@@ -1586,7 +1586,7 @@ describe("Publisher.embed (host side)", () => {
    const helloReply = (m: ReturnType<typeof mount>, extra: Json = {}) =>
       m.fromChild(
          m.msg("hello", {
-            id: "hello-1",
+            id: "hello",
             reply: true,
             payload: { handles: [], runtime: "1" },
             ...extra,
@@ -1635,37 +1635,21 @@ describe("Publisher.embed (host side)", () => {
       ).toThrow("http(s) origin");
    });
 
-   it("says hello on load, retries a few times, and stops once the page replies", async () => {
+   it("says hello once on each load, and never retries", async () => {
       const page = bootHost();
       const m = mount(page);
       expect(m.childPosts).toEqual([]);
       m.load();
-      expect(m.childPosts).toHaveLength(1);
-      expect(m.childPosts[0]).toEqual({
-         targetOrigin: APP,
-         msg: {
-            protocol: "publisher",
-            v: 1,
-            type: "hello",
-            id: "hello-1",
+      expect(m.childPosts).toEqual([
+         {
+            targetOrigin: APP,
+            msg: { protocol: "publisher", v: 1, type: "hello", id: "hello" },
          },
-      });
-      await page.clock.advance(500);
-      expect(m.childPosts).toHaveLength(2);
-      expect(m.childPosts[1].msg.id).toBe("hello-2");
-      helloReply(m);
-      await page.clock.advance(5000);
-      expect(m.childPosts).toHaveLength(2);
-   });
-
-   it("gives up after five hellos", async () => {
-      const page = bootHost();
-      const m = mount(page);
-      m.load();
+      ]);
       await page.clock.advance(10000);
-      expect(m.childPosts.filter((p) => p.msg.type === "hello")).toHaveLength(
-         5,
-      );
+      expect(m.childPosts).toHaveLength(1);
+      m.load();
+      expect(m.childPosts).toHaveLength(2);
    });
 
    it("answers a page's unsolicited ready with a hello", () => {
@@ -1865,23 +1849,21 @@ describe("Publisher.embed (host side)", () => {
       let tokens = 0;
       const m = mount(page, { getToken: () => String(++tokens) });
       m.load();
-      m.fromChild(m.msg("hello", { id: "hello-1", reply: true }), APP, {
+      m.fromChild(m.msg("hello", { id: "hello", reply: true }), APP, {
          postMessage() {},
       });
       m.fromChild(
-         m.msg("hello", { id: "hello-1", reply: true }),
+         m.msg("hello", { id: "hello", reply: true }),
          "https://evil.example.com",
       );
-      m.fromChild(m.msg("hello", { id: "hello-1", reply: true }), "null");
-      m.fromChild(
-         m.msg("hello", { id: "hello-1", reply: true, nonce: "wrong" }),
-      );
+      m.fromChild(m.msg("hello", { id: "hello", reply: true }), "null");
+      m.fromChild(m.msg("hello", { id: "hello", reply: true, nonce: "wrong" }));
       m.fromChild({
-         ...m.msg("hello", { id: "hello-1", reply: true }),
+         ...m.msg("hello", { id: "hello", reply: true }),
          nonce: undefined,
       });
       m.fromChild({
-         ...m.msg("hello", { id: "hello-1", reply: true }),
+         ...m.msg("hello", { id: "hello", reply: true }),
          protocol: "x",
       });
       await flush();
@@ -2072,10 +2054,10 @@ describe("Publisher.embed (host side)", () => {
       m.childPosts.length = 0;
       const strangers = [
          {
-            ...m.msg("hello", { id: "hello-1", reply: true }),
+            ...m.msg("hello", { id: "hello", reply: true }),
             nonce: undefined,
          },
-         { ...m.msg("hello", { id: "hello-1", reply: true }), nonce: "wrong" },
+         { ...m.msg("hello", { id: "hello", reply: true }), nonce: "wrong" },
          { ...m.msg("ready"), nonce: undefined },
          { ...m.msg("auth.token.request"), nonce: undefined },
          { ...m.msg("auth.token.request"), nonce: "wrong" },
@@ -2212,6 +2194,49 @@ describe("Publisher.embed (host side)", () => {
             }
          });
       }
+
+      for (const c of fixture.givensReplay) {
+         it(`givens replay: ${c.name}`, async () => {
+            const m = mount(bootHost());
+            m.load();
+            helloReply(m);
+            await flush();
+            for (const step of c.before) {
+               if ("hostSends" in step) {
+                  m.handle
+                     .send("givens.set", { givens: step.hostSends })
+                     .catch(() => {});
+               } else {
+                  m.fromChild(
+                     m.msg("givens.changed", {
+                        payload: { givens: step.pageReports },
+                     }),
+                  );
+               }
+            }
+            await flush();
+            m.childPosts.length = 0;
+            m.load();
+            helloReply(m);
+            await flush();
+            expect(
+               m.childPosts
+                  .filter((p) => p.msg.type === "givens.set")
+                  .map((p) => p.msg.payload),
+            ).toEqual(c.replayed ? [{ givens: c.replayed }] : []);
+         });
+      }
+
+      it("replays nothing on the first bind, which sends only what was queued", async () => {
+         const m = mount(bootHost());
+         m.load();
+         m.handle.send("givens.set", { givens: { a: 1 } }).catch(() => {});
+         helloReply(m);
+         await flush();
+         expect(
+            m.childPosts.filter((p) => p.msg.type === "givens.set"),
+         ).toHaveLength(1);
+      });
 
       for (const c of fixture.tokenRequests) {
          it(`token request: ${c.name}`, async () => {

@@ -48,6 +48,9 @@
 // accepted from window.parent at an allowed origin only. Every page → host envelope
 // echoes the nonce from #publisher-nonce= when the URL has one (read once, then removed
 // from the URL; restored before the runtime's own reload); host → page ones carry none.
+// The host says hello on every iframe load and answers the page's `ready` with one; nothing
+// retries, so load the runtime with a script tag, not after the frame's load event. After a
+// reload the host replays the givens it last sent or received, with givens.set.
 // Page → host events: ready, query.ran, givens.changed, version.unavailable. Host → page:
 // auth.token (built in), givens.set (built in; applies only once the page has called
 // onGivensChange, which also advertises it), and whatever the page registers with on(). A
@@ -97,6 +100,9 @@
    }
    function isString(v) {
       return typeof v === "string";
+   }
+   function isPlainObject(v) {
+      return !!v && typeof v === "object" && !Array.isArray(v);
    }
    // The server-injected context; null when the page predates it or it is malformed.
    function readPageContext() {
@@ -757,8 +763,6 @@
    }
 
    // --- Embed helper (host page) -----------------------------------------
-   var HELLO_TRIES = 5;
-   var HELLO_INTERVAL_MS = 500;
    var SEND_TIMEOUT_MS = 5000;
 
    function randomNonce() {
@@ -832,9 +836,10 @@
       var hostHandlers = new Map();
       var ready = false;
       var readyWaiters = [];
-      var helloTries = 0;
-      var helloTimer = null;
       var seq = 0;
+      var binds = 0;
+      // The givens the page should hold: what the host last sent with givens.set (merged) or the page last reported.
+      var heldGivens = null;
       var gone = false;
       // Bumped on every load and on destroy: a token or a reply to a page request is dropped if the frame moved on while it was pending.
       var generation = 0;
@@ -855,13 +860,19 @@
          }
       }
 
-      // The page may load after the first hello, or never answer (an old runtime).
       function sayHello() {
-         clearTimeout(helloTimer);
-         if (ready || gone || helloTries >= HELLO_TRIES) return;
-         helloTries++;
-         hostPost("hello", undefined, { id: "hello-" + helloTries });
-         helloTimer = setTimeout(sayHello, HELLO_INTERVAL_MS);
+         if (!gone) hostPost("hello", undefined, { id: "hello" });
+      }
+
+      function holdGivens(payload) {
+         var patch = payload && payload.givens;
+         if (!isPlainObject(patch)) return;
+         var next = Object.assign({}, heldGivens);
+         Object.keys(patch).forEach(function (k) {
+            if (patch[k] === null) delete next[k];
+            else next[k] = patch[k];
+         });
+         heldGivens = next;
       }
 
       function sendToken() {
@@ -897,7 +908,10 @@
       function onReady() {
          if (ready) return;
          ready = true;
-         clearTimeout(helloTimer);
+         // A reloaded page starts with no givens; the first bind has none to replay.
+         if (++binds > 1 && heldGivens) {
+            hostPost("givens.set", { givens: heldGivens });
+         }
          sendToken();
          readyWaiters.splice(0).forEach(function (fn) {
             fn();
@@ -928,10 +942,13 @@
             }
             return;
          }
-         if (m.type === "ready" && !ready) {
-            // The page is up and offered itself before our hello landed; answer now.
-            helloTries = 0;
-            sayHello();
+         // The page is up and offered itself before our hello landed; answer now.
+         if (m.type === "ready" && !ready) sayHello();
+         if (
+            m.type === "givens.changed" &&
+            isPlainObject(m.payload && m.payload.givens)
+         ) {
+            heldGivens = Object.assign({}, m.payload.givens);
          }
          var list = (hostHandlers.get(m.type) || []).slice();
          if (m.type === "auth.token.request" && isRequest && options.getToken) {
@@ -1006,7 +1023,6 @@
       function onLoad() {
          generation++;
          ready = false;
-         helloTries = 0;
          sayHello();
       }
       iframe.addEventListener("load", onLoad);
@@ -1014,7 +1030,6 @@
       function cleanup() {
          gone = true;
          generation++;
-         clearTimeout(helloTimer);
          window.removeEventListener("message", onMessage);
          iframe.removeEventListener("load", onLoad);
          observer.disconnect();
@@ -1046,6 +1061,7 @@
                   return;
                }
                var id = "h" + ++seq;
+               if (type === "givens.set") holdGivens(payload);
                var timer = setTimeout(function () {
                   pending.delete(id);
                   var queued = readyWaiters.indexOf(go);

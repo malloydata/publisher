@@ -1,5 +1,5 @@
 {
-   "comment": "One protocol, two hosts: read by dataAppBridge.spec.ts (SDK) and publisher.spec.ts (the vanilla Publisher.embed). \"$NONCE\" is the embed's nonce and \"$ID\" the id of the request being answered; every page message here echoes the nonce unless the case says otherwise, and the host never sends one. A handshake case with loadFirst fires the frame's load event after the host's send and before the message; the send, when probePosted, is then answered and must resolve.",
+   "comment": "One protocol, two hosts: read by dataAppBridge.spec.ts (SDK) and publisher.spec.ts (the vanilla Publisher.embed). \"$NONCE\" is the embed's nonce and \"$ID\" the id of the request being answered; every page message here echoes the nonce unless the case says otherwise, and the host never sends one. A givensReplay case runs its `before` steps on a bound page (hostSends: the host sends givens.set; pageReports: the page emits givens.changed), reloads the frame, and expects the givens.set the host posts once the new page answers hello (null: none). A handshake case with loadFirst fires the frame's load event after the host's send and before the message; the send, when probePosted, is then answered and must resolve.",
    "appOrigin": "https://app.example.com",
    "events": [
       {
@@ -173,7 +173,7 @@
             "protocol": "publisher",
             "v": 1,
             "type": "hello",
-            "id": "hello-1",
+            "id": "hello",
             "reply": true,
             "nonce": "$NONCE",
             "payload": { "handles": ["givens.set"], "runtime": "1" }
@@ -188,7 +188,7 @@
             "protocol": "publisher",
             "v": 1,
             "type": "hello",
-            "id": "hello-1",
+            "id": "hello",
             "reply": true,
             "nonce": "$NONCE",
             "payload": { "handles": [], "runtime": "1" }
@@ -202,7 +202,7 @@
             "protocol": "publisher",
             "v": 1,
             "type": "hello",
-            "id": "hello-1",
+            "id": "hello",
             "reply": true,
             "payload": { "handles": [], "runtime": "1" }
          },
@@ -215,7 +215,7 @@
             "protocol": "publisher",
             "v": 1,
             "type": "hello",
-            "id": "hello-1",
+            "id": "hello",
             "reply": true,
             "nonce": "wrong",
             "payload": { "handles": [], "runtime": "1" }
@@ -245,6 +245,34 @@
          },
          "probePosted": false,
          "helloPosted": false
+      }
+   ],
+   "givensReplay": [
+      {
+         "name": "the givens the host sent, merged in order with null removing a key, are replayed to a reloaded page",
+         "before": [
+            { "hostSends": { "a": 1, "b": 2 } },
+            { "hostSends": { "b": null, "c": 3 } }
+         ],
+         "replayed": { "a": 1, "c": 3 }
+      },
+      {
+         "name": "a givens.changed the page reported after a send replaces what was held",
+         "before": [
+            { "hostSends": { "a": 1 } },
+            { "pageReports": { "a": 2, "z": 9 } }
+         ],
+         "replayed": { "a": 2, "z": 9 }
+      },
+      {
+         "name": "a send after the page's report is newer and merges onto it",
+         "before": [{ "pageReports": { "a": 2 } }, { "hostSends": { "b": 1 } }],
+         "replayed": { "a": 2, "b": 1 }
+      },
+      {
+         "name": "with nothing held nothing is replayed",
+         "before": [],
+         "replayed": null
       }
    ],
    "replies": [

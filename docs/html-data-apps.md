@@ -533,12 +533,22 @@ with another `protocol`, a `v` other than `1`, or a missing `type` is ignored.
 message came from `window.parent` at one of its `hostOrigins`, binds to that
 origin, and replies with `{ handles, runtime }`, the event types it handles and
 the runtime's revision. From then on it posts only to that origin, never to
-`*`, and ignores any other. A page that loads before the host's `hello` also
-offers a `ready` event (same payload) to each *exact* origin in `hostOrigins`;
-a post with the wrong target origin is silently dropped, so this reaches only
-the right one. `Publisher.embed` retries `hello` every 500 ms, five times, and
-`send` waits for the page's reply and rejects after 5 seconds, which is also
-what an older runtime that never replies looks like.
+`*`, and ignores any other. The page answers a `hello` whenever one arrives, and
+when its script runs it offers a `ready` event (same payload) to each *exact*
+origin in `hostOrigins`; a post with the wrong target origin is silently
+dropped, so this reaches only the right one. The host says `hello` once when it
+attaches to a frame that has a `src` and once on every `load` of the frame, and
+answers a page's `ready` with one; nothing retries. So **load the runtime with a
+script tag** in the page's HTML, not injected after the frame's `load` event, or
+the page will have missed the host's `hello` and have only its own `ready` to
+start the handshake. `send` waits for the page's reply and rejects after
+5 seconds, which is also what an older runtime that never replies looks like.
+
+**A reload keeps the givens.** A reloaded page starts with an empty givens
+store. The host remembers the givens it last sent with `givens.set` (merged in
+order, a `null` removing a key) or last received in `givens.changed`, whichever
+is newer, and sends them back with `givens.set` each time the page binds after
+the first. `Publisher.embed` and `createDataAppBridge` both do this.
 
 **The nonce.** The host puts a random `#publisher-nonce=<n>` in the iframe's
 URL fragment (a fragment, so it never reaches a log or a `Referer`; `embed` does it
@@ -563,8 +573,6 @@ cannot speak for the page.
 | `givens.changed` | page → host | `{ givens }` | The whole store, after a `setGivens` that changes the store |
 | `query.ran` | page → host | `{ model, sourceName?, queryName?, query?, givens, versionId, rowCount, ms }` | After every successful query. `query` is the first 2000 characters of the Malloy text; `rowCount` is `null` when the result shape is unknown; `versionId` is `null` when unpinned |
 | `version.unavailable` | page → host | `{ versionId, reason }` | Once, when a query at the page's own version answers `VERSION_NOT_FOUND` or `VERSION_ARCHIVED`. The query still rejects as usual |
-| `context.update` | page → host | any object | Not sent by the runtime; a name for pages that tell the host what they are showing, with `Publisher.emit` |
-| `chat.prefill` | page → host | `{ text }` | Not sent by the runtime; a name for pages that ask the host to prefill a chat box, with `Publisher.emit` |
 
 Any other `type` is open: a page and its host may agree on their own.
 

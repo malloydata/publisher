@@ -20,8 +20,6 @@ export interface PublisherPayloads {
       reason: "VERSION_NOT_FOUND" | "VERSION_ARCHIVED";
    };
    "query.ran": PublisherQueryRan;
-   "context.update": Record<string, unknown>;
-   "chat.prefill": { text: string };
 }
 
 /** An envelope's `type`: the known events, or any string a page and its host agree on. */
@@ -136,8 +134,6 @@ export class PublisherBridgeError extends Error {
    code?: PublisherErrorCode;
 }
 
-const HELLO_TRIES = 5;
-const HELLO_INTERVAL_MS = 500;
 const SEND_TIMEOUT_MS = 5000;
 
 /** A fresh random nonce. Make it before the iframe's `src`, and hand the same one to `createDataAppBridge`. */
@@ -179,6 +175,15 @@ function isEnvelope(m: unknown): m is PublisherEnvelope & {
          typeof e.id === "string" ||
          typeof e.id === "number")
    );
+}
+
+function givensOf(p: unknown): Record<string, unknown> | undefined {
+   const givens = (p as { givens?: unknown } | null | undefined)?.givens;
+   return typeof givens === "object" &&
+      givens !== null &&
+      !Array.isArray(givens)
+      ? (givens as Record<string, unknown>)
+      : undefined;
 }
 
 function readyPayloadOf(p: unknown): ReadyPayload | undefined {
@@ -228,9 +233,10 @@ export function createDataAppBridge(
    let gone = false;
    // Bumped on every load and on destroy: a token or a reply to a page request is dropped if the frame moved on while it was pending.
    let generation = 0;
-   let helloTries = 0;
-   let helloTimer: ReturnType<typeof setTimeout> | undefined;
    let seq = 0;
+   let binds = 0;
+   // The givens the page should hold: what the host last sent with givens.set (merged) or the page last reported.
+   let heldGivens: Record<string, unknown> | undefined;
    let resolveReady: (p: ReadyPayload) => void = () => {};
    let rejectReady: (e: Error) => void = () => {};
    const ready = new Promise<ReadyPayload>((resolve, reject) => {
@@ -267,13 +273,19 @@ export function createDataAppBridge(
       }
    }
 
-   // The page may load after the first hello, or never answer (an old runtime).
    function sayHello() {
-      clearTimeout(helloTimer);
-      if (isReady || gone || helloTries >= HELLO_TRIES) return;
-      helloTries++;
-      post("hello", undefined, { id: `hello-${helloTries}` });
-      helloTimer = setTimeout(sayHello, HELLO_INTERVAL_MS);
+      if (!gone) post("hello", undefined, { id: "hello" });
+   }
+
+   function holdGivens(payload: unknown) {
+      const patch = givensOf(payload);
+      if (!patch) return;
+      const next = { ...heldGivens };
+      for (const [k, v] of Object.entries(patch)) {
+         if (v === null) delete next[k];
+         else next[k] = v;
+      }
+      heldGivens = next;
    }
 
    function sendToken() {
@@ -309,7 +321,8 @@ export function createDataAppBridge(
    function onReady() {
       if (isReady) return;
       isReady = true;
-      clearTimeout(helloTimer);
+      // A reloaded page starts with no givens; the first bind has none to replay.
+      if (++binds > 1 && heldGivens) post("givens.set", { givens: heldGivens });
       if (!readySettled) {
          readySettled = true;
          resolveReady(lastReady);
@@ -351,11 +364,12 @@ export function createDataAppBridge(
       }
       if (m.type === "ready") {
          noteReady(m.payload);
-         if (!isReady) {
-            // The page is up and offered itself before our hello landed; answer now.
-            helloTries = 0;
-            sayHello();
-         }
+         // The page is up and offered itself before our hello landed; answer now.
+         if (!isReady) sayHello();
+      }
+      if (m.type === "givens.changed") {
+         const held = givensOf(m.payload);
+         if (held) heldGivens = { ...held };
       }
       const list = (handlers.get(m.type) ?? []).slice();
       if (m.type === "auth.token.request" && isRequest && opts.getToken) {
@@ -414,7 +428,6 @@ export function createDataAppBridge(
    function onLoad() {
       generation++;
       isReady = false;
-      helloTries = 0;
       sayHello();
    }
 
@@ -434,6 +447,7 @@ export function createDataAppBridge(
                return;
             }
             const id = `h${++seq}`;
+            if (type === "givens.set") holdGivens(payload);
             const timer = setTimeout(() => {
                pending.delete(id);
                readyWaiters = readyWaiters.filter((w) => w !== go);
@@ -467,7 +481,6 @@ export function createDataAppBridge(
          if (gone) return;
          gone = true;
          generation++;
-         clearTimeout(helloTimer);
          win.removeEventListener("message", onMessage);
          iframe.removeEventListener("load", onLoad);
          readyWaiters = [];

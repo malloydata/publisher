@@ -60,7 +60,7 @@ function mount(opts: DataAppBridgeOptions = { src: SRC }, iframeSrc?: string) {
    });
    const load = () => iframe.dispatchEvent(new Event("load"));
    const helloReply = (payload: Json = { handles: [], runtime: "1" }) =>
-      fromChild(msg("hello", { id: "hello-1", reply: true, payload }));
+      fromChild(msg("hello", { id: "hello", reply: true, payload }));
    const ofType = (type: string) => posts.filter((p) => p.msg.type === type);
    return {
       bridge,
@@ -185,23 +185,19 @@ describe("the nonce helpers", () => {
 });
 
 describe("handshake", () => {
-   it("says hello on load, retries every 500 ms up to five times, and stops once the page replies", () => {
+   it("says hello once on each load, and never retries", () => {
       const m = track(mount());
       expect(m.posts).toEqual([]);
       m.load();
       expect(m.posts).toEqual([
          {
             targetOrigin: APP,
-            msg: { protocol: "publisher", v: 1, type: "hello", id: "hello-1" },
+            msg: { protocol: "publisher", v: 1, type: "hello", id: "hello" },
          },
       ]);
-      advance(500);
-      expect(m.ofType("hello").map((p) => p.msg.id)).toEqual([
-         "hello-1",
-         "hello-2",
-      ]);
-      m.helloReply();
       advance(10000);
+      expect(m.ofType("hello")).toHaveLength(1);
+      m.load();
       expect(m.ofType("hello")).toHaveLength(2);
    });
 
@@ -218,13 +214,6 @@ describe("handshake", () => {
       expect(track(mount({ src: SRC })).posts).toEqual([]);
       expect(track(mount({ src: SRC }, "")).posts).toEqual([]);
       expect(track(mount({ src: SRC }, "about:blank")).posts).toEqual([]);
-   });
-
-   it("gives up after five hellos", () => {
-      const m = track(mount());
-      m.load();
-      advance(10000);
-      expect(m.ofType("hello")).toHaveLength(5);
    });
 
    it("resolves ready with the reply's payload and records what the page handles", async () => {
@@ -309,6 +298,45 @@ describe("what the host accepts, from the shared fixture", () => {
          }
       });
    }
+
+   for (const c of fixture.givensReplay) {
+      it(`givens replay: ${c.name}`, async () => {
+         const m = track(mount());
+         m.load();
+         m.helloReply();
+         await flush();
+         for (const step of c.before) {
+            if ("hostSends" in step) {
+               m.bridge
+                  .send("givens.set", { givens: step.hostSends })
+                  .catch(() => {});
+            } else {
+               m.fromChild(
+                  m.msg("givens.changed", {
+                     payload: { givens: step.pageReports },
+                  }),
+               );
+            }
+         }
+         await flush();
+         m.posts.length = 0;
+         m.load();
+         m.helloReply();
+         await flush();
+         expect(m.ofType("givens.set").map((p) => p.msg.payload)).toEqual(
+            c.replayed ? [{ givens: c.replayed }] : [],
+         );
+      });
+   }
+
+   it("replays nothing on the first bind, which sends only what was queued", async () => {
+      const m = track(mount());
+      m.load();
+      m.bridge.send("givens.set", { givens: { a: 1 } }).catch(() => {});
+      m.helloReply();
+      await flush();
+      expect(m.ofType("givens.set")).toHaveLength(1);
+   });
 
    for (const c of fixture.tokenRequests) {
       it(`token request: ${c.name}`, async () => {
@@ -405,7 +433,7 @@ describe("what the host sends", () => {
       let tokens = 0;
       const m = track(mount({ src: SRC, getToken: () => String(++tokens) }));
       m.load();
-      m.fromChild(m.msg("hello", { id: "hello-1", reply: true }), "null");
+      m.fromChild(m.msg("hello", { id: "hello", reply: true }), "null");
       await flush();
       expect(tokens).toBe(0);
    });
@@ -652,10 +680,8 @@ describe("the token", () => {
          ...m.msg(type, extra),
          nonce: undefined,
       });
-      m.fromChild(stranger("hello", { id: "hello-1", reply: true }));
-      m.fromChild(
-         m.msg("hello", { id: "hello-1", reply: true, nonce: "wrong" }),
-      );
+      m.fromChild(stranger("hello", { id: "hello", reply: true }));
+      m.fromChild(m.msg("hello", { id: "hello", reply: true, nonce: "wrong" }));
       m.fromChild(stranger("ready"));
       m.fromChild(stranger("auth.token.request", { id: "p1" }));
       const queued = m.bridge.send("secret", {});
