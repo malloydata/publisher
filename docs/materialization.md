@@ -222,7 +222,10 @@ follow the same rule ([the served copy](#the-served-copy-materialization-v2-publ
     denying every caller.
   - A `storage=` table is never read past a gate whose column it stores as a binary float or a
     128-bit integer (which DuckLake holds as a float), or whose column it cannot be shown to hold
-    at all: two exact values can store as one. The type judged is the one recorded when the table
+    at all: two exact values can store as one. The one exception is a destination `DOUBLE` that
+    copies a warehouse 8-byte double unchanged (a Postgres `double precision`, a DuckDB `DOUBLE`,
+    a Snowflake `FLOAT`), which its column contract records `gateExact`: both sides hold the
+    same bits. A 128-bit integer never is. The type judged is the one recorded when the table
     was built; a table altered in the destination afterwards is not re-read (anyone who can alter
     the destination can read it directly anyway). A database table is built by the source's own
     warehouse in its own types, so only a column its DuckLake catalog holds as a float, as the
@@ -1677,7 +1680,7 @@ table below says it is skipped.
 
 | Fact | The rule |
 | --- | --- |
-| The row scope | For the served copy and a rollup: a `where:` the stored table re-applies at read reads only columns stored exactly (not a binary float or a 128-bit integer standing for an exact type; the served copy's rule, a rollup judges its own grain) and compared as its source compares them. Skipped when the entry point is gated, where the gate's rules below decide, and when the query lists no stored columns to judge. |
+| The row scope | For the served copy and a rollup: a `where:` the stored table re-applies at read reads only columns stored exactly (not a binary float, other than a copy its contract records `gateExact`, or a 128-bit integer standing for an exact type; the served copy's rule, a rollup judges its own grain) and compared as its source compares them. Skipped when the entry point is gated, where the gate's rules below decide, and when the query lists no stored columns to judge. |
 | The caller's own filters | Each string comparison the query makes on the stored rows compares as live (its collation, on both sides). Fails closed when the filters, or a persisted result's table, cannot be read. |
 | The result's order and grouping | Over a `storage=` table, a string the query orders by needs its source to compare bytes, and one it groups or compares by equality needs equality to be byte equality there. On a database table, the stored side is judged as for a gate: the stored column must still compare as its source does (an `ALTER … COLLATE` after the build answers live). A `storage=` destination's own `default_collation` is not re-checked for the result. Fails closed when the result cannot be read. |
 | Past an entry-point gate | The leg is one that may read past a gate, every table it read keeps the gate (by kind, tier and the deployment's switches), and no row filter is declared on a composite the entry point reads. |
