@@ -119,6 +119,7 @@ select, .btn { font: 500 var(--fs-sm)/1.2 var(--font-ui); padding: 7px 12px; bor
 .lede { max-width: 62ch; font: 400 var(--fs-lg)/1.5 var(--font-serif); color: var(--text); margin: var(--sp-4) 0 0; }
 .view > .grid-2, .view > .grid-3, .view > .card, .view > .rt-wrap { margin-top: var(--sp-6); }
 .answer { font: 400 var(--fs-xl)/1.35 var(--font-serif); color: var(--text-strong); max-width: 48ch; margin: var(--sp-4) 0 0; }
+.answer[data-pending] { min-height: 2.7em; }
 
 /* Headline numbers: the one tinted panel */
 .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--sp-5); margin: var(--sp-6) 0; padding: var(--sp-5); background: var(--panel); border-top: 3px solid var(--accent); }

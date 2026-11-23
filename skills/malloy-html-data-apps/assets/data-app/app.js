@@ -278,8 +278,8 @@ function working(qs, explain, results) {
       explain[i] && h('p', { text: explain[i] }),
       h('pre', { text: q }),
       h('span', { text: `${rows.length} row${rows.length === 1 ? '' : 's'}${rows.length > 100 ? ', the first 100 shown' : ''}` }),
-      cols.length && h('button', { type: 'button', class: 'btn btn--small', text: 'Download CSV', onclick: () => downloadCsv(rows, cols, i) }),
-      cols.length && h('div', { class: 'working__rows' }, h('table', {},
+      cols.length > 0 && h('button', { type: 'button', class: 'btn btn--small', text: 'Download CSV', onclick: () => downloadCsv(rows, cols, i) }),
+      cols.length > 0 && h('div', { class: 'working__rows' }, h('table', {},
         h('thead', {}, h('tr', {}, ...cols.map((c) => h('th', { text: c })))),
         h('tbody', {}, ...rows.slice(0, 100).map((r) => h('tr', {}, ...cols.map((c) => h('td', { class: typeof r[c] === 'number' ? 'num' : null, text: cell(r[c]) }))))))))
   }))
@@ -351,7 +351,10 @@ function renderScope() {
     h('span', { class: `chip${had.has(c.label) || !C.MOTION ? '' : ' is-new'}`, 'data-label': c.label }, c.label, h('button', { type: 'button', 'aria-label': `Clear ${c.label}`, text: '×', onclick: () => setScope(c.clear) }))))
   const end = h('div', { class: 'scope__end' },
     h('button', { class: 'btn', type: 'button', text: 'Reset', onclick: () => setScope({ ...S.DEFAULT_SCOPE }) }),
-    h('button', { class: 'btn btn--primary', type: 'button', text: 'Copy link', onclick: () => navigator.clipboard?.writeText(location.href) }))
+    h('button', { class: 'btn btn--primary', type: 'button', text: 'Copy link', onclick: (e) => {
+      const b = e.currentTarget
+      Promise.resolve(navigator.clipboard?.writeText(location.href)).then(() => (b.textContent = 'Copied'), () => (b.textContent = 'Copy the address bar instead'))
+    } }))
   $('#scope-bar').replaceChildren(...controls, chips, end)
 }
 const range = (lo, hi) => Array.from({ length: hi - lo + 1 }, (_, i) => lo + i)
@@ -442,10 +445,14 @@ function render({ toTop = false } = {}) {
   else paint(toTop, same)
 }
 
-/** Sets body[data-ready] once every card on the view has drawn or failed and none is redrawing: wait on it for a shot. */
+/**
+ * Sets body[data-ready="true"] once every card on the view has drawn or failed, none is redrawing, and no other part
+ * marked data-pending (a line drawn from a query outside a card) is waiting: wait on it for a shot.
+ */
 function markReady() {
   const cards = [...document.querySelectorAll('#main article.card')]
-  if (cards.every((c) => (c.dataset.loaded || c.querySelector('.state--error')) && !c.classList.contains('is-updating'))) document.body.dataset.ready = '1'
+  const settled = cards.every((c) => (c.dataset.loaded || c.querySelector('.state--error')) && !c.classList.contains('is-updating'))
+  if (settled && !document.querySelector('#main [data-pending]')) document.body.dataset.ready = 'true'
 }
 
 function paint(toTop, same) {
@@ -503,15 +510,32 @@ function paint(toTop, same) {
 // ---- The headline check: open the app at ?check=1#/ and the page says whether its headline is the model's ----
 
 async function selfCheck() {
+  const banner = (fails, passed) => {
+    document.body.dataset.check = fails.length ? 'fail' : 'ok'
+    document.body.prepend(h('pre', { class: 'self-check', text: fails.length ? `Headline check failed:\n${fails.join('\n')}` : passed }))
+  }
+  // The headline card, once it has drawn or failed; a minute without either is a failure too.
   const card = await new Promise((done) => {
-    const look = () => { const c = $('#main .card'); if (c?.dataset.loaded) done(c); else setTimeout(look, 200) }
+    const until = Date.now() + 60000
+    const look = () => {
+      const c = $('#main .card')
+      if (c?.dataset.loaded || c?.querySelector('.state--error') || Date.now() > until) done(c)
+      else setTimeout(look, 200)
+    }
     look()
   })
+  if (!card?.dataset.loaded) return banner([card ? 'The headline card could not load' : 'No headline card drew within a minute'])
   const fails = []
   // The headline is the answer's own query and the first card's: the answer's numbers come from the first.
   const qs = [...new Set([`run: ${S.HEADLINE} -> kpis`, ...card.__spec.queries()])]
   for (const q of qs) if (!/^run: \w+ -> \w+$/.test(q)) fails.push(`The headline card adds to a view: ${q}`)
-  const values = (await Promise.all(qs.map(query))).flat().flatMap((r) => Object.values(r)).filter((v) => typeof v === 'number')
+  let rows
+  try {
+    rows = await Promise.all(qs.map(query))
+  } catch (err) {
+    return banner([`A headline query failed: ${reason(err)}`])
+  }
+  const values = rows.flat().flatMap((r) => Object.values(r)).filter((v) => typeof v === 'number')
   // A number shown agrees with a model value when the value, or its percentage, rounds to it at the shown decimals.
   const agrees = (t) => {
     const m = /([−-]?)([\d,]*\.?\d+)/.exec(t)
@@ -525,8 +549,7 @@ async function selfCheck() {
   const text = document.body.innerText
   for (const bad of [/\bundefined\b/, /\bNaN\b/, /\bTODO\b/, /placeholder/i, /returned no text/i]) if (bad.test(text)) fails.push(`The page says ${bad}`)
   if (!qs.length || !shown.length) fails.push('The headline card shows no queries or no numbers to check')
-  document.body.dataset.check = fails.length ? 'fail' : 'ok'
-  document.body.prepend(h('pre', { class: 'self-check', text: fails.length ? `Headline check failed:\n${fails.join('\n')}` : `Headline check passed: ${shown.length} numbers from ${qs.length} bare views of the model.` }))
+  banner(fails, `Headline check passed: ${shown.length} numbers from ${qs.length} bare views of the model.`)
 }
 
 async function boot() {
@@ -557,6 +580,7 @@ async function boot() {
   $('#footer').replaceChildren(footer())
   $('#data-through').textContent = `Data through ${known.years[1]}` // ADAPT: the data's latest date, from a query
   render()
+  $('.app-footer').hidden = false // after the first view, so its arrival does not push the footer down the page
   if (new URLSearchParams(location.search).has('check')) selfCheck()
 }
 
@@ -572,10 +596,14 @@ function overview() {
   // The headline runs bare views of the source that carries the question's scope, and every word of the answer comes
   // from their rows: so the page, an agent and an analyst get the same numbers.
   const qK = `run: ${S.HEADLINE} -> kpis`
-  const answer = h('p', { class: 'answer' })
+  const answer = h('p', { class: 'answer', 'data-pending': '' })
   query(qK)
     .then(([k]) => answer.replaceChildren(...prose([`Complaints ${k.change < 0 ? 'fell' : 'rose'} by `, { b: C.pct(Math.abs(k.change), 0) }, ` from ${k.prior_year} to ${k.latest_year}.`])))
     .catch((err) => answer.replaceChildren(h('span', { class: 'state state--error', text: `Could not load the answer: ${reason(err)}` })))
+    .finally(() => {
+      answer.removeAttribute('data-pending')
+      markReady()
+    })
   const [kicker, title, lede] = viewHead('Did the drop in rat complaints reach every neighborhood?', 'The city counts every rodent complaint to 311. Here is where they fell, and whether it is holding.').filter(Boolean)
   return h('div', { class: 'view wrap' },
     kicker, title, answer, lede,

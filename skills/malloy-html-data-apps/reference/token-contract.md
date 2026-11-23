@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 Read when setting up an app's stylesheet, or when reskinning one for a client.
 
-Outside the frame template (`reference/app-frame.md`), there is no shipped component library, so visual consistency across apps comes from every app defining the same *kinds* of token and every chart reading them at runtime. The values are free - that is what carries a client's identity. The contract is the shape. The template's stylesheet defines its own tokens (`--up` and `--down` are its positive and negative, by meaning to the reader), and its chart module reads them at runtime; the module's own few fixed label sizes are the module's, not the app's.
+Outside the frame template (`reference/app-frame.md`), there is no shipped component library, so visual consistency across apps comes from every app defining the same *kinds* of token and every chart reading them at runtime. The values are free - that is what carries a client's identity. The contract is the shape. The template's stylesheet defines its own tokens (`--up` is bad news and `--down` good news, by what a change means to the reader, not its direction), and its chart module reads them at runtime; the module's own few fixed label sizes are the module's, not the app's.
 
 ## What to define on `:root`
 

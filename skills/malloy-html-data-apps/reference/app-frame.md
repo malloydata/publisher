@@ -19,8 +19,8 @@ SPDX-License-Identifier: MIT
 | `scope.js` | Every query the app runs and its address; no DOM | Once, then it is the app's own |
 | `styles.css` | The design system: tokens, frame, cards, states, phone layout, looks | Once, then it is the app's own |
 | `charts.js`, `charts.css` | The d3 chart module (`reference/charts.md`) | Whole; never edit, copy again to take a fix |
-| `vendor/d3.min.js` | d3 v7.9.0, ISC | Whole |
-| `vendor/topojson-client.min.js` | topojson-client 3.1.0, ISC, for boundary maps only | Only with a map (`reference/maps.md`) |
+| `vendor/d3.min.js`, `vendor/LICENSE-d3.txt` | d3 v7.9.0 and its ISC license | Whole |
+| `vendor/topojson-client.min.js`, `vendor/LICENSE-topojson-client.txt` | topojson-client 3.1.0 and its ISC license, for boundary maps only | Only with a map (`reference/maps.md`) |
 | `palette.py` | Checks the colour tokens (below) | Never: run it from here |
 | `fonts.py` | Writes `fonts.css`, the faces as base64 text (below) | Never: run it from here |
 
@@ -35,7 +35,7 @@ test -f publisher.json || { echo "run this from the package directory, the one w
 test -n "$T" || { echo "assets/data-app is not on disk: build from the minimal scaffold in SKILL.md"; exit 1; }
 mkdir -p public/vendor
 for f in index.html app.js scope.js styles.css; do [ -e "public/$f" ] || cp "$T/$f" public/; done
-cp "$T/charts.js" "$T/charts.css" public/ && cp "$T/vendor/d3.min.js" public/vendor/
+cp "$T/charts.js" "$T/charts.css" public/ && cp "$T/vendor/d3.min.js" "$T/vendor/LICENSE-d3.txt" public/vendor/
 chmod -R u+w public
 ```
 
@@ -115,12 +115,16 @@ Everything above `// ---- Views` is the frame. Keep it as it is:
   keeps its place. That holds standalone; in a content-height frame the host scrolls and `scrollBy` does nothing,
   so the page may move. A part of a view that follows the address but is not a card, such as Compare's picks, is marked
   `data-redraw="<name>"` and swapped in place.
+- **`body[data-ready="true"]`**: set once every card on the view has drawn or failed, and nothing marked
+  `data-pending` is waiting. A line drawn from a query outside a card, like the Overview's answer, carries
+  `data-pending` until it is drawn. A screenshot waits on it.
 - **`selfCheck()`**: open the app at `?check=1#/` and a banner says whether every number in the answer and the
   headline card is a value bare views of the model return, and that no placeholder (`undefined`, `NaN`) is on the
   page.
 - **d3** loads beside `boot()`'s first queries rather than ahead of them; nothing draws before it is in.
 
-Below it, `boot()` (its distinct-value lists and the "Data through" line are marked ADAPT) and the views.
+Below it, `boot()` (its distinct-value lists and the "Data through" line are marked ADAPT) and the views. The
+example's Overview, Explore, entity page and Compare are worked; its Records and About are headings to fill.
 
 ## `scope.js`: queries and the address
 
@@ -216,7 +220,7 @@ On top of `SKILL.md`'s recipe:
   is true. `document.fonts.check` is true even when the face is missing.
 - Shoot every view, Explore with each scope control set, Explore after a click, and an entity with a scope, at 1280
   and 390 px wide. Cards load as they near the screen, so shoot with a viewport taller than the view and wait for
-  `body[data-ready]`, which the frame sets once every card on the view has drawn or failed
+  `body[data-ready="true"]`, which the frame sets once every card on the view has drawn or failed
   (`reference/verification-harness.md`). No label overlaps or runs off its chart.
 - Every card has a finding and a method note, and its working opens with a definition for every query.
 - Every scope control changes every card that should respond; a card that ignores a key says so.

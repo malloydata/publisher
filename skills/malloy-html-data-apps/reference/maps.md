@@ -33,7 +33,8 @@ the one boundary file the app needs. Run it from the package directory; the firs
 
 ```sh
 T=$(d=$PWD; while :; do for s in "$d/.claude/skills" "$d/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done; [ "$d" = / ] && break; d=$(dirname "$d"); done; for s in "$HOME/.claude/skills" "$HOME/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done)
-mkdir -p public/vendor/maps && cp "$T/vendor/topojson-client.min.js" public/vendor/ && chmod -R u+w public
+test -n "$T" || { echo "assets/data-app is not on disk"; exit 1; }
+mkdir -p public/vendor/maps && cp "$T/vendor/topojson-client.min.js" "$T/vendor/LICENSE-topojson-client.txt" public/vendor/ && chmod -R u+w public
 cd public/vendor
 base=https://cdn.jsdelivr.net/npm
 curl -sSL --fail --max-time 60 -o maps/states-albers-10m.json $base/us-atlas@3.0.1/states-albers-10m.json
@@ -42,7 +43,7 @@ sha256sum -c - <<'SUMS'
 6e7bb086a3c791490361968a3094f377f7726c5d0c4900fec03cc42db2305a3d  maps/states-albers-10m.json
 8048290dfdb6e83fbed17e8985c8cfc4ce9da9b842642f3d3e497280790cfa31  maps/LICENSE-atlas.txt
 SUMS
-[ $? -eq 0 ] || rm -f maps/states-albers-10m.json
+[ $? -eq 0 ] || { rm -f maps/states-albers-10m.json maps/LICENSE-atlas.txt; echo "sum differs: draw a ranked table instead"; exit 1; }
 cd ../..
 ```
 

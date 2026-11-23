@@ -27,7 +27,7 @@ grep -qs "^d3.min.js:" public/vendor/README.md || echo "d3.min.js: d3 v7.9.0, IS
 ```
 
 The frame's `index.html` preloads d3 and `app.js` loads it; an app built without the frame loads it before the
-first chart draws.
+first chart draws, and keeps the frame's `styles.css` `:root` tokens and its `.rt` rules, which the module reads.
 
 Link the styles after `styles.css`, `<link rel="stylesheet" href="./charts.css">`, and import the module as
 `import * as C from './charts.js'`. To learn a function's arguments, read only its comment and signature, never the code:

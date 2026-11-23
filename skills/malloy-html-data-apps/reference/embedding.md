@@ -48,8 +48,8 @@ A frame as tall as its content changes more than these two. Each is invisible st
   enters the screen rather than before (`reference/lazy-load.md`).
 - **The runtime measures the bottoms of `body`'s children**, so a margin on the last child sits outside the
   measurement and gives the frame an inner scrollbar. Put the space inside, as padding.
-- **The host may cap the frame's height** (Credible caps it at 20,000 px). A view runs two to three times as tall at
-  phone width as at desktop, so keep each view under about 5,000 px at desktop width; split a long view into two
+- **The host may cap the frame's height**, for example at 20,000 px. A view runs taller at phone width than at
+  desktop, by half again or more, so keep each view under about 5,000 px at desktop width; split a long view into two
   views rather than growing one.
 - **What the frame refuses fails silently.** Publisher's frame sandbox allows scripts, same-origin requests and
   forms, so a download (a CSV button), a new tab and an `alert` do nothing inside it, though each works standalone.
