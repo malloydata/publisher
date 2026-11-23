@@ -895,15 +895,19 @@ export function packageRelativeRun(
  */
 export function builtFromOf(
    buildSQL: string,
-   manifest: Manifest["buildManifest"],
+   /** Absent for a build given no manifest (a direct call): it read none. */
+   manifest: Manifest["buildManifest"] | undefined,
    builtEntries: Readonly<Record<string, ManifestEntry>>,
    rootAddress: string | undefined,
 ): ManifestEntry["builtFrom"] {
    return builtFromAddresses(
-      Object.entries(manifest.entries).flatMap(([address, { tableName }]) =>
-         address !== rootAddress && tableName && readsTable(buildSQL, tableName)
-            ? [address]
-            : [],
+      Object.entries(manifest?.entries ?? {}).flatMap(
+         ([address, { tableName }]) =>
+            address !== rootAddress &&
+            tableName &&
+            readsTable(buildSQL, tableName)
+               ? [address]
+               : [],
       ),
       builtEntries,
    );
