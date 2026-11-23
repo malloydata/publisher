@@ -261,8 +261,7 @@ function processAlive(pid: number): boolean {
  * One named for this process's own pid goes only if it predates this process,
  * since a restarted container reuses its pids (pid 1); a directory of another
  * live process is never touched, nor a live session's. One with no pid in its
- * name (an earlier release's) goes by the same age rule. Returns how many it
- * removed.
+ * name (an earlier release's) is left alone. Returns how many it removed.
  */
 export function removeStaleBuildDirs(
    root: string = os.tmpdir(),
@@ -277,11 +276,12 @@ export function removeStaleBuildDirs(
          }
          const dir = path.join(root, entry.name);
          const owner = /^malloy-build-(\d+)-/.exec(entry.name)?.[1];
-         const pid = owner === undefined ? undefined : Number(owner);
-         const otherProcess = pid !== undefined && pid !== ownPid;
+         // With no pid there is no telling whether an older publisher sharing this temp root still uses it.
+         if (owner === undefined) continue;
+         const pid = Number(owner);
          try {
             if (
-               otherProcess
+               pid !== ownPid
                   ? processAlive(pid)
                   : statSync(dir).mtimeMs >= startedAtMs
             ) {

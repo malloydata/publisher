@@ -873,7 +873,7 @@ describe.skipIf(!SUPERUSER)(
             expect(await admin.listTables(catalog)).toEqual([]);
          });
 
-         it("creates a schema with 201, answers 200 for one that exists, and records inlining off for it", async () => {
+         it("creates a schema with 201 and answers 200 for one that exists", async () => {
             const first = keep(
                await admin.createSchema(catalog, "s_one", {}, false),
             );
@@ -883,13 +883,6 @@ describe.skipIf(!SUPERUSER)(
             expect((await admin.getCatalog(catalog)).schemas).toEqual(
                expect.arrayContaining(["main", "s_one"]),
             );
-            const scoped = await superuserQuery(
-               `select m.value from ${catalog}.ducklake_metadata m ` +
-                  `join ${catalog}.ducklake_schema s on s.schema_id = m.scope_id ` +
-                  `where m.key = 'data_inlining_row_limit' and m.scope = 'schema' ` +
-                  `and s.schema_name = 's_one' and s.end_snapshot is null`,
-            );
-            expect(scoped).toEqual([{ value: "0" }]);
          });
 
          it("refuses a create-only PUT of a schema that exists with SCHEMA_EXISTS", async () => {

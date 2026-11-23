@@ -273,6 +273,15 @@ describe("a load's failure as an admin refusal", () => {
       expect([mapped.status, mapped.reason]).toEqual([409, "LOAD_CONFLICT"]);
    });
 
+   it("answers a schema dropped before the transaction began as a 404", () => {
+      const mapped = failure(
+         new Error(
+            'Binder Error: Schema "s" not found in DuckLakeCatalog "lake"',
+         ),
+      ) as CatalogAdminError;
+      expect([mapped.status, mapped.reason]).toEqual([404, "SCHEMA_NOT_FOUND"]);
+   });
+
    it("keeps the admin refusals a load can meet, and leaves any other failure to answer 500", () => {
       const busy = new CatalogAdminError(503, "LOAD_BUSY", "busy");
       expect(failure(busy)).toBe(busy);

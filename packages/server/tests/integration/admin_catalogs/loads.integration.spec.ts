@@ -1369,6 +1369,54 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          },
       );
 
+      it("answers 404 SCHEMA_NOT_FOUND when another replica drops the schema before the load's transaction begins", async () => {
+         const schema = `dropped_${counter++}`;
+         await admin.createSchema(CATALOG, schema, undefined, false);
+         const dropper = await attached(`loads_dropper_${counter++}`, "write");
+         const object = await parquet("SELECT 1 AS id, 'a' AS v");
+         // The load has read the schema's owner, so the schema is past the 404 check on the catalog database.
+         const lock = spyOn(admin, "withTableLock");
+         lock.mockImplementation(
+            (catalog, schemaName, table, fn) =>
+               CatalogAdmin.prototype.withTableLock.call(
+                  admin,
+                  catalog,
+                  schemaName,
+                  table,
+                  (held) =>
+                     fn({
+                        ...held,
+                        pg: async (query) => {
+                           const rows = await held.pg(query);
+                           if (query.includes("pg_get_userbyid")) {
+                              await sql(
+                                 dropper,
+                                 `DROP SCHEMA ${CATALOG}.${schema} CASCADE`,
+                              );
+                           }
+                           return rows;
+                        },
+                     }),
+               ) as ReturnType<typeof fn>,
+         );
+         let error: CatalogAdminError;
+         try {
+            error = await refusal(
+               admin.loadTable(CATALOG, schema, "t", {
+                  mode: "merge",
+                  key: ["id"],
+                  objects: [object],
+               }),
+            );
+         } finally {
+            lock.mockRestore();
+         }
+         expect([error.status, error.reason]).toEqual([
+            404,
+            "SCHEMA_NOT_FOUND",
+         ]);
+      });
+
       it("refuses a load while this process's load slot is held, and releases the table's lock", async () => {
          const object = await parquet("SELECT 1 AS id, 'x' AS v");
          const slot = loadSlots.tryAcquire()!;

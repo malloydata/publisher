@@ -438,9 +438,8 @@ export class CatalogAdmin {
    }
 
    /**
-    * Creates a schema, and sets its inlining off so a sync table written into it
-    * never stays rows in the catalog database. Returns whether it is new: a
-    * schema that exists, or one another request created first, is not an error.
+    * Creates a schema. Returns whether it is new: a schema that exists, or one
+    * another request created first, is not an error.
     */
    async createSchema(
       name: string,
@@ -468,18 +467,6 @@ export class CatalogAdmin {
                return false;
             }
             throw error;
-         }
-         try {
-            await s.runSQL(
-               `CALL ${q(name)}.set_option('data_inlining_row_limit', 0, schema => '${escapeSQL(schema)}')`,
-            );
-         } catch (error) {
-            // The schema exists by now; the post-load flush still keeps rows out.
-            logger.warn("Could not turn inlining off for a new schema", {
-               catalog: name,
-               schema,
-               error: redactPgSecrets(errMessage(error)),
-            });
          }
          return true;
       });
@@ -998,6 +985,18 @@ export class CatalogAdmin {
          )
       ) {
          return new CatalogAdminError(409, "LOAD_CONFLICT", mapped.message);
+      }
+      // A schema dropped before the load's transaction began fails at DuckDB's bind; once begun, it is the conflict above.
+      if (
+         mapped instanceof Error &&
+         !(mapped instanceof CatalogAdminError) &&
+         /Schema ".*" not found in DuckLakeCatalog/.test(mapped.message)
+      ) {
+         return new CatalogAdminError(
+            404,
+            "SCHEMA_NOT_FOUND",
+            "The schema was dropped before the load began.",
+         );
       }
       // Unmapped, so a 500 whose log line is this message rather than DuckDB's bare "Out of Memory Error".
       if (

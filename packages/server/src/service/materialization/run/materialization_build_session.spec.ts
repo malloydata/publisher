@@ -1381,32 +1381,29 @@ describe("buildSourceIntoStorage clears a Snowflake session's query tag", () => 
 });
 
 describe("removeStaleBuildDirs", () => {
-   it("removes build directories older than the process and keeps everything else", () => {
+   it("removes build directories of this pid older than the process and keeps everything else", () => {
       const root = mkdtempSync(join(tmpdir(), "stale-sweep-"));
       const startedAt = Date.now();
       const at = (dir: string, offsetMs: number) => {
          const t = new Date(startedAt + offsetMs);
          utimesSync(dir, t, t);
       };
+      const own = `malloy-build-${process.pid}-`;
       try {
-         for (const name of [
-            "malloy-build-old",
-            "malloy-build-new",
-            "other-old",
-         ]) {
+         for (const name of [`${own}old`, `${own}new`, "other-old"]) {
             mkdirSync(join(root, name));
          }
-         writeFileSync(join(root, "malloy-build-file"), "x");
-         at(join(root, "malloy-build-old"), -60_000);
-         at(join(root, "malloy-build-new"), 60_000);
+         writeFileSync(join(root, `${own}file`), "x");
+         at(join(root, `${own}old`), -60_000);
+         at(join(root, `${own}new`), 60_000);
          at(join(root, "other-old"), -60_000);
 
          expect(removeStaleBuildDirs(root, startedAt)).toBe(1);
 
-         expect(existsSync(join(root, "malloy-build-old"))).toBe(false);
-         expect(existsSync(join(root, "malloy-build-new"))).toBe(true);
+         expect(existsSync(join(root, `${own}old`))).toBe(false);
+         expect(existsSync(join(root, `${own}new`))).toBe(true);
          expect(existsSync(join(root, "other-old"))).toBe(true);
-         expect(existsSync(join(root, "malloy-build-file"))).toBe(true);
+         expect(existsSync(join(root, `${own}file`))).toBe(true);
       } finally {
          rmSync(root, { recursive: true, force: true });
       }
@@ -1470,11 +1467,11 @@ describe("removeStaleBuildDirs", () => {
          expect(left()).toEqual([`malloy-build-${ownPid}-live`]);
       });
 
-      it("judges one with no pid in its name by its age", () => {
+      it("leaves one with no pid in its name alone, however old: an older publisher may share the temp root", () => {
          dir("malloy-build-abc123", -60_000);
          dir("malloy-build-7x", 60_000);
-         expect(removeStaleBuildDirs(root, startedAt)).toBe(1);
-         expect(left()).toEqual(["malloy-build-7x"]);
+         expect(removeStaleBuildDirs(root, startedAt)).toBe(0);
+         expect(left()).toEqual(["malloy-build-7x", "malloy-build-abc123"]);
       });
    });
 

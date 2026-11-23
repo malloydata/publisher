@@ -322,7 +322,8 @@ stream in batches:
   together.
 - The load reads the table inside the transaction that writes it, so a load that races a table PUT or
   DELETE of the same table (or a schema drop) on another replica is refused when it commits, `409
-  LOAD_CONFLICT`: nothing is written, retry.
+  LOAD_CONFLICT`: nothing is written, retry. A schema dropped before that transaction begins is a `404
+  SCHEMA_NOT_FOUND`.
 - A load runs in its own DuckDB session, bounded to `PUBLISHER_ADMIN_MEMORY_LIMIT` of memory (default 1.5 GB,
   or `PUBLISHER_DUCKDB_MEMORY_LIMIT` when that is lower, so a load needs both raised to use more) and
   `PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE` of spill (default 6 GiB) under the system temp directory. A server that runs both the admin listener and the serving API shares its CPU and

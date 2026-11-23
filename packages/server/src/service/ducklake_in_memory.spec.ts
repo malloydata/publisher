@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { makeDigest } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
@@ -45,8 +44,8 @@ let envPath: string;
 const opened: DuckDBConnection[] = [];
 
 /** A DuckLake connection as the environment builds it, before any attach. */
-function open(connection: ApiConnection) {
-   const assembled = assembleEnvironmentConnections([connection], envPath);
+function open(connection: ApiConnection, directory = envPath) {
+   const assembled = assembleEnvironmentConnections([connection], directory);
    const built = buildDuckLakeConnection(
       assembled.metadata.get(connection.name!)!,
       assembled.pojo.connections[connection.name!],
@@ -94,30 +93,28 @@ describe("a DuckLake connection's in-memory primary", () => {
 });
 
 describe("a DuckLake connection's digest", () => {
-   const legacyDigest = (name: string) =>
-      makeDigest(
-         "duckdb",
-         path.join(envPath, `${name}_ducklake.duckdb`),
-         envPath,
-         undefined,
-      );
+   // Fixed values over a fixed directory: the digest keys cached query results, so it must not drift.
+   const directory = "/environments/digest-fixture";
+   const goldenA =
+      "ad6f58a426af5d34bebb4111356b9e75283445bb822cbc2b0efba8372b2195c4";
+   const goldenB =
+      "68f49a294b83de536ad4b8f0e2205538881dd526718a8a1ccc2dd7320e6995ac";
 
    it("is the one Malloy computed for its old database file", () => {
-      const a = open(lake("a")).built;
-      const b = open(lake("b")).built;
+      const a = open(lake("a"), directory).built;
+      const b = open(lake("b"), directory).built;
 
-      expect(a.getDigest()).toBe(legacyDigest("a"));
-      expect(b.getDigest()).toBe(legacyDigest("b"));
-      expect(a.getDigest()).not.toBe(b.getDigest());
+      expect(a.getDigest()).toBe(goldenA);
+      expect(b.getDigest()).toBe(goldenB);
    });
 
    it("is replaced by the API fingerprint when one is set", () => {
-      const { built, assembled } = open(lake("a"));
+      const { built, assembled } = open(lake("a"), directory);
       const unset = applyConnectionFingerprint(
          built,
          assembled.metadata.get("a"),
       );
-      expect(unset.getDigest()).toBe(legacyDigest("a"));
+      expect(unset.getDigest()).toBe(goldenA);
 
       const metadata = assembled.metadata.get("a")!;
       const fingerprinted = applyConnectionFingerprint(built, {

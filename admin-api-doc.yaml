@@ -177,8 +177,7 @@ paths:
       operationId: put-schema
       summary: Create a schema
       description: |
-        Creates the schema, and records that tables written into it never keep
-        rows inline in the catalog database. The name is lowercase
+        Creates the schema. The name is lowercase
         (`[a-z_][a-z0-9_]*`) and not reserved (`main`, `memory`,
         `information_schema`, `pg_catalog`, `temp`, `system`, or a name starting
         `__ducklake_metadata_`: `400 SCHEMA_RESERVED`). The request has
@@ -489,7 +488,8 @@ paths:
         the transaction that writes it, so one that races a table PUT or DELETE
         of the same table, or a schema drop, on another replica is refused by
         DuckLake at its commit and answers `409 LOAD_CONFLICT`: nothing was
-        written, and a retry is safe.
+        written, and a retry is safe. A schema dropped before that transaction
+        begins answers `404 SCHEMA_NOT_FOUND`.
 
         A load runs in a session bounded to `PUBLISHER_ADMIN_MEMORY_LIMIT` of
         memory (default 1.5 GB) or the operator's lower
@@ -1119,7 +1119,8 @@ components:
             load on this server, is running; nothing was written, retry.
             `LOAD_CONFLICT` (409): DuckLake refused the commit because
             another request (a table PUT or DELETE, a schema drop) changed
-            the table while the load ran; nothing was written, retry.
+            the table while the load ran; nothing was written, retry. A schema
+            dropped before the load's transaction began is `SCHEMA_NOT_FOUND` (404).
             `LOAD_COLUMN_MISMATCH` (422): the objects' columns do not match
             the table's; `detail` is a `ColumnMismatchDetail`.
             `LOAD_DELETE_LIMIT_EXCEEDED` (422): a replace would delete more rows than
