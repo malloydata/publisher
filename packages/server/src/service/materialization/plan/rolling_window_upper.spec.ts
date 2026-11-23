@@ -274,7 +274,7 @@ source: older is ev extend {
    );
 
    it(
-      "does not chain an extension over a parent whose build leaves an upper bound out",
+      "refuses an extension over a parent whose build leaves an upper bound out, never building it over the raw chain",
       async () => {
          const text = `source: ev is duckdb.table('rwu_ev')
 #(materialize) storage="lake"
@@ -282,14 +282,15 @@ source: older is ev extend { where: ts < now - 30 days }
 #(materialize) storage="lake"
 source: older_big is older extend { where: amount > 100 }
 `;
-         const { duckdb, c } = await compiled(text);
-         const plan = planNamed(c, "older_big");
-         expect(plan.buildsOver).toBeUndefined();
-         const sql = buildSQL(c, "older_big");
-         expect(sql.match(NOW)).toBeNull();
-         expect(await count(duckdb, sql)).toBe(
-            await count(duckdb, "SELECT * FROM rwu_ev WHERE amount > 100"),
-         );
+         const { c } = await compiled(text);
+         expect(
+            Object.values(materializePlansIn(c) ?? {}).map((p) => p.sourceName),
+         ).toEqual(["older"]);
+         expect(
+            (c.annotationFindings ?? [])
+               .filter((f) => f.code === "materialize-not-built")
+               .map((f) => [f.subject, f.refused?.reason]),
+         ).toEqual([["older_big", "upstream_table_unusable"]]);
       },
       { timeout: 30000 },
    );

@@ -21,6 +21,17 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — breaking: an extension table is built over its parent's table or refused, never over the raw chain
+
+**Breaking: a `#(materialize)` extension of a `#(materialize)` parent is now always built over the parent's stored table, or refused when the package is planned, as `upstream_table_unusable` with a `message` naming the parent and why.** A refused extension answers live. Before, every extension that could not chain on its parent was built over the raw chain from the warehouse, recomputing the parent's rows. Refused for now, each until a later change in this release builds it:
+
+- an extension in another tier or storage destination than its parent (a `storage=` extension of a database parent, or of a parent in another destination; a database extension of a `storage=` parent stays refused, since a warehouse cannot read a destination);
+- an incremental extension, or an extension of an incremental parent;
+- an extension of a pair table (a parent that inlines a join_many), or a table of several inlined paths on either side;
+- an extension of a parent whose `where:` reads a given, or holds a current-time term its build leaves out.
+
+**What to do:** declare the extension on its parent's tier and destination, or drop `#(materialize)` from it to answer it live.
+
 ## [Unreleased] — a plain DuckDB destination's file is named from its configured name
 
 **Changed: a plain DuckDB `storage=` destination's database file is named from the destination's configured name, not the session's attach alias,** through one guarded path that refuses a name with a separator or `..` and keeps the file under the destinations root.

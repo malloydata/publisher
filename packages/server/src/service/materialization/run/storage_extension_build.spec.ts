@@ -34,6 +34,7 @@ const plan: MaterializePlan = {
    buildsOver: {
       sourceID: PARENT_ID,
       sourceName: "orders",
+      mode: { tier: "same" },
       declaration: {
          url: "file:///pkg/m.malloy",
          range: {

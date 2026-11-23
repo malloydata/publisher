@@ -96,6 +96,7 @@ source: ext is stored extend {
          buildsOver: {
             sourceID: parent.sourceID,
             sourceName: "stored",
+            mode: { tier: "same" },
             declaration: at("stored", 6),
             path: [at("ext", 10)],
          },
@@ -184,10 +185,12 @@ source: east is mid extend {
   dimension: label is concat(region, '!')
 }`,
          });
-         // Another destination builds over the raw chain; a chain reaching a
-         // warehouse source the destination cannot read (a join) is refused,
-         // never built over the raw chain.
-         expect(plan("elsewhere").buildsOver).toBeUndefined();
+         // Another destination, and a chain reaching a warehouse source the
+         // destination cannot read (a join), are refused, never built over
+         // the raw chain.
+         expect(
+            generatedPlans(c).find((p) => p.sourceName === "elsewhere"),
+         ).toBeUndefined();
          expect(
             generatedPlans(c).find((p) => p.sourceName === "joined"),
          ).toBeUndefined();

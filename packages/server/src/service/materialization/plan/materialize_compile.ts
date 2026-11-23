@@ -57,7 +57,8 @@ import {
    type StoredColumnType,
 } from "./materialize_stored_chain";
 import {
-   chainsOver,
+   chainVerdict,
+   extensionRefusal,
    chainThroughFile,
    chainWithinFile,
    crossFileEntries,
@@ -213,8 +214,11 @@ export async function tryCompileMaterializeCompanion(args: {
                code: errorCodeOf(error),
             },
          );
-         return { plans: planned.plans, parents: new Map() };
+         // TODO(extension chains, case 5: cross-file): refuse each
+         // extension whose chain reaches a persisted parent.
+         return { plans: planned.plans, parents: new Map(), refused: [] };
       });
+      refused.push(...foreign.refused);
       const compile = companionCompiler(args, modelFile, refused, foreign);
       let round = await compile(foreign.plans);
       // Three checks of a round that compiled, each run once, in this order,
@@ -434,27 +438,12 @@ function unchainedRefusal(
    plan: MaterializePlan,
    why: string,
 ): MaterializeRefusal {
-   return {
-      sourceName: plan.sourceName,
-      sourceID: plan.sourceID,
-      reason: unchainedReason(plan, why),
-      outcome: {
-         refused: {
-            reason: UPSTREAM_TABLE_UNUSABLE_REASON,
-            tier: tierOf(plan.persist.storage),
-         },
-      },
-   };
+   return extensionRefusal(plan, plan.buildsOver?.sourceName, why);
 }
 
 /** Why an extension table is refused rather than built over the raw chain. */
 function unchainedReason(plan: MaterializePlan, why: string): string {
-   const parent = plan.buildsOver?.sourceName;
-   return (
-      `it extends ${parent ? `'${parent}'` : "a #(materialize) parent"}, ${why}; ` +
-      `an extension table is built over its parent's table or not at all, ` +
-      `never by recomputing its parent from the warehouse`
-   );
+   return unchainedRefusal(plan, why).reason;
 }
 
 /**
@@ -1857,18 +1846,24 @@ interface CrossFileParents {
    plans: MaterializePlan[];
    /** By the extension's sourceID. */
    parents: ReadonlyMap<string, CrossFileParent>;
+   /**
+    * The extensions whose parent in another file they cannot be built over,
+    * refused (`upstream_table_unusable`) and left out of `plans`.
+    */
+   refused: MaterializeRefusal[];
 }
 
 const NO_CROSS_FILE_PARENTS: CrossFileParents = {
    plans: [],
    parents: new Map(),
+   refused: [],
 };
 
 /**
  * `plans` with `buildsOver` set on each extension table whose nearest
  * materialized ancestor is declared in another local file of the package
  * ({@link crossFileAncestors}), when that file's own companion plans the
- * ancestor and the pair may chain ({@link chainsOver}); with each such
+ * ancestor and the pair may chain ({@link chainVerdict}); with each such
  * parent. The parent's companion is compiled here, as its own model's plan
  * compiles it (the same text at the same URLs, so its build source is the
  * same build), and never twice up one stack of files.
@@ -1882,7 +1877,8 @@ async function crossFileParents(
    modelFile: string,
 ): Promise<CrossFileParents> {
    const candidates = crossFileEntries(plans, args.contents);
-   if (candidates.length === 0) return { plans, parents: new Map() };
+   if (candidates.length === 0)
+      return { plans, parents: new Map(), refused: [] };
    const stack = new Set([...(args.crossFileStack ?? []), modelFile]);
    const files = GeneratedFiles.over(args.getRuntime);
    const companions = args.crossFileCompanions ?? new Map();
@@ -1941,6 +1937,7 @@ async function crossFileParents(
    };
    const parents = new Map<string, CrossFileParent>();
    const chained = new Map<string, MaterializePlan>();
+   const refused: MaterializeRefusal[] = [];
    let ownText: Promise<string | undefined> | undefined;
    const readOwnText = () =>
       (ownText ??= files.read(pathToFileURL(modelFile)).catch(() => undefined));
@@ -1958,7 +1955,10 @@ async function crossFileParents(
          const companion = await companionOf(file);
          if (!companion) break;
          const found = chainOver(plan, companion, entryID, pathBelow, via);
-         if (found === "stop") break;
+         if (found && "refuse" in found) {
+            refused.push(found.refuse);
+            break;
+         }
          if (found) {
             chained.set(plan.sourceID, found.plan);
             parents.set(plan.sourceID, {
@@ -1999,9 +1999,13 @@ async function crossFileParents(
          file = next;
       }
    }
+   const refusedIDs = new Set(refused.map((r) => r.sourceID));
    return {
-      plans: plans.map((p) => chained.get(p.sourceID) ?? p),
+      plans: plans
+         .filter((p) => !refusedIDs.has(p.sourceID))
+         .map((p) => chained.get(p.sourceID) ?? p),
       parents,
+      refused,
    };
 }
 
@@ -2011,8 +2015,9 @@ async function crossFileParents(
  * ({@link chainWithinFile}; that file's compile, not this one's, tells its
  * own `#(materialize)` from one it shares with its base), with the
  * extension's plan given its `buildsOver`. `"stop"` when that source may not
- * be chained on ({@link chainsOver}) or its build source cannot be found;
- * undefined when the file plans no source on the chain.
+ * be chained on ({@link chainVerdict}) or its build source cannot be found,
+ * the extension's refusal; undefined when the file plans no source on the
+ * chain.
  */
 function chainOver(
    plan: MaterializePlan,
@@ -2022,7 +2027,7 @@ function chainOver(
    via: CrossFileParent["via"],
 ):
    | { plan: MaterializePlan; parent: Omit<CrossFileParent, "carriesAlike"> }
-   | "stop"
+   | { refuse: MaterializeRefusal }
    | undefined {
    const generated = companion.generated;
    if (!generated) return undefined;
@@ -2034,7 +2039,12 @@ function chainOver(
          (p: MaterializePlan) => p.sourceID === candidate.sourceID,
       );
       if (!parent) continue;
-      if (!chainsOver(plan, parent)) return "stop";
+      const verdict = chainVerdict(plan, parent);
+      if ("refuse" in verdict) {
+         return {
+            refuse: extensionRefusal(plan, parent.sourceName, verdict.refuse),
+         };
+      }
       const buildSourceID = (
          modelDefOf(generated.model).contents?.[parent.buildSourceName] as
             | { sourceID?: unknown }
@@ -2044,7 +2054,16 @@ function chainOver(
          typeof buildSourceID === "string"
             ? splitSourceID(buildSourceID)?.url
             : undefined;
-      if (buildSourceURL === undefined) return "stop";
+      if (buildSourceURL === undefined) {
+         return {
+            refuse: extensionRefusal(
+               plan,
+               parent.sourceName,
+               `declared in ${path.basename(companion.modelFile)}, whose ` +
+                  `generated build source could not be found`,
+            ),
+         };
+      }
       return {
          plan: {
             ...plan,
@@ -2052,6 +2071,7 @@ function chainOver(
                sourceID: parent.sourceID,
                sourceName: parent.sourceName,
                declaration: candidate.declaration,
+               mode: verdict.link,
                path: [...candidate.path, ...below],
                crossFile: {
                   modelFile: companion.modelFile,

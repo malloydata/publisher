@@ -404,9 +404,28 @@ export interface MaterializePlan {
    /**
     * For an extension table: the materialized parent whose build source
     * this source's build reads, so its table is computed from the parent's.
-    * Absent: built over the raw chain.
+    * Absent: the source extends no materialized parent (an extension whose
+    * parent's table it cannot build over is refused at plan, never built
+    * over the raw chain).
     */
    buildsOver?: MaterializeParent;
+}
+
+/**
+ * How an extension table's build reads its parent's table, decided at plan
+ * ({@link chainVerdict} in plan/materialize_plan.ts) and read by the build,
+ * which never re-derives it.
+ */
+export interface ChainMode {
+   /**
+    * Where the parent's table is, seen from the extension's build:
+    *  - `same`: one tier (both database, or both one `storage=` destination);
+    *  - `storage_over_database`: a `storage=` extension of a database parent,
+    *    whose warehouse build reads the parent's table and is copied in;
+    *  - `across_destinations`: a `storage=` extension of a parent in another
+    *    destination, attached read-only in the extension's build session.
+    */
+   tier: "same" | "storage_over_database" | "across_destinations";
 }
 
 /** The parent an extension table builds over. */
@@ -417,6 +436,8 @@ export interface MaterializeParent {
    sourceName: string;
    /** The parent's declaration in that file, which the build copy re-roots. */
    declaration: TermUse;
+   /** How the build reads the parent's table, decided at plan. */
+   mode: ChainMode;
    /**
     * The declarations from just below the parent to the extension's own,
     * root first, each an `extend` or a rename of the one before, in the

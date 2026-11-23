@@ -141,6 +141,7 @@ source: ext is stored extend {
          buildsOver: {
             sourceID: parent.sourceID,
             sourceName: "stored",
+            mode: { tier: "same" },
             declaration: at("stored", 7),
             path: [at("ext", 11)],
          },
@@ -674,25 +675,19 @@ source: orders_ext is orders extend {
                undefined,
                KEEP_INCREMENTAL,
             );
-            const plan = (name: string) =>
-               generatedPlans(c).find((p) => p.sourceName === name)!;
-            expect(plan("orders").pair?.join).toBe("lines");
-            // Over the raw chain, one row per order, never the parent's
-            // build source, whose rows are the pairs.
-            expect(plan("orders_ext").buildsOver).toBeUndefined();
-            const [sourceID, source] = Object.entries(sourcesIn(c)).find(
-               ([, s]) => s.name === "orders_ext",
-            )!;
-            const sql = buildSQLOf(
-               source,
-               { entries: {} },
-               targetsIn(c)?.[sourceID],
-            );
-            const duckdb = await pkg.getMalloyConnection("duckdb");
-            const rows = (
-               await duckdb.runSQL(`SELECT id FROM (${sql}) t ORDER BY id`)
-            ).rows.map((r) => Number(r.id));
-            expect(rows).toEqual([1, 2, 3]);
+            expect(
+               generatedPlans(c).find((p) => p.sourceName === "orders")?.pair
+                  ?.join,
+            ).toBe("lines");
+            // Refused, never built over the raw chain.
+            expect(
+               generatedPlans(c).find((p) => p.sourceName === "orders_ext"),
+            ).toBeUndefined();
+            expect(
+               (c.annotationFindings ?? [])
+                  .filter((f) => f.code === "materialize-not-built")
+                  .map((f) => [f.subject, f.refused?.reason]),
+            ).toEqual([["orders_ext", "upstream_table_unusable"]]);
          },
          { timeout: 30000 },
       );

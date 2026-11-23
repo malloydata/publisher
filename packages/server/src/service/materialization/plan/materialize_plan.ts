@@ -71,7 +71,9 @@ import {
    type MaterializePairBlocks,
    type MaterializePlan,
    type InlineUniquenessCheck,
+   type ChainMode,
 } from "../domain/table_plans";
+import { UPSTREAM_TABLE_UNUSABLE_REASON } from "./downstream_upstreams";
 import {
    currentTimeFields,
    givenReadingFields,
@@ -1272,8 +1274,9 @@ export function planModelMaterialize(
          plans.push(planned);
       }
    }
-   chainExtensionTables(plans, map);
-   return { plans, refused };
+   const chained = chainExtensionTables(plans, map);
+   refused.push(...chained.refused);
+   return { plans: chained.plans, refused };
 }
 
 /** What planning one source reads beyond the source itself. */
@@ -2026,31 +2029,29 @@ function storedFieldOf(
 }
 
 /**
- * The `#(materialize)` keys that make a table incremental. A chained build
- * reads its parent's table, whose rows an incremental refresh moves on its
- * own schedule, so neither side of a chain may carry one.
+ * The `#(materialize)` keys that make a table incremental.
  */
 const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key", "lookback"];
 
 /**
- * Give each plan that can build over its nearest materialized ancestor's build
- * source its `buildsOver`. The ancestor is the first planned source up
+ * Give each plan that extends a materialized ancestor in its own file its
+ * `buildsOver`, or refuse it. The ancestor is the first planned source up
  * the chain, reached through `extend` and renames only (a query-shaped hop
  * starts a new segment, which the build cannot re-root on a table), declared
  * in the same file (the build copy re-roots it in that file's text; one in
  * another file is the companion compiler's, `crossFileEntries`), as is
- * every declaration between them (`path`). Both must be on one tier (both
- * database, or both `storage=` the same destination), carry no incremental
- * key, and the parent no given-reading `where:` (its build source's own
- * `extend` re-applies that term, which would scope the extension's build to
- * one caller) and no current-time `where:` its build leaves out (the
- * re-rooted parent keeps it as written). A plan that does not qualify
- * builds over the raw chain: the same rows.
+ * every declaration between them (`path`). Whether the pair links, and how,
+ * is {@link chainVerdict}'s: a pair it refuses is refused here
+ * (`upstream_table_unusable`), never built over the raw chain.
  */
-function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
+function chainExtensionTables(
+   plans: MaterializePlan[],
+   map: SourceMap,
+): { plans: MaterializePlan[]; refused: MaterializeRefusal[] } {
    const byID = new Map(plans.map((p) => [p.sourceID, p]));
    const declarationOfID = (sourceID: string) =>
       declarationOf(map.node(sourceID)?.def as SourceDefLike);
+   const refused: MaterializeRefusal[] = [];
    for (const plan of plans) {
       let node = map.node(plan.sourceID);
       let parent: MaterializePlan | undefined;
@@ -2074,45 +2075,141 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
       ) {
          continue;
       }
-      if (!chainsOver(plan, parent)) continue;
+      const verdict = chainVerdict(plan, parent);
+      if ("refuse" in verdict) {
+         refused.push(
+            extensionRefusal(plan, parent.sourceName, verdict.refuse),
+         );
+         continue;
+      }
       plan.buildsOver = {
          sourceID: parent.sourceID,
          sourceName: parent.sourceName,
          declaration,
+         mode: verdict.link,
          path: path as TermUse[],
       };
    }
+   const ids = new Set(refused.map((r) => r.sourceID));
+   return { plans: plans.filter((p) => !ids.has(p.sourceID)), refused };
 }
 
 /**
- * Whether an extension's plan may build over its parent's build source
- *, whichever file declares the parent: both on one tier (both
- * database, whose build reads the parent's build source in its own
- * warehouse, or one storage destination, whose build reads the parent's
- * table there, see `overStored`), neither incremental, neither a table of
- * several inlined paths, the parent no pair table, and the parent with no
- * given-reading `where:` and no current-time `where:` its build leaves out.
+ * Whether an extension's plan links to its materialized parent's table, and
+ * how ({@link ChainMode}), or why it is refused: there is no third outcome,
+ * so an extension is never built by recomputing its parent from raw.
+ * Whichever file declares the parent.
  */
-export function chainsOver(
+type ChainVerdict = { link: ChainMode } | { refuse: string };
+
+/**
+ * {@link ChainVerdict} for one extension and its parent. Linked today: a
+ * pair on one tier (both database, whose build reads the parent's build
+ * source in its own warehouse, or one storage destination, whose build reads
+ * the parent's table there, see `overStored`), neither incremental, neither a
+ * table of several inlined paths, the parent no pair table, and the parent
+ * with no given-reading `where:` and no current-time `where:` its build
+ * leaves out. Every other pair is refused, each with why.
+ */
+export function chainVerdict(
    plan: MaterializePlan,
    parent: MaterializePlan,
-): boolean {
-   if (plan.persist.storage !== parent.persist.storage) return false;
+): ChainVerdict {
+   const tiers = chainTiers(plan, parent);
+   if ("refuse" in tiers) return tiers;
    const incremental = (p: MaterializePlan) =>
       Object.keys(p.persist).some((k) => INCREMENTAL_KEYS.includes(k));
-   if (incremental(plan) || incremental(parent)) return false;
-   // A table that stacks several inlined paths is a SQL source over the
-   // author's model: neither builds over the other's build source.
-   if (plan.pairBlocks || parent.pairBlocks) return false;
-   // A pair table holds its source once per child of the inlined
-   // join_many, not once per row: an extension built over it would store
-   // (and its served copy count) each parent once per child.
-   if (parent.pair) return false;
-   if (givenReadTerms(parent).length > 0) return false;
-   // The re-rooted parent keeps its `where:` as written, so a term its
-   // table leaves out would be applied to the extension's build.
-   if (leftOutWindowTerms(parent.readTimeTerms).length > 0) return false;
-   return true;
+   // TODO(extension chains, case 2: incremental): coordinate the refresh.
+   if (incremental(plan) || incremental(parent)) {
+      return {
+         refuse:
+            "and an incremental extension, or an extension of an incremental " +
+            "parent, has no coordinated refresh over the parent's table yet",
+      };
+   }
+   // TODO(extension chains, case 3: pair parent): re-root on the join.
+   if (plan.pairBlocks || parent.pairBlocks) {
+      return {
+         refuse:
+            "and a table of several inlined paths is not yet built over, or as " +
+            "an extension of, another table",
+      };
+   }
+   if (parent.pair) {
+      return {
+         refuse:
+            "whose pair table holds a row per child of its inlined join_many, " +
+            "which an extension's build does not yet read back as one row per " +
+            "parent",
+      };
+   }
+   // TODO(extension chains, case 4: given and window terms): leave the
+   // parent's left-out terms out of the re-root.
+   if (givenReadTerms(parent).length > 0) {
+      return {
+         refuse:
+            "whose given-reading `where:` its re-root would apply to the " +
+            "extension's build, scoping its table to one caller",
+      };
+   }
+   if (leftOutWindowTerms(parent.readTimeTerms).length > 0) {
+      return {
+         refuse:
+            "whose current-time `where:` its build leaves out, which its " +
+            "re-root would apply to the extension's build",
+      };
+   }
+   return { link: tiers.link };
+}
+
+/**
+ * Where the parent's table is, seen from the extension's build, or why the
+ * extension cannot read it there.
+ */
+function chainTiers(
+   plan: MaterializePlan,
+   parent: MaterializePlan,
+): ChainVerdict {
+   const own = plan.persist.storage;
+   const theirs = parent.persist.storage;
+   if (own === theirs) return { link: { tier: "same" } };
+   // TODO(extension chains, case 1: tiers and destinations).
+   return {
+      refuse:
+         theirs === undefined
+            ? `whose database table its build in destination '${own}' does not read yet`
+            : own === undefined
+              ? `whose table is in storage destination '${theirs}', which a ` +
+                `database build cannot read`
+              : `whose table is in storage destination '${theirs}', which its ` +
+                `build in destination '${own}' does not read yet`,
+   };
+}
+
+/**
+ * The refusal of an extension table `plan` that cannot be built over its
+ * parent's table (`parentName`, when known), as `upstream_table_unusable`
+ * with `why`: it answers live and is never built over the raw chain.
+ */
+export function extensionRefusal(
+   plan: Pick<MaterializePlan, "sourceName" | "sourceID" | "persist">,
+   parentName: string | undefined,
+   why: string,
+): MaterializeRefusal {
+   return {
+      sourceName: plan.sourceName,
+      sourceID: plan.sourceID,
+      reason:
+         `it extends ${parentName ? `'${parentName}'` : "a #(materialize) parent"}, ${why}; ` +
+         `an extension table is built over its parent's table or not at all, ` +
+         `never by recomputing its parent from the warehouse`,
+      outcome: {
+         refused: {
+            reason: UPSTREAM_TABLE_UNUSABLE_REASON,
+            tier: tierOf(plan.persist.storage),
+         },
+      },
+   };
 }
 
 /**
