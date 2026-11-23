@@ -167,3 +167,89 @@ describe("chainVerdict", () => {
       );
    });
 });
+
+describe("an extension whose parent is in another file", () => {
+   const findings = (c: Awaited<ReturnType<typeof packages.plan>>["c"]) =>
+      (c.annotationFindings ?? [])
+         .filter((f) => f.code === "materialize-not-built")
+         .map((f) => [f.subject, f.refused?.reason, f.message]);
+
+   it(
+      "links through a file that declares nothing on the chain",
+      async () => {
+         const { c } = await packages.plan({
+            "a.malloy": `${BASE}
+#(materialize)
+source: orders is orders_raw
+`,
+            "b.malloy": `import "a.malloy"
+source: mid is orders extend { dimension: x is 1 }
+`,
+            "m.malloy": `import "b.malloy"
+#(materialize)
+source: ext is mid extend { dimension: big is amount > 10 }
+`,
+         });
+         const ext = generatedPlans(c).find((p) => p.sourceName === "ext");
+         expect(ext?.buildsOver?.sourceName).toBe("orders");
+         expect(ext?.buildsOver?.crossFile?.via).toEqual([
+            expect.stringMatching(/b\.malloy$/),
+         ]);
+         expect(findings(c)).toEqual([]);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "passes through a source its own file refuses, to a parent beyond it",
+      async () => {
+         const { c } = await packages.plan({
+            "a.malloy": `${BASE}
+#(materialize)
+source: orders is orders_raw
+`,
+            // Refused in its own file: its inlined join reads the current
+            // time, which a stored copy would freeze.
+            "b.malloy": `import "a.malloy"
+source: regions is orders_raw -> { group_by: region } extend {
+  primary_key: region
+  where: year(now()) > 2000
+}
+#(materialize) inline=["k"]
+source: mid is orders extend {
+  join_one: k is regions on region = k.region
+  dimension: x is 1
+}
+`,
+            "m.malloy": `import "b.malloy"
+#(materialize)
+source: ext is mid extend { dimension: big is amount > 10 }
+`,
+         });
+         const ext = generatedPlans(c).find((p) => p.sourceName === "ext");
+         expect(findings(c).map(([subject]) => subject)).toEqual(["mid"]);
+         expect(ext?.buildsOver?.sourceName).toBe("orders");
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "builds, with no parent, an extension whose chain into another file reaches no persisted source",
+      async () => {
+         const { c } = await packages.plan({
+            "b.malloy": `${BASE}
+source: mid is orders_raw extend { dimension: x is 1 }
+`,
+            "m.malloy": `import "b.malloy"
+#(materialize)
+source: ext is mid extend { dimension: big is amount > 10 }
+`,
+         });
+         const ext = generatedPlans(c).find((p) => p.sourceName === "ext");
+         expect(ext).toBeDefined();
+         expect(ext?.buildsOver).toBeUndefined();
+         expect(findings(c)).toEqual([]);
+      },
+      { timeout: 60000 },
+   );
+});
