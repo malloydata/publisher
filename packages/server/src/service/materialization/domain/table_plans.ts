@@ -18,6 +18,7 @@
  * Pure.
  */
 
+import type { StringReads } from "./string_reads";
 import type { TableKind as StoredTableKind } from "./vocabulary";
 import type { BuildTarget, PersistSource } from "@malloydata/malloy";
 import type {
@@ -730,6 +731,22 @@ interface TablePlanFacts {
     * leg in a destination). Absent: no such leg, so no check.
     */
    storedKeyCheck?: string;
+   /**
+    * A `storage=` table built over its upstreams' stored tables in its
+    * destination (a chained source, a view or query there, a rollup over
+    * its base's table): the strings that build compares, read at plan, which
+    * each upstream's recorded contract must compare as live does
+    * (`string_reads.ts`). A `refused` one is refused at plan; otherwise the
+    * build judges them against the contracts of the tables it reads.
+    */
+   stringReads?: StringReads;
+   /**
+    * Why the plan found this table cannot be built over its upstreams'
+    * tables, as it must be (a downstream is never built by recomputing its
+    * upstreams from raw): it is refused at plan as `upstream_table_unusable`
+    * with this as its message.
+    */
+   unusableUpstream?: string;
 }
 
 /**
@@ -764,15 +781,6 @@ export type TablePlan = TablePlanFacts &
             * over the upstreams' real tables, or not at all.
             */
            storedInDestination?: StoredInDestination;
-           /**
-            * A view or query offered a build over its upstreams' tables
-            * whose compile over them failed (it reads what a stored table
-            * does not hold, such as a pair table's joined source's own
-            * measures): the upstreams it would have read, by author's
-            * sourceID. It builds from its definition, and its entry says so
-            * (`upstreamReuse: recomputed`).
-            */
-           overStoredDeclined?: { upstreamSourceIDs: readonly string[] };
         }
       | {
            kind: Extract<TableKind, "materialize" | "pair">;

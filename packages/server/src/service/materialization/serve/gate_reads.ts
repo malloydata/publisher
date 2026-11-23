@@ -1945,7 +1945,7 @@ export async function queryFilterReadsOfQuery(
       namedMeasures: boolean;
       /**
        * The stages to read in place of the query's own, on its entry point:
-       * a chained build's downstream query (`chainBuildCollationRefusal`).
+       * a chained build's downstream query (`chain_string_reads.ts`).
        */
       pipeline?: readonly unknown[];
    },

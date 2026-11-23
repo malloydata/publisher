@@ -11,7 +11,6 @@ import {
    ConnectionFailedError,
    ConnectionPoolExhaustedError,
    MaterializationEligibilityError,
-   WarehouseRecomputeRefusedError,
 } from "../../../errors";
 import {
    classifyBuildError,
@@ -31,20 +30,6 @@ function strictMiss(sourceID: string): Error {
 }
 
 describe("classifyBuildError", () => {
-   // ms2data/service#6756: the instructions refused the only build there is.
-   it("reads a refused warehouse recompute as deterministic, whatever its reason echoes", () => {
-      expect(
-         classifyBuildError(
-            new WarehouseRecomputeRefusedError(
-               "rollup",
-               "lake",
-               // A reason quoting a transient-looking phrase stays deterministic.
-               "'rollup' reads the source warehouse (regions) through 'timed out'",
-            ),
-         ),
-      ).toBe(false);
-   });
-
    it.each([
       ["a SQL syntax error", 'Parser Error: syntax error at or near "FORM"'],
       ["a Malloy compile defect", "Model failed to compile: bad field"],

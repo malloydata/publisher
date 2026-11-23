@@ -33,7 +33,7 @@ import {
    weakestStringCompare,
 } from "../domain/column_contract";
 import type { ManifestEntry } from "../domain/types";
-import { STORAGE_DIALECT } from "../domain/dialect";
+import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
 import type { Tier } from "../domain/vocabulary";
 import { recordContractCapture } from "../../../materialization_metrics";
 import { isStringNativeType } from "../stored_column_types";
@@ -224,7 +224,14 @@ export async function storageContract(args: {
             : "its column collations did not read",
       );
    }
-   const stored = { dialect: STORAGE_DIALECT, columns, collations };
+   const stored = {
+      dialect: STORAGE_DIALECT,
+      columns,
+      collations,
+      ...(collations.defaultCollation
+         ? { defaultCollation: collations.defaultCollation }
+         : {}),
+   };
    if (args.stackedOn) {
       return deriveContract({
          tier: "storage",
@@ -255,8 +262,26 @@ export async function storageContract(args: {
 export function liveCollationsOf(
    connection: ReadConnection,
    sql: string,
+   /**
+    * BigQuery's read (the host port's `bigqueryBuildCompareBinary`): whether
+    * every string the SQL reads compares byte-exact, read from the catalog.
+    * Absent, BigQuery's strings compare unknown.
+    */
+   bigqueryBinary?: () => Promise<boolean>,
 ): (columns: string[]) => Promise<Map<string, Collation>> {
-   return (columns) => liveCollations(connection, sql, columns);
+   return async (columns) => {
+      if (
+         bigqueryBinary &&
+         capabilitiesOf(connection.dialectName).stringCollation === "dataset"
+      ) {
+         // Query-wide, as an answer's check reads BigQuery: every table the
+         // build reads holds no collated column, or nothing is known.
+         const binary = await bigqueryBinary().catch(() => false);
+         const judged: Collation = binary ? "binary" : "unknown";
+         return new Map(columns.map((c) => [c, judged]));
+      }
+      return liveCollations(connection, sql, columns);
+   };
 }
 
 /**

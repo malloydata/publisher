@@ -11,6 +11,7 @@
  * at a seam; here it runs for real, over a plain-DuckDB file destination.
  */
 
+import type { StringReads } from "../domain/string_reads";
 import { sourcesIn } from "../../../test_helpers/materialization_test_fixtures";
 import { compiledTextReader } from "../../../utils";
 import { DuckDBInstance } from "@duckdb/node-api";
@@ -209,12 +210,10 @@ async function stack(
    name: string,
    builtEntries: Record<string, ManifestEntry>,
    /**
-    * The host port's `chainCollationRefusal`: byte-exact (no refusal) by
-    * default, as a DuckDB source with no collation is; null leaves it out.
+    * The strings its plan recorded it compares: none by default, as for a
+    * DuckDB source with no collation; null records none.
     */
-   collation:
-      | ((request: unknown) => Promise<string | undefined>)
-      | null = async () => undefined,
+   stringReads: StringReads | null = { reads: [] },
 ): Promise<{
    result?: Awaited<
       ReturnType<StorageBuildStrategy["buildDownstreamViaParents"]>
@@ -247,10 +246,6 @@ async function stack(
                   modelDef: source._model?._modelDef,
                   context: [chain.dir, {} as never, {}],
                }) ?? { declined: "no model declares the downstream" },
-            // A DuckDB source with no collation compares byte-exact, as the
-            // destination does (stacked_storage_collation.component.spec.ts
-            // judges a collated one).
-            ...(collation ? { chainCollationRefusal: collation } : {}),
          } as never,
          `${name}_t`,
          chain.facts,
@@ -259,6 +254,7 @@ async function stack(
             source._model?._modelDef,
             compiledTextReader(source._model?._modelDef),
          ),
+         stringReads ? { stringReads } : {},
       );
       return { result, models: transientModels(spy) };
    } catch (error) {
@@ -616,53 +612,48 @@ source: mixed is daily extend {
          expect(models).toEqual([]);
       });
 
-      it("does not stack a downstream whose strings its source compares otherwise, nor one it cannot ask about", async () => {
+      it("does not stack a downstream whose strings its parent's contract records compared otherwise, nor one whose strings were not recorded", async () => {
          const chain = await planChain(CHAIN);
          await writeLake(chain.dir, DAILY_ROWS);
-         const asked: unknown[] = [];
-         const refused = await stack(
-            chain,
-            "monthly",
-            parentEntry(chain, "daily"),
-            async (request) => {
-               asked.push(request);
-               return "`cat` compares under a deterministic collation";
-            },
-         );
-         expect(asked).toEqual([
-            {
-               downstream: {
-                  sourceID: chain.byName("monthly").id,
-                  name: "monthly",
-               },
-               stored: [chain.byName("daily").id],
-            },
-         ]);
-         // A shape no build over the parents gives live's rows for, as one
-         // that reaches the warehouse: the recompute strict permits (unless
-         // `warehouseReach: refuse`), never an uncarried shape strict refuses.
+         const entries = parentEntry(chain, "daily");
+         for (const entry of Object.values(entries)) {
+            entry.contract = {
+               v: 1,
+               dialect: "duckdb",
+               columns: [
+                  {
+                     name: "cat",
+                     nativeType: "VARCHAR",
+                     collation: "binary",
+                     compare: "none",
+                     gateExact: true,
+                  },
+               ],
+            };
+         }
+         const refused = await stack(chain, "monthly", entries, {
+            reads: [{ names: ["cat"], need: "equality" }],
+         });
+         // A shape no build over the parents gives live's rows for: refused
+         // as a shape it could not carry (recomputeAfterStackFailure), never
+         // recomputed from raw.
          expect(refused.error).toBeInstanceOf(MaterializationEligibilityError);
-         expect(refused.error).not.toBeInstanceOf(ChainedShapeNotCarriedError);
          expect((refused.error as Error).message).toBe(
             "'monthly' compares a string over its stored upstreams ('daily') " +
                "that the destination, byte-exact, would compare otherwise " +
-               "than its source does: `cat` compares under a deterministic " +
-               "collation",
+               "than its source does: it groups or compares 'cat', which its " +
+               "upstream's table records as compared unlike live",
          );
          expect(refused.models).toEqual([]);
-         // No port: it never stacks.
-         const unasked = await stack(
-            chain,
-            "monthly",
-            parentEntry(chain, "daily"),
-            null,
+         // Nothing recorded at plan: it never stacks.
+         const unrecorded = await stack(chain, "monthly", entries, null);
+         expect(unrecorded.error).toBeInstanceOf(
+            MaterializationEligibilityError,
          );
-         expect(unasked.error).toBeInstanceOf(MaterializationEligibilityError);
-         expect(unasked.error).not.toBeInstanceOf(ChainedShapeNotCarriedError);
-         expect((unasked.error as Error).message).toEndWith(
-            "this package cannot read its source's collation",
+         expect((unrecorded.error as Error).message).toEndWith(
+            "its string reads were not recorded",
          );
-         expect(unasked.models).toEqual([]);
+         expect(unrecorded.models).toEqual([]);
       });
 
       it("reports a downstream the destination cannot compile as a shape it could not carry", async () => {

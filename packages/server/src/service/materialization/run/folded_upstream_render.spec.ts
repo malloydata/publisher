@@ -168,7 +168,6 @@ async function scenario(model: string) {
          strict: opts.strict,
          priorRefusals: [],
          hostInstructed: opts.hostInstructed,
-         warehouseReach: "recompute",
       });
    };
    return {

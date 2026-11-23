@@ -1174,30 +1174,6 @@ export class ChainedShapeNotCarriedError extends Error {
 }
 
 /**
- * A strict, orchestrated `storage=` build refused the warehouse recompute
- * (ms2data/service#6756, publisher#1327): the source reaches the source
- * warehouse through an intermediate no stored table stands in for, so its only
- * build would recompute its stored upstreams from raw, and the orchestrator
- * said `warehouseReach: "refuse"`. A property of the model and the
- * instructions, so retrying the same ones fails the same way.
- */
-export class WarehouseRecomputeRefusedError extends Error {
-   get kind(): "warehouse_recompute_refused" {
-      return "warehouse_recompute_refused";
-   }
-
-   constructor(sourceName: string, destinationName: string, reason: string) {
-      super(
-         `Failed to materialize source '${sourceName}' into storage ` +
-            `destination '${destinationName}': its only build recomputes its ` +
-            `stored upstreams from the source warehouse, and the build ` +
-            `instructions refuse that (warehouseReach: refuse): ${reason}`,
-      );
-      this.name = "WarehouseRecomputeRefusedError";
-   }
-}
-
-/**
  * A build wrote its table but could not read back the table's column
  * contract (`ManifestEntry.contract`), which a table must carry to be served
  * from. The source fails with SourceFailure code `contract_capture_failed`
@@ -1740,7 +1716,6 @@ interface ErrorByKind {
    materialization_eligibility: MaterializationEligibilityError;
    chained_upstream_missing: ChainedUpstreamMissingError;
    chained_shape_not_carried: ChainedShapeNotCarriedError;
-   warehouse_recompute_refused: WarehouseRecomputeRefusedError;
    contract_capture_failed: ContractCaptureFailedError;
    schema_incompatible: SchemaIncompatibleError;
    publisher_config: PublisherConfigError;
@@ -1831,7 +1806,6 @@ const ERROR_CLASSES: {
    materialization_eligibility: MaterializationEligibilityError,
    chained_upstream_missing: ChainedUpstreamMissingError,
    chained_shape_not_carried: ChainedShapeNotCarriedError,
-   warehouse_recompute_refused: WarehouseRecomputeRefusedError,
    contract_capture_failed: ContractCaptureFailedError,
    schema_incompatible: SchemaIncompatibleError,
    publisher_config: PublisherConfigError,
@@ -2360,7 +2334,6 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    // No specific answer: a generalized 500, its detail only logged.
    chained_upstream_missing: UNHANDLED,
    chained_shape_not_carried: UNHANDLED,
-   warehouse_recompute_refused: UNHANDLED,
    contract_capture_failed: UNHANDLED,
    schema_incompatible: UNHANDLED,
    publisher_config: UNHANDLED,

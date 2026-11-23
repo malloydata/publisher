@@ -2,19 +2,44 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `chainBuildCollationRefusal` over a DuckDB source: a chained `storage=`
- * build computed over its stored upstream compares strings byte-exact, so it
- * may stack only where what it groups, compares or orders of a string its
- * source compares byte-exact too. A column under `NOCASE` does not; a build
- * that compares no string, or one over a byte-exact column, may stack. The
- * Postgres cases run end to end in
- * tests/component/r4/stacked_storage_collation.component.spec.ts.
+ * `chainBuildStringReads` over a DuckDB source, judged against the stored
+ * upstreams' contracts (`stringReadsRefusal`): a chained `storage=` build
+ * computed over its stored upstream compares strings byte-exact, so it may
+ * stack only where each string it groups, compares or orders is recorded as
+ * compared there as live compares it. The upstream over a `NOCASE` column
+ * records it `none`; a build that compares no string, or one over a
+ * byte-exact column (`exact`), may stack. The Postgres cases run end to end
+ * in tests/component/r4/stacked_storage_collation.component.spec.ts.
  */
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { SingleConnectionRuntime } from "@malloydata/malloy";
 import { afterAll, describe, expect, it } from "bun:test";
-import { chainBuildCollationRefusal } from "./gate_collation";
+import type { ColumnContract } from "../domain/column_contract";
+import { stringReadsRefusal } from "../domain/string_reads";
+import { chainBuildStringReads } from "./chain_string_reads";
+
+/** An upstream's contract, `v` compared as `compare`. */
+const contract = (compare: "exact" | "equality" | "none"): ColumnContract => ({
+   v: 1,
+   dialect: "duckdb",
+   columns: [
+      {
+         name: "id",
+         nativeType: "BIGINT",
+         collation: null,
+         compare: "exact",
+         gateExact: true,
+      },
+      {
+         name: "v",
+         nativeType: "VARCHAR",
+         collation: "binary",
+         compare,
+         gateExact: true,
+      },
+   ],
+});
 
 const rows = (collate: string) => `duckdb.sql("""
   SELECT CAST(id AS BIGINT) AS id, v${collate} AS v
@@ -35,7 +60,7 @@ source: bytes is ${rows("")} -> { select: id, v } extend {
 source: bytes_group is bytes -> { group_by: v; aggregate: n is count() }
 `;
 
-describe("chainBuildCollationRefusal over a DuckDB source", () => {
+describe("chainBuildStringReads over a DuckDB source", () => {
    const connection = new DuckDBConnection("duckdb");
    const runtime = new SingleConnectionRuntime({ connection } as never);
    const model = runtime.loadModel(MODEL);
@@ -56,13 +81,18 @@ describe("chainBuildCollationRefusal over a DuckDB source", () => {
    const refusal = async (
       downstream: string,
       rollup?: { baseName: string; grain: string[]; measures: string[] },
-   ) =>
-      chainBuildCollationRefusal({
+   ) => {
+      const stored = [...(await storedIDs())];
+      const reads = await chainBuildStringReads(
          load,
-         downstream,
-         ...(rollup ? { rollup } : {}),
-         stored: await storedIDs(),
-      });
+         rollup ? { rollup, stored } : { downstream, stored },
+      );
+      // The upstream over a NOCASE column records it compared unlike live.
+      const base = rollup?.baseName ?? downstream;
+      return stringReadsRefusal(reads, [
+         contract(base.startsWith("nocase") ? "none" : "exact"),
+      ]);
+   };
 
    afterAll(async () => {
       await connection.close();
@@ -103,5 +133,24 @@ describe("chainBuildCollationRefusal over a DuckDB source", () => {
 
    it("refuses a downstream it cannot find", async () => {
       expect(await refusal("no_such_source")).toBeString();
+   });
+
+   it("refuses a build whose ordered string is recorded equality only", async () => {
+      const stored = [...(await storedIDs())];
+      const reads = await chainBuildStringReads(load, {
+         rollup: { baseName: "bytes", grain: [], measures: ["lo"] },
+         stored,
+      });
+      expect(stringReadsRefusal(reads, [contract("equality")])).toBeString();
+      expect(stringReadsRefusal(reads, [contract("exact")])).toBeUndefined();
+   });
+
+   it("refuses over an upstream with no contract", async () => {
+      const stored = [...(await storedIDs())];
+      const reads = await chainBuildStringReads(load, {
+         downstream: "bytes_group",
+         stored,
+      });
+      expect(stringReadsRefusal(reads, [undefined])).toBeString();
    });
 });

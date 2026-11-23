@@ -63,7 +63,6 @@ import { redactConnectionSecrets } from "./connection_redaction";
 import {
    type BuildEnvironment,
    type ChainedPlanFacts,
-   type WarehouseReach,
 } from "./build_upstreams";
 import { type BuildQueryMetadata } from "./build_query_tag";
 import type { IncrementalRunContext } from "./incremental_build";
@@ -116,8 +115,6 @@ export interface InstructedBuildOptions {
     * ChainedPlanFacts.hostInstructed).
     */
    hostInstructed?: boolean;
-   /** What a strict build does with the warehouse recompute. */
-   warehouseReach?: WarehouseReach;
    /**
     * Auto-run only: the inline uniqueness checks' passes, read from the run
     * before and recorded for the run after (inline_uniqueness.ts). Undefined

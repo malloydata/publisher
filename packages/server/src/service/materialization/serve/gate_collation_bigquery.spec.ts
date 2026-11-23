@@ -23,6 +23,7 @@ import {
 } from "@malloydata/malloy";
 import { afterEach, describe, expect, it, jest } from "bun:test";
 import {
+   bigqueryBuildCompareBinary,
    storedTableCollationRefusal,
    stringGateCollationRefusal,
 } from "./gate_collation";
@@ -698,5 +699,71 @@ describe("a BigQuery database table", () => {
             "run: ci -> { group_by: region }",
          ).why,
       ).toBe("a stored table compares strings under a unknown collation");
+   });
+});
+
+/**
+ * The build side's read (a `storage=` build's column contract): the same
+ * catalog reads over the build's SQL and the tables its source reads, so a
+ * build records its strings compared `exact` exactly where an answer's
+ * check would compare them byte-exact, and `none` (fail closed) otherwise.
+ */
+describe("a BigQuery storage= build's live string comparison, for its contract", () => {
+   async function buildBinary(catalog: Catalog, name: string) {
+      const { connection, sent } = stubBigQuery(catalog);
+      const model = new SingleConnectionRuntime({ connection }).loadModel(
+         MODEL,
+      );
+      const query = model.loadQuery(`run: ${name} -> { select: * }`);
+      const { sql } = await query.getPreparedResult();
+      const def = (
+         (await model.getModel()) as unknown as {
+            _modelDef: { contents: Record<string, unknown> };
+         }
+      )._modelDef.contents[name];
+      const binary = await bigqueryBuildCompareBinary({
+         connection,
+         source: { connectionName: "bq", _sourceDef: def } as never,
+         sql,
+      });
+      return { binary, sent };
+   }
+
+   it("is binary where an answer's check is: no collated column in the project", async () => {
+      expect((await buildBinary({ location: "US" }, "plain")).binary).toBe(
+         true,
+      );
+      expect((await buildBinary({ location: "US" }, "authored")).binary).toBe(
+         true,
+      );
+   });
+
+   it("is binary over a table outside the collated dataset's collated tables", async () => {
+      const catalog = {
+         location: "US",
+         projects: { proj: ["ds"] },
+         datasets: { "proj.ds": CI_DS },
+      };
+      expect((await buildBinary(catalog, "plain")).binary).toBe(true);
+      expect((await buildBinary(catalog, "ci")).binary).toBe(false);
+   });
+
+   it("is not binary when a read fails or cannot place the project", async () => {
+      expect(
+         (
+            await buildBinary(
+               { location: "US", projects: { proj: "fail" } },
+               "plain",
+            )
+         ).binary,
+      ).toBe(false);
+      expect(
+         (
+            await buildBinary(
+               { location: "US", projects: { proj: ["ds"] } },
+               "authored",
+            )
+         ).binary,
+      ).toBe(false);
    });
 });

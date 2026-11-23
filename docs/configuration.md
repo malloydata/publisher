@@ -873,7 +873,7 @@ source, model, table, destination, connection or query.
 | `publisher_storage_build_attribution_skipped_total{reason}` | Counter | `storage=` builds whose warehouse read went out untagged while tagging was on. |
 | `publisher_storage_serve_shape_type_fallback_total{kind}` | Counter | Captured DuckDB column types carried as json in a stored table's declared type (`array` or `unrecognized`). |
 | `publisher_storage_column_type_mismatch_total{stage,declared}` | Counter | Stored columns whose type does not serve as Malloy declares it, found at `build` or at `serve`, on every `storage=` kind (`#@ persist`, `#(materialize)`, rollups, persisted views and queries): once per table when it is bound, beside the `storage-column-type-mismatch` package warning (a database table altered outside a build counts here too, beside `database-column-type-mismatch`). |
-| `publisher_storage_chained_build_total{outcome}` | Counter | Chained `storage=` builds: `parent_reuse`, `inline_fallback`, `strict_shape_fallback`, `strict_refused`, `infra_failure`. |
+| `publisher_storage_chained_build_total{outcome}` | Counter | Chained `storage=` builds: `parent_reuse`, `strict_refused`, `infra_failure`. `inline_fallback` and `strict_shape_fallback` are retained but no longer produced: no build recomputes its upstreams from raw. |
 
 `table_collision_total` and `build_plan_compute_failed_total` are the ones to alert on: the first is
 two sources answering from one table's rows, the second a package whose stored tables all went live.

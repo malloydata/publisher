@@ -642,7 +642,6 @@ describe("a host's instructions listing a view before its upstream", () => {
       order = instructions.map((i) => i.physicalTableName);
       const created = await service.createMaterialization(ENV, PKG, {
          buildInstructions: instructions,
-         strictUpstreams: true,
       });
       const deadline = Date.now() + 120_000;
       for (;;) {

@@ -29,6 +29,7 @@ import {
    bigqueryColumnCollation,
    type Collation,
    DUCKDB_COLLATE_DEFINITIONS,
+   duckdbDefaultCollation,
    duckdbTableCollations,
    PG_COLLATION_COLUMNS,
    PG_COLLATION_IDENTITY,
@@ -1571,7 +1572,8 @@ export function collationCatalogBatches(
                     : "";
             return {
                sql:
-                  "SELECT sql FROM duckdb_tables() WHERE NOT internal " +
+                  "SELECT sql, current_setting('default_collation') AS dc " +
+                  "FROM duckdb_tables() WHERE NOT internal " +
                   `AND lower(table_name) = lower(${lit(tableOf(t))})` +
                   qualifier,
                keys: [t.key],
@@ -1581,7 +1583,17 @@ export function collationCatalogBatches(
                      .filter((d): d is string => typeof d === "string");
                   // Not found, or found in more than one schema: unread.
                   return defs.length === 1
-                     ? new Map([[t.key, duckdbTableCollations(defs[0])]])
+                     ? new Map([
+                          [
+                             t.key,
+                             {
+                                ...duckdbTableCollations(defs[0]),
+                                defaultCollation: duckdbDefaultCollation(
+                                   field(rows[0], "dc"),
+                                ),
+                             },
+                          ],
+                       ])
                      : new Map();
                },
             };

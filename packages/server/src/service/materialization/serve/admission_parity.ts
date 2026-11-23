@@ -60,18 +60,12 @@ export function reportProbeCompile(site: AdmissionReadSite): void {
  *   inputs cannot prove (no `upstreamSchemas`, as a host's manifest carries
  *   none) and the build's contract does;
  * - `bigquery_ttl`: a BigQuery catalog the probe re-read and the load did
- *   not;
- * - `destination_default_unrecorded`: TEMPORARY, until PR B records a
- *   destination's `default_collation` in the contract and checks it at bind
- *   (`compatible()` then reports `collation_changed`). A destination whose
- *   session default is set after the build is refused by the probe and
- *   admitted by the lookup. Remove it once that lands.
+ *   not.
  */
 export type ParityAllowance =
    | "bind_detects_alter"
    | "r10_binary64_orchestrated"
-   | "bigquery_ttl"
-   | "destination_default_unrecorded";
+   | "bigquery_ttl";
 
 /** One disagreement shadow admission found. */
 export interface ParityDrift {

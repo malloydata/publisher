@@ -43,6 +43,7 @@ import {
    emptyBuildPlanParts,
    type FinishedBuildPlan,
 } from "../../../src/service/materialization/plan/build_plan";
+import { chainBuildStringReads } from "../../../src/service/materialization";
 import { overlayKey } from "../../../src/service/overlay_key";
 import {
    closeCorpus,
@@ -139,6 +140,8 @@ async function planModel(model: CorpusModel, root: string): Promise<Planned> {
                importBaseURL: new URL(".", entry),
             };
          },
+         // As a package load reads them: the strings a stacked build compares.
+         stringReads: { read: chainBuildStringReads },
       });
       const connectionDigests: Record<string, string> = {};
       for (const [name, c] of model.connections) {

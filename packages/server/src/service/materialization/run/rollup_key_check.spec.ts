@@ -175,7 +175,6 @@ async function scenario(model: string) {
          strict: false,
          priorRefusals: [],
          hostInstructed: false,
-         warehouseReach: "recompute",
          uniqueness: ledger,
       });
       expect(result.failures).toEqual({});
@@ -514,7 +513,6 @@ async function storedScenario(
          strict: false,
          priorRefusals: [],
          hostInstructed: false,
-         warehouseReach: "recompute",
          uniqueness: ledger,
       });
       expect(result.failures).toEqual({});
@@ -733,7 +731,6 @@ describe("a database rollup over a base that is itself stored", () => {
                strict: false,
                priorRefusals: [],
                hostInstructed: false,
-               warehouseReach: "recompute",
                uniqueness: new UniquenessLedger(undefined, id, undefined),
             });
          // The stored base holds a duplicate the warehouse no longer has.

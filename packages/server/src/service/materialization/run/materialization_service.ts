@@ -88,11 +88,7 @@ import {
 } from "./manifest_committer";
 import type { EligibilityTier } from "./materialization_instructed_run";
 import { isActiveRun, outcomeFor } from "./run_status";
-import {
-   packageRelativeRun,
-   type WarehouseReach,
-   withChainBuildText,
-} from "./build_upstreams";
+import { packageRelativeRun, withChainBuildText } from "./build_upstreams";
 import { tallySources } from "./run_telemetry";
 import type { QueryContext } from "../../query_metadata";
 import { packageOwner } from "./table_mark_sql";
@@ -133,8 +129,6 @@ export interface RunBuildOptions {
    buildInstructions: BuildInstruction[] | undefined;
    ledger: LedgerEntry[] | undefined;
    referenceManifest: ManifestReference[] | undefined;
-   strictUpstreams: boolean | undefined;
-   warehouseReach?: WarehouseReach;
    trigger: "on_demand" | "scheduler";
    runContext?: components["schemas"]["RunContext"];
    /** The version createMaterialization resolved; null when unversioned. */
@@ -201,12 +195,6 @@ interface CreateMaterializationOptions {
    sourceNames?: string[];
    buildInstructions?: BuildInstruction[];
    referenceManifest?: ManifestReference[];
-   strictUpstreams?: boolean;
-   /**
-    * What a strict build does with a source whose only build recomputes
-    * a stored upstream from the warehouse. Orchestrated-only.
-    */
-   warehouseReach?: WarehouseReach;
    /**
     * The caller-supplied incremental ledger (each entry a
     * `ManifestEntry.ledger` an earlier run reported). When present, even
@@ -1028,10 +1016,6 @@ export class MaterializationService {
                         // local store, which a supplied ledger would replace.
                         ledger: orchestrated ? options.ledger : undefined,
                         referenceManifest: options.referenceManifest,
-                        strictUpstreams: options.strictUpstreams,
-                        warehouseReach: orchestrated
-                           ? options.warehouseReach
-                           : undefined,
                         trigger,
                         runContext: options.runContext ?? undefined,
                         version,
@@ -1606,7 +1590,7 @@ export class MaterializationService {
          seedEntries: carried,
          signal,
          // Always strict: a downstream is built over its upstreams' tables
-         // or not at all (`strictUpstreams` is accepted and ignored).
+         // or not at all.
          strict: true,
          // Orchestrated-only; see reclaimStorageTablesFromFailedRun.
          owner: orchestrated ? { environmentId, packageName } : undefined,
@@ -1620,7 +1604,6 @@ export class MaterializationService {
          priorRefusals: Object.values(derivedRefused),
          clearedTiers,
          hostInstructed: orchestrated,
-         warehouseReach: opts.warehouseReach,
          freshness: (() => {
             const index = declaredFreshnessIndex(pkg.getBuildPlan());
             return {

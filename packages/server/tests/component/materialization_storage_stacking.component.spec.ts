@@ -1108,6 +1108,7 @@ source: monthly_live is raw -> {
             table: string,
             strictUpstreams: boolean,
             schema?: unknown,
+            contract?: unknown,
          ) => {
             const created = await new MaterializationController(
                service,
@@ -1129,6 +1130,7 @@ source: monthly_live is raw -> {
                         connectionName: "warehouse",
                         storageDestinationName: LAKE,
                         ...(schema ? { schema } : {}),
+                        ...(contract ? { contract } : {}),
                      },
                   ],
                   strictUpstreams,
@@ -1149,11 +1151,23 @@ source: monthly_live is raw -> {
                "'daily' is materialized in destination 'lake', but by a reference that carries no column list",
             );
          }
-         // With the schema the host stored from daily's entry, it stacks.
+         // With the schema the host stored from daily's entry, but not its
+         // contract, the strings `monthly` groups cannot be judged: refused.
+         const unjudged = await host(
+            "host_monthly_no_contract_t",
+            true,
+            daily.schema,
+         );
+         expect(unjudged.status).toBe("FAILED");
+         expect(unjudged.error).toContain(
+            "an upstream it reads has no column contract",
+         );
+         // With the schema and the contract the host stored, it stacks.
          const stacked = await host(
             "host_monthly_schema_t",
             true,
             daily.schema,
+            (daily as { contract?: unknown }).contract,
          );
          expect([stacked.status, stacked.error]).toEqual([
             "MANIFEST_FILE_READY",

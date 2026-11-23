@@ -3134,7 +3134,11 @@ export class Model {
     */
    public async refreshStringCapabilities(): Promise<void> {
       const refresh = this.stringCapabilityReader;
-      const load = this.authorQueryLoader();
+      const materializer = this.modelMaterializer;
+      const load =
+         this.modelType === "model" && !this.isNotebook() && materializer
+            ? (query: string) => materializer.loadQuery(query)
+            : undefined;
       const modelDef = this.modelDef;
       const runtime = (
          this.modelMaterializer as unknown as
@@ -3394,22 +3398,6 @@ export class Model {
          modelDef: this.modelDef,
          context: this.servedCopyContext,
       });
-   }
-
-   /**
-    * Compiles a query in this model as it serves, with its live connections:
-    * how a chained `storage=` build's collation check reads what the build
-    * compares (`chainCollationRefusal`). Undefined when this model has no
-    * compile to query.
-    */
-   public authorQueryLoader():
-      | ((query: string) => QueryMaterializer)
-      | undefined {
-      const materializer = this.modelMaterializer;
-      if (this.modelType !== "model" || this.isNotebook() || !materializer) {
-         return undefined;
-      }
-      return (query) => materializer.loadQuery(query);
    }
 
    /**

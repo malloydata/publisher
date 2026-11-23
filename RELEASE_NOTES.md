@@ -33,6 +33,50 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Added: counters `publisher_query_catalog_reads_total{site}` and `publisher_query_probe_compiles_total{site}`,** the catalog reads and extra compiles read admission makes while answering a query.
 
+## [Unreleased] — a plain DuckDB destination's file is named from its configured name
+
+**Changed: a plain DuckDB `storage=` destination's database file is named from the destination's configured name, not the session's attach alias,** through one guarded path that refuses a name with a separator or `..` and keeps the file under the destinations root.
+
+## [Unreleased] — a storage destination's `default_collation` is held to the column contract
+
+**Changed: a `storage=` table's contract records its destination session's `default_collation` (`contract.defaultCollation`), read in the build's session, and every bind reads the destination's current value beside the table's column collations.** A bind that finds another value reports the table `incompatible` with `incompatibility.code` `collation_changed`, naming its string columns that declare no collation of their own, and it answers live until it is rebuilt. A read that fails leaves the table unread, as before. A table built under a non-default setting passes its own contract, and records its strings as compared unlike live (`compare: none`), so nothing stacks on them or serves them past a gate.
+
+## [Unreleased] — breaking: no downstream is built from its definition over a persisted upstream
+
+**Breaking: every persisted view, named query and rollup that would have been built from its definition, recomputing a persisted upstream from raw, is now refused when the package is planned, as `upstream_table_unusable`, with a `message` naming the upstream and why.** It answers live, and is never built from raw. Newly refused:
+
+- a persisted view or named query whose compile over its upstream's table fails (for example a view over a pair table that reads the joined source's own measures). Before, it was built from its definition and reported `upstreamReuse: "recomputed"`;
+- a persisted view or named query that reaches several `#(materialize)` sources;
+- a persisted view or named query whose `#(materialize)` upstream is declared in another file, or has no table it can build from there (a pair table it cannot re-root over, a source that filters its rows again at read, a table in a `storage=` destination);
+- a persisted view or named query that reads its `#(materialize)` upstream in another time zone than the upstream's table was built in;
+- a rollup over a pair table, over an extension of a `#(materialize)` source in another file, or over any persisted base whose build over the base's table did not compile to the planned table at plan.
+
+**Changed: a `storage=` rollup over a gated base stored in its destination is built over that base's table.** The gates apply at read and the base's table holds every caller's rows, as its source does, so a rollup grouped from it holds what one grouped from the warehouse would. Before, it was built from the warehouse.
+
+**Who is affected:** packages with such views, queries or rollups; each `upstream_table_unusable` refusal names the upstream. **What to do:** move the downstream next to its upstream (one file, one zone), or declare it over a source its build can read in place.
+
+## [Unreleased] — breaking: `strictUpstreams` and `warehouseReach` do nothing, and their last traces are retired
+
+**Changed: `buildInstructions.strictUpstreams` and `buildInstructions.warehouseReach` are accepted and ignored.** Both are still validated (a non-boolean `strictUpstreams`, or a `warehouseReach` other than `recompute` or `refuse`, is a 400), and a request that sends either logs one warning, `buildInstructions options are deprecated and ignored`, naming them. A later release removes them from the API. **What to do:** stop sending them.
+
+**Removed: the `warehouse_recompute_refused` failure (`WarehouseRecomputeRefusedError`).** No build recomputes a stored upstream from the warehouse, so nothing raised it; a source with no build over its upstreams' tables is refused at plan (`upstream_table_unusable`) or fails with `chained_shape_not_carried`.
+
+**Changed: `publisher_storage_chained_build_total{outcome}` no longer produces `inline_fallback` or `strict_shape_fallback`.** The values are retained so a dashboard's queries still parse; they stay at zero. The outcomes produced are `parent_reuse`, `strict_refused` and `infra_failure`.
+
+**Docs:** `upstreamReuse` and the chaining guides now describe always-strict builds.
+
+## [Unreleased] — a stacked `storage=` build's collation guard reads its upstreams' contracts, decided at plan
+
+**Changed: whether a `storage=` build over its upstreams' tables in its destination compares its strings as live does is decided from the column contracts those tables recorded, never by probing the source's collation at build.** The plan reads the strings the build groups, compares or orders (a chained `#@ persist` source, a view or named query built in its destination, a rollup over its base's table) and records them on the table's plan. When the package has bound its upstreams' tables, the plan judges them there: a column the build orders must be recorded `compare: exact`, one it groups or compares for equality `exact` or `equality`. A build that fails the check is refused at plan as `upstream_table_unusable`, with a `message` naming the string, and answered live. An upstream built in the same run is judged at build against the contract it has just recorded, with the same verdict and no probe. Verdicts are the ones #1996's probe gave for Postgres and DuckDB sources.
+
+**Changed: a `storage=` rollup whose base cannot be re-rooted on its table in the destination is refused when the package is planned, as `upstream_table_unusable` with a `message` naming the base and why,** rather than when a run reaches it. The plan writes the text the rollup builds from over a stand-in of the base's table (its bound columns, else the ones its build writes). What stays with the run is what needs the table itself: its columns as the run holds it, which the compile reads, and the contract of a base built in the same run.
+
+**Changed: a `storage=` view or named query built in its destination is held to the same check.** Before, only chained `#@ persist` sources and rollups over a stored base were.
+
+**Changed: a `storage=` build reading BigQuery records how its strings compare live, from the catalog reads an answer's collation check makes** (complete reads only). Before, every BigQuery string column was recorded `compare: none`, so no build could stack on it. A read that fails or is incomplete still records `none`, which fails closed.
+
+**Fixed: the check now covers the destination's own collation**, which the contract's stored side records; #1996's probe read only the source's.
+
 ## [Unreleased] — breaking: every build is strict, and a run of named sources builds the upstreams it cannot carry
 
 **Changed: every build is strict, standalone or a host's, whatever `strictUpstreams` says.** A downstream whose persisted upstream has no table in the run fails rather than recomputing the upstream from raw. `strictUpstreams` and `warehouseReach` are deprecated: both are accepted and ignored (`warehouseReach` values are still validated), since nothing recomputes a stored upstream any more.

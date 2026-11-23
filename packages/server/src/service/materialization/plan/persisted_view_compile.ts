@@ -136,6 +136,13 @@ interface GeneratedPersistedViews {
    /** By candidate: the persisted upstreams whose tables it would read. */
    overStoredUpstreams: ReadonlyMap<string, readonly string[]>;
    /**
+    * The views and queries over a `#(materialize)` upstream whose table they
+    * cannot be built from (several such upstreams, one in another file, a
+    * pair table it cannot re-root over, another zone), by build sourceID,
+    * with why: refused at plan (build_plan.ts).
+    */
+   overStoredUnusable: ReadonlyMap<string, string>;
+   /**
     * The `storage=` views and queries over upstreams stored in their own
     * destination, by build sourceID: each compiled over its upstreams'
     * stand-ins, or why not (storage_over_stored.ts). build_plan.ts proves
@@ -707,6 +714,7 @@ export async function tryCompilePersistedViewCompanion(args: {
             overStoredSources,
             overStoredCandidates: overStored.candidates,
             overStoredUpstreams: overStored.upstreams,
+            overStoredUnusable: overStored.unusable,
             storageOverStored,
          },
          refused,
@@ -735,8 +743,8 @@ export async function tryCompilePersistedViewCompanion(args: {
  * ({@link storedMaterializeUpstream}: its copy re-rooted on its build
  * source, `stored`, by the build sourceID), and no source stored where the
  * view cannot read it in place (a `storage=` destination, a second
- * `#(materialize)`, another zone). The rest build from their definitions,
- * as planned.
+ * `#(materialize)`, another zone). Those over a `#(materialize)` upstream
+ * whose table they cannot read are `unusable`, and refused at plan.
  */
 function overStoredUpstreamNotes(
    modelDef: unknown,
@@ -750,6 +758,8 @@ function overStoredUpstreamNotes(
    stored: Map<string, StoredMaterializeBase>;
    /** By build sourceID: the persisted upstreams it reads the tables of. */
    upstreams: Map<string, string[]>;
+   /** By build sourceID: why its `#(materialize)` upstream's table is unusable. */
+   unusable: Map<string, string>;
 } {
    const map = SourceMap.of(modelDef);
    const contents =
@@ -759,6 +769,7 @@ function overStoredUpstreamNotes(
    const upstreams = new Map<string, string[]>();
    const candidates = new Set<string>();
    const stored = new Map<string, StoredMaterializeBase>();
+   const unusable = new Map<string, string>();
    const plans: {
       buildSourceID: string;
       storage?: string;
@@ -790,7 +801,11 @@ function overStoredUpstreamNotes(
          materialized,
          { pairs: true },
       );
-      if (!chainable || base === "unusable") continue;
+      if (!chainable) continue;
+      if (base && "unusable" in base) {
+         unusable.set(plan.buildSourceID, base.unusable);
+         continue;
+      }
       if (spans.length === 0 && base === undefined) continue;
       keep.set(plan.buildSourceID, new Set(spans));
       upstreams.set(plan.buildSourceID, [
@@ -800,7 +815,7 @@ function overStoredUpstreamNotes(
       if (base) stored.set(plan.buildSourceID, base);
       candidates.add(plan.buildSourceID);
    }
-   return { keep, candidates, stored, upstreams };
+   return { keep, candidates, stored, upstreams, unusable };
 }
 
 /**

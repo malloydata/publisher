@@ -15,6 +15,7 @@
  * manifest; the committer does.
  */
 
+import type { StringReads } from "../domain/string_reads";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { errorCodeOf } from "../../../error_code";
 import { parseContract } from "../domain/column_contract";
@@ -42,7 +43,6 @@ import type {
    RollupKeyCheck,
 } from "../domain/table_plans";
 import type { InlineUniquenessCheck } from "../domain/table_plans";
-import { splitSourceID } from "../domain/table_plans";
 import {
    assertPlacementNamed,
    assertTierEligible,
@@ -479,7 +479,6 @@ export class InstructedBuild {
          priorRefusals = [],
          clearedTiers,
          hostInstructed = false,
-         warehouseReach = "recompute",
          uniqueness,
          packageRuns,
       } = options;
@@ -511,7 +510,6 @@ export class InstructedBuild {
                   index.bySourceEntityId.get(sourceEntityId),
             ),
             hostInstructed,
-            warehouseReach,
             materializePlans: materializePlansOf(tables),
          },
          ...this.seedInstructedRun(seedEntries, connections, strict),
@@ -916,16 +914,7 @@ export class InstructedBuild {
          withBuiltProvenance(
             run,
             sourceEntityId,
-            withDeclinedViewUpstreamReuse(
-               run,
-               persistSource,
-               withRollupUpstreamReuse(
-                  run,
-                  persistSource,
-                  sourceEntityId,
-                  built,
-               ),
-            ),
+            withRollupUpstreamReuse(run, persistSource, sourceEntityId, built),
          ),
          leafChecks,
       );
@@ -1200,6 +1189,7 @@ export class InstructedBuild {
             ...(storedBase ? { storedBase } : {}),
             ...(overStoredUpstreams ? { overStoredUpstreams } : {}),
             ...storedInDestinationOf(compiled.tables[persistSource.sourceID]),
+            ...stringReadsOf(compiled.tables[persistSource.sourceID]),
             ...(compiled.tables[persistSource.sourceID]?.kind === "rollup"
                ? { rollup: true }
                : {}),
@@ -2651,39 +2641,13 @@ function withRollupUpstreamReuse(
 }
 
 /**
- * A view's or query's entry, when its build over its upstreams' tables did
- * not compile at plan (`overStoredDeclined`) and it built from its
- * definition: `upstreamReuse: recomputed`, naming the upstreams, never
- * `reused` and never unlabelled. Any other entry is returned as built.
+ * The strings a `storage=` build over stored tables compares, as its plan
+ * recorded them, as a build option.
  */
-function withDeclinedViewUpstreamReuse(
-   run: InstructedRun,
-   persistSource: PersistSource,
-   entry: ManifestEntry,
-): ManifestEntry {
-   const table = run.compiled.tables[persistSource.sourceID];
-   // A build that already says it recomputed keeps its own reason.
-   if (
-      table?.kind !== "view" ||
-      !table.overStoredDeclined ||
-      entry.upstreamReuse === "recomputed"
-   ) {
-      return entry;
-   }
-   const names = table.overStoredDeclined.upstreamSourceIDs.map(
-      (id) =>
-         run.compiled.tables[id]?.source.name ?? splitSourceID(id)?.name ?? id,
-   );
-   const named = names.map((n) => `'${n}'`).join(", ");
-   return {
-      ...entry,
-      upstreamReuse: "recomputed",
-      upstreamRecomputeReason:
-         `its build over the stored table of persisted upstream ${named} ` +
-         `does not compile (it reads what that table does not hold, such as ` +
-         `a measure or view of an inlined join's joined source); recomputed ` +
-         `from its definition in the warehouse`,
-   };
+function stringReadsOf(
+   table: InstructedRun["compiled"]["tables"][string] | undefined,
+): { stringReads?: StringReads } {
+   return table?.stringReads ? { stringReads: table.stringReads } : {};
 }
 
 /** A view's or query's proven build in its destination, as a build option. */

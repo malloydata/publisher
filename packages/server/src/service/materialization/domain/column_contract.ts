@@ -314,6 +314,12 @@ function columnCompare(
    if (collation === null) return "none";
    if (args.tier === "database") return "exact";
    if (collation !== BINARY_COLLATION) return "none";
+   // A column with no collation of its own compares under the destination
+   // session's default, which must be binary too.
+   const sessionDefault = args.stored.defaultCollation;
+   if (sessionDefault !== undefined && sessionDefault !== BINARY_COLLATION) {
+      return "none";
+   }
    if (args.stackedOn !== undefined) return args.stackedOn;
    const live = args.live?.get(name);
    return live === "binary"
@@ -354,7 +360,10 @@ export type IncompatibleCode =
 /** A table as a bind reads it now (`ObservedColumns`, with its collations). */
 interface ObservedTable {
    columns: readonly { name: string; nativeType?: string; type?: string }[];
-   /** Its collations; undefined when its engine's are not read. */
+   /**
+    * Its collations, and (DuckDB) the reading session's default collation;
+    * undefined when its engine's are not read.
+    */
    collations?: TableCollations;
 }
 
@@ -368,8 +377,11 @@ type Compatibility =
  * its build recorded: the one comparator every drift trigger asks. A column
  * the contract records that is gone, holds another native type (case and
  * spacing aside), or, on an engine whose collations are read, another
- * collation, is incompatible; a column the table gained is not. The first
- * of gone, retyped and collation reports, naming every such column.
+ * collation, is incompatible; a column the table gained is not. So is a
+ * destination whose session default collation is not the one the build
+ * recorded (`defaultCollation`), which every string column declared with no
+ * collation of its own compares under. The first of gone, retyped and
+ * collation reports, naming every such column.
  *
  * Never asked of a table whose read failed: that table is unread, on its own
  * path, and never incompatible.
@@ -410,6 +422,20 @@ export function compatible(
    }
    if (recollated.length > 0) {
       return { ok: false, code: "collation_changed", columns: recollated };
+   }
+   const defaultNow = observed.collations?.defaultCollation;
+   if (
+      contract.defaultCollation !== undefined &&
+      defaultNow !== undefined &&
+      defaultNow !== contract.defaultCollation
+   ) {
+      return {
+         ok: false,
+         code: "collation_changed",
+         columns: contract.columns
+            .filter((c) => c.collation === BINARY_COLLATION)
+            .map((c) => c.name),
+      };
    }
    return { ok: true };
 }

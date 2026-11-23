@@ -7236,8 +7236,7 @@ components:
             $ref: "#/components/schemas/NotebookCell"
         annotations:
           type: array
-          description:
-            Array of file-level (##) annotations attached to the notebook.
+          description: Array of file-level (##) annotations attached to the notebook.
           items:
             type: string
         startingGivens:
@@ -11762,28 +11761,12 @@ components:
           default: recompute
           deprecated: true
           description: >-
-            Deprecated: no build recomputes a stored upstream from the source
-            warehouse any more, so every value behaves as `refuse`; the
-            values are still validated. What follows is the former
-            behaviour.
-
-
-
-            What a strict build (`strictUpstreams: true`) does with a
-            `storage=` source whose only build recomputes a stored upstream
-            from the source warehouse: the source reaches the warehouse through
-            an intermediate that no stored table can stand in for, so no build
-            over the stored tables exists for it. `recompute` (the default,
-            and what an absent or null value means) builds it and reports
-            `upstreamReuse: recomputed` with the reason; `refuse` fails the
-            source instead, with that reason in its `SourceFailure.reason` and
-            `retryable: false`, and nothing reads the warehouse. Non-strict
-            builds ignore it, as they ignore `strictUpstreams`.
-
-
-            An open string, not an enum, so a later value needs no client
-            change; today's values are `recompute` and `refuse`, and any other
-            is a 400.
+            Deprecated: accepted and ignored. No build recomputes a stored
+            upstream from the source warehouse, so there is nothing for it to
+            choose; a request that sends it (or `strictUpstreams`) logs one
+            deprecation warning. The values are still validated: `recompute`
+            and `refuse` are accepted, null reads as absent, and any other
+            value is a 400.
         ledger:
           type: array
           items:
@@ -12344,9 +12327,7 @@ components:
             deterministically earlier in the same run. That last source
             inherits its upstream's classification (`true` when any such
             upstream's failure is transient) and its `reason` names the
-            upstream's own failure. Also `false` for a source a strict build
-            refused under `warehouseReach: refuse`, whose only build would
-            recompute its stored upstreams from the warehouse.
+            upstream's own failure.
 
 
             A warehouse's own data or syntax error is one the warehouse names
@@ -12574,35 +12555,35 @@ components:
             For a source that reads another persisted source, how this table's
             rows were computed from it. `reused`: every persisted upstream was
             read from its already-materialized table, so the rows are a
-            function of those snapshots and consistent with them. `recomputed`:
-            at least one persisted upstream was recomputed from its definition
-            and inlined into this build, because its table could not be read --
-            on either tier, an upstream this build neither materialized nor was
-            handed by reference; for a database build, an upstream that
-            landed in a `storage=` destination; for a `storage=` build, a
-            source that reaches the warehouse through a non-persisted source,
-            or whose shape does not compile in the destination; on the
-            database tier, an upstream whose table holds other columns than
-            its build recorded (retyped or dropped since), could not be read,
-            or whose build recorded no column types; and always, for a
-            persisted view or named query, which builds from its source's
-            definition. `upstreamRecomputeReason` says which. Such a table reflects the
-            warehouse at THIS build's time rather than the upstream's
-            snapshot, so the two can disagree when their refresh cadences
-            differ.
+            function of those snapshots and consistent with them.
 
-            Not a location: it does not name the table the rows came from.
-            Absent for a source that reads no persisted upstream, which has one
-            way to build and no choice to report.
 
-            A database rollup reports what its build actually read: `reused`
-            only when it built from its base's materialized table, `recomputed`
-            when it could not because that table holds other columns than its
-            build recorded, could not be read, or recorded no column types,
-            and absent when it built from the warehouse for any other reason. Before
-            0.15.0 every rollup over a persisted base reported `reused`. A
-            `storage=` rollup reports `reused` only when it stacked on a stored
-            table.
+            Every build is strict: a downstream is built over its upstreams'
+            tables or not at all, and is never built by recomputing an
+            upstream from raw. A downstream the plan cannot build over its
+            upstreams' tables is refused when the package is planned
+            (`upstream_table_unusable`), and one whose upstream's table a run
+            cannot read fails that build (a missing upstream, a moved table
+            as `schema_incompatible`, a shape the destination cannot carry);
+            neither reports `upstreamReuse`.
+
+
+            `recomputed`: retained, and no longer planned. No build is
+            planned to read a persisted upstream's definition rather than its
+            table: a persisted view, named query or rollup that cannot be
+            built over its upstream's table is refused at plan. The value
+            stays for the run's own check, which labels a build whose SQL
+            inlined an upstream it should have read (with
+            `upstreamRecomputeReason` naming it); a strict build refuses such
+            a build before writing it, so an entry is not expected to carry
+            it.
+
+
+            Not a location: it does not name the table the rows came from
+            (`builtFrom` does). Absent for a source that reads no persisted
+            upstream, which has one way to build and no choice to report. A
+            rollup reports `reused` when it built from its base's table, and
+            nothing otherwise.
         builtAt:
           type: string
           format: date-time

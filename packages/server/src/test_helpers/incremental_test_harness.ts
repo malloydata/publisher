@@ -1,7 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { planChainBuildText } from "../service/materialization";
+import {
+   chainBuildStringReads,
+   planChainBuildText,
+} from "../service/materialization";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -139,6 +142,7 @@ export function tempBuildPlanPackages(): {
             getPackageMetadata: () => ({}),
             getVersionId: () => undefined,
             planChainBuildText: planChainBuildText(dir, malloyConfig),
+            planChainStringReads: chainBuildStringReads,
             ...overrides,
          };
       },

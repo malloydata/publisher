@@ -1248,7 +1248,7 @@ describe.skipIf(process.platform === "win32")(
             'CREATE OR REPLACE TABLE "lake"."orders_g1"',
             'DESCRIBE "lake"."orders_g1"',
             // The column contract's read of its collations, before COMMIT.
-            "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('orders_g1') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
+            "SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('orders_g1') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
             "COMMIT",
             'SELECT count(*) AS n FROM "lake"."orders_g1"',
             "DESCRIBE (passthrough)",
@@ -1256,7 +1256,7 @@ describe.skipIf(process.platform === "win32")(
             'CREATE OR REPLACE TABLE "lake"."daily_g1"',
             'DESCRIBE "lake"."daily_g1"',
             // The column contract's read of its collations, before COMMIT.
-            "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('daily_g1') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
+            "SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('daily_g1') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
             "COMMIT",
             'SELECT count(*) AS n FROM "lake"."daily_g1"',
          ]);
@@ -1542,7 +1542,7 @@ source: events is warehouse.sql("""
             `DESCRIBE "lake"."${TABLE}"`,
             `SELECT count(*) AS n FROM "lake"."${TABLE}"`,
             // The column contract's read of its collations.
-            `SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('${TABLE}') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))`,
+            `SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('${TABLE}') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))`,
          ]);
          const script = lake.statements.find((s) => s.startsWith("BEGIN;"))!;
          expect(script.split("\n")[1]).toBe(
@@ -1639,7 +1639,9 @@ source: events is warehouse.sql("""
          fs.appendFileSync(csv(lake.root), "7,c,64.0,70\n");
          lake.onStatement = (sql) => {
             if (
-               sql.startsWith("SELECT sql FROM duckdb_tables()") &&
+               sql.startsWith(
+                  "SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables()",
+               ) &&
                sql.includes(`lower('${TABLE}')`)
             ) {
                throw new Error("injected: catalog read failed");
@@ -1668,7 +1670,9 @@ source: events is warehouse.sql("""
          // names the table with its contract.
          const delta = lake.statements.findIndex((x) => x.startsWith("BEGIN;"));
          const read = lake.statements.findIndex((x) =>
-            x.startsWith("SELECT sql FROM duckdb_tables()"),
+            x.startsWith(
+               "SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables()",
+            ),
          );
          expect(delta).toBeGreaterThanOrEqual(0);
          expect(read).toBeGreaterThan(delta);
@@ -2055,7 +2059,7 @@ describe.skipIf(process.platform === "win32")(
             `CREATE OR REPLACE TABLE "lake"."${DAILY}"`,
             `DESCRIBE "lake"."${DAILY}"`,
             // The column contract's read of its collations, before COMMIT.
-            `SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('${DAILY}') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))`,
+            `SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('${DAILY}') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))`,
             "COMMIT",
             `SELECT count(*) AS n FROM "lake"."${DAILY}"`,
          ]);
@@ -2165,7 +2169,9 @@ describe.skipIf(process.platform === "win32")(
          const failedCapture = await failing(
             (sql) => {
                if (
-                  sql.startsWith("SELECT sql FROM duckdb_tables()") &&
+                  sql.startsWith(
+                     "SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables()",
+                  ) &&
                   sql.includes(`lower('${ORDERS}')`)
                ) {
                   throw new Error("injected: catalog read failed");
@@ -2196,7 +2202,7 @@ describe.skipIf(process.platform === "win32")(
             "BEGIN TRANSACTION",
             `CREATE OR REPLACE TABLE "lake"."${ORDERS}"`,
             `DESCRIBE "lake"."${ORDERS}"`,
-            `SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('${ORDERS}') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))`,
+            `SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('${ORDERS}') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))`,
             "ROLLBACK",
          ]);
          // The previous generation's table stands: its files and rows.

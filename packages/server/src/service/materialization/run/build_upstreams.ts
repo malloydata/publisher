@@ -28,12 +28,8 @@ import {
    type TableFolds,
 } from "./run_plan";
 import { type MaterializePlan } from "../domain/table_plans";
-import type {
-   ChainBuildRequest,
-   ChainBuildText,
-   ChainCollationRequest,
-} from "../domain/chain_build";
-import type { PersistSource } from "@malloydata/malloy";
+import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
+import type { Connection, PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
 import { ChainedShapeNotCarriedError } from "../../../errors";
 import { logger } from "../../../logger";
@@ -107,23 +103,12 @@ export interface ChainedPlanFacts {
     */
    hostInstructed?: boolean;
    /**
-    * What a strict build does with a source whose only build recomputes a
-    * stored upstream from the warehouse: `recompute` builds it and reports
-    * `upstreamReuse: recomputed`; `refuse` fails it
-    * ({@link WarehouseRecomputeRefusedError}). Only a host sets it; absent
-    * means `recompute`, and a non-strict build ignores it.
-    */
-   warehouseReach?: WarehouseReach;
-   /**
     * The plan's `#(materialize)` plans by sourceID. A `storage=` extension
     * table among them (one with `buildsOver.overStored`) builds over its
     * parent's stored table from its own chain, not by lifting author text.
     */
    materializePlans?: Readonly<Record<string, MaterializePlan>>;
 }
-
-/** See {@link ChainedPlanFacts.warehouseReach}. */
-export type WarehouseReach = "recompute" | "refuse";
 
 /** A build with no plan to consult: nothing is known to be stored. */
 export const NO_PLAN_FACTS: ChainedPlanFacts = {
@@ -708,14 +693,16 @@ export interface BuildEnvironment {
     */
    chainBuildText?(request: ChainBuildRequest): ChainBuildText;
    /**
-    * Why a chained `storage=` build must not stack on its stored upstreams
-    * (the host port's `chainCollationRefusal`), or undefined when it may.
-    * Absent, it never stacks: it recomputes, or under strict upstreams
-    * refuses.
+    * Whether a `storage=` build's BigQuery SQL reads only strings compared
+    * byte-exact, read from the catalog as an answer's check reads it (the
+    * host port's; serve/gate_collation.ts), for its column contract. Absent,
+    * its strings are recorded compared `none`.
     */
-   chainCollationRefusal?(
-      request: ChainCollationRequest,
-   ): Promise<string | undefined>;
+   bigqueryBuildCompareBinary?(args: {
+      connection: Connection;
+      source: PersistSource;
+      sql: string;
+   }): Promise<boolean>;
    /**
     * The root of the package being built, which the build's reads of author
     * files stay inside. Absent in test doubles: those reads are then confined
@@ -731,17 +718,14 @@ export interface BuildEnvironment {
 }
 
 /**
- * `environment` with the package's `chainBuildText` and
- * `chainCollationRefusal`, for one run of that package. The environment
+ * `environment` with the package's `chainBuildText`, for one run of that package. The environment
  * itself is left as it is.
  */
 export function withChainBuildText<E extends BuildEnvironment>(
    environment: E,
    pkg: {
       chainBuildText(request: ChainBuildRequest): ChainBuildText;
-      chainCollationRefusal(
-         request: ChainCollationRequest,
-      ): Promise<string | undefined>;
+      bigqueryBuildCompareBinary?: BuildEnvironment["bigqueryBuildCompareBinary"];
       getPackagePath(): string;
       reportIncompatible?(handles: readonly string[]): void;
    },
@@ -765,8 +749,9 @@ export function withChainBuildText<E extends BuildEnvironment>(
               code: "package_stale",
            }
          : pkg.chainBuildText(request);
-   scoped.chainCollationRefusal = (request) =>
-      pkg.chainCollationRefusal(request);
+   if (pkg.bigqueryBuildCompareBinary) {
+      scoped.bigqueryBuildCompareBinary = pkg.bigqueryBuildCompareBinary;
+   }
    if (pkg.reportIncompatible) {
       scoped.reportIncompatible = (handles) => pkg.reportIncompatible!(handles);
    }
