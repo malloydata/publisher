@@ -491,7 +491,10 @@ export async function withDestinationSession<T>(
          // path for reading alone, so writes there are kept out by the
          // catalog's READ_ONLY attach and by the one statement such a build
          // runs that a model shapes, which must be a single SELECT
-         // ({@link assertSingleSelect}): a SELECT cannot `COPY ... TO`.
+         // ({@link assertSingleSelect}): a SELECT cannot `COPY ... TO`. That
+         // SELECT is compiled in a session without them
+         // (buildDownstreamIntoStorage), so the compile's reads never run
+         // with them attached either.
          await lockDownDestinationSession(session, [
             ...destinationAllowlist(destination),
             ...others.flatMap((other) =>
@@ -1428,6 +1431,33 @@ export async function buildDownstreamIntoStorage(params: {
       environmentPath,
    } = params;
 
+   const connectionName = params.connectionName ?? destinationName;
+   const compile = (session: DuckDBConnection) =>
+      planChainedDownstream({
+         model,
+         downstreamName,
+         virtualMap,
+         ...(params.recomputes ? { recomputes: params.recomputes } : {}),
+         ...(params.sameDeclaredTypes ? { sameDeclaredTypes: true } : {}),
+         ...(params.givenFree ? { givenFree: true } : {}),
+         connections: new FixedConnectionMap(
+            new Map([[connectionName, session]]),
+            connectionName,
+         ),
+      });
+   // A build that reads another destination compiles first, in a session of
+   // its own destination alone (confined to it), so
+   // nothing the compile reads ever runs with the other destination
+   // attached; the session that attaches it runs only the checked SELECT.
+   const precompiled = params.readOnly?.length
+      ? await withDestinationSession(
+           { destinationName, destinationConnection, environmentPath },
+           { purpose: "build_compile" },
+           compile,
+        )
+      : undefined;
+   if (precompiled) await assertSingleSelect(precompiled.sql);
+
    return withDestinationSession(
       { destinationName, destinationConnection, environmentPath },
       {
@@ -1436,23 +1466,7 @@ export async function buildDownstreamIntoStorage(params: {
          ...(params.readOnly ? { alsoRead: params.readOnly } : {}),
       },
       async (session) => {
-         const connectionName = params.connectionName ?? destinationName;
-         const { sql, downstream } = await planChainedDownstream({
-            model,
-            downstreamName,
-            virtualMap,
-            ...(params.recomputes ? { recomputes: params.recomputes } : {}),
-            ...(params.sameDeclaredTypes ? { sameDeclaredTypes: true } : {}),
-            ...(params.givenFree ? { givenFree: true } : {}),
-            connections: new FixedConnectionMap(
-               new Map([[connectionName, session]]),
-               connectionName,
-            ),
-         });
-
-         // Another destination is attached read-only, its data path in the
-         // session's allowlist: the model-shaped SQL must not write there.
-         if (params.readOnly?.length) await assertSingleSelect(sql);
+         const { sql, downstream } = precompiled ?? (await compile(session));
          const incremental = params.incremental;
          if (!incremental) {
             return writeStackedTable(session, params, sql, downstream);

@@ -28,7 +28,8 @@
  */
 
 import { PostgresConnection } from "@malloydata/db-postgres";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
+import { DuckDBConnection as MalloyDuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
 import * as path from "path";
 import { MaterializationController } from "../../src/controller/materialization.controller";
@@ -48,6 +49,7 @@ import { freshLoadPool } from "../../src/test_helpers/conformance/package_runner
 import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import * as generatedFiles from "../../src/service/materialization/text/generated_files";
 import { openTempStorage } from "../../src/test_helpers/temp_storage";
 
 const ENV = "e1";
@@ -1311,6 +1313,74 @@ if (POSTGRES_URL) {
                sumOf([...FIRST, ...SECOND, late]),
             ]);
          }
+      });
+   });
+
+   describe("a storage= extension over a parent in another destination compiles without that destination attached", () => {
+      let root = "";
+      const f = new Fixture(DUCKLAKE(() => root, ["lake2"]));
+      let built: Materialization;
+      /** Every statement each DuckDB session ran, by session. */
+      const ran = new Map<object, string[]>();
+      /** The sessions a chained build compiled its model in. */
+      const compiledIn = new Set<object>();
+
+      beforeAll(async () => {
+         root = fs.realpathSync(
+            fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), "xcc-")),
+         );
+         const model = MODEL.replace(/name="__P__[a-z_]+"/g, "")
+            .replace(/(lookback="7 days")__S__/, `$1 storage="lake"`)
+            .replace(/__S__/g, ` storage="lake2"`);
+         await f.open(model);
+         const run = MalloyDuckDBConnection.prototype.runSQL;
+         const runSpy = spyOn(
+            MalloyDuckDBConnection.prototype,
+            "runSQL",
+         ).mockImplementation(function (
+            this: MalloyDuckDBConnection,
+            sql: string,
+            ...rest: unknown[]
+         ) {
+            ran.set(this, [...(ran.get(this) ?? []), sql]);
+            return (run as (...a: unknown[]) => never).call(this, sql, ...rest);
+         } as never);
+         const compile = generatedFiles.inMemoryRuntime;
+         const compileSpy = spyOn(
+            generatedFiles,
+            "inMemoryRuntime",
+         ).mockImplementation((files, connections) => {
+            void connections
+               .lookupConnection()
+               .then((c) => compiledIn.add(c as object));
+            return compile(files, connections);
+         });
+         try {
+            built = await f.build({});
+         } finally {
+            runSpy.mockRestore();
+            compileSpy.mockRestore();
+         }
+      }, 400_000);
+      afterAll(async () => {
+         await f.close();
+         fs.rmSync(root, { recursive: true, force: true });
+      });
+
+      it("never runs the compile in a session that attached the parent's destination", () => {
+         expect([built.status, (built as { error?: unknown }).error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         const attachesLake = (session: object) =>
+            (ran.get(session) ?? []).some((sql) =>
+               /ATTACH[\s\S]*\bAS\s+"?lake"?(\s|$)[\s\S]*READ_ONLY/i.test(sql),
+            );
+         // The build that reads it attaches it read-only...
+         expect([...ran.keys()].some(attachesLake)).toBe(true);
+         // ...and every compile ran without it.
+         expect(compiledIn.size).toBeGreaterThan(0);
+         expect([...compiledIn].filter(attachesLake)).toEqual([]);
       });
    });
 
