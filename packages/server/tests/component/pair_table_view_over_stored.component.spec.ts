@@ -15,6 +15,9 @@
  *  - A fresh package builds the pair table and the view in one run.
  *  - A pair table whose leaf key check failed refuses the view
  *    (`schema_incompatible`), naming the upstream and the check.
+ *  - A view that reads a measure the joined source declares does not compile
+ *    over the re-root (the join carries only the stored dimensions): it is
+ *    built from its definition and labelled `recomputed`, never `reused`.
  *
  * DuckDB, and Postgres when `PUBLISHER_TEST_POSTGRES_URL` names one.
  */
@@ -614,6 +617,47 @@ for (const tier of tiers) {
          expect(failures[0].reason).toMatch(
             /upstream 'orders''s pair table: the leaf key check of its inlined join_many.*found the key 'items\.item_id' held more than once or NULL/,
          );
+      });
+   });
+}
+
+/** A view through one join that reads the joined source's own measure. */
+const CHILD_MEASURE = `${HEAD}source: items is warehouse.table('__T__pv_items') extend {
+  primary_key: item_id
+  measure: item_total is price.sum()
+}
+
+#(materialize) inline=["items"]
+source: orders is warehouse.table('__T__pv_orders') extend {
+  primary_key: id
+  join_many: items is items on items.order_id = id
+}
+
+source: s is orders extend {
+  #@ persist name="__T__pv_vm"
+  view: by_cust is { group_by: cust; aggregate: item_total is items.item_total }
+}
+`;
+
+for (const tier of tiers) {
+   describe(`a view reading the joined source's own measure is built from its definition, and says so (${tier.label})`, () => {
+      const f = new Fixture(tier, CHILD_MEASURE);
+      let run: Materialization;
+
+      beforeAll(async () => {
+         await f.open();
+         run = await f.build({});
+      }, 300_000);
+      afterAll(() => f.close());
+
+      it("labels the view recomputed, never reused, and names no pair table in builtFrom", () => {
+         expect(run.status).toBe("MANIFEST_FILE_READY");
+         const view = Object.values(entriesOf(run)).find((e) =>
+            /^s__by_cust__view$/.test(e.sourceName ?? ""),
+         )!;
+         expect(view).toBeDefined();
+         expect(view.upstreamReuse).toBe("recomputed");
+         expect(view.builtFrom ?? []).toEqual([]);
       });
    });
 }

@@ -133,6 +133,8 @@ interface GeneratedPersistedViews {
    overStoredSources: ReadonlyMap<string, OverStoredBase>;
    /** The build sourceIDs offered the compile: the candidates. */
    overStoredCandidates: ReadonlySet<string>;
+   /** By candidate: the persisted upstreams whose tables it would read. */
+   overStoredUpstreams: ReadonlyMap<string, readonly string[]>;
    /**
     * The `storage=` views and queries over upstreams stored in their own
     * destination, by build sourceID: each compiled over its upstreams'
@@ -704,6 +706,7 @@ export async function tryCompilePersistedViewCompanion(args: {
             text,
             overStoredSources,
             overStoredCandidates: overStored.candidates,
+            overStoredUpstreams: overStored.upstreams,
             storageOverStored,
          },
          refused,
