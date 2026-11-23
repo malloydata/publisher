@@ -56,6 +56,9 @@
             },
             "url": "<pkg>/m.malloy"
           },
+          "mode": {
+            "tier": "same"
+          },
           "overStored": {
             "declarations": "source: stored is stored__mat extend {\n}\nsource: by_given is stored extend {\n  where: true\n}",
             "flags": [
@@ -353,6 +356,9 @@
             },
             "url": "<pkg>/m.malloy"
           },
+          "mode": {
+            "tier": "same"
+          },
           "overStored": {
             "declarations": "source: stored is stored__mat extend {\n}\nsource: east is stored extend {\n  where: region = 'east'\n}",
             "flags": [
@@ -497,6 +503,9 @@
             },
             "url": "<pkg>/m.malloy"
           },
+          "mode": {
+            "tier": "same"
+          },
           "overStored": {
             "declarations": "source: east is east__mat extend {\n  where: region = 'east'\n}\nsource: east_big is east extend {\n  where: is_big\n}",
             "flags": [
@@ -640,6 +649,9 @@
               }
             },
             "url": "<pkg>/m.malloy"
+          },
+          "mode": {
+            "tier": "same"
           },
           "overStored": {
             "declarations": "source: stored is stored__mat extend {\n}\nsource: renamed is stored extend {\n  rename: order_id is id\n  measure: id_total is order_id.sum()\n}",

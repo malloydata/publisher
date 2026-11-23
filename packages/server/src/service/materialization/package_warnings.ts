@@ -31,7 +31,11 @@ import {
 import { DUCKLAKE_DATA_INLINING_ON } from "../dialects/ducklake_inlining";
 import { CronEvaluator } from "./run/cron_evaluator";
 import type { Binding } from "./domain/binding";
-import { INCREMENTAL_LATE_ROWS_CODE } from "./domain/incremental";
+import {
+   INCREMENTAL_LATE_ROWS_CODE,
+   MATERIALIZE_EXTENSION_GENERATION_UNPROVEN_CODE,
+} from "./domain/incremental";
+import type { UnprovenGeneration } from "./run/incremental_upstream";
 import {
    isPersistedQuerySourceID,
    isRollupOrigin,
@@ -243,6 +247,39 @@ export function repeatedJoinOneKeyWarnings(
  * cleared only when a rebuild's manifest is bound. The window's bounds are values from
  * the data, so the message points at the run's entry rather than quoting
  * them.
+ */
+export function unprovenGenerationWarnings(
+   plan: BuildPlan | null,
+   unproven: readonly UnprovenGeneration[],
+): ApiPackageWarning[] {
+   if (unproven.length === 0) return [];
+   const bySourceEntity = new Map(
+      Object.values(plan?.sources ?? {}).flatMap((source) =>
+         source.sourceEntityId ? [[source.sourceEntityId, source]] : [],
+      ),
+   );
+   return unproven.map((u) => {
+      const source = bySourceEntity.get(u.sourceEntityId);
+      return {
+         ...(source?.modelPath ? { model: source.modelPath } : {}),
+         subject: source?.name ?? u.sourceName,
+         code: MATERIALIZE_EXTENSION_GENERATION_UNPROVEN_CODE,
+         severity: "warn" as const,
+         message:
+            `the newest run rebuilt this incremental extension in full over ` +
+            `its parent '${u.parentName}''s table: it could not prove which ` +
+            `build of that table it last read, so a delta could miss rows a ` +
+            `parent refresh restated. Neither the run's ledger entry for it ` +
+            `nor the bound manifest records the parent's build (a host that ` +
+            `stores ledger entries keeps \`parent\` and \`builtFrom\` as ` +
+            `written). The next run that reads its ledger entry refreshes ` +
+            `it by delta again.`,
+      };
+   });
+}
+
+/**
+ * One warning per source whose bound entry reports late rows.
  */
 export function lateRowWarnings(
    plan: BuildPlan | null,

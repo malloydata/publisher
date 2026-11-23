@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The build-time gate of a persisted view or named query planned over a
- * `#(materialize)` pair table with its join put back (plan/pair_reroot.ts):
+ * The build-time gate of a persisted view or named query, or an extension
+ * table, planned over a `#(materialize)` pair table with its join put back
+ * (plan/pair_reroot.ts):
  * the re-root counts and sums each level of the path by that level's key, so
  * the build relies on the leaf's key being unique and never null on the leaf
  * source's rows. The build writing the pair table runs that check and
@@ -19,7 +20,10 @@ import { parseContract } from "../domain/column_contract";
 /**
  * Why `downstream` must not build over its pair-table upstream `upstream`,
  * whose current entry is `entry`, given the leaf checks it relies on
- * (`OverStoredBase.pairLeafKeys`), or undefined when every one passed.
+ * (`OverStoredBase.pairLeafKeys`, or an extension's `ChainMode.pair`), or
+ * undefined when every one passed. Also read at plan, over the upstream's
+ * bound contract, so a failure the bind already holds refuses the
+ * extension there rather than failing its build again.
  */
 export function pairLeafRefusal(
    downstream: string,

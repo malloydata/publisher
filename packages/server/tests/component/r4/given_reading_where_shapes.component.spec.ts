@@ -296,7 +296,8 @@ const CASES: ShapeCase[] = [
       path: {
          kind: "refused_warning",
          code: "materialize-not-built",
-         says: MOVE_WHERE,
+         // Its own rows depend on the caller's given (upstream_table_unusable).
+         says: "one shared table cannot serve every caller",
       },
       fromTable: true,
    },

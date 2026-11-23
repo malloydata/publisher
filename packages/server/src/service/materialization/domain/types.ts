@@ -193,6 +193,13 @@ export interface FreshnessAwareManifestEntry {
     */
    lateRows?: LateRows;
    /**
+    * The wire entry's `ledger` and `builtFrom`, as an incremental extension's
+    * standalone refresh reads them: which build of its parent's table it last
+    * read (run/incremental_upstream.ts, `boundParentReads`).
+    */
+   ledger?: ManifestEntry["ledger"];
+   builtFrom?: ManifestEntry["builtFrom"];
+   /**
     * The wire entry's `contract`, as the host stored it (read with
     * `parseContract`): a table with none is never served from.
     */

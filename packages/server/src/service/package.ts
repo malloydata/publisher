@@ -9,6 +9,7 @@ import {
 import type {
    BoundStorageColumns,
    BoundStorageContract,
+   BoundTableContract,
    PlanChainBuildText,
    PlanChainStringReads,
 } from "./materialization/domain/chain_build";
@@ -124,6 +125,10 @@ import type {
    ChainBuildText,
 } from "./materialization/domain/chain_build";
 import type { KeptTable, LateRows } from "./materialization/domain/types";
+import type {
+   LedgerParent,
+   UnprovenGeneration,
+} from "./materialization/domain/incremental";
 import { underCompilerKeys } from "./materialization/domain/binding";
 import {
    confinedPackagePath,
@@ -1724,6 +1729,24 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.mz.boundLateRows();
    }
 
+   /** The host port's `boundParentReads` (PackageMaterialization.boundParentReads). */
+   public boundParentReads(): ReadonlyMap<string, readonly LedgerParent[]> {
+      return this.mz.boundParentReads();
+   }
+
+   /** The host port's `boundIncrementalEntries` (PackageMaterialization.boundIncrementalEntries). */
+   public boundIncrementalEntries(): ReadonlyMap<
+      string,
+      Pick<ManifestEntry, "builtAt" | "ledger">
+   > {
+      return this.mz.boundIncrementalEntries();
+   }
+
+   /** The host port's `setUnprovenGenerations`. */
+   public setUnprovenGenerations(list: readonly UnprovenGeneration[]): void {
+      this.mz.setUnprovenGenerations(list);
+   }
+
    public forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
       this.mz.forgetKeyUniqueness(sourceEntityIds);
    }
@@ -2210,6 +2233,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.mz.servedCopyWarnings(),
          ...this.mz.repeatedJoinOneKeyWarnings(),
          ...this.mz.lateRowWarnings(),
+         ...this.mz.unprovenGenerationWarnings(),
          ...this.mz.keptTableWarnings(),
          ...this.mz.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),
@@ -2982,6 +3006,12 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       sourceID,
       destination,
    ) => this.mz.boundStorageContract(sourceID, destination);
+
+   /** See {@link BuildPlanPackage.boundTableContract}. */
+   public readonly boundTableContract: BoundTableContract = (
+      sourceID,
+      storage,
+   ) => this.mz.boundTableContract(sourceID, storage);
 
    /** See {@link BuildPlanPackage.planChainStringReads}. */
    public readonly planChainStringReads: PlanChainStringReads =

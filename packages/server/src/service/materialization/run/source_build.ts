@@ -42,6 +42,7 @@ import { authorModelLiftContext } from "../text/author_model";
 import { reachPersisted } from "../text/source_map";
 import { BuildInstruction, ManifestEntry } from "../domain/types";
 import { isPersistedResultSourceID } from "../domain/table_plans";
+import type { ExtensionParent } from "./incremental_apply";
 import type { DatabaseBuildRequest } from "./tier";
 import { DatabaseTier } from "./database_build_strategy";
 import {
@@ -800,6 +801,13 @@ export async function buildSource(
       ),
    );
    const { isStorageBuild, buildSQL } = rendered;
+   const extensionParent = extensionParentOf({
+      persistSource,
+      planFacts,
+      builtEntries,
+      builtThisRun,
+      incremental,
+   });
    // Strict refused these above: here each is recomputed. A rollup's own
    // fallback is counted where it is decided (instructed_build.ts).
    for (const { name, reason, kind } of rendered.movedRead.values()) {
@@ -880,6 +888,7 @@ export async function buildSource(
          contentSourceEntityId,
          planFacts,
          lift,
+         ...(extensionParent ? { extensionParent } : {}),
          ...(replacesView ? { replacesView } : {}),
          ...(storedBase ? { storedBase } : {}),
          ...(storedInDestination ? { storedInDestination } : {}),
@@ -901,7 +910,7 @@ export async function buildSource(
                : undefined,
          ),
       });
-      return built;
+      return withExtensionReuse(built, planFacts, persistSource.sourceID);
    }
 
    // Incremental refresh: a source with `refresh="incremental"` and a usable
@@ -919,6 +928,7 @@ export async function buildSource(
       incrementalRefresh: sourceIncrementalRefresh(incremental, persistSource, {
          physicalTableName,
          sourceEntityId: contentSourceEntityId,
+         ...(extensionParent ? { parent: extensionParent } : {}),
       }),
       ...(replacesView ? { replacesView } : {}),
       ...(signal ? { signal } : {}),
@@ -931,7 +941,63 @@ export async function buildSource(
       builtEntries,
       contentSourceEntityId ?? instruction.sourceEntityId,
    );
-   return builtFrom ? { ...built, builtFrom } : built;
+   return withExtensionReuse(
+      builtFrom ? { ...built, builtFrom } : built,
+      planFacts,
+      persistSource.sourceID,
+   );
+}
+
+/**
+ * `entry` labelled `upstreamReuse: "reused"` when it is a `#(materialize)`
+ * extension table whose build read its parent's table (its `builtFrom`
+ * names the parent's address) and nothing else labelled it. The author's
+ * text names the parent, not its generated build source, so the manifest
+ * walk that labels other builds does not see it.
+ */
+function withExtensionReuse(
+   entry: ManifestEntry,
+   planFacts: ChainedPlanFacts,
+   sourceID: string,
+): ManifestEntry {
+   if (entry.upstreamReuse !== undefined) return entry;
+   const parent = planFacts.materializePlans?.[sourceID]?.buildsOver;
+   const address = parent && planFacts.addressBySourceId[parent.sourceID];
+   if (address === undefined) return entry;
+   return (entry.builtFrom ?? []).some((b) => b.sourceEntityId === address)
+      ? { ...entry, upstreamReuse: "reused" }
+      : entry;
+}
+
+/**
+ * For an incremental extension table its plan links to its parent's table
+ * (`buildsOver.mode.incremental`): the parent as this run holds it, which
+ * its refresh follows (incremental_upstream.ts). Undefined for any other
+ * source.
+ */
+function extensionParentOf(args: {
+   persistSource: Pick<PersistSource, "sourceID">;
+   planFacts: Pick<ChainedPlanFacts, "materializePlans" | "addressBySourceId">;
+   builtEntries: Readonly<Record<string, ManifestEntry>>;
+   builtThisRun: ReadonlySet<string> | undefined;
+   incremental: IncrementalRunContext | undefined;
+}): ExtensionParent | undefined {
+   const over =
+      args.planFacts.materializePlans?.[args.persistSource.sourceID]
+         ?.buildsOver;
+   const coordinate = over?.mode.incremental?.coordinate;
+   if (!over || !coordinate) return undefined;
+   const address = args.planFacts.addressBySourceId[over.sourceID];
+   if (address === undefined) return undefined;
+   return {
+      address,
+      name: over.sourceName,
+      coordinate,
+      parentIncremental:
+         args.incremental?.declarations[over.sourceID]?.incremental === true,
+      entry: args.builtEntries[address],
+      builtThisRun: args.builtThisRun?.has(address) ?? false,
+   };
 }
 
 /**

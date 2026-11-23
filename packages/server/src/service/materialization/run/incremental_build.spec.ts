@@ -9,7 +9,7 @@
 import { describe, expect, it } from "bun:test";
 import { makeDigest } from "@malloydata/malloy";
 import {
-   carriedLedgerExtensions,
+   ledgerExtensionKeys,
    incrementalLineage,
    indexCallerLedger,
    ledgerFields,
@@ -366,7 +366,7 @@ describe("indexCallerLedger and ledgerFields: the entry is opaque to hosts", () 
       });
    });
 
-   describe("carriedLedgerExtensions", () => {
+   describe("ledgerExtensionKeys", () => {
       const lineage = {
          connectionName: "wh",
          physicalTableName: "orders_v1",
@@ -393,50 +393,223 @@ describe("indexCallerLedger and ledgerFields: the entry is opaque to hosts", () 
          };
       }
 
-      it("reads the echoed entry's unknown keys for the source's table", () => {
-         const r = refresh([{ ...ENTRY, parent: "g1" }]);
-         expect(carriedLedgerExtensions(r, undefined)).toEqual({
-            parent: "g1",
+      describe("the history since the last full rebuild (seededBy, advances)", () => {
+         const withStep = (step: Record<string, unknown> | undefined) => ({
+            context: {
+               forceRefresh: false,
+               materializationId: "run-now",
+               parentSteps: new Map(step ? [["addr", step]] : []),
+            } as unknown as IncrementalRunContext,
+            lineage: lineage as never,
+         });
+         const adv = (from: string, advancedBy: string) => ({
+            from,
+            advancedBy,
+            start: "2024-06-01",
+            startType: "date",
+         });
+         const start = { malloyType: "date", value: "2024-06-20" };
+
+         it("starts over on a full rebuild", () => {
+            expect(
+               ledgerExtensionKeys(
+                  withStep(undefined),
+                  undefined,
+                  "run-now",
+                  "full",
+               ),
+            ).toEqual({
+               advancedBy: "run-now",
+               seededBy: "run-now",
+               advances: [],
+            });
+         });
+
+         it("appends a delta to the history it started from", () => {
+            const keys = ledgerExtensionKeys(
+               withStep({
+                  mode: "delta",
+                  priorAdvancedBy: "r2",
+                  start,
+                  priorChain: { seededBy: "r1", advances: [adv("r1", "r2")] },
+               }),
+               undefined,
+               "run-now",
+               "delta",
+            );
+            expect(keys).toEqual({
+               advancedBy: "run-now",
+               seededBy: "r1",
+               advances: [
+                  adv("r1", "r2"),
+                  {
+                     from: "r2",
+                     advancedBy: "run-now",
+                     start: "2024-06-20",
+                     startType: "date",
+                  },
+               ],
+            });
+         });
+
+         it("keeps the newest eight", () => {
+            const advances = Array.from({ length: 8 }, (_, i) =>
+               adv(`r${i + 1}`, `r${i + 2}`),
+            );
+            const keys = ledgerExtensionKeys(
+               withStep({
+                  mode: "delta",
+                  priorAdvancedBy: "r9",
+                  start,
+                  priorChain: { seededBy: "r1", advances },
+               }),
+               undefined,
+               "run-now",
+               "delta",
+            ) as { seededBy: string; advances: { from: string }[] };
+            expect(keys.seededBy).toBe("r1");
+            expect(keys.advances.map((a) => a.from)).toEqual([
+               "r2",
+               "r3",
+               "r4",
+               "r5",
+               "r6",
+               "r7",
+               "r8",
+               "r9",
+            ]);
+         });
+
+         it("anchors a new history at the build a delta started from when none, or a broken one, is recorded", () => {
+            for (const priorChain of [
+               undefined,
+               { seededBy: "r1", advances: [adv("r1", "rX")] },
+            ]) {
+               expect(
+                  ledgerExtensionKeys(
+                     withStep({
+                        mode: "delta",
+                        priorAdvancedBy: "r2",
+                        start,
+                        ...(priorChain ? { priorChain } : {}),
+                     }),
+                     undefined,
+                     "run-now",
+                     "delta",
+                  ),
+               ).toEqual({
+                  advancedBy: "run-now",
+                  seededBy: "r2",
+                  advances: [
+                     {
+                        from: "r2",
+                        advancedBy: "run-now",
+                        start: "2024-06-20",
+                        startType: "date",
+                     },
+                  ],
+               });
+            }
+         });
+
+         it("keeps it through a refresh that applied nothing, and never carries an echoed one", () => {
+            const priorChain = { seededBy: "r1", advances: [adv("r1", "r2")] };
+            expect(
+               ledgerExtensionKeys(
+                  withStep({ mode: "skip", priorAdvancedBy: "r2", priorChain }),
+                  undefined,
+                  "r2",
+                  "none",
+               ),
+            ).toEqual({ advancedBy: "r2", ...priorChain });
+            const echoed = refresh([
+               { ...ENTRY, seededBy: "forged", advances: [adv("a", "b")] },
+            ]);
+            expect(
+               ledgerExtensionKeys(echoed, undefined, undefined, undefined),
+            ).toBeUndefined();
          });
       });
 
-      it("returns a fresh object, so a value computed this run overrides a carried one", () => {
-         const r = refresh([{ ...ENTRY, parent: "g1", kept: true }]);
-         const extensions = carriedLedgerExtensions(r, undefined)!;
-         extensions.parent = "g2";
+      it("carries the echoed entry's unknown keys for the source's table", () => {
+         const r = refresh([{ ...ENTRY, future: "g1" }]);
          expect(
-            ledgerFields(lineage as never, bound as never, extensions),
+            ledgerExtensionKeys(r, undefined, undefined, undefined),
+         ).toEqual({
+            future: "g1",
+         });
+      });
+
+      it("amends the carried keys with the ones this run computes, never an echoed one", () => {
+         const echoed = {
+            ...ENTRY,
+            future: "g1",
+            advancedBy: "old-run",
+            parent: { sourceEntityId: "p", advancedBy: "old-run" },
+         };
+         const r = refresh([echoed]);
+         expect(
+            ledgerFields(
+               lineage as never,
+               bound as never,
+               ledgerExtensionKeys(r, undefined, "this-run", undefined),
+            ),
          ).toEqual({
             ledger: {
                ...ENTRY,
                coveredThrough: "2024-07-01",
-               parent: "g2",
-               kept: true,
+               future: "g1",
+               advancedBy: "this-run",
             },
          });
+         // A computed key the run has no value for is dropped, not carried.
+         expect(
+            ledgerExtensionKeys(r, undefined, undefined, undefined),
+         ).toEqual({
+            future: "g1",
+         });
          // The run's index is untouched, for any other reader.
-         expect(carriedLedgerExtensions(r, undefined)).toEqual({
-            parent: "g1",
-            kept: true,
+         expect(
+            [...(r.context.callerLedger?.values() ?? [])][0]?.extensions,
+         ).toEqual({
+            future: "g1",
+            advancedBy: "old-run",
+            parent: { sourceEntityId: "p", advancedBy: "old-run" },
          });
       });
 
       it("carries nothing for a reseed, a forced run, the local store, or another table", () => {
-         const echoed = [{ ...ENTRY, parent: "g1" }];
-         expect(carriedLedgerExtensions(refresh(echoed), true)).toBeUndefined();
+         const echoed = [{ ...ENTRY, future: "g1" }];
          expect(
-            carriedLedgerExtensions(refresh(echoed, true), undefined),
+            ledgerExtensionKeys(refresh(echoed), true, undefined, undefined),
          ).toBeUndefined();
          expect(
-            carriedLedgerExtensions(refresh(undefined), undefined),
-         ).toBeUndefined();
-         expect(
-            carriedLedgerExtensions(
-               refresh([{ ...echoed[0], physicalTableName: "other" }]),
+            ledgerExtensionKeys(
+               refresh(echoed, true),
+               undefined,
+               undefined,
                undefined,
             ),
          ).toBeUndefined();
-         expect(carriedLedgerExtensions(undefined, undefined)).toBeUndefined();
+         expect(
+            ledgerExtensionKeys(
+               refresh(undefined),
+               undefined,
+               undefined,
+               undefined,
+            ),
+         ).toBeUndefined();
+         expect(
+            ledgerExtensionKeys(
+               refresh([{ ...echoed[0], physicalTableName: "other" }]),
+               undefined,
+               undefined,
+               undefined,
+            ),
+         ).toBeUndefined();
+         expect(
+            ledgerExtensionKeys(undefined, undefined, undefined, undefined),
+         ).toBeUndefined();
       });
    });
 });

@@ -121,6 +121,12 @@ import { type DeploymentFacts, ServeVerdicts } from "./serve_verdicts";
 import { SourceMap } from "./text/source_map";
 import type { KeptTable } from "./domain/types";
 import type { LateRows } from "./domain/types";
+import type { LedgerParent } from "./run/incremental_apply";
+import {
+   boundParentReads,
+   incrementalEntriesOf,
+   type UnprovenGeneration,
+} from "./run/incremental_upstream";
 import { isRollupOrigin, originOfTable } from "./domain/table_plans";
 import { queryTimezoneOf } from "../governance/ir/compiled_model";
 import type {
@@ -296,6 +302,8 @@ export class PackageMaterialization {
     * shape. The database entries carry theirs on {@link databaseEntries}.
     */
    private storageLateRows: ReadonlyMap<string, LateRows> = new Map();
+   /** See {@link setUnprovenGenerations}. */
+   private unprovenGenerations: readonly UnprovenGeneration[] = [];
    /** {@link snapshot}, keyed on every fact it is made from. */
    private snapshotMemo:
       | { key: readonly unknown[]; snapshot: Snapshot; signature: string }
@@ -543,6 +551,27 @@ export class PackageMaterialization {
             (b.sourceIDs ?? []).includes(sourceID),
       );
       const entry = binding && this.storageEntries[binding.virtualHandle];
+      return entry ? parseContract(entry.contract) : undefined;
+   }
+
+   /**
+    * The column contract bound for the table of `sourceID`: in destination
+    * `storage` when given ({@link boundStorageContract}), else the database
+    * table the plan the bind is served under addresses it at; undefined when
+    * none is bound. What a plan judges an extension's build over a pair-table
+    * parent by (plan/build_plan.ts).
+    */
+   boundTableContract(
+      sourceID: string,
+      storage: string | undefined,
+   ): ColumnContract | undefined {
+      if (storage !== undefined) {
+         return this.boundStorageContract(sourceID, storage);
+      }
+      const address = (this.plan.servingPlan() ?? this.plan.buildPlan)
+         ?.sources?.[sourceID]?.sourceEntityId;
+      const entry =
+         address === undefined ? undefined : this.databaseEntries?.[address];
       return entry ? parseContract(entry.contract) : undefined;
    }
 
@@ -2009,6 +2038,38 @@ export class PackageMaterialization {
          if (entry.lateRows) bound.set(id, entry.lateRows);
       }
       return bound;
+   }
+
+   /** See incremental_upstream.ts, `boundParentReads`. */
+   boundParentReads(): ReadonlyMap<string, readonly LedgerParent[]> {
+      return boundParentReads([
+         ...Object.entries(this.storageEntries),
+         ...Object.entries(this.databaseEntries ?? {}),
+      ]);
+   }
+
+   /** See host.ts, `boundIncrementalEntries`. */
+   boundIncrementalEntries(): ReadonlyMap<
+      string,
+      Pick<ManifestEntry, "builtAt" | "ledger">
+   > {
+      return incrementalEntriesOf([
+         ...Object.entries(this.storageEntries),
+         ...Object.entries(this.databaseEntries ?? {}),
+      ]);
+   }
+
+   /** The extensions the newest run could not prove a parent build for. */
+   setUnprovenGenerations(list: readonly UnprovenGeneration[]): void {
+      this.unprovenGenerations = list;
+   }
+
+   /** See package_warnings.ts, `unprovenGenerationWarnings`. */
+   unprovenGenerationWarnings(): ApiPackageWarning[] {
+      return warnings.unprovenGenerationWarnings(
+         this.plan.buildPlan,
+         this.unprovenGenerations,
+      );
    }
 
    /** See package_warnings.ts, `lateRowWarnings`. */

@@ -747,7 +747,10 @@ describe("the storage tier's build carries an echoed ledger entry's unknown keys
                watermark: "order_month",
                strategy: "range_replace",
                sourceEntityId: "abcdef1234567890",
-               parent: { sourceEntityId: "up", coveredThrough: "2024-06-01" },
+               futureKey: {
+                  sourceEntityId: "up",
+                  coveredThrough: "2024-06-01",
+               },
             } as never,
          ]),
       } as unknown as IncrementalRunContext;
@@ -810,13 +813,13 @@ describe("the storage tier's build carries an echoed ledger entry's unknown keys
          physicalTableName: "monthly__mabc",
          storageDestinationName: "shared",
          coveredThrough: "2024-07-01",
-         parent: { sourceEntityId: "up", coveredThrough: "2024-06-01" },
+         futureKey: { sourceEntityId: "up", coveredThrough: "2024-06-01" },
       });
    });
 
    it("carries nothing from an entry a reseed ignores", async () => {
       const entry = await build(true);
       expect(entry.ledger?.coveredThrough).toBe("2024-07-01");
-      expect(entry.ledger).not.toHaveProperty("parent");
+      expect(entry.ledger).not.toHaveProperty("futureKey");
    });
 });

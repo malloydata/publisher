@@ -1185,6 +1185,8 @@ export class InstructedBuild {
          if (overStoredUpstreams) {
             assertPairLeafKeysOfUpstream(run, persistSource);
          }
+         // So does an extension table over a pair-table parent.
+         assertPairLeafKeysOfParent(run, persistSource);
 
          // An inlined join_one must match at most one row: checked on
          // the source's own connection before anything is written.
@@ -2448,6 +2450,64 @@ function assertPairLeafKeysOfUpstream(
 }
 
 /**
+ * Refuse an extension table whose parent is a pair table
+ * (`buildsOver.mode.pair`, read back with its join put back) unless the
+ * parent's current entry in the run records each leaf key check the re-root
+ * relies on as passed ({@link assertPairLeafKeysPassed}). A parent whose
+ * bound contract the plan found failing (`unusableUpstream`) is judged by it
+ * only when this run did not rebuild the parent's table: the extension is
+ * then refused (`upstream_table_unusable`), never attempted, so that table
+ * never fails it twice. A parent rebuilt in this run is judged by its fresh
+ * contract instead.
+ */
+function assertPairLeafKeysOfParent(
+   run: InstructedRun,
+   persistSource: PersistSource,
+): void {
+   const { compiled } = run;
+   const over =
+      compiled.tables[persistSource.sourceID]?.materialize?.buildsOver;
+   if (!over?.mode.pair) return;
+   const parent = compiled.tables[over.sourceID];
+   let entry: ManifestEntry | undefined;
+   if (parent) {
+      try {
+         entry =
+            run.entries[
+               computeSourceEntityId(
+                  parent.source,
+                  compiled.connectionDigests,
+                  parent.target,
+                  compiled.tableFolds,
+                  compiled.upstreamSchemas,
+               )
+            ];
+      } catch {
+         entry = undefined;
+      }
+   }
+   const table = compiled.tables[persistSource.sourceID];
+   if (
+      table?.unusableUpstream &&
+      table.unusableUnlessParentRebuilt &&
+      !(entry && run.builtAddresses.has(entry.sourceEntityId))
+   ) {
+      throw new MaterializationEligibilityError({
+         reason: "upstream_table_unusable",
+         message:
+            `'${persistSource.name}' is not built: ${table.unusableUpstream}; ` +
+            `a downstream is never built by recomputing its upstreams from raw`,
+      });
+   }
+   assertPairLeafKeysPassed(
+      persistSource.name,
+      over.sourceName,
+      over.mode.pair.leafKeys,
+      entry,
+   );
+}
+
+/**
  * The source a rollup builds from when this run holds its base's
  * table: the rollup compiled over that table (rollup_compile.ts), so its
  * build reads the table rather than the warehouse, through the build
@@ -2664,6 +2724,7 @@ function withBuiltProvenance(
             ? { storageDestinationName: read.storageDestinationName }
             : {}),
          ...(read.builtAt ? { builtAt: read.builtAt } : {}),
+         ...(read.ledger ? { coveredThrough: read.ledger.coveredThrough } : {}),
       });
    }
    const { builtFrom: _unset, ...rest } = entry;
