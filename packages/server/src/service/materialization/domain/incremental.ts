@@ -138,3 +138,12 @@ export interface PairDelta {
  * while the run that found them is bound.
  */
 export const INCREMENTAL_LATE_ROWS_CODE = "persist-incremental-late-rows";
+
+/**
+ * The code on the warning for an incremental source whose `merge_key=` a
+ * delta found repeated in the source's rows: its delta is rolled back and
+ * the source rebuilt in full (`merge_key_not_unique`), on every refresh whose
+ * delta repeats a key.
+ */
+export const INCREMENTAL_MERGE_KEY_NOT_UNIQUE_CODE =
+   "persist-incremental-merge-key-not-unique";

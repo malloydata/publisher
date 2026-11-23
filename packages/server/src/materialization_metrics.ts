@@ -111,6 +111,7 @@ export const INCREMENTAL_STEP_REASONS = [
    "plan_error",
    "chained_storage",
    "pair_parent_row",
+   "merge_key_not_unique",
    // Skips.
    "frontier_unreadable",
    "not_advanced",

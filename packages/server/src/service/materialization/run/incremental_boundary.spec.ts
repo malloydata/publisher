@@ -35,7 +35,10 @@ import {
 } from "./incremental_apply";
 import { durationSeconds } from "../domain/freshness";
 import type { BuildPlan } from "../domain/types";
-import { lateRowWarnings } from "../package_warnings";
+import {
+   lateRowWarnings,
+   mergeKeyNotUniqueWarnings,
+} from "../package_warnings";
 import { sessionRunner } from "./incremental_storage";
 import { watermarkTextSql, withStatementTimeout } from "./warehouse_sql";
 
@@ -755,5 +758,27 @@ describe("the late-row warning", () => {
       );
       expect(w.message).toContain('widen its lookback= (now "1 hour")');
       expect(w.message).toContain("#(materialize)");
+   });
+
+   it("names a merge key found not unique, and only that source", () => {
+      const [w, ...rest] = mergeKeyNotUniqueWarnings(
+         plan("persist", { refresh: "incremental", merge_key: "id" }),
+         new Set(["sid"]),
+      );
+      expect(rest).toEqual([]);
+      expect(w).toMatchObject({
+         code: "persist-incremental-merge-key-not-unique",
+         subject: "events",
+         model: "m.malloy",
+         severity: "warn",
+      });
+      expect(w.message).toContain('merge_key="id" is not unique');
+      expect(w.message).toContain("merge_key_not_unique");
+      expect(
+         mergeKeyNotUniqueWarnings(
+            plan("persist", { merge_key: "id" }),
+            new Set(["other"]),
+         ),
+      ).toEqual([]);
    });
 });

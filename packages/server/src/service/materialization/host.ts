@@ -86,6 +86,11 @@ interface MaterializationPackage extends BuildPlanPackage {
     */
    boundLateRows?(): ReadonlyMap<string, LateRows>;
    /**
+    * What a run's merge found of an incremental source's `merge_key=`, by
+    * content address: not unique, which the package warns of, or unique.
+    */
+   noteMergeKeyUniqueness?(sourceEntityId: string, unique: boolean): void;
+   /**
     * The physical names of the database tables this copy is bound to now,
     * as the bind wrote them (possibly quoted): a caller's drop refuses any of
     * them (Reclaimer.dropConnectionTable).

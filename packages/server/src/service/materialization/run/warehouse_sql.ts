@@ -878,6 +878,30 @@ export function transactsInScriptingBlock(dialect: string): boolean {
 }
 
 /**
+ * A condition true for a row where `failing` is false or NULL, which fails
+ * the statement with `message` (plain text, no quote) where `failing` is
+ * true. DuckDB and BigQuery raise it with their `error()`. Postgres and
+ * Snowflake have none, so the message is cast to an integer, which fails
+ * quoting it; the cast is of a CASE over a row's value, never a constant, so
+ * no planner raises it while planning.
+ */
+export function passesUnless(
+   dialect: string,
+   failing: string,
+   message: string,
+): string {
+   const text = `'${message}'`;
+   switch (registeredDialect(dialect)) {
+      case "duckdb":
+         return `(CASE WHEN ${failing} THEN error(${text}) END) IS NULL`;
+      case "standardsql":
+         return `(CASE WHEN ${failing} THEN ERROR(${text}) END) IS NULL`;
+      default:
+         return `CAST(CASE WHEN ${failing} THEN ${text} END AS INTEGER) IS NULL`;
+   }
+}
+
+/**
  * A delta's statements as one transaction: a Snowflake Scripting block on
  * Snowflake (one statement per call, each possibly on a different pooled
  * session), otherwise the statements between {@link transactionKeywords}'

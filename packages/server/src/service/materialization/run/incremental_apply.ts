@@ -32,6 +32,7 @@ import { foldedTablePathParts, quoteIdentifier } from "../../quoting";
 import {
    escapeSqlString,
    inOneTransaction,
+   passesUnless,
    probeSelect,
    serverVersionSql,
    targetColumnsProbeSql,
@@ -630,10 +631,63 @@ export function shapeMismatch(
 }
 
 /**
+ * `left.column` matches `right.column`, a NULL matching a NULL: with plain
+ * `=`, a NULL identity value never matches its own copy, so its row would be
+ * written again on every run as a silent duplicate. `column` is quoted.
+ */
+function nullSafeKeyMatch(left: string, right: string, column: string): string {
+   return (
+      `(${left}.${column} = ${right}.${column} OR ` +
+      `(${left}.${column} IS NULL AND ${right}.${column} IS NULL))`
+   );
+}
+
+/** The text a merge's key guard fails with; {@link isMergeKeyGuardFailure} reads it. */
+export const MERGE_KEY_GUARD_MESSAGE = "incremental-merge-key-not-unique";
+
+/** Whether an error is a merge's key guard failing (and the delta rolled back). */
+export function isMergeKeyGuardFailure(err: unknown): boolean {
+   return errMessage(err).includes(MERGE_KEY_GUARD_MESSAGE);
+}
+
+/**
+ * The merge's source, failing when it holds one identity (`matchNames`: the
+ * merge keys and any scope columns) more than once.
+ *
+ * A delta is the source's own rows in a range, so a key repeated there is
+ * repeated in the source: `merge_key=` is not unique in it, and no merge
+ * leaves the table equal to live. Postgres refuses to update one stored row
+ * twice; DuckDB updates it from either row, or inserts both when the key is
+ * new; keeping only the newest would drop a row live returns. So the delta
+ * fails and rolls back, and the source is rebuilt in full, which copies
+ * live's rows as they are (`merge_key_not_unique`, see applyIncrementalStep).
+ *
+ * A window over the read the merge already makes, so the guard costs no
+ * second read of the source and judges the rows the merge writes.
+ * `PARTITION BY` groups NULLs as equal: the relation of the merge's
+ * {@link nullSafeKeyMatch}.
+ */
+function mergeKeyGuard(
+   dialect: string,
+   deltaSQL: string,
+   matchNames: readonly string[],
+): string {
+   const partition = matchNames
+      .map((k) => quoteIdentifier(k, dialect))
+      .join(", ");
+   return (
+      `SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY ${partition}) ` +
+      `AS __merge_key_rows FROM (${deltaSQL}) AS __g) AS __k ` +
+      `WHERE ${passesUnless(dialect, "__merge_key_rows > 1", MERGE_KEY_GUARD_MESSAGE)}`
+   );
+}
+
+/**
  * The statements that apply one delta, in the order they must run.
  *
  *  - MERGE (merge_key= declared): match on the identity columns, update matches,
- *    insert the rest. Tolerates a row RESTATED with a new watermark value.
+ *    insert the rest. Tolerates a row RESTATED with a new watermark value. Its
+ *    source fails when it repeats an identity ({@link mergeKeyGuard}).
  *
  *  - RANGE REPLACE (no merge_key=): delete the watermark range, then insert.
  *    Correct when a row's watermark never changes.
@@ -710,20 +764,15 @@ export function deltaStatements(params: {
          ...(params.scopeColumns ?? []).filter((c) => !mergeKeys.includes(c)),
       ];
       const keys = new Set(mergeKeys);
-      // NULL-safe: with plain `=`, a NULL identity column never matches its own
-      // copy, so the row would be re-inserted every run as a silent duplicate.
       const on = matchNames
-         .map(
-            (k) =>
-               `(__t.${q(k)} = __s.${q(k)} OR (__t.${q(k)} IS NULL AND __s.${q(k)} IS NULL))`,
-         )
+         .map((k) => nullSafeKeyMatch("__t", "__s", q(k)))
          .join(" AND ");
       const updates = columns
          .filter((c) => !keys.has(c))
          .map((c) => `${q(c)} = __s.${q(c)}`);
       const clauses = [
          `MERGE INTO ${quotedTablePath} AS __t`,
-         `USING (${deltaSQL}) AS __s`,
+         `USING (${mergeKeyGuard(dialect, deltaSQL, matchNames)}) AS __s`,
          `ON ${on}`,
       ];
       // When every column is an identity column there is nothing to SET, and an
@@ -815,7 +864,7 @@ export function pairDeltaStatements(params: {
       transaction.begin,
       `DELETE FROM ${quotedTablePath} AS __t WHERE EXISTS (` +
          `SELECT 1 FROM ${staged} AS __s WHERE ` +
-         `(__t.${key} = __s.${key} OR (__t.${key} IS NULL AND __s.${key} IS NULL)))`,
+         `${nullSafeKeyMatch("__t", "__s", key)})`,
       `INSERT INTO ${quotedTablePath} (${columnList}) ` +
          `SELECT ${columnList} FROM ${staged}`,
       ...(params.windowDeletes ?? []).map(
@@ -1550,6 +1599,37 @@ export async function seedCoveredThrough(
       : frontier;
 }
 
+/**
+ * Whether a table a full rebuild just wrote holds one identity (`matchNames`,
+ * stored column names: the merge keys and any scope columns) on more than one
+ * row, NULLs grouped as equal as the merge matches them. Such a table equals
+ * live, but a later delta that reads the key once would match every stored
+ * copy and rewrite them all as that one row, so no boundary is recorded and
+ * the source is rebuilt in full until the key is unique (advanceLedgerAfterSeed).
+ */
+export async function probeRepeatedKey(
+   runner: SqlRunner,
+   dialect: string,
+   quotedTablePath: string,
+   matchNames: readonly string[],
+): Promise<{ repeated: boolean; error?: string; errorCode?: string }> {
+   const keys = matchNames.map((k) => quoteIdentifier(k, dialect)).join(", ");
+   const sql = probeSelect(
+      dialect,
+      `SELECT 1 AS ${probeAlias("repeated", dialect)} FROM ${quotedTablePath} ` +
+         `GROUP BY ${keys} HAVING COUNT(*) > 1 LIMIT 1`,
+   );
+   try {
+      return { repeated: probeRows((await runner(sql)).rows).length > 0 };
+   } catch (err) {
+      return {
+         repeated: false,
+         error: errMessage(err),
+         errorCode: errorCodeOf(err),
+      };
+   }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Late rows: rows the source holds below a delta's lower bound that the stored
 // table lacks. A delta never reads below that bound, so such a row (stamped
@@ -1606,11 +1686,7 @@ export function lateRowsSql(params: {
       `__t.${w} = __s.${w}`,
       ...matchColumns
          .filter((c) => c !== params.watermark)
-         .map(
-            (c) =>
-               `(__t.${q(c)} = __s.${q(c)} OR ` +
-               `(__t.${q(c)} IS NULL AND __s.${q(c)} IS NULL))`,
-         ),
+         .map((c) => nullSafeKeyMatch("__t", "__s", q(c))),
    ].join(" AND ");
    return probeSelect(
       dialect,

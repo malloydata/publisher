@@ -29,6 +29,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import {
    applyDeltaScript,
    deltaStatements,
+   isMergeKeyGuardFailure,
 } from "./materialization/run/incremental_apply";
 
 let duckdb: DuckDBConnection;
@@ -262,3 +263,93 @@ describe("merge (merge_key= declared)", () => {
       ]);
    });
 });
+
+describe.each(["postgres", "duckdb"])(
+   "merge of a delta that repeats a merge key, %s spelling",
+   (dialect) => {
+      /** The merge's error, or undefined when it committed. */
+      async function failure(
+         name: string,
+         rows: [number | null, string, number][],
+      ): Promise<unknown> {
+         const statements = deltaStatements({
+            dialect,
+            quotedTablePath: `"${name}"`,
+            deltaSQL: rows
+               .map(
+                  ([id, date, revenue]) =>
+                     `SELECT CAST(${id ?? "NULL"} AS INTEGER) AS "order_id", ` +
+                     `DATE '${date}' AS "order_date", ${revenue} AS "revenue"`,
+               )
+               .join(" UNION ALL "),
+            columns: COLUMNS,
+            mergeKeys: ["order_id"],
+            watermarkName: "order_date",
+            start: { malloyType: "date", value: "2024-06-01" },
+            end: { malloyType: "date", value: "2024-07-01" },
+         });
+         try {
+            await applyDeltaScript(runner, dialect, statements);
+            return undefined;
+         } catch (err) {
+            return err;
+         }
+      }
+
+      // Each case leaves the table as it was: the delta is rolled back, and
+      // the source is rebuilt in full (incremental_reasons.spec.ts), where a
+      // merge would have stored one of the two rows, or both.
+      it.each([
+         [
+            "a stored key, at two watermarks",
+            [
+               [1, "2024-06-02", 11],
+               [1, "2024-06-03", 12],
+            ],
+         ],
+         [
+            "a new key, at two watermarks",
+            [
+               [2, "2024-06-02", 21],
+               [2, "2024-06-03", 22],
+            ],
+         ],
+         [
+            "a key at one watermark twice (a tie)",
+            [
+               [1, "2024-06-02", 11],
+               [1, "2024-06-02", 12],
+            ],
+         ],
+         [
+            "a NULL key twice, as the merge matches NULL to NULL",
+            [
+               [null, "2024-06-02", 31],
+               [null, "2024-06-03", 32],
+            ],
+         ],
+      ] as [string, [number | null, string, number][]][])(
+         "fails on %s, and leaves the table as it was",
+         async (_label, rows) => {
+            const name = await seed([[1, "2024-06-01", 10]]);
+            const err = await failure(name, rows);
+            expect(isMergeKeyGuardFailure(err)).toBe(true);
+            expect(await contents(name)).toEqual(["1|2024-06-01|10"]);
+         },
+      );
+
+      it("merges a NULL key beside a non-NULL one: they are distinct keys", async () => {
+         const name = await seed([[1, "2024-06-01", 10]]);
+         expect(
+            await failure(name, [
+               [null, "2024-06-02", 31],
+               [1, "2024-06-03", 12],
+            ]),
+         ).toBeUndefined();
+         expect(await contents(name)).toEqual([
+            "1|2024-06-03|12",
+            "null|2024-06-02|31",
+         ]);
+      });
+   },
+);

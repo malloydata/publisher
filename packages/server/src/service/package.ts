@@ -1743,6 +1743,17 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
+    * The host port's `noteMergeKeyUniqueness`: what a run's merge found of a
+    * source's `merge_key=` (see PackageMaterialization.noteMergeKeyUniqueness).
+    */
+   public noteMergeKeyUniqueness(
+      sourceEntityId: string,
+      unique: boolean,
+   ): void {
+      this.mz.noteMergeKeyUniqueness(sourceEntityId, unique);
+   }
+
+   /**
     * The host port's `setKeptTables`: the tables the newest auto-run lists as
     * kept after a rename (see PackageMaterialization.setKeptTables).
     */
@@ -2210,6 +2221,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.mz.servedCopyWarnings(),
          ...this.mz.repeatedJoinOneKeyWarnings(),
          ...this.mz.lateRowWarnings(),
+         ...this.mz.mergeKeyNotUniqueWarnings(),
          ...this.mz.keptTableWarnings(),
          ...this.mz.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),

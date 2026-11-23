@@ -1129,6 +1129,8 @@ export class MaterializationService {
          // a delta or skip carries it until a rebuild.
          if (incremental) {
             incremental.priorLateRows = pkg.boundLateRows?.();
+            incremental.noteMergeKeyUniqueness = (sourceEntityId, unique) =>
+               pkg.noteMergeKeyUniqueness?.(sourceEntityId, unique);
          }
 
          const derived = await this.deriveRunInstructions(

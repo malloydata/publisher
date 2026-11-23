@@ -206,6 +206,12 @@ export class PackageMaterialization {
     */
    private keptTables: readonly KeptTable[] = [];
    /**
+    * The incremental sources, by content address, whose `merge_key=` a run's
+    * merge found repeated in their rows and no later delta has found unique
+    * (see noteMergeKeyUniqueness).
+    */
+   private mergeKeysNotUnique = new Set<string>();
+   /**
     * The same entries as table names only, the manifest models hydrate with
     * and /compile reads. Surfaced on /status so the control plane can confirm
     * a worker bound it.
@@ -1841,6 +1847,24 @@ export class PackageMaterialization {
 
    keptTableWarnings(): ApiPackageWarning[] {
       return warnings.keptTableWarnings(this.plan.buildPlan, this.keptTables);
+   }
+
+   /**
+    * What a run's merge found of a source's `merge_key=`: not unique (its
+    * delta was rolled back and the source rebuilt in full), or unique (a
+    * delta committed), which clears the warning.
+    */
+   noteMergeKeyUniqueness(sourceEntityId: string, unique: boolean): void {
+      if (unique) this.mergeKeysNotUnique.delete(sourceEntityId);
+      else this.mergeKeysNotUnique.add(sourceEntityId);
+   }
+
+   /** See package_warnings.ts, `mergeKeyNotUniqueWarnings`. */
+   mergeKeyNotUniqueWarnings(): ApiPackageWarning[] {
+      return warnings.mergeKeyNotUniqueWarnings(
+         this.plan.buildPlan,
+         this.mergeKeysNotUnique,
+      );
    }
 
    /**

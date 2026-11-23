@@ -11,12 +11,14 @@ import {
 } from "../../../test_helpers/metrics_harness";
 import type { IncrementalDeclaration } from "../domain/incremental";
 import {
+   MERGE_KEY_GUARD_MESSAGE,
    PAIR_GUARD_MESSAGE,
    warehouseDeltaTarget,
    type DeltaTarget,
    type SqlRunner,
 } from "./incremental_apply";
 import {
+   advanceLedgerAfterSeed,
    applyIncrementalStep,
    planSourceRefresh,
    type IncrementalRunContext,
@@ -311,6 +313,114 @@ describe("incremental refresh fallback reasons", () => {
       expect(applied).toEqual({ applied: false });
       expect(await counted("seed", "pair_parent_row")).toBe(1);
    });
+
+   it("rebuilds with merge_key_not_unique when a merge's delta repeats a key, and tells the package", async () => {
+      const merge = {
+         ...LINEAGE,
+         mergeKeys: ["id"],
+         strategy: "merge",
+      } as unknown as typeof LINEAGE;
+      const noted: [string, boolean][] = [];
+      const step = {
+         mode: "delta",
+         start: { malloyType: "date", value: "2024-06-01" },
+         end: { malloyType: "date", value: "2024-07-01" },
+         coveredThrough: { malloyType: "date", value: "2024-07-01" },
+         statements: ["MERGE INTO t USING s ON true"],
+      } as never;
+      const withNotes = {
+         ...context(),
+         noteMergeKeyUniqueness: (id: string, unique: boolean) =>
+            noted.push([id, unique]),
+      };
+      const applied = await applyIncrementalStep({
+         context: withNotes,
+         lineage: merge,
+         step,
+         target: {
+            ...target(merge),
+            runner: async () => {
+               throw new Error(
+                  `invalid input syntax for type integer: "${MERGE_KEY_GUARD_MESSAGE}"`,
+               );
+            },
+         },
+         sourceName: "daily",
+      });
+      expect(applied).toEqual({ applied: false });
+      expect(await counted("seed", "merge_key_not_unique")).toBe(1);
+      expect(noted).toEqual([["sid", false]]);
+      const logged = warn
+         .getCalls()
+         .find(
+            (c) =>
+               (c.args[1] as { code?: string })?.code ===
+               "persist-incremental-merge-key-not-unique",
+         );
+      expect(logged?.args[1]).toMatchObject({
+         sourceName: "daily",
+         mergeKeys: ["id"],
+      });
+
+      // A delta that commits finds the key unique, which clears the warning.
+      await applyIncrementalStep({
+         context: withNotes,
+         lineage: merge,
+         step,
+         target: { ...target(merge), runner: async () => ({ rows: [] }) },
+         sourceName: "daily",
+      });
+      expect(noted).toEqual([
+         ["sid", false],
+         ["sid", true],
+      ]);
+   });
+
+   it.each([
+      ["repeats a key", [{ repeated: 1 }], false],
+      ["holds each key once", [], true],
+   ] as const)(
+      "records a merge source's boundary after a rebuild only when the table holds each key once: %s",
+      async (_label, repeatedRows, unique) => {
+         const merge = {
+            ...LINEAGE,
+            mergeKeys: ["id"],
+            scopeColumns: ["org"],
+            strategy: "merge",
+         } as unknown as typeof LINEAGE;
+         const noted: [string, boolean][] = [];
+         const upserted: unknown[] = [];
+         const probes: string[] = [];
+         const bound = await advanceLedgerAfterSeed({
+            context: {
+               ...context({
+                  upsertIncrementalLedgerEntry: async (e: unknown) => {
+                     upserted.push(e);
+                     return e as never;
+                  },
+               }),
+               noteMergeKeyUniqueness: (id: string, u: boolean) =>
+                  noted.push([id, u]),
+            },
+            lineage: merge,
+            quotedTablePath: `"analytics"."daily"`,
+            dialect: "postgres",
+            runner: async (sql) => {
+               probes.push(sql);
+               if (sql.includes("HAVING COUNT(*) > 1")) {
+                  return { rows: [...repeatedRows] };
+               }
+               return { rows: [{ watermark_max: "2024-06-30" }] };
+            },
+         });
+         expect(probes[0]).toContain(
+            'GROUP BY "id", "org" HAVING COUNT(*) > 1',
+         );
+         expect(noted).toEqual([["sid", unique]]);
+         expect(bound === undefined).toBe(!unique);
+         expect(upserted.length).toBe(unique ? 1 : 0);
+      },
+   );
 
    it("fails, rather than rebuilding, when a pair delta fails for any other reason", async () => {
       const pair = {
