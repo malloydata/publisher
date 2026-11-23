@@ -399,6 +399,17 @@ export async function withDestinationSession<T>(
        * bind's read of its tables). Never with `build`.
        */
       readOnly?: boolean;
+      /**
+       * Other destinations attached read-only beside this one, before the
+       * session is confined, each under its own name: a build that reads a
+       * table in another destination. Never written: their attach is
+       * read-only, and the confinement allows only their own paths besides
+       * this destination's.
+       */
+      alsoRead?: readonly {
+         destinationName: string;
+         destinationConnection: ApiConnection;
+      }[];
    },
    fn: (session: DuckDBConnection) => Promise<T>,
 ): Promise<T> {
@@ -452,13 +463,34 @@ export async function withDestinationSession<T>(
          // before the session is locked, whoever locks it.
          createLocalDataPaths(session, destinationAllowlist(destination));
       }
-      if (options.lockdown !== "caller") {
-         // Setup done (the destination attached): confine the session to it
-         // (duckdb_lockdown.ts) before any of its work runs.
-         await lockDownDestinationSession(
-            session,
-            destinationAllowlist(destination),
+      const others = options.alsoRead ?? [];
+      for (const other of others) {
+         assertSupportedDestination(
+            other.destinationName,
+            other.destinationConnection,
          );
+         await attachDestinationReadOnly(
+            session,
+            {
+               alias: other.destinationName,
+               destinationName: other.destinationName,
+            },
+            other.destinationConnection,
+            environmentPath,
+         );
+      }
+      if (options.lockdown !== "caller") {
+         // Setup done (the destinations attached): confine the session to
+         // them (duckdb_lockdown.ts) before any of its work runs.
+         await lockDownDestinationSession(session, [
+            ...destinationAllowlist(destination),
+            ...others.flatMap((other) =>
+               destinationAllowlist({
+                  destinationConnection: other.destinationConnection,
+                  environmentPath,
+               }),
+            ),
+         ]);
       }
       return fn(session);
    }
@@ -1323,6 +1355,14 @@ export async function buildDownstreamIntoStorage(params: {
    environmentPath: string;
    /** See StorageBuildRequest.replacesView. */
    replacesView?: string[];
+   /**
+    * Other destinations the build reads (an extension's parent in another
+    * destination), each attached read-only under its own name.
+    */
+   readOnly?: readonly {
+      destinationName: string;
+      destinationConnection: ApiConnection;
+   }[];
 }): Promise<StorageBuildResult> {
    const {
       destinationName,
@@ -1335,7 +1375,11 @@ export async function buildDownstreamIntoStorage(params: {
 
    return withDestinationSession(
       { destinationName, destinationConnection, environmentPath },
-      { purpose: "build", build: true },
+      {
+         purpose: "build",
+         build: true,
+         ...(params.readOnly ? { alsoRead: params.readOnly } : {}),
+      },
       async (session) => {
          const connectionName = params.connectionName ?? destinationName;
          const { sql, downstream } = await planChainedDownstream({

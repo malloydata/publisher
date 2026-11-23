@@ -1263,10 +1263,16 @@ async function copiedPlan(
          "declared in a file its build copy cannot re-root it in",
       );
    }
-   // A `storage=` pair also carries what its build compiles in the
-   // destination over the parent's stored table, lifted as its build copy
-   // is; without it, the raw chain.
-   if (plan.buildsOver && parent && plan.persist.storage !== undefined) {
+   // A `storage=` extension of a stored parent also carries what its build
+   // compiles in the destination over the parent's stored table, lifted as
+   // its build copy is. One of a database parent builds in the warehouse
+   // over the parent's table, as a database extension does, and is copied in.
+   if (
+      plan.buildsOver &&
+      parent &&
+      plan.persist.storage !== undefined &&
+      plan.buildsOver.mode.tier !== "storage_over_database"
+   ) {
       const overStored =
          foreign && !foreign.carriesAlike
             ? undefined

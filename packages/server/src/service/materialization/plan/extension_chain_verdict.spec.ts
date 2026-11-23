@@ -157,6 +157,20 @@ describe("chainVerdict", () => {
       ).toEqual({ link: { tier: "same" } });
    });
 
+   it("links a storage= extension of a database parent, or of a parent in another destination", () => {
+      expect(
+         chainVerdict({ ...ext, persist: { storage: "lake" } }, parent),
+      ).toEqual({ link: { tier: "storage_over_database" } });
+      expect(
+         chainVerdict(
+            { ...ext, persist: { storage: "other" } },
+            { ...parent, persist: { storage: "lake" } },
+         ),
+      ).toEqual({
+         link: { tier: "across_destinations", parentDestination: "lake" },
+      });
+   });
+
    it("refuses, with why, a database extension of a storage= parent", () => {
       const verdict = chainVerdict(ext, {
          ...parent,

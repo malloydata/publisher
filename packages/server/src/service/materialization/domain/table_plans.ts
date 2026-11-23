@@ -426,6 +426,11 @@ export interface ChainMode {
     *    destination, attached read-only in the extension's build session.
     */
    tier: "same" | "storage_over_database" | "across_destinations";
+   /**
+    * With `across_destinations`: the `storage=` destination the parent's
+    * table is in, which the build attaches read-only beside its own.
+    */
+   parentDestination?: string;
 }
 
 /** The parent an extension table builds over. */

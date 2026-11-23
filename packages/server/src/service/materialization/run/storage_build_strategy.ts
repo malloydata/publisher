@@ -1488,18 +1488,25 @@ export class StorageBuildStrategy
       const { plan, parent, chain } = extension;
       const address = planFacts.addressBySourceId[parent.sourceID];
       const entry = address === undefined ? undefined : builtEntries[address];
+      // The destination the parent's table is in: this build's own, or,
+      // for a parent in another destination, that one, attached read-only.
+      const parentDestination =
+         parent.mode.tier === "across_destinations"
+            ? parent.mode.parentDestination
+            : destinationName;
       if (
          address === undefined ||
          entry === undefined ||
+         parentDestination === undefined ||
          !upstreamEntryIsCurrent(address, entry, planFacts) ||
-         entry.storageDestinationName !== destinationName ||
+         entry.storageDestinationName !== parentDestination ||
          !entry.schema?.length
       ) {
          const detail = upstreamPlacement(
             parent.sourceName,
             address,
             entry,
-            destinationName,
+            parentDestination ?? destinationName,
             planFacts,
          );
          throw new ChainedUpstreamMissingError(
@@ -1510,16 +1517,20 @@ export class StorageBuildStrategy
             [{ name: parent.sourceName, detail }],
          );
       }
+      const parentConnection =
+         parentDestination === destinationName
+            ? destinationConnection
+            : environment.getStorageDestination(parentDestination);
       const binding: Binding = {
          kind: "persist",
          tier: "storage",
          sourceName: chain.parentBuildSourceName,
-         destinationName,
+         destinationName: parentDestination,
          virtualHandle: address,
          tablePath: storageTablePath(
-            destinationName,
+            parentDestination,
             entry.physicalTableName,
-            destinationSchemaOf(destinationConnection),
+            destinationSchemaOf(parentConnection),
          ),
          schema: entry.schema
             .filter((c) => c.name && c.type)
@@ -1567,6 +1578,16 @@ export class StorageBuildStrategy
                physicalTableName,
                environmentPath: environment.getEnvironmentPath(),
                ...(replacesView ? { replacesView } : {}),
+               ...(parentDestination !== destinationName
+                  ? {
+                       readOnly: [
+                          {
+                             destinationName: parentDestination,
+                             destinationConnection: parentConnection,
+                          },
+                       ],
+                    }
+                  : {}),
             }),
          );
       } catch (err) {

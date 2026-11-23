@@ -2617,6 +2617,15 @@ function refuseAcrossPlacements<
          for (const upstreamID of reads) {
             const upstream = compiled.tables[upstreamID];
             if (!upstream) continue;
+            // An extension table reads its parent in another destination
+            // with that destination attached read-only (its plan's mode).
+            const over = table.materialize?.buildsOver;
+            if (
+               over?.mode.tier === "across_destinations" &&
+               over.sourceID === upstreamID
+            ) {
+               continue;
+            }
             const why = placementReason(placed, {
                name: upstream.source.name,
                storage: declaredStorage(upstream.source)?.trim() || undefined,

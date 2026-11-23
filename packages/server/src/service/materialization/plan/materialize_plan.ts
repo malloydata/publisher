@@ -2164,7 +2164,17 @@ export function chainVerdict(
 
 /**
  * Where the parent's table is, seen from the extension's build, or why the
- * extension cannot read it there.
+ * extension cannot read it there:
+ *
+ *  - one tier: the build reads the parent's table where both are;
+ *  - a `storage=` extension of a database parent: its build runs in the
+ *    warehouse over the parent's table, as any `storage=` build reads a
+ *    database upstream, and is copied into its destination;
+ *  - a `storage=` extension of a parent in another destination: its build
+ *    runs in its own destination's session with the parent's destination
+ *    attached read-only, both DuckDB;
+ *  - a database extension of a `storage=` parent: refused, since a warehouse
+ *    cannot read a destination and nothing copies a stored table back.
  */
 function chainTiers(
    plan: MaterializePlan,
@@ -2173,16 +2183,17 @@ function chainTiers(
    const own = plan.persist.storage;
    const theirs = parent.persist.storage;
    if (own === theirs) return { link: { tier: "same" } };
-   // TODO(extension chains, case 1: tiers and destinations).
+   if (theirs === undefined) return { link: { tier: "storage_over_database" } };
+   if (own !== undefined) {
+      return {
+         link: { tier: "across_destinations", parentDestination: theirs },
+      };
+   }
    return {
       refuse:
-         theirs === undefined
-            ? `whose database table its build in destination '${own}' does not read yet`
-            : own === undefined
-              ? `whose table is in storage destination '${theirs}', which a ` +
-                `database build cannot read`
-              : `whose table is in storage destination '${theirs}', which its ` +
-                `build in destination '${own}' does not read yet`,
+         `whose table is in storage destination '${theirs}', which a ` +
+         `database build cannot read (declare the extension with ` +
+         `storage=, or its parent without it)`,
    };
 }
 

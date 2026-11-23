@@ -112,7 +112,7 @@ source: orders is orders_raw extend {
    );
 
    it(
-      "refuses an extension in another destination than its parent and an incremental one, and chains one in another file over its parent's build source",
+      "chains an extension in another destination than its parent, refuses an incremental one, and chains one in another file over its parent's build source",
       async () => {
          const c = await compiled({
             "m.malloy": `${BASE}
@@ -133,19 +133,21 @@ source: other_ext is orders extend { dimension: n is 1 }
          for (const p of generatedPlans(c)) {
             expect([p.sourceName, p.buildsOver?.sourceName]).toEqual([
                p.sourceName,
-               p.sourceName === "other_ext" ? "orders" : undefined,
+               p.sourceName === "orders" ? undefined : "orders",
             ]);
          }
+         // Read with the parent's destination attached beside its own.
+         expect(
+            generatedPlans(c).find((p) => p.sourceName === "stored_ext")
+               ?.buildsOver?.mode,
+         ).toEqual({ tier: "across_destinations", parentDestination: "lake" });
          // Never over the raw chain: refused at plan.
          expect(
             (c.annotationFindings ?? [])
                .filter((f) => f.code === "materialize-not-built")
                .map((f) => [f.subject, f.refused?.reason])
                .sort(),
-         ).toEqual([
-            ["inc_ext", "upstream_table_unusable"],
-            ["stored_ext", "upstream_table_unusable"],
-         ]);
+         ).toEqual([["inc_ext", "upstream_table_unusable"]]);
          // Across files (P10): imported from a copy of `m.malloy` with the
          // parent re-rooted on its build source.
          const other = generatedPlans(c).find(
@@ -159,7 +161,7 @@ source: other_ext is orders extend { dimension: n is 1 }
             generatedPlans(c)
                .map((p) => p.sourceName)
                .sort(),
-         ).toEqual(["orders", "other_ext"]);
+         ).toEqual(["orders", "other_ext", "stored_ext"]);
       },
       { timeout: 30000 },
    );
@@ -614,7 +616,7 @@ source: orders is orders_raw
    );
 
    it(
-      "chains a database extension over its database parent, and never builds a storage= extension of a database parent over the raw chain (P10, phase 3 pull request 6)",
+      "chains a database extension over its database parent, and a storage= extension of a database parent over its table in the warehouse (P10, phase 3 pull request 6)",
       async () => {
          const c = await compiled(`${BASE}
 #(materialize)
@@ -637,12 +639,19 @@ source: stored_ext is orders extend { dimension: east is region = 'east' }
             // Database: its build reads the parent's build source in the
             // warehouse, so nothing is compiled over a stored table.
             ["orders_ext", "orders", true],
+            // Built in the warehouse over the parent's table too, then copied
+            // into its destination.
+            ["stored_ext", "orders", true],
          ]);
          expect(
-            (c.annotationFindings ?? [])
-               .filter((f) => f.code === "materialize-not-built")
-               .map((f) => [f.subject, f.refused?.reason]),
-         ).toEqual([["stored_ext", "upstream_table_unusable"]]);
+            generatedPlans(c).find((p) => p.sourceName === "stored_ext")
+               ?.buildsOver?.mode,
+         ).toEqual({ tier: "storage_over_database" });
+         expect(
+            (c.annotationFindings ?? []).filter(
+               (f) => f.code === "materialize-not-built",
+            ),
+         ).toEqual([]);
       },
       { timeout: 30000 },
    );

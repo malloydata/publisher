@@ -892,7 +892,7 @@ export async function buildSource(
                : undefined,
          ),
       });
-      return built;
+      return withExtensionReuse(built, planFacts, persistSource.sourceID);
    }
 
    // Incremental refresh: a source with `refresh="incremental"` and a usable
@@ -936,7 +936,7 @@ export async function buildSource(
  * text names the parent, not its generated build source, so the manifest
  * walk that labels other builds does not see it.
  */
-export function withExtensionReuse(
+function withExtensionReuse(
    entry: ManifestEntry,
    planFacts: ChainedPlanFacts,
    sourceID: string,
