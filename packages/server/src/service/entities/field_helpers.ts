@@ -4,7 +4,8 @@
 import type { Entity, JoinSourceMetadata } from "./internal_types";
 import { isOnRoute } from "../annotation_reader";
 import { AccessModifierEnum, EntityTypeEnum } from "./internal_types";
-import { extractCodeFromEntity } from "./model_text";
+import { extractCodeFromEntity, modelTextBetween } from "./model_text";
+import { stripMalloyCommentsAndLiterals } from "../malloy_lexer_core";
 import { motlyTag } from "../motly";
 import type {
    AtomicField,
@@ -230,27 +231,38 @@ interface MalloyNote {
    at?: MalloyDocLocation;
 }
 
-/** Whether `a` comes before `b` (or is `b`, with `orAt`); false when either has no line. */
-const before = (a: Position, b: Position, orAt = false): boolean => {
-   if (a.line === undefined || b.line === undefined) return false;
-   if (a.line !== b.line) return a.line < b.line;
-   const [ac, bc] = [a.character ?? 0, b.character ?? 0];
-   return orAt ? ac <= bc : ac < bc;
-};
+/** The keyword a definition's own notes may sit above, with its access label. */
+const STATEMENT_LEAD =
+   /^\s*(?:(?:public|private|internal)\s+)?(?:source|join_one|join_many|join_cross)\s*:\s*$/;
 
-/** Where each named source and query of the explore's model is declared, when it carries its model. */
-const declarationLocations = (
-   explore: Explore,
-): MalloyDocLocation[] | undefined => {
-   const contents = (
-      explore as unknown as {
-         _modelDef?: { contents?: Record<string, { location?: unknown }> };
-      }
-   )._modelDef?.contents;
-   if (!contents) return undefined;
-   return Object.values(contents).flatMap((o) =>
-      o.location ? [o.location as MalloyDocLocation] : [],
+/**
+ * Whether only comments, other annotations and the statement's keyword lie
+ * between `note` and the definition at `start`, read from the text the model
+ * compiled from: then Malloy attached it there. False when that text can't
+ * be read.
+ */
+const tagsDefinitionAt = (
+   note: MalloyNote,
+   url: string,
+   start: Position,
+): boolean => {
+   const end = note.at?.range?.end;
+   if (
+      end?.line === undefined ||
+      end.character === undefined ||
+      start.line === undefined ||
+      start.character === undefined
+   ) {
+      return false;
+   }
+   const between = modelTextBetween(
+      url,
+      { line: end.line, character: end.character },
+      { line: start.line, character: start.character },
    );
+   if (between === undefined) return false;
+   const code = stripMalloyCommentsAndLiterals(between);
+   return code.trim() === "" || STATEMENT_LEAD.test(code);
 };
 
 /**
@@ -279,9 +291,10 @@ const declarationLocations = (
  * points back at the base's declaration, which lives elsewhere. We keep
  * the notes whose lines run contiguously into this explore's declaration
  * (which also covers a note on a statement defining several sources), and
- * any note above it with no other named declaration in between: a base is
- * always declared between its notes and the child, so a blank line or a
- * comment between a source and its own notes doesn't lose them.
+ * any note with only comments, other annotations and its keyword between it
+ * and the declaration in the text the model compiled from. A copied note has
+ * its base's declaration in between, wherever that base was imported from.
+ * Without that text (a model compiled from a string), only contiguity holds.
  */
 export const getDirectTaglines = (explore: Explore): string[] => {
    const annotation = (
@@ -298,11 +311,7 @@ export const getDirectTaglines = (explore: Explore): string[] => {
    ];
 
    const exploreLoc = (explore as { location?: MalloyDocLocation }).location;
-   const directNotes = filterDirectlyDeclaredNotes(
-      notes,
-      exploreLoc,
-      declarationLocations(explore),
-   );
+   const directNotes = filterDirectlyDeclaredNotes(notes, exploreLoc);
 
    return directNotes
       .map((n) => n.text)
@@ -365,7 +374,6 @@ const noteLineRange = (
 const filterDirectlyDeclaredNotes = (
    notes: MalloyNote[],
    exploreLoc: MalloyDocLocation | undefined,
-   declarations?: readonly MalloyDocLocation[],
 ): MalloyNote[] => {
    const srcStart = exploreLoc?.range?.start?.line;
    const srcEnd = exploreLoc?.range?.end?.line ?? srcStart;
@@ -423,19 +431,15 @@ const filterDirectlyDeclaredNotes = (
       line = topmost - 1;
    }
 
-   // A note above the source with no other named declaration between them is
-   // its own, past a blank line or a comment: one copied from a base sits
-   // above that base, which is declared in between.
+   // Past a blank line or a comment, a note is its own when nothing but
+   // trivia and the keyword lie between them; one copied from a base has the
+   // base's declaration in between.
    const start = exploreLoc?.range?.start;
-   if (declarations && start) {
-      const between = declarations
-         .filter((d) => d.url === exploreUrl)
-         .map((d) => d.range?.start)
-         .filter((s): s is Position => !!s && before(s, start));
+   if (exploreUrl && start) {
       for (const note of sameFileNotes) {
-         const end = note.at?.range?.end;
-         if (direct.has(note) || !end || !before(end, start, true)) continue;
-         if (!between.some((s) => before(end, s, true))) direct.add(note);
+         if (!direct.has(note) && tagsDefinitionAt(note, exploreUrl, start)) {
+            direct.add(note);
+         }
       }
    }
 

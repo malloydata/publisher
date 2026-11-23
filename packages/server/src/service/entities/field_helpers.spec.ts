@@ -21,6 +21,7 @@ import {
    isMalloyDefined,
    parseDocAnnotation,
 } from "./field_helpers";
+import { withModelTextCache } from "./model_text";
 
 // Build a minimal Field whose location.range spans the whole docString.
 // Using an `internal.malloy` URL means extractCodeFromEntity reads from
@@ -397,19 +398,40 @@ source: nums is duckdb.table('t') extend {
 });
 
 describe("getDirectTaglines (compile-backed)", () => {
-   async function direct(model: string): Promise<Record<string, string[]>> {
+   /** Each source's direct taglines, read as package load reads them: from `file:` models with their texts. */
+   async function direct(
+      model: string,
+      others: Record<string, string> = {},
+   ): Promise<Record<string, string[]>> {
+      const files = { "main.malloy": model, ...others };
       const conn = new DuckDBConnection("duckdb");
       try {
          const runtime = new Runtime({
-            urlReader: new InMemoryURLReader(new Map()),
+            urlReader: new InMemoryURLReader(
+               new Map(
+                  Object.entries(files).map(([name, text]) => [
+                     `file:///${name}`,
+                     text,
+                  ]),
+               ),
+            ),
             connection: conn,
          });
-         const compiled = await runtime.getModel(model);
-         return Object.fromEntries(
-            compiled.explores.map((e) => [
-               e.name,
-               getDirectTaglines(e).map((t) => t.trim()),
-            ]),
+         const compiled = await runtime.getModel(
+            new URL("file:///main.malloy"),
+         );
+         const texts = new Map(
+            Object.entries(files).map(([name, text]) => [`/${name}`, text]),
+         );
+         return withModelTextCache(
+            () =>
+               Object.fromEntries(
+                  compiled.explores.map((e) => [
+                     e.name,
+                     getDirectTaglines(e).map((t) => t.trim()),
+                  ]),
+               ),
+            texts,
          );
       } finally {
          await conn.close();
@@ -443,6 +465,38 @@ source: right_below is base extend {}
       assert.deepStrictEqual(notes.base, ["#(doc) Base", "#(agent-hidden)"]);
       assert.deepStrictEqual(notes.below, []);
       assert.deepStrictEqual(notes.right_below, []);
+   });
+
+   test("never takes the notes of a base it reaches without extend, or that is written on its definition", async () => {
+      const notes = await direct(`
+#(agent-hidden)
+source: base is duckdb.sql("select 1 as a")
+
+source: plain is base
+
+source:
+  #(agent-hidden)
+  per_def is duckdb.sql("select 1 as a"),
+  per_def_child is per_def extend {}
+
+source: per_def_next is per_def extend {}
+`);
+      assert.deepStrictEqual(notes.plain, []);
+      assert.deepStrictEqual(notes.per_def, ["#(agent-hidden)"]);
+      assert.deepStrictEqual(notes.per_def_child, []);
+      assert.deepStrictEqual(notes.per_def_next, []);
+   });
+
+   test("never takes a base's notes when only the child is imported", async () => {
+      const notes = await direct(`import { child } from "other.malloy"\n`, {
+         "other.malloy": `#(agent-hidden)
+#(doc) Base doc
+source: base is duckdb.sql("select 1 as a")
+
+source: child is base extend {}
+`,
+      });
+      assert.deepStrictEqual(notes.child, []);
    });
 
    test("gives a note on a statement to every source it defines", async () => {

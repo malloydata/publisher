@@ -53,6 +53,32 @@ function readModelLines(filePath: string): string[] {
 }
 
 /**
+ * The text of the model file at `url` from `start` to `end` (zero-based), from
+ * the revision the run compiled; undefined when that file cannot be read.
+ */
+export function modelTextBetween(
+   url: string,
+   start: { line: number; character: number },
+   end: { line: number; character: number },
+): string | undefined {
+   let lines: string[];
+   try {
+      lines = readModelLines(fileURLToPath(url));
+   } catch {
+      return undefined;
+   }
+   if (end.line >= lines.length) return undefined;
+   if (start.line === end.line) {
+      return lines[start.line]!.slice(start.character, end.character);
+   }
+   return [
+      lines[start.line]!.slice(start.character),
+      ...lines.slice(start.line + 1, end.line),
+      lines[end.line]!.slice(0, end.character),
+   ].join("\n");
+}
+
+/**
  * Extracts the Malloy code from an entity based on location.
  */
 export function extractCodeFromEntity(
