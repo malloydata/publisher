@@ -46,6 +46,7 @@ import type {
    IncrementalStrategy,
    LateRows,
    LedgerEntry,
+   MalformedLedgerEntry,
    ManifestEntry,
 } from "../domain/types";
 import {
@@ -127,6 +128,13 @@ export interface IncrementalRunContext {
     * is one neither can be held to.
     */
    callerLedger?: ReadonlyMap<string, RecordedBoundary>;
+   /**
+    * The defect of each entry the controller dropped from {@link callerLedger}
+    * as malformed, by the `physicalTableName` it named. Its source seeds as
+    * any source with no entry does, under `ledger_entry_malformed` rather than
+    * `no_boundary`, so a corrupted entry is told apart from a missing one.
+    */
+   malformedCallerLedger?: ReadonlyMap<string, string>;
    /**
     * The `lateRows` the package's bound manifest reports, by content address:
     * what earlier deltas' late-row checks found and no rebuild has cleared.
@@ -358,8 +366,19 @@ export async function planSourceRefresh(params: {
    if (context.callerLedger) {
       // No fallback to the local store for a table the caller omitted: a
       // worker's own row may be a generation stale, which is why this mode
-      // exists. No entry means the ordinary `no_boundary` seed.
+      // exists. No entry means the ordinary `no_boundary` seed, unless the
+      // caller sent one the controller dropped as malformed.
       ledgerEntry = context.callerLedger.get(recordedTableKey(lineage)) ?? null;
+      const defect = context.malformedCallerLedger?.get(
+         lineage.physicalTableName,
+      );
+      if (ledgerEntry === null && defect !== undefined && !forceRefresh) {
+         return {
+            mode: "seed",
+            reasonCode: "ledger_entry_malformed",
+            reason: `the supplied ledger entry for this table was malformed (${defect}) and was dropped`,
+         };
+      }
    } else {
       try {
          ledgerEntry = await context.ledger.getIncrementalLedgerEntry(
@@ -884,6 +903,8 @@ export function incrementalRunContext(
        * (even empty) replaces it for the whole run.
        */
       ledger: LedgerEntry[] | undefined;
+      /** The caller's entries dropped as malformed; read only beside `ledger`. */
+      malformedLedger?: MalformedLedgerEntry[];
    },
    localLedger: IncrementalLedgerStore,
 ): IncrementalRunContext | undefined {
@@ -896,13 +917,20 @@ export function incrementalRunContext(
       if (declaration.incremental) declarations[sourceID] = declaration;
    }
    if (Object.keys(declarations).length === 0) return undefined;
-   const { ledger, ...rest } = run;
+   const { ledger, malformedLedger, ...rest } = run;
    return {
       ...rest,
       declarations,
       ledger: localLedger,
       ...(ledger !== undefined
          ? { callerLedger: indexCallerLedger(ledger) }
+         : {}),
+      ...(ledger !== undefined && malformedLedger?.length
+         ? {
+              malformedCallerLedger: new Map(
+                 malformedLedger.map((m) => [m.physicalTableName, m.defect]),
+              ),
+           }
          : {}),
    };
 }

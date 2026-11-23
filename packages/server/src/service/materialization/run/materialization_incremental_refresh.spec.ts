@@ -4,9 +4,14 @@
 import { Manifest } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
-import { BuildInstruction, LedgerEntry } from "../domain/types";
+import {
+   BuildInstruction,
+   LedgerEntry,
+   type MalformedLedgerEntry,
+} from "../domain/types";
 import { NATIVE_SCHEMA_ROW_LIMIT } from "./database_native_types";
 import { indexCallerLedger } from "./incremental_build";
+import { logger } from "../../../logger";
 import { MaterializationController } from "../../../controller/materialization.controller";
 import type { MaterializationService } from "./materialization_service";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
@@ -103,6 +108,8 @@ describe("buildOneSource: incremental refresh", () => {
        * caller-ledger mode, replacing the local store; absent reads the store.
        */
       ledger?: LedgerEntry[];
+      /** The caller's entries the controller dropped as malformed. */
+      malformedLedger?: MalformedLedgerEntry[];
       now?: Date;
    }) {
       const upsert = sinon.stub().resolves();
@@ -123,6 +130,16 @@ describe("buildOneSource: incremental refresh", () => {
          declarations: { orders: DECLARATION },
          ...(overrides.ledger !== undefined
             ? { callerLedger: indexCallerLedger(overrides.ledger) }
+            : {}),
+         ...(overrides.malformedLedger
+            ? {
+                 malformedCallerLedger: new Map(
+                    overrides.malformedLedger.map((m) => [
+                       m.physicalTableName,
+                       m.defect,
+                    ]),
+                 ),
+              }
             : {}),
          ledger: {
             getIncrementalLedgerEntry: read,
@@ -753,7 +770,10 @@ describe("buildOneSource: incremental refresh", () => {
       // request: the source it described seeds, and every other entry in the
       // same ledger still applies.
       it("seeds the source whose echoed entry is malformed, while another's entry still deltas", async () => {
-         async function ledgerOf(entries: unknown[]): Promise<LedgerEntry[]> {
+         async function ledgerOf(entries: unknown[]): Promise<{
+            ledger: LedgerEntry[];
+            malformedLedger?: MalformedLedgerEntry[];
+         }> {
             const create = sinon.stub().resolves({ id: "m1" });
             await new MaterializationController({
                createMaterialization: create,
@@ -773,7 +793,8 @@ describe("buildOneSource: incremental refresh", () => {
                   },
                },
             );
-            return create.firstCall.args[2].ledger;
+            const { ledger, malformedLedger } = create.firstCall.args[2];
+            return { ledger, malformedLedger };
          }
          const OTHER = { ...ENTRY, physicalTableName: "events_v1" };
 
@@ -782,10 +803,10 @@ describe("buildOneSource: incremental refresh", () => {
             ENTRY,
             { ...OTHER, strategy: "upsert" },
          ]);
-         expect(sound).toEqual([ENTRY]);
+         expect(sound.ledger).toEqual([ENTRY]);
          const delta = await callBuildOneSource({
             runSQL: probeAwareRunSQL(),
-            context: incrementalContext({ ledger: sound }).context,
+            context: incrementalContext(sound).context,
          });
          expect(delta.refresh).toBe("delta");
 
@@ -794,12 +815,28 @@ describe("buildOneSource: incremental refresh", () => {
             { ...ENTRY, mergeKeys: "x" },
             OTHER,
          ]);
-         expect(corrupted).toEqual([OTHER]);
+         expect(corrupted.ledger).toEqual([OTHER]);
          const runSQL = probeAwareRunSQL();
-         const seeded = await callBuildOneSource({
-            runSQL,
-            context: incrementalContext({ ledger: corrupted }).context,
-         });
+         const warn = sinon.spy(logger, "warn");
+         let seeded: Awaited<ReturnType<typeof callBuildOneSource>>;
+         try {
+            seeded = await callBuildOneSource({
+               runSQL,
+               context: incrementalContext(corrupted).context,
+            });
+            // Told apart from a source the caller sent no entry for.
+            const rebuilt = (
+               warn.getCalls().map((c) => c.args) as unknown[][]
+            ).find(
+               ([message]) =>
+                  message === "Rebuilding an incremental source in full",
+            );
+            expect(rebuilt?.[1]).toMatchObject({
+               reasonCode: "ledger_entry_malformed",
+            });
+         } finally {
+            warn.restore();
+         }
          expect(seeded.refresh).toBe("full");
          const statements = runSQL.getCalls().map((c) => c.args[0] as string);
          expect(statements.some((s) => s.startsWith("CREATE TABLE"))).toBe(

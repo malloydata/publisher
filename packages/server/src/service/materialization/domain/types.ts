@@ -45,6 +45,17 @@ export type Realization = components["schemas"]["Realization"];
  */
 export type LedgerEntry = components["schemas"]["LedgerEntry"];
 
+/**
+ * A `buildInstructions.ledger` entry dropped as malformed: the table it named
+ * and what was wrong with it. Its source seeds under `ledger_entry_malformed`.
+ * An entry naming no string table cannot be attributed to a source and is
+ * only logged.
+ */
+export interface MalformedLedgerEntry {
+   physicalTableName: string;
+   defect: string;
+}
+
 /** How a delta advances the serving table. */
 export type IncrementalStrategy = "merge" | "range_replace";
 
