@@ -25,6 +25,8 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Changed: a plain DuckDB `storage=` destination's database file is named from the destination's configured name, not the session's attach alias,** through one guarded path that refuses a name with a separator or `..` and keeps the file under the destinations root.
 
+The name such a destination's file is named from may use only ASCII letters, digits, `_`, `-` and `.` (`^[A-Za-z0-9_.-]+$`), never `..`. A destination list holding a plain DuckDB entry with any other name rejects that entry when the list loads, naming the pattern, rather than failing its first build or table listing with a 400. A DuckLake destination, whose files are not named from its name, keeps any name.
+
 ## [Unreleased] — a storage destination's `default_collation` is held to the column contract
 
 **Changed: a `storage=` table's contract records its destination session's `default_collation` (`contract.defaultCollation`), read in the build's session, and every bind reads the destination's current value beside the table's column collations.** A bind that finds another value reports the table `incompatible` with `incompatibility.code` `collation_changed`, naming its string columns that declare no collation of their own, and it answers live until it is rebuilt. A read that fails leaves the table unread, as before. A table built under a non-default setting passes its own contract, and records its strings as compared unlike live (`compare: none`), so nothing stacks on them or serves them past a gate.
