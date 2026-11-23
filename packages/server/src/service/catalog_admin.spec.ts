@@ -83,8 +83,16 @@ describe("the main schema", () => {
                (error as CatalogAdminError).status,
                (error as CatalogAdminError).reason,
             ]).toEqual([schema, 400, "SCHEMA_RESERVED"]);
+            // It says where tables go, which a schema create's refusal has no need to.
+            expect((error as CatalogAdminError).message).toContain(
+               "PUT /catalogs/{catalog}/schemas/{schema}",
+            );
          }
       }
+      const create = await admin
+         .createSchema("c", "main", {}, false)
+         .catch((e) => e);
+      expect((create as CatalogAdminError).message).not.toContain("PUT");
    });
 });
 

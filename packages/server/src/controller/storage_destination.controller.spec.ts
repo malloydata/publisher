@@ -23,8 +23,10 @@ type ApiConnection = components["schemas"]["Connection"];
 describe("StorageDestinationController", () => {
    let envPath: string;
    let controller: StorageDestinationController;
+   let declared: ApiConnection;
 
    beforeEach(() => {
+      declared = { name: "lake", type: "duckdb" } as ApiConnection;
       envPath = mkdtempSync(join(tmpdir(), "dest-controller-"));
       mkdirSync(storageDestinationRoot(envPath), { recursive: true });
       const environment = {
@@ -36,7 +38,7 @@ describe("StorageDestinationController", () => {
                   `Storage destination ${name} not found`,
                );
             }
-            return { name: "lake", type: "duckdb" } as ApiConnection;
+            return declared;
          },
       };
       const store = fakeOf<PackageLookup>({
@@ -69,8 +71,7 @@ describe("StorageDestinationController", () => {
          { name: "daily__g001" },
       ]);
 
-      // A non-`main` schema qualifies the name, so the same table name in `main`
-      // is left alone.
+      // The schema qualifies the name, so the same table name in `main` is left alone.
       await controller.dropTable("env", "lake", "analytics", "daily__g001");
       expect(await controller.listTables("env", "lake", "analytics")).toEqual(
          [],
@@ -78,6 +79,24 @@ describe("StorageDestinationController", () => {
       expect(await controller.listTables("env", "lake", "main")).toEqual([
          { name: "daily__g001" },
       ]);
+   });
+
+   it("drops from the schema the path names, not the one the destination builds into", async () => {
+      declared = {
+         name: "lake",
+         type: "duckdb",
+         ducklakeConnection: { destinationSchema: "materialized" },
+      } as ApiConnection;
+      await seed(
+         "CREATE TABLE orders AS SELECT 1 AS x; " +
+            "CREATE SCHEMA materialized; " +
+            "CREATE TABLE materialized.orders AS SELECT 1 AS x;",
+      );
+      await controller.dropTable("env", "lake", "main", "orders");
+      expect(await controller.listTables("env", "lake", "main")).toEqual([]);
+      expect(
+         await controller.listTables("env", "lake", "materialized"),
+      ).toEqual([{ name: "orders" }]);
    });
 
    it("answers an unknown destination as a 404, not the build path's 422", async () => {

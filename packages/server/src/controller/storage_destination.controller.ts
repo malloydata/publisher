@@ -80,8 +80,8 @@ export class StorageDestinationController {
          await dropStorageTable({
             destinationName,
             destinationConnection: destination,
-            physicalTableName:
-               schemaName === "main" ? tableName : `${schemaName}.${tableName}`,
+            // Always qualified: a bare name would land in `destinationSchema`, not the schema the path names.
+            physicalTableName: `${schemaName}.${tableName}`,
             environmentPath: environment.getEnvironmentPath(),
          });
       } catch (error) {

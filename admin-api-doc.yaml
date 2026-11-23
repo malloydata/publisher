@@ -1116,8 +1116,8 @@ components:
             OBJECT_UNREADABLE.
             `SCHEMA_EXISTS`: a create-only schema PUT found the schema.
             `SCHEMA_RESERVED`: the schema name is one the engine owns, `main`,
-            or a name starting `__ducklake_metadata_`; also the target of a
-            table PUT, DELETE or load. `LOAD_BUSY` (503): another load of the table, or another
+            or a name starting `__ducklake_metadata_`; also refused as the
+            target of a table PUT, DELETE or load. `LOAD_BUSY` (503): another load of the table, or another
             load on this server, is running; nothing was written, retry.
             `LOAD_CONFLICT` (409): DuckLake refused the commit because
             another request (a table PUT or DELETE, a schema drop) changed

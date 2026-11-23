@@ -740,10 +740,13 @@ describe.skipIf(!SUPERUSER)(
                ),
             ).toEqual(["early"]);
          } finally {
-            await admin.deleteTable("ds_standalone", "stage", "migrated");
-            await rawSql("ds_standalone", [
-               "DROP TABLE ds_standalone.main.early",
-            ]);
+            try {
+               await admin.deleteTable("ds_standalone", "stage", "migrated");
+            } finally {
+               await rawSql("ds_standalone", [
+                  "DROP TABLE ds_standalone.main.early",
+               ]);
+            }
          }
       });
 
@@ -859,7 +862,7 @@ describe.skipIf(!SUPERUSER)(
                environmentPath: "",
             }),
          ).toEqual(["orders"]);
-         // The catalog is checked before the schema, so a missing one answers first.
+         // A reserved schema is refused before any catalog I/O; otherwise the catalog is looked up before the schema.
          const missing = await admin
             .putTable(
                "ds_nowhere",

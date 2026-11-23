@@ -607,7 +607,7 @@ export class CatalogAdmin {
       identifier(schema, "schema");
       identifier(table, "table");
       // Only the target is refused: a copy may still read its source from `main`.
-      refuseReserved(schema);
+      refuseReserved(schema, TABLE_SCHEMA_HINT);
       const source = tableSource(request.source);
       // Taken first, as a load takes it, so a busy server refuses before reading anything.
       const created = await withLoadSlot(async () => {
@@ -715,7 +715,7 @@ export class CatalogAdmin {
    ): Promise<void> {
       identifier(schema, "schema");
       identifier(table, "table");
-      refuseReserved(schema);
+      refuseReserved(schema, TABLE_SCHEMA_HINT);
       const owner = await this.withCatalogDatabase(async (pg) => {
          await this.requireCatalog(pg, name);
          return this.schemaOwner(pg, name);
@@ -926,7 +926,7 @@ export class CatalogAdmin {
       identifier(name, "catalog");
       identifier(schema, "schema");
       identifier(table, "table");
-      refuseReserved(schema);
+      refuseReserved(schema, TABLE_SCHEMA_HINT);
       const request = loadRequest(body);
       return withLoadSlot(() =>
          this.withTableLock(
@@ -1551,8 +1551,12 @@ function schemaName(value: unknown, what: string): string {
    return value;
 }
 
+/** Appended to a table write's refusal, so it says where tables go. */
+const TABLE_SCHEMA_HINT =
+   "; tables go in a schema created with PUT /catalogs/{catalog}/schemas/{schema}";
+
 /** Refuses a name the engine owns or DuckLake needs, whatever its case, and the metadata catalogs' prefix, as `readableSchemas` does. */
-function refuseReserved(schema: string): void {
+function refuseReserved(schema: string, hint = ""): void {
    const folded = schema.toLowerCase();
    if (
       RESERVED_SCHEMAS.includes(folded) ||
@@ -1561,7 +1565,7 @@ function refuseReserved(schema: string): void {
       throw new CatalogAdminError(
          400,
          "SCHEMA_RESERVED",
-         `'${schema}' is a reserved schema name.`,
+         `'${schema}' is a reserved schema name${hint}.`,
       );
    }
 }

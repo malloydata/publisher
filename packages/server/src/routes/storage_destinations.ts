@@ -6,6 +6,7 @@
  * and file cleanup an orchestrator's garbage collection used. The admin API's
  * catalog resources replace them (admin-api-doc.yaml: GET and DELETE
  * `/catalogs/{c}/schemas/{s}/tables[/{t}]`, and DELETE `/catalogs/{c}/snapshots`).
+ * The admin API refuses `main`, so dropping a table there stays here (or DuckLake SQL).
  * Every response carries `Deprecation: true`. Removing them is deleting this
  * module, its controller, and the one call in routes/api.ts.
  */
