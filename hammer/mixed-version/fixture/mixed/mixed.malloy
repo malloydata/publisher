@@ -1,0 +1,55 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+// The mixed-version test's fixture (hammer/mixed-version/run.ts). This
+// checkout builds every table; the last release then serves them from the
+// manifest this checkout wrote. Every table lives where both servers read it:
+// the Postgres warehouse (the database tier) or the `lake` DuckLake
+// destination, whose catalog is on that Postgres.
+
+##! experimental { persistence }
+
+// Unannotated: what a live recompute says, for telling a stored answer apart.
+source: live_orders is orders_pg.table('public.mv_orders')
+source: live_items is orders_pg.table('public.mv_items')
+
+#@ persist name="public.mv_pg_daily"
+source: pg_daily is orders_pg.table('public.mv_orders') -> {
+  group_by: order_date
+  aggregate: total_amount is amount.sum()
+}
+
+#(materialize)
+source: pg_by_category is orders_pg.table('public.mv_orders') -> {
+  group_by: category
+  aggregate: total_amount is amount.sum()
+}
+
+#@ persist name="mv_lake_daily" storage=lake
+source: lake_daily is orders_pg.table('public.mv_orders') -> {
+  group_by: order_date
+  aggregate: total_amount is amount.sum()
+}
+
+#(materialize) storage="lake"
+source: lake_by_region is orders_pg.table('public.mv_orders') -> {
+  group_by: region
+  aggregate: total_amount is amount.sum()
+}
+
+source: items is orders_pg.table('public.mv_items') extend { primary_key: item_id }
+
+// A pair table, and a persisted view this checkout builds over it.
+#(materialize) inline=["items"]
+source: orders is orders_pg.table('public.mv_orders') extend {
+  primary_key: order_id
+  join_many: items is items on items.order_id = order_id
+}
+
+source: pair_views is orders extend {
+  #@ persist name="public.mv_pair_view"
+  view: by_region is {
+    group_by: region
+    aggregate: total_amount is amount.sum(), item_count is items.count()
+  }
+}
