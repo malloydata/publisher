@@ -64,6 +64,30 @@ describe("a schema name", () => {
    });
 });
 
+describe("the main schema", () => {
+   it("is refused as the target of a load, a table PUT and a table DELETE, in any case, before the catalog database is reached", async () => {
+      const source = { uri: "gs://b/p/a.parquet", format: "parquet" };
+      for (const schema of ["main", "Main", "MAIN"]) {
+         for (const attempt of [
+            () => admin.loadTable("c", schema, "t", valid),
+            () => admin.putTable("c", schema, "t", { source }, false),
+            () => admin.deleteTable("c", schema, "t"),
+         ]) {
+            const error = await attempt().then(
+               () => undefined,
+               (e) => e,
+            );
+            expect(error).toBeInstanceOf(CatalogAdminError);
+            expect([
+               schema,
+               (error as CatalogAdminError).status,
+               (error as CatalogAdminError).reason,
+            ]).toEqual([schema, 400, "SCHEMA_RESERVED"]);
+         }
+      }
+   });
+});
+
 describe("a load's request body", () => {
    it("passes validation when every rule is met, and only then reaches the catalog database", async () => {
       const error = await admin

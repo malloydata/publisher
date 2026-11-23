@@ -123,7 +123,7 @@ describe("the admin listener", () => {
                ifAbsent = absent;
                return {
                   table: {
-                     schema: "main",
+                     schema: "s",
                      name: "t",
                      columns: [],
                      partitionedBy: [],
@@ -137,7 +137,7 @@ describe("the admin listener", () => {
       expect(
          (await request(app).post("/api/v0/catalogs").send({})).status,
       ).toBe(201);
-      const path = "/api/v0/catalogs/ds_x/schemas/main/tables/t";
+      const path = "/api/v0/catalogs/ds_x/schemas/s/tables/t";
       expect((await request(app).put(path).send({})).status).toBe(201);
       expect(ifAbsent).toBe(false);
       created = false;
@@ -168,7 +168,7 @@ describe("the admin listener", () => {
          }),
          watch,
       );
-      const path = "/api/v0/catalogs/ds_x/schemas/main/tables/t/loads";
+      const path = "/api/v0/catalogs/ds_x/schemas/s/tables/t/loads";
       const body = {
          commitMessage: "nightly",
          mode: "merge",
@@ -178,7 +178,7 @@ describe("the admin listener", () => {
       const ok = await request(app).post(path).send(body);
       expect(ok.status).toBe(201);
       expect(ok.body.rowsInserted).toBe(1);
-      expect(seen).toEqual([["ds_x", "main", "t", body]]);
+      expect(seen).toEqual([["ds_x", "s", "t", body]]);
       refuse = new CatalogAdminError(
          422,
          "LOAD_DELETE_LIMIT_EXCEEDED",

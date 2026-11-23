@@ -229,20 +229,22 @@ A=http://localhost:4050/api/v0
 curl -s -X POST $A/catalogs -H 'Content-Type: application/json' \
   -d '{"name": "sales", "dataPath": "/srv/lake/sales", "fileDeletionGrace": "1 day"}'
 
-# Load a CSV that sits under the data path into main.orders (201 created, 200 replaced;
+# Create a schema (201 created, 200 existed; `If-None-Match: *` refuses one that exists with
+# 412 SCHEMA_EXISTS). Lowercase names only; `main`, `memory`, `information_schema`,
+# `pg_catalog`, `temp` and `system` answer 400 SCHEMA_RESERVED. Tables go in schemas like this:
+# a table PUT, a table DELETE or a load whose target is `main` answers 400 SCHEMA_RESERVED too.
+curl -s -X PUT $A/catalogs/sales/schemas/staging
+
+# Load a CSV that sits under the data path into staging.orders (201 created, 200 replaced;
 # add `If-None-Match: *` to refuse a table that exists).
-curl -s -X PUT $A/catalogs/sales/schemas/main/tables/orders -H 'Content-Type: application/json' \
+curl -s -X PUT $A/catalogs/sales/schemas/staging/tables/orders -H 'Content-Type: application/json' \
   -d '{"source": {"uri": "/srv/lake/sales/uploads/orders.csv", "format": "csv"}}'
 
 # Copy a table from another catalog of the same catalog database (a migration), rewritten
-# into this catalog's own files; a missing source answers 404 SOURCE_NOT_FOUND.
-curl -s -X PUT $A/catalogs/sales/schemas/main/tables/orders_2025 -H 'Content-Type: application/json' \
+# into this catalog's own files; a missing source answers 404 SOURCE_NOT_FOUND. The source may
+# be in `main`, which is how a table an earlier release put there moves into a schema.
+curl -s -X PUT $A/catalogs/sales/schemas/staging/tables/orders_2025 -H 'Content-Type: application/json' \
   -d '{"source": {"catalog": "sales_2025", "schema": "main", "table": "orders"}}'
-
-# Create a schema (201 created, 200 existed; `If-None-Match: *` refuses one that exists with
-# 412 SCHEMA_EXISTS). Lowercase names only; `main`, `memory`, `information_schema`,
-# `pg_catalog`, `temp` and `system` answer 400 SCHEMA_RESERVED.
-curl -s -X PUT $A/catalogs/sales/schemas/staging
 
 # Apply Parquet objects under the data path to staging.charges, upserting by id (201, with the
 # counts of rows inserted, replaced, unchanged and deleted). `"mode": "replace"` with
@@ -253,19 +255,19 @@ curl -s -X POST $A/catalogs/sales/schemas/staging/tables/charges/loads -H 'Conte
 
 # What it holds: the catalog, one schema's tables, or every table of every schema.
 curl -s $A/catalogs/sales
-curl -s $A/catalogs/sales/schemas/main/tables
+curl -s $A/catalogs/sales/schemas/staging/tables
 curl -s $A/catalogs/sales/tables
+
+# Drop a table, then reclaim history from before a date, and the files only it held.
+curl -s -X DELETE $A/catalogs/sales/schemas/staging/tables/orders
+curl -s -X DELETE "$A/catalogs/sales/snapshots?olderThan=2026-10-01T00:00:00Z"
 
 # Drop a schema and every table in it (204, also when it does not exist).
 curl -s -X DELETE $A/catalogs/sales/schemas/staging
-
-# Drop a table, then reclaim history from before a date, and the files only it held.
-curl -s -X DELETE $A/catalogs/sales/schemas/main/tables/orders
-curl -s -X DELETE "$A/catalogs/sales/snapshots?olderThan=2026-10-01T00:00:00Z"
 ```
 
-To read `sales` from a model, give the environment a DuckLake connection to the same catalog, with no
-`bucketUrl` (next section): `sales.table('orders')`.
+To read `sales` from a model, give the environment a managed DuckLake connection to the same catalog,
+with no `bucketUrl` (next section) and the schema in `readableSchemas`: `sales.table('staging.orders')`.
 
 **Files.** A load reads one CSV, Parquet, Excel or JSON object under the catalog's data path, the only
 location its session can read, and rewrites the bytes as the catalog's own Parquet in one DuckLake
@@ -366,9 +368,13 @@ it, so in a mixed-version deployment upgrade every server before any config leav
 
 **Keep built tables apart from people's.** `ducklakeConnection.destinationSchema` on a storage
 destination puts every table a build writes in that schema (`materialized`, say) instead of `main`, and
-the serve binding reads it from there. People's own tables stay in `main`. A `#@ persist name=` that
-already names a schema keeps it. No build creates the schema: the catalog's owner does, and a build into a
-destination whose `destinationSchema` the catalog lacks is refused with a message naming both.
+the serve binding reads it from there. People's own tables go in schemas they create through the admin
+API, which does not write `main`: a table PUT, a table DELETE or a load targeting it answers `400
+SCHEMA_RESERVED`, though a copy may still read its source from there. A destination that shares its catalog
+with a managed read-only connection must set `destinationSchema`, since every managed connection reads
+`main`, and a build without one writes there. A `#@ persist name=` that already names a schema keeps it.
+No build creates the schema: the catalog's owner does, and a build into a destination whose
+`destinationSchema` the catalog lacks is refused with a message naming both.
 
 **Serve the catalog to models.** Give the catalog a `connections` entry, with `managed: true`. Publisher
 then sets the session's search path to the catalog's `main` after the attach, so `sales.table('orders')`,
@@ -421,7 +427,8 @@ because it is not a single SELECT never ran and is not. A statement that fails i
 
 The main API's storage-destination routes (`GET …/storageDestinations/{dest}/schemas/{schema}/tables`,
 `DELETE …/tables/{table}` and `POST …/fileCleanups`) are deprecated: the admin API's catalog, table and
-snapshot resources replace them, and they will be removed.
+snapshot resources replace them, and they will be removed. Until then the `DELETE` is also the way to drop
+a table in `main`, which the admin API refuses.
 
 ## Catalog-format compatibility
 

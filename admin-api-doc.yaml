@@ -326,6 +326,10 @@ paths:
       operationId: put-table
       summary: Create or replace a table from a source
       description: |
+        The schema may not be `main` (`400 SCHEMA_RESERVED`); a copy's source
+        may be in it, which is how a table an earlier release put there moves
+        into a schema the admin API created.
+
         Writes the table from `source`: one CSV, Parquet, Excel or JSON object
         under the catalog's data path, the only location the session can read;
         or a table of a catalog in the same catalog database (a migration's
@@ -416,6 +420,8 @@ paths:
       operationId: delete-table
       summary: Drop a table
       description: |
+        The schema may not be `main` (`400 SCHEMA_RESERVED`).
+
         Drops the table. A table that does not exist answers 204 as well, so a
         retried drop is free. Its data files stay until a snapshot delete
         reclaims them, which is also the window in which the table can still be
@@ -442,6 +448,8 @@ paths:
       operationId: load-table
       summary: Apply Parquet objects to a table by key
       description: |
+        The schema may not be `main` (`400 SCHEMA_RESERVED`).
+
         Applies Parquet objects under the catalog's data path to the table,
         creating it when it does not exist. `merge` upserts the objects' rows by
         `key`; `replace` makes the table equal to the objects, by `key` when one
@@ -1108,7 +1116,8 @@ components:
             OBJECT_UNREADABLE.
             `SCHEMA_EXISTS`: a create-only schema PUT found the schema.
             `SCHEMA_RESERVED`: the schema name is one the engine owns, `main`,
-            or a name starting `__ducklake_metadata_`. `LOAD_BUSY` (503): another load of the table, or another
+            or a name starting `__ducklake_metadata_`; also the target of a
+            table PUT, DELETE or load. `LOAD_BUSY` (503): another load of the table, or another
             load on this server, is running; nothing was written, retry.
             `LOAD_CONFLICT` (409): DuckLake refused the commit because
             another request (a table PUT or DELETE, a schema drop) changed

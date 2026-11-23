@@ -76,7 +76,7 @@ type DucklakeStorage = NonNullable<
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** A role name safe in a libpq `options=-crole=` value, hyphens included (`<prefix>-ducklake`). */
 const ROLE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
-/** Reserved on a schema create or drop; `main` is DuckLake's default and cannot be dropped. */
+/** Refused on a schema create or drop and on a table write; `main` is DuckLake's default and cannot be dropped. */
 const RESERVED_SCHEMAS = ["main", ...RESERVED_SCHEMA_NAMES];
 /** DuckLake's interval spelling for `delete_older_than`, e.g. `1 day`, `12 hours`. */
 const INTERVAL = /^(\d+) (second|minute|hour|day|week)s?$/;
@@ -606,6 +606,8 @@ export class CatalogAdmin {
    ): Promise<{ table: CatalogTable; created: boolean }> {
       identifier(schema, "schema");
       identifier(table, "table");
+      // Only the target is refused: a copy may still read its source from `main`.
+      refuseReserved(schema);
       const source = tableSource(request.source);
       // Taken first, as a load takes it, so a busy server refuses before reading anything.
       const created = await withLoadSlot(async () => {
@@ -713,6 +715,7 @@ export class CatalogAdmin {
    ): Promise<void> {
       identifier(schema, "schema");
       identifier(table, "table");
+      refuseReserved(schema);
       const owner = await this.withCatalogDatabase(async (pg) => {
          await this.requireCatalog(pg, name);
          return this.schemaOwner(pg, name);
@@ -923,6 +926,7 @@ export class CatalogAdmin {
       identifier(name, "catalog");
       identifier(schema, "schema");
       identifier(table, "table");
+      refuseReserved(schema);
       const request = loadRequest(body);
       return withLoadSlot(() =>
          this.withTableLock(
