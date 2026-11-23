@@ -209,6 +209,17 @@ describe("dropJoinDefinition", () => {
       ).toBe("extend {\n\n}");
    });
 
+   it("takes out a block doc written on it", () => {
+      const out = dropJoinDefinition(
+         "extend {\n  dimension: d is 1\n  #|(doc)\n  The join.\n  |#\n  join_one: c is x on c.id = id\n}",
+         "c",
+      )!;
+      expect(out).toContain("dimension: d is 1");
+      expect(out).not.toContain("join_one");
+      expect(out).not.toContain("|#");
+      expect(out).not.toContain("The join.");
+   });
+
    it("leaves the text unchanged when it declares no such join, or only a field of that name", () => {
       expect(dropJoinDefinition(TEXT, "nope")).toBe(TEXT);
       expect(

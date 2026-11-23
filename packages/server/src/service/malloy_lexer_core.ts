@@ -311,7 +311,7 @@ function skipAnnotation(
 }
 
 /** An annotation as the lexer reads it: where it starts and ends, and whether it is a `##` one. */
-export interface AnnotationSpan {
+interface AnnotationSpan {
    from: number;
    to: number;
    /** A `##` or `##|` model annotation, which tags no statement. */
@@ -324,7 +324,7 @@ export interface AnnotationSpan {
  * them, past spaces and comments. Anything else in the span ends the run of
  * annotations before it, so only those after the last such character count.
  */
-export function annotationsBefore(
+function annotationsBefore(
    text: string,
    from: number,
    to: number,
@@ -358,6 +358,25 @@ export function annotationsBefore(
       i = end;
    }
    return found;
+}
+
+/**
+ * Where the annotations tagging the statement at `at` start, `#|` blocks
+ * included: `at` when it has none. `floor` is where the token before it ends,
+ * so only trivia lies between; a `##` annotation is the file's, so the run
+ * stops at one.
+ */
+export function statementAnnotationsFrom(
+   text: string,
+   floor: number,
+   at: number,
+): number {
+   let from = at;
+   for (const tag of annotationsBefore(text, floor, at).reverse()) {
+      if (tag.model) break;
+      from = tag.from;
+   }
+   return from;
 }
 
 /** Whether the line starting at `at` closes a block annotation opened in `column`. */
