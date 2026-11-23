@@ -994,15 +994,17 @@ async function buildAll(
    } finally {
       fs.rmSync(scratch, { recursive: true, force: true });
    }
-   // With the column read the server binds with (package.ts), so a stored
-   // column the database holds as another type (F-13: a HUGEINT DuckLake
-   // keeps as a DOUBLE) is guarded here as it is there.
+   // As the server binds (environment.ts): with the column reads it binds
+   // with, so a stored column the database holds as another type (F-13: a
+   // HUGEINT DuckLake keeps as a DOUBLE) is guarded here as it is there, and
+   // each bind's commit compiling the served copy and reading what read
+   // admission looks up before the next bind starts.
    const mz = pkg.materialization();
-   mz.bind({
+   await mz.bindCompiled({
       database: database as never,
       observed: await mz.readDatabaseColumns(database as never),
    });
-   pkg.materialization().bind({
+   await mz.bindCompiled({
       storage: stored as never,
       storageObserved: await mz.readStorageColumns(stored as never),
    });
