@@ -14,8 +14,11 @@ import {
    assembleEnvironmentConnections,
    validateConnectionSqlFields,
    validateDuckdbApiSurface,
+   storageDestinationFile,
+   storageDestinationRoot,
    validateStorageDestinations,
 } from "./connection_config";
+import { BadRequestError } from "../errors";
 import { normalizeSnowflakePrivateKey } from "./dialects/snowflake";
 import { installSettings } from "../test_helpers/settings_env";
 import { toPublicConnection } from "./connection_public_view";
@@ -1945,5 +1948,21 @@ describe("ducklakeConnection.storage.s3Connection.region is held to a region's s
       expect(() =>
          validateConnectionSqlFields(withRegion(region)),
       ).not.toThrow();
+   });
+});
+
+describe("storageDestinationFile", () => {
+   it("puts a destination's file under the destinations root", () => {
+      expect(storageDestinationFile("/env", "lake")).toBe(
+         path.join(storageDestinationRoot("/env"), "lake.duckdb"),
+      );
+   });
+
+   it("refuses a traversal-shaped or separator-bearing name", () => {
+      for (const name of ["../escape", "..", "a/b", "a\\b", "x/../../y", ""]) {
+         expect(() => storageDestinationFile("/env", name)).toThrow(
+            BadRequestError,
+         );
+      }
    });
 });

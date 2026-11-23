@@ -456,6 +456,37 @@ export function storageDestinationRoot(environmentPath: string): string {
    return path.join(environmentPath, STORAGE_DESTINATIONS_DIR);
 }
 
+/**
+ * A plain DuckDB destination's name as a file name: letters, digits, `_`,
+ * `-` and `.`, never `..`, so it cannot leave the destinations root.
+ */
+const DESTINATION_FILE_NAME = /^(?!.*\.\.)[A-Za-z0-9_.-]+$/;
+
+/**
+ * Where a plain DuckDB destination's database file lives, under
+ * {@link storageDestinationRoot}. Every path to that file goes through here:
+ * a name that could reach outside the root (a separator, `..`) is refused.
+ */
+export function storageDestinationFile(
+   environmentPath: string,
+   destinationName: string,
+): string {
+   if (!DESTINATION_FILE_NAME.test(destinationName)) {
+      throw new BadRequestError(
+         `Storage destination name '${destinationName}' is not a valid file ` +
+            `name: use letters, digits, '_', '-' and '.', never '..'.`,
+      );
+   }
+   const root = storageDestinationRoot(environmentPath);
+   const file = path.join(root, `${destinationName}.duckdb`);
+   if (path.dirname(file) !== root) {
+      throw new BadRequestError(
+         `Storage destination name '${destinationName}' leaves its root.`,
+      );
+   }
+   return file;
+}
+
 /** An entry of a `storageDestinations` list that cannot be used, and why. */
 export type RejectedStorageDestination = {
    /** Absent when the entry carried no usable name to attribute the defect to. */

@@ -94,7 +94,10 @@ import {
 } from "../../duckdb_session_setup";
 import type { WatermarkBound } from "./incremental_apply";
 import type { LateRows } from "../domain/types";
-import { storageDestinationRoot } from "../../connection_config";
+import {
+   storageDestinationFile,
+   storageDestinationRoot,
+} from "../../connection_config";
 import {
    allowedForLockdown,
    hasUrlScheme,
@@ -419,14 +422,14 @@ export async function withDestinationSession<T>(
       if (options.readOnly) {
          await attachDestinationReadOnly(
             session,
-            alias,
+            { alias, destinationName },
             destinationConnection,
             environmentPath,
          );
       } else {
          await attachDestinationReadWrite(
             session,
-            alias,
+            { alias, destinationName },
             destinationConnection,
             environmentPath,
          );
@@ -1475,17 +1478,6 @@ export function requireDuckLakeConfig(
    return cfg;
 }
 
-/** Where a plain DuckDB destination's database file lives. */
-function destinationDatabasePath(
-   environmentPath: string,
-   destinationName: string,
-): string {
-   return path.join(
-      storageDestinationRoot(environmentPath),
-      `${destinationName}.duckdb`,
-   );
-}
-
 /**
  * {@link attachDestinationReadWrite}, read-only: a DuckLake catalog through
  * its read-only attach, a plain DuckDB destination's file `READ_ONLY`. A
@@ -1494,41 +1486,53 @@ function destinationDatabasePath(
  */
 async function attachDestinationReadOnly(
    session: DuckDBConnection,
-   destinationName: string,
+   /**
+    * What it is attached as, and the configured destination whose file or
+    * catalog it is: the file's path is derived from the destination's own
+    * name (storageDestinationFile), never from the alias.
+    */
+   names: { alias: string; destinationName: string },
    destinationConnection: ApiConnection,
    environmentPath: string,
 ): Promise<void> {
+   const { alias, destinationName } = names;
    if (isCatalogDestination(destinationConnection)) {
       const cfg = requireDuckLakeConfig(destinationName, destinationConnection);
-      await attachDuckLakeReadOnlyIfPresent(session, destinationName, cfg);
+      await attachDuckLakeReadOnlyIfPresent(session, alias, cfg);
       return;
    }
-   const dbPath = destinationDatabasePath(environmentPath, destinationName);
+   const dbPath = storageDestinationFile(environmentPath, destinationName);
    if (!existsSync(dbPath)) return;
    await session.runSQL(
-      `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_DIALECT)} (READ_ONLY)`,
+      `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(alias, STORAGE_DIALECT)} (READ_ONLY)`,
    );
 }
 
 /** Attach the destination connection read-write on the build session. */
 async function attachDestinationReadWrite(
    session: DuckDBConnection,
-   destinationName: string,
+   /**
+    * What it is attached as, and the configured destination whose file or
+    * catalog it is: the file's path is derived from the destination's own
+    * name (storageDestinationFile), never from the alias.
+    */
+   names: { alias: string; destinationName: string },
    destinationConnection: ApiConnection,
    environmentPath: string,
 ): Promise<void> {
+   const { alias, destinationName } = names;
    if (isCatalogDestination(destinationConnection)) {
       const cfg = requireDuckLakeConfig(destinationName, destinationConnection);
-      await attachDuckLakeReadWrite(session, destinationName, cfg);
+      await attachDuckLakeReadWrite(session, alias, cfg);
       return;
    }
    // Plain DuckDB: the file lives under the destinations root (as connection
    // assembly derives it) so it cannot collide with a same-named connection.
    // Created here because a build may be the first thing to touch it.
    mkdirSync(storageDestinationRoot(environmentPath), { recursive: true });
-   const dbPath = destinationDatabasePath(environmentPath, destinationName);
+   const dbPath = storageDestinationFile(environmentPath, destinationName);
    await session.runSQL(
-      `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_DIALECT)}`,
+      `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(alias, STORAGE_DIALECT)}`,
    );
 }
 
