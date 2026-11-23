@@ -345,8 +345,10 @@ paths:
         a reader sees the old table or the new one. A file the reader refuses
         (not the format it claims, a value it cannot convert, an Excel `sheet`
         the workbook lacks or a sheet with no rows) or an object that does not
-        exist is `400 INVALID_REQUEST` carrying the reader's own
-        message, with the object named by its file name. A `500` is a failure a
+        exist is `422 OBJECT_UNREADABLE` carrying the reader's own
+        message, with the object named by its file name: the request is
+        well-formed but the named data cannot be applied, so correct the
+        object, don't retry. A `500` is a failure a
         retry may cure (storage unavailable or throttled, a refused credential,
         a full spill disk), and a retry is safe: it writes the whole table from
         the same object again. `201` when the table is new,
@@ -392,6 +394,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "412":
           description: "`If-None-Match: *` and the table exists (`TABLE_EXISTS`)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The source object is missing, is not the format it claims, or holds a value its column cannot (`OBJECT_UNREADABLE`); nothing was written, and a retry fails the same way
           content:
             application/json:
               schema:
@@ -447,9 +455,8 @@ paths:
         between, finds nothing to do, writes nothing and takes no snapshot. It
         reports the same `rowCount` and `cursorMax` as the first call, with
         every row counted in `rowsUnchanged` and none inserted, replaced or
-        deleted, and still answers `201`. `loadId` is provenance only (it goes
-        in the commit message and the logs): a repeated one is not detected, so
-        a retry is safe because it finds nothing to change.
+        deleted, and still answers `201`. A retry is safe because it finds
+        nothing to change.
         Of two rows of one key, the later one wins: the later object in
         `objects`, then the later row of an object. A key stored more than once
         is rewritten once.
@@ -470,7 +477,7 @@ paths:
         written NULL. A column typed NULL in every object (as a Parquet writer
         writes an all-NULL column) is ignored, and objects that leave no column
         are refused. A column of the table named `__publisher_…` is refused.
-        Refusals are `422 LOAD_SCHEMA_CONTRACT`, whose `detail` names the column
+        Refusals are `422 LOAD_COLUMN_MISMATCH`, whose `detail` names the column
         and why.
 
         One table loads at a time, across every replica of this server (a
@@ -526,10 +533,10 @@ paths:
                 $ref: "#/components/schemas/Error"
         "422":
           description: |
-            The load was refused, and nothing was written: the objects break the table's
-            contract (`LOAD_SCHEMA_CONTRACT`, with `detail`), a replace would delete more
-            rows than allowed (`LOAD_ROW_DROP_GUARD`, with `detail`), or an object could
-            not be read (`LOAD_OBJECT_UNREADABLE`, naming the object by its index, not its URI)
+            The load was refused, and nothing was written: the objects' columns do not
+            match the table's (`LOAD_COLUMN_MISMATCH`, with `detail`), a replace would delete more
+            rows than allowed (`LOAD_DELETE_LIMIT_EXCEEDED`, with `detail`), or an object could
+            not be read (`OBJECT_UNREADABLE`, naming the object by its index, not its URI)
           content:
             application/json:
               schema:
@@ -550,7 +557,7 @@ paths:
       tags: [snapshots]
       operationId: list-snapshots
       summary: List a catalog's snapshots
-      description: The newest first, each with its time and what it changed.
+      description: The newest first, each with its time, what it changed, and its author and commit message when it has them.
       parameters:
         - name: limit
           in: query
@@ -933,15 +940,22 @@ components:
 
     LoadRequest:
       type: object
-      required: [loadId, mode, objects]
+      required: [mode, objects]
       description: |
         A merge needs `key` and refuses `maxDeletedRows`; a replace needs
         `maxDeletedRows` and is keyless when `key` is omitted.
       properties:
-        loadId:
+        commitMessage:
           type: string
-          pattern: "^[A-Za-z0-9._:-]{1,128}$"
-          description: Provenance only. It is recorded in the commit's message and the logs, and nothing else reads it
+          minLength: 1
+          maxLength: 1024
+          pattern: '^[^\u0000]*$'
+          description: |
+            The message of the snapshot the load commits, listed by
+            `GET /snapshots` beside the author `publisher-admin`. `load
+            <schema>.<table>` when absent. A load that changes nothing writes no
+            snapshot, so records nothing. A message holding Malloy's statement
+            separator (`-- hack: split on this`) is refused.
         mode:
           type: string
           enum: [merge, replace]
@@ -976,7 +990,7 @@ components:
           minimum: 0
           description: |
             The most stored rows a replace may delete (the net shrink, for a
-            keyless one); more is refused with `LOAD_ROW_DROP_GUARD`
+            keyless one); more is refused with `LOAD_DELETE_LIMIT_EXCEEDED`
       additionalProperties: false
 
     Load:
@@ -1040,6 +1054,12 @@ components:
           type: object
           additionalProperties: true
           description: What it changed, as DuckLake records it (e.g. `tables_created`)
+        author:
+          type: ["string", "null"]
+          description: Who committed it, as DuckLake records it (`publisher-admin` for a load); null when none was set
+        commitMessage:
+          type: ["string", "null"]
+          description: The message the commit carried, such as a load's `commitMessage`; null when none was set
 
     SnapshotDeletion:
       type: object
@@ -1089,8 +1109,8 @@ components:
             CATALOG_SETTING_UNREADABLE, SCHEMA_NOT_FOUND, TABLE_NOT_FOUND,
             SOURCE_NOT_FOUND, TABLE_EXISTS, OBJECT_OUTSIDE_DATA_PATH,
             INVALID_REQUEST, SCHEMA_EXISTS, SCHEMA_RESERVED, LOAD_BUSY,
-            LOAD_CONFLICT, LOAD_SCHEMA_CONTRACT, LOAD_ROW_DROP_GUARD,
-            LOAD_OBJECT_UNREADABLE.
+            LOAD_CONFLICT, LOAD_COLUMN_MISMATCH, LOAD_DELETE_LIMIT_EXCEEDED,
+            OBJECT_UNREADABLE.
             `SCHEMA_EXISTS`: a create-only schema PUT found the schema.
             `SCHEMA_RESERVED`: the schema name is one the engine owns, `main`,
             or a name starting `__ducklake_metadata_`. `LOAD_BUSY` (503): another load of the table, or another
@@ -1098,29 +1118,89 @@ components:
             `LOAD_CONFLICT` (409): DuckLake refused the commit because
             another request (a table PUT or DELETE, a schema drop) changed
             the table while the load ran; nothing was written, retry.
-            `LOAD_SCHEMA_CONTRACT` (422): the objects break the table's
-            contract; `detail` is `{column, tableType, loadType, detail}`, where
-            the inner `detail` is one of `null_key`, `missing_key`,
-            `missing_cursor`, `cursor_type`, `type_change`, `reserved_name`,
-            `case_collision` or `no_columns` (`tableType` and `loadType` are
-            null when a side has no such column). `type_change` is a type
-            that does not widen losslessly, against the table's column, or
-            between two objects (`tableType` is then null). `reserved_name` is
-            a column name starting `__publisher_` (in the objects, or in the
-            table), or `file_row_number`, `rowid` or one holding a NUL;
-            `case_collision` is two names, in one object or two, that differ
-            only by case, or one name twice in an object.
-            `LOAD_ROW_DROP_GUARD` (422): a replace would delete more rows than
-            `maxDeletedRows`; `detail` is `{wouldDelete, rowsBefore,
-            maxDeletedRows}`.
-            `LOAD_OBJECT_UNREADABLE` (422): an object is missing, not Parquet,
-            or holds a value its column's type cannot; the message is DuckDB's
-            with each URI replaced by `objects[i]`, and `detail` is
-            `{object}`, the object's index in `objects`, when it can be told.
+            `LOAD_COLUMN_MISMATCH` (422): the objects' columns do not match
+            the table's; `detail` is a `ColumnMismatchDetail`.
+            `LOAD_DELETE_LIMIT_EXCEEDED` (422): a replace would delete more rows than
+            `maxDeletedRows`; `detail` is a `DeleteLimitDetail`.
+            `OBJECT_UNREADABLE` (422, a table PUT or a load): an object is
+            missing, not in the format it claims, or holds a value its column's
+            type cannot. The request is well-formed but the named data cannot
+            be applied: correct the object, don't retry. The message is
+            DuckDB's, with each URI replaced by `objects[i]` (a file name on a
+            PUT), and a load's `detail` is an `ObjectUnreadableDetail`.
             A storage failure (unavailable, throttled, a refused credential)
             or a full spill disk is a `500` instead, to retry.
             Treat an unrecognized value as absent.
         detail:
-          type: object
-          additionalProperties: true
-          description: Present on the refusals that carry what a caller can act on (the `LOAD_*` 422s); its shape is per `reason`
+          description: Present on the refusals that carry what a caller can act on; its shape is per `reason`
+          oneOf:
+            - $ref: "#/components/schemas/ColumnMismatchDetail"
+            - $ref: "#/components/schemas/DeleteLimitDetail"
+            - $ref: "#/components/schemas/ObjectUnreadableDetail"
+
+    ColumnMismatchDetail:
+      type: object
+      description: The `detail` of `LOAD_COLUMN_MISMATCH`, naming the column that breaks the table's contract and how
+      required: [column, tableType, loadType, violation]
+      properties:
+        column:
+          type: string
+          description: The offending column; the folded name for a `case_collision`
+        tableType:
+          type: ["string", "null"]
+          description: The table's type of the column; null when the table has no such column
+        loadType:
+          type: ["string", "null"]
+          description: The objects' type of the column; null when the objects have no such column
+        violation:
+          type: string
+          enum:
+            - null_key
+            - missing_key
+            - missing_cursor
+            - cursor_type
+            - type_change
+            - reserved_name
+            - case_collision
+            - no_columns
+          description: |
+            `null_key`: a `key` column is NULL in a row of the objects.
+            `missing_key`: a `key` column is not a column of the objects, or of
+            the table when it exists. `missing_cursor`:
+            the `cursor` is not a column of the objects. `cursor_type`: the
+            `cursor` is not an integer, DATE or TIMESTAMP column.
+            `type_change`: a type that does not widen losslessly, against the
+            table's column, or between two objects (`tableType` is then null).
+            `reserved_name`: a column name starting `__publisher_` (in the
+            objects, or in the table), or `file_row_number`, `rowid` or one
+            holding a NUL. `case_collision`: two names, in one object or two,
+            that differ only by case, or one name twice in an object.
+            `no_columns`: the objects leave no column.
+
+    DeleteLimitDetail:
+      type: object
+      description: The `detail` of `LOAD_DELETE_LIMIT_EXCEEDED`
+      required: [wouldDelete, rowsBefore, maxDeletedRows]
+      properties:
+        wouldDelete:
+          type: integer
+          format: int64
+          description: The stored rows the replace would delete
+        rowsBefore:
+          type: integer
+          format: int64
+          description: The table's rows before the load
+        maxDeletedRows:
+          type: integer
+          format: int64
+          description: The request's limit
+
+    ObjectUnreadableDetail:
+      type: object
+      description: The `detail` of a load's `OBJECT_UNREADABLE`. Absent when the reader's message names no object of the request
+      required: [object]
+      properties:
+        object:
+          type: integer
+          minimum: 0
+          description: The index of the unreadable object in the request's `objects`

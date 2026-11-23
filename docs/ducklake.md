@@ -248,7 +248,7 @@ curl -s -X PUT $A/catalogs/sales/schemas/staging
 # counts of rows inserted, replaced, unchanged and deleted). `"mode": "replace"` with
 # `maxDeletedRows` makes the table equal to the objects instead.
 curl -s -X POST $A/catalogs/sales/schemas/staging/tables/charges/loads -H 'Content-Type: application/json' \
-  -d '{"loadId": "run_1:charges", "mode": "merge", "key": ["id"], "cursor": "created",
+  -d '{"commitMessage": "charges run_1", "mode": "merge", "key": ["id"], "cursor": "created",
        "objects": ["/srv/lake/sales/uploads/run_1/charges-0.parquet"]}'
 
 # What it holds: the catalog, one schema's tables, or every table of every schema.
@@ -280,7 +280,10 @@ partition spec (one a since-retired `partition=` build wrote, or any `SET PARTIT
 its rows in partition order, on one thread at a low flush threshold, so the copy prunes files the way the
 source did; a partitioned table copied onto
 itself, under any spelling of its name (DuckDB matches names case-insensitively), is refused, since the
-rewrite would empty it before reading it. `GET …/tables/{table}` reports a
+rewrite would empty it before reading it. A table PUT of an object that is missing, is not the format it
+claims or holds a value its column cannot is `422 OBJECT_UNREADABLE`, as a load's is: the request is
+well-formed but the named data cannot be applied, so correct the object rather than retry.
+`GET …/tables/{table}` reports a
 table's spec as `partitionedBy`, empty for an unpartitioned table, so a migration can check a copy against
 its source.
 
@@ -290,14 +293,15 @@ stream in batches:
 
 - `merge` upserts by `key`. `replace` makes the table equal to the call's objects, by `key` or, with no
   key, as a whole; a replace that would delete more than `maxDeletedRows` rows writes nothing (`422
-  LOAD_ROW_DROP_GUARD`), so an empty or truncated extract cannot empty a table.
+  LOAD_DELETE_LIMIT_EXCEEDED`), so an empty or truncated extract cannot empty a table.
 - A row the objects do not change is not rewritten, so a load retried after it committed writes nothing
   and takes no snapshot. It reports the same `rowCount` and `cursorMax` as the first call, with every row
-  counted in `rowsUnchanged` and none inserted, replaced or deleted, and it still answers `201`. `loadId` is
-  provenance only (the commit message and the logs): the server does not recognize a repeated one, so a
-  retry is safe because it finds nothing to change, provided no other load of the table committed in
-  between. Of two rows with one key, the later object in
-  `objects` wins, then the later row of an object.
+  counted in `rowsUnchanged` and none inserted, replaced or deleted, and it still answers `201`. A retry is
+  safe because it finds nothing to change, provided no other load of the table committed in between.
+  Of two rows with one key, the later object in `objects` wins, then the later row of an object.
+- A load that commits records `commitMessage` (optional; `load <schema>.<table>` when absent) as its
+  snapshot's message, with the author `publisher-admin`; `GET …/snapshots` lists both as `commitMessage`
+  and `author`. A load that changes nothing writes no snapshot, so records nothing.
 - A new column is added, even when no row changes. An existing one keeps its type when the objects type
   it the same or narrower, losslessly, and is widened to the objects' type when that is a lossless widening
   of the table's: a wider integer, a decimal with no fewer integer or fraction digits, an integer into a
@@ -307,8 +311,9 @@ stream in batches:
   type they are read together as. A column that every object types NULL, as a Parquet writer writes an
   all-NULL column, is ignored; objects with no other column are refused. Anything else, a column of the
   table named `__publisher_…`, a NULL key, or a cursor that is not an integer, DATE or TIMESTAMP is `422
-  LOAD_SCHEMA_CONTRACT`, with a `detail` naming the column. An object that is missing, is not Parquet, or
-  holds a value its column cannot is `422 LOAD_OBJECT_UNREADABLE`; a storage failure is a `500` to retry.
+  LOAD_COLUMN_MISMATCH`, with a `detail` naming the column and the `violation`. An object that is
+  missing, is not Parquet, or holds a value its column cannot is `422 OBJECT_UNREADABLE`; a storage
+  failure is a `500` to retry.
 - One load of a table runs at a time across every replica (a Postgres advisory lock in the catalog
   database), and one load or copy runs at a time per server. Either busy is `503 LOAD_BUSY`, never
   queued: retry. A load whose lock connection is lost before it commits rolls back and answers the same.

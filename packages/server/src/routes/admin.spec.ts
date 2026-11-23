@@ -170,7 +170,7 @@ describe("the admin listener", () => {
       );
       const path = "/api/v0/catalogs/ds_x/schemas/main/tables/t/loads";
       const body = {
-         loadId: "r:1",
+         commitMessage: "nightly",
          mode: "merge",
          key: ["id"],
          objects: ["o"],
@@ -179,17 +179,22 @@ describe("the admin listener", () => {
       expect(ok.status).toBe(201);
       expect(ok.body.rowsInserted).toBe(1);
       expect(seen).toEqual([["ds_x", "main", "t", body]]);
-      refuse = new CatalogAdminError(422, "LOAD_ROW_DROP_GUARD", "too many", {
-         wouldDelete: 4,
-         rowsBefore: 5,
-         maxDeletedRows: 3,
-      });
+      refuse = new CatalogAdminError(
+         422,
+         "LOAD_DELETE_LIMIT_EXCEEDED",
+         "too many",
+         {
+            wouldDelete: 4,
+            rowsBefore: 5,
+            maxDeletedRows: 3,
+         },
+      );
       const refused = await request(app).post(path).send(body);
       expect(refused.status).toBe(422);
       expect(refused.body).toEqual({
          code: 422,
          message: "too many",
-         reason: "LOAD_ROW_DROP_GUARD",
+         reason: "LOAD_DELETE_LIMIT_EXCEEDED",
          detail: { wouldDelete: 4, rowsBefore: 5, maxDeletedRows: 3 },
       });
    });

@@ -21,7 +21,6 @@ import {
    packColumnGroups,
    typeBytes,
    parquetRowBytes,
-   readerRefusal,
    readerSql,
    sourceColumns,
    typeVariants,
@@ -147,42 +146,43 @@ describe("loadStorageTable refuses before attaching", () => {
    });
 });
 
-describe("readerRefusal: what a person sent and the reader refused", () => {
+describe("objectUnreadable for a table PUT: what a person sent and the reader refused", () => {
    const uri = "s3://lake/org_1/db_2/staging/orders/0e1f/broken.parquet";
+   const byName = (error: unknown, object: string) =>
+      objectUnreadable(error, [object], true);
 
-   it("is a 400 in the reader's own words, naming the file rather than the staging path, without the SQL", () => {
-      const refusal = readerRefusal(
+   it("is a 422 in the reader's own words, naming the file rather than the staging path, without the SQL", () => {
+      const refusal = byName(
          new Error(
             `Invalid Input Error: No magic bytes found at end of file '${uri}'\n\nLINE 1: ...CREATE OR REPLACE TABLE "db_2"."main"."orders" AS SELECT * FROM read_parquet('${uri}')`,
          ),
          uri,
       );
-      expect(refusal).toBeInstanceOf(BadRequestError);
+      expect(refusal).toBeInstanceOf(LoadRefusalError);
       expect(refusal?.message).toBe(
          "Invalid Input Error: No magic bytes found at end of file 'broken.parquet'",
       );
+      expect(refusal?.reason).toBe("OBJECT_UNREADABLE");
+      expect(refusal?.detail).toBeUndefined();
    });
 
    it("leaves a storage or catalog failure alone, to answer 500", () => {
       expect(
-         readerRefusal(
-            new Error("IO Error: Connection error for HTTP HEAD"),
-            uri,
-         ),
+         byName(new Error("IO Error: Connection error for HTTP HEAD"), uri),
       ).toBeNull();
       // Arithmetic, which a `SELECT *` from a reader never does.
       expect(
-         readerRefusal(
+         byName(
             new Error(
                "Out of Range Error: Overflow in multiplication of INT8 (100 * 2)!",
             ),
             uri,
          ),
       ).toBeNull();
-      expect(readerRefusal("not an error", uri)).toBeNull();
+      expect(byName("not an error", uri)).toBeNull();
    });
 
-   it("is a 400 for a workbook read_xlsx cannot use, so a retry is never spent on one", () => {
+   it("is a 422 for a workbook read_xlsx cannot use, so a retry is never spent on one", () => {
       const book = "s3://lake/org_1/db_2/staging/orders/0e1f/book.xlsx";
       for (const message of [
          `Binder Error: Sheet "Sheet9" not found in xlsx file "${book}"`,
@@ -192,8 +192,8 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
          `Binder Error: No [Content_Types].xml found in xlsx file "${book}"`,
          "IO Error: Failed to open zip for reading",
       ]) {
-         const refusal = readerRefusal(new Error(message), book);
-         expect([message, refusal instanceof BadRequestError]).toEqual([
+         const refusal = byName(new Error(message), book);
+         expect([message, refusal instanceof LoadRefusalError]).toEqual([
             message,
             true,
          ]);
@@ -201,7 +201,7 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
       }
       // Any other Binder Error is not the workbook's fault.
       expect(
-         readerRefusal(
+         byName(
             new Error('Binder Error: Referenced column "x" not found'),
             book,
          ),
@@ -252,8 +252,8 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
          expect(thrown.message).toMatch(
             /^Invalid Input Error: No magic bytes found/,
          );
-         const refusal = readerRefusal(thrown, file);
-         expect(refusal).toBeInstanceOf(BadRequestError);
+         const refusal = byName(thrown, file);
+         expect(refusal).toBeInstanceOf(LoadRefusalError);
          expect(refusal?.message).toContain("'broken.parquet'");
          expect(refusal?.message).not.toContain(dir);
          // The SQL DuckDB echoes after `LINE 1:` names the staging path again.
@@ -266,8 +266,8 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
          expect(thrown.message).toMatch(
             /^IO Error: No files found that match the pattern/,
          );
-         const refusal = readerRefusal(thrown, file);
-         expect(refusal).toBeInstanceOf(BadRequestError);
+         const refusal = byName(thrown, file);
+         expect(refusal).toBeInstanceOf(LoadRefusalError);
          expect(refusal?.message).toContain('"absent.parquet"');
          expect(refusal?.message).not.toContain(dir);
       });
@@ -282,7 +282,7 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
          expect(thrown.message).toMatch(
             /^Binder Error: Sheet "NoSuchSheet" not found in xlsx file/,
          );
-         expect(readerRefusal(thrown, book)).toBeInstanceOf(BadRequestError);
+         expect(byName(thrown, book)).toBeInstanceOf(LoadRefusalError);
       });
 
       it("for an xlsx object that is not a workbook", async () => {
@@ -292,7 +292,7 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
          expect(thrown.message).toMatch(
             /^IO Error: Failed to open zip for reading/,
          );
-         expect(readerRefusal(thrown, file)).toBeInstanceOf(BadRequestError);
+         expect(byName(thrown, file)).toBeInstanceOf(LoadRefusalError);
       });
 
       it("for a CSV value the column's type cannot hold", async () => {
@@ -306,8 +306,8 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
          expect(thrown.message).toMatch(
             /^Conversion Error: CSV Error on Line: 3\n/,
          );
-         const refusal = readerRefusal(thrown, file);
-         expect(refusal).toBeInstanceOf(BadRequestError);
+         const refusal = byName(thrown, file);
+         expect(refusal).toBeInstanceOf(LoadRefusalError);
          expect(refusal?.message).toContain(
             `Could not convert string "N/A" to 'DOUBLE'`,
          );
@@ -362,7 +362,7 @@ describe("objectUnreadable: the reader failures a retry cannot cure", () => {
          uris,
       );
       expect(refusal).toBeInstanceOf(LoadRefusalError);
-      expect(refusal?.reason).toBe("LOAD_OBJECT_UNREADABLE");
+      expect(refusal?.reason).toBe("OBJECT_UNREADABLE");
       expect(refusal?.message).not.toContain("gs://");
       expect(refusal?.message).not.toContain("LINE 1");
       if (message.includes(uris[1])) {
@@ -588,7 +588,7 @@ describe("loadLayout: the objects' columns against the table's", () => {
       } catch (error) {
          expect(error).toBeInstanceOf(LoadRefusalError);
          expect((error as LoadRefusalError).reason).toBe(
-            "LOAD_SCHEMA_CONTRACT",
+            "LOAD_COLUMN_MISMATCH",
          );
          return error as LoadRefusalError;
       }
@@ -661,7 +661,7 @@ describe("loadLayout: the objects' columns against the table's", () => {
             column: "X",
             tableType,
             loadType: load,
-            detail: "type_change",
+            violation: "type_change",
          });
          return;
       }
@@ -683,12 +683,12 @@ describe("loadLayout: the objects' columns against the table's", () => {
    it("refuses a key that is not a column of both sides", () => {
       expect(
          contract(() => loadLayout({ key: ["nope"] }, stage, table)).detail,
-      ).toMatchObject({ column: "nope", detail: "missing_key" });
+      ).toMatchObject({ column: "nope", violation: "missing_key" });
       expect(
          contract(() => loadLayout({ key: ["extra"] }, stage, table)).detail,
       ).toMatchObject({
          column: "extra",
-         detail: "missing_key",
+         violation: "missing_key",
          tableType: "INTEGER",
       });
       expect(
@@ -701,7 +701,7 @@ describe("loadLayout: the objects' columns against the table's", () => {
          ).detail,
       ).toMatchObject({
          column: "w",
-         detail: "missing_key",
+         violation: "missing_key",
          loadType: "INTEGER",
       });
    });
@@ -742,13 +742,13 @@ describe("loadLayout: the objects' columns against the table's", () => {
          ).toMatchObject({
             column: "c",
             loadType: type,
-            detail: "cursor_type",
+            violation: "cursor_type",
          });
       }
       expect(
          contract(() => loadLayout({ key: ["id"], cursor: "c" }, stage, null))
             .detail,
-      ).toMatchObject({ detail: "missing_cursor" });
+      ).toMatchObject({ violation: "missing_cursor" });
    });
 
    it("refuses a table column named like the load's own helper columns, whatever its case", () => {
@@ -760,7 +760,7 @@ describe("loadLayout: the objects' columns against the table's", () => {
                   { name, type: "INTEGER" },
                ]),
             ).detail,
-         ).toMatchObject({ column: name, detail: "reserved_name" });
+         ).toMatchObject({ column: name, violation: "reserved_name" });
       }
    });
 });
@@ -836,15 +836,15 @@ describe("sourceColumns: the columns the objects' schemas hold", () => {
          column: "",
          tableType: null,
          loadType: null,
-         detail: "no_columns",
+         violation: "no_columns",
       });
       expect(
          contract(() =>
             sourceColumns([shape(["root", 1], ["x", 0, "NullType()"])]),
          ),
-      ).toMatchObject({ detail: "no_columns" });
+      ).toMatchObject({ violation: "no_columns" });
       expect(contract(() => sourceColumns([]))).toMatchObject({
-         detail: "no_columns",
+         violation: "no_columns",
       });
    });
 
@@ -858,14 +858,14 @@ describe("sourceColumns: the columns the objects' schemas hold", () => {
       ]) {
          expect(
             contract(() => sourceColumns([shape(["root", 1], [name, 0])])),
-         ).toMatchObject({ column: name, detail: "reserved_name" });
+         ).toMatchObject({ column: name, violation: "reserved_name" });
       }
       // Within one schema, and across two.
       expect(
          contract(() =>
             sourceColumns([shape(["root", 2], ["a", 0], ["A", 0])]),
          ),
-      ).toMatchObject({ column: "a", detail: "case_collision" });
+      ).toMatchObject({ column: "a", violation: "case_collision" });
       expect(
          contract(() =>
             sourceColumns([
@@ -873,13 +873,13 @@ describe("sourceColumns: the columns the objects' schemas hold", () => {
                shape(["root", 1], ["id", 0]),
             ]),
          ),
-      ).toMatchObject({ column: "id", detail: "case_collision" });
+      ).toMatchObject({ column: "id", violation: "case_collision" });
       // A name repeated within one schema.
       expect(
          contract(() =>
             sourceColumns([shape(["root", 2], ["a", 0], ["a", 0])]),
          ),
-      ).toMatchObject({ detail: "case_collision" });
+      ).toMatchObject({ violation: "case_collision" });
    });
 
    it.each(["UNKNOWN", "NullType()"])(
@@ -891,7 +891,7 @@ describe("sourceColumns: the columns the objects' schemas hold", () => {
                   shape(["root", 2], ["a", 0, nullType], ["A", 0]),
                ]),
             ),
-         ).toMatchObject({ column: "a", detail: "case_collision" });
+         ).toMatchObject({ column: "a", violation: "case_collision" });
       },
    );
 

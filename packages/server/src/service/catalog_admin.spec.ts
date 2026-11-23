@@ -13,7 +13,12 @@ import {
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
 import { CatalogAdmin, CatalogAdminError, withLoadSlot } from "./catalog_admin";
-import { LoadRefusalError } from "./materialization/run/storage_table_load";
+import {
+   LoadRefusalError,
+   loadLayout,
+   objectUnreadable,
+} from "./materialization/run/storage_table_load";
+import { DUCKDB_STATEMENT_SEPARATOR } from "./single_select";
 
 const SERVER_SRC = resolve(__dirname, "..");
 const REPO_ROOT = resolve(__dirname, "../../../..");
@@ -24,7 +29,7 @@ const admin = new CatalogAdmin({
 });
 
 const valid = {
-   loadId: "run_1:charges",
+   commitMessage: "nightly charges",
    mode: "merge",
    key: ["id"],
    objects: ["gs://b/p/a.parquet", "gs://b/p/b.parquet"],
@@ -75,7 +80,6 @@ describe("a load's request body", () => {
       // A keyless replace needs a guard, not a key.
       const replace = await admin
          .loadTable("c", "s", "t", {
-            loadId: "x",
             mode: "replace",
             maxDeletedRows: 0,
             objects: ["o"],
@@ -91,14 +95,32 @@ describe("a load's request body", () => {
       ["a body that is not an object", [valid], "body must be a JSON object"],
       ["no body", undefined, "body must be a JSON object"],
       ["an unknown key", { ...valid, bogus: 1 }, "Unknown key 'bogus'."],
-      ["no loadId", { ...valid, loadId: undefined }, "'loadId'"],
-      ["a loadId with a space", { ...valid, loadId: "a b" }, "'loadId'"],
+      ["a loadId, which is gone", { ...valid, loadId: "x" }, "Unknown key"],
       [
-         "a loadId over 128 characters",
-         { ...valid, loadId: "a".repeat(129) },
-         "'loadId'",
+         "an empty commitMessage",
+         { ...valid, commitMessage: "" },
+         "'commitMessage'",
       ],
-      ["an empty loadId", { ...valid, loadId: "" }, "'loadId'"],
+      [
+         "a commitMessage that is not text",
+         { ...valid, commitMessage: 1 },
+         "'commitMessage'",
+      ],
+      [
+         "a commitMessage over 1024 characters",
+         { ...valid, commitMessage: "a".repeat(1025) },
+         "'commitMessage'",
+      ],
+      [
+         "a commitMessage with a NUL",
+         { ...valid, commitMessage: "a\0b" },
+         "no NUL",
+      ],
+      [
+         "a commitMessage holding the statement separator",
+         { ...valid, commitMessage: `a ${DUCKDB_STATEMENT_SEPARATOR} b` },
+         "statement separator",
+      ],
       ["no mode", { ...valid, mode: undefined }, "'mode'"],
       ["a refresh mode", { ...valid, mode: "refresh" }, "'mode'"],
       [
@@ -169,6 +191,24 @@ describe("a load's request body", () => {
       },
    );
 
+   it("takes a commitMessage of 1024 characters, or none", async () => {
+      for (const commitMessage of [
+         "a".repeat(1024),
+         "😀".repeat(1024),
+         undefined,
+      ]) {
+         const error = await admin
+            .loadTable("c", "s", "t", { ...valid, commitMessage })
+            .then(
+               () => undefined,
+               (e) => e,
+            );
+         expect((error as CatalogAdminError).reason).not.toBe(
+            "INVALID_REQUEST",
+         );
+      }
+   });
+
    it("accepts 16 key columns and 1000 objects", async () => {
       const error = await admin
          .loadTable("c", "s", "t", {
@@ -206,13 +246,13 @@ describe("a load's failure as an admin refusal", () => {
 
    it("answers a refusal of the load as a 422 with its detail", () => {
       const mapped = failure(
-         new LoadRefusalError("LOAD_ROW_DROP_GUARD", "too many", {
+         new LoadRefusalError("LOAD_DELETE_LIMIT_EXCEEDED", "too many", {
             wouldDelete: 4,
          }),
       ) as CatalogAdminError;
       expect([mapped.status, mapped.reason, mapped.detail]).toEqual([
          422,
-         "LOAD_ROW_DROP_GUARD",
+         "LOAD_DELETE_LIMIT_EXCEEDED",
          { wouldDelete: 4 },
       ]);
    });
@@ -263,6 +303,34 @@ describe("a load's failure as an admin refusal", () => {
          );
          expect((mapped as Error).cause).toBe(original);
       }
+   });
+});
+
+describe("a table PUT's failure as an admin refusal", () => {
+   const redacted = (error: unknown) =>
+      (admin as unknown as { redacted(error: unknown): unknown }).redacted(
+         error,
+      );
+
+   it("answers an object the reader refused as 422 OBJECT_UNREADABLE, as a load does", () => {
+      const refusal = objectUnreadable(
+         new Error(
+            "Invalid Input Error: No magic bytes found at end of file 'gs://b/p/a.parquet'",
+         ),
+         ["gs://b/p/a.parquet"],
+         true,
+      );
+      const mapped = redacted(refusal) as CatalogAdminError;
+      expect([mapped.status, mapped.reason, mapped.message]).toEqual([
+         422,
+         "OBJECT_UNREADABLE",
+         "Invalid Input Error: No magic bytes found at end of file 'a.parquet'",
+      ]);
+   });
+
+   it("does not turn a transaction conflict into a load's 409", () => {
+      const conflict = new Error("Transaction conflict - attempting to insert");
+      expect(redacted(conflict)).toBe(conflict);
    });
 });
 
@@ -319,6 +387,7 @@ describe("the admin API's documented reasons", () => {
    const doc = parse(read(resolve(REPO_ROOT, "admin-api-doc.yaml")));
    const documented: string =
       doc.components.schemas.Error.properties.reason.description;
+   const schemas = doc.components.schemas;
 
    it("finds the reasons the code throws", () => {
       // A pattern that matched nothing would pass the next check vacuously.
@@ -327,15 +396,15 @@ describe("the admin API's documented reasons", () => {
             "CATALOG_NOT_FOUND",
             "LOAD_BUSY",
             "LOAD_CONFLICT",
-            "LOAD_SCHEMA_CONTRACT",
-            "LOAD_ROW_DROP_GUARD",
-            "LOAD_OBJECT_UNREADABLE",
+            "LOAD_COLUMN_MISMATCH",
+            "LOAD_DELETE_LIMIT_EXCEEDED",
+            "OBJECT_UNREADABLE",
          ]),
       );
    });
 
-   it("lists every contract detail the code gives", () => {
-      const details = [
+   it("lists every contract violation the code gives, and no other", () => {
+      const violations = [
          ...read(
             resolve(
                SERVER_SRC,
@@ -343,15 +412,56 @@ describe("the admin API's documented reasons", () => {
             ),
          ).matchAll(/contractRefusal\(\s*"([a-z_]+)"/g),
       ].map((m) => m[1]);
-      expect(details.length).toBeGreaterThan(5);
+      expect(violations.length).toBeGreaterThan(5);
+      expect([...new Set(violations)].sort()).toEqual(
+         [...schemas.ColumnMismatchDetail.properties.violation.enum].sort(),
+      );
+   });
+
+   it("gives the detail keys the spec's schemas require", () => {
+      const mismatch = (() => {
+         try {
+            loadLayout(
+               { key: ["nope"] },
+               [{ name: "id", type: "BIGINT" }],
+               null,
+            );
+         } catch (error) {
+            return (error as LoadRefusalError).detail;
+         }
+         throw new Error("the load layout accepted a key the objects lack");
+      })();
+      expect(Object.keys(mismatch!).sort()).toEqual(
+         [...schemas.ColumnMismatchDetail.required].sort(),
+      );
+      const unreadable = objectUnreadable(
+         new Error('IO Error: No files found that match the pattern "a"'),
+         ["a"],
+      );
+      expect(Object.keys(unreadable!.detail!).sort()).toEqual(
+         [...schemas.ObjectUnreadableDetail.required].sort(),
+      );
+      const limit = read(
+         resolve(
+            SERVER_SRC,
+            "service/materialization/run/storage_table_load.ts",
+         ),
+      ).match(/"LOAD_DELETE_LIMIT_EXCEEDED",\s*`[^`]*`,\s*\{([^}]*)\}/);
+      expect(limit).not.toBeNull();
       expect(
-         details.filter((detail) => !documented.includes(`\`${detail}\``)),
-      ).toEqual([]);
+         [...limit![1].matchAll(/^\s*(\w+)/gm)].map((m) => m[1]).sort(),
+      ).toEqual([...schemas.DeleteLimitDetail.required].sort());
    });
 
    it("lists every reason the code throws in the spec", () => {
-      expect(
-         [...thrown].filter((reason) => !documented.includes(reason)),
-      ).toEqual([]);
+      // The list itself: the prose below it names each reason again, which would keep a stale list entry passing.
+      const listed = documented
+         .match(/Machine-readable:([^.]*)\./)![1]
+         .split(",")
+         .map((reason) => reason.trim());
+      expect(listed.length).toBeGreaterThan(10);
+      expect([...thrown].filter((reason) => !listed.includes(reason))).toEqual(
+         [],
+      );
    });
 });

@@ -148,7 +148,6 @@ describe.skipIf(!SUPERUSER)("table load admission", () => {
                // Both are held; the slot answers first.
                const error = await refusal(
                   admin.loadTable("c", "s", "t", {
-                     loadId: "x",
                      mode: "merge",
                      key: ["id"],
                      objects: ["o"],

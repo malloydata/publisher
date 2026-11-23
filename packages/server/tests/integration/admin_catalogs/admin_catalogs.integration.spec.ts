@@ -347,6 +347,40 @@ describe.skipIf(!SUPERUSER)(
          ]);
       });
 
+      it("refuses a missing object and a file that is not Parquet as 422 OBJECT_UNREADABLE, writing nothing", async () => {
+         writeFileSync(
+            join(root, "ds_owned", "broken.parquet"),
+            "this is not parquet",
+         );
+         for (const file of ["broken.parquet", "absent.parquet"]) {
+            const error = await refusal(
+               admin.putTable(
+                  "ds_owned",
+                  "main",
+                  "unreadable",
+                  {
+                     source: {
+                        uri: join(root, "ds_owned", file),
+                        format: "parquet",
+                     },
+                  },
+                  false,
+               ),
+            );
+            expect([file, error.status, error.reason]).toEqual([
+               file,
+               422,
+               "OBJECT_UNREADABLE",
+            ]);
+            expect(error.message).toContain(file);
+            expect(error.message).not.toContain(root);
+            expect(error.detail).toBeUndefined();
+         }
+         expect(
+            (await admin.listTables("ds_owned", "main")).map((t) => t.name),
+         ).toEqual(["orders"]);
+      });
+
       it("lists and describes the table, and counts its bytes in the catalog", async () => {
          const tables = keep(await admin.listTables("ds_owned", "main"));
          expect(tables.map((t) => t.name)).toEqual(["orders"]);

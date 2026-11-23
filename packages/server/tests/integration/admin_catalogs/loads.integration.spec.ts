@@ -139,11 +139,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
       table: string,
       body: Record<string, unknown>,
       catalog = CATALOG,
-   ) =>
-      admin.loadTable(catalog, "s", table, {
-         loadId: `run:${counter++}`,
-         ...body,
-      });
+   ) => admin.loadTable(catalog, "s", table, body);
 
    const merge = (
       table: string,
@@ -442,6 +438,46 @@ describe.skipIf(!SUPERUSER)("loads", () => {
       });
    });
 
+   describe("the commit message", () => {
+      const newest = async () => (await admin.listSnapshots(CATALOG, 1))[0];
+
+      it("is the caller's commitMessage verbatim, listed with the author publisher-admin", async () => {
+         const object = await parquet("SELECT 1 AS id, 'a' AS v");
+         await load("msg_given", {
+            mode: "merge",
+            key: ["id"],
+            objects: [object],
+            commitMessage: "nightly 'orders' load",
+         });
+         expect(await newest()).toMatchObject({
+            author: "publisher-admin",
+            commitMessage: "nightly 'orders' load",
+         });
+      });
+
+      it("is `load <schema>.<table>` when the caller gives none", async () => {
+         const object = await parquet("SELECT 1 AS id, 'a' AS v");
+         await merge("msg_default", [object]);
+         expect(await newest()).toMatchObject({
+            author: "publisher-admin",
+            commitMessage: "load s.msg_default",
+         });
+      });
+
+      it("is recorded by no snapshot when the load changes nothing", async () => {
+         const object = await parquet("SELECT 1 AS id, 'a' AS v");
+         await merge("msg_noop", [object]);
+         const before = await newest();
+         await load("msg_noop", {
+            mode: "merge",
+            key: ["id"],
+            objects: [object],
+            commitMessage: "a retry",
+         });
+         expect(await newest()).toEqual(before);
+      });
+   });
+
    describe("replace", () => {
       async function seeded(table: string): Promise<void> {
          await merge(table, [
@@ -492,7 +528,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          );
          expect([error.status, error.reason]).toEqual([
             422,
-            "LOAD_ROW_DROP_GUARD",
+            "LOAD_DELETE_LIMIT_EXCEEDED",
          ]);
          expect(error.detail).toEqual({
             wouldDelete: 4,
@@ -602,7 +638,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                objects: [empty],
             }),
          );
-         expect(error.reason).toBe("LOAD_ROW_DROP_GUARD");
+         expect(error.reason).toBe("LOAD_DELETE_LIMIT_EXCEEDED");
          expect(await rowsOf("rep_empty")).toHaveLength(5);
       });
    });
@@ -618,7 +654,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          const error = await refusal(promise);
          expect([error.status, error.reason]).toEqual([
             422,
-            "LOAD_SCHEMA_CONTRACT",
+            "LOAD_COLUMN_MISMATCH",
          ]);
          return error.detail!;
       }
@@ -731,7 +767,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             column: "n",
             tableType: "INTEGER",
             loadType: "VARCHAR",
-            detail: "type_change",
+            violation: "type_change",
          });
          // BIGINT into DOUBLE rounds past 2^53, and DOUBLE into BIGINT drops fractions.
          expect(
@@ -742,7 +778,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                   ),
                ]),
             ),
-         ).toMatchObject({ column: "x", detail: "type_change" });
+         ).toMatchObject({ column: "x", violation: "type_change" });
          expect(
             await contract(
                merge("c_narrow", [
@@ -751,7 +787,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                   ),
                ]),
             ),
-         ).toMatchObject({ column: "x", detail: "type_change" });
+         ).toMatchObject({ column: "x", violation: "type_change" });
          expect(await snapshotId()).toBe(before);
       });
 
@@ -766,7 +802,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             ),
          ).toMatchObject({
             column: "__publisher_present",
-            detail: "reserved_name",
+            violation: "reserved_name",
          });
       });
 
@@ -782,13 +818,13 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             column: "k",
             tableType: null,
             loadType: "BIGINT",
-            detail: "type_change",
+            violation: "type_change",
          });
          expect(
             await refusal(
                merge("c_mixed", await mixed("INTEGER", "VARCHAR")),
             ).then((error) => error.detail),
-         ).toMatchObject({ column: "k", detail: "type_change" });
+         ).toMatchObject({ column: "k", violation: "type_change" });
          expect(
             (await admin.listTables(CATALOG, "s")).map((t) => t.name),
          ).not.toContain("c_mixed");
@@ -804,14 +840,14 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          await seed("c_key", "SELECT 1 AS id, 'a' AS v");
          expect(
             await contract(merge("c_key", [await parquet("SELECT 'a' AS v")])),
-         ).toMatchObject({ column: "id", detail: "missing_key" });
+         ).toMatchObject({ column: "id", violation: "missing_key" });
          expect(
             await contract(
                merge("c_key", [
                   await parquet("SELECT NULL::INTEGER AS id, 'a' AS v"),
                ]),
             ),
-         ).toMatchObject({ detail: "null_key" });
+         ).toMatchObject({ violation: "null_key" });
          expect(await rowsOf("c_key")).toEqual([{ id: 1, v: "a" }]);
       });
 
@@ -823,7 +859,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                   await parquet("SELECT 2 AS id, 'y' AS V"),
                ]),
             ),
-         ).toMatchObject({ detail: "case_collision" });
+         ).toMatchObject({ violation: "case_collision" });
       });
 
       it("refuses a column name the load reserves", async () => {
@@ -834,7 +870,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                      await parquet(`SELECT 1 AS id, 1 AS ${name}`),
                   ]),
                ),
-            ).toMatchObject({ column: name, detail: "reserved_name" });
+            ).toMatchObject({ column: name, violation: "reserved_name" });
          }
       });
 
@@ -864,11 +900,11 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             column: "v",
             tableType: "VARCHAR",
             loadType: "VARCHAR",
-            detail: "cursor_type",
+            violation: "cursor_type",
          });
          expect(
             await contract(merge("c_cursor", [object], { cursor: "nope" })),
-         ).toMatchObject({ detail: "missing_cursor" });
+         ).toMatchObject({ violation: "missing_cursor" });
       });
    });
 
@@ -954,12 +990,12 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          );
          expect([error.status, error.reason, error.detail]).toEqual([
             422,
-            "LOAD_SCHEMA_CONTRACT",
+            "LOAD_COLUMN_MISMATCH",
             {
                column: "",
                tableType: null,
                loadType: null,
-               detail: "no_columns",
+               violation: "no_columns",
             },
          ]);
       });
@@ -1054,7 +1090,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          const error = await refusal(merge("unread", [good, missing]));
          expect([error.status, error.reason]).toEqual([
             422,
-            "LOAD_OBJECT_UNREADABLE",
+            "OBJECT_UNREADABLE",
          ]);
          expect(error.message).not.toContain("missing.parquet");
          expect(error.message).not.toContain(root);
@@ -1068,7 +1104,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          const error = await refusal(merge("unread2", [file]));
          expect([error.status, error.reason]).toEqual([
             422,
-            "LOAD_OBJECT_UNREADABLE",
+            "OBJECT_UNREADABLE",
          ]);
          expect(error.message).not.toContain(root);
       });
@@ -1136,7 +1172,6 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             (
                await refusal(
                   admin.loadTable("nowhere", "s", "t", {
-                     loadId: "x",
                      mode: "merge",
                      key: ["id"],
                      objects: [object],
@@ -1148,7 +1183,6 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             (
                await refusal(
                   admin.loadTable(CATALOG, "nowhere", "t", {
-                     loadId: "x",
                      mode: "merge",
                      key: ["id"],
                      objects: [object],
@@ -1205,7 +1239,6 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                try {
                   busy = await refusal(
                      other.loadTable(CATALOG, "s", "overlap", {
-                        loadId: "second",
                         mode: "merge",
                         key: ["id"],
                         objects: [object],
@@ -1222,7 +1255,6 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          expect(first.rowsInserted).toBe(3);
          expect(
             await other.loadTable(CATALOG, "s", "overlap", {
-               loadId: "third",
                mode: "merge",
                key: ["id"],
                objects: [object],
@@ -1295,7 +1327,6 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             await admin.createSchema(CATALOG, schema, undefined, false);
             const loadInto = (objects: string[]) =>
                admin.loadTable(CATALOG, schema, "t", {
-                  loadId: `run:${counter++}`,
                   mode: "merge",
                   key: ["id"],
                   objects,
@@ -1489,7 +1520,6 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          columnGroupBudget?: number,
       ) =>
          mergeStorageTable({
-            loadId: `run:${counter++}`,
             destinationName: CATALOG,
             destinationConnection: destination,
             schemaName: "s",
@@ -1881,7 +1911,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          });
          expect(compares(shrunk.seen)).toBe(0);
          const refused = await recorded(() => refusal(replace(1, 0)));
-         expect(refused.value.reason).toBe("LOAD_ROW_DROP_GUARD");
+         expect(refused.value.reason).toBe("LOAD_DELETE_LIMIT_EXCEEDED");
          expect(refused.value.detail).toEqual({
             wouldDelete: 1,
             rowsBefore: 2,

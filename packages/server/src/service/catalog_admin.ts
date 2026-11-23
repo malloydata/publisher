@@ -55,6 +55,7 @@ import { parseS3Endpoint } from "./gcs_s3_utils";
 import { redactPgSecrets } from "../pg_helpers";
 import { errMessage } from "../utils";
 import { quoteIdentifier } from "./quoting";
+import { containsStatementSeparator } from "./single_select";
 import { withStatementUsage } from "./statement_usage";
 import {
    type LoadFormat,
@@ -267,6 +268,9 @@ export interface CatalogSnapshot {
    id: number;
    time: string;
    changes: Record<string, unknown>;
+   /** Who committed it, as DuckLake records it; null when none was set. */
+   author: string | null;
+   commitMessage: string | null;
 }
 
 /** Appends a libpq `options` setting that makes the session act as `role`. */
@@ -746,17 +750,22 @@ export class CatalogAdmin {
          (
             (await rows(
                s,
-               `SELECT snapshot_id, snapshot_time, changes FROM ${q(name)}.snapshots() ` +
+               `SELECT snapshot_id, snapshot_time, changes, author, commit_message FROM ${q(name)}.snapshots() ` +
                   `ORDER BY snapshot_id DESC LIMIT ${Math.max(1, Math.min(limit, 1000))}`,
             )) as {
                snapshot_id: unknown;
                snapshot_time: unknown;
                changes: unknown;
+               author: unknown;
+               commit_message: unknown;
             }[]
          ).map((r) => ({
             id: Number(r.snapshot_id),
             time: new Date(String(r.snapshot_time)).toISOString(),
             changes: (r.changes ?? {}) as Record<string, unknown>,
+            author: r.author == null ? null : String(r.author),
+            commitMessage:
+               r.commit_message == null ? null : String(r.commit_message),
          })),
       );
    }
@@ -964,7 +973,6 @@ export class CatalogAdmin {
                   catalog: name,
                   schema,
                   table,
-                  loadId: request.loadId,
                   mode: request.mode,
                   objects: request.objects.length,
                   rowsInserted: result.rowsInserted,
@@ -979,16 +987,8 @@ export class CatalogAdmin {
 
    // ---- internals ----
 
-   /** A load's failure as an admin refusal: the load's own 422s, and DuckLake's commit conflict, or a table another request created first, as a 409. */
+   /** A load's failure as an admin refusal: DuckLake's commit conflict, or a table another request created first, as a 409; the load's own 422s come from {@link redacted}. */
    private loadFailure(error: unknown): unknown {
-      if (error instanceof LoadRefusalError) {
-         return new CatalogAdminError(
-            422,
-            error.reason,
-            error.message,
-            error.detail,
-         );
-      }
       const mapped = this.redacted(error);
       if (
          mapped instanceof Error &&
@@ -1277,6 +1277,9 @@ export class CatalogAdmin {
       if (error instanceof CatalogAdminError) return error;
       const message = error instanceof Error ? error.message : String(error);
       const safe = redactPgSecrets(message);
+      if (error instanceof LoadRefusalError) {
+         return new CatalogAdminError(422, error.reason, safe, error.detail);
+      }
       if (
          /Existing DuckLake at metadata catalog .* does not exist/i.test(safe)
       ) {
@@ -1285,10 +1288,7 @@ export class CatalogAdmin {
       if (/must sit under the catalog's data path/.test(safe)) {
          return new CatalogAdminError(400, "OBJECT_OUTSIDE_DATA_PATH", safe);
       }
-      // A request the load path refused -- a reader option it cannot use, or a
-      // file the reader refused (not the format it claims, a value it cannot
-      // convert; storage_table_load.ts's readerRefusal): a 400 with a reason,
-      // like every other admin refusal.
+      // A request the load path refused (a reader option it cannot use): a 400 with a reason, like every other admin refusal.
       if (error instanceof BadRequestError) {
          return new CatalogAdminError(400, "INVALID_REQUEST", safe);
       }
@@ -1379,15 +1379,14 @@ function onlyKeys(
    }
 }
 
-/** A load's `loadId`: provenance only, so the alphabet is one a commit message and a log line carry as they are. */
-const LOAD_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+const MAX_COMMIT_MESSAGE = 1024;
 /** Key and cursor columns are lowercase identifiers; the load matches them to the objects' columns by name, ignoring case. */
 const LOAD_COLUMN = /^[a-z_][a-z0-9_]*$/;
 const MAX_LOAD_OBJECTS = 1000;
 const MAX_LOAD_KEYS = 16;
 
 interface LoadRequest {
-   loadId: string;
+   commitMessage?: string;
    mode: "merge" | "replace";
    /** Empty for a keyless replace. */
    key: string[];
@@ -1404,14 +1403,27 @@ function loadRequest(value: unknown): LoadRequest {
    }
    onlyKeys(
       body,
-      ["loadId", "mode", "key", "objects", "cursor", "maxDeletedRows"],
+      ["commitMessage", "mode", "key", "objects", "cursor", "maxDeletedRows"],
       "",
    );
-   const { loadId, mode, cursor, maxDeletedRows } = body;
-   if (typeof loadId !== "string" || !LOAD_ID.test(loadId)) {
-      throw badRequest(
-         "'loadId' must be 1 to 128 characters of letters, digits, '.', '_', ':' and '-'.",
-      );
+   const { commitMessage, mode, cursor, maxDeletedRows } = body;
+   if (commitMessage !== undefined) {
+      if (
+         typeof commitMessage !== "string" ||
+         commitMessage === "" ||
+         [...commitMessage].length > MAX_COMMIT_MESSAGE ||
+         commitMessage.includes("\0")
+      ) {
+         throw badRequest(
+            `'commitMessage' must be 1 to ${MAX_COMMIT_MESSAGE} characters, with no NUL.`,
+         );
+      }
+      // runSQL splits on the separator even inside a literal, so such a message would fail every retry with a 500.
+      if (containsStatementSeparator(commitMessage)) {
+         throw badRequest(
+            "'commitMessage' may not contain a statement separator.",
+         );
+      }
    }
    if (mode !== "merge" && mode !== "replace") {
       throw badRequest("'mode' must be 'merge' or 'replace'.");
@@ -1450,7 +1462,9 @@ function loadRequest(value: unknown): LoadRequest {
       throw badRequest("'objects' must list at least one object.");
    }
    return {
-      loadId,
+      ...(commitMessage !== undefined
+         ? { commitMessage: commitMessage as string }
+         : {}),
       mode,
       key,
       objects,

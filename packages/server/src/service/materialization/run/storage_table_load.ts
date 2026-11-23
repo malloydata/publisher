@@ -186,7 +186,7 @@ export async function loadStorageTable(params: {
       },
       (session) =>
          writeTableAs(session, params, reader, (error) =>
-            readerRefusal(error, params.uri),
+            objectUnreadable(error, [params.uri], true),
          ),
    );
 }
@@ -323,35 +323,6 @@ function readerWords(
       words = words.split(uri).join(label);
    }
    return redactStorageUrls(words).trim();
-}
-
-/**
- * A load the file reader refused, as the person who sent the file should read it: a 400
- * carrying DuckDB's own words ("No magic bytes found", `Could not convert string "N/A" to
- * 'DOUBLE'`), which name the fix, rather than a 500 a caller can only retry. The object's URI,
- * an internal staging path, is replaced by its file name, and the SQL DuckDB echoes after
- * `LINE` is dropped. A missing object is refused the same way, so a 500 is always one a retry
- * may cure. Null for anything else (a storage or catalog failure), which stays a 500.
- *
- * Applied only to the `CREATE TABLE ... AS SELECT` that runs the reader (see
- * {@link writeTableAs}): the flush, count and describe after it run against the
- * catalog, not the file, so their failures stay 500 whatever their prefix.
- *
- * A 400 is not logged on its own, and the route logs only the message returned, so
- * the original -- the staging path and the SQL -- is logged here at warn for the
- * operator reading an odd 400.
- */
-export function readerRefusal(
-   error: unknown,
-   uri: string,
-): BadRequestError | null {
-   if (!(error instanceof Error) || readerFault(error, [uri]) === null) {
-      return null;
-   }
-   logInternalFailure("Load refused by the file reader", error, "warn");
-   return new BadRequestError(
-      readerWords(error, [[uri, path.posix.basename(uri)]]),
-   );
 }
 
 /**
@@ -503,7 +474,7 @@ const COPY_SOURCE_ALIAS = "__copy_source";
  * inlining off, and the table's row count and columns after.
  *
  * `refused` classifies a failure of that statement alone: the error it returns
- * is thrown in place of the original (the load passes {@link readerRefusal}).
+ * is thrown in place of the original (the load passes {@link objectUnreadable}).
  * It never sees the flush, count or describe that follow, which fail against the
  * catalog after the table is committed, so a retry would meet the table.
  *
@@ -612,9 +583,9 @@ export interface LoadResult {
 }
 
 type LoadRefusalReason =
-   | "LOAD_SCHEMA_CONTRACT"
-   | "LOAD_ROW_DROP_GUARD"
-   | "LOAD_OBJECT_UNREADABLE";
+   | "LOAD_COLUMN_MISMATCH"
+   | "LOAD_DELETE_LIMIT_EXCEEDED"
+   | "OBJECT_UNREADABLE";
 
 /** A keyed load the request's objects or the table's contract refuse: 422 with `reason`, and `detail` for the caller to act on. */
 export class LoadRefusalError extends Error {
@@ -717,16 +688,16 @@ function cursorMaxSql(name: string, kind: CursorKind): string {
 }
 
 function contractRefusal(
-   detail: string,
+   violation: string,
    column: string,
    message: string,
    types: { tableType?: string; loadType?: string } = {},
 ): LoadRefusalError {
-   return new LoadRefusalError("LOAD_SCHEMA_CONTRACT", message, {
+   return new LoadRefusalError("LOAD_COLUMN_MISMATCH", message, {
       column,
       tableType: types.tableType ?? null,
       loadType: types.loadType ?? null,
-      detail,
+      violation,
    });
 }
 
@@ -1050,13 +1021,17 @@ async function assertObjectTypesConvert(
 }
 
 /**
- * A keyed load's objects the reader refused ({@link readerFault}), as a 422 in
- * DuckDB's words with each URI named by its place in `objects`. Null for
- * anything else, which stays a 500. Exported for tests.
+ * The objects a load's reader refused ({@link readerFault}), as a 422 in DuckDB's
+ * words, with each URI named by its place in `objects` and the SQL it echoes dropped.
+ * A table PUT's one object has no place in a list, so `byName` names it by its file
+ * name and gives no `detail`. Null for anything else (a storage or catalog failure),
+ * which stays a 500. The original, which holds the staging path and the SQL, is
+ * logged at warn. Exported for tests.
  */
 export function objectUnreadable(
    error: unknown,
    uris: readonly string[],
+   byName = false,
 ): LoadRefusalError | null {
    if (!(error instanceof Error) || !readerFault(error, uris)) return null;
    logInternalFailure("Load could not read an object", error, "warn");
@@ -1064,10 +1039,14 @@ export function objectUnreadable(
    const object = uris.findIndex((uri) => said.includes(uri));
    const words = readerWords(
       error,
-      uris.map((uri, i) => [uri, `objects[${i}]`] as const),
+      uris.map(
+         (uri, i) =>
+            [uri, byName ? path.posix.basename(uri) : `objects[${i}]`] as const,
+      ),
    );
+   if (byName) return new LoadRefusalError("OBJECT_UNREADABLE", words);
    return new LoadRefusalError(
-      "LOAD_OBJECT_UNREADABLE",
+      "OBJECT_UNREADABLE",
       object < 0
          ? `An object of the load could not be read: ${words}`
          : `objects[${object}] could not be read: ${words}`,
@@ -1490,7 +1469,8 @@ interface KeyedLoadParams {
    destinationConnection: ApiConnection;
    schemaName: string;
    tableName: string;
-   loadId: string;
+   /** The commit's message; `load <schema>.<table>` when absent. */
+   commitMessage?: string;
    mode: "merge" | "replace";
    /** Empty for a keyless replace. */
    key: string[];
@@ -1514,7 +1494,7 @@ interface KeyedLoadParams {
  * - The objects are read once into a stage that keeps the latest row of a
  *   key; they are checked against the table's columns (see {@link loadLayout}).
  * - Everything that reads the table (its columns, the plan, the counts, the
- *   row-drop guard) runs inside the one transaction (one snapshot) that writes
+ *   delete limit) runs inside the one transaction (one snapshot) that writes
  *   it, so DuckLake's commit-time check refuses a load whose table another
  *   replica replaced or dropped meanwhile. The caller's lock is confirmed
  *   before the commit; a load that changes nothing commits nothing.
@@ -1616,7 +1596,7 @@ async function planAndApply(
       plan.deleted > (params.maxDeletedRows ?? 0)
    ) {
       throw new LoadRefusalError(
-         "LOAD_ROW_DROP_GUARD",
+         "LOAD_DELETE_LIMIT_EXCEEDED",
          `The load would delete ${plan.deleted} of the table's ${rowsBefore} rows, more than maxDeletedRows (${params.maxDeletedRows ?? 0}).`,
          {
             wouldDelete: plan.deleted,
@@ -1666,11 +1646,8 @@ async function applyLoad(
            delete: `DELETE FROM ${target}`,
            insert: `INSERT INTO ${target} (${written.map(q).join(", ")}) SELECT ${written.map(q).join(", ")} FROM ${STAGE}`,
         };
-   const message = [
-      "load",
-      `${params.schemaName}.${params.tableName}`,
-      params.loadId,
-   ].join(":");
+   const message =
+      params.commitMessage ?? `load ${params.schemaName}.${params.tableName}`;
    if (!exists) {
       await session.runSQL(
          `CREATE TABLE ${target} AS SELECT ${written.map(q).join(", ")} FROM ${STAGE}`,
