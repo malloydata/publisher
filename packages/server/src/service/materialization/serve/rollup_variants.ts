@@ -369,6 +369,11 @@ interface RollupQuery {
     */
    rawSql: boolean;
    /**
+    * Whether the run target sets its own `timezone:`, which the rollup's
+    * stored times are not read in ({@link RollupStatics}).
+    */
+   timeZoned?: boolean;
+   /**
     * Set when the run target extends or renames the source the rollups
     * aggregate: that base's definition, and what the run target
     * adds to it.
@@ -428,6 +433,12 @@ export class RollupVariantServe {
        * with the plans; a source absent from it has none.
        */
       candidates?: ReadonlyMap<string, RollupCandidates>;
+      /**
+       * What a query on each candidate source declines by before reading
+       * its own shape ({@link RollupStatics}), by `sourceID`: the same for
+       * every query on the source, so read with the plans.
+       */
+      statics?: ReadonlyMap<string, RollupStatics>;
    };
 
    constructor(private readonly host: RollupVariantHost) {}
@@ -472,18 +483,22 @@ export class RollupVariantServe {
          byBase,
       };
       this.planMemo = built;
+      const candidates = new Map<string, RollupCandidates>();
+      const statics = new Map<string, RollupStatics>();
       if (modelDef && byBase.size > 0) {
-         const candidates = new Map<string, RollupCandidates>();
          for (const node of SourceMap.of(modelDef).nodes()) {
             const c = this.walkCandidates(node.sourceID);
             if (c.target || c.branches.length > 0) {
                candidates.set(node.sourceID, c);
+               statics.set(
+                  node.sourceID,
+                  rollupStaticsOf(node.def as object, modelDef, c),
+               );
             }
          }
-         built.candidates = candidates;
-      } else {
-         built.candidates = new Map();
       }
+      built.candidates = candidates;
+      built.statics = statics;
       return byBase;
    }
 
@@ -518,6 +533,33 @@ export class RollupVariantServe {
       return recorded === "unrecorded"
          ? walked
          : shadowFact("rollup_candidates", walked, recorded, showCandidates);
+   }
+
+   /**
+    * {@link rollupStaticsOf} for a query on `sourceID`, by
+    * `materialize.admissionMode`: looked up in what the plans recorded under
+    * `lookup`, walked on the query's own compile of the source under
+    * `probe`, both under `shadow` (the walk deciding).
+    */
+   private staticsFor(
+      sourceID: string,
+      struct: object,
+      modelDef: unknown,
+      candidates: RollupCandidates,
+   ): RollupStatics {
+      const walk = () => rollupStaticsOf(struct, modelDef, candidates);
+      const mode = admissionMode();
+      if (mode === "probe") return walk();
+      const recorded = this.planMemo?.statics?.get(sourceID);
+      if (mode === "lookup") {
+         if (recorded) return recorded;
+         reportQueryWalk("rollup_candidates");
+         return walk();
+      }
+      const walked = walk();
+      return recorded === undefined
+         ? walked
+         : shadowFact("rollup_candidates", walked, recorded, showStatics);
    }
 
    /**
@@ -596,13 +638,17 @@ export class RollupVariantServe {
          throw new NoRollupForQuery("the query's source declares no rollup");
       }
       const plans = target?.plans ?? [];
-      const extension = target?.extension;
-      // The live entry point's gates, as the governor walks them: a query
-      // reaches here past them only when the router let the leg through.
-      const gates = liveEntryPointGates(
+      // The source's own facts, recorded with the plans: its live entry
+      // point's gates (as the governor walks them: a query reaches here past
+      // them only when the router let the leg through), its zone, its
+      // extension's verdict and each join branch's gate decline.
+      const statics = this.staticsFor(
+         sourceID,
          struct,
-         prepared.modelDef ?? (modelDef as never),
+         prepared.modelDef ?? modelDef,
+         candidates,
       );
+      const gates = statics.gates;
       const shape = queryShapeOf(prepared.query, struct, {
          sourceName: localName,
       });
@@ -623,14 +669,20 @@ export class RollupVariantServe {
       // An extension that adds more than fields declines its base's rollups
       //; its own joins' rollups are still tried.
       let ownPlans = plans;
-      if (extension) {
-         try {
-            extension.delta = checkExtension(struct, extension.baseDef);
-         } catch (error) {
-            if (!isDeclineOf(error, "rollup")) throw error;
-            first = error;
+      let extension: RollupQuery["extension"];
+      if (target?.extension) {
+         const verdict = statics.extension;
+         if (verdict && "decline" in verdict) {
+            first = verdict.decline;
             ownPlans = [];
-            for (const plan of plans) members.set(plan.rollupSourceName, error);
+            for (const plan of plans) {
+               members.set(plan.rollupSourceName, verdict.decline);
+            }
+         } else {
+            extension = {
+               baseDef: target.extension.baseDef,
+               ...(verdict ? { delta: verdict.delta } : {}),
+            };
          }
       }
       // The views the query reads by name: the one its text runs,
@@ -650,6 +702,7 @@ export class RollupVariantServe {
          shape,
          views,
          rawSql: readsRawSql(prepared.query),
+         timeZoned: statics.timeZoned,
          ...(gates ? { gates } : {}),
          ...(zoned ? { zoned } : {}),
          ...(extension ? { extension } : {}),
@@ -667,7 +720,7 @@ export class RollupVariantServe {
       // Then a joined source's rollup, read through the join: the
       // join branches, inside the rollup step.
       const usage = branches.length > 0 ? queryFieldUsagePaths(prepared) : [];
-      for (const { branch, refusal } of branches) {
+      for (const [i, { branch, refusal }] of branches.entries()) {
          // Through a join, a zoned query is read from the joined source's
          // rollup by the same rule as its own: what the query reads
          // through the join, and the grain the join meets, must not depend
@@ -703,7 +756,7 @@ export class RollupVariantServe {
             // declared in an overlay of the served copy's own copy of the
             // query source's declaring file (`compileJoinGated`),
             // so the gate lands there as on a database rollup's variant.
-            const gated = joinGateDecline(gates, struct, branch.plan);
+            const gated = statics.branchGates[i];
             if (gated) {
                first ??= gated;
                members.set(branch.plan.rollupSourceName, gated);
@@ -1410,7 +1463,7 @@ export class RollupVariantServe {
       // a grafted gate or a caller's filter on it compared, in another zone:
       // live's answer would differ, and a truncation gate would admit groups
       // live refuses.
-      if (timezoneOf(query.struct) !== undefined) {
+      if (query.timeZoned) {
          throw new LegDecline(
             "rollup_time_zone",
             "the query's source sets its own time zone, which the rollup's stored times are not read in",
@@ -3916,5 +3969,78 @@ function showCandidates(c: RollupCandidates): string | undefined {
       ),
       extension: ext ? String(ext.sourceID) : null,
       branches: c.branches.length,
+   });
+}
+
+/**
+ * What a query on one candidate source declines by, or carries, before its
+ * own shape is read: the same for every query on the source, so recorded
+ * with the plans and looked up per query.
+ */
+interface RollupStatics {
+   /** The live entry point's gates ({@link liveEntryPointGates}). */
+   readonly gates?: EnforcedGates;
+   /** Whether the source sets its own `timezone:`. */
+   readonly timeZoned: boolean;
+   /**
+    * For a source that extends or renames the rolled-up one, what it adds
+    * ({@link checkExtension}), or why its base's rollups decline.
+    */
+   readonly extension?: { delta: SourceDelta } | { decline: LegDecline };
+   /**
+    * Each join branch's decline past the entry point's gates
+    * ({@link joinGateDecline}), by the branch's index; empty when ungated.
+    */
+   readonly branchGates: readonly (LegDecline | undefined)[];
+}
+
+/** {@link RollupStatics} of the source `def`, as `modelDef` declares it. */
+function rollupStaticsOf(
+   def: object,
+   modelDef: unknown,
+   candidates: RollupCandidates,
+): RollupStatics {
+   const gates = liveEntryPointGates(def, modelDef);
+   let extension: RollupStatics["extension"];
+   const baseDef = candidates.target?.extension?.baseDef;
+   if (baseDef !== undefined) {
+      try {
+         extension = { delta: checkExtension(def, baseDef) };
+      } catch (error) {
+         if (!isDeclineOf(error, "rollup")) throw error;
+         extension = { decline: error };
+      }
+   }
+   return {
+      ...(gates ? { gates } : {}),
+      timeZoned: timezoneOf(def) !== undefined,
+      ...(extension ? { extension } : {}),
+      branchGates: gates
+         ? candidates.branches.map(({ branch }) =>
+              joinGateDecline(gates, def, branch.plan),
+           )
+         : [],
+   };
+}
+
+/** A rendering of a source's statics, for comparing a lookup with its walk. */
+function showStatics(s: RollupStatics): string {
+   const decline = (d: LegDecline | undefined) =>
+      d ? `${d.code}:${d.message}` : null;
+   return JSON.stringify({
+      gates: s.gates ?? null,
+      timeZoned: s.timeZoned,
+      extension: !s.extension
+         ? null
+         : "decline" in s.extension
+           ? decline(s.extension.decline)
+           : {
+                added: s.extension.delta.added.map(
+                   (a) => (a as { name?: unknown }).name,
+                ),
+                changed: s.extension.delta.changed,
+                addsFilter: s.extension.delta.addsFilter,
+             },
+      branchGates: s.branchGates.map(decline),
    });
 }

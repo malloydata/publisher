@@ -88,4 +88,57 @@ describe("the rollup leg's candidate list", () => {
          ["rollup_candidates", undefined],
       ]);
    });
+
+   describe("what a candidate source declines by before its shape is read", () => {
+      const candidates = { target: { plans: [PLAN] }, branches: [] };
+      function staticsFor(
+         serve: Record<string, unknown>,
+         struct: object,
+      ): unknown {
+         return (
+            serve.staticsFor as (
+               id: string,
+               struct: object,
+               modelDef: unknown,
+               c: unknown,
+            ) => unknown
+         ).call(serve, "orders@m", struct, { contents: {} }, candidates);
+      }
+
+      it("is looked up per query, walking nothing", async () => {
+         const recorded = { timeZoned: true, branchGates: [] };
+         const serve = serveWith(new Map(), undefined);
+         serve.planMemo = { statics: new Map([["orders@m", recorded]]) };
+         await withAdmissionMode("lookup", async () => {
+            expect(staticsFor(serve, {})).toBe(recorded);
+         });
+         expect(queryWalks().get("rollup_candidates")).toBeUndefined();
+      });
+
+      it("walks the query's own compile, and counts it, when none was recorded", async () => {
+         const serve = serveWith(new Map(), undefined);
+         serve.planMemo = { statics: new Map() };
+         await withAdmissionMode("lookup", async () => {
+            const walked = staticsFor(serve, {}) as { timeZoned: boolean };
+            expect(walked.timeZoned).toBe(false);
+         });
+         expect(queryWalks().get("rollup_candidates")).toBe(1);
+      });
+
+      it("answers the walk in shadow, and records drift when the record differs", async () => {
+         const serve = serveWith(new Map(), undefined);
+         serve.planMemo = {
+            statics: new Map([
+               ["orders@m", { timeZoned: true, branchGates: [] }],
+            ]),
+         };
+         await withAdmissionMode("shadow", async () => {
+            const walked = staticsFor(serve, {}) as { timeZoned: boolean };
+            expect(walked.timeZoned).toBe(false);
+         });
+         expect(parityDrifts().map((d) => d.side)).toEqual([
+            "rollup_candidates",
+         ]);
+      });
+   });
 });

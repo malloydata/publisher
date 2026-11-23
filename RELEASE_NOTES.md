@@ -51,7 +51,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Changed: each bind records, for every named source, what its gates and row scope read and whether it carries a gate or a row filter declared on a composite,** and read admission looks them up instead of walking the author's compile per query. A stored gate column's exactness is read from the table's column contract (`gateExact`, recorded at build from the column's origin), not judged per answer from the bind's types and the warehouse types they copy.
 
-**Changed: the rollup leg reads which rollups a query's source could answer from (its own, one through its extends and renames, one through a join) from a list built with the plans,** instead of walking the model's sources on every query.
+**Changed: the rollup leg reads which rollups a query's source could answer from (its own, one through its extends and renames, one through a join) from a list built with the plans,** instead of walking the model's sources on every query. The list also records what a query on each source declines by before its shape is read: the source's own gates (and, past them, each join branch's gate decline), its own `timezone:`, and, for an extension of the rolled-up source, an added `where:` or zone.
 
 ## [Unreleased] — a plain DuckDB destination's file is named from its configured name
 
