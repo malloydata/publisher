@@ -59,20 +59,10 @@ import { type ResultReads, resultReadsOfQuery } from "./result_reads";
 import {
    admissionMode,
    type FactSide,
-   holdParityAllowance,
    reportQueryWalk,
    shadowFact,
 } from "./admission_parity";
 
-/**
- * Whether `lookup` admission judges a stored gate column's exactness from
- * its column contract. Off until builds record a binary64 copy's
- * `gateExact` from the column's origin (PR C's build side): until then the
- * contract judges such a column inexact where the bind's types, with the
- * warehouse types it copies, prove it exact, so the types decide. `shadow`
- * compares the two either way.
- */
-const GATE_EXACT_FROM_CONTRACT = false;
 import {
    carriesAGate,
    type RecordedScope,
@@ -328,7 +318,7 @@ export class ReadAdmission {
             )?.columns.length ?? 0) > 0,
       );
       const mode = admissionMode();
-      if (mode === "lookup" && GATE_EXACT_FROM_CONTRACT && recordable) {
+      if (mode === "lookup" && recordable) {
          return withRecordedGateColumns(tables, readsOf, contracts);
       }
       const walked = await withGateColumnTypes(tables, readsOf);
@@ -338,19 +328,7 @@ export class ReadAdmission {
          readsOf,
          contracts,
       );
-      // A float copy the warehouse types prove exact, which builds do not
-      // yet record so: the difference that origin-aware `gateExact` closes.
-      const pending = walked.some((t) =>
-         (t.gateColumnUpstreamTypes ?? []).some((u) => u !== undefined),
-      );
-      const release = pending
-         ? holdParityAllowance("r10_binary64_pending_origins")
-         : undefined;
-      try {
-         return shadowFact("gate_exact", walked, recorded, showGateColumns);
-      } finally {
-         release?.();
-      }
+      return shadowFact("gate_exact", walked, recorded, showGateColumns);
    }
 
    /** See {@link queryReadsAccess}; read once per query. */
