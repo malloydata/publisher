@@ -14,9 +14,9 @@ The shape a real model takes: raw tables prepared by several non-persisted
 sources, three stored levels, and the intermediates between them differing in
 what they reach. `daily_regional` joins a warehouse table, so `regional` has no
 build over `daily`'s stored table, and nothing recomputes from raw: the plan
-refuses it. `summary` reads only `regional`, which has no table, so it fails.
-`daily` builds. Each source reports its own outcome in one run, and the two
-not built answer live, equal to the warehouse.
+refuses it. `summary` reads only `regional`, which has no table, so the plan
+refuses it too. `daily` builds, and the two not built answer live, equal to
+the warehouse.
 
 ## Publisher
 
@@ -74,20 +74,25 @@ source: summary is regional_wide -> {
 ## Build refusals
 
 `regional` reads `regions` through `daily_regional`: the plan refuses it.
+`summary` reads `regional`'s table, which the plan will never build, so the
+plan refuses it too, naming `regional`, rather than leaving a run to fail it.
 
 Expect:
 
 | source   | tier    | reason                  |
 | -------- | ------- | ----------------------- |
 | regional | storage | upstream_table_unusable |
+| summary  | storage | upstream_table_unusable |
+
+## Warns
+
+cites: its upstream 'regional' declares a persisted table, but it is refused
 
 ## Build (orchestrated, strict, pkg=cmx)
 
-What the plan lists, upstream first. `daily` builds; `summary` fails, its
-upstream `regional` having no table to read.
+What the plan lists: `daily` builds.
 
 - daily -> cmx_daily__g1 @ lake
-- summary -> cmx_summary__g1 @ lake (failed)
 
 ## Bind cmx
 

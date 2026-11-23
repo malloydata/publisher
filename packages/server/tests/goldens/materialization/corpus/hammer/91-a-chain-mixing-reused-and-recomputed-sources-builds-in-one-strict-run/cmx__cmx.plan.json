@@ -15,6 +15,20 @@
         "route": "@",
         "subject": "regional",
         "tier": "unservable"
+      },
+      {
+        "code": "persist-not-built",
+        "message": "#@ persist source \"summary\" is not built, so it is answered live: its upstream 'regional' declares a persisted table, but it is refused (upstream_table_unusable), and a downstream is never built by recomputing its upstream from raw.",
+        "model": "cmx.malloy",
+        "refused": {
+          "name": "summary",
+          "reason": "upstream_table_unusable",
+          "sourceID": "summary@<hammer>/cmx/cmx.malloy",
+          "tier": "storage"
+        },
+        "route": "@",
+        "subject": "summary",
+        "tier": "unservable"
       }
     ],
     "builds": [
@@ -22,21 +36,18 @@
         "connectionName": "orders_pg",
         "dependsOn": {
           "daily@<hammer>/cmx/cmx.malloy": [],
-          "daily_regional@<hammer>/cmx/cmx.malloy": [],
-          "summary@<hammer>/cmx/cmx.malloy": []
+          "daily_regional@<hammer>/cmx/cmx.malloy": []
         },
         "order": [
           "daily@<hammer>/cmx/cmx.malloy",
-          "daily_regional@<hammer>/cmx/cmx.malloy",
-          "summary@<hammer>/cmx/cmx.malloy"
+          "daily_regional@<hammer>/cmx/cmx.malloy"
         ]
       }
     ],
     "droppedPersistSources": [],
     "kinds": {
       "daily@<hammer>/cmx/cmx.malloy": "persist",
-      "daily_regional@<hammer>/cmx/cmx.malloy": "persist",
-      "summary@<hammer>/cmx/cmx.malloy": "persist"
+      "daily_regional@<hammer>/cmx/cmx.malloy": "persist"
     },
     "materializePlans": {},
     "rollupPlans": {},
@@ -48,16 +59,11 @@
       "daily_regional@<hammer>/cmx/cmx.malloy": {
         "attributed": true,
         "classification": "row_level"
-      },
-      "summary@<hammer>/cmx/cmx.malloy": {
-        "attributed": true,
-        "classification": "row_level"
       }
     },
     "sourceModelPaths": {
       "daily@<hammer>/cmx/cmx.malloy": "cmx.malloy",
-      "daily_regional@<hammer>/cmx/cmx.malloy": "cmx.malloy",
-      "summary@<hammer>/cmx/cmx.malloy": "cmx.malloy"
+      "daily_regional@<hammer>/cmx/cmx.malloy": "cmx.malloy"
     }
   },
   "rollupsKeepingGates": [],
@@ -74,10 +80,6 @@
             {
               "dependsOn": [],
               "sourceID": "daily_regional@<hammer>/cmx/cmx.malloy"
-            },
-            {
-              "dependsOn": [],
-              "sourceID": "summary@<hammer>/cmx/cmx.malloy"
             }
           ]
         ]
@@ -93,6 +95,15 @@
         "origin": "persist",
         "reason": "upstream_table_unusable",
         "sourceID": "regional@<hammer>/cmx/cmx.malloy",
+        "tier": "storage"
+      },
+      "summary@<hammer>/cmx/cmx.malloy": {
+        "message": "#@ persist source \"summary\" is not built, so it is answered live: its upstream 'regional' declares a persisted table, but it is refused (upstream_table_unusable), and a downstream is never built by recomputing its upstream from raw.",
+        "modelPath": "cmx.malloy",
+        "name": "summary",
+        "origin": "persist",
+        "reason": "upstream_table_unusable",
+        "sourceID": "summary@<hammer>/cmx/cmx.malloy",
         "tier": "storage"
       }
     },
@@ -172,40 +183,6 @@
         "sourceEntityId": "6c78dad00d882fc718ce688bee839aa9a7f485814d626bdee75c57e674110350",
         "sourceID": "daily_regional@<hammer>/cmx/cmx.malloy",
         "sql": "sha256:529b7fccb9a7bcd6"
-      },
-      "summary@<hammer>/cmx/cmx.malloy": {
-        "annotationFields": {
-          "name": "cmx_summary",
-          "storage": "lake"
-        },
-        "columns": [
-          {
-            "name": "grand_total",
-            "type": "number"
-          }
-        ],
-        "connectionName": "orders_pg",
-        "dialect": "duckdb",
-        "freshness": null,
-        "modelPath": "cmx.malloy",
-        "name": "summary",
-        "origin": "persist",
-        "preaggregate": null,
-        "queryMetadata": null,
-        "reads": [
-          {
-            "connectionName": "orders_pg",
-            "table": "public.cmx_orders"
-          },
-          {
-            "connectionName": "orders_pg",
-            "table": "public.cmx_regions"
-          }
-        ],
-        "refresh": null,
-        "sourceEntityId": "75c6692d5e685ea56574888f62625f4c8405c38e9971b26940cbaeee891ce286",
-        "sourceID": "summary@<hammer>/cmx/cmx.malloy",
-        "sql": "sha256:98c2a92be091bb1e"
       }
     }
   }

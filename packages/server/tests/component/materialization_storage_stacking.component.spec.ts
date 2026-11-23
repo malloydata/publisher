@@ -252,6 +252,15 @@ source: rollup is daily_regional -> {
   aggregate: grand is total.sum()
 }
 `;
+/** The same, with a `storage=` `summary` over `rollup` through a reshape. */
+const WAREHOUSE_JOIN_CHAIN_MODEL = `${WAREHOUSE_JOIN_MODEL}
+source: rollup_wide is rollup -> { select: * } extend {
+  dimension: big is grand > 2
+}
+
+#@ persist storage="${LAKE}"
+source: summary is rollup_wide -> { aggregate: total_grand is grand.sum() }
+`;
 const WAREHOUSE_JOIN_QUERY =
    "run: rollup -> { select: region, grand; order_by: region }";
 
@@ -1344,6 +1353,38 @@ source: monthly is daily -> { group_by: cat; aggregate: grand is total.sum() }
          );
          // `rollup` answers live, equal to live.
          const served = await answer("m.malloy", WAREHOUSE_JOIN_QUERY);
+         expect(served.rows).toEqual(live.rows);
+      });
+
+      it("refuses at plan a downstream of a source the plan refused, naming it, so a run never fails it", async () => {
+         await setUp({ "m.malloy": WAREHOUSE_JOIN_CHAIN_MODEL });
+         const live = await answer(
+            "m.malloy",
+            "run: summary -> { select: total_grand }",
+         );
+         const pkg = await env.getPackage(parsePackageName(PKG), false);
+         const plan = pkg.getBuildPlan()!;
+         const planned = Object.values(plan.sources).map((x) => x.name);
+         expect(planned).not.toContain("rollup");
+         expect(planned).not.toContain("summary");
+         const refusals = Object.values(plan.refusedSources ?? {});
+         const summary = refusals.find((r) => r.name === "summary");
+         expect(summary?.reason).toBe("upstream_table_unusable");
+         expect(summary?.message).toContain("its upstream 'rollup'");
+         // A run builds what the plan lists, and fails nothing.
+         const m = await build();
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         expect(entriesOf(m).map((e) => e.sourceName)).toEqual(["daily"]);
+         expect(
+            Object.keys(
+               (m.manifest as { failures?: Record<string, unknown> })
+                  .failures ?? {},
+            ),
+         ).toEqual([]);
+         const served = await answer(
+            "m.malloy",
+            "run: summary -> { select: total_grand }",
+         );
          expect(served.rows).toEqual(live.rows);
       });
 
