@@ -684,7 +684,7 @@ source: orders_ext is orders extend {
             expect(
                generatedPlans(c).find((p) => p.sourceName === "orders_ext")
                   ?.buildsOver?.mode,
-            ).toEqual({ tier: "same", pair: { leafKeys: ["lines.line_id"] } });
+            ).toEqual({ tier: "same", pair: { leafKeys: ["leaf:lines.line_id"] } });
             expect(
                (c.annotationFindings ?? []).filter(
                   (f) => f.code === "materialize-not-built",
