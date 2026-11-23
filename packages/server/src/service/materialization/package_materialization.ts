@@ -270,6 +270,8 @@ export class PackageMaterialization {
    private buildFound = new Map<string, string | undefined>();
    /** The rebind {@link onIncompatible} runs, and whether another is due after it. */
    private rebinding: { again: boolean } | undefined;
+   /** The commits in order ({@link commit}): each starts after the last ends. */
+   private commitChain: Promise<void> = Promise.resolve();
    /** The snapshot from before a bind that is compiling ({@link servedSnapshot}). */
    private committing: Snapshot | undefined;
    /** The pending re-read of the `storage=` tables the last bind left unread. */
@@ -916,7 +918,16 @@ export class PackageMaterialization {
     * model's served copy compiles over the new snapshot while the models go
     * on reading the one from before (`servedSnapshot`), then the two swap.
     */
-   private async commit(change: () => void, models?: "installed") {
+   private commit(change: () => void, models?: "installed"): Promise<void> {
+      // One commit at a time: a second, started while the first's served
+      // copies compile, would snapshot the first's new state, skip its own
+      // compile, and clear `committing` before the first's copies exist.
+      const run = this.commitChain.then(() => this.commitNow(change, models));
+      this.commitChain = run.catch(() => undefined);
+      return run;
+   }
+
+   private async commitNow(change: () => void, models?: "installed") {
       const before = this.snapshot();
       this.committing = before;
       try {

@@ -203,6 +203,42 @@ describe("a failed stored read leaves its table unread, never incompatible", () 
       }
    }, 120_000);
 
+   it("runs overlapping commits one at a time, so none clears the other's pending compile", async () => {
+      const mz = pkg.materialization() as unknown as {
+         commit(change: () => void, models?: "installed"): Promise<void>;
+         committing: unknown;
+      };
+      const model = pkg.getModel("m.malloy")! as unknown as {
+         prepareServedCopyOver: (...a: unknown[]) => Promise<unknown>;
+      };
+      const prepare = model.prepareServedCopyOver.bind(model);
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      let compiles = 0;
+      model.prepareServedCopyOver = async (...a: unknown[]) => {
+         compiles += 1;
+         if (compiles === 1) await gate;
+         return prepare(...a);
+      };
+      try {
+         const order: string[] = [];
+         const first = mz.commit(() => order.push("first"), "installed");
+         const second = mz.commit(() => order.push("second"), "installed");
+         await new Promise((r) => setTimeout(r, 50));
+         // The first is compiling: the second has not begun, and the
+         // models still read the snapshot from before the first.
+         expect(order).toEqual(["first"]);
+         expect(mz.committing).toBeDefined();
+         release();
+         await Promise.all([first, second]);
+         expect(order).toEqual(["first", "second"]);
+         expect(compiles).toBe(2);
+         expect(mz.committing).toBeUndefined();
+      } finally {
+         model.prepareServedCopyOver = prepare;
+      }
+   }, 60_000);
+
    it("never finds a table incompatible for a read that failed on something else (a permission)", async () => {
       readFailed();
       expect(verdictOf()?.reason).not.toBe("incompatible");
