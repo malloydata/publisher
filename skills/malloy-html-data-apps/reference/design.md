@@ -138,7 +138,7 @@ Also decide what the app does **not** do. An explorer that cannot export, or a m
 
 ## 5. Design for consistency without a shared kit
 
-There is no shipped component library. Consistency comes from a **token contract**: define the tokens in CSS, and have every chart read them at runtime rather than hardcoding color. That is what lets one app carry a client's identity while still looking like it was built on purpose.
+Apart from the frame template (`reference/app-frame.md`), there is no shipped component library. Consistency comes from a **token contract**: define the tokens in CSS, and have every chart read them at runtime rather than hardcoding color. That is what lets one app carry a client's identity while still looking like it was built on purpose.
 
 Three rules do the load-bearing work here:
 

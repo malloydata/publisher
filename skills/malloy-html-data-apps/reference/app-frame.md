@@ -24,11 +24,15 @@ SPDX-License-Identifier: MIT
 | `palette.py` | Checks the colour tokens (below) | Never: run it from here |
 | `fonts.py` | Writes `fonts.css`, the faces as base64 text (below) | Never: run it from here |
 
-Find the folder where the skill is installed, then copy. A file already in `public/` is the app's own and stays:
+Run the copy from the package's own directory, the one holding `publisher.json`. The first line finds where the
+skill is installed: in this directory or one above it (a workspace's `.claude/skills` or `.agents/skills`), else in
+your home directory. A shell variable does not outlive its command, so every snippet below that uses `$T` starts
+with the same line. A file already in `public/` is the app's own and stays:
 
 ```sh
-T=$(find . "$HOME/.claude" "$HOME/.agents" -type d -path '*malloy-html-data-apps/assets/data-app' 2>/dev/null | head -1)
-test -d "$T" || { echo "assets/data-app is not on disk: build from the minimal scaffold in SKILL.md"; exit 1; }
+T=$(d=$PWD; while :; do for s in "$d/.claude/skills" "$d/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done; [ "$d" = / ] && break; d=$(dirname "$d"); done; for s in "$HOME/.claude/skills" "$HOME/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done)
+test -f publisher.json || { echo "run this from the package directory, the one with publisher.json"; exit 1; }
+test -n "$T" || { echo "assets/data-app is not on disk: build from the minimal scaffold in SKILL.md"; exit 1; }
 mkdir -p public/vendor
 for f in index.html app.js scope.js styles.css; do [ -e "public/$f" ] || cp "$T/$f" public/; done
 cp "$T/charts.js" "$T/charts.css" public/ && cp "$T/vendor/d3.min.js" public/vendor/
@@ -103,11 +107,13 @@ Everything above `// ---- Views` is the frame. Keep it as it is:
   and `compare` from `VIEWS` in `scope.js`, and keeps the `compare()` function, which the frame names.
 - **`tile()`**: a card that loads as it nears the screen, with loading, empty and error states, a finding sentence,
   a method note and its working (each query, what it counts, its rows and a CSV of them). Its loading state keeps
-  240 px; pass `reserve` with the chart's height for a card that is shorter or taller. When the scope changes on the
+  240 px; pass `reserve` with the chart's height for a card that is shorter or taller. It does not remember settled heights
+  between visits, which `reference/performance.md` describes. When the scope changes on the
   same view, every card is drawn again in place: the chart stays, dimmed, until the rows arrive, then marks move
   and numbers count.
 - **`paint()` and `keepInView()`**: a new scope never takes a card out of the page, and the card the reader clicked
-  keeps its place. A part of a view that follows the address but is not a card, such as Compare's picks, is marked
+  keeps its place. That holds standalone; in a content-height frame the host scrolls and `scrollBy` does nothing,
+  so the page may move. A part of a view that follows the address but is not a card, such as Compare's picks, is marked
   `data-redraw="<name>"` and swapped in place.
 - **`selfCheck()`**: open the app at `?check=1#/` and a banner says whether every number in the answer and the
   headline card is a value bare views of the model return, and that no placeholder (`undefined`, `NaN`) is on the
@@ -168,12 +174,14 @@ Credit them as a source in About. A client's own identity is different (`referen
 Check the tokens after every change, until it prints `palette ok`:
 
 ```sh
+T=$(d=$PWD; while :; do for s in "$d/.claude/skills" "$d/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done; [ "$d" = / ] && break; d=$(dirname "$d"); done; for s in "$HOME/.claude/skills" "$HOME/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done)
 python3 -I "$T/palette.py" public/styles.css
 ```
 
-It checks text contrast on the page and panel, marks at 3:1, categories far enough apart in colour and under
-red-green colour blindness, `--up` and `--down` apart in lightness, and a ramp that darkens at every step. A note
-names two categories to label directly wherever both appear.
+It checks text contrast on the page and panel, marks at 3:1, categories far enough apart in colour, `--up` and
+`--down` apart in lightness, and a ramp that darkens at every step; each failure exits 1. Categories too close under
+red-green colour blindness are a note, not a failure, since no six colours separate fully for every reader: label
+those two directly wherever both appear.
 
 ## Fonts
 
@@ -182,12 +190,13 @@ A sans for everything that is not prose, a serif for ledes, findings and method 
 is under the SIL Open Font License, which travels with it:
 
 ```sh
+T=$(d=$PWD; while :; do for s in "$d/.claude/skills" "$d/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done; [ "$d" = / ] && break; d=$(dirname "$d"); done; for s in "$HOME/.claude/skills" "$HOME/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done)
 python3 -I "$T/fonts.py" public figtree source-serif-4   # add inter or fraunces when the look uses one
 ```
 
 It fetches each pinned file, checks its sum, and writes `public/fonts.css` and the licenses to
 `public/vendor/fonts/`. Load `fonts.css` before `styles.css`. The stacks fall back to system faces, so if the font
-host does not answer, ship without `fonts.css` and say so; never keep a file whose sum differs.
+host does not answer, ship without `fonts.css`, remove its `<link>` from `index.html` so the page does not ask for a missing file, and say so; never keep a file whose sum differs.
 
 ## Before you build on it
 
@@ -207,7 +216,8 @@ On top of `SKILL.md`'s recipe:
   is true. `document.fonts.check` is true even when the face is missing.
 - Shoot every view, Explore with each scope control set, Explore after a click, and an entity with a scope, at 1280
   and 390 px wide. Cards load as they near the screen, so shoot with a viewport taller than the view and wait for
-  `[data-loaded]` (`reference/verification-harness.md`). No label overlaps or runs off its chart.
+  `body[data-ready]`, which the frame sets once every card on the view has drawn or failed
+  (`reference/verification-harness.md`). No label overlaps or runs off its chart.
 - Every card has a finding and a method note, and its working opens with a definition for every query.
 - Every scope control changes every card that should respond; a card that ignores a key says so.
 - A nav link opened from low on a view lands at the top of the next view.

@@ -220,6 +220,7 @@ function tile(spec) {
         body.replaceChildren(h('div', { class: 'state state--error', text: `Could not load: ${reason(err)}` }))
         console.error(`[${title}]`, err)
       })
+      .then(() => mine === epoch && markReady())
   }
   card.__load = () => run(false)
   const respec = (next) => {
@@ -288,6 +289,7 @@ function working(qs, explain, results) {
 function downloadCsv(rows, cols, i) {
   // Quoted where a spreadsheet would split or run it: commas, quotes, line breaks, a leading = + - @.
   const cell = (v) => {
+    if (typeof v === 'number') return String(v)
     const t = v === null || v === undefined ? '' : String(v)
     return /[",\n\r]|^[=+\-@]/.test(t) ? `"${(/^[=+\-@]/.test(t) ? `'${t}` : t).replace(/"/g, '""')}"` : t
   }
@@ -440,8 +442,15 @@ function render({ toTop = false } = {}) {
   else paint(toTop, same)
 }
 
+/** Sets body[data-ready] once every card on the view has drawn or failed and none is redrawing: wait on it for a shot. */
+function markReady() {
+  const cards = [...document.querySelectorAll('#main article.card')]
+  if (cards.every((c) => (c.dataset.loaded || c.querySelector('.state--error')) && !c.classList.contains('is-updating'))) document.body.dataset.ready = '1'
+}
+
 function paint(toTop, same) {
   epoch++
+  delete document.body.dataset.ready
   io.disconnect()
   if (route.view === 'compare' && route.compare.length) picked = [...route.compare]
   for (const a of document.querySelectorAll('.app-nav a')) {
@@ -488,6 +497,7 @@ function paint(toTop, same) {
     ;($(focusNext) || $('#main')).focus({ preventScroll: true })
     focusNext = null
   }
+  markReady()
 }
 
 // ---- The headline check: open the app at ?check=1#/ and the page says whether its headline is the model's ----
@@ -498,7 +508,8 @@ async function selfCheck() {
     look()
   })
   const fails = []
-  const qs = card.__spec.queries()
+  // The headline is the answer's own query and the first card's: the answer's numbers come from the first.
+  const qs = [...new Set([`run: ${S.HEADLINE} -> kpis`, ...card.__spec.queries()])]
   for (const q of qs) if (!/^run: \w+ -> \w+$/.test(q)) fails.push(`The headline card adds to a view: ${q}`)
   const values = (await Promise.all(qs.map(query))).flat().flatMap((r) => Object.values(r)).filter((v) => typeof v === 'number')
   // A number shown agrees with a model value when the value, or its percentage, rounds to it at the shown decimals.
@@ -562,7 +573,9 @@ function overview() {
   // from their rows: so the page, an agent and an analyst get the same numbers.
   const qK = `run: ${S.HEADLINE} -> kpis`
   const answer = h('p', { class: 'answer' })
-  query(qK).then(([k]) => answer.replaceChildren(...prose([`Complaints ${k.change < 0 ? 'fell' : 'rose'} by `, { b: C.pct(Math.abs(k.change), 0) }, ` from ${k.prior_year} to ${k.latest_year}.`])))
+  query(qK)
+    .then(([k]) => answer.replaceChildren(...prose([`Complaints ${k.change < 0 ? 'fell' : 'rose'} by `, { b: C.pct(Math.abs(k.change), 0) }, ` from ${k.prior_year} to ${k.latest_year}.`])))
+    .catch((err) => answer.replaceChildren(h('span', { class: 'state state--error', text: `Could not load the answer: ${reason(err)}` })))
   const [kicker, title, lede] = viewHead('Did the drop in rat complaints reach every neighborhood?', 'The city counts every rodent complaint to 311. Here is where they fell, and whether it is holding.').filter(Boolean)
   return h('div', { class: 'view wrap' },
     kicker, title, answer, lede,
@@ -587,11 +600,11 @@ function explore() {
         draw: ([rows], body) => C.bars(chartBox(body), rows.map((r) => ({ label: r.borough, value: r.complaint_count })), { horizontal: true, selected: scope.borough, onPick: (b) => toggleScope('borough', b) }),
       }),
       tile({
-        title: 'Top ZIP codes', sub: 'Open a ZIP code’s page.',
+        title: 'Top ZIP codes', sub: 'Open a ZIP code’s page from its name.',
         queries: () => [S.tileQuery('zips', scope, known)],
         explain: ['The ZIP codes with the most complaints under the scope, and each one\'s change on the year before.'],
         draw: ([rows], body) => C.rankTable(body, rows.map((r) => ({ id: r.incident_zip, name: S.ENTITY.label(r.incident_zip), value: r.complaint_count, change: r.change_vs_prior })), {
-          valueLabel: 'Complaints', changeLabel: 'Against last year', good: 'fall', onOpen: openEntity,
+          valueLabel: 'Complaints', changeLabel: 'Against last year', good: 'fall', href: (id) => linkTo(S.ENTITY.view, id),
           inCompare, onCompare: toggleCompare,
         }),
         finding: ([rows]) => [{ b: S.ENTITY.label(rows[0].incident_zip) }, ` has the most complaints in scope, ${C.fmt(rows[0].complaint_count)}.`],

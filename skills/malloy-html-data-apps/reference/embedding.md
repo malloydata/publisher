@@ -48,12 +48,14 @@ A frame as tall as its content changes more than these two. Each is invisible st
   enters the screen rather than before (`reference/lazy-load.md`).
 - **The runtime measures the bottoms of `body`'s children**, so a margin on the last child sits outside the
   measurement and gives the frame an inner scrollbar. Put the space inside, as padding.
-- **The host may cap the frame's height.** Keep each view under about 5,000 px at desktop width; split a long view
-  into two views rather than growing one.
-- **What the frame's sandbox refuses fails silently.** Publisher's frame allows scripts, same-origin requests and
-  forms only, so a download (a CSV button), a clipboard write, full screen, a new tab or an `alert` does nothing
-  inside it, though each works standalone. A host may allow more; the frame template's "Download CSV" and "Copy
-  link" work only where it does.
+- **The host may cap the frame's height** (Credible caps it at 20,000 px). A view runs two to three times as tall at
+  phone width as at desktop, so keep each view under about 5,000 px at desktop width; split a long view into two
+  views rather than growing one.
+- **What the frame refuses fails silently.** Publisher's frame sandbox allows scripts, same-origin requests and
+  forms, so a download (a CSV button), a new tab and an `alert` do nothing inside it, though each works standalone.
+  A clipboard write and full screen work in the same-origin Console, and are refused in a frame on another origin
+  unless the host delegates them. A host may allow more. Check the frame template's "Download CSV" and "Copy link"
+  in the frame your app will live in.
 
 Test embedded, not just standalone: the Publisher console renders a package's app at `/<env>/<package>/data-apps/<path>`, which exercises the same resize contract a host does (`reference/verification-harness.md`).
 

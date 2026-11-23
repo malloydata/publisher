@@ -67,6 +67,8 @@ export function mount(host, buildOption) {
 
 ### Trim the library to what the app draws
 
+Not the frame template's d3 module (`reference/charts.md`): it is copied whole, so a fixed version can be copied over it, and it draws SVG, which a check counts by marks rather than pixels.
+
 Most chart libraries publish a modular build. A bundle of only the series types and components the app actually uses is typically a third smaller (one build: 1,122 KB to 713 KB, 369 KB to 243 KB gzipped). Inventory what the code passes the library (every series `type:`, and components such as legend, tooltip, visualMap, markLine), bundle exactly those once with a bundler outside the package, and commit the bundle together with its entry file and the command that rebuilt it.
 
 **A trimmed build fails silently.** A series type left out of the bundle still mounts its canvas, throws nothing and logs nothing, and draws an empty box. A canvas count proves nothing. Verify by reading pixels: open every page and every kind of drawer, and require each chart canvas to have drawn pixels, against the full build first and then the trimmed one. Write the list of included types next to the bundle, so the next person to add a chart type knows to rebuild.

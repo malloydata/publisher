@@ -86,7 +86,7 @@ Tables are where density pays. A stat table with generous row height wastes the 
 Every state change the user causes should be acknowledged, and nothing else should move.
 
 - **Hover states on everything interactive**, and they must be visible: a surface shift, not a 2% opacity change nobody perceives. A row that opens a drawer on click must look clickable before the click.
-- **Transitions belong on state, not on load.** Animating *content* in on first paint delays the thing the reader came for. Animating a drawer open, a filter chip appearing, a sort re-ordering: those are feedback, and they are still right when the state came from the URL on first load.
+- **Transitions belong on state, not on load.** Animating *content* in on first paint delays the thing the reader came for. Animating a drawer open, a filter chip appearing, a sort re-ordering: those are feedback, and they are still right when the state came from the URL on first load. The frame template's chart module eases a chart in on its first draw, briefly, and not at all under reduced motion or `?motion=0`.
 - **Focus states are not optional and not the browser default.** A keyboard user needs a visible ring drawn from the accent.
 - Keep it fast. Anything over ~250ms on a UI transition feels sluggish (a mark moving between two answers is not a UI transition: the d3 module takes 380 ms so the eye can follow it, `reference/charts.md`); the contract's `--dur-fast` / `--dur-base` pair exists so these stay consistent.
 
