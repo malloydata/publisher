@@ -166,7 +166,7 @@ import type {
    PersistedViewPlan,
    StoredInDestination,
 } from "../domain/table_plans";
-import type { StorageOverStored } from "./storage_over_stored";
+import { type StorageOverStored, storedColumnsOf } from "./storage_over_stored";
 import { deletingWindowsOf } from "./rolling_window";
 import {
    tryCompileRollupCompanion,
@@ -1028,6 +1028,8 @@ async function collectGeneratedRollups(
       /** The author's model, where a stored-base build's strings are read. */
       materializer: ModelMaterializer;
       stringReads?: StringReadsPorts;
+      chainBuildText?: PlanChainBuildText;
+      boundStorageColumns?: BoundStorageColumns;
    },
 ): Promise<void> {
    const { generated, refused, omitted, failure } =
@@ -1082,8 +1084,13 @@ async function collectGeneratedRollups(
                  plan.storage,
               )
             : undefined;
+      const unusableUpstream =
+         storedBase && plan.storage !== undefined
+            ? storedBaseDecline(args, source, plan, storedBase, plan.storage)
+            : undefined;
       parts.tables[source.sourceID] = {
          kind: "rollup",
+         ...(unusableUpstream ? { unusableUpstream } : {}),
          ...plannedFacts(source, args.modelPath),
          rollup: plan,
          // Proven at plan, and recorded: any other rollup builds from the
@@ -1182,6 +1189,88 @@ async function planStringReads(
    if (contracts.some((c) => c === undefined)) return reads;
    const why = stringReadsRefusal(reads, contracts);
    return why === undefined ? reads : { refused: why };
+}
+
+/**
+ * Why a `storage=` rollup cannot be built over its base's table in its
+ * destination, decided from the text it builds from there (the served
+ * copy's chain text, over a stand-in of the base's table: its bound
+ * columns, else the ones its build writes), or undefined when the text is
+ * written. What the text compiles to over the real table is the build's to
+ * find: it depends on that table's columns.
+ */
+function storedBaseDecline(
+   args: {
+      modelPath: string;
+      modelDef: unknown;
+      materialized?: MaterializedBases;
+      chainBuildText?: PlanChainBuildText;
+      boundStorageColumns?: BoundStorageColumns;
+   },
+   source: PersistSource,
+   plan: RollupPlan,
+   storedBase: {
+      baseSourceID: string;
+      companion: { url: string; text: string };
+   },
+   destination: string,
+): string | undefined {
+   const base = `its base '${plan.baseSourceName}''s table in '${destination}'`;
+   if (!args.chainBuildText) {
+      return `no served copy writes its text over ${base}`;
+   }
+   // As bound, else as its build writes them: a `#(materialize)` base's
+   // compiled output, a `#@ persist` base's output fields.
+   const columns =
+      args.boundStorageColumns?.(storedBase.baseSourceID, destination) ??
+      args.materialized?.plans.find(
+         (p) => p.sourceID === storedBase.baseSourceID,
+      )?.storedColumns ??
+      storedColumnsOf(
+         SourceMap.of(args.modelDef).node(storedBase.baseSourceID)?.def,
+      );
+   if (columns === undefined) {
+      return `${base} holds no columns a stored table can stand in for`;
+   }
+   const handle = "publisher_stand_in_base";
+   const text = args.chainBuildText(
+      {
+         downstream: { sourceID: source.sourceID, name: source.name },
+         destination: { name: destination, schema: "main" },
+         upstreams: [
+            {
+               entry: {
+                  sourceEntityId: handle,
+                  sourceName: plan.baseSourceName,
+                  physicalTableName: handle,
+                  connectionName: destination,
+                  storageDestinationName: destination,
+                  schema: columns.map((c) => ({ ...c })),
+               },
+               names: { [plan.baseSourceName]: [storedBase.baseSourceID] },
+            },
+         ],
+         rollup: {
+            baseSourceID: storedBase.baseSourceID,
+            companion: storedBase.companion,
+         },
+      },
+      {
+         modelPath: args.modelPath,
+         modelDef: args.modelDef,
+         ...(args.materialized
+            ? {
+                 materializePlans: Object.fromEntries(
+                    args.materialized.plans.map((p) => [p.sourceID, p]),
+                 ),
+              }
+            : {}),
+      },
+   );
+   if (text === undefined) return `its model does not declare ${base}`;
+   return "declined" in text
+      ? `${base} cannot be re-rooted on that table: ${text.declined}`
+      : undefined;
 }
 
 /**
@@ -1793,6 +1882,8 @@ async function collectGeneratedTables(
       materialized,
       materializer,
       ...(args.stringReads ? { stringReads: args.stringReads } : {}),
+      ...(chainBuildText ? { chainBuildText } : {}),
+      ...(boundStorageColumns ? { boundStorageColumns } : {}),
    });
 }
 
@@ -2493,17 +2584,22 @@ function refuseUncomparableStrings<
    const dropped = new Set<string>();
    for (const [sourceID, table] of Object.entries(compiled.tables)) {
       const reads = table.stringReads;
-      if (reads === undefined || !("refused" in reads)) continue;
+      const why =
+         table.unusableUpstream ??
+         (reads !== undefined && "refused" in reads
+            ? `it is built over its upstreams' tables in its storage= ` +
+              `destination, which compares strings byte-exact, and ` +
+              reads.refused
+            : undefined);
+      if (why === undefined) continue;
       dropped.add(sourceID);
       findings.push(
          notBuiltFinding(
             compiled,
             sourceID,
             UPSTREAM_TABLE_UNUSABLE_REASON,
-            `it is built over its upstreams' tables in its storage= ` +
-               `destination, which compares strings byte-exact, and ` +
-               `${reads.refused}; a downstream is never built by ` +
-               `recomputing its upstreams from raw`,
+            `${why}; a downstream is never built by recomputing its ` +
+               `upstreams from raw`,
          ),
       );
    }

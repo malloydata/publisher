@@ -740,6 +740,13 @@ interface TablePlanFacts {
     * build judges them against the contracts of the tables it reads.
     */
    stringReads?: StringReads;
+   /**
+    * Why the plan found this table cannot be built over its upstreams'
+    * tables, as it must be (a downstream is never built by recomputing its
+    * upstreams from raw): it is refused at plan as `upstream_table_unusable`
+    * with this as its message.
+    */
+   unusableUpstream?: string;
 }
 
 /**

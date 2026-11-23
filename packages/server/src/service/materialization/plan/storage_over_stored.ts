@@ -232,7 +232,7 @@ async function compileOne(args: {
  * it. Undefined for a source that is not a query, or an output a stored
  * table does not carry as one column (a nest, a record).
  */
-function storedColumnsOf(
+export function storedColumnsOf(
    def: unknown,
 ): { name: string; type: string }[] | undefined {
    const d = def as { type?: unknown; fields?: unknown } | undefined;

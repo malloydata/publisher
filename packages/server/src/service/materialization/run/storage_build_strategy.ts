@@ -1062,6 +1062,13 @@ export class StorageBuildStrategy
     * A rollup that cannot be built that way is refused
     * (ChainedShapeNotCarriedError), never built from the warehouse: the plan
     * built it over its base's table.
+    *
+    * The plan has already refused a rollup whose text cannot be written
+    * over its base's table, and one whose compared strings a bound base's
+    * contract does not compare as live does. What is judged here needs the
+    * run: the base's table as this run holds it (its columns, which the
+    * re-root declares and the compile reads, and, for a base built in this
+    * run, the contract it just recorded).
     */
    async stackRollupOnStoredBase(
       ctx: StorageBuildContext,
