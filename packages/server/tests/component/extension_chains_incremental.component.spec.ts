@@ -190,39 +190,44 @@ const POSTGRES: Tier = {
    },
 };
 
-/** A `storage=` DuckLake destination over a Postgres warehouse. */
-const DUCKLAKE = (root: () => string): Tier => ({
+/**
+ * `storage=` DuckLake destinations over a Postgres warehouse, one catalog
+ * and bucket each: `lake`, and any `others` beside it.
+ */
+const DUCKLAKE = (root: () => string, others: string[] = []): Tier => ({
    label: "DuckLake storage=",
    raw: "public.xc_raw",
    prefix: "",
    storage: "lake",
    warehouse: async () => {
-      const catalog = `xcl_${process.pid}_${Date.now()}`;
-      const db = `xcw_${process.pid}_${Date.now()}`;
-      const drop = await pgDatabases([catalog, db]);
-      const bucket = path.join(root(), "bucket");
-      fs.mkdirSync(bucket, { recursive: true });
+      const stamp = `${process.pid}_${Date.now()}`;
+      const lakes = ["lake", ...others];
+      const catalogs = lakes.map((l) => `xcl_${l}_${stamp}`);
+      const db = `xcw_${stamp}`;
+      const drop = await pgDatabases([...catalogs, db]);
       return {
          config: {
             name: "warehouse",
             type: "postgres",
             postgresConnection: { ...pgParts(), databaseName: db },
          },
-         destinations: [
-            {
-               name: "lake",
+         destinations: lakes.map((name, i) => {
+            const bucket = path.join(root(), `bucket_${name}`);
+            fs.mkdirSync(bucket, { recursive: true });
+            return {
+               name,
                type: "ducklake",
                ducklakeConnection: {
                   catalog: {
                      postgresConnection: {
                         ...pgParts(),
-                        databaseName: catalog,
+                        databaseName: catalogs[i],
                      },
                   },
                   storage: { bucketUrl: bucket },
                },
-            },
-         ],
+            };
+         }),
          drop,
       };
    },
@@ -805,4 +810,112 @@ if (POSTGRES_URL) {
          }
       });
    });
+
+   // Across tiers and destinations (extension chains, cases 1 and 2): the
+   // parent advances by a delta that re-reads a late row, and each
+   // extension follows it over the parent's table, in another tier or
+   // destination than the parent's, nothing missed or counted twice.
+   for (const [label, parentName, parentStorage, extStorage, others] of [
+      [
+         "a database parent, its extensions in a DuckLake destination",
+         `name="public.xc_ev"`,
+         "",
+         ` storage="lake"`,
+         [],
+      ],
+      [
+         "a parent in one DuckLake destination, its extensions in another",
+         "",
+         ` storage="lake"`,
+         ` storage="lake2"`,
+         ["lake2"],
+      ],
+   ] as const) {
+      describe(`an incremental extension across tiers: ${label}`, () => {
+         let root = "";
+         const f = new Fixture(DUCKLAKE(() => root, [...others]));
+         let first: Materialization;
+         let second: Materialization;
+         const seedsInSecond: typeof f.seeds = [];
+         const destination = extStorage.match(/"(.*)"/)![1];
+
+         beforeAll(async () => {
+            root = fs.realpathSync(
+               fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), "xct-")),
+            );
+            // The parent on its own tier, every extension on the other.
+            const model = MODEL.replace(`name="__P__ev"`, parentName)
+               .replace(/name="__P__[a-z_]+"/g, "")
+               .replace(/(lookback="7 days")__S__/, `$1${parentStorage}`)
+               .replace(/__S__/g, extStorage);
+            await f.open(model);
+            first = await f.build({});
+            await f.insert(SECOND);
+            const before = f.seeds.length;
+            second = await f.build({});
+            seedsInSecond.push(...f.seeds.slice(before));
+         }, 400_000);
+         afterAll(async () => {
+            await f.close();
+            fs.rmSync(root, { recursive: true, force: true });
+         });
+
+         it("seeds each extension over the parent's table, recording the parent build it read", () => {
+            for (const run of [first, second]) {
+               expect([run.status, (run as { error?: unknown }).error]).toEqual(
+                  ["MANIFEST_FILE_READY", null],
+               );
+            }
+            const [parentAddress, parent] = entryNamed(first, "ev")!;
+            expect(parent.storageDestinationName ?? "").toBe(
+               parentStorage.match(/"(.*)"/)?.[1] ?? "",
+            );
+            for (const name of EXTENSIONS) {
+               const ext = entryNamed(first, name)![1];
+               expect([
+                  name,
+                  ext.storageDestinationName,
+                  ext.builtFrom?.map((b) => b.sourceEntityId),
+               ]).toEqual([name, destination, [parentAddress]]);
+            }
+            expect(entryNamed(first, "ext_rr")![1].ledger?.parent).toEqual({
+               sourceEntityId: parentAddress,
+               advancedBy: first.id,
+               builtAt: parent.builtAt,
+               coveredThrough: parent.ledger?.coveredThrough as string,
+               coveredThroughType: "timestamp",
+            });
+         });
+
+         it("deltas each extension on the parent's watermark after the parent's delta", () => {
+            const [parentAddress, parent] = entryNamed(second, "ev")!;
+            expect(parent.refresh).toBe("delta");
+            for (const name of ["ext_rr", "ext_mg"]) {
+               const ext = entryNamed(second, name)![1];
+               expect([name, ext.refresh]).toEqual([name, "delta"]);
+               expect(ext.ledger?.parent?.sourceEntityId).toBe(parentAddress);
+               expect(ext.ledger?.parent?.advancedBy).toBe(second.id);
+            }
+            // Followed by delta, not reseeded; only the extension on another
+            // watermark is rebuilt, for that reason.
+            expect(
+               seedsInSecond
+                  .filter((s) => s.reasonCode !== undefined)
+                  .map((s) => s.reasonCode),
+            ).toEqual(["upstream_watermark_differs"]);
+            expect(entryNamed(second, "ext_wm")![1].refresh).toBe("full");
+         });
+
+         it("serves every extension equal to live, the late row once", async () => {
+            for (const name of ["ev", ...EXTENSIONS]) {
+               const served = await f.totals(name);
+               expect([name, served.n, served.total]).toEqual([
+                  name,
+                  5,
+                  sumOf([...FIRST, ...SECOND]),
+               ]);
+            }
+         });
+      });
+   }
 }

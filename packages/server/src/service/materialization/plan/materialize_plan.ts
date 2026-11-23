@@ -2155,7 +2155,7 @@ export function chainVerdict(
 ): ChainVerdict {
    const tiers = chainTiers(plan, parent);
    if ("refuse" in tiers) return tiers;
-   const incrementalMode = chainIncremental(plan, parent, tiers.link);
+   const incrementalMode = chainIncremental(plan, parent);
    if ("refuse" in incrementalMode) return incrementalMode;
    const pairParent =
       parent.pair !== undefined || parent.pairBlocks !== undefined;
@@ -2241,11 +2241,16 @@ function isIncremental(p: MaterializePlan): boolean {
  *    so a range of the extension's cannot be told which rows of the parent's
  *    moved: it is rebuilt in full over the parent's table whenever that
  *    table changed, and the package warns.
+ * The same on every tier the chain links (`ChainMode.tier`): a `storage=`
+ * extension of a database parent computes its delta in the warehouse over
+ * the parent's table and applies it in its destination, as any `storage=`
+ * table does; one of a parent in its own or another destination runs its
+ * delta in the destination session over the parent's table, attached
+ * read-only when it is another destination's.
  */
 function chainIncremental(
    plan: MaterializePlan,
    parent: MaterializePlan,
-   tier: ChainMode,
 ): { incremental?: ChainMode["incremental"] } | { refuse: string } {
    const own = isIncremental(plan);
    const theirs = isIncremental(parent);
@@ -2258,22 +2263,6 @@ function chainIncremental(
             "and a pair table (an inlined join_many) on either side cannot " +
             "have its incremental refresh coordinated with the other, so " +
             "neither may be incremental",
-      };
-   }
-   // Not yet decided: an incremental refresh across tiers (a storage=
-   // extension of a database parent, or of a parent in another destination).
-   if (tier.tier !== "same") {
-      const where = (storage: string | undefined) =>
-         storage === undefined
-            ? "in the database"
-            : `in storage destination '${storage}'`;
-      return {
-         refuse:
-            `and an incremental refresh on either side is coordinated only ` +
-            `when the extension and its parent are on one tier, but the ` +
-            `extension is ${where(plan.persist.storage)} and its parent ` +
-            `${where(parent.persist.storage)} (put both in the database or ` +
-            `both in one storage destination, or refresh both in full)`,
       };
    }
    if (!own) return {};

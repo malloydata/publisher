@@ -112,6 +112,18 @@ source: s_inc is orders extend { dimension: big is amount > 10 }
       extensions: ["s_inc"],
    },
    {
+      label: "incremental across destinations",
+      files: `${BASE}
+#(materialize) storage="lake" refresh="incremental" watermark="order_date"
+source: orders is orders_raw
+#(materialize) storage="other" refresh="incremental" watermark="order_date"
+source: o_inc is orders extend { dimension: big is amount > 10 }
+#(materialize) storage="other"
+source: o_full is orders extend { dimension: big is amount > 10 }
+`,
+      extensions: ["o_inc", "o_full"],
+   },
+   {
       label: "incremental over a pair-table parent",
       files: `${PAIRED}
 #(materialize) inline=["lines"]
@@ -721,7 +733,7 @@ describe("chainVerdict", () => {
       ).toEqual({ link: { tier: "same" } });
    });
 
-   it("refuses an incremental side with a pair table or across tiers", () => {
+   it("refuses an incremental side with a pair table", () => {
       const inc = { persist: { refresh: "incremental", watermark: "id" } };
       const pairParent = chainVerdict(
          { ...ext, ...inc },
@@ -733,13 +745,43 @@ describe("chainVerdict", () => {
       expect("refuse" in pairParent && pairParent.refuse).toContain(
          "pair table",
       );
-      const across = chainVerdict(
-         { ...ext, persist: { ...inc.persist, storage: "lake" } },
-         { ...parent, ...inc },
-      );
-      expect("refuse" in across && across.refuse).toContain(
-         "the extension is in storage destination 'lake' and its parent in the database",
-      );
+   });
+
+   it("links an incremental side across tiers and destinations, coordinated as on one", () => {
+      const wm = {
+         columns: [
+            { dimension: "id", column: "id", computed: false },
+            { dimension: "ts", column: "ts", computed: false },
+         ],
+      };
+      const inc = (storage?: string) => ({
+         ...wm,
+         persist: {
+            refresh: "incremental",
+            watermark: "ts",
+            ...(storage ? { storage } : {}),
+         },
+      });
+      expect(
+         chainVerdict({ ...ext, ...inc("lake") }, { ...parent, ...inc() }),
+      ).toEqual({
+         link: {
+            tier: "storage_over_database",
+            incremental: { coordinate: "delta", parentWatermark: "ts" },
+         },
+      });
+      expect(
+         chainVerdict(
+            { ...ext, ...inc("other") },
+            { ...parent, ...inc("lake") },
+         ),
+      ).toEqual({
+         link: {
+            tier: "across_destinations",
+            parentDestination: "lake",
+            incremental: { coordinate: "delta", parentWatermark: "ts" },
+         },
+      });
    });
 
    it("refuses, with why, a database extension of a storage= parent", () => {
