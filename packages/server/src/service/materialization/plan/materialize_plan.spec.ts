@@ -112,7 +112,7 @@ source: orders is orders_raw extend {
    );
 
    it(
-      "chains an extension in another destination than its parent, refuses an incremental one, and chains one in another file over its parent's build source",
+      "chains an extension in another destination than its parent, an incremental one in its parent's destination, and one in another file over its parent's build source",
       async () => {
          const c = await compiled({
             "m.malloy": `${BASE}
@@ -141,13 +141,18 @@ source: other_ext is orders extend { dimension: n is 1 }
             generatedPlans(c).find((p) => p.sourceName === "stored_ext")
                ?.buildsOver?.mode,
          ).toEqual({ tier: "across_destinations", parentDestination: "lake" });
-         // Never over the raw chain: refused at plan.
+         // An incremental extension of a full parent deltas over its table.
+         expect(
+            generatedPlans(c).find((p) => p.sourceName === "inc_ext")
+               ?.buildsOver?.mode,
+         ).toEqual({ tier: "same", incremental: { coordinate: "delta" } });
+         // Never over the raw chain: nothing here is refused.
          expect(
             (c.annotationFindings ?? [])
                .filter((f) => f.code === "materialize-not-built")
                .map((f) => [f.subject, f.refused?.reason])
                .sort(),
-         ).toEqual([["inc_ext", "upstream_table_unusable"]]);
+         ).toEqual([]);
          // Across files (P10): imported from a copy of `m.malloy` with the
          // parent re-rooted on its build source.
          const other = generatedPlans(c).find(
@@ -161,7 +166,7 @@ source: other_ext is orders extend { dimension: n is 1 }
             generatedPlans(c)
                .map((p) => p.sourceName)
                .sort(),
-         ).toEqual(["orders", "other_ext", "stored_ext"]);
+         ).toEqual(["inc_ext", "orders", "other_ext", "stored_ext"]);
       },
       { timeout: 30000 },
    );

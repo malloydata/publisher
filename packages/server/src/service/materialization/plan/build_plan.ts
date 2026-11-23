@@ -117,6 +117,8 @@ import {
 import {
    materializeRefusalFinding,
    pairFullRefreshFinding,
+   extensionRefusal,
+   extensionFullRefreshFinding,
 } from "./materialize_plan";
 import { pairKeyColumns, pairLevelRowColumn } from "./build_file_generator";
 import {
@@ -922,6 +924,8 @@ async function collectGeneratedMaterialize(
             pairFullRefreshFinding(plan, plan.pairFullRefresh, args.modelPath),
          );
       }
+      const reseeds = extensionFullRefreshFinding(plan, args.modelPath);
+      if (reseeds) addAnnotationFinding(parts, reseeds);
    }
    const targets = await generated.runtime.getBuildTargets(generated.model);
    const planByName = new Map(
@@ -3159,6 +3163,36 @@ function refuseIncrementalUnbuildable<
       findings.push(
          notBuiltFinding(compiled, sourceID, "incremental_unsupported", reason),
       );
+   }
+   // An extension table of a dropped parent has no parent's table to build
+   // over, and is never built over the raw chain: refused with it.
+   for (let more = dropped.size > 0; more; ) {
+      more = false;
+      for (const [sourceID, table] of Object.entries(compiled.tables)) {
+         const parent = table.materialize?.buildsOver;
+         if (
+            !parent ||
+            dropped.has(sourceID) ||
+            !dropped.has(parent.sourceID)
+         ) {
+            continue;
+         }
+         dropped.add(sourceID);
+         findings.push(
+            notBuiltFinding(
+               compiled,
+               sourceID,
+               UPSTREAM_TABLE_UNUSABLE_REASON,
+               extensionRefusal(
+                  table.materialize!,
+                  parent.sourceName,
+                  `which is not built (its incremental refresh is not ` +
+                     `supported here)`,
+               ).reason,
+            ),
+         );
+         more = true;
+      }
    }
    return withoutSources(compiled, findings, dropped);
 }

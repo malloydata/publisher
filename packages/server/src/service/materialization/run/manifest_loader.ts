@@ -204,6 +204,8 @@ export function splitManifestEntries(
          ...boundSchemaOf(entry.schema),
          ...boundNativeSchemaOf(entry.nativeSchema),
          ...(entry.lateRows ? { lateRows: entry.lateRows } : {}),
+         ...(entry.ledger?.parent ? { ledger: entry.ledger } : {}),
+         ...(entry.builtFrom?.length ? { builtFrom: entry.builtFrom } : {}),
          ...(entry.contract !== undefined ? { contract: entry.contract } : {}),
          ...(entry.builtAt ? { builtAt: entry.builtAt } : {}),
          // Set only by a bind from the local store (withRollupKeyRecords);

@@ -5983,6 +5983,18 @@ components:
                   table (an inlined `join_many`) whose `refresh="incremental"`
                   is not honoured: it is rebuilt in full on every refresh, and
                   served (`subject` the source; `warn`).
+                  `materialize-extension-full-refresh`: an incremental
+                  `#(materialize)` extension whose watermark is not the same
+                  stored column as its incremental parent's: it is rebuilt in
+                  full over the parent's table whenever that table changes, and
+                  served (`subject` the extension; `warn`; the message names
+                  both watermarks).
+                  `materialize-extension-generation-unproven`: the newest run
+                  rebuilt an incremental extension in full because it could not
+                  prove which build of its parent's table it last read (neither
+                  the run's ledger entry nor the bound manifest records it;
+                  step reason `upstream_generation_skipped`) (`subject` the
+                  extension; `warn`).
                   `rollup-join-one-key-repeated`: a rollup's last build found
                   a `join_one` key repeated in the data, so queries that read
                   that join beside other aggregates are answered live
@@ -11780,9 +11792,10 @@ components:
             every existing caller. Present (even empty), it IS the ledger for
             this run: boundaries are read from here, the local store is neither
             read nor written, and an incremental source with no entry here
-            seeds. An entry that does not validate against this run is a 400
-            (see `LedgerEntry`); an entry for a source being `reseed`-ed is
-            ignored.
+            seeds. An entry that does not validate against this run is a 400,
+            while one whose own shape is malformed is dropped and its source
+            seeds (see `LedgerEntry`); an entry for a source being `reseed`-ed
+            is ignored.
 
             For an orchestrator that dispatches one package's refreshes across
             interchangeable workers: the local store is per-process, so a
@@ -11965,10 +11978,22 @@ components:
         returns it verbatim in `BuildInstructions.ledger` on the next run —
         only the publisher derives these values.
 
+        OPAQUE to hosts: store each entry whole (as JSON, say) and echo it back
+        unchanged. Do not rebuild it from the fields listed here. The publisher
+        may add keys at any time (`additionalProperties`), and a key a host
+        drops is lost to the next run.
+
         A returned entry is validated at create time: one naming a table the
         run does not instruct, or whose `sourceEntityId` is no longer the
-        source's, is a 400. After a publish or rollback that changes the
-        source, delete the entry (the source seeds) or set `reseed`.
+        source's, is a 400, as are duplicate entries for one table. An entry
+        whose own shape is malformed (a required field missing or empty, an
+        unknown `strategy`, `mergeKeys` not an array of strings, an empty
+        `storageDestinationName`) is not a 400: it is dropped with a logged
+        warning and its source seeds (rebuilds in full), so one corrupted
+        entry cannot wedge every build of the package. After a publish or
+        rollback that changes the source, delete the entry (the source seeds)
+        or set `reseed`.
+      additionalProperties: true
       required:
         [
           connectionName,
@@ -12046,6 +12071,51 @@ components:
             `BuildInstruction.sourceEntityId`. The match is what guarantees a
             boundary is never applied to a table whose definition has moved on
             since it was measured.
+        advancedBy:
+          type: string
+          description: >-
+            The materialization run that last changed the table: a delta, or
+            a full rebuild. A run that applied nothing (`refresh: none`) keeps
+            the one before. Which build of the table the boundary describes,
+            for an extension table built over it (`parent.advancedBy`).
+            Returned verbatim; absent on an entry an older release reported.
+        parent:
+          type: object
+          description: >-
+            For an incremental extension table (a `#(materialize)` extension
+            of a `#(materialize)` parent, built over the parent's table): which
+            build of the parent's table this boundary was reached over, as
+            `builtFrom` names it. The next refresh deltas only when the
+            parent's table is still that build, or was refreshed in that run
+            from exactly it; otherwise the extension rebuilds in full over the
+            parent's table (step reason `upstream_generation_skipped`), since a
+            delta could miss rows a parent refresh it never read restated.
+            Returned verbatim like every other field; a caller that drops it
+            costs each extension a full rebuild, never a wrong row. Absent for
+            any other source.
+          required: [sourceEntityId]
+          properties:
+            sourceEntityId:
+              type: string
+              description: The parent's content address, as its manifest entry is keyed.
+            advancedBy:
+              type: string
+              description: >-
+                The parent's own `ledger.advancedBy` when the extension read
+                it: the build of the parent's table it read, compared with
+                the one the parent's next refresh starts from.
+            builtAt:
+              type: string
+              format: date-time
+              description: The parent entry's `builtAt` when the extension read it.
+            coveredThrough:
+              type: string
+              description: >-
+                The parent's own `ledger.coveredThrough` when the extension read
+                it, when the parent is incremental.
+            coveredThroughType:
+              type: string
+              description: The Malloy type of `coveredThrough`.
 
     BuiltFromTable:
       type: object
@@ -12082,6 +12152,14 @@ components:
             only while its upstream's current entry still has this digest, so
             a rebuilt or altered upstream rebuilds its readers. Absent when
             the upstream carried no contract.
+        coveredThrough:
+          type: string
+          description: >-
+            The upstream's incremental boundary when the build read it: its
+            entry's `ledger.coveredThrough`, as canonical scalar text. Absent
+            when the upstream is not incrementally refreshed. An incremental
+            extension's range ends no later than this, so it never records
+            coverage its parent's table lacks.
 
     ColumnContract:
       type: object

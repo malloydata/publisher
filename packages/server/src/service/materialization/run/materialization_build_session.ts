@@ -686,6 +686,22 @@ export interface StorageIncrementalRefresh {
    }) => Promise<WatermarkBound | undefined>;
 }
 
+/**
+ * {@link StorageIncrementalRefresh} for a table stacked on stored upstreams
+ * in its own destination (an incremental extension table over its parent's
+ * table): the session holds the destination alone, and the rows a delta
+ * reads are the stacked build's own SQL (`storedSQL`) run there.
+ */
+export interface StackedIncrementalRefresh {
+   plan: (deps: {
+      session: DuckDBConnection;
+      quotedTablePath: string;
+      /** The stacked build's SQL, projected to the stored columns. */
+      storedSQL: string;
+   }) => Promise<StorageRefreshOutcome | undefined>;
+   afterSeed: StorageIncrementalRefresh["afterSeed"];
+}
+
 /** See `buildSourceIntoStorage`'s `deps`. */
 export interface BuildSessionDeps {
    federate?: typeof federateSourceForPassthrough;
@@ -1363,6 +1379,11 @@ export async function buildDownstreamIntoStorage(params: {
       destinationName: string;
       destinationConnection: ApiConnection;
    }[];
+   /**
+    * An incremental table's in-place refresh: a delta of the stacked SQL in
+    * the destination, or undefined to have it rebuilt.
+    */
+   incremental?: StackedIncrementalRefresh;
 }): Promise<StorageBuildResult> {
    const {
       destinationName,
@@ -1395,7 +1416,45 @@ export async function buildDownstreamIntoStorage(params: {
             ),
          });
 
-         return writeStackedTable(session, params, sql, downstream);
+         const incremental = params.incremental;
+         if (!incremental) {
+            return writeStackedTable(session, params, sql, downstream);
+         }
+         const target = quoteManifestTablePath(
+            storageTablePath(
+               destinationName,
+               params.physicalTableName,
+               destinationSchemaOf(destinationConnection),
+            ),
+            STORAGE_DIALECT,
+         );
+         const refreshed = await incremental.plan({
+            session,
+            quotedTablePath: target,
+            storedSQL: sql,
+         });
+         if (refreshed) {
+            return {
+               storageDestinationName: destinationName,
+               schema: await describeTable(session, target),
+               rowCount: await countStoredRows(session, target),
+               collations: await readCollationsOrFail(session, target),
+               readCost: null,
+               upstreamReuse: "reused",
+               refresh: refreshed,
+            };
+         }
+         const written = await writeStackedTable(
+            session,
+            params,
+            sql,
+            downstream,
+         );
+         const seededThrough = await incremental.afterSeed({
+            session,
+            quotedTablePath: target,
+         });
+         return { ...written, seededThrough };
       },
    );
 }

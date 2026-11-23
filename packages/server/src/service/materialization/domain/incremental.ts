@@ -15,7 +15,7 @@
  */
 
 import type { RollingWindow } from "./read_time_terms";
-import type { IncrementalStrategy } from "./types";
+import type { IncrementalStrategy, LedgerEntry } from "./types";
 
 /** What a declared name turned out to be on the compiled source. */
 export type ResolvedName =
@@ -138,3 +138,21 @@ export interface PairDelta {
  * while the run that found them is bound.
  */
 export const INCREMENTAL_LATE_ROWS_CODE = "persist-incremental-late-rows";
+
+/**
+ * The code on the warning for an incremental extension the newest run
+ * rebuilt in full because no record said which build of its parent's table
+ * it last read (step reason `upstream_generation_skipped`).
+ */
+export const MATERIALIZE_EXTENSION_GENERATION_UNPROVEN_CODE =
+   "materialize-extension-generation-unproven";
+
+/** Which build of its parent's table an extension's boundary was reached over. */
+export type LedgerParent = NonNullable<LedgerEntry["parent"]>;
+
+/** One extension whose last-read parent build no record names. */
+export interface UnprovenGeneration {
+   sourceName: string;
+   sourceEntityId: string;
+   parentName: string;
+}

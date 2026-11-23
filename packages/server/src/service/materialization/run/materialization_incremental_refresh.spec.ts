@@ -7,6 +7,8 @@ import * as sinon from "sinon";
 import { BuildInstruction, LedgerEntry } from "../domain/types";
 import { NATIVE_SCHEMA_ROW_LIMIT } from "./database_native_types";
 import { indexCallerLedger } from "./incremental_build";
+import { MaterializationController } from "../../../controller/materialization.controller";
+import type { MaterializationService } from "./materialization_service";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import { createMocks } from "../../../test_helpers/materialization_service_harness";
 import { fakeContractReads } from "../../../test_helpers/contract_fixture";
@@ -238,6 +240,8 @@ describe("buildOneSource: incremental refresh", () => {
          watermark: "order_date",
          strategy: "range_replace",
          sourceEntityId: "abcdef1234567890",
+         // The run that changed the table.
+         advancedBy: "run-1",
       });
    });
 
@@ -550,6 +554,7 @@ describe("buildOneSource: incremental refresh", () => {
          expect(entry.ledger).toEqual({
             ...ENTRY,
             coveredThrough: "2024-07-01",
+            advancedBy: "run-1",
          });
       });
 
@@ -691,6 +696,84 @@ describe("buildOneSource: incremental refresh", () => {
             expect(remove.called).toBe(false);
          });
       }
+
+      it("carries keys it does not know on an entry to the build, and still deltas", async () => {
+         const extended = {
+            ...ENTRY,
+            parentGeneration: { sourceEntityId: "p1", coveredThrough: "x" },
+         } as LedgerEntry;
+         const { context } = incrementalContext({ ledger: [extended] });
+         const boundary = [...context.callerLedger!.values()][0];
+         expect(boundary?.extensions).toEqual({
+            parentGeneration: { sourceEntityId: "p1", coveredThrough: "x" },
+         });
+         const entry = await callBuildOneSource({
+            runSQL: probeAwareRunSQL(),
+            context,
+         });
+         expect(entry.refresh).toBe("delta");
+      });
+
+      // The controller drops a malformed entry rather than refusing the
+      // request: the source it described seeds, and every other entry in the
+      // same ledger still applies.
+      it("seeds the source whose echoed entry is malformed, while another's entry still deltas", async () => {
+         async function ledgerOf(entries: unknown[]): Promise<LedgerEntry[]> {
+            const create = sinon.stub().resolves({ id: "m1" });
+            await new MaterializationController({
+               createMaterialization: create,
+            } as unknown as MaterializationService).createMaterialization(
+               "env",
+               "pkg",
+               {
+                  buildInstructions: {
+                     sources: [
+                        {
+                           sourceEntityId: "abcdef1234567890",
+                           materializedTableId: "mt-1",
+                           physicalTableName: "orders_v1",
+                        },
+                     ],
+                     ledger: entries,
+                  },
+               },
+            );
+            return create.firstCall.args[2].ledger;
+         }
+         const OTHER = { ...ENTRY, physicalTableName: "events_v1" };
+
+         // orders' entry is sound; a neighbour's is corrupted: orders deltas.
+         const sound = await ledgerOf([
+            ENTRY,
+            { ...OTHER, strategy: "upsert" },
+         ]);
+         expect(sound).toEqual([ENTRY]);
+         const delta = await callBuildOneSource({
+            runSQL: probeAwareRunSQL(),
+            context: incrementalContext({ ledger: sound }).context,
+         });
+         expect(delta.refresh).toBe("delta");
+
+         // orders' entry is corrupted; the neighbour's is sound: orders seeds.
+         const corrupted = await ledgerOf([
+            { ...ENTRY, mergeKeys: "x" },
+            OTHER,
+         ]);
+         expect(corrupted).toEqual([OTHER]);
+         const runSQL = probeAwareRunSQL();
+         const seeded = await callBuildOneSource({
+            runSQL,
+            context: incrementalContext({ ledger: corrupted }).context,
+         });
+         expect(seeded.refresh).toBe("full");
+         const statements = runSQL.getCalls().map((c) => c.args[0] as string);
+         expect(statements.some((s) => s.startsWith("CREATE TABLE"))).toBe(
+            true,
+         );
+         expect(statements.some((s) => s.startsWith("BEGIN;"))).toBe(false);
+         // And reports a fresh, well-formed entry for the host to store.
+         expect(seeded.ledger?.strategy).toBe("range_replace");
+      });
 
       it("still seeds on a fact about the TABLE, exactly as local mode does", async () => {
          // The entry is fine; the table is empty. That is not the caller's
