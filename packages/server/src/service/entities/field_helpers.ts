@@ -4,8 +4,12 @@
 import type { Entity, JoinSourceMetadata } from "./internal_types";
 import { isOnRoute } from "../annotation_reader";
 import { AccessModifierEnum, EntityTypeEnum } from "./internal_types";
-import { extractCodeFromEntity, modelTextBetween } from "./model_text";
-import { stripMalloyCommentsAndLiterals } from "../malloy_lexer_core";
+import {
+   extractCodeFromEntity,
+   modelCode,
+   modelOffset,
+   type ModelCode,
+} from "./model_text";
 import { motlyTag } from "../motly";
 import type {
    AtomicField,
@@ -231,38 +235,87 @@ interface MalloyNote {
    at?: MalloyDocLocation;
 }
 
-/** The keyword a definition's own notes may sit above, with its access label. */
-const STATEMENT_LEAD =
-   /^\s*(?:(?:public|private|internal)\s+)?(?:source|join_one|join_many|join_cross)\s*:\s*$/;
+/** The statements whose notes tag the sources they define. */
+const DEFINING_KEYWORDS = new Set([
+   "source",
+   "join_one",
+   "join_many",
+   "join_cross",
+]);
+const ACCESS_LABELS = new Set(["public", "private", "internal"]);
 
 /**
- * Whether only comments, other annotations and the statement's keyword lie
- * between `note` and the definition at `start`, read from the text the model
- * compiled from: then Malloy attached it there. False when that text can't
- * be read.
+ * Where a note Malloy attached to the definition at `at` must lie to be its
+ * own, as half-open offset spans of `model`: the run of trivia (spaces,
+ * comments, annotations) and its statement's keyword just above it, and for a
+ * later definition of a statement (after a `,`), the trivia above that
+ * statement's keyword too. A note copied from a base lies above the base's
+ * declaration, outside them.
  */
-const tagsDefinitionAt = (
-   note: MalloyNote,
-   url: string,
-   start: Position,
-): boolean => {
-   const end = note.at?.range?.end;
-   if (
-      end?.line === undefined ||
-      end.character === undefined ||
-      start.line === undefined ||
-      start.character === undefined
-   ) {
-      return false;
+const ownNoteSpans = (model: ModelCode, at: number): [number, number][] => {
+   const { text, code } = model;
+   const trivia = (i: number) => /\s/.test(code[i]!) || code[i] !== text[i];
+   const skipTrivia = (i: number) => {
+      while (i > 0 && trivia(i - 1)) i--;
+      return i;
+   };
+   const wordBefore = (i: number) => {
+      let s = i;
+      while (s > 0 && /\w/.test(code[s - 1]!)) s--;
+      return { start: s, word: code.slice(s, i).toLowerCase() };
+   };
+   // The statement head whose `keyword:` ends just before `colonEnd`, with its label.
+   const headAt = (colonEnd: number): number | undefined => {
+      const colon = colonEnd - 1;
+      if (code[colon] !== ":" || code[colon - 1] === ":") return undefined;
+      const keyword = wordBefore(skipTrivia(colon));
+      if (!DEFINING_KEYWORDS.has(keyword.word)) return undefined;
+      const label = wordBefore(skipTrivia(keyword.start));
+      return ACCESS_LABELS.has(label.word) ? label.start : keyword.start;
+   };
+   const before = skipTrivia(at);
+   const head = headAt(before);
+   if (head !== undefined) return [[skipTrivia(head), at]];
+   if (code[before - 1] !== ",") return [[before, at]];
+   // A later definition: its own notes after the comma, and the statement's.
+   let depth = 0;
+   for (let i = before - 1; i > 0; i--) {
+      const c = code[i]!;
+      if (c === ")" || c === "]" || c === "}") depth++;
+      else if (c === "(" || c === "[" || c === "{") depth--;
+      if (depth < 0) break;
+      if (depth === 0 && c === ":" && code[i + 1] !== ":") {
+         const statement = headAt(i + 1);
+         if (statement !== undefined) {
+            return [
+               [before, at],
+               [skipTrivia(statement), statement],
+            ];
+         }
+      }
    }
-   const between = modelTextBetween(
-      url,
-      { line: end.line, character: end.character },
-      { line: start.line, character: start.character },
-   );
-   if (between === undefined) return false;
-   const code = stripMalloyCommentsAndLiterals(between);
-   return code.trim() === "" || STATEMENT_LEAD.test(code);
+   return [[before, at]];
+};
+
+/**
+ * Whether each same-file note is the explore's own, read from the text the
+ * model compiled from; undefined when that text can't be read.
+ */
+const ownNoteTest = (
+   exploreLoc: MalloyDocLocation,
+): ((note: MalloyNote) => boolean) | undefined => {
+   const model = exploreLoc.url ? modelCode(exploreLoc.url) : undefined;
+   if (!model) return undefined;
+   const at = modelOffset(model, exploreLoc.range?.start);
+   const end = modelOffset(model, exploreLoc.range?.end);
+   if (at === undefined || end === undefined) return undefined;
+   const spans = [...ownNoteSpans(model, at), [at, end] as [number, number]];
+   return (note) => {
+      const from = modelOffset(model, note.at?.range?.start);
+      const to = modelOffset(model, note.at?.range?.end);
+      if (from === undefined || to === undefined) return false;
+      return spans.some(([s, e]) => from >= s && to <= e);
+   };
 };
 
 /**
@@ -288,13 +341,14 @@ const tagsDefinitionAt = (
  * The only reliable local signal is *location*: a note genuinely declared
  * on this source sits within the source's declaration or immediately above
  * the `source:` keyword (block annotations). A note copied from a base
- * points back at the base's declaration, which lives elsewhere. We keep
- * the notes whose lines run contiguously into this explore's declaration
- * (which also covers a note on a statement defining several sources), and
- * any note with only comments, other annotations and its keyword between it
- * and the declaration in the text the model compiled from. A copied note has
- * its base's declaration in between, wherever that base was imported from.
- * Without that text (a model compiled from a string), only contiguity holds.
+ * points back at the base's declaration, which lives elsewhere. Read from
+ * the text the model compiled from, a note is this source's own when it lies
+ * inside the declaration or in the run of comments and annotations above it
+ * and its statement's keyword (the statement's, too, for a later definition
+ * of a multi-definition statement); a copied note has its base's declaration
+ * in between, wherever that base was imported from. Without that text (a
+ * model compiled from a string) we fall back to line contiguity: a note whose
+ * lines run straight into the declaration.
  */
 export const getDirectTaglines = (explore: Explore): string[] => {
    const annotation = (
@@ -390,6 +444,12 @@ const filterDirectlyDeclaredNotes = (
       return !noteUrl || !exploreUrl || noteUrl === exploreUrl;
    });
 
+   // With the text the model compiled from, read it as Malloy does.
+   const own = exploreLoc && ownNoteTest(exploreLoc);
+   if (own) {
+      return sameFileNotes.filter((n) => !n.at?.range || own(n));
+   }
+
    // Map each line to the notes that occupy it, so we can walk upward from
    // the `source:` keyword while every intervening line is an annotation.
    const lineToNotes = new Map<number, MalloyNote[]>();
@@ -429,18 +489,6 @@ const filterDirectlyDeclaredNotes = (
          }
       }
       line = topmost - 1;
-   }
-
-   // Past a blank line or a comment, a note is its own when nothing but
-   // trivia and the keyword lie between them; one copied from a base has the
-   // base's declaration in between.
-   const start = exploreLoc?.range?.start;
-   if (exploreUrl && start) {
-      for (const note of sameFileNotes) {
-         if (!direct.has(note) && tagsDefinitionAt(note, exploreUrl, start)) {
-            direct.add(note);
-         }
-      }
    }
 
    // Preserve original ordering.

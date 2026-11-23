@@ -15,12 +15,21 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../logger";
 import { readPackageURLSync } from "../../utils";
+import { stripMalloyCommentsAndLiterals } from "../malloy_lexer_core";
 
 const modelLines = new AsyncLocalStorage<{
    lines: Map<string, string[]>;
+   code: Map<string, ModelCode>;
    /** The package root a file not in `lines` must lie inside to be read. */
    packageRoot?: string;
 }>();
+
+/** A model file's text, and the same with comments, annotations and literals blanked in place. */
+export interface ModelCode {
+   text: string;
+   code: string;
+   lineStarts: number[];
+}
 
 /**
  * Runs `fn` with each model file's lines split at most once. `texts` (by
@@ -35,7 +44,7 @@ export function withModelTextCache<T>(
 ): T {
    const lines = new Map<string, string[]>();
    for (const [filePath, text] of texts) lines.set(filePath, text.split("\n"));
-   return modelLines.run({ lines, packageRoot }, fn);
+   return modelLines.run({ lines, code: new Map(), packageRoot }, fn);
 }
 
 function readModelLines(filePath: string): string[] {
@@ -53,29 +62,53 @@ function readModelLines(filePath: string): string[] {
 }
 
 /**
- * The text of the model file at `url` from `start` to `end` (zero-based), from
- * the revision the run compiled; undefined when that file cannot be read.
+ * The model file at `url` as the run compiled it, stripped once per run;
+ * undefined when that file cannot be read.
  */
-export function modelTextBetween(
-   url: string,
-   start: { line: number; character: number },
-   end: { line: number; character: number },
-): string | undefined {
+export function modelCode(url: string): ModelCode | undefined {
+   let filePath: string;
    let lines: string[];
    try {
-      lines = readModelLines(fileURLToPath(url));
+      filePath = fileURLToPath(url);
+      lines = readModelLines(filePath);
    } catch {
       return undefined;
    }
-   if (end.line >= lines.length) return undefined;
-   if (start.line === end.line) {
-      return lines[start.line]!.slice(start.character, end.character);
+   const store = modelLines.getStore();
+   const cached = store?.code.get(filePath);
+   if (cached !== undefined) return cached;
+   const text = lines.join("\n");
+   const lineStarts: number[] = [];
+   let at = 0;
+   for (const line of lines) {
+      lineStarts.push(at);
+      at += line.length + 1;
    }
-   return [
-      lines[start.line]!.slice(start.character),
-      ...lines.slice(start.line + 1, end.line),
-      lines[end.line]!.slice(0, end.character),
-   ].join("\n");
+   const model = {
+      text,
+      code: stripMalloyCommentsAndLiterals(text),
+      lineStarts,
+   };
+   store?.code.set(filePath, model);
+   return model;
+}
+
+/** The offset of a Malloy position, whose `character` counts code points; undefined when off the text. */
+export function modelOffset(
+   model: ModelCode,
+   pos: { line?: number; character?: number } | undefined,
+): number | undefined {
+   if (pos?.line === undefined || pos.character === undefined) {
+      return undefined;
+   }
+   let at = model.lineStarts[pos.line];
+   if (at === undefined) return undefined;
+   for (let k = 0; k < pos.character; k++) {
+      if (at >= model.text.length) return undefined;
+      const c = model.text.charCodeAt(at);
+      at += c >= 0xd800 && c <= 0xdbff ? 2 : 1;
+   }
+   return at;
 }
 
 /**

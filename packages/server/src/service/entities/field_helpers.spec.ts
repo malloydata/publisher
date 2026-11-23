@@ -5,9 +5,10 @@
  * @fileoverview Tests for field_helpers entity classification.
  */
 
-import { describe, test } from "bun:test";
+import { describe, spyOn, test } from "bun:test";
 import assert from "node:assert";
-import type { Field } from "@malloydata/malloy";
+import type { Explore, Field } from "@malloydata/malloy";
+import * as lexerCore from "../malloy_lexer_core";
 import { Runtime, InMemoryURLReader } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { AccessModifierEnum, EntityTypeEnum } from "./internal_types";
@@ -423,11 +424,18 @@ describe("getDirectTaglines (compile-backed)", () => {
          const texts = new Map(
             Object.entries(files).map(([name, text]) => [`/${name}`, text]),
          );
+         // Each source, and each join in it as `source.join`.
+         const explores = compiled.explores.flatMap((e) => [
+            [e.name, e] as const,
+            ...e.allFields
+               .filter((f) => f.isExplore())
+               .map((f) => [`${e.name}.${f.name}`, f as Explore] as const),
+         ]);
          return withModelTextCache(
             () =>
                Object.fromEntries(
-                  compiled.explores.map((e) => [
-                     e.name,
+                  explores.map(([name, e]) => [
+                     name,
                      getDirectTaglines(e).map((t) => t.trim()),
                   ]),
                ),
@@ -448,9 +456,30 @@ source: gap is duckdb.sql("select 1 as a")
 #(doc) Commented
 // a note
 source: commented is duckdb.sql("select 1 as a")
+
+#(doc) smile 😀😀
+
+SOURCE: shouted is duckdb.sql("select 1 as a")
 `);
       assert.deepStrictEqual(notes.gap, ["#(doc) Gap", "#(agent-hidden)"]);
       assert.deepStrictEqual(notes.commented, ["#(doc) Commented"]);
+      assert.deepStrictEqual(notes.shouted, ["#(doc) smile 😀😀"]);
+   });
+
+   test("keeps a join's own notes across a blank line, never its base's", async () => {
+      const notes = await direct(`
+#(authorize) false
+source: base is duckdb.sql("select 1 as a")
+
+source: parent is duckdb.sql("select 1 as a") extend {
+  #(doc) Own join
+
+  join_cross: own_join is base extend {}
+  join_cross: bare_join is base extend {}
+}
+`);
+      assert.deepStrictEqual(notes["parent.own_join"], ["#(doc) Own join"]);
+      assert.deepStrictEqual(notes["parent.bare_join"], []);
    });
 
    test("never takes a base's notes, declared above it or right above it", async () => {
@@ -508,6 +537,45 @@ source: a1 is base, a2 is base
 `);
       assert.deepStrictEqual(notes.a1, ["#(doc) Shared"]);
       assert.deepStrictEqual(notes.a2, ["#(doc) Shared"]);
+   });
+
+   test("gives a note on a multi-line statement to every source it defines, past a blank line", async () => {
+      const notes = await direct(`
+#(doc) Base
+source: base is duckdb.sql("select 1 as a")
+
+#(doc) Shared
+
+source:
+  m1 is base,
+  #(doc) Second
+  m2 is base extend { dimension: b is 1 },
+  m3 is base extend {}
+`);
+      assert.deepStrictEqual(notes.m1, ["#(doc) Shared"]);
+      assert.deepStrictEqual(notes.m2, ["#(doc) Shared", "#(doc) Second"]);
+      assert.deepStrictEqual(notes.m3, ["#(doc) Shared"]);
+   });
+
+   test("strips each file once, not once per note", async () => {
+      const strip = spyOn(lexerCore, "stripMalloyCommentsAndLiterals");
+      try {
+         const children = Array.from(
+            { length: 200 },
+            (_, i) => `source: s${i} is base extend {}`,
+         ).join("\n");
+         const notes = await direct(`
+#(doc) Base
+#(agent-hidden)
+source: base is duckdb.sql("select 1 as a")
+
+${children}
+`);
+         assert.deepStrictEqual(notes.s199, []);
+         assert.strictEqual(strip.mock.calls.length, 1);
+      } finally {
+         strip.mockRestore();
+      }
    });
 });
 
