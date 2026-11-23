@@ -98,10 +98,24 @@ describe("applyLoadSessionSettings", () => {
       }
    });
 
-   it("leaves the spill cap alone: no setting names one", async () => {
+   it("leaves the spill cap at its default when the general limit is set", async () => {
       expect((await settingsFor("512MB"))[1]).toBe(
          "SET max_temp_directory_size='6GiB'",
       );
+   });
+
+   it("takes the admin caps; a memory cap above the general limit is held to it", async () => {
+      installEnv({
+         PUBLISHER_ADMIN_MEMORY_LIMIT: "3GB",
+         PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE: "20GB",
+         PUBLISHER_DUCKDB_MEMORY_LIMIT: "2GB",
+      });
+      const { conn, sql } = recorder();
+      await applyLoadSessionSettings(conn);
+      expect(sql.slice(0, 2)).toEqual([
+         "SET memory_limit='2GB'",
+         "SET max_temp_directory_size='20GB'",
+      ]);
    });
 });
 
@@ -299,6 +313,20 @@ describe("applySessionResourceLimits", () => {
          for (const value of ["1GB", "1gb", "1 GB", "1GiB", "1.5GB", "512MB"]) {
             installEnv({ PUBLISHER_DUCKDB_MEMORY_LIMIT: value });
             expect(() => assertDuckDBResourceConfig()).not.toThrow();
+         }
+      });
+
+      it("rejects an admin cap that is not a DuckDB size", () => {
+         for (const variable of [
+            "PUBLISHER_ADMIN_MEMORY_LIMIT",
+            "PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE",
+         ]) {
+            for (const bad of ["lots", "off", "6"]) {
+               installEnv({ [variable]: bad });
+               expect(() => assertDuckDBResourceConfig()).toThrow(
+                  new RegExp(variable),
+               );
+            }
          }
       });
 

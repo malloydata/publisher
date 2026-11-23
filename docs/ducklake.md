@@ -323,8 +323,9 @@ stream in batches:
 - The load reads the table inside the transaction that writes it, so a load that races a table PUT or
   DELETE of the same table (or a schema drop) on another replica is refused when it commits, `409
   LOAD_CONFLICT`: nothing is written, retry.
-- A load runs in its own DuckDB session, bounded to 1.5 GB of memory (or `PUBLISHER_DUCKDB_MEMORY_LIMIT`
-  when that is lower) and 6 GiB of spill under the system temp directory. A server that runs both the admin listener and the serving API shares its CPU and
+- A load runs in its own DuckDB session, bounded to `PUBLISHER_ADMIN_MEMORY_LIMIT` of memory (default 1.5 GB,
+  or `PUBLISHER_DUCKDB_MEMORY_LIMIT` when that is lower, so a load needs both raised to use more) and
+  `PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE` of spill (default 6 GiB) under the system temp directory. A server that runs both the admin listener and the serving API shares its CPU and
   memory between a load and user queries; run the admin listener on its own (`"servingApiEnabled":
   false`) when loads are large.
 - A keyed load compares a table's columns in narrow passes rather than one join over every column: the

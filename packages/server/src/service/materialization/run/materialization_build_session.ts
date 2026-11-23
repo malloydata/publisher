@@ -42,6 +42,7 @@ import os from "node:os";
 import path from "node:path";
 import type { components } from "../../../api";
 import { duckDBByteSize, getDuckDBMemoryLimit } from "../../../config";
+import { settings } from "../../../settings";
 import {
    BadRequestError,
    MaterializationEligibilityError,
@@ -541,9 +542,6 @@ export async function withDestinationSession<T>(
    }
 }
 
-/** The most memory an admin table load or copy session may use. */
-const LOAD_MEMORY_LIMIT = "1.5GB";
-
 /**
  * The bounds for an admin table load or copy, which runs beside the server's
  * other work in a pod sized for it: a memory cap below the pod's (the
@@ -554,15 +552,16 @@ const LOAD_MEMORY_LIMIT = "1.5GB";
 export async function applyLoadSessionSettings(
    session: DuckDBConnection,
 ): Promise<void> {
+   const cap = settings.get("admin.memoryLimit");
    const configured = getDuckDBMemoryLimit();
    const memoryLimit =
       configured !== undefined &&
-      duckDBByteSize(configured) < duckDBByteSize(LOAD_MEMORY_LIMIT)
+      duckDBByteSize(configured) < duckDBByteSize(cap)
          ? configured
-         : LOAD_MEMORY_LIMIT;
+         : cap;
    for (const setting of [
       `memory_limit='${escapeSQL(memoryLimit)}'`,
-      "max_temp_directory_size='6GiB'",
+      `max_temp_directory_size='${escapeSQL(settings.get("admin.maxTempDirectorySize"))}'`,
       "preserve_insertion_order=false",
       "enable_http_metadata_cache=true",
       "parquet_metadata_cache=true",

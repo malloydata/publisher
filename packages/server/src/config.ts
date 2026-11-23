@@ -357,6 +357,18 @@ export function assertDuckDBResourceConfig(): void {
             `"1GB" or "512MB" (or "off" to disable), got "${memoryLimit}"`,
       );
    }
+   for (const [key, variable] of [
+      ["admin.memoryLimit", "PUBLISHER_ADMIN_MEMORY_LIMIT"],
+      ["admin.maxTempDirectorySize", "PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE"],
+   ] as const) {
+      const size = settings.get(key);
+      if (!DUCKDB_BYTE_SIZE.test(size)) {
+         throw new Error(
+            `Invalid value for ${variable}: expected a size like "1.5GB" or ` +
+               `"6GiB", got "${size}"`,
+         );
+      }
+   }
    const rowGroupSizeBytes = getDuckLakeRowGroupSizeBytes();
    if (
       rowGroupSizeBytes !== undefined &&

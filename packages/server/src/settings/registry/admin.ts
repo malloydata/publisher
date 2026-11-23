@@ -36,6 +36,23 @@ export const admin = [
       defaultText: "`600000` (10 min)",
       notes: "How long the admin listener lets a request run before closing its connection. A table copy or a file load answers only when the table is written, so a large table needs longer than the main API's ten minutes; raise this for the caller's largest copy, and keep the caller's own timeout above it. Applies to the admin listener alone: the main API and MCP listeners keep ten minutes.",
    }),
+   // Strings because DuckDB parses them; assertDuckDBResourceConfig checks them at boot.
+   setting({
+      key: "admin.memoryLimit",
+      type: string(),
+      default: "1.5GB",
+      description:
+         "Most memory one admin table load or copy session may use, as a DuckDB size (1.5GB).",
+      notes: "The `memory_limit` of the DuckDB session an admin table load or copy runs in, as a flat DuckDB size (`1.5GB`, `512MB`). The session uses the lower of this and `PUBLISHER_DUCKDB_MEMORY_LIMIT`, so a pod whose general limit is smaller is never raised by the default: to give a load more than 1.5GB, raise both. A keyed load sizes its comparison passes to half of this. Validated at startup.",
+   }),
+   setting({
+      key: "admin.maxTempDirectorySize",
+      type: string(),
+      default: "6GiB",
+      description:
+         "Most spill one admin table load or copy session may write, as a DuckDB size (6GiB).",
+      notes: "The `max_temp_directory_size` of the DuckDB session an admin table load or copy runs in, as a flat DuckDB size (`6GiB`, `20GB`). Keep it under the pod's ephemeral storage. A load that outgrows it answers `500` and a retry is safe. Validated at startup.",
+   }),
    setting({
       key: "admin.catalogDatabase",
       type: string(),

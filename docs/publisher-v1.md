@@ -1927,6 +1927,8 @@ keep their file paths and gain derived variables and flags. `indexing.maxEntitie
 | `PUBLISHER_MODEL_PAGE` (the model viewer) | `modelPage` (enum: `explorer`, `viewer`) | unchanged | — | a lasting choice between two pages, both kept |
 | `PUBLISHER_PACKAGE_INLINE_FIELDS` (#1532) | `packageInlineFields` (enum: `on`, `off`) | unchanged | — | a transition setting that a later release turns off and the one after removes with the fields, so, like `packageVersioning`, it keeps its name and has no flag |
 | _new_ (#1882) | `admin.requestTimeoutMs` | `PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS` | `--admin-request-timeout-ms` | added after the design was written, so it took its derived names from the start |
+| _new_ | `admin.memoryLimit` | `PUBLISHER_ADMIN_MEMORY_LIMIT` | `--admin-memory-limit` | the memory cap of an admin load or copy session (default `1.5GB`), held to `duckdb.memoryLimit` when that is lower |
+| _new_ | `admin.maxTempDirectorySize` | `PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE` | `--admin-max-temp-directory-size` | the spill cap of an admin load or copy session (default `6GiB`) |
 
 Step 2 has shipped, so a new setting takes only its derived name, as `PUBLISHER_VERSION_PROMOTION`
 did from the start, and never needs an alias.

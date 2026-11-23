@@ -491,8 +491,10 @@ paths:
         DuckLake at its commit and answers `409 LOAD_CONFLICT`: nothing was
         written, and a retry is safe.
 
-        A load runs in a session bounded to 1.5 GB of memory, or the operator's
-        lower `PUBLISHER_DUCKDB_MEMORY_LIMIT`, and 6 GiB of spill. A keyed load
+        A load runs in a session bounded to `PUBLISHER_ADMIN_MEMORY_LIMIT` of
+        memory (default 1.5 GB) or the operator's lower
+        `PUBLISHER_DUCKDB_MEMORY_LIMIT`, and `PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE`
+        of spill (default 6 GiB). A keyed load
         compares the table's columns in narrow passes, the keys first and then
         groups of columns sized to half the session's memory. A keyed replace
         or merge of 10 million rows by 21 columns stays within the spill limit
