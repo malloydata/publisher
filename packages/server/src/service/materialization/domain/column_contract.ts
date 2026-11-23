@@ -429,13 +429,14 @@ export function compatible(
       defaultNow !== undefined &&
       defaultNow !== contract.defaultCollation
    ) {
-      return {
-         ok: false,
-         code: "collation_changed",
-         columns: contract.columns
-            .filter((c) => c.collation === BINARY_COLLATION)
-            .map((c) => c.name),
-      };
+      // Only a string column with no collation of its own (recorded binary)
+      // compares under the default: a table with none is not changed by it.
+      const underDefault = contract.columns
+         .filter((c) => c.collation === BINARY_COLLATION)
+         .map((c) => c.name);
+      if (underDefault.length > 0) {
+         return { ok: false, code: "collation_changed", columns: underDefault };
+      }
    }
    return { ok: true };
 }
