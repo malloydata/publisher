@@ -252,9 +252,10 @@ export class PackageMaterialization {
    /** Where the last bind read its `storage=` tables (readStorageColumns). */
    private storageSite: StoredTableSite | undefined;
    /**
-    * Tables a stored read found not as their bind found them, by address:
-    * failed closed until the rebind {@link onIncompatible} starts judges
-    * them again.
+    * Tables a stored read failed on, by address: failed closed (unread,
+    * answered live) until the rebind {@link onIncompatible} starts reads
+    * them again. Only that rebind's catalog read, held to each contract,
+    * may find one incompatible.
     */
    private readFailed: ReadonlySet<string> = new Set();
    /**
@@ -540,7 +541,6 @@ export class PackageMaterialization {
       const known = handles.filter((h) => !this.readFailed.has(h));
       if (known.length > 0) {
          this.readFailed = new Set([...this.readFailed, ...known]);
-         recordIncompatibleDetected("read", known.length);
          this.publish();
       }
       if (this.rebinding) {
@@ -596,6 +596,10 @@ export class PackageMaterialization {
          this.readFailed = new Set();
       });
       this.logObservedOutcome();
+      // A table still unread (a swap's rename window outlasting the read) is
+      // read again with backoff, as a bind's are, and serves once it is.
+      if (observed) this.scheduleUnreadRetry(1);
+      if (storageObserved) this.scheduleStorageRetry(1);
    }
 
    /**
@@ -654,7 +658,18 @@ export class PackageMaterialization {
       });
       this.observedOutcome = {
          drifted: observed.drifted,
-         unread: [...observed.unread, ...stored.unread],
+         // A table a stored read failed on is unread until the rebind reads
+         // it: a failed read is never a verdict on the table (a swap's
+         // rename window, a permission, a live table it joined).
+         unread: [
+            ...observed.unread,
+            ...stored.unread,
+            ...[...this.readFailed].map((id) => ({
+               sourceEntityId: id,
+               reason: "not_read" as const,
+               detail: "a query's read of it failed; it is read again",
+            })),
+         ],
          uncaptured: observed.uncaptured,
          contractMissing: [
             ...observed.contractMissing,
@@ -1229,17 +1244,6 @@ export class PackageMaterialization {
             incompatibility: { code: "upstream_altered", columns: [] },
          });
       }
-      // A table a stored read failed on, until the rebind judges it again.
-      for (const id of this.readFailed) {
-         const t = tableOf(id);
-         if (!t.physicalTableName) continue;
-         verdicts.set(id, {
-            reason: "incompatible",
-            physicalTableName: t.physicalTableName,
-            ...(t.builtAt ? { builtAt: t.builtAt } : {}),
-            incompatibility: { code: "read_failed", columns: [] },
-         });
-      }
       for (const i of this.observedOutcome.incompatible) {
          verdicts.set(i.sourceEntityId, {
             reason: "incompatible",
@@ -1392,6 +1396,7 @@ export class PackageMaterialization {
       }
       for (const table of this.observedOutcome.incompatible) {
          if (!read(table.sourceEntityId)) continue;
+         recordIncompatibleDetected("bind", table.code);
          logger.warn(
             "A bound table no longer matches the column contract its build recorded, so it is not served from; its sources answer live until a build rebuilds it",
             {

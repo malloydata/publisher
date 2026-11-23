@@ -470,7 +470,7 @@ const EMISSIONS: Record<string, () => void> = {
    publisher_materialization_key_check_total: () =>
       recordKeyCheck("parent", "not_unique"),
    publisher_materialization_incompatible_detected_total: () =>
-      recordIncompatibleDetected("read", 1),
+      recordIncompatibleDetected("bind", "column_retyped"),
    publisher_materialization_contract_capture_total: () =>
       recordContractCapture("storage", "unread"),
    publisher_storage_tables_retained_total: () => recordStorageTableRetained(),

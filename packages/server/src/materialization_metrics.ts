@@ -451,9 +451,11 @@ const contractCaptureCounter = lazyCounter(
 );
 const incompatibleDetectedCounter = lazyCounter(
    "publisher_materialization_incompatible_detected_total",
-   "Bound tables the drift handler found no longer as their bind found " +
-      "them, failed closed until a rebind judges them again. Labels: " +
-      "trigger ('read': a stored read failed on a column or table gone).",
+   "Bound tables a bind's catalog read found no longer matching the column " +
+      "contract their build recorded, so they answer live until rebuilt. " +
+      "Labels: trigger ('bind'), code ('column_gone'|'column_retyped'|" +
+      "'collation_changed'|'declared_moved'|...). A failed stored read is " +
+      "never counted: it leaves the table unread until that read.",
 );
 const storageTableRetainedCounter = lazyCounter(
    "publisher_storage_tables_retained_total",
@@ -803,12 +805,16 @@ export function recordKeyCheck(
    keyCheckCounter().add(1, { kind, outcome });
 }
 
-/** Record tables the drift handler failed closed (package_materialization.ts). */
+/**
+ * Record a table a bind's catalog read found incompatible with its contract
+ * (package_materialization.ts), by code. A failed stored read is never
+ * counted: it leaves the table unread until that read.
+ */
 export function recordIncompatibleDetected(
-   trigger: "read",
-   tables: number,
+   trigger: "bind",
+   code: string,
 ): void {
-   incompatibleDetectedCounter().add(tables, { trigger });
+   incompatibleDetectedCounter().add(1, { trigger, code });
 }
 
 /** Record one column contract capture (run/column_contract_capture.ts). */

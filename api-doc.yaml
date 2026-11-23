@@ -5016,11 +5016,11 @@ components:
             With `incompatible`: what changed (`column_gone`,
             `column_retyped`, `collation_changed`, `declared_moved`, or
             `upstream_altered`: a table an upstream it was built from
-            changed under, found when a reload could not recompile;
-            `read_failed`: a query's read of it found a column or the table
-            gone, until the package's rebind judges it again; an open set)
-            and the columns it changed (none for `upstream_altered` or
-            `read_failed`).
+            changed under, found when a reload could not recompile; an open
+            set) and the columns it changed (none for `upstream_altered`). A
+            query's failed read of a table never makes it `incompatible`: it
+            leaves the table unread, answered live, until the package's
+            rebind reads its catalog and holds it to its contract.
           properties:
             code:
               type: string
