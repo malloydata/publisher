@@ -75,7 +75,8 @@
   },
   "materialize": {
     "enabled": true,
-    "gatedSources": false
+    "gatedSources": false,
+    "admissionMode": "probe"
   },
   "materialization": {
     "schedulerEnabled": false,

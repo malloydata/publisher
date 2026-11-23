@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — read admission judges a stored answer's strings by what load, bind and build recorded
+
+**Added: setting `materialize.admissionMode` (`PUBLISHER_ADMISSION_MODE`), a test and canary setting: `probe` (the default), `lookup` or `shadow`.** It picks how read admission judges whether a stored answer compares strings as live does. `probe` reads the source's and the stored table's collations from the warehouse on each query, as before. `shadow` runs both ways, decides by the probe, and logs each disagreement at warn as `admission parity drift`.
+
+**Added: counters `publisher_query_catalog_reads_total{site}` and `publisher_query_probe_compiles_total{site}`,** the catalog reads and extra compiles read admission makes while answering a query, and `publisher_admission_parity_drift_total{side,direction}`, shadow admission's disagreements.
+
 ## [Unreleased] — breaking: every build is strict, and a run of named sources builds the upstreams it cannot carry
 
 **Changed: every build is strict, standalone or a host's, whatever `strictUpstreams` says.** A downstream whose persisted upstream has no table in the run fails rather than recomputing the upstream from raw. `strictUpstreams` and `warehouseReach` are deprecated: both are accepted and ignored (`warehouseReach` values are still validated), since nothing recomputes a stored upstream any more.

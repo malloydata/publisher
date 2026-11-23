@@ -457,6 +457,40 @@ const incompatibleDetectedCounter = lazyCounter(
       "'collation_changed'|'declared_moved'|...). A failed stored read is " +
       "never counted: it leaves the table unread until that read.",
 );
+/**
+ * Where a query's read admission reads the warehouse, or compiles a query of
+ * its own, to judge a stored answer's string comparisons: the source side
+ * (`source_probe`) or the stored side (`stored_probe`). Under lookup
+ * admission neither is ever reached on a query.
+ */
+export const QUERY_ADMISSION_READ_SITES = [
+   "source_probe",
+   "stored_probe",
+] as const;
+export type QueryAdmissionReadSite =
+   (typeof QUERY_ADMISSION_READ_SITES)[number];
+const queryCatalogReadCounter = lazyCounter(
+   "publisher_query_catalog_reads_total",
+   "Catalog reads read admission made while answering a query, to judge a " +
+      "stored answer's string comparisons. Labels: site " +
+      "('source_probe'|'stored_probe'). Zero under lookup admission " +
+      "(materialize.admissionMode), which reads what load, bind and build " +
+      "recorded instead.",
+);
+const queryProbeCompileCounter = lazyCounter(
+   "publisher_query_probe_compiles_total",
+   "Compiles read admission made while answering a query, beyond the " +
+      "query's own: a probe query or the query's SQL, to read a source's " +
+      "collation. Labels: site ('source_probe'|'stored_probe'). Zero under " +
+      "lookup admission.",
+);
+const admissionParityDriftCounter = lazyCounter(
+   "publisher_admission_parity_drift_total",
+   "Shadow admission's disagreements (materialize.admissionMode=shadow): a " +
+      "query whose probe and lookup judged a stored answer's string " +
+      "comparisons differently. The probe decided. Labels: side " +
+      "('source'|'stored'), direction ('probe_refuses'|'lookup_refuses').",
+);
 const storageTableRetainedCounter = lazyCounter(
    "publisher_storage_tables_retained_total",
    "Tables a FAILED run left in a storage= destination and deliberately did not " +
@@ -815,6 +849,24 @@ export function recordIncompatibleDetected(
    code: string,
 ): void {
    incompatibleDetectedCounter().add(1, { trigger, code });
+}
+
+/** Record one catalog read read admission made while answering a query. */
+export function recordQueryCatalogRead(site: QueryAdmissionReadSite): void {
+   queryCatalogReadCounter().add(1, { site });
+}
+
+/** Record one compile read admission made while answering a query. */
+export function recordQueryProbeCompile(site: QueryAdmissionReadSite): void {
+   queryProbeCompileCounter().add(1, { site });
+}
+
+/** Record one disagreement shadow admission found. */
+export function recordAdmissionParityDrift(
+   side: "source" | "stored",
+   direction: "probe_refuses" | "lookup_refuses",
+): void {
+   admissionParityDriftCounter().add(1, { side, direction });
 }
 
 /** Record one column contract capture (run/column_contract_capture.ts). */

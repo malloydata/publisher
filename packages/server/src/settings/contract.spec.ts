@@ -1654,6 +1654,19 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("PUBLISHER_MATERIALIZE_GATED_SOURCES"),
       },
    ],
+   "materialize.admissionMode": [
+      { name: "unset", expect: value("probe") },
+      {
+         name: "PUBLISHER_ADMISSION_MODE",
+         env: { PUBLISHER_ADMISSION_MODE: "shadow" },
+         expect: value("shadow"),
+      },
+      {
+         name: "not a mode",
+         env: { PUBLISHER_ADMISSION_MODE: "sometimes" },
+         expect: fails("PUBLISHER_ADMISSION_MODE"),
+      },
+   ],
    "persist.collisionEnforcementEnabled": [
       { name: "unset", expect: value(true) },
       {

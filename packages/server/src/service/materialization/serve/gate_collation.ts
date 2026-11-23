@@ -67,6 +67,11 @@ import {
 } from "../../governance/ir/prepared_query";
 import { identifier, quotedIdentifier, quotedPath } from "../../malloy_text";
 import { queryTableReads } from "../../governance/ir/source_reads";
+import {
+   type QueryAdmissionReadSite,
+   recordQueryCatalogRead,
+   recordQueryProbeCompile,
+} from "../../../materialization_metrics";
 
 import type { CollationProbe, GateReads } from "./gate_reads_types";
 import {
@@ -147,7 +152,7 @@ export async function stringGateCollationRefusal(args: {
    ).runtime;
    if (!runtime) return "no runtime";
    const connect = async (name: string | undefined = connectionName) =>
-      probeIO(await runtime.connections.lookupConnection(name));
+      probeIO(await runtime.connections.lookupConnection(name), "source_probe");
    const reader = collationReaderOf(dialect);
    if (reader === undefined) return "a dialect whose collation is not read";
    if (reader.scope === "dataset") {
@@ -168,6 +173,7 @@ export async function stringGateCollationRefusal(args: {
       // however far from the entry point.
       let sql: string;
       try {
+         recordQueryProbeCompile("source_probe");
          ({ sql } = await args.authorRunnable.getPreparedResult(
             (args.givens ? { givens: args.givens } : {}) as never,
          ));
@@ -242,6 +248,7 @@ export async function stringGateCollationRefusal(args: {
                         modelDef,
                         entryName,
                         path,
+                        site: "source_probe",
                         ...(args.givens ? { givens: args.givens } : {}),
                      }),
                   ),
@@ -432,6 +439,7 @@ async function bigquerySource(args: {
          args.authorRunnable as unknown as { runtime?: ProbeRuntime }
       ).runtime;
       if (!runtime) return unknown;
+      recordQueryProbeCompile("source_probe");
       const { sql } = await args.authorRunnable.getPreparedResult(
          (args.givens ? { givens: args.givens } : {}) as never,
       );
@@ -440,7 +448,10 @@ async function bigquerySource(args: {
          typeof struct?.connection === "string" ? struct.connection : undefined;
       const catalog = new BigQueryCatalog(
          bigqueryReadsOf(runtime, args.bind ?? NO_BIND),
-         probeIO(await runtime.connections.lookupConnection(connectionName)),
+         probeIO(
+            await runtime.connections.lookupConnection(connectionName),
+            "source_probe",
+         ),
          connectionName,
       );
       const { job } = catalog;
@@ -711,7 +722,10 @@ async function probeSql(args: {
    entryName: string;
    path: readonly string[];
    givens?: Record<string, unknown>;
+   /** Where on a query's path it is compiled, for the counter. */
+   site: QueryAdmissionReadSite;
 }): Promise<string> {
+   recordQueryProbeCompile(args.site);
    const ref = args.path.map((p) => identifier(p)).join(".");
    const { sql } = await args.runtime
       ._loadModelFromModelDef(args.modelDef)
@@ -744,9 +758,10 @@ async function probe(args: {
    if (args.path.some((p) => malloyIdentifiers(p).length !== 1)) {
       return "unknown";
    }
-   const sql = await probeSql(args);
+   const sql = await probeSql({ ...args, site: "source_probe" });
    const io = probeIO(
       await args.runtime.connections.lookupConnection(args.connectionName),
+      "source_probe",
    );
    try {
       return await reader.sourceColumns(io, sql);
@@ -780,13 +795,22 @@ async function catalogRead(
  * client's `datasets.list`, its projects and location), read duck-typed
  * here and nowhere else.
  */
-export function probeIO(connection: Connection): ProbeIO {
+export function probeIO(
+   connection: Connection,
+   /** Where on a query's path it reads, for the counter; absent, off it. */
+   site?: QueryAdmissionReadSite,
+): ProbeIO {
+   const counted = () => {
+      if (site !== undefined) recordQueryCatalogRead(site);
+   };
    return {
       dialectName: connection.dialectName,
       async rows(sql) {
+         counted();
          return (await catalogRead(connection, sql)).rows ?? [];
       },
       async completeRows(sql) {
+         counted();
          const result = await catalogRead(connection, sql, {
             rowLimit: CATALOG_ROW_LIMIT,
          });
@@ -1071,6 +1095,7 @@ async function databaseCollationRefusal(args: {
    if (!runtime) return "no runtime";
    const source = probeIO(
       await runtime.connections.lookupConnection(connectionName),
+      "stored_probe",
    );
    const sourceDefault = await memoized(
       memo,
@@ -1086,6 +1111,7 @@ async function databaseCollationRefusal(args: {
       const storedName = t.destinationName ?? connectionName;
       const connection = probeIO(
          await args.storedRuntime.connections.lookupConnection(storedName),
+         "stored_probe",
       );
       const path = t.tablePath;
       if (
@@ -1146,6 +1172,7 @@ async function databaseCollationRefusal(args: {
                   modelDef,
                   entryName,
                   path,
+                  site: "stored_probe",
                   ...(args.givens ? { givens: args.givens } : {}),
                }),
             ),
@@ -1239,6 +1266,7 @@ async function storedSide(
             DUCKDB_COLLATION.storedTable(
                probeIO(
                   await runtime.connections.lookupConnection(connectionName),
+                  "stored_probe",
                ),
                tablePath,
             ),
@@ -1250,6 +1278,7 @@ async function storedSide(
       t.destinationName ?? (await entryConnectionOf(args.authorRunnable));
    const connection = probeIO(
       await runtime.connections.lookupConnection(connectionName),
+      "stored_probe",
    );
    if (reader.scope === "dataset") {
       return bigqueryDatabaseTableCollation(
