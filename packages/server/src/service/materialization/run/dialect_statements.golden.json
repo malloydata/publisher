@@ -596,25 +596,25 @@
   "probeTargetColumns": {
     "duckdb": {
       "statements": [
-        "SELECT column_name AS \"column_name\"\n              FROM duckdb_columns()\n              WHERE database_name = 'lake'\n                AND schema_name = 'sch'\n                AND table_name = 't__m1'\n              ORDER BY column_index"
+        "SELECT column_name AS \"column_name\", data_type AS \"column_type\"\n              FROM duckdb_columns()\n              WHERE database_name = 'lake'\n                AND schema_name = 'sch'\n                AND table_name = 't__m1'\n              ORDER BY column_index"
       ],
       "error": null
     },
     "postgres": {
       "statements": [
-        "SELECT row_to_json(__p) AS \"row\" FROM (SELECT column_name AS \"column_name\"\n           FROM information_schema.columns\n           WHERE table_schema = 'sch'\n             AND table_name = 't__m1'\n           ORDER BY ordinal_position) AS __p"
+        "SELECT row_to_json(__p) AS \"row\" FROM (SELECT column_name AS \"column_name\", data_type AS \"column_type\"\n           FROM information_schema.columns\n           WHERE table_schema = 'sch'\n             AND table_name = 't__m1'\n           ORDER BY ordinal_position) AS __p"
       ],
       "error": null
     },
     "standardsql": {
       "statements": [
-        "SELECT column_name AS `column_name`\n              FROM `lake`.`sch`.INFORMATION_SCHEMA.COLUMNS\n              WHERE table_name = 't__m1'\n              ORDER BY ordinal_position"
+        "SELECT column_name AS `column_name`, data_type AS `column_type`\n              FROM `lake`.`sch`.INFORMATION_SCHEMA.COLUMNS\n              WHERE table_name = 't__m1'\n              ORDER BY ordinal_position"
       ],
       "error": null
     },
     "snowflake": {
       "statements": [
-        "SELECT column_name AS \"column_name\"\n           FROM \"LAKE\".information_schema.columns\n           WHERE table_schema = 'SCH'\n             AND table_name = 'T__M1'\n           ORDER BY ordinal_position"
+        "SELECT column_name AS \"column_name\", data_type AS \"column_type\"\n           FROM \"LAKE\".information_schema.columns\n           WHERE table_schema = 'SCH'\n             AND table_name = 'T__M1'\n           ORDER BY ordinal_position"
       ],
       "error": null
     },

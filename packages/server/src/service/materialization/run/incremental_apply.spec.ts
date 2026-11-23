@@ -387,6 +387,7 @@ describe("probeTargetColumns", () => {
          "analytics.daily",
       );
       expect(result.columns).toEqual(["a", "b"]);
+      expect(seen[0]).toContain('data_type AS "column_type"');
       expect(seen[0]).toContain("information_schema.columns");
       expect(seen[0]).toContain("table_schema = 'analytics'");
       expect(seen[0]).toContain("table_name = 'daily'");
@@ -478,7 +479,7 @@ describe("probeTargetColumns", () => {
          "postgres",
          "analytics.gone",
       );
-      expect(result).toEqual({ columns: [] });
+      expect(result).toEqual({ columns: [], types: new Map() });
    });
 
    it("turns a failed probe into a reason, not an exception", async () => {
@@ -962,6 +963,10 @@ describe("planIncrementalStep", () => {
          columns?: string[];
          nonEmpty?: boolean;
          maxWatermark?: unknown;
+         /** Each stored column's type, as the catalog spells it. */
+         storedTypes?: string[];
+         /** Each delta column's type (`pg_typeof`), or a failed read. */
+         deltaTypes?: string[] | "fails";
       } = {},
    ): { runner: SqlRunner; seen: string[] } {
       const seen: string[] = [];
@@ -974,7 +979,24 @@ describe("planIncrementalStep", () => {
             return {
                rows: (
                   answers.columns ?? ["order_date", "region", "revenue"]
-               ).map((c) => ({ column_name: c })),
+               ).map((c, i) => ({
+                  column_name: c,
+                  ...(answers.storedTypes
+                     ? { column_type: answers.storedTypes[i] }
+                     : {}),
+               })),
+            };
+         }
+         if (sql.includes("pg_typeof")) {
+            if (answers.deltaTypes === "fails") {
+               throw new Error("permission denied for table base");
+            }
+            return {
+               rows: [
+                  Object.fromEntries(
+                     (answers.deltaTypes ?? []).map((t, i) => [`t${i}`, t]),
+                  ),
+               ],
             };
          }
          if (sql.includes("LIMIT 1")) {
@@ -1009,6 +1031,67 @@ describe("planIncrementalStep", () => {
          ...overrides,
       });
    };
+
+   describe("a source column widened after the build", () => {
+      const STORED = ["date", "text", "integer"];
+      it("rebuilds when the delta's type is wider than the stored column's", async () => {
+         const step = await plan(
+            {},
+            { storedTypes: STORED, deltaTypes: ["date", "text", "bigint"] },
+         );
+         expect(step).toMatchObject({
+            mode: "seed",
+            reasonCode: "shape_mismatch",
+         });
+         if (step.mode !== "seed") return;
+         expect(step.reason).toContain('"revenue" (integer → bigint)');
+      });
+
+      it("deltas when the types are unchanged, or narrower", async () => {
+         for (const revenue of ["integer", "smallint"]) {
+            const step = await plan(
+               {},
+               { storedTypes: STORED, deltaTypes: ["date", "text", revenue] },
+            );
+            expect(step.mode).toBe("delta");
+         }
+      });
+
+      it("rebuilds when the delta's types cannot be read", async () => {
+         const step = await plan(
+            {},
+            { storedTypes: STORED, deltaTypes: "fails" },
+         );
+         expect(step).toMatchObject({
+            mode: "seed",
+            reasonCode: "shape_mismatch",
+         });
+      });
+
+      it("reads the delta's types with no row: pg_typeof over an empty read", async () => {
+         const { runner, seen } = fakeRunner({
+            storedTypes: STORED,
+            deltaTypes: STORED,
+         });
+         await planIncrementalStep({
+            target: warehouseDeltaTarget({
+               dialect: "postgres",
+               runner,
+               quotedTablePath: `"analytics"."daily"`,
+               lineage: LINEAGE,
+               sourceSQL: "SELECT * FROM base",
+            }),
+            lineage: LINEAGE,
+            ledgerEntry: LEDGER,
+            forceRefresh: false,
+            now: NOW,
+            columns: ["order_date", "region", "revenue"],
+         });
+         const read = seen.find((q) => q.includes("pg_typeof"));
+         expect(read).toContain("LIMIT 0");
+         expect(read).toContain('pg_typeof(__q."revenue")) AS t2');
+      });
+   });
 
    it("applies a delta over [covered_through, snapshot) for a date watermark", async () => {
       const step = await plan();

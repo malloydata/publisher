@@ -765,6 +765,9 @@ export function targetColumnsProbeSql(
    segments: string[],
 ): string | undefined {
    const alias = quoteIdentifier("column_name", dialect);
+   // Each column's type as the catalog spells it, which a delta's own types
+   // are compared with (delta_type_widening.ts).
+   const typeAlias = quoteIdentifier("column_type", dialect);
    const knownDialect = registeredDialect(dialect);
    if (knownDialect === "duckdb") {
       // `duckdb_columns()`: an attached DuckLake catalog has no
@@ -779,7 +782,7 @@ export function targetColumnsProbeSql(
       // The catalog is the FIRST segment (the path is `<destination>.<name>`);
       // counting from the end would misread a longer name's container.
       const database = segments[0];
-      return `SELECT column_name AS ${alias}
+      return `SELECT column_name AS ${alias}, data_type AS ${typeAlias}
               FROM duckdb_columns()
               WHERE database_name = '${escapeSqlString(database, dialect)}'
                 AND schema_name = '${escapeSqlString(schema, dialect)}'
@@ -803,7 +806,7 @@ export function targetColumnsProbeSql(
             : "information_schema.columns";
       return probeSelect(
          dialect,
-         `SELECT column_name AS ${alias}
+         `SELECT column_name AS ${alias}, data_type AS ${typeAlias}
            FROM ${infoSchema}
            WHERE table_schema = ${schema}
              AND table_name = '${escapeSqlString(table, dialect)}'
@@ -818,10 +821,62 @@ export function targetColumnsProbeSql(
       .slice(0, -1)
       .map((s) => quoteIdentifier(s, dialect))
       .join(".");
-   return `SELECT column_name AS ${alias}
+   return `SELECT column_name AS ${alias}, data_type AS ${typeAlias}
               FROM ${container}.INFORMATION_SCHEMA.COLUMNS
               WHERE table_name = '${escapeSqlString(table, dialect)}'
               ORDER BY ordinal_position`;
+}
+
+/**
+ * The read of each of `columns` of `sql`'s rows with its type, without
+ * reading a row, spelled as targetColumnsProbeSql reads a stored column's,
+ * or undefined for a dialect it is not read on.
+ *
+ * Postgres: `pg_typeof` of each column of an empty read, joined to one row so
+ * there is a row to type; a domain reads as its base type. Its `regtype`
+ * text is `information_schema`'s `data_type` for every number type
+ * (`integer`, `bigint`, `real`, `double precision`, `numeric`).
+ */
+export function deltaColumnTypesSql(
+   dialect: string,
+   sql: string,
+   columns: readonly string[],
+):
+   | {
+        sql: string;
+        typesOf(rows: Record<string, unknown>[]): Map<string, string>;
+     }
+   | undefined {
+   switch (registeredDialect(dialect)) {
+      case "postgres":
+         break;
+      default:
+         return undefined;
+   }
+   if (columns.length === 0) return undefined;
+   const types = columns
+      .map(
+         (c, i) =>
+            `(SELECT coalesce(nullif(typbasetype, 0), oid)::regtype::text ` +
+            `FROM pg_type WHERE oid = pg_typeof(__q.${quoteIdentifier(c, dialect)})) AS t${i}`,
+      )
+      .join(", ");
+   return {
+      sql: probeSelect(
+         dialect,
+         `SELECT ${types} FROM (SELECT 1) AS __one LEFT JOIN ` +
+            `(SELECT * FROM (${sql}) AS __b LIMIT 0) AS __q ON true`,
+      ),
+      typesOf: (rows) => {
+         const row = rows[0] ?? {};
+         return new Map(
+            columns.flatMap((c, i) => {
+               const type = row[`t${i}`];
+               return typeof type === "string" ? [[c, type] as const] : [];
+            }),
+         );
+      },
+   };
 }
 
 /**

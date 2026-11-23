@@ -30,6 +30,7 @@ import { capabilitiesOf, dialectsWith } from "../domain/dialect";
 import { errMessage } from "../../../utils";
 import { foldedTablePathParts, quoteIdentifier } from "../../quoting";
 import {
+   deltaColumnTypesSql,
    escapeSqlString,
    inOneTransaction,
    passesUnless,
@@ -41,6 +42,7 @@ import {
    withStatementTimeout,
 } from "./warehouse_sql";
 import type { PairDelta } from "../domain/incremental";
+import { widenedColumns } from "./delta_type_widening";
 import type { LateRows } from "../domain/types";
 import {
    windowDeleteBefore,
@@ -409,15 +411,19 @@ function probeAlias(name: string, dialect: string): string {
 }
 
 /**
- * The target table's column names in ordinal order, or a reason it could not be
- * read. An absent table reports `columns: []` with no error, which is the SEED
- * signal.
+ * The target table's column names in ordinal order, each one's type as the
+ * catalog spells it, or a reason they could not be read. An absent table
+ * reports `columns: []` with no error, which is the SEED signal.
  */
 export async function probeTargetColumns(
    runner: SqlRunner,
    dialect: string,
    physicalTableName: string,
-): Promise<{ columns: string[]; error?: string }> {
+): Promise<{
+   columns: string[];
+   types?: ReadonlyMap<string, string>;
+   error?: string;
+}> {
    const segments = decodeTablePathSegments(dialect, physicalTableName);
    if (!segments || segments.length === 0) {
       return {
@@ -437,11 +443,18 @@ export async function probeTargetColumns(
       };
    }
    try {
-      const result = await runner(sql);
-      const columns = probeRows(result.rows)
-         .map((r) => r["column_name"])
-         .filter((n): n is string => typeof n === "string" && n.length > 0);
-      return { columns };
+      const rows = probeRows((await runner(sql)).rows).filter(
+         (r): r is Record<string, unknown> & { column_name: string } =>
+            typeof r["column_name"] === "string" && r["column_name"] !== "",
+      );
+      const types = new Map(
+         rows.flatMap((r) =>
+            typeof r["column_type"] === "string"
+               ? [[r.column_name, r["column_type"]] as const]
+               : [],
+         ),
+      );
+      return { columns: rows.map((r) => r.column_name), types };
    } catch (err) {
       return { columns: [], error: errMessage(err) };
    }
@@ -1297,6 +1310,16 @@ export interface DeltaTarget {
       columns: string[],
    ): Promise<string>;
    /**
+    * Each column of a delta's rows (`deltaSQL`, from {@link deltaRows}) with
+    * its type as the TARGET's catalog would spell it, read without reading a
+    * row. Absent where it cannot be read: the delta's types are then not
+    * judged (see delta_type_widening.ts).
+    */
+   deltaColumnTypes?(
+      deltaSQL: string,
+      columns: readonly string[],
+   ): Promise<{ types?: ReadonlyMap<string, string>; error?: string }>;
+   /**
     * The SOURCE's watermark frontier, for a number or string watermark (see
     * resolveDeltaEnd).
     */
@@ -1351,6 +1374,17 @@ export function warehouseDeltaTarget(params: {
             start,
             end,
          })}) AS __c`,
+      deltaColumnTypes: async (deltaSQL, columns) => {
+         const read = deltaColumnTypesSql(dialect, deltaSQL, columns);
+         if (!read) return {};
+         try {
+            return {
+               types: read.typesOf(probeRows((await runner(read.sql)).rows)),
+            };
+         } catch (err) {
+            return { error: errMessage(err) };
+         }
+      },
       probeSourceFrontier: () =>
          probeMaxWatermark(
             runner,
@@ -1511,20 +1545,30 @@ export async function planIncrementalStep(inputs: {
    }
 
    // Built LAST: producing it can issue the source read (DeltaTarget.deltaRows),
-   // which no failed check should pay for.
+   // which no failed check should pay for. A pair table's range is open
+   // above. Its watermark is a parent's greatest field over all its rows, so
+   // one child stamped past the clock would hold the parent above every
+   // bounded range until the clock caught up, and the parent's own changes
+   // with it; replacing a parent whole is idempotent, so reading it again on
+   // each refresh is safe.
+   const deltaSQL = await target.deltaRows(
+      start,
+      lineage.pair ? undefined : end.bound,
+   );
+   const narrower = await storedColumnsNarrower(
+      target,
+      deltaSQL,
+      inputs.columns,
+      probe.types,
+   );
+   if (narrower) {
+      return { mode: "seed", reasonCode: "shape_mismatch", reason: narrower };
+   }
    const column = (field: string) => target.storedColumn?.(field) ?? field;
    const statements = deltaStatements({
       dialect,
       quotedTablePath: target.quotedTablePath,
-      // A pair table's range is open above. Its watermark is a parent's
-      // greatest field over all its rows, so one child stamped past the clock
-      // would hold the parent above every bounded range until the clock
-      // caught up, and the parent's own changes with it; replacing a parent
-      // whole is idempotent, so reading it again on each refresh is safe.
-      deltaSQL: await target.deltaRows(
-         start,
-         lineage.pair ? undefined : end.bound,
-      ),
+      deltaSQL,
       columns: inputs.columns,
       mergeKeys: (lineage.mergeKeys ?? []).map(column),
       scopeColumns: lineage.scopeColumns?.map(column),
@@ -1554,6 +1598,37 @@ export async function planIncrementalStep(inputs: {
       coveredThrough: end.bound,
       statements,
    };
+}
+
+/**
+ * Why the stored table cannot hold the delta's values as they are, or
+ * undefined when it can: a column whose stored type is narrower than the
+ * delta's (an upstream widened after the table was built, which Malloy's
+ * types do not show; see delta_type_widening.ts), or a delta whose types
+ * could not be read, which is not proven to fit. Either rebuilds the table in
+ * full, at the source's types. Not judged when the target reads no types.
+ */
+async function storedColumnsNarrower(
+   target: DeltaTarget,
+   deltaSQL: string,
+   columns: readonly string[],
+   storedTypes: ReadonlyMap<string, string> | undefined,
+): Promise<string | undefined> {
+   if (!target.deltaColumnTypes || !storedTypes || storedTypes.size === 0) {
+      return undefined;
+   }
+   const delta = await target.deltaColumnTypes(deltaSQL, columns);
+   if (delta.error !== undefined) {
+      return `the delta's column types could not be read (${delta.error}), so they are not proven to fit the table's columns`;
+   }
+   if (!delta.types) return undefined;
+   const widened = widenedColumns(storedTypes, delta.types);
+   if (widened.length === 0) return undefined;
+   return (
+      `the table's columns cannot hold the delta's values exactly: ` +
+      `${widened.join(", ")} (stored → source). The source's column was ` +
+      `widened after the table was built, so the table is rebuilt at its type`
+   );
 }
 
 /**

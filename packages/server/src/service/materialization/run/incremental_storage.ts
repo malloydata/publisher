@@ -204,6 +204,31 @@ function storageWindowRows(params: {
    };
 }
 
+/**
+ * A delta's column types as the destination session reads them (`DESCRIBE`
+ * of its SELECT), for a `storage=` table whose source is Postgres only: its
+ * passthrough's DESCRIBE prepares the query on the server, reading no row.
+ * Another engine's may run it, so its delta's types are not read, and not
+ * judged (DeltaTarget.deltaColumnTypes).
+ */
+function describedTypes(
+   session: DuckDBConnection,
+): NonNullable<DeltaTarget["deltaColumnTypes"]> {
+   return async (deltaSQL) => {
+      try {
+         const rows = (await session.runSQL(`DESCRIBE (${deltaSQL})`))
+            .rows as Record<string, unknown>[];
+         return {
+            types: new Map(
+               rows.map((r) => [String(r.column_name), String(r.column_type)]),
+            ),
+         };
+      } catch (err) {
+         return { error: errMessage(err) };
+      }
+   };
+}
+
 export function storageDeltaTarget(params: {
    /** The build-scoped session: destination attached read-write, source federated. */
    session: DuckDBConnection;
@@ -340,6 +365,10 @@ export function storageDeltaTarget(params: {
                ? guardDeltaDecimals(read.selectSQL, exact.stored)
                : read.selectSQL;
          },
+
+         ...(capabilitiesOf(sourceType).passthroughNumericAsDouble
+            ? { deltaColumnTypes: describedTypes(session) }
+            : {}),
 
          ...storageWindowRows({
             session,
