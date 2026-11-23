@@ -1141,7 +1141,7 @@ components:
       properties:
         column:
           type: string
-          description: The offending column; the folded name for a `case_collision`
+          description: The offending column; the folded name for a `case_collision`, and `""` for `no_columns`
         tableType:
           type: ["string", "null"]
           description: The table's type of the column; null when the table has no such column

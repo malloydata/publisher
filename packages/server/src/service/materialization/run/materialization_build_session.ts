@@ -261,7 +261,8 @@ function processAlive(pid: number): boolean {
  * One named for this process's own pid goes only if it predates this process,
  * since a restarted container reuses its pids (pid 1); a directory of another
  * live process is never touched, nor a live session's. One with no pid in its
- * name (an earlier release's) is left alone. Returns how many it removed.
+ * name (an earlier release's) is left alone. Liveness is by pid, so the temp
+ * root must not be shared across PID namespaces. Returns how many it removed.
  */
 export function removeStaleBuildDirs(
    root: string = os.tmpdir(),

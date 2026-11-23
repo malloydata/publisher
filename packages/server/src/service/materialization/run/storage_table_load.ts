@@ -263,7 +263,7 @@ async function withLoadSession<T>(
 
 /**
  * read_xlsx reports a workbook it cannot use (a sheet that isn't there, no rows, not a zip) as Binder or IO errors.
- * A remote object cut short mid-download could also read as "Failed to open zip": that rare transient answers a terminal 400.
+ * A remote object cut short mid-download could also read as "Failed to open zip": that rare transient answers a terminal 422.
  */
 const XLSX_CONTENT =
    /^Binder Error: (Sheet ".*" not found in xlsx file|Invalid range|No rows found in xlsx file|No sheets found|No \[Content_Types\]\.xml found)|^IO Error: Failed to open zip for reading/;
@@ -587,7 +587,7 @@ type LoadRefusalReason =
    | "LOAD_DELETE_LIMIT_EXCEEDED"
    | "OBJECT_UNREADABLE";
 
-/** A keyed load the request's objects or the table's contract refuse: 422 with `reason`, and `detail` for the caller to act on. */
+/** A load or table PUT the request's objects or the table's contract refuse: 422 with `reason`, and `detail` for the caller to act on. */
 export class LoadRefusalError extends Error {
    constructor(
       readonly reason: LoadRefusalReason,
