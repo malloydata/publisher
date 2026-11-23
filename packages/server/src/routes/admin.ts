@@ -81,6 +81,19 @@ function listLimit(req: express.Request): number {
    return limit;
 }
 
+/** A list's `after`: one cursor, or none. */
+function listAfter(req: express.Request): string | undefined {
+   const raw = req.query.after;
+   if (raw !== undefined && typeof raw !== "string") {
+      throw new CatalogAdminError(
+         400,
+         "INVALID_REQUEST",
+         "'after' must be given once, as the `nextCursor` of the page before.",
+      );
+   }
+   return raw;
+}
+
 export function registerAdminRoutes(
    app: express.Express,
    apiPrefix: string,
@@ -172,7 +185,10 @@ export function registerAdminRoutes(
             req.body,
             req.get("Idempotency-Key"),
          );
-         if (created) res.location(`loads/${load.id}`);
+         // Relative, so a gateway that rewrites the path keeps it; a trailing slash moves the base it resolves against.
+         if (created) {
+            res.location(`${req.path.endsWith("/") ? "" : "loads/"}${load.id}`);
+         }
          res.status(created ? 201 : 200).json(load);
       }),
    );
@@ -184,7 +200,7 @@ export function registerAdminRoutes(
             req.params.schemaName,
             req.params.tableName,
             listLimit(req),
-            typeof req.query.after === "string" ? req.query.after : undefined,
+            listAfter(req),
          ),
       ),
    );

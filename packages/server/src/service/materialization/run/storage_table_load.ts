@@ -600,7 +600,7 @@ export interface LoadRecord {
    result: LoadResult;
 }
 
-/** What a keyed load reports: its counts, and whether it committed a snapshot. */
+/** What a load reports: its counts, and whether it committed a snapshot. */
 export interface LoadOutcome {
    result: LoadResult;
    /** Present when the load committed: the snapshot its transaction read, a floor below its own snapshot for finding its record. */

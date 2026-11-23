@@ -22,6 +22,8 @@ import { dirname, join } from "path";
 import type { components } from "../../../src/api";
 import { logger } from "../../../src/logger";
 import { loadSlots } from "../../../src/query_concurrency";
+import { resetInstrumentsForTesting } from "../../../src/telemetry";
+import { startMetricsHarness } from "../../../src/test_helpers/metrics_harness";
 import {
    CatalogAdmin,
    CatalogAdminError,
@@ -853,6 +855,10 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                            pg: async (query) => {
                               reads++;
                               return held.pg(query);
+                           },
+                           pgAfterCommit: async (query) => {
+                              reads++;
+                              return held.pgAfterCommit(query);
                            },
                         }),
                   ) as ReturnType<typeof fn>,
@@ -1722,6 +1728,69 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          );
          // The lock went with its connection: the retry loads.
          expect((await merge("killed", [object])).rowsInserted).toBe(3);
+      });
+
+      it("answers a plain error, not a 503 LOAD_BUSY or a lost-lock count, when the lock's connection dies after the commit", async () => {
+         const harness = await startMetricsHarness();
+         resetInstrumentsForTesting();
+         const object = await parquet(
+            "SELECT i AS id, 'v' || i AS v FROM range(1, 4) t(i)",
+         );
+         const lock = spyOn(admin, "withTableLock");
+         lock.mockImplementation(
+            (catalog, schema, table, fn) =>
+               CatalogAdmin.prototype.withTableLock.call(
+                  admin,
+                  catalog,
+                  schema,
+                  table,
+                  (held) => {
+                     // Kills the connection right before the load's record is read back.
+                     const killing =
+                        (read: typeof held.pg): typeof held.pg =>
+                        async (query) => {
+                           if (query.includes("ducklake_snapshot_changes")) {
+                              const [{ pid }] = await held.pg(
+                                 "SELECT pg_backend_pid() AS pid",
+                              );
+                              await superuser(
+                                 `select pg_terminate_backend(${Number(pid)})`,
+                              );
+                           }
+                           return read(query);
+                        };
+                     return fn({
+                        ...held,
+                        pg: killing(held.pg),
+                        pgAfterCommit: killing(held.pgAfterCommit),
+                     });
+                  },
+               ) as ReturnType<typeof fn>,
+         );
+         try {
+            const error = await merge("committed_then_lost", [object]).then(
+               () => undefined,
+               (e) => e,
+            );
+            expect(error).toBeInstanceOf(Error);
+            expect(error).not.toBeInstanceOf(CatalogAdminError);
+            expect((error as Error).message).toContain(
+               "committed, but its record could not be read back; retrying it is safe",
+            );
+            expect(
+               await harness.collectCounter("publisher_load_rejections_total", {
+                  cause: "lost",
+               }),
+            ).toBe(0);
+         } finally {
+            lock.mockRestore();
+            resetInstrumentsForTesting();
+            await harness.shutdown();
+         }
+         // The load did commit: its retry finds nothing to do.
+         expect(
+            (await merge("committed_then_lost", [object])).rowsUnchanged,
+         ).toBe(3);
       });
 
       it("rolls back and answers 409 when another replica replaces the table before the commit", async () => {

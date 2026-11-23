@@ -146,6 +146,8 @@ type CatalogQuery = (sql: string) => Promise<Record<string, unknown>[]>;
 export interface TableLock {
    /** Reads the catalog database on the lock's own connection. */
    pg: CatalogQuery;
+   /** Reads as `pg` does, for after a commit: a failure stays the plain error, since a 503 `LOAD_BUSY` would say nothing was written. */
+   pgAfterCommit: CatalogQuery;
    /**
     * Throws 503 `LOAD_BUSY` when the lock's connection is gone. A session lock
     * dies with its connection, so call it right before the commit it guards.
@@ -908,6 +910,7 @@ export class CatalogAdmin {
                      );
                   }
                },
+               pgAfterCommit: (sql) => query(sql),
                assertLockHeld: async () => {
                   try {
                      if (lost) throw new Error("connection lost");
@@ -974,7 +977,7 @@ export class CatalogAdmin {
             name,
             schema,
             table,
-            async ({ pg, assertLockHeld }) => {
+            async ({ pg, pgAfterCommit, assertLockHeld }) => {
                await this.requireCatalog(pg, name);
                await requireRecordedSchema(pg, name, schema);
                const [earlier] = keyDigest
@@ -1048,16 +1051,21 @@ export class CatalogAdmin {
                      created: false,
                   };
                }
-               const [stored] = await readLoads(pg, name, schema, table, {
-                  id: record.id,
-                  above: committedAfter,
-                  limit: 1,
-               });
-               if (!stored) {
-                  throw new Error(
+               const unread = (cause?: unknown) =>
+                  new Error(
                      `Load ${record.id} committed, but its record could not be read back; retrying it is safe.`,
+                     { cause },
                   );
-               }
+               const [stored] = await readLoads(
+                  pgAfterCommit,
+                  name,
+                  schema,
+                  table,
+                  { id: record.id, above: committedAfter, limit: 1 },
+               ).catch((error: unknown) => {
+                  throw unread(error);
+               });
+               if (!stored) throw unread();
                return { load: stored.load, created: true };
             },
          ),

@@ -548,7 +548,7 @@ paths:
           description: The load committed (or is the replay of one that did), with its id, snapshot and counts
           headers:
             Location:
-              description: The load, relative to this request's URL, `loads/{id}`
+              description: The load, as a reference relative to this request's URL, `loads/{id}`, or `{id}` when the request's path ends in a slash
               schema:
                 type: string
           content:
@@ -618,7 +618,7 @@ paths:
         - name: after
           in: query
           required: false
-          description: The `nextCursor` of the page before; opaque
+          description: The `nextCursor` of the page before, given once; opaque
           schema:
             type: string
       responses:

@@ -189,6 +189,15 @@ describe("the admin listener", () => {
          .send(body);
       expect(ok.status).toBe(201);
       expect(ok.headers.location).toBe("loads/abc");
+      // A trailing slash moves the base the reference resolves against.
+      for (const suffix of ["", "/"]) {
+         const res = await request(app).post(`${path}${suffix}`).send(body);
+         expect([
+            suffix,
+            new URL(res.headers.location, `http://h${path}${suffix}`).pathname,
+         ]).toEqual([suffix, `${path}/abc`]);
+      }
+      seen.length = 1;
       expect(ok.body).toMatchObject({ id: "abc", rowsInserted: 1 });
       expect(seen).toEqual([["ds_x", "s", "t", body, "run-1"]]);
       created = false;
@@ -249,6 +258,12 @@ describe("the admin listener", () => {
          ["list", "ds_x", "s", "t", 5, "MQ"],
          ["list", "ds_x", "s", "t", 100, undefined],
       ]);
+      const repeated = await request(app).get(`${path}?after=MQ&after=Mg`);
+      expect([repeated.status, repeated.body.reason]).toEqual([
+         400,
+         "INVALID_REQUEST",
+      ]);
+      expect(seen).toHaveLength(4);
       for (const limit of ["0", "1001", "1.5", "x"]) {
          const refused = await request(app).get(`${path}?limit=${limit}`);
          expect([limit, refused.status, refused.body.reason]).toEqual([
