@@ -8,7 +8,7 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# `warehouseReach` no longer chooses: the warehouse recompute is refused whatever it says
+# `warehouseReach` no longer chooses: the warehouse recompute is refused at plan, whatever a host sends
 
 The companion of `86-an-intermediate-reaching-the-warehouse-is-recomputed-and-says-so`,
 over the same shape. `daily_regional` joins the stored `daily` to `regions`, a
@@ -18,8 +18,9 @@ recompute `daily` from the warehouse.
 An orchestrator could once choose that recompute with `warehouseReach:
 recompute` or refuse it with `refuse` (ms2data/service#6756). No build
 recomputes a stored upstream from raw any more, so the knob is accepted and
-ignored: the build of `rollup` fails, naming the intermediate, under either
-value, and reads nothing from the warehouse.
+ignored, and the plan refuses `rollup` outright, before and after `daily` is
+bound: the plan a host reads lists it as refused, never as a source to
+instruct, so no host build of it can be dispatched, let alone succeed.
 
 ## Publisher
 
@@ -71,22 +72,35 @@ source: rollup is daily_regional -> {
 
 expect binding: daily -> lake
 
-## Build refused (orchestrated, strict, reach=refuse, pkg=owr)
+## Build refusals
 
-Rebuild `rollup` alone, reusing the stored `daily`, with the recompute refused.
-The run fails, naming the intermediate.
+Expect:
 
-- rollup -> owr_rollup__g2 @ lake
-  reference: daily
+| source | tier    | reason                  |
+| ------ | ------- | ----------------------- |
+| rollup | storage | upstream_table_unusable |
 
-cites: daily_regional
+## Warns
 
-## Build refused (orchestrated, strict, reach=recompute, pkg=owr)
+cites: it reads the source warehouse (regions) through 'daily_regional'
 
-The same build with the recompute asked for: refused the same way, since the
-value is ignored.
+## Build (orchestrated, strict, reach=refuse, pkg=owr)
 
-- rollup -> owr_rollup__g3 @ lake
-  reference: daily
+A host build of what the plan lists, sending the deprecated knob: `daily`
+builds, and the knob changes nothing.
 
-cites: daily_regional
+- daily -> owr_daily__g2 @ lake
+
+## Build (orchestrated, strict, reach=recompute, pkg=owr)
+
+- daily -> owr_daily__g3 @ lake
+
+## Build refusals
+
+Still refused after the host's builds.
+
+Expect:
+
+| source | tier    | reason                  |
+| ------ | ------- | ----------------------- |
+| rollup | storage | upstream_table_unusable |

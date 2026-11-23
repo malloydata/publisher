@@ -15,9 +15,10 @@ materializes. The destination holds no such table, so no build of `rollup` over
 `daily`'s stored rows exists: the only build there would be recomputes `daily`
 from the warehouse with the join beside it.
 
-No build recomputes a stored upstream from raw, so `rollup` is **not built**: a
-run that is asked for it fails it, with a reason naming the intermediate the
-destination could not stand in for, and `daily` still builds. `rollup` then
+No build recomputes a stored upstream from raw, so `rollup` is **not built**:
+the plan refuses it, bound or not, with a reason naming the warehouse table and
+the intermediate the destination could not stand in for, and `daily` still
+builds. `rollup` then
 **answers live**, so it always agrees with the warehouse, where a recomputed
 table would have mixed `daily`'s snapshot with fresh rows.
 
@@ -93,17 +94,21 @@ Expect:
 | ------------ | --------------- | ------------- | ---------- |
 | 99           | 2026-01-03      | 10            | 1000       |
 
-## Build refused (orchestrated, pkg=cir)
+## Build refusals
 
-Rebuild `rollup` alone, reusing the `daily` already built. The run fails
-`rollup` and names the intermediate the destination could not stand in for.
+The plan refuses `rollup` whether or not `daily`'s table is bound, so a host
+reading the plan never instructs it, and its refusal names the warehouse table
+and the intermediate the destination could not stand in for.
 
-- rollup -> cir_rollup__g2 @ lake
-  reference: daily
+Expect:
 
-cites: daily_regional
+| source | tier    | reason                  |
+| ------ | ------- | ----------------------- |
+| rollup | storage | upstream_table_unusable |
 
-## Bind cir
+## Warns
+
+cites: it reads the source warehouse (regions) through 'daily_regional'
 
 ## Query rollup (again)
 

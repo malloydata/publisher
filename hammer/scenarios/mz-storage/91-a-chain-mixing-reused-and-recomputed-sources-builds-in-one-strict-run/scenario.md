@@ -13,11 +13,10 @@ SPDX-License-Identifier: MIT
 The shape a real model takes: raw tables prepared by several non-persisted
 sources, three stored levels, and the intermediates between them differing in
 what they reach. `daily_regional` joins a warehouse table, so `regional` has no
-build over `daily`'s stored table, and nothing recomputes from raw: it fails.
-`summary` reads only `regional`, so with `regional` failed it has no upstream
-table to read and fails too. `daily` builds. Each source reports its own
-outcome in one run, and the two that failed answer live, equal to the
-warehouse.
+build over `daily`'s stored table, and nothing recomputes from raw: the plan
+refuses it. `summary` reads only `regional`, which has no table, so it fails.
+`daily` builds. Each source reports its own outcome in one run, and the two
+not built answer live, equal to the warehouse.
 
 ## Publisher
 
@@ -72,13 +71,22 @@ source: summary is regional_wide -> {
 }
 ```
 
+## Build refusals
+
+`regional` reads `regions` through `daily_regional`: the plan refuses it.
+
+Expect:
+
+| source   | tier    | reason                  |
+| -------- | ------- | ----------------------- |
+| regional | storage | upstream_table_unusable |
+
 ## Build (orchestrated, strict, pkg=cmx)
 
-All three in one instruction list, upstream first. `daily` builds; `regional`
-fails (its intermediate reaches `regions`); `summary` fails with it.
+What the plan lists, upstream first. `daily` builds; `summary` fails, its
+upstream `regional` having no table to read.
 
 - daily -> cmx_daily__g1 @ lake
-- regional -> cmx_regional__g1 @ lake (failed)
 - summary -> cmx_summary__g1 @ lake (failed)
 
 ## Bind cmx

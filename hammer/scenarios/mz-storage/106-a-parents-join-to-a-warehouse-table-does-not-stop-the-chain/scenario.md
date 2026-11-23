@@ -72,7 +72,7 @@ source: by_name is daily -> { group_by: region_name; aggregate: grand is total.s
 ## Publish
 
 `rollup` stacks on `daily`; `by_name` reads the join the destination cannot
-bind, so it is not built.
+bind, so the plan refuses it and it is not built.
 
 expect binding: daily -> lake
 expect binding: rollup -> lake
@@ -119,15 +119,21 @@ Strict: `rollup` alone over the stored `daily`. Stacks on the table.
 - rollup -> pjw_rollup__g2 @ lake (reused)
   reference: daily
 
-## Build refused (orchestrated, strict, pkg=pjw)
+## Build refusals
 
-Strict: `by_name` reads `region_name`, which cannot be followed to `daily`'s
-stored table. Refused, naming the field.
+`by_name` reads `region_name`, which `daily`'s stored table does not hold: the
+join that supplies it reads the warehouse. The plan refuses it, naming the
+field, bound or not.
 
-- by_name -> pjw_by_name__g2 @ lake
-  reference: daily
+Expect:
 
-cites: 'region_name', which could not be followed to the stored table
+| source  | tier    | reason                  |
+| ------- | ------- | ----------------------- |
+| by_name | storage | upstream_table_unusable |
+
+## Warns
+
+cites: it reads 'region_name' from a table no stored upstream holds
 
 ## Bind pjw
 
