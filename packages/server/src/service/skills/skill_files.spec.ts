@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { execFileSync } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -190,6 +191,7 @@ describe("skillFiles", () => {
          expect(files).toEqual(["SKILL.md", "p205.txt"]);
          expect(warnings).toHaveLength(1);
          expect(warnings[0]).toContain("last 10");
+         expect(warnings[0]).toContain("p200.txt");
       });
 
       it("counts neither comments nor blank lines toward the 200", () => {
@@ -317,5 +319,97 @@ describe("skillFiles", () => {
       const elapsed = performance.now() - started;
       expect(result.files).toHaveLength(981);
       expect(elapsed).toBeLessThan(1000);
+   });
+
+   describe("SKILL.md", () => {
+      it("is kept even when a folder sorting before it fills the entry limit", () => {
+         write("SKILL.md");
+         for (let i = 0; i <= ASSET_MAX_ENTRIES; i++) write(`Assets/f${i}.txt`);
+         const { files, warnings } = skillFiles(dir);
+         expect(files).toContain("SKILL.md");
+         expect(warnings).toHaveLength(1);
+         expect(warnings[0]).toContain("more than 1000 entries");
+      });
+
+      it("gets no special case when it is a directory", () => {
+         write("SKILL.md/x");
+         write("a.txt");
+         skillignore("SKILL.md");
+         expect(skillFiles(dir)).toMatchObject({
+            files: ["a.txt"],
+            warnings: [],
+         });
+      });
+
+      it("warns when a lowercase pattern matches it", () => {
+         write("SKILL.md");
+         skillignore("skill.md");
+         const { files, warnings } = skillFiles(dir);
+         expect(files).toEqual(["SKILL.md"]);
+         expect(warnings).toHaveLength(1);
+      });
+   });
+
+   describe("star cap boundary", () => {
+      it("applies a pattern with two single stars, with no warning", () => {
+         write("abc.txt");
+         skillignore("a*b*c.txt");
+         expect(skillFiles(dir)).toMatchObject({ files: [], warnings: [] });
+      });
+
+      it("skips a pattern with three single stars, with one warning", () => {
+         write("abcd.txt");
+         skillignore("a*b*c*d.txt");
+         const { files, warnings } = skillFiles(dir);
+         expect(files).toEqual(["abcd.txt"]);
+         expect(warnings).toHaveLength(1);
+      });
+
+      it("counts a `**` inside a segment as a single star, but not a whole-segment one", () => {
+         write("abcd.txt");
+         write("x/y/w.txt");
+         skillignore("a**b**c**d.txt", "!**/keep.txt", "x/**/y/**");
+         const { files, warnings } = skillFiles(dir);
+         expect(files).toEqual(["abcd.txt"]);
+         expect(warnings).toHaveLength(1);
+         expect(warnings[0]).toContain("a**b**c**d.txt");
+      });
+   });
+
+   describe("gitignore semantics", () => {
+      it("cannot re-include a file under an ignored directory", () => {
+         write("fixtures/keep.csv");
+         write("fixtures/other.csv");
+         skillignore("fixtures/", "!fixtures/keep.csv");
+         expect(skillFiles(dir).files).toEqual([]);
+      });
+
+      it("re-includes a file when the rule is `fixtures/**`", () => {
+         write("fixtures/keep.csv");
+         write("fixtures/other.csv");
+         skillignore("fixtures/**", "!fixtures/keep.csv");
+         expect(skillFiles(dir).files).toEqual(["fixtures/keep.csv"]);
+      });
+
+      it("refuses a .skillignore that is a directory, with a warning", () => {
+         write("a.txt");
+         write(".skillignore/inner", "a.txt");
+         const result = skillFiles(dir);
+         expect(result.files).toEqual(["a.txt"]);
+         expect(result.skillignore).toBeNull();
+         expect(result.warnings).toHaveLength(1);
+      });
+
+      it.skipIf(process.platform === "win32")(
+         "refuses a .skillignore that is a FIFO, with a warning",
+         () => {
+            write("a.txt");
+            execFileSync("mkfifo", [path.join(dir, ".skillignore")]);
+            const result = skillFiles(dir);
+            expect(result.files).toEqual(["a.txt"]);
+            expect(result.skillignore).toBeNull();
+            expect(result.warnings).toHaveLength(1);
+         },
+      );
    });
 });

@@ -19,7 +19,7 @@ const SKILLIGNORE = ".skillignore";
 const SKILLIGNORE_MAX_BYTES = 16 * 1024;
 const SKILLIGNORE_MAX_PATTERNS = 200;
 const SKILLIGNORE_PATTERN_MAX_CHARS = 200;
-/** Each further single `*` multiplies the match cost (about 8x under bun), so a pattern stops at this many. */
+/** Cheap insurance: `ignore` 7 matches these in under 1 ms, but 5.x cost about 8x more per further single `*`. */
 const SKILLIGNORE_MAX_SINGLE_STARS = 2;
 
 export interface SkillFilesResult {
@@ -49,9 +49,18 @@ function builtInExcluded(name: string, isDirectory: boolean): boolean {
       : lower.endsWith(".pyc");
 }
 
-/** A `**` run is not a single star. */
+/** `ignore` compiles a `**` that is not a whole path segment exactly like `*`, so a run counts as one star there. */
 function singleStars(pattern: string): number {
-   return pattern.replace(/\*{2,}/g, "").split("*").length - 1;
+   return pattern
+      .replace(/^!/, "")
+      .split("/")
+      .reduce(
+         (stars, segment) =>
+            segment === "**"
+               ? stars
+               : stars + (segment.match(/\*+/g)?.length ?? 0),
+         0,
+      );
 }
 
 /** Adds the bounded patterns of `<dir>/.skillignore` to `matcher`; returns its text, or null when none was applied. */
@@ -92,10 +101,11 @@ function readSkillignore(
 
    let patterns = 0;
    let excess = 0;
+   let firstExcess = "";
    for (const line of text.replace(/^\uFEFF/, "").split(/\r?\n/)) {
       if (line.trim() === "" || line.startsWith("#")) continue;
       if (++patterns > SKILLIGNORE_MAX_PATTERNS) {
-         excess++;
+         if (excess++ === 0) firstExcess = line;
          continue;
       }
       if (line.length > SKILLIGNORE_PATTERN_MAX_CHARS) {
@@ -119,7 +129,7 @@ function readSkillignore(
    }
    if (excess > 0) {
       warnings.push(
-         `${SKILLIGNORE} has more than ${SKILLIGNORE_MAX_PATTERNS} patterns, so the last ${excess} are skipped`,
+         `${SKILLIGNORE} has more than ${SKILLIGNORE_MAX_PATTERNS} patterns, so the last ${excess} are skipped, from ${shown(firstExcess)}`,
       );
    }
    return text;
@@ -150,7 +160,13 @@ export function skillFiles(dir: string): SkillFilesResult {
          );
          return;
       }
-      entries.sort((a, b) => compareText(a.name, b.name));
+      // At the root SKILL.md goes first so the entry limit can never cut it.
+      entries.sort(
+         (a, b) =>
+            (rel === ""
+               ? Number(b.name === SKILL_MD) - Number(a.name === SKILL_MD)
+               : 0) || compareText(a.name, b.name),
+      );
       for (const entry of entries) {
          if (stopped) return;
          const relative = rel ? `${rel}/${entry.name}` : entry.name;
@@ -164,7 +180,7 @@ export function skillFiles(dir: string): SkillFilesResult {
          const isDirectory = entry.isDirectory();
          if (builtInExcluded(entry.name, isDirectory)) continue;
          if (matcher.ignores(isDirectory ? `${relative}/` : relative)) {
-            if (relative !== SKILL_MD) continue;
+            if (relative !== SKILL_MD || isDirectory) continue;
             warnings.push(
                `${SKILLIGNORE} matches ${SKILL_MD}, which a skill always keeps`,
             );
