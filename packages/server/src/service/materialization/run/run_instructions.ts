@@ -806,6 +806,13 @@ interface SelfInstructions {
    /** Tables this run builds under a new name in place of an earlier run's. */
    renamed: RenamedTable[];
    /**
+    * Pair tables this run rebuilds because their contract records a leaf key
+    * check that could not run (`unverified`), by content address: a check
+    * the rebuild still cannot run is recorded `rebuiltToVerify`, and that
+    * table is not rebuilt for it again ({@link awaitsVerifyingRebuild}).
+    */
+   rebuiltToVerify: Set<string>;
+   /**
     * Incremental tables a delta would advance in place rather than reseed,
     * by content address, with their prior entries: the run keeps their rows,
     * as it keeps a carried table's (see deriveHoldingCarried).
@@ -821,9 +828,10 @@ interface SelfInstructions {
  * table whose contract records no check of a leaf key the model declares
  * now (`materialize`'s leaf keys): a reload that moves the leaf's primary key leaves its
  * address alone, and nothing reads or builds over it until a build checks
- * the new key. A check the build could not run is recorded (`unverified`),
- * so it does not count as a moved key: the table is carried, and nothing
- * builds over it until a rebuild records the check passed.
+ * the new key. So is one whose check the build could not run (recorded
+ * `unverified`), once ({@link awaitsVerifyingRebuild}): the check runs again
+ * right after the rebuild writes the table, over the rows it was built
+ * from, never over a table built from rows since changed.
  */
 function rebuiltInFull(
    prior: ManifestEntry | undefined,
@@ -837,7 +845,29 @@ function rebuiltInFull(
    return (
       contract === undefined ||
       options.incompatible?.has(sourceEntityId) === true ||
-      leafKeys.some((k) => contract.keys?.[k] === undefined)
+      leafKeys.some((k) => contract.keys?.[k] === undefined) ||
+      awaitsVerifyingRebuild(prior, materialize)
+   );
+}
+
+/**
+ * Whether a pair table's contract records a check of a leaf key the model
+ * declares that its build could not run (`unverified`), and the table was
+ * not itself rebuilt to run it (`rebuiltToVerify`). Such a table is rebuilt
+ * in full, once per table: a check is taken over the rows the table was
+ * built from, so one run later over the leaf's current rows could pass a
+ * table built while the leaf held a key twice. A rebuild whose check still
+ * cannot run records it `rebuiltToVerify`, and that table stays carried,
+ * the views over it refused, until it is rebuilt for another reason.
+ */
+function awaitsVerifyingRebuild(
+   prior: ManifestEntry | undefined,
+   materialize: MaterializePlan | undefined,
+): boolean {
+   if (prior === undefined || materialize === undefined) return false;
+   const keys = servableContract(prior.contract)?.keys;
+   return pairLeafContractKeys(materialize).some(
+      (k) => keys?.[k]?.unverified === true && keys[k].rebuiltToVerify !== true,
    );
 }
 
@@ -865,6 +895,72 @@ interface SelfInstructionOptions {
     * reseeds).
     */
    incompatible?: ReadonlySet<string>;
+   /**
+    * Each incremental source's newest entry from any committed run, by
+    * address (materialization_scope.ts, `newestIncrementalEntries`): the
+    * table a delta advances when `priorEntries` has no entry for it (a run
+    * of other named sources left it out). It decides only whether that
+    * table is advanced or reseeded, and is held to its contract like any
+    * prior; never its name.
+    */
+   incrementalPriors?: Readonly<Record<string, ManifestEntry>>;
+}
+
+/**
+ * The entry recorded for the table a delta would advance in place: the
+ * source's prior, else its newest incremental entry from an earlier run
+ * (`incrementalPriors`: a run of other named sources records none for it,
+ * and the ledger still advances it), when it names the table this run
+ * writes (`logicalName`, in `destination`). Undefined when the source takes
+ * no delta, or the run writes another table, which a delta cannot advance.
+ */
+function advancedTableEntry(
+   deltaEligible: boolean,
+   prior: ManifestEntry | undefined,
+   table: {
+      sourceEntityId: string;
+      logicalName: string;
+      destination: string | undefined;
+      options: SelfInstructionOptions;
+   },
+): ManifestEntry | undefined {
+   if (!deltaEligible) return undefined;
+   const { sourceEntityId, logicalName, destination } = table;
+   const entry = prior ?? table.options.incrementalPriors?.[sourceEntityId];
+   return entry?.physicalTableName === logicalName &&
+      (entry.storageDestinationName ?? undefined) === destination
+      ? entry
+      : undefined;
+}
+
+/**
+ * Whether the delta path takes `persistSource`'s table: the SAME predicate
+ * the build's dispatch uses, so the two never disagree about which sources
+ * are incremental. A declaration the delta path cannot act on (unsupported
+ * dialect, unusable watermark) keeps skip-if-unchanged rather than
+ * rebuilding fully every run.
+ */
+function deltaPathTakes(
+   ...args: Parameters<typeof sourceIncrementalRefresh>
+): boolean {
+   return sourceIncrementalRefresh(...args) !== undefined;
+}
+
+/** The instruction that builds one source's table in an auto-run. */
+function selfInstruction(
+   sourceEntityId: string,
+   physicalTableName: string,
+   destination: string | undefined,
+   reseed: boolean,
+): BuildInstruction {
+   return {
+      sourceEntityId,
+      materializedTableId: `local-${sourceEntityId.substring(0, STAGING_ID_LEN)}`,
+      physicalTableName,
+      realization: "COPY",
+      ...(destination ? { destination } : {}),
+      ...(reseed ? { reseed: true } : {}),
+   };
 }
 
 /**
@@ -908,6 +1004,7 @@ export function deriveSelfInstructions(
    const confirmExists: Record<string, BuildInstruction> = {};
    const renamed: RenamedTable[] = [];
    const advanced: Record<string, ManifestEntry> = {};
+   const rebuiltToVerify = new Set<string>();
    const { sources, refused, refusals, cleared } = gateSources(
       compiled,
       include,
@@ -960,16 +1057,11 @@ export function deriveSelfInstructions(
          continue;
       }
 
-      // The SAME predicate the build's dispatch uses, so the two never
-      // disagree about which sources are incremental. A declaration the
-      // delta path cannot act on (unsupported dialect, unusable watermark)
-      // keeps skip-if-unchanged rather than rebuilding fully every run.
-      const deltaEligible =
-         sourceIncrementalRefresh(incremental, persistSource, {
-            physicalTableName: tableName,
-            storageDestinationName: destination,
-            sourceEntityId,
-         }) !== undefined;
+      const deltaEligible = deltaPathTakes(incremental, persistSource, {
+         physicalTableName: tableName,
+         storageDestinationName: destination,
+         sourceEntityId,
+      });
 
       // An incremental source keeps a table named before readable names
       // until it is reseeded: its ledger is keyed by the table's name, so
@@ -980,24 +1072,27 @@ export function deriveSelfInstructions(
          renaming && deltaEligible && !incremental?.forceRefresh
             ? previous!
             : tableName;
-
+      // The table a delta advances, held like any prior wherever its entry
+      // was recorded.
+      const inPlace = advancedTableEntry(deltaEligible, prior, {
+         sourceEntityId,
+         logicalName,
+         destination,
+         options,
+      });
+      const materialize = compiled.tables[persistSource.sourceID]?.materialize;
       const mustRebuild = rebuiltInFull(
-         prior,
+         prior ?? inPlace,
          sourceEntityId,
          options,
-         compiled.tables[persistSource.sourceID]?.materialize,
+         materialize,
       );
-      const instruction: BuildInstruction = {
+      const instruction = selfInstruction(
          sourceEntityId,
-         materializedTableId: `local-${sourceEntityId.substring(
-            0,
-            STAGING_ID_LEN,
-         )}`,
-         physicalTableName: logicalName,
-         realization: "COPY",
-         ...(destination ? { destination } : {}),
-         ...(mustRebuild && deltaEligible ? { reseed: true } : {}),
-      };
+         logicalName,
+         destination,
+         mustRebuild && deltaEligible,
+      );
       // A source whose `storage=` or name changed is rebuilt, the old table
       // reclaimed once the run commits (supersededTable).
       if (
@@ -1048,15 +1143,15 @@ export function deriveSelfInstructions(
       if (superseded) renamed.push(superseded);
       // A delta appends to the table it holds, so the run keeps its rows.
       if (
-         deltaEligible &&
+         inPlace !== undefined &&
          !mustRebuild &&
          !incremental?.forceRefresh &&
-         !(options.forceRefresh && !pulledIn.has(persistSource.sourceID)) &&
-         prior !== undefined &&
-         sameDestination &&
-         prior.physicalTableName === logicalName
+         !(options.forceRefresh && !pulledIn.has(persistSource.sourceID))
       ) {
-         advanced[sourceEntityId] = prior;
+         advanced[sourceEntityId] = inPlace;
+      }
+      if (awaitsVerifyingRebuild(prior ?? inPlace, materialize)) {
+         rebuiltToVerify.add(sourceEntityId);
       }
       instructions.push(instruction);
    }
@@ -1090,6 +1185,7 @@ export function deriveSelfInstructions(
       confirmExists,
       renamed: notWrittenThisRun(renamed, instructions, carried, sources),
       advanced,
+      rebuiltToVerify,
    };
 }
 

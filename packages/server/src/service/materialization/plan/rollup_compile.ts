@@ -40,6 +40,7 @@ import type {
    ModelMaterializer,
    Runtime,
 } from "@malloydata/malloy";
+import { rollupLabel } from "../domain/rollup_measures";
 import { errorCodeOf } from "../../../error_code";
 import * as path from "path";
 import { getMaterializeEnabled } from "../../../config";
@@ -343,7 +344,7 @@ function rollupBuildCopies(
             plan,
             tier: "unservable",
             code: ROLLUP_NOT_BUILT_CODE,
-            message: `#(rollup) rollup of source "${plan.baseSourceName}" at (${plan.grainDimensions.join(", ")}) is not built, so its measures are served live: ${made.reason}.`,
+            message: `${rollupLabel(plan)} is not built, so its measures are served live: ${made.reason}.`,
             sourceName: plan.baseSourceName,
             refused: measureRefusalKey(
                plan.baseSourceID,
@@ -416,7 +417,7 @@ function strictRollupRefusals(
          plan,
          tier: "unservable",
          code: ROLLUP_NOT_BUILT_CODE,
-         message: `#(rollup) rollup of source "${plan.baseSourceName}" at (${plan.grainDimensions.join(", ")}) is not built, so its measures are served live: ${why}.`,
+         message: `${rollupLabel(plan)} is not built, so its measures are served live: ${why}.`,
          sourceName: plan.baseSourceName,
          refused: measureRefusalKey(
             plan.baseSourceID,

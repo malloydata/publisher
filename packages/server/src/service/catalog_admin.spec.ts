@@ -79,9 +79,9 @@ async function refusalOf(attempt: () => Promise<unknown>) {
       (e) => e,
    );
    if (error instanceof CatalogAdminError) return [error.status, error.reason];
-   // DuckDB's attach (a PUT or DELETE) and node-pg's lock client (a load) word the same refusal differently.
+   // DuckDB's attach (a PUT or DELETE) and node-pg's lock client (a load) word it differently, and Windows drops port 1 rather than refusing it.
    expect(String(error?.message)).toMatch(
-      /port 1 failed: Connection refused|ECONNREFUSED 127\.0\.0\.1:1/,
+      /port 1 failed: (Connection refused|timeout expired)|(ECONNREFUSED|ETIMEDOUT) 127\.0\.0\.1:1/,
    );
    return undefined;
 }

@@ -20,7 +20,8 @@ import {
    targetsIn,
 } from "../../../test_helpers/materialization_test_fixtures";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { DatabaseTier } from "./database_build_strategy";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { computeSourceEntityId } from "../plan/build_plan";
@@ -107,7 +108,11 @@ async function scenario() {
    } as BuildInstruction;
    let previous: Record<string, ManifestEntry> = {};
    let runs = 0;
-   async function run(rebuild: boolean, orchestrated = false) {
+   async function run(
+      rebuild: boolean,
+      orchestrated = false,
+      rebuiltToVerify = false,
+   ) {
       runs += 1;
       const ledger = new UniquenessLedger(undefined, `run-${runs}`);
       const result = await build.run({
@@ -120,6 +125,7 @@ async function scenario() {
          signal: new AbortController().signal,
          priorRefusals: [],
          hostInstructed: orchestrated,
+         ...(rebuiltToVerify ? { rebuiltToVerify: new Set([address]) } : {}),
          uniqueness: ledger,
       });
       expect(result.failures).toEqual({});
@@ -287,4 +293,109 @@ describe("a pair table's leaf key check, on a build", () => {
       });
       expect(bound()?.primaryKeys).toEqual({ "segs@m": false });
    });
+});
+
+describe("a pair table's leaf key check that could not run", () => {
+   /** Leaf key checks fail to run while `failing.on`; counts each try. */
+   function flakyChecks() {
+      const failing = { on: true, tries: 0 };
+      const original = DatabaseTier.prototype.checkKey;
+      const spy = spyOn(DatabaseTier.prototype, "checkKey").mockImplementation(
+         function (this: DatabaseTier, ...args) {
+            const check = args[1] as { contractKey?: string };
+            if (check.contractKey?.startsWith("leaf:")) {
+               failing.tries += 1;
+               if (failing.on) {
+                  return Promise.reject(new Error("leaf check unavailable"));
+               }
+            }
+            return original.apply(this, args);
+         },
+      );
+      return { failing, restore: () => spy.mockRestore() };
+   }
+   const unverified = {
+      unique: false,
+      level: "leaf",
+      unverified: true,
+   } as const;
+
+   it(
+      "is recorded unverified, and a carried table is never checked again over the leaf's current rows",
+      async () => {
+         const s = await scenario();
+         const flaky = flakyChecks();
+         try {
+            expect(s.leafCheck(await s.run(true))).toEqual(unverified);
+            flaky.failing.on = false;
+            const tries = flaky.failing.tries;
+            // Carried: only a rebuild runs the check, over the rows it wrote.
+            expect(s.leafCheck(await s.run(false))).toEqual(unverified);
+            expect(flaky.failing.tries).toBe(tries);
+         } finally {
+            flaky.restore();
+         }
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "records what the rebuild that verifies it finds, with no mark once it ran",
+      async () => {
+         const s = await scenario();
+         const flaky = flakyChecks();
+         try {
+            await s.run(true);
+            flaky.failing.on = false;
+            expect(s.leafCheck(await s.run(true, false, true))).toEqual({
+               unique: true,
+               level: "leaf",
+            });
+         } finally {
+            flaky.restore();
+         }
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "marks a check the verifying rebuild still cannot run rebuiltToVerify, and no other build's",
+      async () => {
+         const s = await scenario();
+         const flaky = flakyChecks();
+         try {
+            await s.run(true);
+            expect(s.leafCheck(await s.run(true, false, true))).toEqual({
+               ...unverified,
+               rebuiltToVerify: true,
+            });
+            // Carried, the mark rides on the entry.
+            expect(s.leafCheck(await s.run(false))).toEqual({
+               ...unverified,
+               rebuiltToVerify: true,
+            });
+            // A rebuild for another reason starts the table's generation over.
+            expect(s.leafCheck(await s.run(true))).toEqual(unverified);
+         } finally {
+            flaky.restore();
+         }
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "is never marked on a host's build, which the auto-run's rebuild set does not reach",
+      async () => {
+         const s = await scenario();
+         const flaky = flakyChecks();
+         try {
+            expect(s.leafCheck(await s.run(true, true, true))).toEqual(
+               unverified,
+            );
+         } finally {
+            flaky.restore();
+         }
+      },
+      { timeout: 60000 },
+   );
 });

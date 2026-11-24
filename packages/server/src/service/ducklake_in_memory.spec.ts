@@ -100,21 +100,26 @@ describe("a DuckLake connection's digest", () => {
    const goldenB =
       "68f49a294b83de536ad4b8f0e2205538881dd526718a8a1ccc2dd7320e6995ac";
 
-   it("is the one Malloy computed for its old database file", () => {
-      const a = open(lake("a"), directory).built;
-      const b = open(lake("b"), directory).built;
+   // The goldens hash a POSIX path; on Windows path.join gives the backslashed one Malloy hashed there.
+   it.skipIf(process.platform === "win32")(
+      "is the one Malloy computed for its old database file",
+      () => {
+         const a = open(lake("a"), directory).built;
+         const b = open(lake("b"), directory).built;
 
-      expect(a.getDigest()).toBe(goldenA);
-      expect(b.getDigest()).toBe(goldenB);
-   });
+         expect(a.getDigest()).toBe(goldenA);
+         expect(b.getDigest()).toBe(goldenB);
+      },
+   );
 
    it("is replaced by the API fingerprint when one is set", () => {
       const { built, assembled } = open(lake("a"), directory);
+      const legacy = built.getDigest();
       const unset = applyConnectionFingerprint(
          built,
          assembled.metadata.get("a"),
       );
-      expect(unset.getDigest()).toBe(goldenA);
+      expect(unset.getDigest()).toBe(legacy);
 
       const metadata = assembled.metadata.get("a")!;
       const fingerprinted = applyConnectionFingerprint(built, {

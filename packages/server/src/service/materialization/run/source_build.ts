@@ -178,9 +178,16 @@ async function movedUpstreams(args: {
    connection: MalloyConnection;
    builtThisRun?: ReadonlySet<string>;
    rootAddress?: string;
+   /** The name its warnings give the source built. */
    sourceName: string;
    /** The source built: an extension's parent is checked too. */
    sourceID: string;
+   /**
+    * The source built is a rollup: its build reads its base through a
+    * generated alias (`<base>__rollup_base`), so an upstream is named by the
+    * source whose build wrote its table instead.
+    */
+   rollup?: boolean;
    /** Where a `storage=` upstream's table is read (the environment). */
    site: StoredTableSite;
 }): Promise<MovedUpstreams> {
@@ -200,11 +207,15 @@ async function movedUpstreams(args: {
       const entry = builtEntries[address];
       if (!entry || !(address in manifest.buildManifest.entries)) continue;
       const upstream = {
-         name:
-            reach.lift.sourceNameById.get(sourceID) ??
-            (sourceID === parent?.sourceID ? parent.sourceName : undefined) ??
-            entry.sourceName ??
+         name: driftCheckedUpstreamName({
+            sourceID,
             address,
+            entry,
+            lifted: reach.lift.sourceNameById.get(sourceID),
+            parent,
+            planFacts,
+            rollup: args.rollup === true,
+         }),
          entry,
       };
       if (entry.storageDestinationName) stored.set(address, upstream);
@@ -252,6 +263,35 @@ async function movedUpstreams(args: {
       moved.set(address, { name, ...move });
    }
    return moved;
+}
+
+/**
+ * The name a drift check's warning or refusal gives an upstream it holds:
+ * as the build's model names it (`lifted`), else an extension's parent by
+ * its author's name, else as its entry records it. A rollup's build reads
+ * its base through a generated alias (`<base>__rollup_base`), so for a
+ * rollup it is the source whose build wrote the table, as its entry or the
+ * plan records it.
+ */
+export function driftCheckedUpstreamName(args: {
+   sourceID: string;
+   address: string;
+   entry: Pick<ManifestEntry, "sourceName">;
+   lifted: string | undefined;
+   parent: { sourceID: string; sourceName: string } | undefined;
+   planFacts: Pick<ChainedPlanFacts, "namesByAddress">;
+   rollup: boolean;
+}): string {
+   const { sourceID, address, entry, parent } = args;
+   const recorded =
+      entry.sourceName ?? args.planFacts.namesByAddress?.[address]?.[0];
+   return (
+      (args.rollup ? recorded : undefined) ??
+      args.lifted ??
+      (sourceID === parent?.sourceID ? parent.sourceName : undefined) ??
+      entry.sourceName ??
+      address
+   );
 }
 
 /**
@@ -787,6 +827,12 @@ export interface SourceBuildOptions {
     */
    rollup?: boolean;
    /**
+    * The name this build's warnings give its source when that is not the
+    * name it compiles under: a rollup's label (rollupLabel), never
+    * its generated `<base>__rollup__…` source. Absent: its own name.
+    */
+   presentedName?: string;
+   /**
     * A persisted view's or named query's build source compiled over its
     * upstreams' stored tables (persisted_view_compile.ts): it reads each
     * upstream as any chained build does, from its table through the
@@ -832,6 +878,7 @@ export async function buildSource(
       stringReads,
       upstreamTypes,
       rollup,
+      presentedName,
       signal,
       builtThisRun,
       overStoredUpstreams,
@@ -846,8 +893,9 @@ export async function buildSource(
       connection,
       ...(builtThisRun ? { builtThisRun } : {}),
       rootAddress: contentSourceEntityId ?? instruction.sourceEntityId,
-      sourceName: persistSource.name,
+      sourceName: presentedName ?? persistSource.name,
       sourceID: persistSource.sourceID,
+      ...(rollup ? { rollup } : {}),
       site: environment,
    });
    const rendered = reportingDrift(environment, () =>
