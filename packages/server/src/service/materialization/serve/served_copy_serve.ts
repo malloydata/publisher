@@ -1485,11 +1485,10 @@ export class ServedCopyServe {
                   column,
                   bigIntegerOptionsOf(def, binding),
                ),
-            // The leaf's key check, as the run that wrote the table recorded
-            // it beside the table (`pairLeafKeyChecks`), read only while it
-            // checked the key the leaf declares now: the plan a reload keeps
-            // names the key at load, and nothing re-addresses the table when
-            // the leaf's primary key moves.
+            // The leaf's key check, as the build that wrote the table
+            // recorded it in its contract (`pairLeafKeyChecksOf`), read only
+            // while it checked the key the leaf declares now: nothing
+            // re-addresses the table when the leaf's primary key moves.
             (sourceID) =>
                checkedKeyIs(
                   binding.primaryKeyColumns,
@@ -4123,8 +4122,8 @@ function blockPaths(
  * leaf re-declared over that level's rows. `lane` picks the block a table of
  * several inlined paths is read for (its first, otherwise). Undefined when
  * the table does not store what the plan says (a column missing).
- * `leafKeyChecked` says whether the run that wrote the table recorded the
- * leaf's key unique and never null, for the leaf source's sourceID.
+ * `leafKeyChecked` says whether the table's contract records the leaf's key
+ * unique and never null, for the leaf source's sourceID.
  */
 function pairRerootOf(
    plan: MaterializePlan,

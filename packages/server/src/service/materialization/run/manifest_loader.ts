@@ -24,10 +24,8 @@ import { logger } from "../../../logger";
 import {
    FreshnessManifest,
    isLegacyFailedEntry,
-   type KeyUniqueness,
    ManifestEntry,
 } from "../domain/types";
-import { parseKeyUniqueness } from "../domain/binding";
 
 type WireBuildManifest = components["schemas"]["BuildManifest"];
 
@@ -137,13 +135,8 @@ export function isUsableTableName(name: string): boolean {
 export function splitManifestEntries(
    entries: Record<string, ManifestEntry>,
    source: string,
-   // Where the entries came from. Only Publisher's own store is read for a
-   // key check record (withRollupKeyRecords); a host's manifest is never
-   // trusted with one.
-   from: "store" | "host" = "host",
    { quiet = false }: { quiet?: boolean } = {},
 ): FetchedManifest {
-   const readKeyUniqueness = from === "store";
    const tableNameManifest: FreshnessManifest = {};
    const storageEntries: Record<string, ManifestEntry> = {};
    for (const [sourceEntityId, entry] of Object.entries(entries)) {
@@ -183,17 +176,12 @@ export function splitManifestEntries(
          continue;
       }
       if (entry.storageDestinationName) {
-         // The internal key record only from the local store
-         // (withRollupKeyRecords); a host's entry never brings one.
+         // A key check is read off the table's contract when it is bound
+         // (package_materialization.ts), never off a record an entry carries.
          const { keyUniqueness: _unread, ...plain } = entry as ManifestEntry & {
             keyUniqueness?: unknown;
          };
-         const keyUniqueness = readKeyUniqueness
-            ? keyUniquenessOnEntry(entry)
-            : undefined;
-         storageEntries[sourceEntityId] = keyUniqueness
-            ? ({ ...plain, keyUniqueness } as ManifestEntry)
-            : plain;
+         storageEntries[sourceEntityId] = plain;
          continue;
       }
       tableNameManifest[sourceEntityId] = {
@@ -212,38 +200,7 @@ export function splitManifestEntries(
          ...(entry.builtFrom?.length ? { builtFrom: entry.builtFrom } : {}),
          ...(entry.contract !== undefined ? { contract: entry.contract } : {}),
          ...(entry.builtAt ? { builtAt: entry.builtAt } : {}),
-         // Set only by a bind from the local store (withRollupKeyRecords);
-         // a host's manifest never carries it.
-         ...(readKeyUniqueness && keyUniquenessOnEntry(entry)
-            ? { keyUniqueness: keyUniquenessOnEntry(entry) }
-            : {}),
       };
    }
    return { tableNameManifest, storageEntries };
-}
-
-/** The internal rollup key record a local-store entry may carry. */
-function keyUniquenessOnEntry(entry: ManifestEntry): KeyUniqueness | undefined {
-   const k = parseKeyUniqueness(
-      (entry as { keyUniqueness?: unknown }).keyUniqueness,
-   );
-   const own =
-      k?.keyColumn !== undefined && k.unique !== undefined
-         ? { keyColumn: k.keyColumn, unique: k.unique }
-         : undefined;
-   // A record from before the columns were kept carries none: each of its
-   // checks then reads as unknown, and answers live until the next run.
-   return own || k?.parentKeys
-      ? {
-           ...(own ?? {}),
-           ...(k?.parentKeys
-              ? {
-                   parentKeys: k.parentKeys,
-                   ...(k.parentKeyColumns
-                      ? { parentKeyColumns: k.parentKeyColumns }
-                      : {}),
-                }
-              : {}),
-        }
-      : undefined;
 }

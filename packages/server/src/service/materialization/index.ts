@@ -21,6 +21,7 @@ export { removeStaleBuildDirs } from "./run/materialization_build_session";
 export { MaterializationService } from "./run/materialization_service";
 export { keptTablesResolverFor, Reclaimer } from "./run/reclaimer";
 export { isUsableTableName } from "./run/manifest_loader";
+export { isActiveRun } from "./run/run_status";
 export { MaterializationScheduler } from "./run/materialization_scheduler";
 export { readUpstreamSchemas } from "./run/upstream_schema_read";
 export type * from "./host";

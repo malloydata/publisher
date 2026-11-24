@@ -1659,8 +1659,8 @@ export class RollupVariantServe {
 
    /**
     * What the build of `plan`'s table found of the query source's primary key
-    * (its parent key check): `unique` when unique and never NULL, `unknown`
-    * when not checked, or a table a host's manifest binds.
+    * (its parent key check), as the table's contract records it: `unique`
+    * when unique and never NULL, `unknown` when not checked.
     */
    private parentKeyUniqueness(
       plan: RollupVariantPlan,
@@ -1700,8 +1700,8 @@ export class RollupVariantServe {
     * What the build of a stored table the served copy reads for the query's
     * source found of `key`: `unique` when a source it stores declares `key`
     * its primary key and the check found it unique and never NULL;
-    * `repeated` when one found it repeated or NULL; `unknown` when not
-    * checked, or a binding a host's manifest made.
+    * `repeated` when one found it repeated or NULL; `unknown` when its
+    * contract records no check of `key`.
     */
    private storedKeyUniqueness(
       binding: Binding,

@@ -125,7 +125,11 @@ import {
    incrementalEntriesOf,
    type UnprovenGeneration,
 } from "./run/incremental_upstream";
-import { isRollupOrigin, originOfTable } from "./domain/table_plans";
+import {
+   isRollupOrigin,
+   originOfTable,
+   pairLeavesOf,
+} from "./domain/table_plans";
 import { queryTimezoneOf } from "../governance/ir/compiled_model";
 import type {
    BuildManifest,
@@ -1120,45 +1124,38 @@ export class PackageMaterialization {
    }
 
    /**
-    * The key checks {@link withRecordedKeyChecks} read off a contract, by
-    * identity: never a local run's record, so each is read again, under the
-    * primary keys the models declare then, whenever its entry is.
-    */
-   private readonly contractKeyChecks = new WeakSet<object>();
-
-   /**
-    * `entries`, each that carries no key check record of a local run
-    * (`keyUniqueness`) given the rollup and source key checks its contract
-    * records (`keyUniquenessOfContract`), for the sources the models declare
-    * now: so a table a host built and bound serves a join to a rollup as one
-    * this server built does. A local record, when there is one, stands. One
-    * read off a contract before is read again, never kept: a primary key the
-    * models moved since then finds no check recorded under it, and its joins
-    * to rollups answer live.
+    * `entries`, each given the key checks its contract records
+    * (`keyUniquenessOfContract`): the rollup and source checks, and a pair
+    * table's leaf checks, named through the current plan's pair paths, all
+    * under the primary keys the models declare now. The contract is the one
+    * store of key verdicts, for a table this server built and one a host
+    * built alike; a verdict an entry brings any other way is dropped. Read
+    * again on every bind and every change of the models, never kept: a
+    * primary key the models moved finds no check recorded under it, and its
+    * joins to rollups and through pair tables answer live.
     */
    private withRecordedKeyChecks<
       E extends { contract?: unknown; keyUniqueness?: unknown },
    >(entries: Readonly<Record<string, E>>): Readonly<Record<string, E>> {
       let sources: KeyedSource[] | undefined;
+      let leaves:
+         | ReadonlyMap<string, ReturnType<typeof pairLeavesOf>>
+         | undefined;
       let out: Record<string, E> | undefined;
       for (const [id, entry] of Object.entries(entries)) {
-         const previous = entry.keyUniqueness;
-         const fromContract =
-            typeof previous === "object" &&
-            previous !== null &&
-            this.contractKeyChecks.has(previous);
-         if (
-            (previous !== undefined && !fromContract) ||
-            entry.contract === undefined
-         ) {
-            continue;
+         let keyUniqueness;
+         if (entry.contract !== undefined) {
+            sources ??= this.keyedSources();
+            leaves ??= this.pairLeavesByAddress();
+            keyUniqueness = keyUniquenessOfContract(
+               entry.contract,
+               sources,
+               leaves.get(id),
+            );
          }
-         sources ??= this.keyedSources();
-         const keyUniqueness = keyUniquenessOfContract(entry.contract, sources);
-         if (!keyUniqueness && !fromContract) continue;
+         if (!keyUniqueness && entry.keyUniqueness === undefined) continue;
          out ??= { ...entries };
          if (keyUniqueness) {
-            this.contractKeyChecks.add(keyUniqueness);
             out[id] = { ...entry, keyUniqueness };
          } else {
             const { keyUniqueness: _stale, ...rest } = entry;
@@ -1166,6 +1163,20 @@ export class PackageMaterialization {
          }
       }
       return out ?? entries;
+   }
+
+   /** Each pair table's leaves in the current plan ({@link pairLeavesOf}), by the table's content address. */
+   private pairLeavesByAddress(): Map<string, ReturnType<typeof pairLeavesOf>> {
+      const out = new Map<string, ReturnType<typeof pairLeavesOf>>();
+      const plans = this.plan.materializePlans;
+      for (const [sourceID, source] of Object.entries(
+         this.plan.buildPlan?.sources ?? {},
+      )) {
+         const plan = plans[sourceID];
+         const leaves = plan ? pairLeavesOf(plan) : [];
+         if (leaves.length > 0) out.set(source.sourceEntityId, leaves);
+      }
+      return out;
    }
 
    /** Every source the models declare with a primary key, as a contract's key checks name it. */
@@ -1456,7 +1467,6 @@ export class PackageMaterialization {
       const { tableNameManifest, storageEntries } = splitManifestEntries(
          { ...prior },
          `prior entries (package ${this.owner.packageName()})`,
-         "store",
          { quiet: true },
       );
       const observed = new Map<string, ObservedColumns>();

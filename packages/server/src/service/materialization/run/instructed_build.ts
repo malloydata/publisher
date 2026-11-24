@@ -38,7 +38,6 @@ import { keyCheckCompilerKey } from "../domain/key_check";
 import {
    assertInlinedJoinsUnique,
    pairLeafKeyChecksOf,
-   checkDigest,
    tableIdentityKey,
    type StoredJoin,
    type UniquenessLedger,
@@ -187,43 +186,27 @@ const STORAGE: Pick<StorageBuildStrategy, "checkKey" | "keyCheckSql"> =
  * The key checks every build runs over a table once it is written, a host's
  * included: a rollup's key and its query sources' keys, and a stored
  * source's own key. None fails the build. What each found goes in the
- * table's contract (`ColumnContract.keys`, returned here), and an auto-run
- * also records it, with a pair table's leaf checks, beside the table in its
- * run (the uniqueness ledger).
+ * table's contract (`ColumnContract.keys`, returned here), the one store of
+ * key verdicts a bind reads; a pair table's leaf checks are already in it
+ * (`withLeafKeys`).
  */
 async function checkBuiltKeys(
    run: InstructedRun,
    persistSource: PersistSource,
    graphConnectionName: string,
    connection: MalloyConnection,
-   { instruction, orchestrated, sourceEntityId }: GatedSource,
    entry: ManifestEntry,
-   leafChecks: readonly PairLeafCheck[],
 ): Promise<Record<string, ContractKeyCheck>> {
    const { compiled } = run;
-   const ledger = orchestrated ? undefined : run.uniqueness;
    const relative = relativeSourceIDOf(run);
    const keys = await checkRollupKeys(
-      ledger,
       compiled,
       persistSource,
       entry,
       connection,
       graphConnectionName,
-      sourceEntityId,
-      writtenTableIdentity(instruction, graphConnectionName),
       relative,
    );
-   // A pair table's leaf key checks ran before the entry was recorded
-   // ({@link pairLeafKeysOf}) and are in its contract; an auto-run also
-   // records them beside the table, for the served copy.
-   for (const { check, record } of ledger ? leafChecks : []) {
-      if (!record) continue;
-      ledger!.recordRollupKey(sourceEntityId, {
-         ...record,
-         sourceID: check.sourceID,
-      });
-   }
    // A source stored in a destination, read there beside a joined
    // source's rollup through a join keyed on its primary key:
    // check that key over the rows its table holds.
@@ -231,9 +214,7 @@ async function checkBuiltKeys(
       ? storedKeyCheckOf(run, persistSource.sourceID, entry)
       : undefined;
    if (stored) {
-      const record = await checkAndRecordKey(
-         ledger,
-         sourceEntityId,
+      const record = await checkKeyAndWarn(
          "stored",
          () =>
             STORAGE.checkKey(
@@ -243,7 +224,6 @@ async function checkBuiltKeys(
                   environmentPath: run.environment.getEnvironmentPath(),
                },
                stored,
-               stored.table,
             ),
          {
             notRun:
@@ -252,8 +232,6 @@ async function checkBuiltKeys(
                "A stored source holds its primary key more than once or NULL; its queries through a storage #(rollup) rollup read as a join_many are answered live",
          },
          { source: persistSource.name, keyColumn: stored.keyColumn },
-         // Recorded under its own sourceID.
-         persistSource.sourceID,
       );
       const subject = relative?.(persistSource.sourceID);
       if (record && subject) {
@@ -654,10 +632,6 @@ export class InstructedBuild {
          throw err;
       }
 
-      // A rollup this run carried keeps its key check's record while its
-      // table stands as that check found it.
-      if (uniqueness) carryRollupKeys(run, uniqueness);
-
       return {
          entries: run.entries,
          failures: run.failures,
@@ -959,7 +933,6 @@ export class InstructedBuild {
          pairLeafKeyChecksOf(materialize),
          connection,
          persistSource.name,
-         writtenTableIdentity(instruction, graphConnectionName),
       );
       const withLeaves = withLeafKeys(
          withBuiltProvenance(
@@ -978,9 +951,7 @@ export class InstructedBuild {
             persistSource,
             graphConnectionName,
             connection,
-            gated,
             withLeaves,
-            leafChecks,
          ),
       );
       run.builtSources.push(persistSource.name);
@@ -2030,14 +2001,11 @@ async function storedJoinOf(
  * and declines (`COUNT_SEMANTICS`) rather than trust another set of rows.
  */
 async function checkRollupKeys(
-   ledger: UniquenessLedger | undefined,
    compiled: RunPlan,
    persistSource: PersistSource,
    entry: ManifestEntry,
    connection: MalloyConnection,
    connectionName: string,
-   address: string,
-   table: string,
    /** A sourceID as a contract key names it; absent, no `parent:` key is recorded. */
    relative: ((sourceID: string) => string) | undefined,
 ): Promise<Record<string, ContractKeyCheck>> {
@@ -2053,11 +2021,9 @@ async function checkRollupKeys(
    }
    const keys: Record<string, ContractKeyCheck> = {};
    if (own && groupsBaseRows) {
-      const record = await checkAndRecordKey(
-         ledger,
-         address,
+      const record = await checkKeyAndWarn(
          "rollup",
-         () => DATABASE.checkKey({ connection }, own, table),
+         () => DATABASE.checkKey({ connection }, own),
          {
             notRun:
                "A #(rollup) rollup's key check did not run; queries through its join_one that need the key unique are answered live",
@@ -2074,15 +2040,12 @@ async function checkRollupKeys(
       }
    }
    const parents = await checkParentKeys(
-      ledger,
       rollupParentKeyChecksOf(compiled, sourceID).filter(
          (check) => groupsBaseRows || check.sourceID !== baseSourceID,
       ),
       connection,
       connectionName,
       persistSource.name,
-      address,
-      table,
    );
    for (const { check, record } of parents) {
       const subject = relative?.(check.sourceID);
@@ -2129,22 +2092,17 @@ function rollupParentKeyChecksOf(
  * unknown and declines.
  */
 async function checkParentKeys(
-   ledger: UniquenessLedger | undefined,
    checks: readonly ParentKeyCheck[],
    connection: MalloyConnection,
    connectionName: string,
    rollupName: string,
-   address: string,
-   table: string,
 ): Promise<{ check: ParentKeyCheck; record: KeyCheckRecord }[]> {
    const found: { check: ParentKeyCheck; record: KeyCheckRecord }[] = [];
    for (const check of checks) {
       if (check.connectionName !== connectionName) continue;
-      const record = await checkAndRecordKey(
-         ledger,
-         address,
+      const record = await checkKeyAndWarn(
          "parent",
-         () => DATABASE.checkKey({ connection }, check, table),
+         () => DATABASE.checkKey({ connection }, check),
          {
             notRun:
                "A query source's primary key check did not run; its queries through a #(rollup) rollup read as a join_many are answered live",
@@ -2156,7 +2114,6 @@ async function checkParentKeys(
             source: check.sourceID,
             keyColumn: check.keyColumn,
          },
-         check.sourceID,
       );
       if (record) found.push({ check, record });
    }
@@ -2181,14 +2138,13 @@ async function runPairLeafKeyChecks(
    checks: ReturnType<typeof pairLeafKeyChecksOf>,
    connection: MalloyConnection,
    sourceName: string,
-   table: string,
 ): Promise<PairLeafCheck[]> {
    const out: PairLeafCheck[] = [];
    for (const check of checks) {
       const logContext = { source: sourceName, keyColumn: check.keyColumn };
       let record: KeyCheckRecord | undefined;
       try {
-         record = await DATABASE.checkKey({ connection }, check, table);
+         record = await DATABASE.checkKey({ connection }, check);
       } catch (err) {
          logger.warn(
             "A pair table's leaf key check did not run; counts through its inlined join_many are answered live, and a view over it is not built",
@@ -2297,19 +2253,15 @@ function storedKeyCheckOf(
 
 /**
  * Run one key check, warn when it did not run or found the key repeated, and
- * return what it found, recorded in `ledger` (an auto-run's) under `address`
- * (and `sourceID`, for a check of a source other than the table's own). A
- * check that does not run, or throws, on either tier, reads as unknown: it
- * warns, returns and records nothing, and never fails the build.
+ * return what it found, for the table's contract. A check that does not
+ * run, or throws, on either tier, reads as unknown: it warns, returns
+ * nothing, and never fails the build.
  */
-export async function checkAndRecordKey(
-   ledger: UniquenessLedger | undefined,
-   address: string,
+export async function checkKeyAndWarn(
    kind: KeyCheckKind,
    runCheck: () => Promise<KeyCheckRecord | undefined>,
    messages: { notRun: string; notUnique: string },
    logContext: Record<string, unknown>,
-   sourceID?: string,
 ): Promise<KeyCheckRecord | undefined> {
    let record: KeyCheckRecord | undefined;
    try {
@@ -2326,122 +2278,7 @@ export async function checkAndRecordKey(
    }
    recordKeyCheck(kind, record.unique ? "unique" : "not_unique");
    if (!record.unique) logger.warn(messages.notUnique, logContext);
-   ledger?.recordRollupKey(
-      address,
-      sourceID !== undefined ? { ...record, sourceID } : record,
-   );
    return record;
-}
-
-/**
- * For each rollup with a key check whose entry this run carried rather than
- * built, keep the previous run's record when it still describes the table
- * ({@link UniquenessLedger.carryRollupKey}).
- */
-function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
-   const { compiled } = run;
-   for (const [sourceID, table] of Object.entries(compiled.tables)) {
-      if (!table.rollup) continue;
-      const check = rollupKeyCheckOf(compiled, sourceID);
-      const parentChecks = rollupParentKeyChecksOf(compiled, sourceID);
-      const { source } = table;
-      if (!check && parentChecks.length === 0) continue;
-      const address = computeSourceEntityId(
-         source,
-         compiled.connectionDigests,
-         table.target,
-         compiled.tableFolds,
-         compiled.upstreamSchemas,
-      );
-      const entry = run.entries[address];
-      if (!entry?.physicalTableName || run.builtAddresses.has(address)) {
-         continue;
-      }
-      // A rollup in a destination carries its own key check and its base's
-      // primary key check (`compileParentKeyChecks`), recorded against its
-      // table there.
-      const stored = entry.storageDestinationName;
-      const tableKey = stored
-         ? tableIdentityKey("destination", stored, entry.physicalTableName)
-         : tableIdentityKey(
-              "connection",
-              source.connectionName,
-              entry.physicalTableName,
-           );
-      if (check) {
-         ledger.carryRollupKey(
-            address,
-            tableKey,
-            checkDigest(tableKey, check.sql),
-         );
-      }
-      for (const parent of parentChecks) {
-         ledger.carryRollupKey(
-            address,
-            tableKey,
-            checkDigest(tableKey, parent.sql),
-            parent.sourceID,
-         );
-      }
-   }
-   // A pair table's leaf key checks, while its table stands.
-   for (const { source, target, materialize } of Object.values(
-      compiled.tables,
-   )) {
-      const checks = pairLeafKeyChecksOf(materialize);
-      if (checks.length === 0) continue;
-      const address = computeSourceEntityId(
-         source,
-         compiled.connectionDigests,
-         target,
-         compiled.tableFolds,
-         compiled.upstreamSchemas,
-      );
-      const entry = run.entries[address];
-      if (!entry?.physicalTableName || run.builtAddresses.has(address)) {
-         continue;
-      }
-      const table = entry.storageDestinationName
-         ? tableIdentityKey(
-              "destination",
-              entry.storageDestinationName,
-              entry.physicalTableName,
-           )
-         : tableIdentityKey(
-              "connection",
-              source.connectionName,
-              entry.physicalTableName,
-           );
-      for (const check of checks) {
-         ledger.carryRollupKey(
-            address,
-            table,
-            checkDigest(table, check.sql),
-            check.sourceID,
-         );
-      }
-   }
-   // A stored source's own key check, while its table stands.
-   for (const [sourceID, table] of Object.entries(compiled.tables)) {
-      if (table.storedKeyCheck === undefined) continue;
-      const address = computeSourceEntityId(
-         table.source,
-         compiled.connectionDigests,
-         table.target,
-         compiled.tableFolds,
-         compiled.upstreamSchemas,
-      );
-      const entry = run.entries[address];
-      if (!entry || run.builtAddresses.has(address)) continue;
-      const check = storedKeyCheckOf(run, sourceID, entry);
-      if (!check) continue;
-      ledger.carryRollupKey(
-         address,
-         check.table,
-         checkDigest(check.table, check.sql),
-         sourceID,
-      );
-   }
 }
 
 /**

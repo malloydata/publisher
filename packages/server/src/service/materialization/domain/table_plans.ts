@@ -298,10 +298,10 @@ export interface InlineUniquenessCheck {
    pairLevel?: number;
    /**
     * Set on a pair table's leaf key check ({@link pairKeyChecks}): it never
-    * fails the build. An auto-run runs it once the table is written and
-    * records what it found beside the table (unique and never null, under
-    * {@link joinedSourceID}); the served copy re-declares a count through the
-    * path over the leaf's key only where that record passed.
+    * fails the build. Every build runs it once the table is written and
+    * records what it found in the table's contract (`leaf:<join path>.<key>`,
+    * read back as {@link joinedSourceID}'s); the served copy re-declares a
+    * count through the path over the leaf's key only where that check passed.
     */
    recordOnly?: true;
 }
@@ -980,11 +980,30 @@ export function pairLeafPath(p: MaterializePair): {
  * `run/inline_uniqueness.ts` records them (`leaf:items.options.option_id`).
  */
 export function pairLeafContractKeys(plan: MaterializePlan): string[] {
-   const pairs = plan.pairBlocks?.blocks ?? (plan.pair ? [plan.pair] : []);
-   return pairs.map((p) => {
+   return pairPathsOf(plan).map((p) => {
       const leaf = pairLeafPath(p);
       return contractKeyName("leaf", leaf.names.join("."), leaf.keyColumn);
    });
+}
+
+/**
+ * Each pair path's leaf, as a bind reads its check off the table's contract:
+ * the join path its contract key names (`items.options`) and the leaf
+ * source's sourceID. The key column is left out: a bind looks the check up
+ * under the primary key the leaf declares now, not the one the plan names.
+ */
+export function pairLeavesOf(
+   plan: MaterializePlan,
+): { joinPath: string; sourceID: string }[] {
+   return pairPathsOf(plan).map((p) => {
+      const leaf = pairLeafPath(p);
+      return { joinPath: leaf.names.join("."), sourceID: leaf.sourceID };
+   });
+}
+
+/** A plan's pair paths: its blocks', else its one pair's. */
+function pairPathsOf(plan: MaterializePlan): MaterializePair[] {
+   return plan.pairBlocks?.blocks ?? (plan.pair ? [plan.pair] : []);
 }
 
 /** A `#(materialize)` plan's kind: `pair` when it stores an inlined join_many. */

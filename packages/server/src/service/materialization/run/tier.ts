@@ -20,7 +20,6 @@ import type { BuildInstruction, ManifestEntry } from "../domain/types";
 import type { BuildTier } from "../../../materialization_metrics";
 import type { ApiConnection } from "../../model";
 import type { QueryMetadata } from "../../query_metadata";
-import type { RollupKeyRecord } from "./inline_uniqueness";
 import type { sourceIncrementalRefresh } from "./incremental_build";
 
 /** A source's incremental refresh the run can act on: its context and lineage. */
@@ -61,13 +60,9 @@ export interface TierAdapter<Request, Site> {
    /**
     * Run a key check over a table at `site`: what it found, or undefined
     * when it did not run. A throw is read as the same: the key is unknown and
-    * the build goes on (instructed_build.ts, checkAndRecordKey).
+    * the build goes on (instructed_build.ts, checkKeyAndWarn).
     */
-   checkKey(
-      site: Site,
-      check: KeyCheck,
-      table: string,
-   ): Promise<KeyCheckRecord | undefined>;
+   checkKey(site: Site, check: KeyCheck): Promise<KeyCheckRecord | undefined>;
 }
 
 /** A table a tier drops. */
@@ -92,8 +87,11 @@ export interface KeyCheck {
    sql: string;
 }
 
-/** What a key check found over one table. */
-export type KeyCheckRecord = Omit<RollupKeyRecord, "checkedInRun">;
+/** What a key check found over one table: whether its key was unique and never NULL. */
+export interface KeyCheckRecord {
+   keyColumn: string;
+   unique: boolean;
+}
 
 /** Where a database table is reached: its warehouse connection. */
 export interface DatabaseSite {

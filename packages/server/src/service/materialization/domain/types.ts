@@ -181,10 +181,10 @@ export interface FreshnessAwareManifestEntry {
     */
    nativeSchema?: { name: string; type: string }[];
    /**
-    * A `#(rollup)` rollup's key check, as the
-    * auto-run that wrote or carried this table recorded it: whether the rows
-    * it grouped held its one grain dimension once per value. Internal, never
-    * on the wire; absent (unknown) on every entry a host's manifest binds.
+    * The key checks the table's contract records, as a bind reads them
+    * under the primary keys the models declare now (`keyUniquenessOfContract`):
+    * a `#(rollup)` rollup's own key, and each checked source's primary key.
+    * Internal, never on the wire: set only by a bind, off the contract.
     */
    keyUniqueness?: KeyUniqueness;
    /**

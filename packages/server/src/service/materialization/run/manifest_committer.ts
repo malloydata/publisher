@@ -42,11 +42,6 @@ import {
    ManifestReference,
    SourceFailure,
 } from "../domain/types";
-import {
-   keyUniquenessAt,
-   withRollupKeyRecords,
-   type RollupKeyRecord,
-} from "./inline_uniqueness";
 import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 import { type RunLifecycle } from "./run_lifecycle";
 
@@ -288,8 +283,6 @@ export class ManifestCommitter {
       entries: Record<string, ManifestEntry>,
       // The version the run built; undefined for an unversioned package.
       versionId?: string,
-      // The rollup key checks this run stands behind.
-      rollupKeys?: Readonly<Record<string, RollupKeyRecord>>,
       // Records the run done, with what this reports; called under the
       // package's lock, after the load (see commit).
       finish: (served: Served) => Promise<void> = async () => {},
@@ -311,11 +304,6 @@ export class ManifestCommitter {
          // table on the source's OWN connection, where it does not exist.
          // Storage entries serve via the bindings below.
          if (entry.physicalTableName && !entry.storageDestinationName) {
-            const keyUniqueness = keyUniquenessAt(
-               rollupKeys,
-               sourceEntityId,
-               entry,
-            );
             manifestEntries[sourceEntityId] = {
                tableName: entry.physicalTableName,
                // For dialect quoting at bind (Package.quoteBoundTableNames): the
@@ -326,7 +314,6 @@ export class ManifestCommitter {
                // the served copy binds a v1 table with.
                ...boundSchemaOf(entry.schema),
                ...boundNativeSchemaOf(entry.nativeSchema),
-               ...(keyUniqueness ? { keyUniqueness } : {}),
                ...freshnessFactsOf(entry),
                ...(entry.contract !== undefined
                   ? { contract: entry.contract }
@@ -335,21 +322,11 @@ export class ManifestCommitter {
             };
          }
       }
-      // A stored table's own primary key check rides on its entry, from this
-      // run's records alone (the join-to-rollup branch in a destination).
-      const storageEntries = Object.fromEntries(
-         Object.entries(builtEntries).map(([id, entry]) => {
-            const keyUniqueness = entry.storageDestinationName
-               ? keyUniquenessAt(rollupKeys, id, entry)
-               : undefined;
-            return [id, keyUniqueness ? { ...entry, keyUniqueness } : entry];
-         }),
-      );
       await environment.loadRunManifest({
          packageName,
          versionId,
          database: manifestEntries,
-         storage: storageEntries,
+         storage: builtEntries,
          commit: async (outcome) => {
             if (outcome.loaded) {
                logger.info("Auto-run: loaded manifest into package models", {
@@ -411,10 +388,7 @@ export class ManifestCommitter {
 
    /**
     * The entries a rebind binds, read as a package load reads them
-    * (`storageBindingResolverFor`): each with the key checks the newest run
-    * stands behind (`withRollupKeyRecords`). Without them a rebind after a
-    * run would drop what the run's own load bound, and the served copy would
-    * read every recorded key as unknown.
+    * (`storageBindingResolverFor`).
     */
    private boundEntries(
       environmentId: string,
@@ -423,11 +397,10 @@ export class ManifestCommitter {
    ): Promise<Record<string, ManifestEntry>> {
       // Read fresh each time, under the slot's lock the caller holds: what a
       // rebind binds is the store as of the bind, not as of the run's start.
-      return storageBindingResolverFor(
-         this.repository,
-         environmentId,
-         withRollupKeyRecords,
-      )(packageName, reader);
+      return storageBindingResolverFor(this.repository, environmentId)(
+         packageName,
+         reader,
+      );
    }
 
    /**
@@ -657,14 +630,13 @@ export class ManifestCommitter {
             // Read and bound under the package's lock, which an unversioned
             // run is created under too: a run created before the read is
             // active, so the read binds no key check of a table it may be
-            // rewriting (uncontestedAutoRun); one created after the bind
+            // rewriting (storageBindingResolverFor); one created after the bind
             // forgets what was bound before it writes.
             await environment.rebindPackageFromStore(packageName, async () => {
                const { tableNameManifest, storageEntries } =
                   splitManifestEntries(
                      await this.boundEntries(environmentId, packageName),
                      `rebind (package ${packageName})`,
-                     "store",
                   );
                return {
                   // Database: re-derive (or clear) regardless of mode.

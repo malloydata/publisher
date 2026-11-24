@@ -83,7 +83,7 @@ import type {
    StorageSite,
    TierAdapter,
 } from "./tier";
-import { runRollupKeyCheck } from "./inline_uniqueness";
+import { runKeyCheck } from "./inline_uniqueness";
 import { storedKeyCheckSql } from "../text/key_check_text";
 import {
    ledgerFields,
@@ -715,14 +715,9 @@ export class StorageBuildStrategy
    checkKey(
       site: StorageSite,
       check: KeyCheck,
-      table: string,
    ): Promise<KeyCheckRecord | undefined> {
       return withDestinationSession(site, { purpose: "view" }, (session) =>
-         runRollupKeyCheck(
-            check,
-            session as unknown as MalloyConnection,
-            table,
-         ),
+         runKeyCheck(check, session as unknown as MalloyConnection),
       );
    }
 

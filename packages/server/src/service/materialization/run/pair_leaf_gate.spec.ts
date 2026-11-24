@@ -166,8 +166,6 @@ describe("a built pair table's leaf keys in its contract", () => {
                      record: {
                         keyColumn: "item_id",
                         unique: true,
-                        table: "t",
-                        digest: "d",
                      },
                   },
                ],

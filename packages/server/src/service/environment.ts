@@ -3344,9 +3344,6 @@ export class Environment {
          versionId !== undefined
             ? `local store (package ${packageName} version ${versionId})`
             : `local store (package ${packageName})`,
-         // From the store, with the key checks its newest run stands behind
-         // (withRollupKeyRecords).
-         "store",
          { quiet },
       );
       return {
@@ -4555,7 +4552,6 @@ export class Environment {
                   splitManifestEntries(
                      params.storage,
                      `run (package ${packageName} version ${versionId})`,
-                     "store",
                      // Compared, not bound: the load bound these above.
                      { quiet: true },
                   ).storageEntries,

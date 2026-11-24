@@ -64,7 +64,6 @@ import { environmentResource } from "../api_resource";
 import { type EnvironmentName, parseEnvironmentName } from "./identity";
 import { VersionStore } from "./versions/version_store";
 import { storageBindingResolverFor } from "./versions/materialization_scope";
-import { withRollupKeyRecords } from "./materialization/run/inline_uniqueness";
 import { keptTablesResolverFor } from "./materialization";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import { SERVER_VERSION } from "../version";
@@ -1089,11 +1088,7 @@ export class EnvironmentStore
       // A version of a `scope: version` package reads only its own runs;
       // everything else reads the package's shared runs.
       environment.setStorageBindingResolver(
-         storageBindingResolverFor(
-            repository,
-            environmentId,
-            withRollupKeyRecords,
-         ),
+         storageBindingResolverFor(repository, environmentId),
       );
       environment.setKeptTablesResolver(
          keptTablesResolverFor(repository, environmentId),
