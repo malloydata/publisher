@@ -189,12 +189,13 @@ export interface DestinationDialect {
    /**
     * Why `connection`, of this type, reaches the tables of `destination`, of
     * this type too, or undefined when the comparison finds no overlap
-    * (destination_overlap.ts).
+    * (destination_overlap.ts). `sameCatalog` is whether it names the same
+    * catalog, so the destination's schema names are the connection's own.
     */
    overlap(
       connection: ApiConnection,
       destination: ApiConnection,
-   ): string | undefined;
+   ): { reason: string; sameCatalog: boolean } | undefined;
    /**
     * The settings a build session that writes into this catalog runs with,
     * set after the catalog is attached and its schema checked.

@@ -58,6 +58,7 @@ import {
    METADATA_CATALOG_PREFIX,
    recordedCatalogSettings,
    recordedSchemaPaths,
+   ScopeContainmentError,
    storageSecretScope,
 } from "./ducklake_catalog";
 import { catalogKey, reconcileDataInlining } from "./ducklake_inlining";
@@ -824,7 +825,16 @@ async function secureCatalogStorage(
                  readableSchemas,
                  readOnly: true,
                  managed: true,
-              }).catch(() => undefined)
+              }).catch(async (error) => {
+                 // Refused like the secret branch: a catalog left attached would look attached to the next lookup.
+                 if (error instanceof ScopeContainmentError) {
+                    await connection
+                       .runSQL(`DETACH ${quoteIdentifier(dbName, "duckdb")};`)
+                       .catch(() => {});
+                    throw error;
+                 }
+                 return undefined;
+              })
             : [
                  dataPath ||
                     (await recordedCatalogSettings(
@@ -1088,7 +1098,7 @@ async function listTablesForDuckLake(
 function ducklakeOverlap(
    connection: ApiConnection,
    destination: ApiConnection,
-): string | undefined {
+): { reason: string; sameCatalog: boolean } | undefined {
    const c = connection.ducklakeConnection;
    const d = destination.ducklakeConnection;
    if (!c || !d) return undefined;
@@ -1098,12 +1108,18 @@ function ducklakeOverlap(
       cCatalog === catalogKey(d.catalog?.postgresConnection) &&
       (c.catalog?.metadataSchema ?? "") === (d.catalog?.metadataSchema ?? "")
    ) {
-      return "it names the same DuckLake catalog";
+      return {
+         reason: "it names the same DuckLake catalog",
+         sameCatalog: true,
+      };
    }
    const cPath = dataPath(c.storage?.bucketUrl);
    const dPath = dataPath(d.storage?.bucketUrl);
    if (cPath && dPath && (cPath.startsWith(dPath) || dPath.startsWith(cPath))) {
-      return "its data path overlaps the destination's";
+      return {
+         reason: "its data path overlaps the destination's",
+         sameCatalog: false,
+      };
    }
    return undefined;
 }

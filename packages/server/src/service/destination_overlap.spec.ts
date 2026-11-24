@@ -272,6 +272,29 @@ describe("refuseListedDestinationSchema", () => {
       expect((error as Error).message).toContain("materialized");
    });
 
+   it("does not refuse a connection on another catalog whose data path merely nests with the destination's, which still overlaps", () => {
+      const dest = lake(
+         "dest",
+         { host: "pg-a", databaseName: "cat", metadataSchema: "lake" },
+         "gs://lake",
+      );
+      dest.ducklakeConnection!.destinationSchema = "materialized";
+      const view = lake(
+         "view",
+         {
+            host: "pg-b",
+            databaseName: "other_catalog",
+            metadataSchema: "lake",
+         },
+         "gs://lake/tenant",
+      );
+      view.ducklakeConnection!.readableSchemas = ["materialized"];
+      refuseListedDestinationSchema([view], [dest]);
+      const [overlap] = destinationOverlaps([view], [dest]);
+      expect(overlap.reason).toContain("data path");
+      expect(overlap.listsDestinationSchema).toBeUndefined();
+   });
+
    it("lets through a list that omits the schema, a connection on another catalog, and main", () => {
       refuseListedDestinationSchema(
          [listing("stripe")],

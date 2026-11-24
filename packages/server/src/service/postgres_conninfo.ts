@@ -20,6 +20,7 @@ import path from "path";
 import { Client, type ClientConfig } from "pg";
 import tls from "tls";
 import { components } from "../api";
+import { BadRequestError } from "../errors";
 import { logger } from "../logger";
 import { externalEnv, type ExternalVariable } from "../settings";
 import { escapeSQL } from "./duckdb_session_setup";
@@ -45,7 +46,7 @@ export function validatePostgresSslmode(
    sslmode: string,
 ): void {
    if (!(PROXIED_SSLMODES as readonly string[]).includes(sslmode)) {
-      throw new Error(
+      throw new BadRequestError(
          `${subject} has unsupported sslmode '${sslmode}' ` +
             `(expected ${PROXIED_SSLMODES.join(" | ")}).`,
       );
@@ -53,7 +54,7 @@ export function validatePostgresSslmode(
    if (sslmode === "verify-ca") {
       const caBundle = externalEnv("NODE_EXTRA_CA_CERTS");
       if (!caBundle || !existsSync(caBundle)) {
-         throw new Error(
+         throw new BadRequestError(
             `${subject} uses sslmode 'verify-ca' but no readable ` +
                `CA bundle is available (NODE_EXTRA_CA_CERTS is unset or points at a missing file). ` +
                `Add the CA bundle to the image or use sslmode 'no-verify'.`,
@@ -693,9 +694,14 @@ const UNHONORED_SETTINGS: ReadonlyArray<{
    key: string;
    env?: ExternalVariable;
    demands: (value: string) => boolean;
+   instead?: string;
 }> = [
    // node-pg reads a password file from PGPASSFILE only, so the key would be dropped.
-   { key: "passfile", demands: (v) => v !== "" },
+   {
+      key: "passfile",
+      demands: (v) => v !== "",
+      instead: "set PGPASSFILE instead",
+   },
    {
       key: "channel_binding",
       env: "PGCHANNELBINDING",
@@ -752,7 +758,7 @@ export function pgClientConfig(
          `${subject}: the connection string sets ${unsupported ? `'${unsupported}'` : `more than one '${listed}'`}, which loads cannot use; spell host, port and dbname.`,
       );
    }
-   for (const { key, env, demands } of UNHONORED_SETTINGS) {
+   for (const { key, env, demands, instead } of UNHONORED_SETTINGS) {
       const inString = params.has(key);
       const value = inString
          ? params.get(key)
@@ -762,7 +768,7 @@ export function pgClientConfig(
       if (value && demands(value)) {
          throw new Error(
             inString
-               ? `${subject}: the connection string sets '${key}', which the load lock's client cannot honor; remove it.`
+               ? `${subject}: the connection string sets '${key}', which the load lock's client cannot honor; remove it${instead ? `, and ${instead}` : ""}.`
                : `${subject}: ${env} is set in the environment, which the load lock's client cannot honor; unset it.`,
          );
       }

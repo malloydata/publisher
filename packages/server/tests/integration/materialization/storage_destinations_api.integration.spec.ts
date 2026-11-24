@@ -27,8 +27,7 @@ function ducklakeDestination(name: string, bucketPath: string) {
    };
 }
 
-// A destination that builds into `materialized` and a connection on its catalog
-// that lists that schema: the pair `readableSchemas` must never form.
+// A destination building into `materialized` and a connection on its catalog listing it: a pair readableSchemas refuses.
 const overlappingPair = () => ({
    connections: [
       {

@@ -31,20 +31,24 @@ import { destinationSchemaOf } from "./materialization/domain/storage_table_path
 
 type ApiConnection = components["schemas"]["Connection"];
 
-/**
- * Why `connection` reaches `destination`'s tables, or undefined when this
- * check finds no overlap. Only two connections of one type whose registry
- * entry can compare them (DuckLake's) are compared.
- */
-export function destinationOverlap(
+/** Why `connection` reaches `destination`'s tables, or undefined when this check finds no overlap, and whether it is the same catalog. Only two connections of one type whose registry entry can compare them (DuckLake's) are compared. */
+function overlapOf(
    connection: ApiConnection,
    destination: ApiConnection,
-): string | undefined {
+): { reason: string; sameCatalog: boolean } | undefined {
    const overlap = connectionDialectOf(destination.type)?.destination?.overlap;
    if (overlap === undefined || connection.type !== destination.type) {
       return undefined;
    }
    return overlap(connection, destination);
+}
+
+/** Why `connection` reaches `destination`'s tables, or undefined when this check finds no overlap. */
+export function destinationOverlap(
+   connection: ApiConnection,
+   destination: ApiConnection,
+): string | undefined {
+   return overlapOf(connection, destination)?.reason;
 }
 
 /** Every connection that reaches a destination, with why, the destination's build schema, and whether the connection can read that schema. */
@@ -62,8 +66,9 @@ export function destinationOverlaps(
    const out: ReturnType<typeof destinationOverlaps> = [];
    for (const connection of connections) {
       for (const destination of destinations) {
-         const reason = destinationOverlap(connection, destination);
-         if (reason) {
+         const found = overlapOf(connection, destination);
+         if (found) {
+            const { reason, sameCatalog } = found;
             const schema = destinationSchemaOf(destination);
             out.push({
                connection: connection.name ?? "",
@@ -79,8 +84,9 @@ export function destinationOverlaps(
                   managedSchemas(
                      connection.ducklakeConnection?.readableSchemas,
                   ).has(schema.toLowerCase()),
-               // `listsDestinationSchema` makes the schema's stored copies readable by name; DuckDB matches schema names regardless of case.
-               ...(normalizeReadableSchemas(
+               // A schema name is the destination's only on its own catalog; DuckDB matches schema names regardless of case.
+               ...(sameCatalog &&
+               normalizeReadableSchemas(
                   connection.ducklakeConnection?.readableSchemas,
                )?.some((name) => name.toLowerCase() === schema.toLowerCase())
                   ? { listsDestinationSchema: schema }

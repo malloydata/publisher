@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { pgDatabaseTarget } from "./postgres_conninfo";
+import { BadRequestError } from "../errors";
+import { pgDatabaseTarget, validatePostgresSslmode } from "./postgres_conninfo";
 
 describe("pgDatabaseTarget", () => {
    it("names the database a keyword/value string or a URI reaches, apart from who connects and how", () => {
@@ -52,6 +53,26 @@ describe("pgDatabaseTarget", () => {
          "postgres://pg",
       ]) {
          expect(pgDatabaseTarget(conninfo)).toBeUndefined();
+      }
+   });
+});
+
+describe("validatePostgresSslmode's refusals are 400s", () => {
+   it("answers an unsupported sslmode as a BadRequestError", () => {
+      expect(() => validatePostgresSslmode("c", "sometimes")).toThrow(
+         BadRequestError,
+      );
+   });
+
+   it("answers verify-ca with no CA bundle as a BadRequestError", () => {
+      const saved = process.env.NODE_EXTRA_CA_CERTS;
+      delete process.env.NODE_EXTRA_CA_CERTS;
+      try {
+         expect(() => validatePostgresSslmode("c", "verify-ca")).toThrow(
+            BadRequestError,
+         );
+      } finally {
+         if (saved !== undefined) process.env.NODE_EXTRA_CA_CERTS = saved;
       }
    });
 });

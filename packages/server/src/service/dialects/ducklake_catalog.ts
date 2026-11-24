@@ -201,6 +201,9 @@ function readableSchemaScope(
    return `${rootSlash}${trimmed}/`;
 }
 
+/** A listed schema's storage scope reaches an unlisted schema's files. */
+export class ScopeContainmentError extends Error {}
+
 /**
  * The URL prefixes a DuckLake catalog's storage secret is scoped to, each with
  * exactly one trailing slash so `…/org_a/` never matches `…/org_ab`. The
@@ -214,7 +217,8 @@ function readableSchemaScope(
  * the data path, and one that does not, or that the catalog does not record, is
  * left out and logged, so a bad entry narrows the view rather than widening it.
  * A listed schema's directory that also holds an unlisted schema's files throws,
- * since the secret would reach them. Undefined when nothing states a path, when
+ * since the secret would reach them; `main`'s root-wide scope of a migrated catalog
+ * only warns. Undefined when nothing states a path, when
  * a managed view's main path is unknown, or when the root names no bucket: the
  * caller then refuses the attach rather than creating an unscoped secret.
  */
@@ -243,7 +247,7 @@ export function storageSecretScope(input: {
       while (start < main.path.length && main.path[start] === "/") start++;
       mainScope = oneTrailingSlash(`${rootSlash}${main.path.slice(start)}`);
    }
-   const owners: [string, string][] = [["main", mainScope]];
+   const owners: [string, string][] = [];
    for (const schema of input.readableSchemas ?? []) {
       const recorded = input.schemaPaths?.get(schema);
       const prefix = recorded && readableSchemaScope(rootSlash, recorded);
@@ -259,6 +263,7 @@ export function storageSecretScope(input: {
    }
    // The secret reaches everything under a listed schema's directory, an unlisted schema's files included.
    const listed = managedSchemas(input.readableSchemas);
+   const underMain: string[] = [];
    for (const [name, recorded] of input.schemaPaths ?? []) {
       if (listed.has(name)) continue;
       const path = oneTrailingSlash(
@@ -267,13 +272,21 @@ export function storageSecretScope(input: {
             : recorded.path,
       );
       const reaching = owners.find(([, prefix]) => path.startsWith(prefix));
-      if (reaching) {
-         throw new Error(
+      if (!reaching) {
+         if (path.startsWith(mainScope)) underMain.push(name);
+      } else {
+         throw new ScopeContainmentError(
             `The storage scope of schema '${reaching[0]}' (${reaching[1]}) of DuckLake catalog '${input.catalog}' ` +
                `also reaches the files of schema '${name}' (${path}), which the managed view does not list. ` +
                `Give each schema a directory of its own, or list '${name}' in readableSchemas.`,
          );
       }
    }
-   return [...new Set(owners.map(([, prefix]) => prefix))];
+   // Shipped behavior: a 0.2-migrated catalog's main is the data path itself, so it is warned about and not refused.
+   if (underMain.length > 0) {
+      logger.warn(
+         `The storage scope of schema 'main' (${mainScope}) of DuckLake catalog '${input.catalog}' also reaches the files of unlisted schema(s) ${underMain.map((name) => `'${name}'`).join(", ")}: main's path is the data path itself, as in a catalog migrated from DuckLake 0.2.`,
+      );
+   }
+   return [...new Set([mainScope, ...owners.map(([, prefix]) => prefix)])];
 }

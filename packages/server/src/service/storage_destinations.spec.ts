@@ -471,6 +471,28 @@ describe("Environment: connections and storage destinations are disjoint", () =>
             ).toBe("elsewhere");
          });
 
+         it("applies nothing when the readme write fails", async () => {
+            const environment = makeEnvironment([unrelated], [builds]);
+            sinon
+               .stub(fs.promises, "writeFile")
+               .rejects(new Error("disk full"));
+            await expect(
+               environment.update({
+                  name: "test-env",
+                  readme: "new",
+                  connections: [listing],
+                  storageDestinations: [other],
+               }),
+            ).rejects.toThrow("Failed to update environment README");
+            expect(environment.listApiConnections().map((c) => c.name)).toEqual(
+               ["warehouse"],
+            );
+            expect(
+               environment.listStorageDestinations()[0].ducklakeConnection
+                  ?.destinationSchema,
+            ).toBe("materialized");
+         });
+
          it("passes when the same update moves the destination off the listed schema", async () => {
             const environment = makeEnvironment([unrelated], [builds]);
             await environment.update({
@@ -996,6 +1018,22 @@ describe("Environment: connections and storage destinations are disjoint", () =>
             /No storage secret could be scoped for DuckLake catalog 'db_x'/,
          );
          expect(secrets(statements)).toHaveLength(0);
+      });
+
+      it("refuses, and detaches, a local-data-path view whose listed schema's directory holds an unlisted schema", async () => {
+         const statements: string[] = [];
+         stubCatalog(statements, {
+            ...RECORDED,
+            schemas: {
+               extra_a: { path: "extra_a/", path_is_relative: true },
+               nested: { path: "extra_a/nested/", path_is_relative: true },
+            },
+         });
+         const lake = readableView(["extra_a"]);
+         lake.ducklakeConnection!.storage = { bucketUrl: envPath };
+         const failure = await lookupView(lake);
+         expect(failure?.message).toMatch(/'extra_a'.*'nested'/);
+         expect(statements.some((sql) => /^DETACH /.test(sql))).toBe(true);
       });
 
       it("does not read the schema paths for a destination, which serves every schema", async () => {

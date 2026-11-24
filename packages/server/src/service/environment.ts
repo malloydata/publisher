@@ -667,62 +667,65 @@ export class Environment {
                  true,
               );
 
-      if (payload.connections) {
-         const payloadConnections = payload.connections;
+      const payloadConnections = payload.connections;
+      if (payloadConnections || nextDestinations) {
          await this.runConnectionUpdateExclusive(async () => {
-            logger.info(
-               `Updating ${payloadConnections.length} connections for environment ${this.environmentName}`,
-            );
-            // The list replaces the stored one wholesale, but reads carry no
-            // credentials, so an echoed entry arrives without them. Merging
-            // against the stored entry keeps one connection edit in the app
-            // from stripping every other connection's credentials.
-            const mergedConnections = payloadConnections.map((incoming) => {
-               const stored = this.apiConnections.find(
-                  (existing) => existing.name === incoming.name,
+            let nextMalloyConfig:
+               | ReturnType<typeof buildEnvironmentMalloyConfig>
+               | undefined;
+            if (payloadConnections) {
+               logger.info(
+                  `Updating ${payloadConnections.length} connections for environment ${this.environmentName}`,
                );
-               return stored
-                  ? mergeConnectionUpdate(stored, incoming)
-                  : incoming;
-            });
-            const isUpdateConnectionRequest = true;
-            const nextMalloyConfig = buildEnvironmentMalloyConfig(
-               mergedConnections,
-               this.environmentPath,
-               isUpdateConnectionRequest,
-            );
-
-            // The pair is checked before either list is assigned.
-            if (nextDestinations) {
-               this.applyStorageDestinations(
-                  nextDestinations,
-                  nextMalloyConfig.apiConnections,
-               );
-            } else {
-               refuseListedDestinationSchema(
-                  nextMalloyConfig.apiConnections,
-                  this.destinations,
+               // The list replaces the stored one wholesale, but reads carry no
+               // credentials, so an echoed entry arrives without them. Merging
+               // against the stored entry keeps one connection edit in the app
+               // from stripping every other connection's credentials.
+               const mergedConnections = payloadConnections.map((incoming) => {
+                  const stored = this.apiConnections.find(
+                     (existing) => existing.name === incoming.name,
+                  );
+                  return stored
+                     ? mergeConnectionUpdate(stored, incoming)
+                     : incoming;
+               });
+               const isUpdateConnectionRequest = true;
+               nextMalloyConfig = buildEnvironmentMalloyConfig(
+                  mergedConnections,
+                  this.environmentPath,
+                  isUpdateConnectionRequest,
                );
             }
-            this.updateConnections(nextMalloyConfig);
-            // A wholesale replacement: the list is now the desired state.
-            this.connectionsAuthoritative = true;
 
-            logger.info(
-               `Successfully updated connections for environment ${this.environmentName}`,
-               {
-                  apiConnections: this.apiConnections.length,
-                  internalConnections: this.apiConnections.length,
-               },
+            // Everything that can refuse runs before anything is assigned, and the lock keeps a connection add from checking against the pair this replaces.
+            refuseListedDestinationSchema(
+               nextMalloyConfig?.apiConnections ?? this.apiConnections,
+               nextDestinations ?? this.destinations,
             );
-         });
-      } else if (nextDestinations) {
-         this.applyStorageDestinations(nextDestinations, this.apiConnections);
-      }
+            if (payload.readme !== undefined) {
+               await this.writeEnvironmentReadme(payload.readme);
+               this.metadata.readme = payload.readme;
+            }
+            if (nextDestinations) {
+               this.applyStorageDestinations(nextDestinations);
+            }
+            if (nextMalloyConfig) {
+               this.updateConnections(nextMalloyConfig);
+               // A wholesale replacement: the list is now the desired state.
+               this.connectionsAuthoritative = true;
 
-      if (payload.readme !== undefined) {
-         this.metadata.readme = payload.readme;
+               logger.info(
+                  `Successfully updated connections for environment ${this.environmentName}`,
+                  {
+                     apiConnections: this.apiConnections.length,
+                     internalConnections: this.apiConnections.length,
+                  },
+               );
+            }
+         });
+      } else if (payload.readme !== undefined) {
          await this.writeEnvironmentReadme(payload.readme);
+         this.metadata.readme = payload.readme;
       }
 
       return this;
@@ -898,10 +901,12 @@ export class Environment {
       storageDestinations: ApiConnection[],
       { rejectInvalid = false }: { rejectInvalid?: boolean } = {},
    ): void {
-      this.applyStorageDestinations(
-         this.resolveStorageDestinations(storageDestinations, rejectInvalid),
-         this.apiConnections,
+      const next = this.resolveStorageDestinations(
+         storageDestinations,
+         rejectInvalid,
       );
+      refuseListedDestinationSchema(this.apiConnections, next);
+      this.applyStorageDestinations(next);
    }
 
    private resolveStorageDestinations(
@@ -920,12 +925,7 @@ export class Environment {
          : processStorageDestinations(requested);
    }
 
-   /** Refuses a destination list whose schema a connection lists, before either list is assigned. */
-   private applyStorageDestinations(
-      next: ApiConnection[],
-      connections: readonly ApiConnection[],
-   ): void {
-      refuseListedDestinationSchema(connections, next);
+   private applyStorageDestinations(next: ApiConnection[]): void {
       const previous = this.destinations;
       this.destinations = next;
       this.destinationsAuthoritative = true;

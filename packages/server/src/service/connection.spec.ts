@@ -4970,13 +4970,34 @@ describe("storageSecretScope", () => {
                },
             }),
          ).toThrow(/'extra_a'.*'nested'/);
-         // A catalog migrated from DuckLake 0.2 keeps main's files at the data path itself.
-         expect(() =>
-            view([], {
-               main: { path: "", relative: true },
-               other: { path: "other/", relative: true },
-            }),
-         ).toThrow(/'main'.*'other'/);
+      });
+
+      it("keeps a catalog migrated from DuckLake 0.2 attachable: main's root-wide scope is warned about, not refused", () => {
+         const warn = sinon.stub(logger, "warn");
+         try {
+            for (const main of [
+               { path: "", relative: true },
+               { path: "s3://bucket/org_a/db_b/", relative: false },
+            ]) {
+               warn.resetHistory();
+               expect(
+                  view([], { main, other: { path: "other/", relative: true } }),
+               ).toEqual(["s3://bucket/org_a/db_b/"]);
+               expect(warn.callCount).toBe(1);
+               expect(String(warn.firstCall.args[0])).toContain("'lake'");
+               expect(String(warn.firstCall.args[0])).toContain("'other'");
+            }
+            // A listed non-main schema is still refused, whatever main is.
+            expect(() =>
+               view(["extra_a"], {
+                  main: { path: "", relative: true },
+                  extra_a: { path: "extra_a/", relative: true },
+                  nested: { path: "extra_a/nested/", relative: true },
+               }),
+            ).toThrow(/'extra_a'.*'nested'/);
+         } finally {
+            warn.restore();
+         }
       });
 
       it("lets an unlisted schema stand beside the listed ones, even by a shared name prefix", () => {

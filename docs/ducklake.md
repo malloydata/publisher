@@ -73,7 +73,9 @@ Two consequences for models:
   is always readable): its storage secret, or on a local data path its file allowlist. A listed schema
   the catalog does not record, or whose path is not under the data path, is left out and logged. A
   listed schema's directory that also holds an unlisted schema's files (its path begins with the
-  listed one's) refuses the attach, naming both, since the scope would reach those files. A read
+  listed one's) refuses the attach, naming both, since the scope would reach those files; `main` alone is
+  exempt, and a catalog migrated from DuckLake 0.2, whose `main` is the data path itself, attaches with a
+  warning naming the schemas under it. A read
   outside the scope goes out unsigned, so the bucket must not allow anonymous reads. Changing the list
   opens the connection afresh at once; the previous instance finishes its in-flight queries. Create a
   schema in the catalog before listing it: a schema listed before it exists gets no file access until
@@ -434,7 +436,8 @@ destinations an environment holds, so it misses those of one whose stored destin
 itself, with `400 SCHEMA_RESERVED`.
 
 A connection's `readableSchemas` may not list a schema a storage destination of its environment builds
-into: that would make the destination's stored copies, gated sources' rows among them, readable by name
+into, when both name the same catalog (database and metadata schema; a connection that only shares a data
+path with the destination is warned about, not refused): that would make the destination's stored copies, gated sources' rows among them, readable by name
 without their gate. Saving such a connection (`POST` or `PUT` of a connection, or an environment create or
 update that brings one, a config reload included) is refused with `400`, and the same pair in the
 config at startup fails the environment's load. `main` is not refused, since a managed connection always

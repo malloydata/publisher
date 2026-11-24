@@ -9,6 +9,7 @@ import {
 import { Connection } from "@malloydata/malloy";
 import { components } from "../api";
 import { ConnectionOrigin, getS3CredentialChainPolicy } from "../config";
+import { BadRequestError } from "../errors";
 import { logger } from "../logger";
 import { runIntrospectionSQL, sqlLiteral } from "./introspection_sql";
 
@@ -185,14 +186,16 @@ export function validateS3ProviderShape(
          typeof provider !== "string" ||
          !S3_PROVIDERS.includes(provider as (typeof S3_PROVIDERS)[number])
       ) {
-         throw new Error(
+         throw new BadRequestError(
             `S3 provider must be one of ${S3_PROVIDERS.join(", ")} for: ${connectionName}`,
          );
       }
    }
    const chain = s3Connection.chain as unknown;
    if (chain !== undefined && typeof chain !== "string") {
-      throw new Error(`S3 chain must be a string for: ${connectionName}`);
+      throw new BadRequestError(
+         `S3 chain must be a string for: ${connectionName}`,
+      );
    }
 
    if (provider === "credential_chain") {
@@ -205,7 +208,7 @@ export function validateS3ProviderShape(
          policy === "off" ||
          (policy === "destinations-only" && origin === "connection")
       ) {
-         throw new Error(
+         throw new BadRequestError(
             `S3 provider 'credential_chain' is not permitted for: ${connectionName}` +
                ` (S3_CREDENTIAL_CHAIN_POLICY=${policy}). It resolves the host's own` +
                ` credentials; supply an accessKeyId and secretAccessKey instead.`,
@@ -219,13 +222,13 @@ export function validateS3ProviderShape(
          s3Connection.secretAccessKey ||
          s3Connection.sessionToken
       ) {
-         throw new Error(
+         throw new BadRequestError(
             `S3 accessKeyId, secretAccessKey, and sessionToken must not be set when provider is 'credential_chain' for: ${connectionName}`,
          );
       }
    } else if (s3Connection.chain) {
       // The mirror case: a chain under key-based auth misstates what grants access.
-      throw new Error(
+      throw new BadRequestError(
          `S3 chain is only valid when provider is 'credential_chain' for: ${connectionName}`,
       );
    }

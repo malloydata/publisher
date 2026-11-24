@@ -106,7 +106,6 @@ describe("pgClientConfig", () => {
       ["sslcrl", "/etc/crl.pem"],
       ["sslcrldir", "/etc/crl"],
       ["ssl_min_protocol_version", "TLSv1.3"],
-      ["passfile", "/etc/pgpass"],
    ])(
       "refuses %s=%s, which node-pg would drop, naming the key and not the string",
       (key, value) => {
@@ -148,6 +147,20 @@ describe("pgClientConfig", () => {
    ])("accepts %s, which asks for nothing node-pg lacks", (setting) => {
       expect(config(`host=h ${setting}`)).toMatchObject({ host: "h" });
    });
+
+   it.each([
+      "host=h password=secret passfile=/etc/pgpass",
+      "postgres://u:secret@h/cat?passfile=%2Fetc%2Fpgpass",
+   ])(
+      "refuses a passfile key in %s, and names PGPASSFILE instead",
+      (conninfo) => {
+         const error = refusal(conninfo);
+         expect(error).toContain(
+            "test: the connection string sets 'passfile', which the load lock's client cannot honor; remove it, and set PGPASSFILE instead.",
+         );
+         expect(error).not.toContain("secret");
+      },
+   );
 
    it("accepts PGPASSFILE in the environment, which node-pg reads itself", () => {
       process.env.PGPASSFILE = "/etc/pgpass";

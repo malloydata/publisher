@@ -454,6 +454,39 @@ describe("service/connection_service", () => {
             (mockEnvironmentStore.updateConnection as sinon.SinonStub).called,
          ).toBe(false);
       });
+
+      it("checks a destinations-only update against a connection add that is still persisting", async () => {
+         await environment.update({
+            name: "test-project",
+            storageDestinations: [
+               lake("managed", { destinationSchema: "elsewhere" }),
+            ],
+         });
+         (mockRepository.getConnectionByName as sinon.SinonStub).resolves(null);
+         let persisted!: () => void;
+         (mockEnvironmentStore.addConnection as sinon.SinonStub).returns(
+            new Promise<void>((resolve) => (persisted = resolve)),
+         );
+         const add = connectionService.addConnection("test-project", "second", {
+            ...listing,
+            name: "second",
+         });
+         await new Promise((resolve) => setTimeout(resolve, 0));
+         const update = environment.update({
+            name: "test-project",
+            storageDestinations: [
+               lake("managed", { destinationSchema: "materialized" }),
+            ],
+         });
+         await new Promise((resolve) => setTimeout(resolve, 0));
+         persisted();
+         await add;
+         await expect(update).rejects.toThrow(BadRequestError);
+         expect(
+            environment.listStorageDestinations()[0].ducklakeConnection
+               ?.destinationSchema,
+         ).toBe("elsewhere");
+      });
    });
 
    describe("updateConnection", () => {
