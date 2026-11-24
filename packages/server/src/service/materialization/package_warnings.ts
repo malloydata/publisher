@@ -14,6 +14,7 @@ import {
    ROLLUP_NOT_BUILT_CODE,
    type PackageAnnotationFinding,
 } from "../annotation_reader";
+import { rollupLabel } from "./domain/rollup_measures";
 import { components } from "../../api";
 import { PACKAGE_MANIFEST_NAME } from "../../constants";
 import { CLASSIFICATION_COVERAGE } from "../classification";
@@ -539,10 +540,7 @@ export function persistRefusalWarnings(
            : refusalCodeOf(sourceID, source.name);
       const warning: ApiPackageWarning = {
          message: preaggregate
-            ? (rollup
-                 ? `#(rollup) rollup of source "${rollup.baseSourceName}" at ` +
-                   `(${rollup.grainDimensions.join(", ")})`
-                 : "A #(rollup) rollup") +
+            ? (rollup ? rollupLabel(rollup) : "A #(rollup) rollup") +
               ` is not built, so its measures are served live: ` +
               source.message
             : source.message,
@@ -1165,7 +1163,8 @@ const UNREAD_REASON_TEXT: Readonly<Record<UnreadReason, string>> = {
  * read succeeds.
  * The reason is a fixed class, never the driver's text (the log has that).
  * Named by the table, and by the source a query names (a rollup's base), in
- * the model that declares it.
+ * the model that declares it; `sourceEntityId` and `sourceName` name the
+ * unread table's own source (a rollup's, not its base).
  */
 export function databaseTableUnreadWarnings(
    unread: readonly {
@@ -1212,6 +1211,11 @@ export function databaseTableUnreadWarnings(
                ? STORAGE_TABLE_UNREAD_CODE
                : DATABASE_TABLE_UNREAD_CODE,
          reason,
+         // The unread table's own source, so a client routes it without
+         // reading the message: `subject` is the source a query names (a
+         // rollup's base).
+         sourceEntityId,
+         ...(source ? { sourceName: source.name } : {}),
          severity: "warn",
          message:
             `${table}${name ? ` of \`${name}\`` : ""} could not be read ${where} when it was bound (${UNREAD_REASON_TEXT[reason]}), so its queries are answered live. ` +

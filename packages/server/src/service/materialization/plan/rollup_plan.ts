@@ -163,7 +163,11 @@ import {
    type DecomposedMeasure,
    type MeasureRefusal,
 } from "./rollup_measure_grammar";
-import type { AggregateLeaf, Reaggregate } from "../domain/rollup_measures";
+import {
+   rollupLabel,
+   type AggregateLeaf,
+   type Reaggregate,
+} from "../domain/rollup_measures";
 import {
    splitSourceID,
    type ParentKeyCheck,
@@ -1834,8 +1838,7 @@ export function rollupReadsGivenRefusal(
       tier: "unservable",
       code: ROLLUP_NOT_BUILT_CODE,
       message:
-         `#(rollup) rollup of source "${plan.baseSourceName}" at ` +
-         `(${plan.grainDimensions.join(", ")}) is not built, so its measures ` +
+         `${rollupLabel(plan)} is not built, so its measures ` +
          "are served live: its rows read a given, and a table holds one " +
          "value's rows.",
       sourceName: plan.baseSourceName,

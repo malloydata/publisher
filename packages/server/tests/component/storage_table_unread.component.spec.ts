@@ -266,6 +266,9 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
             expect(unread.map((w) => [w.code, w.reason])).toEqual([
                ["storage-table-unread", "catalog_query_failed"],
             ]);
+            // The unread table's own source, a rollup's not its base's.
+            expect(unread[0].sourceEntityId).toBe(address);
+            expect(unread[0].sourceName).toMatch(mechanism.table);
             expect(unread[0].message).toContain(
                "could not be read in its storage= destination `lake` when it was bound (the catalog query failed), so its queries are answered live. A retry is pending.",
             );

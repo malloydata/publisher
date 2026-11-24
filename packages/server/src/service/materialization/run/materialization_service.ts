@@ -297,6 +297,8 @@ interface RunInstructions {
    refused: Record<string, RefusedSource>;
    cleared: ReadonlyMap<string, EligibilityTier> | undefined;
    renamed: RenamedTable[];
+   /** Pair tables rebuilt to run a leaf key check that could not run. */
+   rebuiltToVerify?: ReadonlySet<string>;
 }
 
 /** What the instructed build returned. */
@@ -1212,11 +1214,17 @@ export class MaterializationService {
             const failed = failedRunManifestOf(err);
             if (failed) {
                // failedRunManifestOf found it on an error that carries one.
+               const relative = packageRelativeRun(
+                  {
+                     entries: {},
+                     failures: failed.failures,
+                     refused: failed.refusedSources ?? {},
+                  },
+                  state.packagePath,
+               );
                withFailedRunManifest(err as BuildRunFailedError, {
-                  failures: packageRelativeRun(
-                     { entries: {}, failures: failed.failures, refused: {} },
-                     state.packagePath,
-                  ).failures,
+                  failures: relative.failures,
+                  refusedSources: relative.refused,
                });
             }
          }
@@ -1405,6 +1413,7 @@ export class MaterializationService {
       // Tables built under readable names in place of an earlier run's,
       // reclaimed once this run commits (Reclaimer.reclaimRenamedTables).
       let renamed: RenamedTable[] = [];
+      let rebuiltToVerify: ReadonlySet<string> | undefined;
       let carried: Record<string, ManifestEntry>;
       let derivedRefused: Record<string, RefusedSource> = {};
       let clearedTiers: ReadonlyMap<string, EligibilityTier> | undefined;
@@ -1445,19 +1454,21 @@ export class MaterializationService {
             id,
             reader,
          );
+         // Each incremental source's newest entry, over the bound
+         // manifest's: a run of some sources binds a manifest naming only
+         // those, while an extension's last read and its parent's last
+         // build are on the newest entry of each (incremental_upstream.ts),
+         // and a table a delta advances is held to its contract by it.
+         const incrementalPriors = incremental
+            ? await this.committer.newestIncrementalEntries(
+                 environmentId,
+                 packageName,
+                 id,
+                 reader,
+              )
+            : {};
          if (incremental) {
-            // Each incremental source's newest entry, over the bound
-            // manifest's: a run of some sources binds a manifest naming only
-            // those, while an extension's last read and its parent's last
-            // build are on the newest entry of each (incremental_upstream.ts).
-            const newest = Object.entries(
-               await this.committer.newestIncrementalEntries(
-                  environmentId,
-                  packageName,
-                  id,
-                  reader,
-               ),
-            );
+            const newest = Object.entries(incrementalPriors);
             incremental.boundParentReads = new Map([
                ...(incremental.boundParentReads ?? []),
                ...boundParentReads(newest),
@@ -1478,6 +1489,7 @@ export class MaterializationService {
             recheck = {},
             confirmExists = {},
             renamed = [],
+            rebuiltToVerify,
          } = await deriveHoldingCarried(
             (incompatible) =>
                this.collaborators.deriveSelfInstructions(
@@ -1507,6 +1519,7 @@ export class MaterializationService {
                         at: new Date(run.startedAt),
                      },
                      incompatible,
+                     incrementalPriors,
                   },
                ),
             () => pkg.incompatibleTables?.(priorEntries) ?? new Set(),
@@ -1559,6 +1572,7 @@ export class MaterializationService {
          refused: derivedRefused,
          cleared: clearedTiers,
          renamed,
+         ...(rebuiltToVerify ? { rebuiltToVerify } : {}),
       };
    }
 
@@ -1650,6 +1664,7 @@ export class MaterializationService {
          carried,
          refused: derivedRefused,
          cleared: clearedTiers,
+         rebuiltToVerify,
       } = derived;
       // An instruction is checked against the plan the package serves
       // (validateInstructions); the run's own plan may have refused its
@@ -1686,6 +1701,7 @@ export class MaterializationService {
          incremental,
          priorRefusals: Object.values(derivedRefused),
          clearedTiers,
+         ...(rebuiltToVerify ? { rebuiltToVerify } : {}),
          hostInstructed: orchestrated,
          freshness: (() => {
             const index = declaredFreshnessIndex(pkg.getBuildPlan());
@@ -1746,7 +1762,7 @@ export class MaterializationService {
          entries: builtEntries,
          failures: builtFailures,
          sourcesRefused: instructedRefused,
-         refusedBesideBuilt: builtRefusedBeside = {},
+         refusedSources: builtRefused = {},
          uniquenessChecks,
       } = built;
 
@@ -1756,12 +1772,12 @@ export class MaterializationService {
       const {
          entries,
          failures,
-         refused: refusedBesideBuilt,
+         refused: refusedInstructed,
       } = packageRelativeRun(
          {
             entries: builtEntries,
             failures: builtFailures,
-            refused: builtRefusedBeside,
+            refused: builtRefused,
          },
          pkg.getPackagePath(),
       );
@@ -1778,7 +1794,8 @@ export class MaterializationService {
       // Auto-run refusals ride the run's free-form metadata, not the manifest
       // a strict-schema caller parses. Orchestrated refusals are in
       // `failures`, where that caller already looks, unless an eligible
-      // sibling built their table (then in `refusedSources`).
+      // sibling built their table or another outcome holds their address
+      // (then in `refusedSources`).
       const sourcesRefused =
          Object.keys(derivedRefused).length + instructedRefused;
       const durationMs = Date.now() - startedAt;
@@ -1816,15 +1833,16 @@ export class MaterializationService {
             sourcesBuilt,
             sourcesReused,
             ...(sourcesRefused > 0 ? { sourcesRefused } : {}),
-            // Auto-run's refusals, plus instructed sources refused beside a
-            // table an eligible sibling built, which are not in `failures`.
+            // Auto-run's refusals, plus instructed refusals `failures` does
+            // not report (beside a table an eligible sibling built, or
+            // another source's failure on their address).
             ...(Object.keys(derivedRefused).length +
-               Object.keys(refusedBesideBuilt).length >
+               Object.keys(refusedInstructed).length >
             0
                ? {
                     refusedSources: {
                        ...derivedRefused,
-                       ...refusedBesideBuilt,
+                       ...refusedInstructed,
                     },
                  }
                : {}),
