@@ -722,7 +722,8 @@ export class CatalogAdmin {
                   `Table '${schema}.${table}' already exists in catalog '${name}'.`,
                );
             }
-            throw this.redacted(error);
+            const mapped = this.redacted(error);
+            throw this.tooLarge(mapped) ?? mapped;
          }
          logger.info(
             source.kind === "table"
@@ -1169,18 +1170,31 @@ export class CatalogAdmin {
             "The schema was dropped before the load began.",
          );
       }
-      // Unmapped, so a 500 whose log line is this message rather than DuckDB's bare "Out of Memory Error".
+      return this.tooLarge(mapped) ?? mapped;
+   }
+
+   /**
+    * A load or table PUT that ran out of the session's memory or its spill cap,
+    * as a 422 that names the way out. Applied by a load and a PUT only, not in
+    * {@link redacted}: a read's or a snapshot delete's out-of-memory is not
+    * something a key or smaller objects cure. A full disk is not matched, and
+    * stays a 500 to retry.
+    */
+   private tooLarge(mapped: unknown): CatalogAdminError | null {
       if (
-         mapped instanceof Error &&
-         !(mapped instanceof CatalogAdminError) &&
-         /Out of Memory Error/.test(mapped.message)
+         !(mapped instanceof Error) ||
+         mapped instanceof CatalogAdminError ||
+         !/Out of Memory Error|failed to offload|failed to pin block|max_temp_directory_size/.test(
+            mapped.message,
+         )
       ) {
-         return new Error(
-            `The load exceeded the load session's memory and spill limits: ${mapped.message}`,
-            { cause: mapped },
-         );
+         return null;
       }
-      return mapped;
+      return new CatalogAdminError(
+         422,
+         "LOAD_TOO_LARGE",
+         `The load exceeded the load session's memory or spill limit (${mapped.message}). Give it a key, split its objects across loads, or raise admin.memoryLimit (and admin.maxTempDirectorySize).`,
+      );
    }
 
    /**

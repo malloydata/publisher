@@ -300,7 +300,10 @@ stream in batches:
 
 - `merge` upserts by `key`. `replace` makes the table equal to the call's objects, by `key` or, with no
   key, as a whole; a replace that would delete more than `maxDeletedRows` rows writes nothing (`422
-  LOAD_DELETE_LIMIT_EXCEEDED`), so an empty or truncated extract cannot empty a table.
+  LOAD_DELETE_LIMIT_EXCEEDED`), so an empty or truncated extract cannot empty a table. A keyless replace
+  compares whole rows as a multiset: a stored row with no identical row in the objects counts as deleted,
+  an object row with no identical stored row as inserted (an edited row is one of each, and
+  `rowsReplaced` is 0), and `maxDeletedRows` guards the deleted count.
 - A row the objects do not change is not rewritten, so a load retried after it committed writes nothing
   and takes no snapshot. It reports the same `rowCount` and `cursorMax` as the first call, with every row
   counted in `rowsUnchanged` and none inserted, replaced or deleted, and it answers `200`, with no `id`. A
@@ -334,16 +337,22 @@ stream in batches:
   decimal or `DOUBLE` that holds all its digits, `FLOAT` into `DOUBLE`, a longer varying text. The widening
   commits with the rows and rewrites no file already written; a table's type never narrows. Objects that
   type one column differently (`BIGINT` in one, `DOUBLE` in another) must each widen losslessly into the
-  type they are read together as. A column that every object types NULL, as a Parquet writer writes an
-  all-NULL column, is ignored; objects with no other column are refused. Anything else, a column of the
-  table named `__publisher_…`, a NULL key, or a cursor that is not an integer, DATE or TIMESTAMP is `422
+  type they are read together as. A column the objects lack is written NULL for every row the load
+  writes, whatever `DEFAULT` the table gives it (a merge writes NULL for every key it touches), so a
+  retry compares equal and changes nothing; a column the table holds `NOT NULL` that the objects lack, or
+  hold a NULL in, is refused. A column that every object types NULL, as a Parquet writer writes an
+  all-NULL column, is ignored; objects with no other column are refused. As the `cursor`, such a column
+  reports `cursorMax: null` (with the table's type as `cursorType`, none on a first load), and as a `key`
+  it is a NULL key. Anything else, a column of the table named `__publisher_…`, a NULL key, a `NOT NULL`
+  violation, or a cursor that is not an integer, DATE or TIMESTAMP is `422
   LOAD_COLUMN_MISMATCH`, with a `detail` naming the column and the `violation`. An object that is
   missing, is not Parquet, or holds a value its column cannot is `422 OBJECT_UNREADABLE`; a storage
   failure is a `500` to retry.
 - One load of a table runs at a time across every replica (a Postgres advisory lock in the catalog
   database), and one load or copy runs at a time per server. Either busy is `503 LOAD_BUSY`, never
-  queued: retry. A load whose lock connection is lost before it commits rolls back and answers the same.
-  The lock is a session advisory lock, so the catalog database connection must be a session-mode one: a
+  queued: retry. A load whose lock connection is lost before it commits rolls back and answers the same;
+  the lock is checked just before the commit, which narrows the window in which a lost lock goes
+  unnoticed but does not close it. The lock is a session advisory lock, so the catalog database connection must be a session-mode one: a
   transaction-mode pooler such as PgBouncer does not hold it, and two loads of a table could then run
   together.
 - The load reads the table inside the transaction that writes it, so a load that races a table PUT or
@@ -360,10 +369,12 @@ stream in batches:
   memory. A keyed replace or merge of 10 million rows by 21 columns stays within the 6 GiB spill limit
   (measured); spill grows with the stage's size plus the widest single column, so a column whose rows
   times width exceed that budget on its own may still spill past it. A keyless replace has no key to
-  narrow by: when its row count matches the table's (every retry) it compares whole rows of both sides, and
-  a table larger than the session's memory can exceed the spill limit, so give a large stream a `key`. A
-  load that outgrows the memory or spill limit answers `500` and writes nothing; the server's log names
-  the cause.
+  narrow by: every one compares whole rows of both sides in one full-width aggregate over the stored and
+  the staged rows, and a table larger than the session's memory can exceed the spill limit, so give a
+  large stream a `key`. A load or table PUT that outgrows the memory or spill limit answers `422
+  LOAD_TOO_LARGE` and writes nothing, and a retry fails the same way: give the load a `key`, split its
+  objects across loads, or raise `PUBLISHER_ADMIN_MEMORY_LIMIT` (and
+  `PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE`). A full spill disk is a `500`, to retry.
 
 **History.** Dropping or replacing a table only retires its files: they stay readable at earlier
 snapshots. `DELETE …/snapshots?olderThan=` expires older snapshots (never the latest) and deletes files

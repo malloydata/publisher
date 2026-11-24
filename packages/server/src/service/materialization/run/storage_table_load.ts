@@ -553,14 +553,15 @@ async function flushInlinedRows(
    );
 }
 
-/** The columns of a table or temporary table, as DuckDB names and types them. */
+/** The columns of a table or temporary table, as DuckDB names and types them; `notNull` only when the column is NOT NULL. */
 async function describeColumns(
    session: DuckDBConnection,
    relation: string,
-): Promise<{ name: string; type: string }[]> {
+): Promise<Column[]> {
    return rows(await session.runSQL(`DESCRIBE ${relation}`)).map((r) => ({
       name: String(r.column_name),
       type: String(r.column_type),
+      ...(r.null === "NO" ? { notNull: true } : {}),
    }));
 }
 
@@ -626,6 +627,7 @@ export class LoadRefusalError extends Error {
 interface Column {
    name: string;
    type: string;
+   notNull?: boolean;
 }
 
 /** A column of the table a load writes, as the load's statements read it. */
@@ -649,7 +651,10 @@ interface LoadLayout {
    added: Column[];
    /** Columns of the table the objects type wider without loss, each with the objects' type, set before the rows are written. */
    retyped: Column[];
-   cursor?: { name: string; type: string; maxSql: string };
+   /** The non-key columns the objects and the table both have that the table holds NOT NULL, whose staged values are checked. */
+   notNull: LoadColumn[];
+   /** `type` is absent for a cursor the objects type NULL on a first load. */
+   cursor?: { name: string; type?: string; maxSql: string };
 }
 
 const STAGE = quoteIdentifier("__publisher_stage", STORAGE_DIALECT);
@@ -734,12 +739,16 @@ function contractRefusal(
  * casts without error. Every key must be a column of both, and the cursor a
  * column of the objects the cursor kinds cover. A table column named like the
  * load's own helper columns is refused, since it would shadow them in the
- * plan. `table` is null for a table that does not exist yet.
+ * plan, and so is a NOT NULL column of the table the objects lack. `table` is
+ * null for a table that does not exist yet. `nullTyped` names the columns
+ * every object types NULL ({@link sourceColumns}), which are not in `stage`: a
+ * key among them is a NULL key, and a cursor among them has no value.
  */
 export function loadLayout(
    params: { key: readonly string[]; cursor?: string },
    stage: readonly Column[],
    table: readonly Column[] | null,
+   nullTyped: readonly string[] = [],
 ): LoadLayout {
    const shadowing = table?.find((c) => fold(c.name).startsWith(HELPER_PREFIX));
    if (shadowing) {
@@ -788,6 +797,13 @@ export function loadLayout(
    const keyColumns = params.key.map((key) => {
       const s = stageByName.get(fold(key));
       const t = tableByName.get(fold(key));
+      if (!s && nullTyped.some((n) => fold(n) === fold(key))) {
+         throw contractRefusal(
+            "null_key",
+            key,
+            "The objects hold a row with a NULL key.",
+         );
+      }
       if (!s || (table && !t)) {
          throw contractRefusal(
             "missing_key",
@@ -803,13 +819,28 @@ export function loadLayout(
    });
    const keys = keyColumns.map((k) => k.name);
    const keyNames = new Set(keys.map(fold));
+   const loaded = columns.filter((c) => !keyNames.has(fold(c.name)));
+   const lacking = loaded.find(
+      (c) => !c.inStage && tableByName.get(fold(c.name))?.notNull,
+   );
+   if (lacking) {
+      throw contractRefusal(
+         "not_null",
+         lacking.name,
+         `Column '${lacking.name}' is NOT NULL in the table and the objects have no value for it.`,
+         { tableType: lacking.type },
+      );
+   }
    return {
       keys,
       keyTypes: keyColumns.map((k) => k.type),
-      columns: columns.filter((c) => !keyNames.has(fold(c.name))),
+      columns: loaded,
       added,
       retyped: [...retyped.values()],
-      cursor: cursorLayout(params.cursor, stageByName, tableByName),
+      notNull: loaded.filter(
+         (c) => c.inStage && tableByName.get(fold(c.name))?.notNull,
+      ),
+      cursor: cursorLayout(params.cursor, stageByName, tableByName, nullTyped),
    };
 }
 
@@ -817,17 +848,30 @@ function cursorLayout(
    cursor: string | undefined,
    stageByName: Map<string, Column>,
    tableByName: Map<string, Column>,
+   nullTyped: readonly string[],
 ): LoadLayout["cursor"] {
    if (cursor === undefined) return undefined;
    const s = stageByName.get(fold(cursor));
-   if (!s) {
-      throw contractRefusal(
-         "missing_cursor",
-         cursor,
-         `Cursor column '${cursor}' is not a column of the objects.`,
-      );
-   }
    const t = tableByName.get(fold(cursor));
+   if (!s) {
+      const dropped = nullTyped.find((n) => fold(n) === fold(cursor));
+      if (dropped === undefined) {
+         throw contractRefusal(
+            "missing_cursor",
+            cursor,
+            `Cursor column '${cursor}' is not a column of the objects.`,
+         );
+      }
+      if (t && !cursorKind(t.type)) {
+         throw contractRefusal(
+            "cursor_type",
+            cursor,
+            `Cursor column '${cursor}' must be an integer, DATE or TIMESTAMP column.`,
+            { tableType: t.type },
+         );
+      }
+      return { name: t?.name ?? dropped, type: t?.type, maxSql: "NULL" };
+   }
    const kind = cursorKind(s.type);
    if (!kind || (t && !cursorKind(t.type))) {
       throw contractRefusal(
@@ -883,11 +927,15 @@ function topLevelColumns(
  * The columns the objects hold, from their schemas alone (see
  * {@link SchemaShape}; one per distinct schema, not one per object): the
  * columns at the top of each, shape by shape. A column typed NULL in every
- * object is absent, and objects that leave no column are refused. A name the
- * load reserves, one DuckDB cannot tell from another by case (it renames the
- * second `A_1`, a NULL-typed one included), or one holding a NUL is refused.
+ * object is not one of `columns` but is named in `nullTyped`, and objects that
+ * leave no column are refused. A name the load reserves, one DuckDB cannot tell
+ * from another by case (it renames the second `A_1`, a NULL-typed one
+ * included), or one holding a NUL is refused.
  */
-export function sourceColumns(shapes: readonly SchemaShape[]): string[] {
+export function sourceColumns(shapes: readonly SchemaShape[]): {
+   columns: string[];
+   nullTyped: string[];
+} {
    const nullTyped = new Map<string, boolean>();
    for (const shape of shapes) {
       const seen = new Set<string>();
@@ -941,7 +989,10 @@ export function sourceColumns(shapes: readonly SchemaShape[]): string[] {
          );
       }
    }
-   return present.map(([name]) => name);
+   return {
+      columns: present.map(([name]) => name),
+      nullTyped: [...nullTyped].filter(([, absent]) => absent).map(([n]) => n),
+   };
 }
 
 /**
@@ -1089,10 +1140,13 @@ export function objectUnreadable(
 async function createStage(
    session: DuckDBConnection,
    uris: readonly string[],
-): Promise<Column[]> {
+): Promise<{ columns: Column[]; nullTyped: string[] }> {
+   let nullTyped: string[];
    try {
       const shapes = await readSchemaShapes(session, uris);
-      const columns = sourceColumns(shapes);
+      const source = sourceColumns(shapes);
+      const columns = source.columns;
+      nullTyped = source.nullTyped;
       await assertObjectTypesConvert(session, uris, typeVariants(shapes));
       const positions = uris
          .map((uri, i) => `('${escapeSQL(uri)}', ${i})`)
@@ -1120,22 +1174,27 @@ async function createStage(
    } catch (error) {
       throw objectUnreadable(error, uris) ?? error;
    }
-   return (await describeColumns(session, STAGE)).filter(
-      (c) => !c.name.startsWith(HELPER_PREFIX),
-   );
+   return {
+      columns: (await describeColumns(session, STAGE)).filter(
+         (c) => !c.name.startsWith(HELPER_PREFIX),
+      ),
+      nullTyped,
+   };
 }
 
 /**
  * The stage's row count and, when it can hold two rows of one key, the later
  * row of each (by object position, then place in the object). Refuses an
- * object whose name is not the URI it was given and a NULL key. Returns the
- * rows left and the cursor's greatest value over them.
+ * object whose name is not the URI it was given, a NULL key, and a NULL in a
+ * column the table holds NOT NULL (among the rows left). Returns the rows left
+ * and the cursor's greatest value over them.
  */
 async function settleStage(
    session: DuckDBConnection,
    layout: LoadLayout,
 ): Promise<{ rows: number; cursorMax: string | null }> {
    const keys = layout.keys.map(q);
+   const required = layout.notNull.map((c) => q(c.name));
    const measure = async () => {
       const [r] = rows(
          await session.runSQL(
@@ -1144,6 +1203,12 @@ async function settleStage(
                   ? `count(*) FILTER (WHERE ${keys.map((k) => `${k} IS NULL`).join(" OR ")}) AS null_keys, ` +
                     `count(DISTINCT ${keys.length === 1 ? keys[0] : `(${keys.join(", ")})`}) AS distinct_keys, `
                   : "0 AS null_keys, 0 AS distinct_keys, ") +
+               required
+                  .map(
+                     (c, i) =>
+                        `count(*) FILTER (WHERE ${c} IS NULL) AS nn${i}, `,
+                  )
+                  .join("") +
                `${layout.cursor?.maxSql ?? "NULL"} AS cursor_max FROM ${STAGE}`,
          ),
       );
@@ -1152,10 +1217,11 @@ async function settleStage(
          strays: Number(r.strays),
          nullKeys: Number(r.null_keys),
          distinctKeys: Number(r.distinct_keys),
+         nullRequired: required.map((_, i) => Number(r[`nn${i}`])),
          cursorMax: r.cursor_max == null ? null : String(r.cursor_max),
       };
    };
-   const stats = await measure();
+   let stats = await measure();
    if (stats.strays > 0) {
       throw new BadRequestError(
          "An object's name is not the URI it was given in 'objects'.",
@@ -1168,14 +1234,46 @@ async function settleStage(
          "The objects hold a row with a NULL key.",
       );
    }
-   if (keys.length === 0 || stats.rows === stats.distinctKeys) return stats;
-   await session.runSQL(
-      `DELETE FROM ${STAGE} WHERE rowid IN (SELECT rowid FROM (SELECT rowid, row_number() OVER ` +
-         `(PARTITION BY ${keys.join(", ")} ORDER BY __publisher_pos DESC, __publisher_row DESC) AS n ` +
-         `FROM ${STAGE}) WHERE n > 1)`,
+   if (keys.length > 0 && stats.rows !== stats.distinctKeys) {
+      await session.runSQL(
+         `DELETE FROM ${STAGE} WHERE rowid IN (SELECT rowid FROM (SELECT rowid, row_number() OVER ` +
+            `(PARTITION BY ${keys.join(", ")} ORDER BY __publisher_pos DESC, __publisher_row DESC) AS n ` +
+            `FROM ${STAGE}) WHERE n > 1)`,
+      );
+      stats = await measure();
+   }
+   const nullIn = layout.notNull.find((_, i) => stats.nullRequired[i] > 0);
+   if (nullIn) {
+      throw contractRefusal(
+         "not_null",
+         nullIn.name,
+         `Column '${nullIn.name}' is NOT NULL in the table and the objects hold a row with a NULL in it.`,
+         { tableType: nullIn.type },
+      );
+   }
+   return { rows: stats.rows, cursorMax: stats.cursorMax };
+}
+
+/**
+ * `INSERT INTO target (every column) SELECT …` over the stage as `__s`, a bare
+ * NULL for each column the objects lack: spelled in the INSERT's own select
+ * list, where DuckDB takes the column's type (in a temp table it would be
+ * INTEGER), and so a column's DEFAULT never fills one, which the compare reads
+ * as NULL.
+ */
+function insertInto(
+   target: string,
+   keys: readonly string[],
+   columns: readonly LoadColumn[],
+): string {
+   const written = [
+      ...keys.map((name) => ({ name, inStage: true })),
+      ...columns,
+   ];
+   return (
+      `INSERT INTO ${target} (${written.map((c) => q(c.name)).join(", ")}) ` +
+      `SELECT ${written.map((c) => (c.inStage ? `__s.${q(c.name)}` : "NULL")).join(", ")}`
    );
-   const { rows: kept, cursorMax } = await measure();
-   return { rows: kept, cursorMax };
 }
 
 /**
@@ -1185,7 +1283,9 @@ async function settleStage(
  * NULL-safe join condition plans as a nested loop. A key with several stored
  * rows is changed, which collapses the copies. The stage's keys are never
  * NULL; only the delete, which must reach stored rows of a NULL key, matches
- * NULLs.
+ * NULLs. Unlike `deltaStatements`' merge, by design: a repeated key keeps its
+ * last row rather than failing, the stage joins on plain `=`, and a column the
+ * objects lack is written NULL.
  *
  * One join over every compared column hashes a whole row of each side, so the
  * keys are settled in a pass over the keys alone and the columns are compared
@@ -1236,10 +1336,6 @@ export function mergeStatements(plan: {
    const passes = (plan.groups ?? [plan.columns])
       .filter((group) => group.length > 0)
       .map(groupPass);
-   const columns = [
-      ...keys,
-      ...plan.columns.filter((c) => c.inStage).map((c) => c.name),
-   ];
    return {
       changes: [keysPass, ...passes],
       delete:
@@ -1247,7 +1343,7 @@ export function mergeStatements(plan: {
          `__s.__publisher_status <> 'new' AND ${nullSafeKeyMatch(keys.map(q), "__t", "__s")})`,
       // A SEMI JOIN, not EXISTS: with the status filter inside it DuckDB decorrelates EXISTS into a delim join that holds every column of the stage.
       insert:
-         `INSERT INTO ${target} (${columns.map(q).join(", ")}) SELECT ${columns.map((c) => `__s.${q(c)}`).join(", ")} ` +
+         `${insertInto(target, keys, plan.columns)} ` +
          `FROM ${STAGE} AS __s SEMI JOIN (SELECT ${keys.map(q).join(", ")} FROM ${CHANGES} WHERE __publisher_status <> 'deleted') AS __c ` +
          `ON ${keys.map((k) => `__s.${q(k)} = __c.${q(k)}`).join(" AND ")}`,
    };
@@ -1454,38 +1550,35 @@ async function planKeyedLoad(
    };
 }
 
-/** A keyless replace: the table's rows and the stage's compared as bags, and every row replaced when they differ. */
+/**
+ * A keyless replace: the table's rows and the stage's compared as bags in one
+ * aggregate over both sides, every column wide. A row of the table with no
+ * identical row in the stage is deleted and a row of the stage with no
+ * identical row in the table is inserted (an edited row is one of each, and a
+ * row repeated n times matches n times); nothing is replaced.
+ */
 async function planKeylessLoad(
    session: DuckDBConnection,
    layout: LoadLayout,
    target: string,
    stageRows: number,
-   rowsBefore: number,
 ): Promise<LoadPlan> {
-   // Bags of different sizes differ, so only equal counts (a retry) need the compare, which holds a row of every column of both sides.
-   if (stageRows === rowsBefore) {
-      const side = (
-         from: string,
-         has: (c: LoadColumn) => boolean,
-         sign: number,
-      ) =>
-         `SELECT ${layout.columns.map((c) => (has(c) ? q(c.name) : `NULL AS ${q(c.name)}`)).join(", ")}, ${sign} AS __publisher_side FROM ${from}`;
-      const [r] = rows(
-         await session.runSQL(
-            `SELECT count(*) AS n FROM (SELECT ${layout.columns.map((c) => q(c.name)).join(", ")}, sum(__publisher_side) AS net FROM (` +
-               `${side(STAGE, (c) => c.inStage, 1)} UNION ALL ${side(target, (c) => c.inTable, -1)}` +
-               ") GROUP BY ALL HAVING sum(__publisher_side) <> 0)",
-         ),
-      );
-      if (Number(r.n) === 0) {
-         return { inserted: 0, replaced: 0, deleted: 0, unchanged: stageRows };
-      }
-   }
+   const side = (from: string, has: (c: LoadColumn) => boolean, sign: number) =>
+      `SELECT ${layout.columns.map((c) => (has(c) ? q(c.name) : `NULL AS ${q(c.name)}`)).join(", ")}, ${sign} AS __publisher_side FROM ${from}`;
+   const [r] = rows(
+      await session.runSQL(
+         "SELECT coalesce(sum(greatest(net, 0)), 0) AS inserted, coalesce(sum(greatest(-net, 0)), 0) AS deleted FROM " +
+            `(SELECT ${layout.columns.map((c) => q(c.name)).join(", ")}, sum(__publisher_side) AS net FROM (` +
+            `${side(STAGE, (c) => c.inStage, 1)} UNION ALL ${side(target, (c) => c.inTable, -1)}` +
+            ") GROUP BY ALL HAVING sum(__publisher_side) <> 0)",
+      ),
+   );
+   const inserted = Number(r.inserted);
    return {
-      inserted: Math.max(0, stageRows - rowsBefore),
-      replaced: Math.min(rowsBefore, stageRows),
-      deleted: Math.max(0, rowsBefore - stageRows),
-      unchanged: 0,
+      inserted,
+      replaced: 0,
+      deleted: Number(r.deleted),
+      unchanged: stageRows - inserted,
    };
 }
 
@@ -1543,11 +1636,11 @@ export async function mergeStorageTable(
          const target = [destinationName, schemaName, tableName]
             .map(q)
             .join(".");
-         const stageColumns = await createStage(session, params.objects);
+         const stage = await createStage(session, params.objects);
          const outcome = await inTransaction(
             session,
             target,
-            () => planAndApply(session, params, target, stageColumns),
+            () => planAndApply(session, params, target, stage),
             "Failed to roll back a table load; the load was not committed",
          );
          await flushInlinedRows(
@@ -1582,12 +1675,26 @@ export async function flushStorageTable(params: {
    );
 }
 
+/** DuckDB's refusal of a NULL in a NOT NULL column as the load's own, for what the staged-row check misses (a column changed by another writer mid-load). */
+export function notNullViolation(error: unknown): LoadRefusalError | null {
+   const failed =
+      error instanceof Error &&
+      /NOT NULL constraint failed: (\S+)/.exec(error.message);
+   if (!failed) return null;
+   const column = failed[1].split(".").pop()!;
+   return contractRefusal(
+      "not_null",
+      column,
+      `Column '${column}' is NOT NULL in the table and the load would write a NULL into it.`,
+   );
+}
+
 /** Reads the table, plans the load against it, refuses a replace past its guard, and writes what changes: the body of the load's transaction. */
 async function planAndApply(
    session: DuckDBConnection,
    params: KeyedLoadParams,
    target: string,
-   stageColumns: readonly Column[],
+   stage: { columns: readonly Column[]; nullTyped: readonly string[] },
 ): Promise<LoadOutcome> {
    const exists =
       rows(
@@ -1598,8 +1705,9 @@ async function planAndApply(
       ).length > 0;
    const layout = loadLayout(
       params,
-      stageColumns,
+      stage.columns,
       exists ? await describeColumns(session, target) : null,
+      stage.nullTyped,
    );
    const stats = await settleStage(session, layout);
    const rowsBefore = exists
@@ -1619,13 +1727,7 @@ async function planAndApply(
              stats.rows,
              rowsBefore,
           )
-        : await planKeylessLoad(
-             session,
-             layout,
-             target,
-             stats.rows,
-             rowsBefore,
-          );
+        : await planKeylessLoad(session, layout, target, stats.rows);
    if (
       params.mode === "replace" &&
       plan.deleted > (params.maxDeletedRows ?? 0)
@@ -1647,7 +1749,7 @@ async function planAndApply(
       rowsDeleted: plan.deleted,
       rowCount: rowsBefore + plan.inserted - plan.deleted,
       cursorMax: stats.cursorMax,
-      ...(layout.cursor ? { cursorType: layout.cursor.type } : {}),
+      ...(layout.cursor?.type ? { cursorType: layout.cursor.type } : {}),
    };
    const changesRows = plan.inserted + plan.replaced + plan.deleted > 0;
    if (
@@ -1701,7 +1803,7 @@ async function applyLoad(
         })
       : {
            delete: `DELETE FROM ${target}`,
-           insert: `INSERT INTO ${target} (${written.map(q).join(", ")}) SELECT ${written.map(q).join(", ")} FROM ${STAGE}`,
+           insert: `${insertInto(target, [], layout.columns)} FROM ${STAGE} AS __s`,
         };
    const message =
       params.commitMessage ?? `load ${params.schemaName}.${params.tableName}`;
@@ -1738,7 +1840,9 @@ async function applyLoad(
       }
       if (changesRows) {
          await session.runSQL(statements.delete);
-         await session.runSQL(statements.insert);
+         await session.runSQL(statements.insert).catch((error: unknown) => {
+            throw notNullViolation(error) ?? error;
+         });
       }
    }
    const record: LoadRecord = {

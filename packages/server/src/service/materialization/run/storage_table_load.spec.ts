@@ -17,6 +17,7 @@ import {
    loadLayout,
    loadStorageTable,
    mergeStatements,
+   notNullViolation,
    objectUnreadable,
    packColumnGroups,
    typeBytes,
@@ -751,6 +752,66 @@ describe("loadLayout: the objects' columns against the table's", () => {
       ).toMatchObject({ violation: "missing_cursor" });
    });
 
+   it("refuses a NOT NULL column the objects lack, and lists the NOT NULL columns they carry", () => {
+      const required = [
+         { name: "ID", type: "BIGINT" },
+         { name: "v", type: "VARCHAR", notNull: true },
+         { name: "extra", type: "INTEGER", notNull: true },
+      ];
+      expect(
+         contract(() => loadLayout({ key: ["id"] }, stage, required)).detail,
+      ).toEqual({
+         column: "extra",
+         tableType: "INTEGER",
+         loadType: null,
+         violation: "not_null",
+      });
+      const layout = loadLayout({ key: ["id"] }, stage, [
+         ...required.slice(0, 2),
+         { name: "extra", type: "INTEGER" },
+      ]);
+      expect(layout.notNull).toEqual([
+         { name: "v", type: "VARCHAR", inStage: true, inTable: true },
+      ]);
+      // A column the table does not have yet cannot be NOT NULL.
+      expect(loadLayout({ key: ["id"] }, stage, null).notNull).toEqual([]);
+   });
+
+   it("refuses a key typed NULL as a NULL key, and reads a cursor typed NULL as holding no value", () => {
+      expect(
+         contract(() => loadLayout({ key: ["j"] }, stage, table, ["j"])).detail,
+      ).toMatchObject({ column: "j", violation: "null_key" });
+      expect(
+         contract(() => loadLayout({ key: ["j"] }, stage, null, ["j"])).detail,
+      ).toMatchObject({ violation: "null_key" });
+      expect(
+         loadLayout({ key: ["id"], cursor: "j" }, stage, null, ["J"]).cursor,
+      ).toEqual({ name: "J", type: undefined, maxSql: "NULL" });
+      expect(
+         loadLayout(
+            { key: ["id"], cursor: "j" },
+            stage,
+            [...table, { name: "J", type: "TIMESTAMP" }],
+            ["j"],
+         ).cursor,
+      ).toEqual({ name: "J", type: "TIMESTAMP", maxSql: "NULL" });
+      expect(
+         contract(() =>
+            loadLayout(
+               { key: ["id"], cursor: "j" },
+               stage,
+               [...table, { name: "j", type: "VARCHAR" }],
+               ["j"],
+            ),
+         ).detail,
+      ).toMatchObject({ column: "j", violation: "cursor_type" });
+      expect(
+         contract(() =>
+            loadLayout({ key: ["id"], cursor: "nope" }, stage, table, ["j"]),
+         ).detail,
+      ).toMatchObject({ violation: "missing_cursor" });
+   });
+
    it("refuses a table column named like the load's own helper columns, whatever its case", () => {
       for (const name of ["__publisher_present", "__PUBLISHER_present"]) {
          expect(
@@ -762,6 +823,27 @@ describe("loadLayout: the objects' columns against the table's", () => {
             ).detail,
          ).toMatchObject({ column: name, violation: "reserved_name" });
       }
+   });
+});
+
+describe("notNullViolation: DuckDB's NOT NULL refusal as the load's own", () => {
+   it("names the column of a Constraint Error, whatever the table's spelling", () => {
+      const refusal = notNullViolation(
+         new Error("Constraint Error: NOT NULL constraint failed: t.Req"),
+      );
+      expect(refusal).toBeInstanceOf(LoadRefusalError);
+      expect(refusal?.reason).toBe("LOAD_COLUMN_MISMATCH");
+      expect(refusal?.detail).toEqual({
+         column: "Req",
+         tableType: null,
+         loadType: null,
+         violation: "not_null",
+      });
+   });
+
+   it("is null for any other failure", () => {
+      expect(notNullViolation(new Error("Catalog Error: nope"))).toBeNull();
+      expect(notNullViolation("NOT NULL constraint failed: t.a")).toBeNull();
    });
 });
 
@@ -806,7 +888,7 @@ describe("sourceColumns: the columns the objects' schemas hold", () => {
                ["element", 0],
                ["last", 0],
             ),
-         ]),
+         ]).columns,
       ).toEqual(["id", "st", "l", "last"]);
    });
 
@@ -820,14 +902,14 @@ describe("sourceColumns: the columns the objects' schemas hold", () => {
                shape(["root", 2], ["id", 0], ["gone", 0, nullType]),
                shape(["root", 3], ["id", 0], ["gone", 0, nullType], ["v", 0]),
             ]),
-         ).toEqual(["id", "v"]);
+         ).toEqual({ columns: ["id", "v"], nullTyped: ["gone"] });
          // Typed in one object, NULL in another: the column stays.
          expect(
             sourceColumns([
                shape(["root", 2], ["id", 0], ["x", 0, nullType]),
                shape(["root", 2], ["id", 0], ["x", 0]),
             ]),
-         ).toEqual(["id", "x"]);
+         ).toEqual({ columns: ["id", "x"], nullTyped: [] });
       },
    );
 
@@ -897,7 +979,8 @@ describe("sourceColumns: the columns the objects' schemas hold", () => {
 
    it("does not take a nested field's name for a column's", () => {
       expect(
-         sourceColumns([shape(["root", 2], ["id", 0], ["st", 1], ["ID", 0])]),
+         sourceColumns([shape(["root", 2], ["id", 0], ["st", 1], ["ID", 0])])
+            .columns,
       ).toEqual(["id", "st"]);
    });
 });
@@ -983,6 +1066,21 @@ describe("mergeStatements: the plan joins on plain equality", () => {
       expect(merge.changes[0]).not.toContain("'deleted'");
       expect(replace.changes[0]).toContain("FULL JOIN");
       expect(replace.changes[0]).toContain("'deleted'");
+   });
+
+   it("inserts every table column, a NULL in the select list for each the objects lack, so a DEFAULT never fills one", () => {
+      const { insert } = mergeStatements({
+         target: "t",
+         mode: "merge",
+         keys: ["id"],
+         columns: [
+            { name: "old", type: "INTEGER", inStage: false, inTable: true },
+            v,
+         ],
+      });
+      expect(insert).toStartWith(
+         'INSERT INTO t ("id", "old", "v") SELECT __s."id", NULL, __s."v" FROM',
+      );
    });
 
    it("compares a column the objects lack, and one the table lacks, as NULL", () => {

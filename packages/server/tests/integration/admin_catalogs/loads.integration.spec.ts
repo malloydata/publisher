@@ -1018,52 +1018,83 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          expect(await snapshotId()).toBe(before);
       });
 
-      it("keyless: replaces every row when anything differs, grows, and shrinks within the guard", async () => {
+      it("keyless: counts the rows that differ as deleted and inserted, and guards the deleted", async () => {
          await seeded("rep_keyless2");
-         const edited = await parquet(
-            "SELECT i AS id, CASE WHEN i = 3 THEN 'edited' ELSE 'v' || i END AS v FROM range(1, 6) t(i)",
-         );
-         expect(
-            await load("rep_keyless2", {
+         const keyless = async (select: string, maxDeletedRows: number) =>
+            load("rep_keyless2", {
                mode: "replace",
-               maxDeletedRows: 0,
-               objects: [edited],
-            }),
-         ).toMatchObject({
-            rowsReplaced: 5,
-            rowsInserted: 0,
-            rowsDeleted: 0,
+               maxDeletedRows,
+               objects: [await parquet(select)],
+            });
+         const edited =
+            "SELECT i AS id, CASE WHEN i = 3 THEN 'edited' ELSE 'v' || i END AS v FROM range(1, 6) t(i)";
+         // An edited row is one deleted and one inserted, so the guard sees it.
+         const error = await refusal(keyless(edited, 0));
+         expect([error.reason, error.detail]).toEqual([
+            "LOAD_DELETE_LIMIT_EXCEEDED",
+            { wouldDelete: 1, rowsBefore: 5, maxDeletedRows: 0 },
+         ]);
+         expect(await rowsOf("rep_keyless2")).toHaveLength(5);
+         expect(await keyless(edited, 1)).toMatchObject({
+            rowsInserted: 1,
+            rowsReplaced: 0,
+            rowsUnchanged: 4,
+            rowsDeleted: 1,
             rowCount: 5,
          });
-         const bigger = await parquet(
-            "SELECT i AS id, 'v' || i AS v FROM range(1, 8) t(i)",
-         );
          expect(
-            await load("rep_keyless2", {
-               mode: "replace",
-               maxDeletedRows: 0,
-               objects: [bigger],
-            }),
+            await keyless(
+               "SELECT i AS id, 'v' || i AS v FROM range(1, 8) t(i)",
+               1,
+            ),
          ).toMatchObject({
-            rowsReplaced: 5,
-            rowsInserted: 2,
-            rowsDeleted: 0,
+            rowsInserted: 3,
+            rowsReplaced: 0,
+            rowsUnchanged: 4,
+            rowsDeleted: 1,
             rowCount: 7,
          });
-         const smaller = await parquet("SELECT 1 AS id, 'v1' AS v");
-         expect(
-            await load("rep_keyless2", {
-               mode: "replace",
-               maxDeletedRows: 6,
-               objects: [smaller],
-            }),
-         ).toMatchObject({
-            rowsReplaced: 1,
+         const smaller = "SELECT 1 AS id, 'v1' AS v";
+         expect((await refusal(keyless(smaller, 5))).detail).toEqual({
+            wouldDelete: 6,
+            rowsBefore: 7,
+            maxDeletedRows: 5,
+         });
+         expect(await keyless(smaller, 6)).toMatchObject({
             rowsInserted: 0,
+            rowsReplaced: 0,
+            rowsUnchanged: 1,
             rowsDeleted: 6,
             rowCount: 1,
          });
          expect(await rowsOf("rep_keyless2")).toEqual([{ id: 1, v: "v1" }]);
+      });
+
+      it("keyless: compares rows as a multiset, so a repeated row counts once per copy", async () => {
+         const rowsOfV = async () =>
+            (
+               await sql(
+                  reader,
+                  `SELECT v FROM ${CATALOG}.s.rep_bag ORDER BY v`,
+               )
+            ).map((r) => r.v);
+         const keyless = async (values: string) =>
+            load("rep_bag", {
+               mode: "replace",
+               maxDeletedRows: 10,
+               objects: [
+                  await parquet(`SELECT * FROM (VALUES ${values}) t(v)`),
+               ],
+            });
+         await keyless("('a'), ('a'), ('b')");
+         expect(await keyless("('a'), ('b'), ('b')")).toMatchObject({
+            rowsInserted: 1,
+            rowsReplaced: 0,
+            rowsUnchanged: 2,
+            rowsDeleted: 1,
+            rowCount: 3,
+         });
+         expect(await rowsOfV()).toEqual(["a", "b", "b"]);
       });
 
       it("keyless: an object with no rows cannot empty the table past the guard", async () => {
@@ -1346,6 +1377,104 @@ describe.skipIf(!SUPERUSER)("loads", () => {
       });
    });
 
+   describe("DEFAULT and NOT NULL columns", () => {
+      const create = (table: string, columns: string) =>
+         sql(writer, `CREATE TABLE ${CATALOG}.s.${table} (${columns})`);
+      const contract = async (promise: Promise<unknown>) => {
+         const error = await refusal(promise);
+         expect([error.status, error.reason]).toEqual([
+            422,
+            "LOAD_COLUMN_MISMATCH",
+         ]);
+         return error.detail!;
+      };
+
+      it("writes NULL, not the DEFAULT, into a column the objects lack, so a retry changes nothing", async () => {
+         await create(
+            "df_merge",
+            "id INTEGER, v VARCHAR, extra INTEGER DEFAULT 7",
+         );
+         const object = await parquet("SELECT 1 AS id, 'a' AS v");
+         expect(await merge("df_merge", [object])).toMatchObject({
+            rowsInserted: 1,
+         });
+         expect(
+            await rowsOf("df_merge", "id::INTEGER AS id, v, extra"),
+         ).toEqual([{ id: 1, v: "a", extra: null }]);
+         expect(await merge("df_merge", [object])).toMatchObject({
+            rowsInserted: 0,
+            rowsReplaced: 0,
+            rowsUnchanged: 1,
+         });
+         await create("df_keyless", "v VARCHAR, extra INTEGER DEFAULT 7");
+         const first = await load("df_keyless", {
+            mode: "replace",
+            maxDeletedRows: 10,
+            objects: [await parquet("SELECT 'a' AS v")],
+         });
+         expect(first).toMatchObject({ rowsInserted: 1 });
+         expect(
+            await sql(reader, `SELECT extra FROM ${CATALOG}.s.df_keyless`),
+         ).toEqual([{ extra: null }]);
+         expect(
+            await load("df_keyless", {
+               mode: "replace",
+               maxDeletedRows: 10,
+               objects: [await parquet("SELECT 'a' AS v")],
+            }),
+         ).toMatchObject({ rowsUnchanged: 1, rowsInserted: 0, rowsDeleted: 0 });
+      });
+
+      it("refuses a NOT NULL column the objects lack, and writes nothing", async () => {
+         await create(
+            "nn_missing",
+            "id INTEGER, v VARCHAR, req VARCHAR NOT NULL",
+         );
+         await sql(
+            writer,
+            `INSERT INTO ${CATALOG}.s.nn_missing VALUES (1, 'a', 'r')`,
+         );
+         const before = await snapshotId();
+         expect(
+            await contract(
+               merge("nn_missing", [await parquet("SELECT 2 AS id, 'b' AS v")]),
+            ),
+         ).toEqual({
+            column: "req",
+            tableType: "VARCHAR",
+            loadType: null,
+            violation: "not_null",
+         });
+         expect(await snapshotId()).toBe(before);
+      });
+
+      it("refuses a NULL in a NOT NULL column the objects carry, unless a later row of its key replaces it", async () => {
+         await create("nn_value", "id INTEGER, req VARCHAR NOT NULL");
+         const before = await snapshotId();
+         expect(
+            await contract(
+               merge("nn_value", [
+                  await parquet(
+                     "SELECT * FROM (VALUES (1, 'a'), (2, NULL::VARCHAR)) t(id, req)",
+                  ),
+               ]),
+            ),
+         ).toMatchObject({
+            column: "req",
+            tableType: "VARCHAR",
+            violation: "not_null",
+         });
+         expect(await snapshotId()).toBe(before);
+         expect(
+            await merge("nn_value", [
+               await parquet(
+                  "SELECT * FROM (VALUES (1, NULL::VARCHAR), (1, 'later'), (2, 'b')) t(id, req)",
+               ),
+            ]),
+         ).toMatchObject({ rowsInserted: 2 });
+      });
+   });
+
    describe("a column its writer typed NULL", () => {
       // fixtures/*_null_column.parquet: pyarrow 26.0.1, pq.write_table(pa.table({"id": [1, 2, 3], "v": ["a", "b", "c"], "junk": pa.nulls(3)}))
       // and, for only_null_column, pa.table({"junk": pa.nulls(3)}). DuckDB reads `junk` as INTEGER; parquet_schema calls it NullType().
@@ -1420,6 +1549,52 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             "v VARCHAR",
             "junk BIGINT",
          ]);
+      });
+
+      it("reads a cursor typed NULL as no value: on a first load it has no type, and on a table it has the column's", async () => {
+         const first = await merge(
+            "nulls_cursor",
+            [fixture("all_null_column.parquet")],
+            { cursor: "junk" },
+         );
+         expect(first).toMatchObject({ rowsInserted: 3, cursorMax: null });
+         expect(first).not.toHaveProperty("cursorType");
+         await merge("nulls_cursor_typed", [
+            await parquet(
+               "SELECT * FROM (VALUES (1::BIGINT, 'a', 5::BIGINT), (2::BIGINT, 'b', 9::BIGINT)) t(id, v, junk)",
+            ),
+         ]);
+         expect(
+            await merge(
+               "nulls_cursor_typed",
+               [fixture("all_null_column.parquet")],
+               { cursor: "junk" },
+            ),
+         ).toMatchObject({ cursorMax: null, cursorType: "BIGINT" });
+         const error = await refusal(
+            merge("nulls_existing", [fixture("all_null_column.parquet")], {
+               cursor: "junk",
+            }),
+         );
+         expect(error.detail).toMatchObject({
+            column: "junk",
+            tableType: "VARCHAR",
+            violation: "cursor_type",
+         });
+      });
+
+      it("answers a key typed NULL as a NULL key", async () => {
+         for (const table of ["nulls_key_new", "nulls_existing"]) {
+            const error = await refusal(
+               merge(table, [fixture("all_null_column.parquet")], {
+                  key: ["junk"],
+               }),
+            );
+            expect([error.reason, error.detail]).toMatchObject([
+               "LOAD_COLUMN_MISMATCH",
+               { violation: "null_key" },
+            ]);
+         }
       });
 
       it("refuses objects whose every column is typed NULL, as having no column", async () => {
@@ -2392,7 +2567,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          expect(passesOf(seen)).toBe(1);
       });
 
-      it("keyless: compares the bags only when their sizes match, and still guards a shrink", async () => {
+      it("keyless: always compares the bags, and guards the rows that leave", async () => {
          const replace = async (
             rows: number,
             maxDeletedRows: number,
@@ -2414,33 +2589,37 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                "SELECT i AS id, 'v' || i AS v FROM range(1, 6) t(i)",
             ),
          ]);
-         // Equal counts: the compare runs, and an identical table is left alone.
          const snapshot = await snapshotId();
          const same = await recorded(() => replace(5, 0));
          expect(same.value.rowsUnchanged).toBe(5);
          expect(compares(same.seen)).toBe(1);
          expect(await snapshotId()).toBe(snapshot);
-         const edited = await recorded(() => replace(5, 0, true));
-         expect([edited.value.rowsReplaced, compares(edited.seen)]).toEqual([
-            5, 1,
-         ]);
-         // Counts that differ settle it with no compare.
-         const grown = await recorded(() => replace(7, 0));
+         const edited = await recorded(() => replace(5, 1, true));
+         expect([
+            edited.value.rowsInserted,
+            edited.value.rowsDeleted,
+            edited.value.rowsUnchanged,
+            edited.value.rowsReplaced,
+            compares(edited.seen),
+         ]).toEqual([1, 1, 4, 0, 1]);
+         const grown = await recorded(() => replace(7, 1));
          expect(grown.value).toMatchObject({
-            rowsInserted: 2,
-            rowsReplaced: 5,
-            rowsDeleted: 0,
+            rowsInserted: 3,
+            rowsReplaced: 0,
+            rowsUnchanged: 4,
+            rowsDeleted: 1,
             rowCount: 7,
          });
-         expect(compares(grown.seen)).toBe(0);
-         const shrunk = await recorded(() => replace(2, 5));
+         expect(compares(grown.seen)).toBe(1);
+         const shrunk = await recorded(() => replace(2, 6));
          expect(shrunk.value).toMatchObject({
             rowsInserted: 0,
-            rowsReplaced: 2,
+            rowsReplaced: 0,
+            rowsUnchanged: 2,
             rowsDeleted: 5,
             rowCount: 2,
          });
-         expect(compares(shrunk.seen)).toBe(0);
+         expect(compares(shrunk.seen)).toBe(1);
          const refused = await recorded(() => refusal(replace(1, 0)));
          expect(refused.value.reason).toBe("LOAD_DELETE_LIMIT_EXCEEDED");
          expect(refused.value.detail).toEqual({
@@ -2448,14 +2627,14 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             rowsBefore: 2,
             maxDeletedRows: 0,
          });
-         expect(compares(refused.seen)).toBe(0);
+         expect(compares(refused.seen)).toBe(1);
          expect(await rowsOf("kl_shortcut")).toEqual([
             { id: 1, v: "v1" },
             { id: 2, v: "v2" },
          ]);
       });
 
-      it("answers a load that runs out of memory or spill with a 500 that says so, and writes nothing", async () => {
+      it("answers a load that runs out of memory or spill with a 422 LOAD_TOO_LARGE, and writes nothing", async () => {
          await merge("oom", [
             await parquet(
                "SELECT i AS id, 'v' || i AS v FROM range(1, 4) t(i)",
@@ -2479,19 +2658,14 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                : original.apply(this, args);
          });
          const snapshot = await snapshotId();
-         let error: unknown;
-         try {
-            await merge("oom", [changed]);
-         } catch (e) {
-            error = e;
-         } finally {
-            spy.mockRestore();
-         }
-         expect(error).toBeInstanceOf(Error);
-         expect(error).not.toBeInstanceOf(CatalogAdminError);
-         expect((error as Error).message).toMatch(
-            /^The load exceeded the load session's memory and spill limits: Out of Memory Error: failed to offload/,
+         const failed = await refusal(
+            merge("oom", [changed]).finally(() => spy.mockRestore()),
          );
+         expect([failed.status, failed.reason]).toEqual([
+            422,
+            "LOAD_TOO_LARGE",
+         ]);
+         expect(failed.message).toContain("failed to offload");
          expect(await snapshotId()).toBe(snapshot);
          expect(await rowsOf("oom")).toHaveLength(3);
       });

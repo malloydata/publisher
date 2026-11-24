@@ -51,7 +51,7 @@ export const admin = [
       default: "6GiB",
       description:
          "Most spill one admin table load or copy session may write, as a DuckDB size (6GiB).",
-      notes: "The `max_temp_directory_size` of the DuckDB session an admin table load or copy runs in, as a flat DuckDB size (`6GiB`, `20GB`). Keep it under the pod's ephemeral storage. A load that outgrows it answers `500` and a retry is safe. Validated at startup.",
+      notes: "The `max_temp_directory_size` of the DuckDB session an admin table load or copy runs in, as a flat DuckDB size (`6GiB`, `20GB`). Keep it under the pod's ephemeral storage. A load or table PUT that outgrows it (or the memory limit) answers `422 LOAD_TOO_LARGE`; a full disk is a `500`. Validated at startup.",
    }),
    setting({
       key: "admin.catalogDatabase",

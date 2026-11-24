@@ -567,20 +567,39 @@ describe("a load's failure as an admin refusal", () => {
       expect(failure(other)).toBe(other);
    });
 
-   it("leaves DuckDB's out-of-memory and spill-cap failures to answer 500, naming the session's limits in the message", () => {
+   it("answers DuckDB's out-of-memory and spill-cap failures as a 422 LOAD_TOO_LARGE with the way out", () => {
       for (const message of [
          "Out of Memory Error: failed to pin block of size 256.0 KiB (1.3 GiB/1.3 GiB used)",
          "Out of Memory Error: failed to offload data block of size 256.0 KiB (5.9 GiB/6.0 GiB used).",
+         "failed to offload data block of size 256.0 KiB (5.9 GiB/6.0 GiB used)",
+         "failed to pin block of size 256.0 KiB",
+         "the max_temp_directory_size cap was reached",
       ]) {
-         const original = new Error(message);
-         const mapped = failure(original);
-         expect(mapped).toBeInstanceOf(Error);
-         expect(mapped).not.toBeInstanceOf(CatalogAdminError);
-         expect((mapped as Error).message).toBe(
-            `The load exceeded the load session's memory and spill limits: ${message}`,
-         );
-         expect((mapped as Error).cause).toBe(original);
+         const mapped = failure(new Error(message)) as CatalogAdminError;
+         expect(mapped).toBeInstanceOf(CatalogAdminError);
+         expect([mapped.status, mapped.reason]).toEqual([
+            422,
+            "LOAD_TOO_LARGE",
+         ]);
+         expect(mapped.message).toContain(message);
+         expect(mapped.message).toContain("key");
+         expect(mapped.message).toContain("admin.memoryLimit");
       }
+   });
+
+   it("leaves a full spill disk, which a retry may cure, to answer 500", () => {
+      const full = new Error(
+         'IO Error: Could not write file "/tmp/duckdb_temp_storage-0.tmp": No space left on device',
+      );
+      expect(failure(full)).toBe(full);
+   });
+
+   it("maps the memory failures in a load's and a PUT's own failure only, not in redacted(), which reads and snapshot deletes share", () => {
+      const oom = new Error("Out of Memory Error: failed to pin block");
+      const redacted = (
+         admin as unknown as { redacted(error: unknown): unknown }
+      ).redacted(oom);
+      expect(redacted).toBe(oom);
    });
 });
 

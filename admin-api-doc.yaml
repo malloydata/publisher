@@ -350,10 +350,13 @@ paths:
         exist is `422 OBJECT_UNREADABLE` carrying the reader's own
         message, with the object named by its file name: the request is
         well-formed but the named data cannot be applied, so correct the
-        object, don't retry. A `500` is a failure a
-        retry may cure (storage unavailable or throttled, a refused credential,
-        a full spill disk), and a retry is safe: it writes the whole table from
-        the same object again. `201` when the table is new,
+        object, don't retry. A table too large for the write session's memory
+        or its spill cap is `422 LOAD_TOO_LARGE`: a retry fails the same way, so
+        raise `PUBLISHER_ADMIN_MEMORY_LIMIT` (and
+        `PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE`) or write less. A `500` is a
+        failure a retry may cure (storage unavailable or throttled, a refused
+        credential, a full spill disk), and a retry is safe: it writes the whole
+        table from the same object again. `201` when the table is new,
         `200` when it replaced one; with `If-None-Match: *` an existing table is
         refused with `412 TABLE_EXISTS`. Synchronous: it answers when the table
         is written.
@@ -402,7 +405,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "422":
-          description: The source object is missing, is not the format it claims, or holds a value its column cannot (`OBJECT_UNREADABLE`); nothing was written, and a retry fails the same way
+          description: The source object is missing, is not the format it claims, or holds a value its column cannot (`OBJECT_UNREADABLE`), or the write outgrew the session's memory or spill cap (`LOAD_TOO_LARGE`); nothing was written, and a retry fails the same way
           content:
             application/json:
               schema:
@@ -455,7 +458,14 @@ paths:
         `key`; `replace` makes the table equal to the objects, by `key` when one
         is given and as a whole table when not (a replace is the whole stream in
         one call). A replace that would delete more rows than `maxDeletedRows`
-        is refused and writes nothing.
+        is refused and writes nothing. A keyless replace compares the table's
+        rows with the objects' as a multiset, so it reads every column of both:
+        a full-width aggregate over the stored and the staged rows, on every
+        keyless replace, which is its cost (give a large stream a `key`). A
+        stored row with no identical row in the objects counts in
+        `rowsDeleted`, and an object row with no identical stored row in
+        `rowsInserted`; an edited row is one of each, and `maxDeletedRows`
+        guards `rowsDeleted`.
 
         Rows the objects do not change are left as they are, so a load repeated
         after it committed, with no other load of the same table committed in
@@ -481,18 +491,24 @@ paths:
         type they are read together as. Every `key` column must be a column of
         both; no key may be NULL; and `cursor`, when given, must be an integer,
         DATE or TIMESTAMP column. A column of the table the objects lack is
-        written NULL. A column typed NULL in every object (as a Parquet writer
+        written NULL for every row the load writes, whatever DEFAULT the table
+        gives it (a merge writes NULL for every key it touches), and a column
+        the table holds NOT NULL that the objects lack, or hold a NULL in, is
+        refused. A column typed NULL in every object (as a Parquet writer
         writes an all-NULL column) is ignored, and objects that leave no column
-        are refused. A column of the table named `__publisher_…` is refused.
-        Refusals are `422 LOAD_COLUMN_MISMATCH`, whose `detail` names the column
-        and why.
+        are refused; as the `cursor` it reports `cursorMax: null`, and as a
+        `key` it is a NULL key. A column of the table named `__publisher_…` is
+        refused. Refusals are `422 LOAD_COLUMN_MISMATCH`, whose `detail` names
+        the column and why.
 
         One table loads at a time, across every replica of this server (a
         Postgres advisory lock in the catalog database), and one load runs at a
         time on this server (the same slot a table PUT's load or copy takes). A
         load that finds either busy is refused with `503 LOAD_BUSY` and nothing
         written, never queued: retry it. A load whose lock is lost before it
-        commits rolls back and answers the same. The load reads the table inside
+        commits rolls back and answers the same. The lock is checked just
+        before the commit, which narrows the window in which a lost lock goes
+        unnoticed but does not close it. The load reads the table inside
         the transaction that writes it, so one that races a table PUT or DELETE
         of the same table, or a schema drop, on another replica is refused by
         DuckLake at its commit and answers `409 LOAD_CONFLICT`: nothing was
@@ -505,9 +521,13 @@ paths:
         of spill (default 6 GiB). A keyed load stays within the spill limit by
         comparing columns in passes; a keyless replace of a table larger than
         the session's memory can exceed it, so give a large stream a `key`. A
-        load that outgrows either limit answers `500`. A `500` before the
-        commit writes nothing; one from the flush after it may follow a
-        committed load. Either way a retry after any `500` is safe.
+        load that outgrows either limit answers `422 LOAD_TOO_LARGE` and writes
+        nothing: a retry fails the same way, so give it a `key`, split its
+        objects across loads, or raise `PUBLISHER_ADMIN_MEMORY_LIMIT` (and
+        `PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE`). A full spill disk is a
+        `500`. A `500` before the commit writes nothing; one from the flush
+        after it may follow a committed load. Either way a retry after any
+        `500` is safe.
 
         Synchronous: it answers once the rows are committed, with the counts of
         what changed. **A load that committed is a resource**: it answers `201`
@@ -576,8 +596,9 @@ paths:
           description: |
             The load was refused, and nothing was written: the objects' columns do not
             match the table's (`LOAD_COLUMN_MISMATCH`, with `detail`), a replace would delete more
-            rows than allowed (`LOAD_DELETE_LIMIT_EXCEEDED`, with `detail`), or an object could
-            not be read (`OBJECT_UNREADABLE`, naming the object by its index, not its URI)
+            rows than allowed (`LOAD_DELETE_LIMIT_EXCEEDED`, with `detail`), an object could
+            not be read (`OBJECT_UNREADABLE`, naming the object by its index, not its URI), or the
+            load outgrew the session's memory or spill cap (`LOAD_TOO_LARGE`)
           content:
             application/json:
               schema:
@@ -1129,8 +1150,10 @@ components:
           type: integer
           minimum: 0
           description: |
-            The most stored rows a replace may delete (the net shrink, for a
-            keyless one); more is refused with `LOAD_DELETE_LIMIT_EXCEEDED`
+            The most stored rows a replace may delete; more is refused with
+            `LOAD_DELETE_LIMIT_EXCEEDED`. For a keyless replace these are the
+            stored rows with no identical row in the objects, so an edited row
+            counts
       additionalProperties: false
 
     Load:
@@ -1177,11 +1200,11 @@ components:
         rowsInserted:
           type: integer
           format: int64
-          description: Rows of keys the table did not have
+          description: Rows of keys the table did not have; for a keyless replace, the object rows with no identical stored row
         rowsReplaced:
           type: integer
           format: int64
-          description: Rows written over a stored row of the same key, because a column differed
+          description: Rows written over a stored row of the same key, because a column differed. Always 0 for a keyless replace, which has no key to match on
         rowsUnchanged:
           type: integer
           format: int64
@@ -1191,7 +1214,8 @@ components:
           format: int64
           description: |
             Stored rows removed: the rows of keys a replace's objects lack, and
-            the copies beyond one of a key that was stored more than once
+            the copies beyond one of a key that was stored more than once; for a
+            keyless replace, the stored rows with no identical object row
         rowCount:
           type: integer
           format: int64
@@ -1204,7 +1228,7 @@ components:
             a time zone. Null when no `cursor` was given or every value is NULL.
         cursorType:
           type: string
-          description: The cursor column's type as DuckDB names it (`BIGINT`, `DATE`, `TIMESTAMP WITH TIME ZONE`); present when a `cursor` was given
+          description: The cursor column's type as DuckDB names it (`BIGINT`, `DATE`, `TIMESTAMP WITH TIME ZONE`); present when a `cursor` was given, except for a cursor every object types NULL on a table's first load, which has no type
 
     LoadList:
       type: object
@@ -1289,7 +1313,8 @@ components:
             INVALID_REQUEST, SCHEMA_EXISTS, SCHEMA_RESERVED,
             SCHEMA_IS_DESTINATION, LOAD_BUSY,
             LOAD_CONFLICT, LOAD_COLUMN_MISMATCH, LOAD_DELETE_LIMIT_EXCEEDED,
-            OBJECT_UNREADABLE, LOAD_NOT_FOUND, IDEMPOTENCY_KEY_REUSED.
+            LOAD_TOO_LARGE, OBJECT_UNREADABLE, LOAD_NOT_FOUND,
+            IDEMPOTENCY_KEY_REUSED.
             `SCHEMA_EXISTS`: a create-only schema PUT found the schema.
             `SCHEMA_RESERVED`: the schema name is one the engine owns, `main`,
             or a name starting `__ducklake_metadata_`; also refused as the
@@ -1315,6 +1340,10 @@ components:
             the table's; `detail` is a `ColumnMismatchDetail`.
             `LOAD_DELETE_LIMIT_EXCEEDED` (422): a replace would delete more rows than
             `maxDeletedRows`; `detail` is a `DeleteLimitDetail`.
+            `LOAD_TOO_LARGE` (422, a table PUT or a load): the write ran out of
+            the session's memory or its spill cap (`admin.memoryLimit`,
+            `admin.maxTempDirectorySize`). A retry fails the same way: give the
+            load a `key`, split its objects across loads, or raise the limit.
             `OBJECT_UNREADABLE` (422, a table PUT or a load): an object is
             missing, not in the format it claims, or holds a value its column's
             type cannot. The request is well-formed but the named data cannot
@@ -1356,8 +1385,10 @@ components:
             - reserved_name
             - case_collision
             - no_columns
+            - not_null
           description: |
-            `null_key`: a `key` column is NULL in a row of the objects.
+            `null_key`: a `key` column is NULL in a row of the objects, or
+            typed NULL in every object.
             `missing_key`: a `key` column is not a column of the objects, or of
             the table when it exists. `missing_cursor`:
             the `cursor` is not a column of the objects. `cursor_type`: the
@@ -1368,7 +1399,9 @@ components:
             objects, or in the table), or `file_row_number`, `rowid` or one
             holding a NUL. `case_collision`: two names, in one object or two,
             that differ only by case, or one name twice in an object.
-            `no_columns`: the objects leave no column.
+            `no_columns`: the objects leave no column. `not_null`: a column the
+            table holds NOT NULL is missing from the objects (`loadType` is
+            null) or has a NULL among the rows the load writes.
 
     DeleteLimitDetail:
       type: object
