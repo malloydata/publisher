@@ -43,7 +43,7 @@ export const admin = [
       default: "1.5GB",
       description:
          "Most memory one admin table load or copy session may use, as a DuckDB size (1.5GB).",
-      notes: "The `memory_limit` of the DuckDB session an admin table load or copy runs in, as a flat DuckDB size (`1.5GB`, `512MB`). The session uses the lower of this and `PUBLISHER_DUCKDB_MEMORY_LIMIT`, so a pod whose general limit is smaller is never raised by the default: to give a load more than 1.5GB, raise both. A keyed load sizes its comparison passes to half of the session's effective limit. Validated at startup.",
+      notes: "The `memory_limit` of the DuckDB session an admin table load or copy runs in, as a flat DuckDB size (`1.5GB`, `512MB`). The session uses the lower of this and `PUBLISHER_DUCKDB_MEMORY_LIMIT`, so a pod whose general limit is smaller is never raised by the default: to give a load more than 1.5GB, raise both. A keyed load and a keyless replace both size their comparison passes to half of the session's effective limit. Validated at startup.",
    }),
    setting({
       key: "admin.maxTempDirectorySize",

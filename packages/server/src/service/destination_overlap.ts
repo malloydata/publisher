@@ -43,7 +43,7 @@ function overlapOf(
    return overlap(connection, destination);
 }
 
-/** Every connection that reaches a destination, with why, the destination's build schema, and whether the connection can read that schema. */
+/** Every connection that reaches a destination, with why, whether it names the same catalog, the destination's build schema, and whether the connection can read that schema. */
 export function destinationOverlaps(
    connections: readonly ApiConnection[],
    destinations: readonly ApiConnection[],
@@ -52,6 +52,7 @@ export function destinationOverlaps(
    destination: string;
    schema: string;
    reason: string;
+   sameCatalog: boolean;
    readable: boolean;
    listsDestinationSchema?: string;
 }[] {
@@ -67,6 +68,7 @@ export function destinationOverlaps(
                destination: destination.name ?? "",
                schema,
                reason,
+               sameCatalog,
                // A managed read-only view's credential and schema list stop at `main` and its readableSchemas.
                readable:
                   !(

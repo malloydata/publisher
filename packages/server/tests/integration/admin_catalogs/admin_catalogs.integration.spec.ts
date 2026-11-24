@@ -310,20 +310,12 @@ describe.skipIf(!SUPERUSER)(
                session,
                "ds_owned",
                "ds_owned",
-               ["main", "nowhere"],
             );
             expect(schemaPaths.get("main")).toEqual({
                path: "main/",
                relative: true,
             });
             expect(schemaPaths.has("nowhere")).toBe(false);
-            // With no names, every live schema is returned.
-            const all = await recordedSchemaPaths(
-               session,
-               "ds_owned",
-               "ds_owned",
-            );
-            expect(all.get("main")).toEqual(schemaPaths.get("main"));
          } finally {
             await session.close();
          }

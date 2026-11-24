@@ -1336,6 +1336,37 @@ describe("Environment: connections and storage destinations are disjoint", () =>
       expect(environment.hasStorageDestination("other")).toBe(true);
    });
 
+   it("resolves a keep reference after the update before it, so a concurrent update cannot revert a rotation", async () => {
+      const environment = makeEnvironment(
+         [],
+         [ducklakeDestination("managed", "org_a", "old-secret")],
+      );
+      // The first update holds the update lock across its slow readme write.
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+         release = resolve;
+      });
+      sinon.stub(fs.promises, "writeFile").callsFake(() => gate);
+      const rotation = environment.update({
+         name: "test-env",
+         readme: "slow",
+         storageDestinations: [
+            ducklakeDestination("managed", "org_a", "rotated-secret"),
+         ],
+      });
+      const keep = environment.update({
+         name: "test-env",
+         storageDestinations: [{ name: "managed", type: "ducklake" }],
+      });
+      release();
+      await Promise.all([rotation, keep]);
+
+      expect(
+         environment.getStorageDestination("managed").ducklakeConnection
+            ?.catalog?.postgresConnection?.password,
+      ).toBe("rotated-secret");
+   });
+
    it("refuses an update carrying an unusable destination, and applies none of it", async () => {
       // A partial application would be the quiet kind of data loss: the accepted
       // entries become the authoritative set, so the entry we could not read is

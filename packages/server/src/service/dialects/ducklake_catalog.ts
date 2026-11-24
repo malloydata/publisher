@@ -69,9 +69,8 @@ export interface RecordedSchemaPath {
 }
 
 /**
- * The paths a catalog attached as `alias` records in `ducklake_schema` for the
- * named schemas (every live schema when none are named), in one query, keyed by
- * schema name; a schema the catalog does not record is absent. A path of `''` is
+ * The paths a catalog attached as `alias` records in `ducklake_schema` for every
+ * live schema, in one query, keyed by schema name. A path of `''` is
  * what a catalog migrated from DuckLake 0.2 records for `main`: its files sit
  * directly under the data path. A NULL `path_is_relative` reads as relative, the
  * recorded default.
@@ -80,14 +79,12 @@ export async function recordedSchemaPaths(
    connection: DuckDBConnection,
    alias: string,
    metadataSchema: string | undefined,
-   schemaNames?: string[],
 ): Promise<Map<string, RecordedSchemaPath>> {
-   const names = schemaNames?.map((name) => `'${escapeSQL(name)}'`).join(", ");
    const rows = runSQLRows(
       await runInternalSQL(
          connection,
          `SELECT schema_name, path, path_is_relative FROM ${metadataCatalogRef(alias, metadataSchema)}.ducklake_schema ` +
-            `WHERE ${names === undefined ? "" : `schema_name IN (${names}) AND `}end_snapshot IS NULL`,
+            "WHERE end_snapshot IS NULL",
       ),
    );
    const recorded = new Map<string, RecordedSchemaPath>();

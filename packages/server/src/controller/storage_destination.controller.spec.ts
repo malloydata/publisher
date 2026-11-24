@@ -81,22 +81,53 @@ describe("StorageDestinationController", () => {
       ]);
    });
 
-   it("drops from the schema the path names, not the one the destination builds into", async () => {
-      declared = {
-         name: "lake",
-         type: "duckdb",
-         ducklakeConnection: { destinationSchema: "materialized" },
-      } as ApiConnection;
-      await seed(
-         "CREATE TABLE orders AS SELECT 1 AS x; " +
-            "CREATE SCHEMA materialized; " +
-            "CREATE TABLE materialized.orders AS SELECT 1 AS x;",
-      );
+   describe("a destination that builds into a schema other than main", () => {
+      beforeEach(async () => {
+         declared = {
+            name: "lake",
+            type: "duckdb",
+            ducklakeConnection: { destinationSchema: "materialized" },
+         } as ApiConnection;
+         await seed(
+            "CREATE TABLE orders AS SELECT 1 AS x; " +
+               "CREATE SCHEMA materialized; " +
+               "CREATE TABLE materialized.orders AS SELECT 1 AS x;",
+         );
+      });
+
+      it("drops from the schema the path names", async () => {
+         await controller.dropTable("env", "lake", "materialized", "orders");
+         expect(
+            await controller.listTables("env", "lake", "materialized"),
+         ).toEqual([]);
+         expect(await controller.listTables("env", "lake", "main")).toEqual([
+            { name: "orders" },
+         ]);
+      });
+
+      it("refuses a drop in main, which a caller of an earlier release meant as the build schema, naming the schema to use", async () => {
+         for (const schema of ["main", "Main"]) {
+            const error = await controller
+               .dropTable("env", "lake", schema, "orders")
+               .catch((e) => e);
+            expect(error).toBeInstanceOf(BadRequestError);
+            expect(internalErrorToHttpError(error).status).toBe(400);
+            expect(error.message).toContain("'materialized'");
+            expect(error.message).toContain("DELETE /catalogs/");
+         }
+         expect(await controller.listTables("env", "lake", "main")).toEqual([
+            { name: "orders" },
+         ]);
+         expect(
+            await controller.listTables("env", "lake", "materialized"),
+         ).toEqual([{ name: "orders" }]);
+      });
+   });
+
+   it("drops in main on a destination that builds into main", async () => {
+      await seed("CREATE TABLE orders AS SELECT 1 AS x;");
       await controller.dropTable("env", "lake", "main", "orders");
       expect(await controller.listTables("env", "lake", "main")).toEqual([]);
-      expect(
-         await controller.listTables("env", "lake", "materialized"),
-      ).toEqual([{ name: "orders" }]);
    });
 
    it("answers an unknown destination as a 404, not the build path's 422", async () => {

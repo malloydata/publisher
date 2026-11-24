@@ -27,6 +27,8 @@ import { startMetricsHarness } from "../../../src/test_helpers/metrics_harness";
 import {
    CatalogAdmin,
    CatalogAdminError,
+   type Load,
+   type LoadNoOp,
 } from "../../../src/service/catalog_admin";
 import {
    attachDuckLakeReadOnly,
@@ -35,6 +37,7 @@ import {
 import { createIsolatedBuildSession } from "../../../src/service/materialization/run/materialization_build_session";
 import { canonicalSha } from "../../../src/service/package_revision";
 import {
+   CommittedLoadError,
    type LoadRefusalError,
    mergeStatements,
    mergeStorageTable,
@@ -511,14 +514,24 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          objects: string[],
          extra: Record<string, unknown> = {},
       ) => ({ mode: "merge", key: ["id"], objects, ...extra });
-      /** A load with an optional `Idempotency-Key`, answered as the route sees it: the Load, and whether it was created. */
+      /** A load with an optional `Idempotency-Key`, answered as the route sees it: the Load, and whether it was created. Typed as a commit: the specs that read an id assert `created` first, and a no-op's compare its counts alone. */
       const outcome = (
          table: string,
          objects: string[],
          key?: string,
          extra: Record<string, unknown> = {},
          catalog = CATALOG,
-      ) => admin.loadTable(catalog, "s", table, body(objects, extra), key);
+      ) =>
+         admin.loadTable(
+            catalog,
+            "s",
+            table,
+            body(objects, extra),
+            key,
+         ) as Promise<{
+            load: Load;
+            created: boolean;
+         }>;
       /** An object holding the rows `1..n`, valued `<tag>1..<tag>n`. */
       const rowsObject = (tag: string, n = 3) =>
          parquet(
@@ -551,7 +564,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          expect(first.load.committedAt).toBe(newest.time);
          const retry = await outcome("res_basic", [object]);
          expect(retry.created).toBe(false);
-         expect(retry.load).toStrictEqual({
+         expect(retry.load as LoadNoOp).toStrictEqual({
             mode: "merge",
             rowsInserted: 0,
             rowsReplaced: 0,
@@ -582,14 +595,14 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             cursor: "id",
             commitMessage: "orders run 7",
          });
-         const { load } = await admin.loadTable(
+         const { load } = (await admin.loadTable(
             CATALOG,
             "s",
             "res_record",
             request,
             "order-run-7",
-         );
-         const row = await snapshotRow(load.snapshotId!);
+         )) as { load: Load };
+         const row = await snapshotRow(load.snapshotId);
          expect([row.author, row.commit_message]).toEqual([
             "publisher-admin",
             "orders run 7",
@@ -2797,10 +2810,38 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             (e) => e,
          );
          spy.mockRestore();
-         expect(error).toBeInstanceOf(Error);
+         expect(error).toBeInstanceOf(CommittedLoadError);
          expect(error).not.toBeInstanceOf(CatalogAdminError);
          expect(error.message).toContain("failed to pin block");
          expect(await rowsOf("oom_flush")).toEqual([{ id: 1, v: "a" }]);
+      });
+
+      it("does not call a flush failure after a load that changed nothing a failure after its commit, and still fails it", async () => {
+         const object = await parquet("SELECT 1 AS id, 'a' AS v");
+         await merge("noop_flush", [object]);
+         const original = DuckDBConnection.prototype.runSQL;
+         const spy = spyOn(
+            DuckDBConnection.prototype,
+            "runSQL",
+         ).mockImplementation(function (
+            this: DuckDBConnection,
+            ...args: Parameters<typeof original>
+         ) {
+            return args[0].startsWith("CALL ducklake_flush_inlined_data")
+               ? Promise.reject(new Error("IO Error: flush failed"))
+               : original.apply(this, args);
+         });
+         const snapshot = await snapshotId();
+         const error = await merge("noop_flush", [object]).then(
+            () => undefined,
+            (e) => e,
+         );
+         spy.mockRestore();
+         expect(error).toBeInstanceOf(Error);
+         expect(error).not.toBeInstanceOf(CommittedLoadError);
+         expect(error).not.toBeInstanceOf(CatalogAdminError);
+         expect(error.message).toContain("flush failed");
+         expect(await snapshotId()).toBe(snapshot);
       });
 
       it("answers a load that runs out of memory or spill with a 422 LOAD_TOO_LARGE, and writes nothing", async () => {

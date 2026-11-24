@@ -656,20 +656,21 @@ export class Environment {
    }
 
    public async update(payload: ApiEnvironment) {
-      // First, so an unreadable destination list is refused before anything
-      // changes. Absent leaves the list alone; an unreadable shape is
-      // rejected rather than read as "keep none"; an explicit [] clears.
-      const nextDestinations =
-         payload.storageDestinations === undefined
-            ? undefined
-            : this.resolveStorageDestinations(
-                 payload.storageDestinations,
-                 true,
-              );
-
       const payloadConnections = payload.connections;
-      if (payloadConnections || nextDestinations) {
+      if (payloadConnections || payload.storageDestinations !== undefined) {
          await this.runConnectionUpdateExclusive(async () => {
+            // First, so an unreadable list is refused before anything changes,
+            // and under the lock, so a "keep" reference resolves against what
+            // the update before it applied. Absent leaves the list alone; an
+            // unreadable shape is rejected rather than read as "keep none"; an
+            // explicit [] clears.
+            const nextDestinations =
+               payload.storageDestinations === undefined
+                  ? undefined
+                  : this.resolveStorageDestinations(
+                       payload.storageDestinations,
+                       true,
+                    );
             let nextMalloyConfig:
                | ReturnType<typeof buildEnvironmentMalloyConfig>
                | undefined;
@@ -895,7 +896,9 @@ export class Environment {
     * arrived. An entry carrying only the fields a read reports is resolved
     * against the stored list, so a read-modify-write keeps configs it was never
     * shown. `rejectInvalid` refuses a bad entry (a request body) instead of
-    * dropping it (config or a restored row, which cannot be asked to fix it).
+    * dropping it (config or a restored row); either way, a destination whose
+    * build schema a connection's `readableSchemas` lists throws, which fails an
+    * environment's load.
     */
    public setStorageDestinations(
       storageDestinations: ApiConnection[],

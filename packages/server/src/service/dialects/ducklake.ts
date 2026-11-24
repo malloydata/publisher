@@ -826,7 +826,7 @@ async function secureCatalogStorage(
                  readOnly: true,
                  managed: true,
               }).catch(async (error) => {
-                 // Refused like the secret branch: a catalog left attached would look attached to the next lookup.
+                 // Detached on a refusal, or the next lookup would find the catalog attached and skip the check.
                  if (error instanceof ScopeContainmentError) {
                     await connection
                        .runSQL(`DETACH ${quoteIdentifier(dbName, "duckdb")};`)

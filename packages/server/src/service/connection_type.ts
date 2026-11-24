@@ -31,7 +31,14 @@ const managed = new WeakMap<object, ReadonlySet<string>>();
 export function normalizeReadableSchemas(
    list?: string[],
 ): string[] | undefined {
-   const names = [...new Set(list ?? [])]
+   // A raw request body reaches here before the shape check that answers 400, so anything but a list of names is not one.
+   const names = [
+      ...new Set(
+         Array.isArray(list)
+            ? list.filter((name) => typeof name === "string")
+            : [],
+      ),
+   ]
       .filter((name) => name !== "main")
       .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
    return names.length > 0 ? names : undefined;

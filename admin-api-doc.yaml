@@ -583,7 +583,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Load"
+                $ref: "#/components/schemas/LoadNoOp"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -630,15 +630,7 @@ paths:
         nextCursor}`, paged with `limit` and `after`, in a stable order. `nextCursor`
         is absent on the last page. The error envelope is still this API's.
       parameters:
-        - name: limit
-          in: query
-          required: false
-          description: How many, from 1 to 1000.
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 1000
-            default: 100
+        - $ref: "#/components/parameters/limit"
         - name: after
           in: query
           required: false
@@ -687,7 +679,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Load"
+                $ref: "#/components/schemas/LoadRead"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -706,15 +698,7 @@ paths:
       summary: List a catalog's snapshots
       description: The newest first, each with its time, what it changed, and its author and commit message when it has them.
       parameters:
-        - name: limit
-          in: query
-          required: false
-          description: How many, from 1 to 1000.
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 1000
-            default: 100
+        - $ref: "#/components/parameters/limit"
       responses:
         "200":
           description: The snapshots
@@ -855,6 +839,16 @@ components:
       description: A table in the schema.
       schema:
         $ref: "#/components/schemas/Identifier"
+    limit:
+      name: limit
+      in: query
+      required: false
+      description: How many, from 1 to 1000.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 100
     idempotencyKey:
       name: Idempotency-Key
       in: header
@@ -1159,7 +1153,7 @@ components:
             counts as one deleted row
       additionalProperties: false
 
-    Load:
+    LoadNoOp:
       type: object
       required:
         [
@@ -1172,34 +1166,15 @@ components:
           cursorMax,
         ]
       description: |
-        What a load did, in rows. `rowCount` is the table's rows after the load,
-        which is its rows before, plus `rowsInserted`, less `rowsDeleted`. A
-        load that committed also carries `id`, `snapshotId` and `committedAt`; a
-        load that changed nothing has none of them. A read adds `author` and
-        `commitMessage`.
+        What a load that changed nothing did, in rows: counts alone. It committed
+        no snapshot, so it has no `id` and is not a resource. `rowCount` is the
+        table's rows after the load, which is its rows before, plus
+        `rowsInserted`, less `rowsDeleted`.
       properties:
-        id:
-          type: string
-          format: uuid
-          description: The load's id, for `GET …/loads/{id}`. Absent when the load changed nothing and so committed nothing
-        snapshotId:
-          type: integer
-          format: int64
-          description: The snapshot the load committed; the one `GET /snapshots` lists with this load's `commitMessage`. Absent with no `id`
-        committedAt:
-          type: string
-          format: date-time
-          description: When that snapshot was taken. Absent with no `id`
         mode:
           type: string
           enum: [merge, replace]
           description: The request's `mode`
-        author:
-          type: ["string", "null"]
-          description: Who committed the snapshot (`publisher-admin`). On a read only
-        commitMessage:
-          type: ["string", "null"]
-          description: The message the snapshot carries, the request's `commitMessage` or `load <schema>.<table>`. On a read only
         rowsInserted:
           type: integer
           format: int64
@@ -1233,6 +1208,42 @@ components:
           type: string
           description: The cursor column's type as DuckDB names it (`BIGINT`, `DATE`, `TIMESTAMP WITH TIME ZONE`); present when a `cursor` was given, except for a cursor every object types NULL on a table's first load, which has no type
 
+    Load:
+      description: |
+        A load that committed: its counts, and the `id`, `snapshotId` and
+        `committedAt` of the snapshot that carries its record.
+      allOf:
+        - $ref: "#/components/schemas/LoadNoOp"
+        - type: object
+          required: [id, snapshotId, committedAt]
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: The load's id, for `GET …/loads/{id}`
+            snapshotId:
+              type: integer
+              format: int64
+              description: The snapshot the load committed; the one `GET /snapshots` lists with this load's `commitMessage`
+            committedAt:
+              type: string
+              format: date-time
+              description: When that snapshot was taken
+
+    LoadRead:
+      description: A load as a read answers it, with who committed its snapshot and the message it carries.
+      allOf:
+        - $ref: "#/components/schemas/Load"
+        - type: object
+          required: [author, commitMessage]
+          properties:
+            author:
+              type: ["string", "null"]
+              description: Who committed the snapshot (`publisher-admin`)
+            commitMessage:
+              type: ["string", "null"]
+              description: The message the snapshot carries, the request's `commitMessage` or `load <schema>.<table>`
+
     LoadList:
       type: object
       required: [items]
@@ -1240,7 +1251,7 @@ components:
         items:
           type: array
           items:
-            $ref: "#/components/schemas/Load"
+            $ref: "#/components/schemas/LoadRead"
         nextCursor:
           type: string
           description: Opaque position; send it back as `after` for the next page. Absent on the last page

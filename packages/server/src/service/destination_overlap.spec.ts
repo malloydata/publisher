@@ -104,6 +104,25 @@ describe("destinationOverlaps' reasons", () => {
       }
    });
 
+   it("says whether an overlap is the same catalog: a data path alone is not", () => {
+      const sameCatalog = (connection: ApiConnection) =>
+         destinationOverlaps([connection], [destination])[0]?.sameCatalog;
+      expect(
+         sameCatalog(
+            lake("c", {
+               host: "pg",
+               databaseName: "cat",
+               metadataSchema: "lake",
+            }),
+         ),
+      ).toBe(true);
+      expect(
+         sameCatalog(
+            lake("c", { host: "pg", databaseName: "other" }, "s3://bucket"),
+         ),
+      ).toBe(false);
+   });
+
    it("finds no overlap for another metadata schema and data path, or another type", () => {
       expect(
          destinationOverlap(
@@ -296,6 +315,24 @@ describe("refuseListedDestinationSchema", () => {
       const [overlap] = destinationOverlaps([view], [dest]);
       expect(overlap.reason).toContain("data path");
       expect(overlap.listsDestinationSchema).toBeUndefined();
+   });
+
+   it("leaves a readableSchemas that is not a list of names to the connection's own validation, which answers 400, instead of throwing", () => {
+      for (const readableSchemas of [
+         5,
+         true,
+         { a: "b" },
+         [1, null],
+         "stripe",
+      ]) {
+         const view = lake("view", catalog);
+         (view.ducklakeConnection as Record<string, unknown>).readableSchemas =
+            readableSchemas;
+         refuseListedDestinationSchema([view], [builds("materialized")]);
+         expect(() =>
+            destinationOverlaps([view], [builds("materialized")]),
+         ).not.toThrow();
+      }
    });
 
    it("lets through a list that omits the schema, a connection on another catalog, and main", () => {

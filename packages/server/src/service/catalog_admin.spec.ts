@@ -197,7 +197,29 @@ describe("a storage destination's schema", () => {
       expect(await load(a, "main")).toEqual([400, "SCHEMA_RESERVED"]);
    });
 
-   it("leaves a DELETE in it, and every other schema, alone", async () => {
+   it("is refused as the target of a schema DELETE, which would cascade over every build table", async () => {
+      const a = adminOver([
+         {
+            name: "prod",
+            destinations: [lake("dest", "c", "materialized")],
+         },
+      ]);
+      for (const schema of ["materialized", "Materialized"]) {
+         expect(await refusalOf(() => a.deleteSchema("c", schema))).toEqual([
+            409,
+            "SCHEMA_IS_DESTINATION",
+         ]);
+      }
+      // Another schema, and another catalog's, pass the refusal and fail reaching the unreachable catalog database.
+      expect(
+         await refusalOf(() => a.deleteSchema("c", "staging")),
+      ).toBeUndefined();
+      expect(
+         await refusalOf(() => a.deleteSchema("other", "materialized")),
+      ).toBeUndefined();
+   });
+
+   it("leaves a table DELETE in it, and every other schema, alone", async () => {
       const a = adminOver([
          {
             name: "prod",
@@ -509,6 +531,140 @@ describe("a load list's cursor", () => {
             (error as CatalogAdminError).reason,
          ]).toEqual([after, 400, "INVALID_REQUEST"]);
       }
+   });
+});
+
+describe("a table's recorded loads", () => {
+   const ID = (n: number) => `aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa${n}`;
+   const record = (n: number, overrides: Record<string, unknown> = {}) =>
+      JSON.stringify({
+         publisherLoad: 1,
+         id: ID(n),
+         table: "s.t",
+         requestDigest: "d",
+         mode: "merge",
+         result: { rowCount: n },
+         ...overrides,
+      });
+   const row = (snapshot: number, extra: string) => ({
+      snapshot_id: snapshot,
+      committed_at: "2026-01-01T00:00:00.000Z",
+      author: "publisher-admin",
+      commit_message: null,
+      commit_extra_info: extra,
+   });
+   // Newest first, as the catalog database answers: a corrupt record, and one that is another table's, among the real ones.
+   const stored = [
+      row(9, record(9)),
+      row(8, '{"publisherLoad":1,{'),
+      row(7, record(7, { table: "s.other" })),
+      row(6, record(6)),
+   ];
+   /** The catalog database as readLoads sees it: it honors the query's `snapshot_id <` bound and LIMIT. */
+   const reading = () => {
+      const target = new CatalogAdmin({
+         catalogDatabase: "host=127.0.0.1 port=1 dbname=none",
+      });
+      const internals = target as unknown as Record<string, unknown>;
+      const pg = async (sql: string) => {
+         const below = Number(
+            sql.match(/snapshot_id < (\d+)/)?.[1] ?? Infinity,
+         );
+         const limit = Number(sql.match(/LIMIT (\d+)/)![1]);
+         return stored.filter((r) => r.snapshot_id < below).slice(0, limit);
+      };
+      spyOn(internals, "requireCatalog" as never).mockResolvedValue(
+         undefined as never,
+      );
+      spyOn(internals, "withCatalogDatabase" as never).mockImplementation(((
+         fn: (pg: unknown) => unknown,
+      ) => fn(pg)) as never);
+      return target;
+   };
+
+   it("lists only the table's own loads, and a skipped record does not end the pages early", async () => {
+      const target = reading();
+      const first = await target.listLoads("c", "s", "t", 3);
+      expect(first.items.map((l) => l.id)).toEqual([ID(9)]);
+      expect(first.nextCursor).toBeDefined();
+      const second = await target.listLoads("c", "s", "t", 3, first.nextCursor);
+      expect(second.items.map((l) => l.id)).toEqual([ID(6)]);
+      expect(second.nextCursor).toBeUndefined();
+   });
+
+   it("finds a load by its id in any case, and not by another record's", async () => {
+      const target = reading();
+      expect(
+         (await target.getLoad("c", "s", "t", ID(9).toUpperCase())).id,
+      ).toBe(ID(9));
+      // The fake database returns every row whatever the id asked for: a record that is not that id's must not come back.
+      const missing = await target
+         .getLoad("c", "s", "t", ID(5))
+         .catch((e) => e);
+      expect(missing).toBeInstanceOf(CatalogAdminError);
+      expect((missing as CatalogAdminError).reason).toBe("LOAD_NOT_FOUND");
+   });
+});
+
+describe("a load that committed but whose record cannot be read back", () => {
+   const failure = async (key?: string) => {
+      const target = new CatalogAdmin({
+         catalogDatabase: "host=127.0.0.1 port=1 dbname=none",
+      });
+      const internals = target as unknown as Record<string, unknown>;
+      // The schema exists; no load is recorded, before or after the commit.
+      const pg = async (sql: string) =>
+         sql.includes("ducklake_schema") ? [{}] : [];
+      const spies = [
+         spyOn(target, "withTableLock").mockImplementation(((
+            _name: string,
+            _schema: string,
+            _table: string,
+            fn: (lock: unknown) => unknown,
+         ) =>
+            fn({
+               pg,
+               pgAfterCommit: pg,
+               assertLockHeld: async () => undefined,
+            })) as never),
+         spyOn(internals, "requireCatalog" as never).mockResolvedValue(
+            undefined as never,
+         ),
+         spyOn(internals, "schemaOwner" as never).mockResolvedValue(
+            "o" as never,
+         ),
+         spyOn(tableLoad, "mergeStorageTable").mockResolvedValue({
+            result: {
+               rowsInserted: 1,
+               rowsReplaced: 0,
+               rowsUnchanged: 0,
+               rowsDeleted: 0,
+               rowCount: 1,
+               cursorMax: null,
+            },
+            committedAfter: 5,
+         } as never),
+      ];
+      try {
+         return (await target
+            .loadTable("c", "s", "t", valid, key)
+            .catch((e) => e)) as Error;
+      } finally {
+         for (const spy of spies) spy.mockRestore();
+      }
+   };
+
+   it("tells a keyed caller that the same key replays it", async () => {
+      const error = await failure("run-1");
+      expect(error.message).toContain("committed, but its record could not");
+      expect(error.message).toContain("same Idempotency-Key replays it");
+      expect(error.message).not.toContain("safe");
+   });
+
+   it("tells an unkeyed caller that a retry runs the load again", async () => {
+      const error = await failure();
+      expect(error.message).toContain("a retry runs the load again");
+      expect(error.message).not.toContain("safe");
    });
 });
 
@@ -871,5 +1027,73 @@ describe("the admin API's documented reasons", () => {
       expect([...thrown].filter((reason) => !listed.includes(reason))).toEqual(
          [],
       );
+   });
+});
+
+describe("the admin API's load schemas", () => {
+   const doc = parse(
+      readFileSync(resolve(REPO_ROOT, "admin-api-doc.yaml"), "utf8"),
+   );
+   const loads =
+      doc.paths[
+         "/catalogs/{catalogName}/schemas/{schemaName}/tables/{tableName}/loads"
+      ];
+   const schemaRef = (response: {
+      content: Record<string, { schema: { $ref: string } }>;
+   }) => response.content["application/json"].schema.$ref;
+   /** A schema's required fields, through its allOf parts. */
+   const required = (name: string): string[] => {
+      const schema = doc.components.schemas[name];
+      return [
+         ...(schema.required ?? []),
+         ...(schema.allOf ?? []).flatMap(
+            (part: { $ref?: string; required?: string[] }) =>
+               part.$ref
+                  ? required(part.$ref.split("/").pop()!)
+                  : (part.required ?? []),
+         ),
+      ];
+   };
+
+   it("answers a no-op with counts alone, a commit with its id, snapshot and time, and a read with its author and message", () => {
+      expect(required("LoadNoOp")).toContain("mode");
+      for (const field of ["id", "snapshotId", "committedAt"]) {
+         expect(required("LoadNoOp")).not.toContain(field);
+         expect(required("Load")).toContain(field);
+      }
+      expect(required("Load")).toContain("mode");
+      for (const field of ["author", "commitMessage"]) {
+         expect(required("Load")).not.toContain(field);
+         expect(required("LoadRead")).toContain(field);
+      }
+   });
+
+   it("gives each response the schema the route answers with", () => {
+      expect(schemaRef(loads.post.responses["201"])).toBe(
+         "#/components/schemas/Load",
+      );
+      expect(schemaRef(loads.post.responses["200"])).toBe(
+         "#/components/schemas/LoadNoOp",
+      );
+      expect(
+         schemaRef(
+            doc.paths[
+               "/catalogs/{catalogName}/schemas/{schemaName}/tables/{tableName}/loads/{loadId}"
+            ].get.responses["200"],
+         ),
+      ).toBe("#/components/schemas/LoadRead");
+      expect(doc.components.schemas.LoadList.properties.items.items.$ref).toBe(
+         "#/components/schemas/LoadRead",
+      );
+   });
+
+   it("declares the list limit once, for every list that takes it", () => {
+      expect(JSON.stringify(doc).match(/"name":"limit"/g)).toHaveLength(1);
+      expect(loads.get.parameters).toContainEqual({
+         $ref: "#/components/parameters/limit",
+      });
+      expect(
+         doc.paths["/catalogs/{catalogName}/snapshots"].get.parameters,
+      ).toContainEqual({ $ref: "#/components/parameters/limit" });
    });
 });

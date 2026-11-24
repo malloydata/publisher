@@ -166,12 +166,17 @@ describe("the admin listener", () => {
             loadTable: async (c, s, t, body, key) => {
                seen.push([c, s, t, body, key]);
                if (refuse) throw refuse;
-               return {
-                  load: created
-                     ? { ...counts, id: "abc", snapshotId: 7, committedAt: "x" }
-                     : counts,
-                  created,
-               };
+               return created
+                  ? {
+                       load: {
+                          ...counts,
+                          id: "abc",
+                          snapshotId: 7,
+                          committedAt: "x",
+                       },
+                       created: true,
+                    }
+                  : { load: counts, created: false };
             },
          }),
          watch,

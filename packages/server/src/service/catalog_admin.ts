@@ -292,12 +292,16 @@ export interface CatalogSnapshot {
    commitMessage: string | null;
 }
 
-/** A load as the API answers it: its counts and mode, and, when it committed a snapshot, its id and that snapshot's number and time. */
-export interface Load extends LoadResult {
+/** A load that changed nothing: its counts and mode. It commits no snapshot, so it has no id. */
+export interface LoadNoOp extends LoadResult {
    mode: "merge" | "replace";
-   id?: string;
-   snapshotId?: number;
-   committedAt?: string;
+}
+
+/** A load that committed: also its id and its snapshot's number and time. */
+export interface Load extends LoadNoOp {
+   id: string;
+   snapshotId: number;
+   committedAt: string;
 }
 
 /** A load as a read answers it: also who committed its snapshot, and the message. */
@@ -526,6 +530,7 @@ export class CatalogAdmin {
    async deleteSchema(name: string, schema: string): Promise<void> {
       identifier(schema, "schema");
       refuseReserved(schema);
+      this.refuseDestinationSchema(name, schema);
       await this.withAttached(name, "write", (s) =>
          s.runSQL(`DROP SCHEMA IF EXISTS ${q(name)}.${q(schema)} CASCADE`),
       );
@@ -968,7 +973,9 @@ export class CatalogAdmin {
       table: string,
       body: unknown,
       idempotencyKey?: string,
-   ): Promise<{ load: Load; created: boolean }> {
+   ): Promise<
+      { load: Load; created: true } | { load: LoadNoOp; created: false }
+   > {
       identifier(name, "catalog");
       identifier(schema, "schema");
       identifier(table, "table");
@@ -1063,7 +1070,11 @@ export class CatalogAdmin {
                }
                const unread = (cause?: unknown) =>
                   new Error(
-                     `Load ${record.id} committed, but its record could not be read back; retrying it is safe.`,
+                     `Load ${record.id} committed, but its record could not be read back; ${
+                        keyDigest
+                           ? "retrying with the same Idempotency-Key replays it"
+                           : "a retry runs the load again"
+                     }.`,
                      { cause },
                   );
                const [stored] = await readLoads(
@@ -1092,10 +1103,11 @@ export class CatalogAdmin {
       identifier(name, "catalog");
       identifier(schema, "schema");
       identifier(table, "table");
+      const wanted = id.toLowerCase();
       const [stored] = await this.withCatalogDatabase(async (pg) => {
          await this.requireCatalog(pg, name);
-         return LOAD_ID.test(id)
-            ? readLoads(pg, name, schema, table, { id, limit: 1 })
+         return LOAD_ID.test(wanted)
+            ? readLoads(pg, name, schema, table, { id: wanted, limit: 1 })
             : [];
       });
       if (!stored) {
@@ -1127,20 +1139,17 @@ export class CatalogAdmin {
       const size = Math.max(1, Math.min(limit, 1000));
       const found = await this.withCatalogDatabase(async (pg) => {
          await this.requireCatalog(pg, name);
-         return readLoads(pg, name, schema, table, {
+         return readLoadRows(pg, name, schema, table, {
             below,
             limit: size + 1,
          });
       });
+      // The page is the window's rows, whether or not each held a load, so a skipped record cannot end the pages early.
       const page = found.slice(0, size);
       return {
-         items: page.map(withAuthor),
+         items: page.flatMap((r) => (r.stored ? [withAuthor(r.stored)] : [])),
          ...(found.length > size
-            ? {
-                 nextCursor: encodeCursor(
-                    page[page.length - 1].load.snapshotId!,
-                 ),
-              }
+            ? { nextCursor: encodeCursor(page[page.length - 1].snapshotId) }
             : {}),
       };
    }
@@ -1203,7 +1212,7 @@ export class CatalogAdmin {
       );
    }
 
-   /** A person's table in a destination's build schema would feed the incompatible-table rebuild and be served as the build's. */
+   /** A person's table in a destination's build schema would feed the incompatible-table rebuild and be served as the build's, and dropping the schema would remove every build table. */
    private refuseDestinationSchema(catalog: string, schema: string): void {
       const lake = this.connection(catalog, undefined);
       for (const environment of this.environments?.getLoadedEnvironments() ??
@@ -1211,7 +1220,10 @@ export class CatalogAdmin {
          const built = destinationOverlaps(
             [lake],
             environment.listStorageDestinations(),
-         ).find((o) => o.schema.toLowerCase() === schema.toLowerCase());
+         ).find(
+            (o) =>
+               o.sameCatalog && o.schema.toLowerCase() === schema.toLowerCase(),
+         );
          if (built) {
             throw new CatalogAdminError(
                409,
@@ -1777,12 +1789,7 @@ interface LoadFilter {
    above?: number;
 }
 
-/**
- * A table's recorded loads, newest first, read on the catalog database itself
- * (one query) from the snapshots their records are the `extra_info` of. The
- * record is matched as text and parsed here, never cast in SQL: a snapshot
- * another writer annotated is skipped, not an error.
- */
+/** The loads {@link readLoadRows} found, without the rows that held none. */
 async function readLoads(
    pg: CatalogQuery,
    catalog: string,
@@ -1790,6 +1797,24 @@ async function readLoads(
    table: string,
    filter: LoadFilter,
 ): Promise<StoredLoad[]> {
+   const found = await readLoadRows(pg, catalog, schema, table, filter);
+   return found.flatMap((r) => (r.stored ? [r.stored] : []));
+}
+
+/**
+ * A table's recorded loads, newest first, read on the catalog database itself
+ * (one query) from the snapshots their records are the `extra_info` of. The
+ * record is matched as text, then parsed and checked against the selection
+ * here, never cast in SQL: a snapshot another writer annotated is a row with
+ * no load, not an error.
+ */
+async function readLoadRows(
+   pg: CatalogQuery,
+   catalog: string,
+   schema: string,
+   table: string,
+   filter: LoadFilter,
+): Promise<{ snapshotId: number; stored?: StoredLoad }[]> {
    const meta = pgIdent(catalog);
    const has = (field: string, value: string) =>
       `position(${pgLiteral(`"${field}":${JSON.stringify(value)}`)} in c.commit_extra_info) > 0`;
@@ -1821,19 +1846,29 @@ async function readLoads(
          `FROM ${meta}.ducklake_snapshot_changes c JOIN ${meta}.ducklake_snapshot s ON s.snapshot_id = c.snapshot_id ` +
          `WHERE ${where.join(" AND ")} ORDER BY c.snapshot_id DESC LIMIT ${filter.limit}`,
    );
-   return found.flatMap((row) => {
+   const folded = foldedTableName(schema, table);
+   return found.map((row) => {
+      const snapshotId = Number(row.snapshot_id);
       let record: LoadRecord;
       try {
          record = JSON.parse(String(row.commit_extra_info));
       } catch {
-         return [];
+         return { snapshotId };
       }
-      if (record?.publisherLoad !== 1) return [];
-      return [
-         {
+      if (
+         record?.publisherLoad !== 1 ||
+         record.table !== folded ||
+         (filter.id && record.id !== filter.id) ||
+         (filter.keyDigest && record.keyDigest !== filter.keyDigest)
+      ) {
+         return { snapshotId };
+      }
+      return {
+         snapshotId,
+         stored: {
             load: {
                id: record.id,
-               snapshotId: Number(row.snapshot_id),
+               snapshotId,
                committedAt: String(row.committed_at),
                mode: record.mode,
                ...record.result,
@@ -1843,7 +1878,7 @@ async function readLoads(
             commitMessage:
                row.commit_message == null ? null : String(row.commit_message),
          },
-      ];
+      };
    });
 }
 

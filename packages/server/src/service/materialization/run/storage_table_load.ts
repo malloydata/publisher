@@ -1694,7 +1694,11 @@ export async function mergeStorageTable(
             destinationName,
             schemaName,
             tableName,
-         ).catch(afterCommit);
+         ).catch((error: unknown) => {
+            // A load that changed nothing committed nothing, so this failure is not one after its commit.
+            if (outcome.committedAfter === undefined) throw error;
+            return afterCommit(error);
+         });
          return outcome;
       },
    );
