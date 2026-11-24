@@ -636,8 +636,14 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    ): ApiAgent | undefined {
       const agent = this.packageAgents.get(name);
       if (!agent) return undefined;
-      const { definitionSha, skillMeta, asset_roots, assets, ...definition } =
-         agent;
+      const {
+         definitionSha,
+         skillMeta,
+         catalog: _catalog,
+         asset_roots,
+         assets,
+         ...definition
+      } = agent;
       const counts = new Map<string, number>();
       for (const a of assets ?? []) {
          const skill = a.relative_filepath.split("/")[0]!;
@@ -660,7 +666,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       };
    }
 
-   /** One agent skill file, looked up in the resolved set and never joined onto the filesystem; a listed asset is matched exactly, then read from disk and re-checked against its listed sha. */
+   /** One agent skill file, looked up in the resolved set and never joined onto the filesystem; a listed file is matched exactly, then read from disk and re-checked against its listed sha. A binary one answers with a message, not its bytes. */
    public getAgentSkillFile(
       name: string,
       relativeFilepath: string,
@@ -673,11 +679,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       if (file) {
          return { ...file, source: this.agentSource(agent.definitionSha) };
       }
-      const text = readAgentAsset(this.packagePath, agent, relativeFilepath);
-      if (text === undefined) return undefined;
+      const listed = readAgentAsset(this.packagePath, agent, relativeFilepath);
+      if (listed === undefined) return undefined;
       return {
          relative_filepath: relativeFilepath,
-         file_contents: text,
+         ...("text" in listed
+            ? { file_contents: listed.text }
+            : { message: listed.message }),
          source: this.agentSource(agent.definitionSha),
       };
    }
@@ -710,14 +718,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       }
       this.sourceContentSha = computeSourceContentSha(
          this.packagePath,
-         [
-            ...this.models.keys(),
-            ...skills.files.map((f) => f.path),
-            ...agents.paths,
-         ],
+         [...this.models.keys(), ...skills.paths, ...agents.paths],
          // The declaration is hashed whole, so an edit to a dropped agent moves it too.
          declaration,
-         agents.contentShas,
+         new Map([...skills.contentShas, ...agents.contentShas]),
       );
    }
 

@@ -344,16 +344,15 @@ describe("package agents", () => {
          );
       });
 
-      it("finishes a reload, with a warn finding, when a package skill's reference is a regular file", async () => {
+      it("finishes a reload, with a warn finding, when a package skill's frontmatter is not valid YAML", async () => {
          manifest({ agents: { analyst: analyst() } });
          const pkg = await load();
          const before = pkg.getSourceContentSha();
 
          write(
             "skills/odd/SKILL.md",
-            "---\nname: odd\ndescription: d\n---\n\nbody\n",
+            "---\nname: odd\ndescription: Use when: x\n---\n\nbody\n",
          );
-         write("skills/odd/reference", "not a directory");
          await pkg.reloadAllModels({});
 
          expect(pkg.listSkills().map((s) => s.name)).toEqual(["odd"]);
@@ -362,9 +361,7 @@ describe("package agents", () => {
          expect(
             pkg
                .getPackageMetadata()
-               .warnings?.filter((w) =>
-                  w.message?.includes("cannot be listed"),
-               ),
+               .warnings?.filter((w) => w.message?.includes("not valid YAML")),
          ).toEqual([
             expect.objectContaining({
                severity: "warn",
@@ -588,7 +585,7 @@ describe("package agents", () => {
          expect(computeSourceContentSha(dir, ["a.txt"])).not.toBe(before);
       });
 
-      it("ignores a package's own skills/<x>/assets", async () => {
+      it("skips a manifest-shaped file in a package's own skills/<x>/assets with a warning, and still serves the skill and the agent", async () => {
          write(
             "skills/top/SKILL.md",
             "---\nname: top\ndescription: d\n---\n\nbody\n",
@@ -600,35 +597,54 @@ describe("package agents", () => {
          expect(
             pkg
                .getPackageMetadata()
-               .warnings?.filter((w) => w.message?.includes("assets")) ?? [],
-         ).toEqual([]);
+               .warnings?.some(
+                  (w) =>
+                     w.severity === "warn" &&
+                     w.message?.includes("skills/top/assets/publisher.json"),
+               ),
+         ).toBe(true);
          expect(pkg.getAgent("analyst")).toBeDefined();
       });
 
-      it("keeps an agent served, with a warning, when assets/ holds a PNG", async () => {
-         fs.mkdirSync(path.join(dir, A), { recursive: true });
-         fs.writeFileSync(
-            path.join(dir, A, "logo.png"),
-            Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00]),
+      it("moves sourceContentSha when a package skill's script changes, and when its .skillignore does", async () => {
+         write(
+            "skills/top/SKILL.md",
+            "---\nname: top\ndescription: d\n---\n\nbody\n",
          );
+         write("skills/top/scripts/run.py", "print(1)");
+         write("skills/top/scripts/run_test.py", "assert True");
+         const pkg = await load();
+         const base = pkg.getSourceContentSha();
+
+         write("skills/top/scripts/run.py", "print(2)");
+         await pkg.reloadAllModels({});
+         const edited = pkg.getSourceContentSha();
+         expect(edited).not.toBe(base);
+
+         // Ignored by nothing yet, so editing the test file moves the hash;
+         // once ignored, it no longer does.
+         write("skills/top/.skillignore", "*_test.py\n");
+         await pkg.reloadAllModels({});
+         const ignored = pkg.getSourceContentSha();
+         expect(ignored).not.toBe(edited);
+         write("skills/top/scripts/run_test.py", "assert False");
+         await pkg.reloadAllModels({});
+         expect(pkg.getSourceContentSha()).toBe(ignored);
+      });
+
+      it("lists a PNG under assets/ and answers a read of it with a message naming its size, never its bytes", async () => {
+         fs.mkdirSync(path.join(dir, A), { recursive: true });
+         const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00]);
+         fs.writeFileSync(path.join(dir, A, "logo.png"), png);
          write(`${A}/ok.txt`, "fine");
          const pkg = await load();
          expect(
             pkg.getAgent("analyst")!.assets!.map((a) => a.relative_filepath),
-         ).toEqual([`${LISTED}/ok.txt`]);
-         expect(
-            pkg
-               .getPackageMetadata()
-               .warnings?.some(
-                  (w) =>
-                     w.severity === "warn" &&
-                     w.message?.includes("logo.png") &&
-                     w.message.startsWith("Package agent 'analyst'"),
-               ),
-         ).toBe(true);
-         expect(
-            pkg.getAgentSkillFile("analyst", `${LISTED}/logo.png`),
-         ).toBeUndefined();
+         ).toEqual([`${LISTED}/logo.png`, `${LISTED}/ok.txt`]);
+         const read = pkg.getAgentSkillFile("analyst", `${LISTED}/logo.png`)!;
+         expect(read).not.toHaveProperty("file_contents");
+         expect(read.message).toContain(`${png.length} bytes`);
+         expect(read.message).toContain("binary");
       });
 
       it("keeps an agent served when assets/ holds more than 1,000 entries", async () => {

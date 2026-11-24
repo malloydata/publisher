@@ -827,7 +827,7 @@
     },
     {
       "name": "eval-loop",
-      "description": "Conduct a local Publisher evaluation loop in five steps: scrape/run, eval, diagnose, improve, checkpoint. You are the conductor: import cases into the file ledger, spawn a blind answerer, then run eval-answer, eval-diagnose, and eval-improve. Persistence is plain files: the set in the model package''s evals/ directory, runs in the set''s workdir; checkpoints are git commits of the model repo. `eval.py` runs each step from the set''s eval.toml. Use to score a model, diagnose failures, improve behind an acceptance check, or roll back a bad direction."
+      "description": "Conduct a local Publisher evaluation loop in five steps: scrape/run, eval, diagnose, improve, checkpoint. You are the conductor: import cases into the file ledger, spawn a blind answerer, then run eval-answer, eval-diagnose, and eval-improve. Persistence is plain files: the set in the model package's evals/ directory, runs in the set's workdir; checkpoints are git commits of the model repo. `eval.py` runs each step from the set's eval.toml. Use to score a model, diagnose failures, improve behind an acceptance check, or roll back a bad direction."
     },
     {
       "name": "eval-loop/acceptance-check",
@@ -875,11 +875,11 @@
     },
     {
       "name": "malloy-classify",
-      "description": "Propose #(classification) annotations for a Malloy model from an access policy''s class scheme, backed by aggregate value evidence from the served data, and show them as a diff before writing anything. Use when the user asks to \"classify the model\", \"tag PHI/PII\", \"label sensitive fields\", or adds fields to a package that a policy governs, and before running malloy-compliance-review on a model nobody has classified."
+      "description": "Propose #(classification) annotations for a Malloy model from an access policy's class scheme, backed by aggregate value evidence from the served data, and show them as a diff before writing anything. Use when the user asks to \"classify the model\", \"tag PHI/PII\", \"label sensitive fields\", or adds fields to a package that a policy governs, and before running malloy-compliance-review on a model nobody has classified."
     },
     {
       "name": "malloy-compliance-review",
-      "description": "Check a Malloy package and its controls against a written access policy: turn the policy''s prose into a control register, run compliance.py check against a served package (structure, access as each role, and the values themselves), judge what needs a person, and produce a report and a signable attestation. Use when the user asks whether a model \"complies with\", \"satisfies\" or \"meets\" a policy, HIPAA, SOC 2, PCI or the like, asks for a compliance review or attestation, or wants the review in CI."
+      "description": "Check a Malloy package and its controls against a written access policy: turn the policy's prose into a control register, run compliance.py check against a served package (structure, access as each role, and the values themselves), judge what needs a person, and produce a report and a signable attestation. Use when the user asks whether a model \"complies with\", \"satisfies\" or \"meets\" a policy, HIPAA, SOC 2, PCI or the like, asks for a compliance review or attestation, or wants the review in CI."
     },
     {
       "name": "malloy-compliance-review/checks",

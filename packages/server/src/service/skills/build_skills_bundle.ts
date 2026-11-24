@@ -20,6 +20,7 @@
  */
 import * as fs from "fs";
 import * as path from "path";
+import { parseFrontmatter } from "./frontmatter";
 
 export interface SkillEntry {
    name: string;
@@ -27,16 +28,12 @@ export interface SkillEntry {
    body: string;
 }
 
-export function unquote(s: string): string {
-   return s.trim().replace(/^["']|["']$/g, "");
-}
-
 /**
  * Drop the license header (an HTML comment at the top of the Markdown body) and
  * trim. The header is for the file; the agent reading the prompt should not
  * see it as the first line.
  */
-function stripLicenseHeader(body: string): string {
+export function stripLicenseHeader(body: string): string {
    return body
       .replace(/^\s*<!--[\s\S]*?SPDX-License-Identifier:[\s\S]*?-->/, "")
       .trim();
@@ -44,15 +41,8 @@ function stripLicenseHeader(body: string): string {
 
 /** Parse a SKILL.md into its frontmatter name/description and Markdown body. */
 export function parseSkill(md: string, dirName: string): SkillEntry {
-   const text = md.replace(/\r\n/g, "\n"); // tolerate CRLF-committed files
-   const fm = text.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-   const front = fm ? fm[1] : "";
-   const body = stripLicenseHeader(fm ? fm[2] : text);
-   const name = unquote(front.match(/^name:\s*(.+)$/m)?.[1] ?? dirName);
-   const description = unquote(
-      front.match(/^description:\s*(.+)$/m)?.[1] ?? "",
-   );
-   return { name, description, body };
+   const { name, description, body } = parseFrontmatter(md, dirName);
+   return { name, description, body: stripLicenseHeader(body) };
 }
 
 /**

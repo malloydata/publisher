@@ -108,7 +108,8 @@
       "pg": "8.7.3",
       "recursive-readdir": "^2.2.3",
       "simple-git": "^4.0.2",
-      "winston": "^3.17.0"
+      "winston": "^3.17.0",
+      "yaml": "^2.9.1"
    },
    "devDependencies": {
       "@eslint/compat": "^1.2.7",

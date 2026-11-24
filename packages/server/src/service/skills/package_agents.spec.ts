@@ -483,7 +483,7 @@ describe("readPackageAgents", () => {
          expect(dropped({ analyst: entry })).toContain("publisher.json");
       });
 
-      it("does not walk a skills directory that is a link, so a publisher.json beyond it is not seen", () => {
+      it("reads a skills directory that is a link into the package, and refuses a publisher.json anywhere in it", () => {
          const entry = analyst();
          write(
             "shared/conventions/SKILL.md",
@@ -497,7 +497,9 @@ describe("readPackageAgents", () => {
             path.join(pkg, "shared"),
             path.join(pkg, "agents/analyst/skills"),
          );
-         expect(read({ analyst: entry }).agents.has("analyst")).toBe(true);
+         expect(dropped({ analyst: entry })).toContain(
+            "conventions/other/publisher.json",
+         );
       });
 
       it("does not say whether a publisher.json exists beyond a link out of the package", () => {
@@ -593,16 +595,26 @@ describe("readPackageAgents", () => {
          expect(result.warnings.join("\n")).toContain("'quiet'");
       });
 
-      it("serves an agent whose skill reference cannot be listed, flagged on the agent", () => {
-         write(
-            "agents/analyst/skills/odd/SKILL.md",
-            "---\nname: odd\ndescription: d\n---\n\nbody\n",
-         );
-         write("agents/analyst/skills/odd/reference", "not a directory");
-         const result = read({ analyst: analyst() });
-         expect(result.agents.has("analyst")).toBe(true);
-         expect(result.warnings.join("\n")).toContain("cannot be listed");
-      });
+      // chmod revokes nothing on Windows or for root.
+      it.skipIf(isWindows || isRoot)(
+         "serves an agent whose skill has a directory that cannot be listed, flagged on the agent",
+         () => {
+            write(
+               "agents/analyst/skills/odd/SKILL.md",
+               "---\nname: odd\ndescription: d\n---\n\nbody\n",
+            );
+            const sealed = path.join(pkg, "agents/analyst/skills/odd/scripts");
+            fs.mkdirSync(sealed);
+            fs.chmodSync(sealed, 0o000);
+            try {
+               const result = read({ analyst: analyst() });
+               expect(result.agents.has("analyst")).toBe(true);
+               expect(result.warnings.join("\n")).toContain("cannot be listed");
+            } finally {
+               fs.chmodSync(sealed, 0o755);
+            }
+         },
+      );
 
       it("drops an agent whose skill name is not its directory name", () => {
          write(
@@ -812,17 +824,31 @@ describe("readPackageAgents", () => {
       });
 
       describe("skipped, with the agent still served", () => {
-         it("skips non-UTF-8 and NUL-bearing files", () => {
-            writeBytes(
-               `${ASSETS}/logo.png`,
-               Buffer.from([0x89, 0x50, 0xff, 0xfe]),
-            );
-            writeBytes(`${ASSETS}/nul.txt`, Buffer.from("a\0b"));
+         it("lists non-UTF-8 and NUL-bearing files too, hashing their raw bytes", () => {
+            const png = Buffer.from([0x89, 0x50, 0xff, 0xfe]);
+            const nul = Buffer.from("a\0b");
+            writeBytes(`${ASSETS}/logo.png`, png);
+            writeBytes(`${ASSETS}/nul.txt`, nul);
             write(`${ASSETS}/ok.txt`, "fine");
             const result = read({ analyst: analyst() });
-            expect(listed(result)).toEqual([`${LISTED}/ok.txt`]);
-            expect(warned(result, "logo.png", "not valid UTF-8")).toBe(true);
-            expect(warned(result, "nul.txt", "NUL")).toBe(true);
+            expect(result.warnings).toEqual([]);
+            expect(agentOf(result).assets).toEqual([
+               {
+                  relative_filepath: `${LISTED}/logo.png`,
+                  bytes: 4,
+                  sha256: createHash("sha256").update(png).digest("hex"),
+               },
+               {
+                  relative_filepath: `${LISTED}/nul.txt`,
+                  bytes: 3,
+                  sha256: createHash("sha256").update(nul).digest("hex"),
+               },
+               {
+                  relative_filepath: `${LISTED}/ok.txt`,
+                  bytes: 4,
+                  sha256: createHash("sha256").update("fine").digest("hex"),
+               },
+            ]);
          });
 
          it("keeps a leading BOM so the listed sha is the file's", () => {
@@ -870,14 +896,13 @@ describe("readPackageAgents", () => {
             expect(warned(bytes, "big4.txt", "per-agent cap")).toBe(true);
          });
 
+         // The levels are counted from the skill's own directory, which is the first.
          it("walks eight levels and warns about a ninth", () => {
-            const seven = Array.from({ length: 7 }, (_, i) => `d${i}`).join(
-               "/",
-            );
-            write(`${ASSETS}/${seven}/ok.txt`, "x");
-            write(`${ASSETS}/${seven}/d7/deep.txt`, "x");
+            const six = Array.from({ length: 6 }, (_, i) => `d${i}`).join("/");
+            write(`${ASSETS}/${six}/ok.txt`, "x");
+            write(`${ASSETS}/${six}/d6/deep.txt`, "x");
             const result = read({ analyst: analyst() });
-            expect(listed(result)).toEqual([`${LISTED}/${seven}/ok.txt`]);
+            expect(listed(result)).toEqual([`${LISTED}/${six}/ok.txt`]);
             expect(warned(result, "deeper than 8")).toBe(true);
          });
 
@@ -893,14 +918,18 @@ describe("readPackageAgents", () => {
             write(`${ASSETS}/z.txt`, "x");
          };
 
-         it("walks exactly 1,000 entries per agent and stays served past that", () => {
-            fillEntries(998);
+         // The skill's own entries count too: SKILL.md, assets/, reference/ and its one file are 4 beside what is filled here.
+         it("walks exactly 1,000 entries per skill and stays served past that", () => {
+            fillEntries(994);
             const atCap = read({ analyst: analyst() });
             expect(listed(atCap)).toEqual([
                `${LISTED}/a.txt`,
                `${LISTED}/z.txt`,
             ]);
             expect(warned(atCap, "1000 entries")).toBe(false);
+            expect(
+               agentOf(atCap).skills.map((f) => f.relative_filepath),
+            ).toContain("conventions/reference/glossary.md");
 
             write(`${ASSETS}/zz.txt`, "x");
             const over = read({ analyst: analyst() });
@@ -908,18 +937,20 @@ describe("readPackageAgents", () => {
             expect(listed(over)).toEqual([
                `${LISTED}/a.txt`,
                `${LISTED}/z.txt`,
+               `${LISTED}/zz.txt`,
             ]);
-            expect(warned(over, "zz.txt", "1000 entries")).toBe(true);
+            expect(warned(over, "1000 entries")).toBe(true);
          });
 
-         it("rejects a large file with a NUL in its head and keeps the agent", () => {
+         it("lists a large file with a NUL in its head, and hashes it without reading it as text", () => {
             const big = Buffer.alloc(900_000, "a");
             big[10] = 0;
             writeBytes(`${ASSETS}/blob.txt`, big);
             const result = read({ analyst: analyst() });
-            expect(listed(result)).toEqual([]);
-            expect(warned(result, "blob.txt", "NUL")).toBe(true);
-            expect(result.contentShas.size).toBe(0);
+            expect(listed(result)).toEqual([`${LISTED}/blob.txt`]);
+            expect(result.contentShas.get(`${ASSETS}/blob.txt`)).toBe(
+               createHash("sha256").update(big).digest("hex"),
+            );
          });
 
          // chmod revokes nothing on Windows or for root.

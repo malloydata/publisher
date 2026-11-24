@@ -3248,10 +3248,12 @@ paths:
         (for example `analyst-conventions/SKILL.md`), with the same `source`
         pin as the full definition. The path is looked up in the resolved set,
         never joined onto the filesystem. A `relative_filepath` from the
-        agent's `assets` listing (`<skill>/assets/...`, full view only) is
-        matched exactly against the listing, then read from disk as UTF-8 text
-        and served only if it still hashes to its listed `sha256`; one that
-        changed, or became a link, since the load is a 404.
+        agent's `assets` listing (`<skill>/<path>`, full view only) is matched
+        exactly against the listing, then read from disk and served only if it
+        still hashes to its listed `sha256`; one that changed, or became a
+        link, since the load is a 404. A text file answers with
+        `file_contents`; a binary one (not UTF-8, or holding a NUL byte) has
+        no `file_contents` and answers with a `message` naming its size.
 
         404 when the agent or the file is not served.
       parameters:
@@ -3281,7 +3283,8 @@ paths:
         - name: relativeFilepath
           in: path
           description: >-
-            A `relative_filepath` from the agent's skill summary. Slashes may be
+            A `relative_filepath` from the agent's skill summary, or from the
+            full view's `assets`. Slashes may be
             sent literally or as `%2F`; a literal `%` in a name must be sent as
             `%25`.
           required: true
@@ -5764,10 +5767,11 @@ components:
             `skills/` that is not served (unreadable or linked-out `SKILL.md`,
             a frontmatter `name` that is not its directory name, a `skills/`
             directory that links out of the package) or served with a gap (no
-            `description`, a `reference/` that cannot be listed or read); and
+            `description`, frontmatter that is not valid YAML, a file of the
+            skill's directory that is skipped with its reason); and
             each agent the manifest declares that is not served, or is served
             with a finding (an agent skill with no `description`, a skills
-            directory with no skills, an unreadable reference).
+            directory with no skills, a skipped skill file).
             Deprecated-format findings, all `warn`: each `.malloynb` notebook
             (`model` is its path), and each source a file declares deprecated
             `#(filter)` annotations on (`model` is that file, `subject` the
@@ -6572,7 +6576,10 @@ components:
       type: object
       readOnly: true
       description: >-
-        One of an agent's skill files. The snake_case keys
+        One of an agent's inline skill files: a skill's `SKILL.md` and every
+        other Markdown file in its directory outside `assets/`, at any depth,
+        while they fit the 256 KiB inline budget. Markdown past the budget is
+        listed as an `AgentAsset` instead. The snake_case keys
         (`relative_filepath`, `file_contents`) mirror the MCP `get_agent` tool
         the shape is shared with, unlike the camelCase used elsewhere in this
         API.
@@ -6582,12 +6589,12 @@ components:
           description: >-
             Path relative to the agent's skills directory, for example
             `analyst-conventions/SKILL.md` or
-            `analyst-conventions/reference/glossary.md`.
+            `analyst-conventions/references/glossary.md`.
         file_contents:
           type: string
           description: >-
             A `SKILL.md` is re-emitted with only a quoted `name` and
-            `description` in its frontmatter; reference files are served raw.
+            `description` in its frontmatter; other Markdown is served raw.
             Absent when the agent was fetched with `skills=summary`.
         name:
           type: string
@@ -6603,16 +6610,20 @@ components:
       type: object
       readOnly: true
       description: >-
-        A text file a skill ships under `<skill>/assets/` for an agent to copy
-        into an app it builds and not read. Listed without its contents; fetch
-        one with `GET .../agents/{agentName}/skills/{relative_filepath}`.
+        A file of a skill's directory that is not inlined, for an agent to copy
+        and not read: a script, a template, an asset, or Markdown past the
+        inline budget, text or binary, anywhere in the skill but `SKILL.md`. A
+        skill's `.skillignore` decides which files the skill has. Listed
+        without its contents; fetch a text one with
+        `GET .../agents/{agentName}/skills/{relative_filepath}`, which answers a
+        binary one with a message naming its size.
       properties:
         relative_filepath:
           type: string
-          description: "`<skill>/assets/...`, relative to the agent's skill roots."
+          description: "`<skill>/<path>`, relative to the agent's skill roots."
         bytes:
           type: integer
-          description: Size in UTF-8 bytes, under 1 MiB.
+          description: Size in bytes, under 1 MiB.
         sha256:
           type: string
           description: SHA-256 of the file's bytes.
@@ -6621,13 +6632,19 @@ components:
       type: object
       readOnly: true
       description: >-
-        One agent skill file or asset, with the pin of the definition it
-        belongs to.
+        One agent skill file or listed file, with the pin of the definition it
+        belongs to. A listed file that is binary (not UTF-8 text, or holding a
+        NUL byte) has no `file_contents`: `message` says so and names its size.
       properties:
         relative_filepath:
           type: string
         file_contents:
           type: string
+        message:
+          type: string
+          description: >-
+            Set instead of `file_contents` when the file is binary and so is
+            never served as a body.
         source:
           $ref: "#/components/schemas/AgentSource"
 
@@ -6652,9 +6669,10 @@ components:
         definitionSha:
           type: string
           description: >-
-            SHA-256 over this agent's canonical config, instructions, skill
-            files and task files. Editing another agent, or a model, does not
-            move it.
+            SHA-256 over this agent's canonical config, instructions, task
+            files and every file of its skills: inline text, the SHA-256 of
+            each listed file, and each skill's applied `.skillignore`. Editing
+            another agent, or a model, does not move it.
         servedRevision:
           type: string
           description: The package's `servedRevision` at the load this definition came from.
@@ -6684,7 +6702,7 @@ components:
         asset_roots:
           type: object
           description: >-
-            For each skill that ships assets, the package-relative directory
+            For each skill that lists files, the package-relative directory
             holding it. Absent when no skill does. Not in the
             `skills=summary` view.
           additionalProperties:
@@ -6692,16 +6710,16 @@ components:
         assets:
           type: array
           description: >-
-            Every asset the agent's skills ship, listed without contents and
-            sorted by `relative_filepath`. Absent when there are none and in
-            the `skills=summary` view.
+            Every file the agent's skills list for copying, without contents
+            and sorted by `relative_filepath`. Absent when there are none and
+            in the `skills=summary` view.
           items:
             $ref: "#/components/schemas/AgentAsset"
         asset_counts:
           type: object
           description: >-
-            Only in the `skills=summary` view, and only when there are assets:
-            how many assets each skill ships.
+            Only in the `skills=summary` view, and only when there are listed
+            files: how many each skill lists.
           additionalProperties:
             type: integer
         schedules:

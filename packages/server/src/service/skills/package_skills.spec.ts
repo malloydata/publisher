@@ -20,6 +20,16 @@ const skill = (name: string, description = "", body = ""): SkillEntry => ({
    body,
 });
 
+const NOTHING = {
+   skills: [],
+   files: [],
+   catalog: [],
+   paths: [],
+   contentShas: new Map(),
+   warnings: [],
+   blocking: [],
+};
+
 describe("readSkillsDir", () => {
    let pkg: string;
 
@@ -43,12 +53,7 @@ describe("readSkillsDir", () => {
    };
 
    it("returns nothing, and no warning, for a package with no skills/", () => {
-      expect(readSkillsDir(pkg)).toEqual({
-         skills: [],
-         files: [],
-         warnings: [],
-         blocking: [],
-      });
+      expect(readSkillsDir(pkg)).toEqual(NOTHING);
    });
 
    it("answers the same for skills/ and for a skill directory that go out and back, whether or not the outside directory exists", () => {
@@ -108,12 +113,7 @@ describe("readSkillsDir", () => {
 
    it("returns nothing, and no warning, when skills/ is a dangling link", () => {
       fs.symlinkSync(path.join(pkg, "gone"), path.join(pkg, "skills"));
-      expect(readSkillsDir(pkg)).toEqual({
-         skills: [],
-         files: [],
-         warnings: [],
-         blocking: [],
-      });
+      expect(readSkillsDir(pkg)).toEqual(NOTHING);
    });
 
    describe("files that leave the package", () => {
@@ -272,12 +272,13 @@ describe("readSkillsDir", () => {
       expect(warnings[0]).toContain("Fix:");
    });
 
-   it("warns, and still serves the skill, when reference is a regular file", () => {
+   it("lists a plain file named reference like any other file, with no warning", () => {
       writeSkill("odd", "---\nname: odd\ndescription: d\n---\n\nbody\n");
       fs.writeFileSync(path.join(pkg, "skills", "odd", "reference"), "x");
-      const { skills, warnings, blocking } = readSkillsDir(pkg);
+      const { skills, catalog, warnings, blocking } = readSkillsDir(pkg);
       expect(skills.map((s) => s.name)).toEqual(["odd"]);
-      expect(warnings.join("\n")).toContain("cannot be listed");
+      expect(Object.keys(catalog[0]!.files)).toEqual(["SKILL.md", "reference"]);
+      expect(warnings).toEqual([]);
       expect(blocking).toEqual([]);
    });
 

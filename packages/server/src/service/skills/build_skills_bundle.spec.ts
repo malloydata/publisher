@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { parseSkill, unquote } from "./build_skills_bundle";
+import { parseSkill } from "./build_skills_bundle";
+import { unquote } from "./frontmatter";
 
 describe("build_skills_bundle parseSkill", () => {
    it("parses name, description, and body from frontmatter", () => {
