@@ -21,6 +21,17 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased]: a data app learns where each answer came from and the reader's light or dark mode
+
+**[new] The browser runtime (`/sdk/publisher.js`) gives a data app what Publisher knows about its answers.**
+
+- `Publisher.query(model, q, { meta })` and `queryFull` fill `meta` with `servedFrom`, `path` (the table that served the answer and the ones considered) and `executionTimeMs` from the response, and `versionId`, the version the query was pinned to or `null`. Without `meta` nothing changes.
+- `Publisher.model(modelPath)` reads a model's sources and fields with their annotations, and `Publisher.packageResource("build-plan" | "materializations")` what Publisher builds for the package and its runs. Both read the page's pinned version, as its queries do; another resource name is refused.
+
+**[new] Light and dark between a framing page and a data app.** The page hears the reader's mode as `publisher:color-scheme` (`{ type, mode }`), asks for it with `publisher:color-scheme-request`, and answers `publisher:color-scheme-applied` once it has drawn it. The runtime handles the page's side: `Publisher.colorScheme`, `Publisher.onColorScheme(fn)` and `Publisher.colorSchemeApplied(mode)`. The SDK's `DataAppViewer`, and so the console, sends the console's mode to the page's own origin and gives the frame the page's colour scheme once the page answers; it exports the three message names and `PublisherColorScheme`. `Publisher.embed` does not send a mode.
+
+**[new] The `malloy-html-data-apps` skill builds from a kit.** An agent asked for a data app copies the kit and writes one config and its pages: several pages with drill-downs, every block explained on its back, nine themes, light and dark. A dashboard request still goes to `malloy-reports`.
+
 ## [Unreleased] — key-uniqueness verdicts are read only from the table's column contract
 
 **[change] Key-uniqueness verdicts have one store: each table's column contract (`contract.keys`).** A verdict a build recorded (a `#(rollup)` rollup's own key, a querying source's primary key, a stored source's primary key, a pair table's leaf key) is bound only when the contract records it for the primary key the model declares now and it passed (`unique: true`, not `unverified`); anything else, including a check that could not run, answers live. The bind decides; a query only looks the verdict up. What moves:

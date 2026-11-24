@@ -6,8 +6,8 @@
 /**
  * The data app kit's date math (skills/malloy-html-data-apps/assets/data-app/kit/period.js and state.js): which
  * days a period and its comparison cover, and which bucket each row lands in. The bucket rule is pinned against
- * DuckDB with the SQL the kit's Malloy expression compiles to, `days(<field>.day to @<last day>)`, so a row's
- * bucket here is the one the server hands back.
+ * DuckDB with SQL written by hand to compute what the kit's Malloy expression, `days(<field>.day to @<last day>)`,
+ * does, so a row's bucket here is the one the server hands back.
  */
 import { DuckDBInstance } from "@duckdb/node-api";
 import { describe, expect, it } from "bun:test";
@@ -78,6 +78,35 @@ describe("comparison periods", () => {
             first: "2024-01-01",
          }),
       ).toEqual(range("2025-08-19", "2025-11-18"));
+   });
+
+   it("compares a full month, quarter and year with the whole one before it", () => {
+      const span = { first: "2020-01-01" };
+      // Last full month in May 2024 is April (30 days); the month before is all 31 days of March.
+      expect(
+         P.compareRange(
+            { preset: "last_month" },
+            range("2024-04-01", "2024-05-01"),
+            "previous",
+            span,
+         ),
+      ).toEqual(range("2024-03-01", "2024-04-01"));
+      expect(
+         P.compareRange(
+            { preset: "last_quarter" },
+            range("2024-04-01", "2024-07-01"),
+            "previous",
+            span,
+         ),
+      ).toEqual(range("2024-01-01", "2024-04-01"));
+      expect(
+         P.compareRange(
+            { preset: "last_month" },
+            range("2024-02-01", "2024-03-01"),
+            "year",
+            span,
+         ),
+      ).toEqual(range("2023-02-01", "2023-03-01"));
    });
 
    it("gives no comparison that would start before the data does", () => {
@@ -203,6 +232,11 @@ describe("reading an address", () => {
       configure();
       const s = S.fromHash("#/?p=__proto__&c=constructor&m=constructor");
       expect(s.period).toEqual({ preset: S.DEFAULT().period.preset });
+      expect(s.compare).toBe(S.DEFAULT().compare);
+      expect(s.metric).toBe(S.DEFAULT().metric);
+      expect(
+         S.fromHash("#/?p=custom&from=2024-13-01&to=2024-14-05").period.preset,
+      ).not.toBe("custom");
       expect(
          S.fromHash("#/?p=custom&from=2024-02-30&to=2024-03-05").period.preset,
       ).not.toBe("custom");

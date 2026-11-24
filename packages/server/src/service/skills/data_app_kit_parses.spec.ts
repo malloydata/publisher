@@ -23,7 +23,29 @@ describe("the data app kit", () => {
       expect(modules).toContain("kit.js");
    });
 
+   const exportsOf = (file: string) =>
+      new Bun.Transpiler({ loader: "js" }).scan(
+         readFileSync(path.join(KIT, file), "utf8"),
+      ).exports;
+
    for (const file of modules) {
+      it(`${file} imports and re-exports only names its sibling modules export`, () => {
+         const source = readFileSync(path.join(KIT, file), "utf8");
+         for (const m of source.matchAll(
+            /(?:import|export)\s*\{([^}]*)\}\s*from\s*'\.\/([^']+)'/g,
+         )) {
+            const have = exportsOf(m[2]);
+            for (const name of m[1]
+               .split(",")
+               .map((s) => s.trim().split(/\s+as\s+/)[0])
+               .filter(Boolean)) {
+               expect(have, `${file} imports ${name} from ${m[2]}`).toContain(
+                  name,
+               );
+            }
+         }
+      });
+
       it(`parses ${file}`, () => {
          const source = readFileSync(path.join(KIT, file), "utf8");
          expect(() =>

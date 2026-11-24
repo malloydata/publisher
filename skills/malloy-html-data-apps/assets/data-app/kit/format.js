@@ -39,10 +39,12 @@ export function format(kind, v, { compact = false, digits } = {}) {
   return nf({ maximumFractionDigits: digits ?? (abs < 10 && !Number.isInteger(v) ? 2 : 0) }).format(v)
 }
 
+/** `good` as charts.js also spells it. */
+const GOOD = { rise: 'up', fall: 'down' }
 /** The definition of a metric by its model name, with a label spelled from the name when the app gives none. */
 export function metric(name) {
   const m = config?.metrics?.[name] || {}
-  return { name, label: m.label || name.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()), format: m.format || 'number', good: m.good ?? 'up', ...m }
+  return { name, label: m.label || name.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()), format: m.format || 'number', ...m, good: m.good === undefined ? 'up' : Object.hasOwn(GOOD, m.good ?? '') ? GOOD[m.good] : m.good }
 }
 
 /** A metric's value as text: fmtMetric('total_sales', 4740000, { compact: true }) -> "$4.74M". */

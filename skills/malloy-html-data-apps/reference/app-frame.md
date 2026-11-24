@@ -33,9 +33,9 @@ for f in index.html app.js; do [ -e "public/$f" ] || cp "$T/$f" public/; done
 chmod -R u+w public
 ```
 
-An app built earlier carries its kit's version in `public/kit/kit.js` (`KIT_VERSION`) and on the running page
-(`<meta name="data-app-kit">`). Copying a newer kit over it is safe within one major version; across one, read what
-the kit's notes say changed before copying.
+An app built earlier carries its kit's version as `KIT_VERSION`, exported from `public/kit/kit.js`, and on the
+running page (`<meta name="data-app-kit">`). Copying a newer kit over it is meant to be safe within one major
+version; across one, compare the app's config with the new kit's worked `app.js` before copying.
 
 When the skill reached you only as text, `assets/` is not on disk: say so, and build from the minimal scaffold in
 `SKILL.md` to the same design.
@@ -83,6 +83,11 @@ source: sales is order_items extend {
     net_sales is total_sales { where: status != 'Cancelled' and status != 'Returned' }
     #(rollup) grain=["order_date", "category", "channel", "status"]
     items is count()
+    #(rollup) grain=["order_date", "category", "channel", "status"]
+    returned is count() { where: status = 'Returned' }
+    #(rollup) grain=["order_date", "category", "channel", "status"]
+    return_rate is returned / nullif(items, 0)        // a ratio of rolled-up sums rolls up when it says so too
+    aov is net_sales / nullif(order_count, 0)          // a distinct count does not roll up: from the stored source
 }
 ```
 

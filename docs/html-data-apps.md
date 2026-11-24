@@ -143,6 +143,20 @@ and adds nothing to the page's markup.
 | `Publisher.embed` | `(selector, options)` | `{ iframe, destroy() }` |
 | `Publisher.context` | property | `{ environment, package }` inferred from the URL |
 | `Publisher.setToken` | `(token \| null)` | `undefined`; the token then applies to all later queries on the page |
+| `Publisher.model` | `(modelPath, opts?)` | `Promise<Model>`: the model's sources, fields and their annotations |
+| `Publisher.packageResource` | `("build-plan" \| "materializations", opts?)` | `Promise<JSON>`: what Publisher builds for the package, and its runs |
+| `Publisher.colorScheme` | property | `"light"`, `"dark"`, or `null` until the framing page sends one |
+| `Publisher.onColorScheme` | `(fn)` | a function that stops `fn`; `fn` is called with each mode, at once if one is known |
+| `Publisher.colorSchemeApplied` | `(mode)` | `undefined`; tells the framing page the page has drawn `mode` |
+
+`query` and `queryFull` take `opts.meta`, an object the runtime fills with `servedFrom`, `path` (the table that
+served the answer and the ones considered), `executionTimeMs` and `versionId` (the version the query was pinned to,
+or `null`). `model` and `packageResource` read the same pinned version as the page's queries.
+
+A page in a frame hears the reader's light or dark mode as `publisher:color-scheme` (`{ type, mode }`), asks for it
+with `publisher:color-scheme-request`, and answers `publisher:color-scheme-applied` once it has drawn it. The
+Publisher console's viewer sends the mode; the runtime takes it from whatever window framed the page, since it only
+changes how the page looks.
 
 ### Querying
 
@@ -312,7 +326,8 @@ The iframe is sandboxed with `allow-scripts allow-same-origin allow-forms`. When
 you omit `height`, the embedded page measures its own content and posts its
 height to the host, which resizes the iframe to match; the host only accepts
 those messages from the iframe it created. You do not write any of that wiring,
-it ships in the runtime. If your embedded page sets `body { min-height: 100vh }`
+it ships in the runtime. `Publisher.embed` does not send the host's light or dark mode, so an embedded page keeps
+its own. If your embedded page sets `body { min-height: 100vh }`
 or similar, the runtime still measures the real content height rather than the
 viewport, so the frame does not grow without bound.
 

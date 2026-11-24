@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import path from "path";
 import { fileURLToPath } from "url";
 import vm from "vm";
+import { installVariables } from "../../../src/test_helpers/settings_env";
 import { type RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -42,39 +43,19 @@ describe("Publisher runtime: answer metadata and package reads (sandbox-eval HTT
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
    let publisher: Publisher;
+   let sdkSource: string;
 
-   beforeAll(async () => {
-      env = await startRestE2E();
-      baseUrl = env.baseUrl;
-      const fixtureDir = path.resolve(__dirname, "../../fixtures/query-givens");
-      const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: ENV_NAME,
-            packages: [{ name: PKG, location: fixtureDir }],
-            connections: [],
-         }),
-      });
-      if (!createRes.ok)
-         throw new Error(
-            `Failed to create test environment (${createRes.status}): ${await createRes.text()}`,
-         );
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline) {
-         const res = await fetch(
-            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}`,
-         );
-         if (res.ok) break;
-         await new Promise((r) => setTimeout(r, 250));
-      }
-      const sdkSource = await (
-         await fetch(`${baseUrl}/sdk/publisher.js`)
-      ).text();
+   // The runtime in a sandbox standing in for a page at `search`, recording every URL it fetches.
+   function page(search = "") {
+      const urls: string[] = [];
       const sandbox: Record<string, unknown> = {
-         fetch,
+         fetch: (url: string, init?: RequestInit) => {
+            urls.push(String(url));
+            return fetch(url, init);
+         },
          location: {
             pathname: `/environments/${ENV_NAME}/packages/${PKG}/`,
+            search,
             origin: baseUrl,
          },
          console,
@@ -85,7 +66,58 @@ describe("Publisher runtime: answer metadata and package reads (sandbox-eval HTT
       vm.runInContext(sdkSource, vm.createContext(sandbox), {
          filename: "publisher.js",
       });
-      publisher = (sandbox.window as { Publisher: Publisher }).Publisher;
+      return {
+         publisher: (sandbox.window as { Publisher: Publisher }).Publisher,
+         urls,
+      };
+   }
+
+   let restoreVersioning: (() => void) | undefined;
+
+   beforeAll(async () => {
+      // On, so the fixture publishes as the version its publisher.json names (1.0.0) and a page can be pinned to it.
+      restoreVersioning = installVariables({
+         PUBLISHER_PACKAGE_VERSIONING: "on",
+      });
+      env = await startRestE2E();
+      baseUrl = env.baseUrl;
+      const fixtureDir = path.resolve(__dirname, "../../fixtures/query-givens");
+      const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({
+            name: ENV_NAME,
+            packages: [],
+            connections: [],
+         }),
+      });
+      if (!createRes.ok)
+         throw new Error(
+            `Failed to create test environment (${createRes.status}): ${await createRes.text()}`,
+         );
+      // Published, so the package holds the version its publisher.json names.
+      const publishRes = await fetch(
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages`,
+         {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: PKG, location: fixtureDir }),
+         },
+      );
+      if (!publishRes.ok)
+         throw new Error(
+            `Failed to publish ${PKG} (${publishRes.status}): ${await publishRes.text()}`,
+         );
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline) {
+         const res = await fetch(
+            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}`,
+         );
+         if (res.ok) break;
+         await new Promise((r) => setTimeout(r, 250));
+      }
+      sdkSource = await (await fetch(`${baseUrl}/sdk/publisher.js`)).text();
+      publisher = page().publisher;
    });
 
    afterAll(async () => {
@@ -93,6 +125,7 @@ describe("Publisher runtime: answer metadata and package reads (sandbox-eval HTT
          method: "DELETE",
       }).catch(() => {});
       await env?.stop();
+      restoreVersioning?.();
    });
 
    it("fills opts.meta with what the response says about the answer, and still returns the rows", async () => {
@@ -124,8 +157,32 @@ describe("Publisher runtime: answer metadata and package reads (sandbox-eval HTT
    it("reads the model's sources and the package's build plan", async () => {
       const model = await publisher.model(MODEL);
       expect(JSON.stringify(model)).toContain("orders");
-      const plan = await publisher.packageResource("build-plan");
-      expect(plan).toBeDefined();
+      const plan = (await publisher.packageResource("build-plan")) as {
+         graphs: unknown[];
+         sources: unknown;
+      };
+      expect(Array.isArray(plan.graphs)).toBe(true);
+      expect(plan.sources).toBeDefined();
+   });
+
+   it("reads the model and the build plan at the version a pinned page was opened at", async () => {
+      const pinned = page("?versionId=1.0.0");
+      const meta: Record<string, unknown> = {};
+      await pinned.publisher.query(
+         MODEL,
+         "run: orders -> { aggregate: order_count }",
+         { meta },
+      );
+      expect(meta.versionId).toBe("1.0.0");
+      await pinned.publisher.model(MODEL);
+      await pinned.publisher.packageResource("build-plan");
+      const reads = pinned.urls.filter((u) =>
+         /\/models\/model\.malloy$|\/models\/model\.malloy\?|\/build-plan/.test(
+            u,
+         ),
+      );
+      expect(reads.length).toBe(2);
+      for (const u of reads) expect(u).toContain("versionId=1.0.0");
    });
 
    it("refuses a package resource it does not know", async () => {

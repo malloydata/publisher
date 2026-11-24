@@ -10,9 +10,9 @@
 //   - Publisher.queryFull(model, malloy, opts?) → Promise<MalloyResult>  (envelope for <malloy-render>)
 //       opts: { environment?, package?, sourceName?, queryName?, filterParams?,
 //               bypassFilters?, givens?, versionId?, meta? }. meta, an object, is filled
-//               with what the response says about the answer: { servedFrom, path,
-//               executionTimeMs, versionId } (path is the path report: the table that
-//               served it and the ones considered). versionId names a published
+//               with { servedFrom, path, executionTimeMs } from the response (path is
+//               the path report: the table that served it and the ones considered)
+//               and versionId, the version the query was pinned to, or null. opts.versionId names a published
 //               version; a page opened with `?versionId=` queries its own
 //               package at that version by default. givens is a name→value map bound as
 //               Malloy given: runtime parameters for this query (safe parameterization,
@@ -266,11 +266,18 @@
    // tells the page the reader's mode; the page, once it has drawn it, answers
    // with colorSchemeApplied, so a host holding the frame light can let it go.
    var colorScheme = null;
+   var appliedScheme = null;
    var colorSchemeListeners = [];
    var hostOrigin = null;
    function onColorScheme(fn) {
       colorSchemeListeners.push(fn);
-      if (colorScheme) fn(colorScheme);
+      if (colorScheme) {
+         try {
+            fn(colorScheme);
+         } catch (_e) {
+            /* a listener's error is its own */
+         }
+      }
       return function () {
          colorSchemeListeners = colorSchemeListeners.filter(function (f) {
             return f !== fn;
@@ -279,6 +286,7 @@
    }
    function colorSchemeApplied(mode) {
       if (mode !== "light" && mode !== "dark") return;
+      appliedScheme = mode;
       if (!window.parent || window.parent === window) return;
       try {
          window.parent.postMessage(
@@ -302,7 +310,11 @@
             return;
          if (d.mode !== "light" && d.mode !== "dark") return;
          hostOrigin = e.origin && e.origin !== "null" ? e.origin : null;
-         if (d.mode === colorScheme) return;
+         // The same mode again: a host that forgot the answer (a frame it reloaded) hears it again.
+         if (d.mode === colorScheme) {
+            if (appliedScheme === d.mode) colorSchemeApplied(d.mode);
+            return;
+         }
          colorScheme = d.mode;
          colorSchemeListeners.slice().forEach(function (fn) {
             try {

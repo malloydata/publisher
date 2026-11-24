@@ -118,7 +118,11 @@ export function fromHash(hash) {
   const q = new URLSearchParams(qs)
   const preset = q.get('p')
   // A real date only: 2024-02-30 matches the pattern but is no day, and every block would fail on it.
-  const isDay = (d) => /^\d{4}-\d\d-\d\d$/.test(d || '') && P.iso(P.toDate(d)) === d
+  const isDay = (d) => {
+    if (!/^\d{4}-\d\d-\d\d$/.test(d || '')) return false
+    const t = P.toDate(d)
+    return !Number.isNaN(t.getTime()) && P.iso(t) === d // 2024-13-01 is no date; 2024-02-30 rolls over
+  }
   // Own keys only: "constructor" or "__proto__" in an address must not reach a preset or a metric through the prototype.
   const own = (o, k) => k !== null && Object.prototype.hasOwnProperty.call(o, k)
   if (preset === 'custom' && isDay(q.get('from')) && isDay(q.get('to'))) s.period = { preset, from: q.get('from'), to: q.get('to') }
@@ -225,7 +229,7 @@ export function seriesQuery(metrics, s, which = 'current', opts = {}) {
   const g = grain(s)
   const r = which === 'current' ? range(s) : compareRange(s)
   const f = config.date.field
-  const by = rollingKey(f, r, g) || `bucket is ${f}.${g}`
+  const by = rollingKey(f, r, g) || `bucket is ${f}.${g}::date` // a date: a truncated timestamp east of UTC reads as the day before
   const order = P.ROLLING.has(g) ? 'k desc' : 'bucket'
   return run(`{ group_by: ${by}; aggregate: ${metrics.join(', ')}; order_by: ${order} }`, s, { ...opts, which })
 }

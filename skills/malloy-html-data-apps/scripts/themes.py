@@ -10,8 +10,9 @@ here, and refuses a file that differs. Without it, only themes.css is written, w
 
 Each theme is a complete look: a paper, inks, one accent, chart colours, a band for a dark lead, good and bad, and a
 display face for its headline figures. Light colours are chosen by hand from the subject; the dark ones are derived.
-Every colour is then checked, and nudged until it passes: text 4.5:1 on its paper (headlines 7:1), marks 3:1, the
-comparison 2.4:1, and the accent kept apart from bad. Run it after changing a theme; it prints what it nudged.
+Every colour is then checked, and nudged until it passes: text 4.5:1 on its paper (headlines 7:1), the first chart
+colour 3:1 and the others 2.2:1 (a chart with more than one colour names each in a legend or a label, and its rows are
+a click away), the comparison 2.4:1, and the accent kept apart from bad. Run it after changing a theme; it prints what it nudged.
 """
 import base64
 import colorsys

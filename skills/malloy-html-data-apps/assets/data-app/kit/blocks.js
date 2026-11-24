@@ -237,7 +237,7 @@ function howMade(spec, qs, results, said = '') {
     if (!deep.open || deep.__filled) return
     deep.__filled = true
     deep.append(...qs.map((q, i) => {
-      const rows = results[i] || []
+      const rows = flatRows(results[i] || [])
       const cols = rows.length ? Object.keys(rows[0]) : []
       const a = answered.get(q)
       const sb = a?.path?.servedBy
@@ -285,8 +285,26 @@ function askButton(spec, qs, said, covers) {
     items: [{ label: 'what it covers', value: covers.join(' ').slice(0, 900) }, ...qs.slice(0, 3).map((q, i) => ({ label: `query ${i + 1}`, value: q.slice(0, 900) }))],
     givens: Object.fromEntries(Object.entries(store.state.filters).filter(([, v]) => v.length)),
   }
+  // A host caps what it takes, so the context stays under 7,800 characters: the queries go first, from the last, then
+  // the longest filter lists are cut, and last the text of what it covers.
+  const fits = () => JSON.stringify(context).length <= 7800
+  while (!fits() && context.items.length > 1) context.items.pop()
+  for (const k of Object.keys(context.givens)) if (!fits()) context.givens[k] = context.givens[k].slice(0, 20)
+  if (!fits()) context.givens = {}
+  if (!fits()) context.items = [{ ...context.items[0], value: context.items[0].value.slice(0, 400) }]
   const { name, ask } = host()
   return h('button', { type: 'button', class: 'ghost ghost--accent back__ask', text: `Ask ${name} about this`, onclick: () => ask(prompt, context) })
+}
+
+/** Rows with a nested query (trend by's `series`) as flat rows: one per nested row, its fields named `series.bucket`. */
+function flatRows(rows) {
+  return rows.flatMap((r) => {
+    const nest = Object.keys(r).find((k) => Array.isArray(r[k]))
+    if (!nest) return [r]
+    const own = Object.fromEntries(Object.entries(r).filter(([k]) => k !== nest))
+    const kids = r[nest].length ? r[nest] : [{}]
+    return kids.map((c) => ({ ...own, ...Object.fromEntries(Object.entries(c).map(([k, v]) => [`${nest}.${k}`, v])) }))
+  })
 }
 
 export function downloadCsv(rows, cols, name) {
@@ -656,7 +674,7 @@ export function trend({ metric: n, by, top = 5, kicker, headline, span = 12, hei
     queries: (s) => {
       if (!by) return [S.seriesQuery([n], s, 'current', { where }), ...(S.compareRange(s) ? [S.seriesQuery([n], s, 'compare', { where })] : [])]
       const g = S.grain(s)
-      const bucket = S.rollingKey(S.config.date.field, S.range(s), g) || `bucket is ${S.config.date.field}.${g}`
+      const bucket = S.rollingKey(S.config.date.field, S.range(s), g) || `bucket is ${S.config.date.field}.${g}::date`
       // One query: the top values, each with its own series nested in it, so a row limit can never leave holes in a
       // line, and a value past the top is never fetched.
       return [S.run(`{ where: ${by} is not null; group_by: ${col === by ? by : `${col} is ${by}`}; aggregate: ${n}; nest: series is { group_by: ${bucket}; aggregate: ${n} }; order_by: ${n} desc; limit: ${top} }`, s, { where, ignore: S.config.filters.filter((f) => f.field === by).map((f) => f.key) })]

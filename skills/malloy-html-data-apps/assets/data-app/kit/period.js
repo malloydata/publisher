@@ -91,9 +91,12 @@ export function resolve(period, span) {
  */
 export function compareRange(period, range, mode, span) {
   if (mode === 'none' || period.preset === 'all') return null
-  // `to` is exclusive: move the last day the period includes, then step past it. Moving `to` itself would land a month
-  // back on its clamped last day and lose it (1-30 March against 1-27 February).
-  const shiftTo = (to, n) => addDays(addMonths(addDays(to, -1), n), 1)
+  // A full month, quarter or year is compared with the whole one before it, `to` the first day of the next. A period to
+  // date is compared with the same days of the one before: `to` is exclusive, so move the last day it includes, then
+  // step past it. Moving `to` itself would land a month back on its clamped last day and lose it (1-30 March against
+  // 1-27 February).
+  const full = PRESETS[period.preset]?.full
+  const shiftTo = (to, n) => (full ? addMonths(to, n) : addDays(addMonths(addDays(to, -1), n), 1))
   let r
   // A year earlier: 52 weeks back for a period counted in days, so Mondays line up with Mondays; the same dates for a
   // calendar period.
