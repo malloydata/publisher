@@ -1687,9 +1687,10 @@ paths:
         `PACKAGE_IS_VERSIONED`), as is a package with no `latest` yet: publish a new version to
         change content.
 
-        A `manifestLocation` URI that cannot be fetched or bound answers 500 with `reason`
-        `MANIFEST_BIND_FAILED`, on a versioned package as on the version route, and on an
-        unversioned one with nothing of the PATCH applied: its metadata and publisher.json stay as
+        A `manifestLocation` URI that cannot be fetched or bound is refused as on the version
+        route: 400 `MANIFEST_NOT_FOUND` when nothing is at it, 422 `MANIFEST_INVALID` when what is
+        there is not a build manifest, and otherwise 500 `MANIFEST_BIND_FAILED`. That holds on a
+        versioned package, and on an unversioned one with nothing of the PATCH applied: its metadata and publisher.json stay as
         they were, and it serves what it served before, the manifest it had bound or, with none,
         live (or this server's own store, where the server restores unversioned packages from it).
         A manifest that binds with some of its tables declined (one the warehouse does not hold,
@@ -1770,6 +1771,15 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "422":
+          description: >-
+            The `manifestLocation` holds no build manifest: it does not parse,
+            or is not a manifest (`reason` `MANIFEST_INVALID`; nothing of the
+            PATCH was applied).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           description: >-
             The `manifestLocation` could not be fetched or bound (`reason`
@@ -2045,9 +2055,14 @@ paths:
         they send. `manifestLocation` is the body's only field, so any other field is refused
         with 400 naming it, rather than read as a clear.
 
-        A manifest that cannot be fetched (unreachable, timed out, not a manifest) or bound
-        answers 500 with `reason` `MANIFEST_BIND_FAILED` and the cause in the message, and
-        nothing of it is applied: the version's `manifestLocation` stays what it was, the version
+        A manifest that cannot be fetched or bound is refused with the cause in the message:
+        400 with `reason` `MANIFEST_NOT_FOUND` when nothing is at the location (no such file, or
+        an object store's no such object or bucket); 422 with `reason` `MANIFEST_INVALID` when
+        what is there does not parse, is not a JSON object, or has an `entries` that is not an
+        object; and 500 with `reason` `MANIFEST_BIND_FAILED` otherwise (the fetch timed out, the
+        network failed, the store refused the server's credentials, or the bind threw). The
+        first two are the caller's input and fail the same way until it changes; the last is the
+        server's. Whichever it is, nothing of it is applied: the version's `manifestLocation` stays what it was, the version
         is not marked host-owned, and it serves what it served before the request, the manifest
         it had bound or, with none, live (or this server's own runs' tables, for a version no
         host has bound). Its status says the same: `manifestBindingStatus`, `boundManifestUri` and
@@ -2088,6 +2103,15 @@ paths:
           $ref: "#/components/responses/NotFound"
         "410":
           $ref: "#/components/responses/Gone"
+        "422":
+          description: >-
+            The manifest at `manifestLocation` does not parse, or is not a
+            build manifest (`reason` `MANIFEST_INVALID`; nothing of it was
+            applied).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "424":
           $ref: "#/components/responses/PackageManifestError"
         "500":
@@ -10221,6 +10245,13 @@ components:
             what it was (an unversioned package's whole PATCH is undone,
             publisher.json included), and the package or version serves what
             it served before. The message carries the cause.
+
+            MANIFEST_NOT_FOUND, on a 400 from the same routes, means nothing
+            is at the `manifestLocation` (no such file, object or bucket),
+            and MANIFEST_INVALID, on a 422, that what is there does not parse
+            or is not a build manifest. Both are the caller's input: nothing
+            of the manifest was applied, as with MANIFEST_BIND_FAILED, and
+            sending it unchanged fails the same way.
 
             Deliberately an open string rather than an enum. Generators render
             an enum closed, so adding a second value here would break every

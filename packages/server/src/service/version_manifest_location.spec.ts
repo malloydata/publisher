@@ -817,8 +817,8 @@ describe("a local run of a host-bound package or version", () => {
          .catch((error: unknown) => error);
       expect(refused).toBeInstanceOf(ManifestBindFailedError);
       expect(internalErrorToHttpError(refused as Error).json).toMatchObject({
-         code: 500,
-         reason: "MANIFEST_BIND_FAILED",
+         code: 400,
+         reason: "MANIFEST_NOT_FOUND",
       });
       expect((await versions().getVersion(PKG, "1.0.0")).hostOwned).toBe(false);
       expect(await rowOf("1.0.0")).toBeNull();
