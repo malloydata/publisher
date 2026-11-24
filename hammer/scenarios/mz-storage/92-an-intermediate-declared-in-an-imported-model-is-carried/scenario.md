@@ -95,7 +95,7 @@ Expect:
 | ------------ | --------------- | ---------- |
 | 99           | 2026-01-03      | 1000       |
 
-## Build (orchestrated, strict, pkg=cim)
+## Build (orchestrated, pkg=cim)
 
 - rollup -> cim_rollup__g2 @ lake (reused)
   reference: daily

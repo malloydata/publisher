@@ -1108,7 +1108,7 @@ source: mid is parent extend {
          // and it is refused rather than recomputed from raw: at plan, its
          // grouped strings being read from the warehouse, which the refusal
          // names; `deals2`, over it, with it.
-         const m = await build({ strictUpstreams: true });
+         const m = await build({});
          const pkg = await env.getPackage(parsePackageName(PKG), false);
          const refusals = Object.values(
             pkg.getBuildPlan()?.refusedSources ?? {},
@@ -1169,7 +1169,6 @@ source: monthly_live is raw -> {
          // failed as a host-supplied upstream at the wrong tier.
          const host = async (
             table: string,
-            strictUpstreams: boolean,
             schema?: unknown,
             contract?: unknown,
          ) => {
@@ -1196,19 +1195,15 @@ source: monthly_live is raw -> {
                         ...(contract ? { contract } : {}),
                      },
                   ],
-                  strictUpstreams,
                },
             });
             return settled(created.id);
          };
          // A reference that carries no column list, which stacking on a
          // stored table needs (a bound manifest or this worker's own record
-         // fills it): refused, strict or not, and says why; never recomputed.
-         for (const [table, strictUpstreams] of [
-            ["host_monthly_t", false],
-            ["host_monthly_strict_t", true],
-         ] as const) {
-            const refused = await host(table, strictUpstreams);
+         // fills it): refused, and says why; never recomputed.
+         for (const table of ["host_monthly_t"]) {
+            const refused = await host(table);
             expect(refused.status).toBe("FAILED");
             expect(refused.error).toContain(
                "'daily' is materialized in destination 'lake', but by a reference that carries no column list",
@@ -1218,7 +1213,6 @@ source: monthly_live is raw -> {
          // contract, the strings `monthly` groups cannot be judged: refused.
          const unjudged = await host(
             "host_monthly_no_contract_t",
-            true,
             daily.schema,
          );
          expect(unjudged.status).toBe("FAILED");
@@ -1228,7 +1222,6 @@ source: monthly_live is raw -> {
          // With the schema and the contract the host stored, it stacks.
          const stacked = await host(
             "host_monthly_schema_t",
-            true,
             daily.schema,
             (daily as { contract?: unknown }).contract,
          );
@@ -1393,7 +1386,7 @@ source: monthly is daily -> { group_by: cat; aggregate: grand is total.sum() }
          const live = await answer("m.malloy", GTM_SHAPE_QUERY);
          const liveJoined = await answer("m.malloy", GTM_SHAPE_JOINED_QUERY);
          expect(live.servedBy).toBe("live");
-         const m = await build({ strictUpstreams: true });
+         const m = await build({});
          expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
          const base = entryOf(m, "deals_including_deleted");
          const deals = entryOf(m, "deals");
@@ -1422,7 +1415,7 @@ source: monthly is daily -> { group_by: cat; aggregate: grand is total.sum() }
       it("refuses the same shape when neither names its table: never recomputed, answered live", async () => {
          await setUp({ "m.malloy": extendOnlyModel(false) });
          const live = await answer("m.malloy", EXTEND_ONLY_QUERY);
-         const m = await build({ strictUpstreams: true });
+         const m = await build({});
          expect(
             (entryOf(m, /^(d_incl|deals2)$/) as { error?: string }).error ?? "",
          ).toContain(

@@ -79,7 +79,7 @@ Expect:
 | --------------- | ---------- |
 | 350             | 3          |
 
-## Build refused (orchestrated, strict, pkg=dcr)
+## Build refused (orchestrated, pkg=dcr)
 
 `daily` by reference, `counts` by nothing: the build would inline `counts`.
 

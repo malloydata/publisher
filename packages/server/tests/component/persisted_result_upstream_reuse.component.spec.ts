@@ -167,7 +167,7 @@ describe("a persisted view or query over a persisted source reads its table", ()
       // `a` first, so each result has a stored upstream to (not) read.
       await build({ sourceNames: ["a"] });
       resetMaterializationTelemetryForTesting();
-      strict = await build({ strictUpstreams: true });
+      strict = await build({});
       recomputes = await metrics.collectCounter(
          "publisher_materialization_upstream_recompute_total",
          {

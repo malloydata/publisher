@@ -481,7 +481,7 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
          // Out of band: a downstream that recomputed from raw would hold no
          // rows.
          await f.emptyRaw();
-         second = await f.build({ strictUpstreams: true });
+         second = await f.build({});
          served = await f.ask(asText(mechanism));
       }, 300_000);
       afterAll(() => f.close());
@@ -553,7 +553,7 @@ for (const tier of tiers) {
       beforeAll(async () => {
          await f.open();
          live = await f.ask(asText(MECHANISMS[0]));
-         run = await f.build({ strictUpstreams: true });
+         run = await f.build({});
       }, 300_000);
       afterAll(() => f.close());
 

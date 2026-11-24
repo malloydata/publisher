@@ -88,7 +88,7 @@ Expect:
 
 cites: its upstream 'regional' declares a persisted table, but it is refused
 
-## Build (orchestrated, strict, pkg=cmx)
+## Build (orchestrated, pkg=cmx)
 
 What the plan lists: `daily` builds.
 
