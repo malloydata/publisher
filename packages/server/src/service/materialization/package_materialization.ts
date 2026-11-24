@@ -36,6 +36,7 @@ import {
 import { splitManifestEntries } from "./run/manifest_loader";
 import { packageRelativeSourceID } from "./text/read_text";
 import { refreshStringCapabilities } from "./serve/source_capability";
+import { stopsReadAt } from "./domain/freshness";
 import { recordScopeFacts } from "./serve/scope_facts";
 import type { Connection, MalloyConfig } from "@malloydata/malloy";
 import { components } from "../../api";
@@ -95,22 +96,18 @@ import {
    deriveDatabaseServeBindings,
    holdStorageToContracts,
    type IncompatibleTable,
-   type ObservedDrift,
    type UnreadTable,
    kindFromPlan,
    v1StoredColumnsOf,
 } from "./serve/bind";
 import {
    type ContractVerdict,
-   MATERIALIZATION_TYPES_UNRECORDED_CODE,
    type ServeVerdict,
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
 import {
    type BoundTableTypeFinding,
    boundTableTypeFindings,
-   type DatabaseDriftFinding,
-   databaseDriftFindings,
 } from "./serve/storage_bindings";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import { tablePathParts } from "../quoting";
@@ -262,7 +259,7 @@ export class PackageMaterialization {
     * none (a hand-made bind), whose tables are read as their build wrote them.
     */
    private observedColumns: ReadonlyMap<string, ObservedColumns> | undefined;
-   /** What the last snapshot found of the observation: drift, and tables not read. */
+   /** What the last snapshot found of the observation: tables left out, and why. */
    /** The pending re-read of the tables the last read left unread. */
    /** Set by {@link dispose}: the package is released. */
    private disposed = false;
@@ -270,17 +267,13 @@ export class PackageMaterialization {
       | { timer: ReturnType<typeof setTimeout>; attempt: number }
       | undefined;
    private observedOutcome: {
-      drifted: ObservedDrift[];
       unread: UnreadTable[];
-      uncaptured: string[];
       /** Bound tables whose entry carries no column contract (both tiers). */
       contractMissing: string[];
       /** Bound tables that no longer match their contract (both tiers). */
       incompatible: IncompatibleTable[];
    } = {
-      drifted: [],
       unread: [],
-      uncaptured: [],
       contractMissing: [],
       incompatible: [],
    };
@@ -313,6 +306,12 @@ export class PackageMaterialization {
    private commitChain: Promise<void> = Promise.resolve();
    /** The snapshot from before a bind that is compiling ({@link servedSnapshot}). */
    private committing: Snapshot | undefined;
+   /**
+    * The commit at the next freshness edge ({@link scheduleLapse}): when a
+    * bound table's window lapses, the tables a query reads change with no
+    * bind, so the served copy is compiled over them then.
+    */
+   private lapseTimer: ReturnType<typeof setTimeout> | undefined;
    /** The pending re-read of the `storage=` tables the last bind left unread. */
    private storageRetry: ReturnType<typeof setTimeout> | undefined;
    /** The `storage=` entries {@link storageBindings} were made from, by address. */
@@ -377,10 +376,6 @@ export class PackageMaterialization {
          snapshot: () => this.snapshot(),
          storageBindings: () => this.storageBindings,
          databaseEntries: () => this.databaseEntries,
-         typesUnrecorded: () => {
-            this.snapshot();
-            return this.observedOutcome.uncaptured;
-         },
          contractVerdicts: () => this.contractVerdicts(),
          deploymentFacts: () => this.deploymentFacts,
          destinationSchema: (name) => this.serveDestinationSchema?.(name),
@@ -751,7 +746,6 @@ export class PackageMaterialization {
          observed: this.storageObserved,
       });
       this.observedOutcome = {
-         drifted: observed.drifted,
          // A table a stored read failed on is unread until the rebind reads
          // it: a failed read is never a verdict on the table (a swap's
          // rename window, a permission, a live table it joined).
@@ -764,7 +758,6 @@ export class PackageMaterialization {
                detail: "a query's read of it failed; it is read again",
             })),
          ],
-         uncaptured: observed.uncaptured,
          contractMissing: [
             ...observed.contractMissing,
             ...stored.contractMissing,
@@ -1007,15 +1000,21 @@ export class PackageMaterialization {
          change();
          const next = this.snapshot();
          // How each model's sources compare strings, read again on every
-         // commit that serves a table: read admission looks it up per query.
-         if (next.bindings.length > 0 || Object.keys(next.entries).length > 0) {
-            await Promise.all(
-               [...this.owner.models().values()].map((model) => {
-                  model.setStringCapabilityReader(refreshStringCapabilities);
-                  model.setScopeFactsRecorder(recordScopeFacts);
-                  return model.refreshStringCapabilities();
-               }),
-            );
+         // commit that serves a table, and for models a reload just
+         // installed: read admission looks it up per query. Started, never
+         // awaited: a warehouse catalog read must not hold a commit (or a
+         // reload), and a query waits for a read still running only as long
+         // as `stringCapabilitiesOf` bounds it.
+         if (
+            models ||
+            next.bindings.length > 0 ||
+            Object.keys(next.entries).length > 0
+         ) {
+            for (const model of this.owner.models().values()) {
+               model.setStringCapabilityReader(refreshStringCapabilities);
+               model.setScopeFactsRecorder(recordScopeFacts);
+               void model.refreshStringCapabilities();
+            }
          }
          if (next.bindings !== this.publishedBindings || models) {
             this.publishedBindings = next.bindings;
@@ -1037,6 +1036,61 @@ export class PackageMaterialization {
          }
       } finally {
          this.committing = undefined;
+         this.scheduleLapse();
+      }
+   }
+
+   /**
+    * Arm the commit at the next instant a bound table stops being read (its
+    * freshness window lapses, and its fallback does not serve stale): the
+    * bindings a query pins change then with no bind, so each model's served
+    * copy, its problems and its scope facts are compiled over the tables
+    * read from that edge, as a bind's commit compiles them. Re-armed after
+    * every commit; one timer per package, never holding the process open.
+    */
+   private scheduleLapse(): void {
+      if (this.lapseTimer) clearTimeout(this.lapseTimer);
+      this.lapseTimer = undefined;
+      if (this.disposed) return;
+      const now = Date.now();
+      let edge: number | undefined;
+      for (const b of this.snapshot().bindings) {
+         const at = stopsReadAt({
+            dataAsOf: b.freshAsOf,
+            freshnessWindowSeconds: b.freshnessWindowSeconds,
+            freshnessFallback: b.freshnessFallback,
+         });
+         if (
+            at !== undefined &&
+            at > now &&
+            (edge === undefined || at < edge)
+         ) {
+            edge = at;
+         }
+      }
+      if (edge === undefined) return;
+      // setTimeout's longest delay; a later edge re-arms when this fires.
+      const delay = Math.min(edge - now, 2_147_483_647);
+      const timer = setTimeout(() => {
+         this.lapseTimer = undefined;
+         const run = this.commitChain.then(() => this.commitLapse());
+         this.commitChain = run.catch(() => undefined);
+      }, delay);
+      (timer as { unref?: () => void }).unref?.();
+      this.lapseTimer = timer;
+   }
+
+   /** The commit {@link scheduleLapse} arms: every model compiled over the tables read now. */
+   private async commitLapse(): Promise<void> {
+      if (this.disposed) return;
+      try {
+         await Promise.all(
+            [...this.owner.models().values()].map((model) =>
+               model.prepareServedCopy(),
+            ),
+         );
+      } finally {
+         this.scheduleLapse();
       }
    }
 
@@ -1231,6 +1285,8 @@ export class PackageMaterialization {
     */
    dispose(): void {
       this.disposed = true;
+      if (this.lapseTimer) clearTimeout(this.lapseTimer);
+      this.lapseTimer = undefined;
       this.cancelUnreadRetry();
       this.cancelStorageRetry();
    }
@@ -1630,48 +1686,13 @@ export class PackageMaterialization {
    }
 
    /**
-    * Log and count what the bind's column read found: drifted tables, each
-    * column of them the package warning reports counted as a `storage=`
-    * table's is, and tables it could not read. `only`: the tables a retry
-    * read again, so a table is counted and logged once per read of it.
+    * Log and count what the bind's column read found: tables with no
+    * contract, tables that no longer match theirs, and tables it could not
+    * read. `only`: the tables a retry read again, so a table is counted and
+    * logged once per read of it.
     */
    private logObservedOutcome(only?: ReadonlySet<string>): void {
       const read = (id: string) => only === undefined || only.has(id);
-      for (const finding of this.databaseDriftFindings()) {
-         if (!read(finding.sourceEntityId)) continue;
-         for (const m of finding.mismatches) {
-            recordStoredColumnTypeMismatch("serve", m.declaredType);
-         }
-      }
-      for (const drift of this.observedOutcome.drifted) {
-         if (!read(drift.sourceEntityId)) continue;
-         const asDouble = drift.columns.filter((c) => c.storedAsDouble);
-         if (asDouble.length > 0) {
-            logger.warn(
-               "A DuckLake table holds a 128-bit integer column as a DOUBLE, so it is never read as exact: each such column is answered live where live keeps more digits",
-               {
-                  code: warnings.DATABASE_COLUMN_TYPE_MISMATCH_CODE,
-                  packageName: this.owner.packageName(),
-                  sourceEntityId: drift.sourceEntityId,
-                  columns: asDouble,
-               },
-            );
-            if (asDouble.length === drift.columns.length) continue;
-         }
-         const reported = drift.columns.filter(
-            (c) => !c.storedAsDouble && !c.castOnly,
-         );
-         if (reported.length === 0) continue;
-         logger.warn(
-            "A database table's column types changed outside a build; each changed column is read through a faithful cast or answered live",
-            {
-               code: warnings.DATABASE_COLUMN_TYPE_MISMATCH_CODE,
-               packageName: this.owner.packageName(),
-               sourceEntityId: drift.sourceEntityId,
-               columns: reported,
-            },
-         );
-      }
       for (const id of this.observedOutcome.contractMissing) {
          if (!read(id)) continue;
          logger.warn(
@@ -1694,17 +1715,6 @@ export class PackageMaterialization {
                reason: "incompatible",
                code: table.code,
                columns: table.columns,
-            },
-         );
-      }
-      for (const id of this.observedOutcome.uncaptured) {
-         if (!read(id)) continue;
-         logger.warn(
-            "A database table's build recorded no column types, so a change since the build cannot be ruled out; its sources answer live until it is rebuilt",
-            {
-               code: MATERIALIZATION_TYPES_UNRECORDED_CODE,
-               packageName: this.owner.packageName(),
-               sourceEntityId: id,
             },
          );
       }
@@ -1978,6 +1988,7 @@ export class PackageMaterialization {
          void model.prepareServedCopy();
       }
       this.bindTypeFindings(bindings);
+      this.scheduleLapse();
    }
 
    /**
@@ -2026,6 +2037,22 @@ export class PackageMaterialization {
       for (const model of this.owner.models().values()) {
          this.setServedCopyContextOn(model);
       }
+   }
+
+   /**
+    * Start reading how every loaded model's sources compare strings, to
+    * record with each model's runtime: read admission only looks it up, and
+    * waits a bounded time for a read still running, so a query over a table
+    * bound later never judges it unread. Load does not wait for it (a warehouse catalog
+    * read must not hold a load). Every commit that serves a table reads it
+    * again. Never throws.
+    */
+   async recordStringCapabilitiesAtLoad(): Promise<void> {
+      await Promise.all(
+         [...this.owner.models().values()].map((model) =>
+            model.refreshStringCapabilities(),
+         ),
+      );
    }
 
    private setServedCopyContextOn(model: Model): void {
@@ -2273,39 +2300,13 @@ export class PackageMaterialization {
       return warnings.storedColumnTypeWarnings(
          this.owner.models(),
          this.boundTypeFindings,
-         this.databaseDriftFindings(),
       );
    }
 
    /**
-    * The database tables whose columns the last bind found moved outside a
-    * build, as the `storage-column-type-mismatch` warning reports them.
-    */
-   private databaseDriftFindings(): DatabaseDriftFinding[] {
-      this.snapshot();
-      const { drifted } = this.observedOutcome;
-      if (drifted.length === 0) return [];
-      return databaseDriftFindings(drifted, this.plan.buildPlan, {
-         queryTimezone: this.driftQueryTimezone,
-      });
-   }
-
-   /** The time zone a moved column of `source`'s table is read in. */
-   private readonly driftQueryTimezone = (
-      sourceID: string,
-      source: NonNullable<NonNullable<BuildPlan>["sources"]>[string],
-   ): string | undefined =>
-      queryTimezoneOf(
-         source.preaggregate
-            ? this.baseDeclaration(source)
-            : this.declarationLookup(sourceID),
-      );
-
-   /**
-    * What a substituted database table's moved columns must read as, by its
-    * content address: its build source's declared columns and reader's time
-    * zone, the inputs {@link databaseDriftFindings} reads, so the bind and
-    * the warning decide each column alike.
+    * What a bound database table's source declares now, by its content
+    * address: its build source's declared columns and connection, which the
+    * bind holds the table's contract to (`declared_moved`).
     */
    private driftDeclaration(
       sourceEntityId: string,
@@ -2314,12 +2315,10 @@ export class PackageMaterialization {
          ([, s]) => s.sourceEntityId === sourceEntityId,
       );
       if (!found) return undefined;
-      const [sourceID, source] = found;
-      const queryTimezone = this.driftQueryTimezone(sourceID, source);
+      const [, source] = found;
       return {
          columns: source.columns ?? [],
          connectionName: source.connectionName,
-         ...(queryTimezone ? { queryTimezone } : {}),
       };
    }
 

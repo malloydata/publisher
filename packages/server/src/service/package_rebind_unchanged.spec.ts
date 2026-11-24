@@ -73,7 +73,10 @@ describe("a rebind of the same manifest", () => {
       manifest = (table) => ({
          [id!]: {
             tableName: table,
-            contract: contractFor(),
+            contract: contractFor([
+               { name: "a", type: "INTEGER" },
+               { name: "n", type: "BIGINT" },
+            ]),
             connectionName: "duckdb",
             schema: [
                { name: "a", type: "INTEGER" },

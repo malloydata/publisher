@@ -112,7 +112,7 @@ Expect:
 | ------------ | --------------- | ------------- | ---------- |
 | 99           | 2026-01-03      | 10            | 1000       |
 
-## Build (orchestrated, strict, pkg=pjw)
+## Build (orchestrated, pkg=pjw)
 
 Strict: `rollup` alone over the stored `daily`. Stacks on the table.
 

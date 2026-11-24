@@ -19,7 +19,7 @@ import { projectToStoredColumns, storedColumnOf } from "./run_plan";
 import {
    canonicalBoundValue,
    deltaSelect,
-   probeMaxWatermark,
+   sqlDeltaTarget,
    type DeltaTarget,
    type IncrementalLineage,
    type SqlRunner,
@@ -440,48 +440,27 @@ export function stackedDeltaTarget(params: {
    persistSource: PersistSource;
    storedSQL: string;
 }): DeltaTarget {
-   const { session, lineage, storedSQL } = params;
+   const { session, lineage } = params;
    const storedColumn = storedColumnOf(params.persistSource);
-   const watermarkColumn = storedColumn(lineage.watermarkName);
-   const runner = sessionRunner(session);
-   const range = (
-      start: Parameters<DeltaTarget["deltaRows"]>[0],
-      end: Parameters<DeltaTarget["deltaRows"]>[1],
-   ) =>
-      deltaSelect({
-         dialect: STORAGE_DIALECT,
-         sourceSQL: storedSQL,
-         watermarkName: watermarkColumn,
-         start,
-         end,
-      });
    return {
-      dialect: STORAGE_DIALECT,
+      ...sqlDeltaTarget({
+         dialect: STORAGE_DIALECT,
+         runner: sessionRunner(session),
+         quotedTablePath: params.quotedTablePath,
+         logicalTablePath: storageTablePath(
+            params.destinationName,
+            params.physicalTableName,
+            params.destinationSchema,
+         ),
+         sourceSQL: params.storedSQL,
+         watermarkName: storedColumn(lineage.watermarkName),
+         watermarkType: lineage.watermarkType,
+      }),
       storedColumn,
-      runner,
-      quotedTablePath: params.quotedTablePath,
-      logicalTablePath: storageTablePath(
-         params.destinationName,
-         params.physicalTableName,
-         params.destinationSchema,
-      ),
-      deltaRows: async (start, end) => range(start, end),
-      windowRows: async (start, end, columns) =>
-         `SELECT ${columns
-            .map((c) => quoteIdentifier(c, STORAGE_DIALECT))
-            .join(", ")} FROM (${range(start, end)}) AS __c`,
       // The parent's table is in the destination, so DESCRIBE reads no
       // row: a parent rebuilt at a wider type is seen before the delta.
       deltaColumnTypes: describedTypes(session),
       // What the stacked build's casts store each computed type as.
       storedAsBuilt: storedTypesAsBuilt,
-      probeSourceFrontier: () =>
-         probeMaxWatermark(
-            runner,
-            STORAGE_DIALECT,
-            storedSQL,
-            watermarkColumn,
-            lineage.watermarkType,
-         ),
    };
 }

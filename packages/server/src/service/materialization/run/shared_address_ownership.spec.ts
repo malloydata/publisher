@@ -494,7 +494,6 @@ describe("the build loop: one ownership decision per shared table", () => {
             ],
             seedEntries: {},
             signal: new AbortController().signal,
-            strict: false,
             owner: { environmentId: ENV_ID, packageName: PKG },
             ...(options.hostInstructed ? { hostInstructed: true } : {}),
          });

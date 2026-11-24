@@ -1646,6 +1646,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          buildPlanMs = await pkg.mz.applyLoadBuildPlan(outcome.buildPlan);
          // Before any bind, so a database rollup bound later is routed.
          pkg.mz.pushServedCopyContextToModels();
+         void pkg.mz.recordStringCapabilitiesAtLoad();
 
          await applyLoadGates(pkg);
          const entitiesStarted = performance.now();

@@ -65,7 +65,6 @@ function execute(
       instructions,
       seedEntries: seed,
       signal: new AbortController().signal,
-      strict: false,
       priorRefusals: [],
       hostInstructed: true,
    });

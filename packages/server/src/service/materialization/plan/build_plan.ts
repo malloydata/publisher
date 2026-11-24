@@ -169,7 +169,7 @@ import {
    stringReadsRefusal,
    unstoredReadRefusal,
 } from "../domain/string_reads";
-import { keyCheckFailed, keyCheckPassed } from "../domain/column_contract";
+import { pairLeafCheckFailure } from "../domain/column_contract";
 import { reachPersisted, SourceMap } from "../text/source_map";
 import { authorModelReachContext } from "../text/author_model";
 import { quotedIdentifier } from "../../malloy_text";
@@ -177,7 +177,11 @@ import type {
    PersistedViewPlan,
    StoredInDestination,
 } from "../domain/table_plans";
-import { type StorageOverStored, storedColumnsOf } from "./storage_over_stored";
+import {
+   standInUpstream,
+   type StorageOverStored,
+   storedColumnsOf,
+} from "./storage_over_stored";
 import { deletingWindowsOf } from "./rolling_window";
 import { storedMaterializeUpstream } from "./stored_base_copy";
 import {
@@ -1040,17 +1044,8 @@ function pairParentUnusable(
       tier === "same" ? plan.persist.storage : undefined,
    );
    if (!contract) return undefined;
-   const unpassed = leafKeys.filter((k) => !keyCheckPassed(contract, k));
-   if (unpassed.length === 0) return undefined;
-   const failed = unpassed.filter((k) => keyCheckFailed(contract, k));
-   // Name a key as the author wrote it (`items.item_id`), not as the contract
-   // spells it (`leaf:items.item_id`).
-   const shown = (keys: string[]) =>
-      keys.map((k) => `'${k.replace(/^leaf:/, "")}'`).join(", ");
-   const what =
-      failed.length > 0
-         ? `found the key ${shown(failed)} held more than once or NULL`
-         : `recorded no result for the key ${shown(unpassed)}`;
+   const what = pairLeafCheckFailure(contract, leafKeys);
+   if (what === undefined) return undefined;
    return (
       `it extends '${over.sourceName}', whose pair table it is built over ` +
       `with its join put back, and the leaf key check of its inlined ` +
@@ -1391,23 +1386,18 @@ function storedBaseDecline(
    if (columns === undefined) {
       return `${base} holds no columns a stored table can stand in for`;
    }
-   const handle = "publisher_stand_in_base";
    const text = args.chainBuildText(
       {
          downstream: { sourceID: source.sourceID, name: source.name },
          destination: { name: destination, schema: "main" },
          upstreams: [
-            {
-               entry: {
-                  sourceEntityId: handle,
-                  sourceName: plan.baseSourceName,
-                  physicalTableName: handle,
-                  connectionName: destination,
-                  storageDestinationName: destination,
-                  schema: columns.map((c) => ({ ...c })),
-               },
-               names: { [plan.baseSourceName]: [storedBase.baseSourceID] },
-            },
+            standInUpstream({
+               handle: "publisher_stand_in_base",
+               name: plan.baseSourceName,
+               sourceID: storedBase.baseSourceID,
+               destination,
+               columns,
+            }),
          ],
          rollup: {
             baseSourceID: storedBase.baseSourceID,

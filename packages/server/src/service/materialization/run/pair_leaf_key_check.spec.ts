@@ -135,7 +135,6 @@ async function scenario() {
             : [],
          seedEntries: rebuild ? {} : previous.entries,
          signal: new AbortController().signal,
-         strict: false,
          priorRefusals: [],
          hostInstructed: orchestrated,
          uniqueness: ledger,

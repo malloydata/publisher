@@ -21,7 +21,6 @@ import {
    GATE_LEGS,
    GATE_SWITCH_KEYS,
    GATE_TIERS,
-   gateColumnsExact,
    type GatedTable,
    type GateSwitches,
    legMayPassGate,
@@ -75,7 +74,6 @@ const READ_FIELDS: Exactly<
    | "ownGateKept"
    | "holdsOnlyUngatedRows"
    | "gateColumnTypes"
-   | "gateColumnUpstreamTypes"
    | "gatesReadNoColumn"
    | "gateColumnsExactRecorded"
 > = true;
@@ -172,29 +170,7 @@ function dumpAndFail(file: string, rows: string[]): never {
    );
 }
 
-/**
- * Every read in {@link GATE_READS} in the form lookup admission builds: each
- * table's exactness recorded (`gateColumnsExactRecorded`, from its column
- * contract) and no warehouse types, which must decide row for row as the
- * types do.
- */
-function recordedReads(): Record<string, readonly TableRead[]> {
-   return Object.fromEntries(
-      Object.entries(GATE_READS).map(([read, tables]) => [
-         read,
-         tables.map((t) => {
-            const { gateColumnUpstreamTypes: _upstream, ...rest } = t;
-            return { ...rest, gateColumnsExactRecorded: gateColumnsExact(t) };
-         }),
-      ]),
-   );
-}
-
 describe("the gate policy, frozen until the security review (plan question 14)", () => {
-   it("decides every read as its recorded exactness form does", () => {
-      expectFrozen(legRows(recordedReads()), FROZEN_LEG_ROWS);
-   });
-
    it("keeps gates for exactly these tables", () => {
       if (DUMP) dumpAndFail(`${DUMP}.tables.json`, tableRows());
       expectFrozen(tableRows(), FROZEN_TABLE_ROWS);

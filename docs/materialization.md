@@ -1032,10 +1032,10 @@ that would rebuild a table nobody asked to rebuild, and store rows that need not
 every other reader of the upstream sees. A downstream that cannot be built over its upstream's
 table answers live instead, through the served copy, which reads that table.
 
-`strictUpstreams` and `warehouseReach` in `buildInstructions` are accepted and ignored. Both are
-still validated (a non-boolean `strictUpstreams`, or a `warehouseReach` other than `recompute` or
-`refuse`, is a 400), and a request that sends either logs one warning,
-`buildInstructions options are deprecated and ignored`. A later release removes them.
+`strictUpstreams` in `buildInstructions` is accepted and ignored. It is still validated (a
+non-boolean is a 400), and a request that sends it logs one warning, `buildInstructions options
+are deprecated and ignored`. A later release removes it. `warehouseReach` is removed: a request
+that sends it is a 400 that names it.
 
 **Refused when the package is planned.** What the plan can see, it refuses before any run, as
 `upstream_table_unusable` in `refusedSources`, with a `*-not-built` warning and a `message` naming
@@ -1101,6 +1101,19 @@ An extension's own `#(materialize)` table is held to the same rule: one whose bu
 parent's table does not compile, or cannot be written, is refused at plan as
 `upstream_table_unusable`, naming the parent and why, and is never built over the chain from the
 warehouse ([extension tables](#the-served-copy-materialization-v2-publisher_materialize)).
+
+**The regression suite.** These specs pin the rule; a change that breaks one has let a build read
+something other than its upstream's table, or serve a table its contract does not describe:
+
+| What it proves | Spec |
+| --- | --- |
+| A downstream reads its upstream's table, never raw (the drop-raw proof), on the database tier and in a destination | `tests/component/downstream_reads_upstream_table`, `tests/component/storage_downstream_reads_table` |
+| A persisted view or query reads its source's table | `tests/component/persisted_result_upstream_reuse` |
+| An upstream altered since its build is refused `schema_incompatible`, never read or recomputed | `tests/component/chained_build_upstream_drift`, `tests/component/storage_chained_build_upstream_drift`, `tests/component/upstream_column_dropped` |
+| A host's reference is held to the `nativeSchema` it carries | `tests/component/reference_upstream_types` |
+| A stacked `storage=` build compares strings as live does, or is refused | `tests/component/r4/stacked_storage_collation` |
+| Every chained `storage=` source in the corpus stacks on its parents' tables | `src/service/materialization/run/chained_storage_corpus` (with its golden file) |
+| A fleet mid-rollout reads older workers' manifests | `src/service/materialization/run/v1_mixed_fleet_manifest` |
 
 ### The column contract and what a bind checks
 
@@ -1214,22 +1227,18 @@ live in the other (an importer whose own copy is off). Its verdict is `serves`, 
 through the first model read its table, and `notServedIn` names the second. A consumer must read
 `notServedIn` on every verdict, not only on a `live` one.
 
-**Pending after a bind.** A bind returns before each model's served copy recompiles over the tables
-it bound, and that compile is what `notServedIn` and a `served_copy` reason are read from. Until it
-lands, a verdict on a source the served copy reads (`#(materialize)` or `#@ persist`), held by a
-model whose copy is not yet compiled over the tables bound now, carries `servedCopyPending: true`
-and no served-copy judgement: a bound, fresh table reads `serves`, even one the compile will leave
-unread. **A host that reads `GET …/packages/{pkg}/status` after a bind must re-read it while any
-verdict carries `servedCopyPending`**; once it is absent, that verdict is final for the bind. The
-compile usually lands well under a second after the bind. A query never waits on it: each compiles
-or reuses the copy over the tables bound when it starts. A read that finds a copy pending starts its
-compile if nothing else has, one at a time per model, so polling clears the marker on its own: a
-freshness window that lapses changes the tables a query reads with no bind, and a model nobody
-queries would otherwise stay pending. A copy whose compile fails outright is recorded as
-`compile_failed`, not left pending, and is retried: by the next query at once, and by a read
-30 seconds later. While a model's copy is pending, the package's `served-copy-not-served` warnings
-for that model are withheld rather than carried over from the previous bind, so a bind response
-never lists a stale one; they appear with the compile that lands.
+**Final when a commit returns.** Every change to the tables a query reads is a commit: each
+model's served copy, the source of `notServedIn` and a `served_copy` reason, is compiled over the new
+tables before they are swapped in, and models read the previous tables until then. A bind is one
+commit. A freshness window that lapses is another: the tables a query reads change with no bind, so
+the package arms a commit at the next instant a bound table stops being read (its window lapses and
+its fallback does not serve stale), and compiles every model's copy over the tables read from that
+edge, with no query or status read needed. **A verdict read after a bind returns is final for that
+bind**; `servedCopyPending` is retained in the schema and no longer produced. The lapsed table
+itself is judged `stale` from the edge, by its own freshness; between the edge and the commit
+landing (the copy's compile time), a query compiles or reuses the copy over the tables it reads, as
+it always does. A copy whose compile fails outright is recorded as `compile_failed` and is retried
+by the next query.
 
 For example, a model whose copy fails across connections reports every table it holds, either
 kind, as:

@@ -566,7 +566,7 @@ describe.skipIf(process.platform === "win32")(
          }
       });
 
-      it("refuses a downstream carrying author SQL as a shape failure, so the caller recomputes", async () => {
+      it("refuses a downstream carrying author SQL as ineligible", async () => {
          const dir = mkdtempSync(join(tmpdir(), "t3-sql-"));
          try {
             await seedLake(dir);
@@ -830,7 +830,7 @@ describe.skipIf(process.platform === "win32")(
             }
          });
 
-         it("refuses, as a shape failure the caller recomputes, a downstream reading the left-out column", async () => {
+         it("refuses as ineligible a downstream reading the left-out column", async () => {
             const dir = mkdtempSync(join(tmpdir(), "t3-exotic-map-"));
             try {
                await seedExotic(dir);

@@ -51,14 +51,6 @@ const MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE =
    "materialization-connection-cannot-hold-table";
 
 /**
- * The `code` of the package warning for a database table whose build
- * recorded no column types: the bind leaves it out, so the source serves
- * live until it is rebuilt.
- */
-export const MATERIALIZATION_TYPES_UNRECORDED_CODE =
-   "materialization-types-unrecorded";
-
-/**
  * The warning code of a bound table whose entry carries no column contract:
  * it answers live until a build rebuilds it in full.
  */
@@ -84,7 +76,6 @@ export const VERDICT_WARNING_CODES: Readonly<
    destination_missing: MATERIALIZATION_DESTINATION_MISSING_CODE,
    connection_cannot_hold_table:
       MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE,
-   types_unrecorded: MATERIALIZATION_TYPES_UNRECORDED_CODE,
    contract_missing: MATERIALIZATION_CONTRACT_MISSING_CODE,
    incompatible: MATERIALIZATION_TABLE_INCOMPATIBLE_CODE,
 };
@@ -113,13 +104,6 @@ type ServeVerdictReason =
     * `storage=` table): the same name `RefusedSource.reason` gives the setting.
     */
    | "materialization_off"
-   /**
-    * A database table whose build recorded no column types (neither `schema`
-    * nor `nativeSchema` on its manifest entry): a change to its columns since
-    * the build cannot be ruled out, so the bind leaves it out until it is
-    * rebuilt with its types recorded.
-    */
-   | "types_unrecorded"
    /**
     * A table whose manifest entry carries no column contract (built before
     * contracts were recorded, or by a worker that predates them): never
@@ -223,13 +207,6 @@ export interface ServeVerdict {
     */
    notServedIn?: NotServedIn[];
    /**
-    * Some model that holds this source, which its served copy reads, has
-    * yet to compile its copy over the tables bound now (a bind returns
-    * before that compile), so the verdict carries no served-copy judgement
-    * yet: re-read it. Absent once every such model's copy is current.
-    */
-   servedCopyPending?: true;
-   /**
     * With `contract_missing` or `incompatible`: the table generation the
     * verdict judged, so a consumer drops a verdict about a table it has
     * since replaced: its `physicalTableName`, and the `builtAt` its entry
@@ -301,11 +278,6 @@ export interface ServeVerdictFacts {
     */
    freshEntityIds?: ReadonlySet<string>;
    /**
-    * Database: the bound sourceEntityIds the bind left out because their
-    * build recorded no column types (`types_unrecorded`). Absent: none.
-    */
-   typesUnrecordedEntityIds?: ReadonlySet<string>;
-   /**
     * Both tiers: the bound tables the bind left out because their entry
     * carries no contract (`contract_missing`) or because they no longer
     * match it (`incompatible`), by sourceEntityId, with the generation
@@ -349,12 +321,6 @@ export interface ServeVerdictFacts {
     * nothing. Absent: never judged.
     */
    servedCopyOutcome?(sourceID: string): ServedCopyOutcome | undefined;
-   /**
-    * Whether a model holding this source has a served copy that is not yet
-    * compiled over the bindings bound now ({@link ServeVerdict.servedCopyPending}).
-    * Absent: never.
-    */
-   servedCopyPending?(sourceID: string): boolean;
    /**
     * A persisted view's generated build source (`#@ persist` on a view),
     * by its plan sourceID: the source and view it stores. A query reaches it
@@ -743,15 +709,10 @@ function boundVerdict(
    const { sourceID, source, facts, origin, tier, subject, live } = s;
    // Every source the served copy reads, `#(materialize)` or `#@ persist`,
    // is judged by what its compile did, the same fact its
-   // `served-copy-not-served` warnings are read from; a compile still
-   // pending judges nothing.
+   // `served-copy-not-served` warnings are read from; a copy yet to
+   // compile for the first time judges nothing.
    const copy = s.servedCopy ? facts.servedCopyOutcome?.(sourceID) : undefined;
-   const pending =
-      s.servedCopy && facts.servedCopyPending?.(sourceID) === true
-         ? { servedCopyPending: true as const }
-         : {};
    const where = {
-      ...pending,
       ...(copy && copy.notServedIn.length > 0
          ? { notServedIn: copy.notServedIn }
          : {}),
@@ -881,18 +842,6 @@ function boundVerdict(
    }
    const held = contractVerdict();
    if (held) return held;
-   if (facts.typesUnrecordedEntityIds?.has(source.sourceEntityId)) {
-      return live(
-         "types_unrecorded",
-         `${subject}'s table is bound, but its build recorded no column types, ` +
-            `so a change to its columns since the build cannot be ruled out; ` +
-            `queries on it are answered live until it is rebuilt.`,
-         [
-            "Rebuild the table, so its build records its column types.",
-            "A host binding its own manifest sends each database entry's `nativeSchema` (or its `schema`).",
-         ],
-      );
-   }
    if (
       facts.freshEntityIds &&
       !facts.freshEntityIds.has(source.sourceEntityId)

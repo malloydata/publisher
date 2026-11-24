@@ -12,7 +12,11 @@
  * refuses. A source the eligibility gate refuses is returned as refused and serves live.
  */
 
-import { contractDigest, parseContract } from "../domain/column_contract";
+import {
+   contractDigest,
+   parseContract,
+   servableContract,
+} from "../domain/column_contract";
 import { PACKAGE_SANDBOX_CONNECTION } from "../../connection_config";
 import { storageWritable } from "../domain/placement";
 import { freshnessOf } from "../domain/freshness";
@@ -810,8 +814,8 @@ interface SelfInstructions {
 }
 
 /**
- * Whether a prior table must be rebuilt in full: one with no contract
- * (built before contracts were recorded), or one a bind found incompatible
+ * Whether a prior table must be rebuilt in full: one with no servable
+ * contract (built before contracts were recorded, or one listing no column), or one a bind found incompatible
  * with its contract, is never served from, so it is never carried, and an
  * incremental one is reseeded rather than advanced by a delta. So is a pair
  * table whose contract records no check of a leaf key the model declares
@@ -828,7 +832,7 @@ function rebuiltInFull(
    materialize: MaterializePlan | undefined,
 ): boolean {
    if (prior === undefined) return false;
-   const contract = parseContract(prior.contract);
+   const contract = servableContract(prior.contract);
    const leafKeys = materialize ? pairLeafContractKeys(materialize) : [];
    return (
       contract === undefined ||

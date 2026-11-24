@@ -92,6 +92,15 @@ function servedCopy() {
    return { serve: lanes, calls, compiled, kept };
 }
 
+/** A pin at `asOfMs` that reads `bindings`. */
+function pinnedAt(bindings: readonly Binding[], asOfMs: number): Pinned {
+   return {
+      snapshot: makeSnapshot(bindings),
+      asOf: new Date(asOfMs),
+      fresh: bindings,
+   } as unknown as Pinned;
+}
+
 /** Let the queued microtasks run. */
 async function ticks(): Promise<void> {
    for (let i = 0; i < 20; i++) await Promise.resolve();
@@ -193,6 +202,59 @@ describe("CompiledCopyLanes", () => {
       calls[1].finish("b");
       expect(await older).toBe("b");
       expect(kept()).toEqual(["a"]);
+   });
+
+   describe("across a freshness edge", () => {
+      const T0 = Date.parse("2026-11-01T00:00:00Z");
+      // Read until T0 + 60 s; `b` has no window.
+      const lapsing = {
+         ...binding("a", "2026-11-01T00:00:00Z"),
+         freshnessWindowSeconds: 60,
+         freshnessFallback: "live",
+      } as Binding;
+      const steady = binding("b");
+      const before = [lapsing, steady];
+      const after = [steady];
+      const PRE = T0 + 50_000;
+      const POST = T0 + 61_000;
+
+      it("keeps the copy compiled at the edge when a query pinned before it re-keeps the old copy meanwhile", async () => {
+         const { calls, compiled, kept } = servedCopy();
+         const first = compiled(pinnedAt(before, T0 + 10_000));
+         await ticks();
+         calls[0].finish("old");
+         await first;
+         // The commit at the edge starts its compile...
+         const lapse = compiled(pinnedAt(after, POST));
+         await ticks();
+         expect(calls).toHaveLength(2);
+         // ...then a query pinned just before the edge asks, with a later
+         // turn, and is answered from the old copy by identity.
+         expect(await compiled(pinnedAt(before, PRE))).toBe("old");
+         calls[1].finish("lapsed");
+         expect(await lapse).toBe("lapsed");
+         expect(kept()).toEqual(["lapsed"]);
+      });
+
+      it("never lets a query pinned before the edge replace the copy compiled after it", async () => {
+         const { calls, compiled, kept } = servedCopy();
+         const first = compiled(pinnedAt(before, T0 + 10_000));
+         await ticks();
+         calls[0].finish("old");
+         await first;
+         const lapse = compiled(pinnedAt(after, POST));
+         await ticks();
+         calls[1].finish("lapsed");
+         await lapse;
+         // A query pinned before the edge, asking after the commit kept its
+         // copy, compiles its own over the lapsing table.
+         const late = compiled(pinnedAt(before, PRE));
+         await ticks();
+         expect(calls).toHaveLength(3);
+         calls[2].finish("pre-edge");
+         expect(await late).toBe("pre-edge");
+         expect(kept()).toEqual(["lapsed"]);
+      });
    });
 
    it("keeps no compile that an invalidation overtook, and starts a fresh one after it", async () => {

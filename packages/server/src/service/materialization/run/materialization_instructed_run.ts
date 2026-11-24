@@ -93,7 +93,6 @@ export interface InstructedBuildOptions {
    instructions: BuildInstruction[];
    seedEntries: Record<string, ManifestEntry>;
    signal: AbortSignal;
-   strict?: boolean;
    /** Used only to reclaim this run's storage tables on failure. */
    owner?: { environmentId: string; packageName: string };
    buildMetadata?: BuildQueryMetadata;

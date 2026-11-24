@@ -29,4 +29,4 @@ export {
    chainBuildStringReads,
    planChainBuildText,
 } from "./serve/served_copy_serve";
-export { bigqueryBuildCompareBinary } from "./serve/gate_collation";
+export { bigqueryBuildCompareBinary } from "./serve/collation/bigquery_build";

@@ -22,7 +22,7 @@
  */
 
 import { isDuckLakeCatalogUnavailable } from "../../ducklake_catalog_unavailable";
-import { CompiledCopyLanes } from "./served_copy_lanes";
+import { CompiledCopyLanes, readsLapsedAt } from "./served_copy_lanes";
 import { createHash } from "crypto";
 import { requireUnique, verdictOf } from "../domain/key_check";
 import {
@@ -193,7 +193,7 @@ import {
    recordJoinsRead,
    ZONED_TRUNCATION_REASON,
 } from "./served_copy_checks";
-import { admissionMode, reportQueryWalk, shadowFact } from "./admission_parity";
+import { reportQueryWalk } from "./query_walks";
 import type { ScopeLane } from "./scope_facts";
 
 export type { ServedCopyProblem } from "./served_copy_types";
@@ -553,14 +553,30 @@ export class ServedCopyServe {
    }
 
    /**
-    * The author `sourceID`s the compiled copy re-rooted on a stored table,
-    * which are the sources it answers from storage; undefined before the
-    * first compile.
+    * The bindings the compiled copy re-rooted that are still read at `atMs`
+    * (all of them when it is absent). Past a table's freshness edge, and
+    * before the commit at that edge replaces the copy, the copy kept still
+    * re-roots it; a query compiles its own copy over what it pins, so only
+    * what this copy reports must leave the lapsed table out. A recorded
+    * fact checked against the caller's clock, no I/O.
     */
-   rerootedSourceIDs(): ReadonlySet<string> | undefined {
+   private rerootedAt(compiled: Compiled, atMs: number | undefined): Binding[] {
+      return atMs === undefined
+         ? compiled.rerooted
+         : compiled.rerooted.filter((b) => !readsLapsedAt([b], atMs));
+   }
+
+   /**
+    * The author `sourceID`s the compiled copy re-rooted on a stored table
+    * (still read at `atMs`, when given), which are the sources it answers
+    * from storage; undefined before the first compile.
+    */
+   rerootedSourceIDs(atMs?: number): ReadonlySet<string> | undefined {
       const compiled = this.lanes.kept(0);
       if (!compiled) return undefined;
-      return new Set(compiled.rerooted.flatMap((b) => b.sourceIDs ?? []));
+      return new Set(
+         this.rerootedAt(compiled, atMs).flatMap((b) => b.sourceIDs ?? []),
+      );
    }
 
    /**
@@ -579,18 +595,20 @@ export class ServedCopyServe {
 
    /**
     * The author `sourceID`s the compiled copy re-rooted on a database table
-    * and on no storage table; undefined before the first compile.
+    * and on no storage table (still read at `atMs`, when given); undefined
+    * before the first compile.
     */
-   rerootedOnDatabaseOnly(): ReadonlySet<string> | undefined {
+   rerootedOnDatabaseOnly(atMs?: number): ReadonlySet<string> | undefined {
       const compiled = this.lanes.kept(0);
       if (!compiled) return undefined;
+      const rerooted = this.rerootedAt(compiled, atMs);
       const onStorage = new Set(
-         compiled.rerooted
+         rerooted
             .filter((b) => !isDatabase(b))
             .flatMap((b) => b.sourceIDs ?? []),
       );
       return new Set(
-         compiled.rerooted
+         rerooted
             .filter(isDatabase)
             .flatMap((b) => b.sourceIDs ?? [])
             .filter((id) => !onStorage.has(id)),
@@ -604,11 +622,12 @@ export class ServedCopyServe {
     * compile. Not one that opts out of persist, or whose served surface the
     * load-time checks flag: those are declined at query time.
     */
-   servedThroughBaseSourceIDs(): ReadonlySet<string> {
+   servedThroughBaseSourceIDs(atMs?: number): ReadonlySet<string> {
       const compiled = this.lanes.kept(0);
       if (!compiled?.throughBase) return new Set();
-      const ids = new Set(compiled.rerooted.flatMap((b) => b.sourceIDs ?? []));
-      const names = new Set(compiled.rerooted.map((b) => b.sourceName));
+      const rerooted = this.rerootedAt(compiled, atMs);
+      const ids = new Set(rerooted.flatMap((b) => b.sourceIDs ?? []));
+      const names = new Set(rerooted.map((b) => b.sourceName));
       const declined = (id: string) =>
          !!compiled.optOutIDs?.has(id) || !!compiled.unsafeIDs?.has(id);
       return new Set(
@@ -958,9 +977,8 @@ export class ServedCopyServe {
     * The declines that depend only on the queried source and this compile,
     * in the order the walks run them: `chain`, a gate the copy cannot graft
     * then an opted-out or unsafe source on its chain; `zone`, the zone it
-    * computes in. Under `lookup` they are read from what the copy's compile
-    * recorded for a named source; a source written inline walks. Under
-    * `probe` they walk; under `shadow` both run, and the walk decides.
+    * computes in. They are read from what the copy's compile recorded for a
+    * named source; a source written inline walks, and is counted.
     */
    private async checkSourceDeclines(
       attempt: AnswerAttempt,
@@ -973,35 +991,12 @@ export class ServedCopyServe {
                  await checkOptOut(attempt);
               })()
             : checkSourceZone(attempt);
-      const mode = admissionMode();
-      if (mode === "probe") return walk();
       const recorded = await this.recordedDeclines(attempt, which);
-      if (mode === "lookup") {
-         if (recorded === "unrecorded") {
-            reportQueryWalk("served_copy_declines");
-            return walk();
-         }
-         if (recorded) attempt.decline(recorded.reason, recorded.code);
-         return;
+      if (recorded === "unrecorded") {
+         reportQueryWalk("served_copy_declines");
+         return walk();
       }
-      let walked: unknown;
-      try {
-         await walk();
-      } catch (err) {
-         walked = err;
-      }
-      if (recorded !== "unrecorded") {
-         shadowFact("served_copy_declines", walked, recorded, (d) =>
-            d === undefined
-               ? undefined
-               : d instanceof LegDecline
-                 ? d.code
-                 : d instanceof Error
-                   ? `error: ${d.message}`
-                   : (d as SourceDecline).code,
-         );
-      }
-      if (walked !== undefined) throw walked;
+      if (recorded) attempt.decline(recorded.reason, recorded.code);
    }
 
    /**

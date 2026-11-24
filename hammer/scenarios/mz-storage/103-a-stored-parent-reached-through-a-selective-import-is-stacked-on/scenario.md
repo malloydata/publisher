@@ -87,7 +87,7 @@ Expect:
 | ------------ | --------------- | ---------- |
 | 99           | 2026-01-03      | 1000       |
 
-## Build (orchestrated, strict, pkg=sim)
+## Build (orchestrated, pkg=sim)
 
 Strict: `weekly` alone, `daily` by reference. Stacks on the table.
 

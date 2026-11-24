@@ -20,6 +20,7 @@ import { upstreamTypesOf } from "../domain/upstream_schemas";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { errorCodeOf } from "../../../error_code";
 import {
+   type ColumnContract,
    type ContractKeyCheck,
    contractKeyName,
    parseContract,
@@ -164,7 +165,6 @@ import {
 import {
    noteUntypedReference,
    persistedReach,
-   readsUntypedReferences,
    type SourceBuildOptions,
 } from "./source_build";
 import type { KeyCheckRecord } from "./tier";
@@ -287,6 +287,15 @@ function withContractKeys(
 ): ManifestEntry {
    const contract = parseContract(entry.contract);
    if (!contract || Object.keys(keys).length === 0) return entry;
+   return entryWithKeys(entry, contract, keys);
+}
+
+/** `entry` with its parsed `contract`, `keys` merged over the ones it records. */
+function entryWithKeys(
+   entry: ManifestEntry,
+   contract: ColumnContract,
+   keys: Record<string, ContractKeyCheck>,
+): ManifestEntry {
    return {
       ...entry,
       contract: { ...contract, keys: { ...(contract.keys ?? {}), ...keys } },
@@ -438,8 +447,8 @@ export class InstructedBuild {
     * resolves it on a case-folding engine. Quoted for its own connection's
     * dialect; with no connection named, for the one dialect every connection
     * of this build shares. Undefined, never the name as given, when no dialect
-    * is found: the seed is not bound, and a downstream reads its upstream
-    * live (or, strict, fails its own compile). Throws
+    * is found: the seed is not bound, and a downstream fails its own
+    * compile (a strict miss). Throws
     * {@link UnquotableIdentifierError} for a name its dialect cannot quote.
     */
    private quoteSeedTablePath(
@@ -515,7 +524,6 @@ export class InstructedBuild {
          instructions,
          seedEntries,
          signal,
-         strict = false,
          owner,
          buildMetadata,
          incremental,
@@ -555,7 +563,7 @@ export class InstructedBuild {
             hostInstructed,
             materializePlans: materializePlansOf(tables),
          },
-         ...this.seedInstructedRun(seedEntries, connections, strict),
+         ...this.seedInstructedRun(seedEntries, connections),
          builtThisRun: [],
          retainedThisRun: [],
          failures: {},
@@ -842,13 +850,12 @@ export class InstructedBuild {
    private seedInstructedRun(
       seedEntries: Record<string, ManifestEntry>,
       connections: RunPlan["connections"],
-      strict: boolean,
    ): Pick<InstructedRun, "manifest" | "entries"> {
       // Accumulates physical names as sources build so downstreams resolve to
-      // them. In strict mode an upstream neither built nor seeded fails the
-      // compile (runtime-manifest-strict-miss) instead of recomputing live.
+      // them. Always strict: an upstream neither built nor seeded fails the
+      // compile (runtime-manifest-strict-miss), never recomputed live.
       const manifest = new Manifest();
-      manifest.strict = strict;
+      manifest.strict = true;
       const entries: Record<string, ManifestEntry> = {};
       for (const [sourceEntityId, entry] of Object.entries(seedEntries)) {
          if (entry.physicalTableName) {
@@ -866,8 +873,8 @@ export class InstructedBuild {
             } catch (err) {
                if (!(err instanceof UnquotableIdentifierError)) throw err;
                // A name its dialect cannot quote is not bound: a downstream
-               // reads its upstream live (or, strict, fails its own compile),
-               // and the rest of the run goes on.
+               // fails its own compile (a strict miss), and the rest of the
+               // run goes on.
                logger.warn(
                   "Seeded upstream's table name cannot be quoted for its dialect; " +
                      "not binding it for downstream reads",
@@ -2217,10 +2224,12 @@ export function withLeafKeys(
    declared: readonly string[] = [],
 ): ManifestEntry {
    const contract = parseContract(entry.contract);
+   // Unlike withContractKeys, a run whose leaf checks all failed to run still
+   // writes the parsed contract back.
    if (!contract || (leafChecks.length === 0 && declared.length === 0)) {
       return entry;
    }
-   const keys = { ...(contract.keys ?? {}) };
+   const keys: Record<string, ContractKeyCheck> = {};
    for (const key of declared) {
       keys[key] = { unique: false, level: "leaf", unverified: true };
    }
@@ -2229,7 +2238,7 @@ export function withLeafKeys(
          keys[check.contractKey] = { unique: record.unique, level: "leaf" };
       }
    }
-   return { ...entry, contract: { ...contract, keys } };
+   return entryWithKeys(entry, contract, keys);
 }
 
 /**
@@ -2741,10 +2750,7 @@ async function overStoredBaseSource(
               connection,
            )
         ).get(baseAddress);
-   if (
-      move?.kind === "types_unrecorded" &&
-      readsUntypedReferences(run.manifest, run.planFacts)
-   ) {
+   if (move?.kind === "types_unrecorded" && run.planFacts.hostInstructed) {
       noteUntypedReference(persistSource.name, baseName, "rollup");
    } else if (move) {
       run.environment.reportIncompatible?.([baseAddress]);
@@ -2939,11 +2945,7 @@ function withRollupUpstreamReuse(
    ) {
       return entry;
    }
-   const {
-      upstreamReuse: _reuse,
-      upstreamRecomputeReason: _reason,
-      ...rest
-   } = entry;
+   const { upstreamReuse: _reuse, ...rest } = entry;
    return run.readFrom?.has(address)
       ? { ...rest, upstreamReuse: "reused" }
       : rest;

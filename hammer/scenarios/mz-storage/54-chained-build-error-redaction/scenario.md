@@ -82,7 +82,7 @@ expect binding: rollup -> cbelake
 
 Operator drops the isolated catalog DB out-of-band; the next build will fail.
 
-## Build refused (orchestrated, strict, pkg=cbe)
+## Build refused (orchestrated, pkg=cbe)
 
 Strict chained rebuild of `rollup` reusing `daily` — fails (reaching the chained
 error path), and its error must not carry the catalog password.

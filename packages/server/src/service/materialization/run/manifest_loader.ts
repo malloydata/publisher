@@ -27,6 +27,7 @@ import {
    type KeyUniqueness,
    ManifestEntry,
 } from "../domain/types";
+import { parseKeyUniqueness } from "../domain/binding";
 
 type WireBuildManifest = components["schemas"]["BuildManifest"];
 
@@ -223,38 +224,25 @@ export function splitManifestEntries(
 
 /** The internal rollup key record a local-store entry may carry. */
 function keyUniquenessOnEntry(entry: ManifestEntry): KeyUniqueness | undefined {
-   const k = (entry as { keyUniqueness?: Partial<KeyUniqueness> })
-      .keyUniqueness;
-   if (!k) return undefined;
+   const k = parseKeyUniqueness(
+      (entry as { keyUniqueness?: unknown }).keyUniqueness,
+   );
    const own =
-      typeof k.keyColumn === "string" && typeof k.unique === "boolean"
+      k?.keyColumn !== undefined && k.unique !== undefined
          ? { keyColumn: k.keyColumn, unique: k.unique }
          : undefined;
-   const parentKeys =
-      k.parentKeys && typeof k.parentKeys === "object"
-         ? Object.fromEntries(
-              Object.entries(k.parentKeys).filter(
-                 ([, unique]) => typeof unique === "boolean",
-              ),
-           )
-         : {};
-   const parentKeyColumns =
-      k.parentKeyColumns && typeof k.parentKeyColumns === "object"
-         ? Object.fromEntries(
-              Object.entries(k.parentKeyColumns).filter(
-                 ([, column]) => typeof column === "string",
-              ),
-           )
-         : {};
-   const anyParent = Object.keys(parentKeys).length > 0;
    // A record from before the columns were kept carries none: each of its
    // checks then reads as unknown, and answers live until the next run.
-   return own || anyParent
+   return own || k?.parentKeys
       ? {
            ...(own ?? {}),
-           ...(anyParent ? { parentKeys } : {}),
-           ...(anyParent && Object.keys(parentKeyColumns).length > 0
-              ? { parentKeyColumns }
+           ...(k?.parentKeys
+              ? {
+                   parentKeys: k.parentKeys,
+                   ...(k.parentKeyColumns
+                      ? { parentKeyColumns: k.parentKeyColumns }
+                      : {}),
+                }
               : {}),
         }
       : undefined;

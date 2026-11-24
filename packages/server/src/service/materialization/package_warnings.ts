@@ -75,7 +75,6 @@ import {
 } from "./stored_column_types";
 import type {
    BoundTableTypeFinding,
-   DatabaseDriftFinding,
    MismatchHandling,
 } from "./serve/storage_bindings";
 
@@ -93,50 +92,12 @@ const MISMATCH_HANDLING_TEXT: Record<
       `\`::"double"\`) so the warehouse returns the declared type.`,
 };
 
-/**
- * What a database-table drift warning says of how the column is read: the table
- * was altered outside a build, so rebuilding it is the fix.
- */
-const DRIFT_HANDLING_TEXT: Record<
-   DatabaseDriftFinding["mismatches"][number]["handling"],
-   (declaredType: string) => string
-> = {
-   cast: (declaredType) =>
-      `It is read through a cast to \`${declaredType}\`, so it still serves ` +
-      `from the table; rebuilding the table clears this.`,
-   live: () =>
-      `No cast reads it as declared, so queries that read it are answered ` +
-      `live until the table is rebuilt.`,
-};
-
-/**
- * What a drift warning says when the table is as built but its source now
- * declares another type: the table's content address did not move, so a run
- * reuses it, and only a forced rebuild stores the declared type.
- */
-const UPSTREAM_DRIFT_HANDLING_TEXT: Record<
-   DatabaseDriftFinding["mismatches"][number]["handling"],
-   (declaredType: string) => string
-> = {
-   cast: (declaredType) =>
-      `It is read through a cast to \`${declaredType}\`, so it still serves ` +
-      `from the table; a forced rebuild (forceRefresh) clears this.`,
-   live: () =>
-      `No cast reads it as declared, so queries that read it are answered ` +
-      `live until the table is rebuilt with a forced refresh (forceRefresh): ` +
-      `its content address did not move, so a run reuses it.`,
-};
-
 type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 type Models = ReadonlyMap<string, Model>;
 
 /** The code on the warning for a rollup whose build found its join_one key repeated. */
 const ROLLUP_JOIN_ONE_KEY_REPEATED_CODE = "rollup-join-one-key-repeated";
-
-/** The code on the warning for a database table whose columns drifted outside a build. */
-export const DATABASE_COLUMN_TYPE_MISMATCH_CODE =
-   "database-column-type-mismatch";
 
 /**
  * The findings on authored annotations: an unservable one (a valid
@@ -770,14 +731,12 @@ export function servedCopyWarnings(
  * Warnings for stored columns whose type does not serve as the type Malloy
  * declares, one per source and column, read from the bindings bound now:
  * each model's `#@ persist` sources', then every other `storage=` table's
- * (`bound`), then each database table's whose columns moved outside a build
- * (`database`). Keyed by the source's sourceID, so two models' same-named
+ * (`bound`). Keyed by the source's sourceID, so two models' same-named
  * sources both report and a source several models import reports once.
  */
 export function storedColumnTypeWarnings(
    models: Models,
    bound: readonly BoundTableTypeFinding[],
-   database: readonly DatabaseDriftFinding[] = [],
 ): ApiPackageWarning[] {
    const warnings: ApiPackageWarning[] = [];
    const seen = new Set<string>();
@@ -813,31 +772,6 @@ export function storedColumnTypeWarnings(
    for (const finding of bound) {
       for (const m of finding.mismatches) {
          add(finding.modelPath ?? "", finding.subject, finding.sourceID, m);
-      }
-   }
-   for (const finding of database) {
-      for (const m of finding.mismatches) {
-         const key = `${finding.sourceID}\u0000${m.column}`;
-         if (seen.has(key)) continue;
-         seen.add(key);
-         warnings.push({
-            model: finding.modelPath ?? "",
-            subject: finding.subject,
-            code: DATABASE_COLUMN_TYPE_MISMATCH_CODE,
-            severity: "warn",
-            message:
-               (m.gone
-                  ? `no longer has column \`${m.column}\` (declared Malloy ` +
-                    `type \`${m.declaredType}\`): `
-                  : `stores column \`${m.column}\` as ` +
-                    `${m.storedType ?? "a type Malloy reads as no basic type"}, ` +
-                    `not its declared Malloy type \`${m.declaredType}\`: `) +
-               (m.declaredMoved
-                  ? `what its source reads changed type since the build. ` +
-                    UPSTREAM_DRIFT_HANDLING_TEXT[m.handling](m.declaredType)
-                  : `its table was altered outside a build. ` +
-                    DRIFT_HANDLING_TEXT[m.handling](m.declaredType)),
-         });
       }
    }
    return warnings;

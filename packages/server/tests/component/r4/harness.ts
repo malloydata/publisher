@@ -69,7 +69,6 @@ import {
    applyObservedColumns,
    deriveDatabaseServeBindings,
    kindFromPlan,
-   type ObservedDrift,
    v1StoredColumnsOf,
 } from "../../../src/service/materialization/serve/bind";
 import { capturedNativeSchema } from "../../../src/service/materialization/run/database_native_types";
@@ -377,7 +376,6 @@ export interface R4Fixture {
     * its build. Returns what the read found.
     */
    observeDatabaseColumns(): Promise<{
-      drifted: ObservedDrift[];
       unread: { sourceEntityId: string; reason: string }[];
       /** Tables that no longer match their column contracts, left out. */
       incompatible: {
@@ -1561,7 +1559,6 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             });
          }
          return {
-            drifted: applied.drifted,
             unread: applied.unread,
             incompatible: applied.incompatible,
          };

@@ -57,7 +57,7 @@ source: rollup is daily_wide -> {
 }
 ```
 
-## Build refused (orchestrated, strict, pkg=snb)
+## Build refused (orchestrated, pkg=snb)
 
 `daily` is a persisted upstream of `rollup`, reached through `daily_wide`, and
 nothing in this build provides it. Strict refuses rather than recomputing it,

@@ -250,7 +250,6 @@ describe("run telemetry through the build loop", () => {
                ],
                seedEntries: {},
                signal: (opts.abort ?? new AbortController()).signal,
-               strict: false,
             })
             .then(
                (value) => ({ value }),
@@ -727,7 +726,6 @@ describe("run telemetry review findings", () => {
             ],
             seedEntries: {},
             signal: new AbortController().signal,
-            strict: false,
          }),
       )) as {
          failures: Record<

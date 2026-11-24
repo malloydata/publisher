@@ -227,7 +227,6 @@ ${tier.model("drift_m", "amt.sum()", "drift_m_t")}`,
             // left out, never cast (the two sources may share one table).
             const observed = await fixture.observeDatabaseColumns();
             expect(observed.unread).toEqual([]);
-            expect(observed.drifted).toEqual([]);
             expect(observed.incompatible.length).toBeGreaterThan(0);
             for (const d of observed.incompatible) {
                expect(d.code).toBe("column_retyped");
@@ -425,7 +424,6 @@ source: ev is duckdb.table('ev') extend {
       const observed = await fixture.observeDatabaseColumns();
       expect(observed.unread).toEqual([]);
       // The altered rollup's table no longer matches its contract.
-      expect(observed.drifted).toEqual([]);
       expect(observed.incompatible).toEqual([
          expect.objectContaining({
             code: "column_retyped",
@@ -510,7 +508,6 @@ source: drift is ev extend {
          const observed = await fixture.observeDatabaseColumns();
          expect(observed.unread).toEqual([]);
          // The table no longer matches its contract: left out, never cast.
-         expect(observed.drifted).toEqual([]);
          expect(observed.incompatible).toEqual([
             expect.objectContaining({
                code: "column_retyped",

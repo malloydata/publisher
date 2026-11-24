@@ -7,8 +7,7 @@
  * `twin_a` has the same SQL and none (a `storage=` twin), so `col_a`'s
  * address is no longer the BuildID the compiler looks its table up by.
  * `col_b`, a database source over `col_a`, must still render over `col_a`'s
- * table: under strict upstreams it once missed it
- * (`runtime-manifest-strict-miss`), and otherwise recomputed it from raw.
+ * table: it once missed it (`runtime-manifest-strict-miss`).
  * Self-instructed and host-instructed, and without the twin (no fold).
  */
 
@@ -148,7 +147,7 @@ async function scenario(model: string) {
       { environmentName: "env", packageName: "pkg" },
    );
    const run = (
-      opts: { strict: boolean; hostInstructed: boolean },
+      opts: { hostInstructed: boolean },
       /** Build only these sources, over `seedEntries` (a later run). */
       later?: { only: string[]; seedEntries: Record<string, ManifestEntry> },
    ) => {
@@ -165,7 +164,6 @@ async function scenario(model: string) {
             : instructions,
          seedEntries: later?.seedEntries ?? {},
          signal: new AbortController().signal,
-         strict: opts.strict,
          priorRefusals: [],
          hostInstructed: opts.hostInstructed,
       });
@@ -185,13 +183,8 @@ async function scenario(model: string) {
 }
 
 const MODES = [
-   { label: "self-instructed", strict: true, hostInstructed: false },
-   {
-      label: "self-instructed, not strict",
-      strict: false,
-      hostInstructed: false,
-   },
-   { label: "host-instructed", strict: true, hostInstructed: true },
+   { label: "self-instructed", hostInstructed: false },
+   { label: "host-instructed", hostInstructed: true },
 ];
 
 describe("a database build over an upstream whose address folds in its name=", () => {
@@ -285,7 +278,7 @@ describe("a database build over an upstream whose address folds in its name=", (
       "never reads col_a's table for a database source over the twin, which is refused at plan",
       async () => {
          const s = await scenario(DB_OVER_TWIN);
-         const result = await s.run({ strict: false, hostInstructed: false });
+         const result = await s.run({ hostInstructed: false });
          expect(result.failures).toEqual({});
          // A warehouse build cannot read the twin's `storage=` table, and
          // never recomputes it from raw: refused at plan, so never built.
@@ -308,83 +301,72 @@ describe("a database build over an upstream whose address folds in its name=", (
          ["col_a", "fa"],
          ["twin2", "fa2"],
       ]) {
-         for (const strict of [true, false]) {
-            it(
-               `builds over the one twin built when ${base} joins ${joined} and only ${built} is built (strict: ${strict})`,
-               async () => {
-                  const s = await scenario(joinBoth(base, joined));
-                  expect(s.compilerKey("col_a")).toBe(s.compilerKey("twin2"));
-                  expect(s.address("col_a")).not.toBe(s.address("twin2"));
-                  const result = await s.run(
-                     { strict, hostInstructed: false },
-                     { only: [built, "both"], seedEntries: {} },
-                  );
-                  expect(result.failures).toEqual({});
-                  expect(result.entries[s.address("both")].upstreamReuse).toBe(
-                     "reused",
-                  );
-                  expect(s.read("both", table)).toBe(true);
-                  expect(s.read("both", "ev_src")).toBe(false);
-               },
-               { timeout: 60000 },
-            );
-         }
-      }
-   }
-
-   // c3 over twin_b over twin_a: with twin_b's table absent the render
-   // inlines twin_b, and the twin key it then looks up is twin_a's, never
-   // col_a's older table.
-   for (const strict of [true, false]) {
-      for (const twinBSupplied of [true, false]) {
-         if (strict && !twinBSupplied) continue;
          it(
-            `builds a storage source two levels over the twin from the twin's rows (strict: ${strict}, twin_b supplied: ${twinBSupplied})`,
+            `builds over the one twin built when ${base} joins ${joined} and only ${built} is built`,
             async () => {
-               const s = await scenario(TWO_OVER_TWIN);
-               const mode = { strict, hostInstructed: true };
-               const first = await s.run(mode);
-               expect(first.failures).toEqual({});
-               await s.duckdb.runSQL("INSERT INTO ev_src VALUES ('a', 10)");
-               const without = (
-                  entries: Record<string, ManifestEntry>,
-                  ...names: string[]
-               ) =>
-                  Object.fromEntries(
-                     Object.entries(entries).filter(
-                        ([address]) =>
-                           !names.some((n) => address === s.address(n)),
-                     ),
-                  );
-               const second = await s.run(mode, {
-                  only: ["twin_a", "twin_b"],
-                  seedEntries: without(first.entries, "twin_a", "twin_b"),
-               });
-               expect(second.failures).toEqual({});
-               const third = await s.run(mode, {
-                  only: ["c3"],
-                  seedEntries: twinBSupplied
-                     ? without(second.entries, "c3")
-                     : without(second.entries, "c3", "twin_b"),
-               });
-               expect(third.failures).toEqual({});
-               expect(s.read("c3", "fa")).toBe(false);
-               expect(s.stacks.c3).toBe(true);
-               expect(
-                  (
-                     await s.duckdb.runSQL(
-                        "SELECT k, g3::INTEGER AS g3 FROM tc ORDER BY k",
-                     )
-                  ).rows,
-               ).toEqual([
-                  { k: "a", g3: 13 },
-                  { k: "b", g3: 3 },
-               ]);
+               const s = await scenario(joinBoth(base, joined));
+               expect(s.compilerKey("col_a")).toBe(s.compilerKey("twin2"));
+               expect(s.address("col_a")).not.toBe(s.address("twin2"));
+               const result = await s.run(
+                  { hostInstructed: false },
+                  { only: [built, "both"], seedEntries: {} },
+               );
+               expect(result.failures).toEqual({});
+               expect(result.entries[s.address("both")].upstreamReuse).toBe(
+                  "reused",
+               );
+               expect(s.read("both", table)).toBe(true);
+               expect(s.read("both", "ev_src")).toBe(false);
             },
             { timeout: 60000 },
          );
       }
    }
+
+   // c3 over twin_b over twin_a: the twin key it looks up is twin_a's,
+   // never col_a's older table.
+   it(
+      "builds a storage source two levels over the twin from the twin's rows",
+      async () => {
+         const s = await scenario(TWO_OVER_TWIN);
+         const mode = { hostInstructed: true };
+         const first = await s.run(mode);
+         expect(first.failures).toEqual({});
+         await s.duckdb.runSQL("INSERT INTO ev_src VALUES ('a', 10)");
+         const without = (
+            entries: Record<string, ManifestEntry>,
+            ...names: string[]
+         ) =>
+            Object.fromEntries(
+               Object.entries(entries).filter(
+                  ([address]) => !names.some((n) => address === s.address(n)),
+               ),
+            );
+         const second = await s.run(mode, {
+            only: ["twin_a", "twin_b"],
+            seedEntries: without(first.entries, "twin_a", "twin_b"),
+         });
+         expect(second.failures).toEqual({});
+         const third = await s.run(mode, {
+            only: ["c3"],
+            seedEntries: without(second.entries, "c3"),
+         });
+         expect(third.failures).toEqual({});
+         expect(s.read("c3", "fa")).toBe(false);
+         expect(s.stacks.c3).toBe(true);
+         expect(
+            (
+               await s.duckdb.runSQL(
+                  "SELECT k, g3::INTEGER AS g3 FROM tc ORDER BY k",
+               )
+            ).rows,
+         ).toEqual([
+            { k: "a", g3: 13 },
+            { k: "b", g3: 3 },
+         ]);
+      },
+      { timeout: 60000 },
+   );
 
    for (const mode of MODES) {
       it(

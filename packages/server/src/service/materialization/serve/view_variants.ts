@@ -139,7 +139,7 @@ export interface ViewAnswer {
    /**
     * For a database view: its table, for the check that a later stage's
     * filter compares its columns as live compares them
-    * (`gate_collation.ts`): its binding, or its path as the manifest
+    * (`admission_lookup.ts`): its binding, or its path as the manifest
     * substitutes it.
     */
    databaseTableRead?: {

@@ -299,9 +299,7 @@ export interface FailedUpstream {
  * unclassified otherwise. Its reason then names the upstream's own failure,
  * so the dependent does not read as a mere absence.
  *
- * Any other error is the source's own (for instance a non-strict build that
- * recomputed the failed upstream from raw and then failed itself), so it is
- * classified on its own.
+ * Any other error is the source's own, so it is classified on its own.
  */
 export function classifySourceFailure(
    err: unknown,

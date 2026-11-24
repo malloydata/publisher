@@ -3257,42 +3257,19 @@ export class Model {
 
    /**
     * The sources this model's served copy answers from storage, by author
-    * `sourceID`: undefined when the served copy is off for this model, and
-    * `pending` until it has compiled over the bindings bound now. A copy
-    * compiled over a previous bind's bindings is pending too, so a verdict
-    * read between a bind and its compile never judges the new tables by it.
+    * `sourceID`, as its last committed compile left them: undefined when the
+    * served copy is off for this model, and `uncompiled` before its first
+    * compile. A bind's commit compiles the copy before the tables it reads
+    * are swapped in, so the last compile is the copy queries read; past a
+    * freshness edge, until the commit at that edge recompiles it, a table
+    * whose window lapsed is left out by its recorded window.
     */
-   public servedCopySourceIDs(): ReadonlySet<string> | "pending" | undefined {
+   public servedCopySourceIDs():
+      | ReadonlySet<string>
+      | "uncompiled"
+      | undefined {
       if (!this.servedCopyEnabled()) return undefined;
-      const ids = this.servedCopy.rerootedSourceIDs();
-      if (ids && this.servedCopy.isCurrent()) return ids;
-      // Nothing else may compile it: a freshness window that lapses changes
-      // the bindings a query reads with no bind, and a model nobody queries
-      // would stay pending until the next bind.
-      this.refreshServedCopy();
-      return "pending";
-   }
-
-   /** The compile {@link refreshServedCopy} started, while it runs. */
-   private servedCopyRefresh?: Promise<void>;
-
-   /**
-    * Compile the served copy over the bindings fresh now, in the background,
-    * once at a time: a status poll that finds it pending asks again only
-    * after the compile it started has landed (and then finds it current).
-    */
-   private refreshServedCopy(): void {
-      if (this.servedCopyRefresh) return;
-      const refresh = this.prepareServedCopy()
-         .catch(() => {
-            // The compile records its own failure; nothing escapes a poll.
-         })
-         .finally(() => {
-            if (this.servedCopyRefresh === refresh) {
-               this.servedCopyRefresh = undefined;
-            }
-         });
-      this.servedCopyRefresh = refresh;
+      return this.servedCopy.rerootedSourceIDs(Date.now()) ?? "uncompiled";
    }
 
    /**
@@ -3302,7 +3279,7 @@ export class Model {
     */
    public servedCopyDatabaseOnlyIDs(): ReadonlySet<string> | undefined {
       if (!this.servedCopyEnabled()) return undefined;
-      return this.servedCopy.rerootedOnDatabaseOnly();
+      return this.servedCopy.rerootedOnDatabaseOnly(Date.now());
    }
 
    /**
@@ -3312,21 +3289,15 @@ export class Model {
     */
    public servedCopyThroughBaseIDs(): ReadonlySet<string> {
       if (!this.servedCopyEnabled()) return new Set();
-      return this.servedCopy.servedThroughBaseSourceIDs();
+      return this.servedCopy.servedThroughBaseSourceIDs(Date.now());
    }
 
    /**
-    * Why this model's served copy leaves sources unserved: empty when off,
-    * and withheld while the copy is pending ({@link servedCopySourceIDs}),
-    * so a package's warnings never carry a previous bind's problems while
-    * its verdicts say pending.
+    * Why this model's served copy leaves sources unserved, as its last
+    * committed compile found: empty when off.
     */
    public servedCopyProblems(): readonly ServedCopyProblem[] {
       if (!this.servedCopyEnabled()) return [];
-      if (!this.servedCopy.isCurrent()) {
-         this.refreshServedCopy();
-         return [];
-      }
       return this.servedCopy.problems();
    }
 
