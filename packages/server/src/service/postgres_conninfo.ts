@@ -617,14 +617,7 @@ function pgConninfoKeyValues(
    );
 }
 
-/**
- * The database a libpq connection string or URI reaches, as
- * `host:port[,host:port…]/dbname`: the hosts lowercased and sorted, each with
- * its port (5432 when none), whatever the user, password, TLS or other setting.
- * Undefined when the string cannot be read, names no host or dbname, or
- * reaches its host another way (`service`, `hostaddr`), so a caller keeps the
- * raw string and never equates two databases it cannot tell apart.
- */
+/** `host:port/dbname` with sorted hosts and no PGPORT or PGHOST default; undefined when unsure, so two databases it cannot tell apart never compare equal. */
 export function pgDatabaseTarget(conninfo: string): string | undefined {
    const params = new Map<string, string>();
    try {

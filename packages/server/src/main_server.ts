@@ -191,7 +191,6 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    // row/byte caps, so operators check that before chasing OOMKills.
    checkHeapConfiguration();
    const environmentStore = new EnvironmentStore(SERVER_ROOT);
-   // Asks the store at each write which storage destinations build into a catalog's schemas.
    const ADMIN_CATALOGS = ADMIN_CATALOG_CONFIG
       ? new CatalogAdmin(ADMIN_CATALOG_CONFIG, environmentStore)
       : null;

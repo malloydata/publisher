@@ -23,7 +23,7 @@
  */
 
 import type { components } from "../api";
-import { normalizeReadableSchemas } from "./connection_type";
+import { managedSchemas, normalizeReadableSchemas } from "./connection_type";
 import { connectionDialectOf } from "./dialects";
 import { destinationSchemaOf } from "./materialization/domain/storage_table_path";
 
@@ -45,12 +45,7 @@ export function destinationOverlap(
    return overlap(connection, destination);
 }
 
-/**
- * Every connection that reaches a destination, with why and the schema the
- * destination builds into, and `listsDestinationSchema` when the connection's
- * `readableSchemas` names that schema, which makes the schema's stored copies
- * readable by name.
- */
+/** Every connection that reaches a destination, with why, the destination's build schema, and whether the connection can read that schema. */
 export function destinationOverlaps(
    connections: readonly ApiConnection[],
    destinations: readonly ApiConnection[],
@@ -59,6 +54,7 @@ export function destinationOverlaps(
    destination: string;
    schema: string;
    reason: string;
+   readable: boolean;
    listsDestinationSchema?: string;
 }[] {
    const out: ReturnType<typeof destinationOverlaps> = [];
@@ -72,7 +68,16 @@ export function destinationOverlaps(
                destination: destination.name ?? "",
                schema,
                reason,
-               // DuckDB matches schema names regardless of case.
+               // A managed read-only view's credential and schema list stop at `main` and its readableSchemas.
+               readable:
+                  !(
+                     connection.managed === true &&
+                     connection.ducklakeConnection?.readOnly !== false
+                  ) ||
+                  managedSchemas(
+                     connection.ducklakeConnection?.readableSchemas,
+                  ).has(schema.toLowerCase()),
+               // `listsDestinationSchema` makes the schema's stored copies readable by name; DuckDB matches schema names regardless of case.
                ...(normalizeReadableSchemas(
                   connection.ducklakeConnection?.readableSchemas,
                )?.some((name) => name.toLowerCase() === schema.toLowerCase())

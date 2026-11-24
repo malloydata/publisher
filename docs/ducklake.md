@@ -420,7 +420,9 @@ admin-only listener (`servingApiEnabled: false`) refuses nothing, and a connecti
 `destinationSchema` is not a destination. A destination is on the catalog when its `catalog` names the
 same host, port and database as `PUBLISHER_ADMIN_CATALOG_DATABASE`, whatever role, credentials or form
 (a connection string or fields) it connects with, and has the catalog's name as its `metadataSchema`. A
-write that arrives before the environments finish loading is not checked. A load also refuses `main`
+write that arrives before the environments finish loading is not checked, and the check sees only the
+destinations an environment holds, so it misses those of one whose stored destinations could not be read
+(its list is not yet authoritative, `hasAuthoritativeStorageDestinations()`). A load also refuses `main`
 itself, with `400 SCHEMA_RESERVED`.
 
 **Serve the catalog to models.** Give the catalog a `connections` entry, with `managed: true`. Publisher

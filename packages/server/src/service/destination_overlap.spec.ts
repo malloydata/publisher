@@ -176,6 +176,51 @@ describe("destinationOverlap", () => {
       ]);
    });
 
+   it("says whether the connection can read the destination's schema: a managed read-only view reads main and its readableSchemas only", () => {
+      const destination = (destinationSchema?: string) => {
+         const dest = lake("dest", {
+            host: "pg",
+            databaseName: "cat",
+            metadataSchema: "lake",
+         });
+         dest.ducklakeConnection!.destinationSchema = destinationSchema;
+         return dest;
+      };
+      const connection = (
+         extra: Partial<ApiConnection>,
+         readableSchemas?: string[],
+      ) => {
+         const c = lake("c", {
+            host: "pg",
+            databaseName: "cat",
+            metadataSchema: "lake",
+         });
+         c.ducklakeConnection!.readableSchemas = readableSchemas;
+         return Object.assign(c, extra);
+      };
+      const readable = (c: ApiConnection, d: ApiConnection) =>
+         destinationOverlaps([c], [d])[0].readable;
+      const view = { managed: true } as const;
+      expect(readable(connection({}), destination("materialized"))).toBe(true);
+      expect(readable(connection(view), destination("materialized"))).toBe(
+         false,
+      );
+      expect(
+         readable(connection(view, ["stripe"]), destination("materialized")),
+      ).toBe(false);
+      expect(
+         readable(
+            connection(view, ["stripe", "materialized"]),
+            destination("Materialized"),
+         ),
+      ).toBe(true);
+      expect(readable(connection(view), destination())).toBe(true);
+      expect(readable(connection(view), destination("main"))).toBe(true);
+      const writable = connection(view);
+      writable.ducklakeConnection!.readOnly = false;
+      expect(readable(writable, destination("materialized"))).toBe(true);
+   });
+
    it("lists every overlapping pair", () => {
       expect(
          destinationOverlaps(

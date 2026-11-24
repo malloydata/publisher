@@ -41,12 +41,7 @@ export const DUCKLAKE_DATA_INLINING_ON = "ducklake-data-inlining-on";
  */
 const inliningOn = new Map<string, number>();
 
-/**
- * The catalog database a DuckLake config names, as `host:port/dbname` whether
- * it is spelled as a connection string or as fields, and whichever role it
- * connects as; a string that does not say which database it names is its own
- * key.
- */
+/** The catalog database as `host:port/dbname`, so a role, credentials or spelling never makes one database two catalogs. */
 export function catalogKey(
    pg: PostgresConnection | undefined,
 ): string | undefined {

@@ -925,14 +925,16 @@ export class Environment {
          this.apiConnections ?? [],
          this.destinations ?? [],
       )) {
-         logger.warn(
-            `Connection "${overlap.connection}" reaches storage destination "${overlap.destination}": ${overlap.reason}. A destination holds stored tables, gated sources' rows among them with no gate, and models can read them through the connection by name. Never configure a destination's catalog or data path as a connection models can name.`,
-            {
-               environmentName: this.environmentName,
-               connection: overlap.connection,
-               destinationName: overlap.destination,
-            },
-         );
+         if (overlap.readable) {
+            logger.warn(
+               `Connection "${overlap.connection}" reaches storage destination "${overlap.destination}": ${overlap.reason}. A destination holds stored tables, gated sources' rows among them with no gate, and models can read them through the connection by name. Never configure a destination's catalog or data path as a connection models can name.`,
+               {
+                  environmentName: this.environmentName,
+                  connection: overlap.connection,
+                  destinationName: overlap.destination,
+               },
+            );
+         }
          if (overlap.listsDestinationSchema) {
             logger.warn(
                `Connection "${overlap.connection}" lists storage destination "${overlap.destination}"'s schema "${overlap.listsDestinationSchema}" in readableSchemas: that destination's stored copies, gated sources' rows among them, become readable by name without their gate. Remove it from readableSchemas.`,

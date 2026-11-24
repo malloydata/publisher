@@ -336,10 +336,7 @@ const pgLiteral = (value: string) => `'${value.replace(/'/g, "''")}'`;
 const pgIdent = (name: string) => `"${name.replace(/"/g, '""')}"`;
 
 export class CatalogAdmin {
-   /**
-    * `environments` is read at each write for the storage destinations whose
-    * build schema is refused; a standalone admin listener has none to ask.
-    */
+   /** `environments` is read at each write for the destinations whose build schema is refused; a standalone admin listener has none. */
    constructor(
       private readonly config: CatalogAdminConfig,
       private readonly environments?: LoadedEnvironmentsReader,
@@ -1197,11 +1194,7 @@ export class CatalogAdmin {
       );
    }
 
-   /**
-    * Refuses a write into the schema a storage destination of any loaded
-    * environment builds into on this catalog: a person's table there feeds the
-    * rebuild of an incompatible table and can be served as the build's.
-    */
+   /** A person's table in a destination's build schema would feed the incompatible-table rebuild and be served as the build's. */
    private refuseDestinationSchema(catalog: string, schema: string): void {
       const lake = this.connection(catalog, undefined);
       for (const environment of this.environments?.getLoadedEnvironments() ??

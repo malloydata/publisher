@@ -69,15 +69,18 @@ describe("a schema name", () => {
 
 const source = { uri: "gs://b/p/a.parquet", format: "parquet" };
 
-/** What an attempt answers, or undefined when it got past every refusal and failed reaching the catalog database. */
+/** What an attempt answers, or undefined when it got past every refusal and failed connecting to the catalog database. */
 async function refusalOf(attempt: () => Promise<unknown>) {
    const error = await attempt().then(
       () => undefined,
       (e) => e,
    );
-   return error instanceof CatalogAdminError
-      ? [error.status, error.reason]
-      : undefined;
+   if (error instanceof CatalogAdminError) return [error.status, error.reason];
+   // DuckDB's attach (a PUT or DELETE) and node-pg's lock client (a load) word the same refusal differently.
+   expect(String(error?.message)).toMatch(
+      /port 1 failed: Connection refused|ECONNREFUSED 127\.0\.0\.1:1/,
+   );
+   return undefined;
 }
 
 describe("the main schema", () => {

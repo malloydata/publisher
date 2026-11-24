@@ -333,42 +333,92 @@ describe("Environment: connections and storage destinations are disjoint", () =>
       expect(logged).toContain("managed");
    });
 
-   it("warns that a connection reaches a destination's catalog when they connect as different roles", () => {
-      const warn = sinon.stub(logger, "warn").returns(logger as never);
-      const onCatalog = (name: string, postgresConnection: object) =>
+   describe("a connection on a destination's catalog", () => {
+      const onCatalog = (
+         name: string,
+         postgresConnection: object,
+         ducklakeExtra: object = {},
+         extra: object = {},
+      ) =>
          ({
             name,
             type: "ducklake",
+            ...extra,
             ducklakeConnection: {
                catalog: { postgresConnection, metadataSchema: "lake" },
                storage: { bucketUrl: `gs://managed-tier/${name}` },
+               ...ducklakeExtra,
             },
          }) as ApiConnection;
-      makeEnvironment(
-         [
-            onCatalog("models", {
-               connectionString:
-                  "postgres://models_ro:other@CATALOG.internal:5432/ducklake",
-            }),
-         ],
-         [
-            onCatalog("managed", {
-               host: "catalog.internal",
-               port: 5432,
-               databaseName: "ducklake",
-               userName: "publisher",
-               password: "catalog-secret",
-            }),
-         ],
-      );
-      const messages = warn.getCalls().map((call) => String(call.args[0]));
-      expect(
-         messages.some((m) =>
-            m.includes(
-               'Connection "models" reaches storage destination "managed": it names the same DuckLake catalog',
+      const asModels = {
+         connectionString:
+            "postgres://models_ro:other@CATALOG.internal:5432/ducklake",
+      };
+      const asTier = {
+         host: "catalog.internal",
+         port: 5432,
+         databaseName: "ducklake",
+         userName: "publisher",
+         password: "catalog-secret",
+      };
+      const REACHES =
+         'Connection "models" reaches storage destination "managed"';
+      const LISTS = 'lists storage destination "managed"\'s schema';
+      const warnings = (
+         connection: ApiConnection,
+         destination: ApiConnection,
+      ) => {
+         const warn = sinon.stub(logger, "warn").returns(logger as never);
+         makeEnvironment([connection], [destination]);
+         return warn.getCalls().map((call) => String(call.args[0]));
+      };
+      const has = (messages: string[], text: string) =>
+         messages.some((m) => m.includes(text));
+
+      it("warns when it connects as another role than the destination", () => {
+         const messages = warnings(
+            onCatalog("models", asModels),
+            onCatalog("managed", asTier),
+         );
+         expect(
+            has(messages, `${REACHES}: it names the same DuckLake catalog`),
+         ).toBe(true);
+         expect(has(messages, LISTS)).toBe(false);
+      });
+
+      it("does not warn for a managed read-only view when the destination builds into a schema it does not list", () => {
+         const messages = warnings(
+            onCatalog(
+               "models",
+               asModels,
+               { readableSchemas: ["stripe"] },
+               { managed: true },
             ),
-         ),
-      ).toBe(true);
+            onCatalog("managed", asTier, { destinationSchema: "materialized" }),
+         );
+         expect(has(messages, REACHES)).toBe(false);
+         expect(has(messages, LISTS)).toBe(false);
+      });
+
+      it("still warns for a managed view that lists the destination's schema, and for a destination that builds into main", () => {
+         const listed = warnings(
+            onCatalog(
+               "models",
+               asModels,
+               { readableSchemas: ["materialized"] },
+               { managed: true },
+            ),
+            onCatalog("managed", asTier, { destinationSchema: "materialized" }),
+         );
+         expect(has(listed, REACHES)).toBe(true);
+         expect(has(listed, LISTS)).toBe(true);
+         sinon.restore();
+         const inMain = warnings(
+            onCatalog("models", asModels, {}, { managed: true }),
+            onCatalog("managed", asTier),
+         );
+         expect(has(inMain, REACHES)).toBe(true);
+      });
    });
 
    it("omits destinations from the connection list", () => {
