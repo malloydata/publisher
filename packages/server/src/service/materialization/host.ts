@@ -81,7 +81,9 @@ interface MaterializationPackage extends BuildPlanPackage {
          getStorageDestination(destinationName: string): ApiConnection;
          getEnvironmentPath(): string;
       },
-   ): Promise<ReadonlySet<string>>;
+      /** The reads' overall budget, and the run's cancel signal. */
+      options?: { budgetMs?: number; signal?: AbortSignal },
+   ): Promise<{ moved: ReadonlySet<string>; unread: ReadonlySet<string> }>;
    /**
     * The text a chained `storage=` build compiles on its destination alone:
     * the request's downstream, with each stored upstream the request carries

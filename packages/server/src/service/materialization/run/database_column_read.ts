@@ -407,7 +407,8 @@ function movedColumns(
  * comparator): why a chained build must not read it, or undefined when it
  * still matches. A `storage=` build records no `nativeSchema`, so its
  * contract is what it is held to. An entry with no contract is not judged
- * here (the run rebuilds a table it would carry with none); a read that
+ * here (the run rebuilds a table it would carry with none, and a chained build
+ * over a referenced one warns and counts it: noteUncontractedStoredReference); a read that
  * failed counts as moved (fail safe, as {@link movedSinceBuild}).
  */
 export function storedUpstreamMove(
