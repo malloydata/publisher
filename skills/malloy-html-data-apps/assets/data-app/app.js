@@ -1,16 +1,16 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 //
-// ADAPT: a worked dashboard on the kit, over an online store's orders: the materialized `sales` source in reference/app-frame.md, "Make it fast". Keep its shape,
+// ADAPT: a worked data app on the kit, over an online store's orders: the materialized `sales` source in reference/app-frame.md, "Make it fast". Keep its shape,
 // replace everything in it: the brief, the config, the pages. reference/app-frame.md is the kit's reference and
-// reference/dashboard-design.md says what each page and block is for.
+// reference/data-app-design.md says what each page and block is for.
 //
 // Sales performance: how the store is selling, for whoever runs it, opened weekly.
 // Brief: the reader decides where to push (categories, brands, channels) and checks whether the latest weeks beat
 // the weeks before. Net revenue leads: the model's total_sales counts cancelled and returned items too.
 // Pages: Overview (the subject and where it comes from), Products (categories and items), Customers (who buys and
 // how they arrived); a page for each category, brand and customer, reached from any list that names one.
-import { dashboard, subject, rank, share, trend, table, entityHead, pageHead, blocks, S } from './kit/kit.js'
+import { dataApp, subject, rank, share, trend, table, entityHead, pageHead, blocks, S } from './kit/kit.js'
 
 const HEAD = ['net_sales', 'order_count', 'aov', 'user_count', 'margin_pct', 'return_rate']
 const product = (s) => S.run('{ group_by: product is inventory_items.product_name, brand is inventory_items.product_brand, category is inventory_items.product_category; aggregate: net_sales, items, margin_pct, return_rate; order_by: net_sales desc; limit: 300 }', s)
@@ -20,7 +20,7 @@ const productCols = [
   { key: 'margin_pct', metric: 'margin_pct' }, { key: 'return_rate', metric: 'return_rate' },
 ]
 
-dashboard({
+dataApp({
   title: 'Sales performance',
   sub: 'Online store',
   theme: 'bloom',

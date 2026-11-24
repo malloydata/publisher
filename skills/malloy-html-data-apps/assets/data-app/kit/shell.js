@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 //
-// dashboard(config): the page around the blocks. It draws the masthead and the controls, learns the data's span and
+// dataApp(config): the page around the blocks. It draws the masthead and the controls, learns the data's span and
 // each filter's values, reads the address, and draws the page. A change of state on the same page draws its blocks
 // again where they are; another page replaces them.
 
@@ -14,8 +14,8 @@ import { nextEpoch, observe, markReady } from './blocks.js'
 import { MOTION } from './draw.js'
 
 /**
- * dashboard({
- *   title, sub,                         // the masthead: the dashboard's name and what it covers
+ * dataApp({
+ *   title, sub,                         // the masthead: the app's name and what it covers
  *   model, source, extend,              // where queries go; extend adds measures the app needs
  *   date: { field, label } | null,      // the date every period filters on; null for data with no time
  *   metrics: { name: { label, format, good, thresholds, doc } },
@@ -32,7 +32,7 @@ import { MOTION } from './draw.js'
  *   footer,
  * })
  */
-export async function dashboard(cfg) {
+export async function dataApp(cfg) {
   S.configure(cfg)
   // The theme, unless the address previews another (?theme=), and its display face, loaded before anything draws.
   const root = document.documentElement
@@ -227,6 +227,8 @@ function paint(s, same, toTop) {
   observe(main)
   if (toTop) {
     scrollTo(0, 0)
+    // In a frame as tall as its content the host page scrolls, not this one: bring the app's top into its view.
+    if (window.parent !== window) $('#app').scrollIntoView({ block: 'start' })
     main.focus({ preventScroll: true })
   }
   const name = e ? (e.name ? e.name(s.id) : String(s.id)) : page.title

@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 Read when setting up an app's stylesheet, or when reskinning one for a client.
 
-Outside the dashboard kit (`reference/app-frame.md`), which defines and checks these tokens itself, there is no shipped component library, so visual consistency across apps comes from every app defining the same *kinds* of token and every chart reading them at runtime. The values are free - that is what carries a client's identity. The contract is the shape. The template's stylesheet defines its own tokens (`--up` is bad news and `--down` good news, by what a change means to the reader, not its direction), and its chart module reads them at runtime; the module's own few fixed label sizes are the module's, not the app's.
+Outside the data app kit (`reference/app-frame.md`), which defines and checks these tokens itself, there is no shipped component library, so visual consistency across apps comes from every app defining the same *kinds* of token and every chart reading them at runtime. The values are free - that is what carries a client's identity. The contract is the shape. The template's stylesheet defines its own tokens (`--up` is bad news and `--down` good news, by what a change means to the reader, not its direction), and its chart module reads them at runtime; the module's own few fixed label sizes are the module's, not the app's.
 
 ## What to define on `:root`
 
@@ -15,7 +15,7 @@ Outside the dashboard kit (`reference/app-frame.md`), which defines and checks t
 | Surfaces | page background, card surface, a raised and a sunken variant, border, strong border |
 | Text | strong, default, muted, soft - a real ramp, not one color at three opacities |
 | Semantic | positive, negative, warning, each with a soft background variant for fills and badges |
-| Chart palette | a categorical ramp, ordered so the first is the brand accent, plus grid and axis-tick colors. Six is the most a reader tells apart; the dashboard kit ships six, checked in both modes |
+| Chart palette | a categorical ramp, ordered so the first is the brand accent, plus grid and axis-tick colors. Six is the most a reader tells apart; the data app kit ships six, checked in both modes |
 | **Type** | a **closed** size scale of exactly 8 steps, plus the weights, line-heights and letter-spacings you actually use |
 | **Spacing** | a scale (4 / 8 / 12 / 16 / 24 / 32 / 48), not a single step that gets multiplied and divided in place |
 | Structure | a radius scale (small, default, large), a shadow for cards and a deeper one for popovers |

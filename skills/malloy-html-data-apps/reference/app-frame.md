@@ -3,11 +3,11 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# The dashboard kit
+# The data app kit
 
 > Every data app starts from this skill's `assets/data-app/`: a kit of blocks (a subject with its figures, ranked
 > lists, shares, lines over time, tables, grids, watchlists, entity pages) and a worked example app. You write one
-> config and the pages; the kit draws them to Credible's design (`reference/dashboard-design.md`), keeps the state
+> config and the pages; the kit draws them to Credible's design (`reference/data-app-design.md`), keeps the state
 > in the address, makes every chart clickable and every section explain itself.
 
 ## What is in `assets/data-app/`
@@ -16,7 +16,7 @@ SPDX-License-Identifier: MIT
 |---|---|---|
 | `kit/` | The kit: `kit.js` (import everything from it), its modules, `kit.css`, `themes.css` (nine themes, light and dark), `charts.js`/`charts.css` (more chart forms), `fonts.css` (Geist, inlined) and `fonts/` (each theme's display face, loaded only by its theme), `vendor/` (d3, topojson-client, the font licences) | Whole; never edit, copy again to take a fix |
 | `index.html` | The page: links the kit's styles, loads `/sdk/publisher.js` and `app.js` | Once, then it is the app's own |
-| `app.js` | A worked dashboard over an online store's orders: three pages and three entity pages | Once, then rewrite it for your data |
+| `app.js` | A worked data app over an online store's orders: three pages and three entity pages | Once, then rewrite it for your data |
 | `themes.py` | Writes and checks `kit/themes.css`; where a theme is added or changed | Never: run it from here |
 
 Run the copy from the package's own directory, the one holding `publisher.json`. The first line finds where the
@@ -56,7 +56,7 @@ Query the model once for each measure and dimension you plan to use, and look at
 
 ## Make it fast: store the source, roll up what it adds
 
-Every dashboard over a warehouse table, or a file over about 100,000 rows, is materialized: Credible stores the
+Every data app over a warehouse table, or a file over about 100,000 rows, is materialized: Credible stores the
 app's source as a table and keeps rollups of the figures it adds up, and each block's info mark says which one
 answered and how it was built ("a summary Credible keeps of the order lines: one row for each category, channel and
 day, with net revenue already added up, last built 24 November"). A small file in the package needs neither.
@@ -66,11 +66,11 @@ Write the app's source in the model, not in the config's `extend`, which a rollu
 ```malloy
 import "ecommerce.malloy"
 
-#(doc) Order lines for the sales dashboard, with the dimensions it filters by stored beside each line.
+#(doc) Order lines for the sales app, with the dimensions it filters by stored beside each line.
 #(materialize)
 source: sales is order_items extend {
   dimension:
-    order_date is created_at.day                       // the dashboard's date: a day, so a rollup can filter on it
+    order_date is created_at.day                       // the data app's date: a day, so a rollup can filter on it
     category is inventory_items.product_category       // what it filters and ranks by, as the source's own fields
     channel is users.traffic_source
   measure:
@@ -106,15 +106,15 @@ source: sales is order_items extend {
 ## The config
 
 ```js
-import { dashboard, subject, rank, share, trend, table, heat, watch, entityHead, pageHead, aboutPage, blocks, block, S, F, C } from './kit/kit.js'
+import { dataApp, subject, rank, share, trend, table, heat, watch, entityHead, pageHead, aboutPage, blocks, block, S, F, C } from './kit/kit.js'
 
-dashboard({
+dataApp({
   title: 'Sales performance', sub: 'Online store',          // the masthead; keep `sub` to a few words
   model: 'sales.malloy', source: 'sales',                    // a materialized source (above)
   extend: '',                                                // measures the model lacks; a rollup cannot read these
   date: { field: 'order_date', label: 'Order date' },        // a day dimension, or null
   recordNoun: 'order lines',                                 // what a row is, for counts in menus
-  theme: 'bloom',                                            // from the subject: reference/dashboard-design.md
+  theme: 'bloom',                                            // from the subject: reference/data-app-design.md
   metrics: {
     net_sales: { label: 'Net revenue', format: 'usd', good: 'up', doc: 'What customers paid, less cancellations.' },
     return_rate: { label: 'Return rate', format: 'percent', good: 'down' },
@@ -209,8 +209,8 @@ model names or a block in braces. `S.breakdownQuery`, `S.kpiQuery` and `S.series
 ### Page plans, as examples of a shape
 
 These are shapes that have worked, not templates. Choose sections from what the data shows and the reader needs,
-give every dashboard at least one block of your own with the form native to its field, and do not copy a plan
-section for section (`reference/dashboard-design.md`, "Make it about this subject").
+give every data app at least one block of your own with the form native to its field, and do not copy a plan
+section for section (`reference/data-app-design.md`, "Make it about this subject").
 
 - **Overview (performance)**: `subject` with 4 to 6 metrics; `rank` of the main entity and `share` of how it splits,
   side by side; `rank` of a second entity and of a place, side by side; `trend` of the subject by the main entity.

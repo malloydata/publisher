@@ -1,6 +1,6 @@
 /* Copyright (c) Credible Data Inc. SPDX-License-Identifier: MIT */
-/* The dashboard kit's design: Credible's paper and ink, one accent, good and bad only on changes. Copied whole, never
-   edited; an app's rare overrides go in app.css. Read DESIGN.md (reference/dashboard-design.md) for why. */
+/* The data app kit's design: Credible's paper and ink, one accent, good and bad only on changes. Copied whole, never
+   edited; an app's rare overrides go in app.css. Read reference/data-app-design.md for why. */
 
 :root {
   /* Colours come from themes.css, a theme per subject; these are the rest of the design. */

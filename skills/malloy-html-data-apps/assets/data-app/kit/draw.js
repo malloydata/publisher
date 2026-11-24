@@ -3,7 +3,7 @@
 //
 // The kit's own charts, drawn with d3 to the house style: hairline grid, no axis lines, the subject in the accent at
 // 2px, the comparison in grey, ends labelled in place of a legend, a hover rule that lists every series, and a click
-// on every chart. charts.js has the long tail of forms; these are the ones every dashboard uses.
+// on every chart. charts.js has the long tail of forms; these are the ones every app uses.
 
 const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim()
 export const MOTION = typeof matchMedia === 'function' && !matchMedia('(prefers-reduced-motion: reduce)').matches && !/[?&]motion=0\b/.test(location.search)

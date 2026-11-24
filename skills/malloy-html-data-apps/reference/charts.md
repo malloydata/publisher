@@ -10,7 +10,7 @@ lines, areas, scatters, heatmaps, maps, the ranked table, and the forms a specia
 beeswarm, flow, treemap, waterfall and the rest). Each sizes itself to its box, redraws when the box changes width,
 takes a click (`onPick`; not `sparkline`, `waterfall`, `multiples` or `connectedScatter`, and `rankTable` opens a row
 with `onOpen`), shows a tooltip on hover and on keyboard focus, and writes under itself what it could not
-draw. It ships inside the dashboard kit, `assets/data-app/kit/charts.js` (`reference/app-frame.md`), and the kit's own
+draw. It ships inside the data app kit, `assets/data-app/kit/charts.js` (`reference/app-frame.md`), and the kit's own
 blocks cover the common forms (the subject's line, ranked lists, shares, lines by a field, tables, grids, watchlists).
 Reach for this module for the rest, inside a `block()` of your own.
 
@@ -73,7 +73,7 @@ its change, and opens the entity's page (or filters) on a click. Use `extra` for
 ## Everything clicks
 
 - **A click does what the kit's blocks do.** A mark that stands for an entity opens its page (`store.open`); any
-  other filters the dashboard to it (`store.toggleFilter`); a period zooms to it. Pass `onPick`, and `selected` where the chart takes it, to
+  other filters the app to it (`store.toggleFilter`); a period zooms to it. Pass `onPick`, and `selected` where the chart takes it, to
   every chart that stands for something in the scope: a bar, a period, a place, a part, a district. The selected
   mark keeps its colour; the rest fade. Time charts take `onBrush(from, to)` to set the scope's period, and show it,
   and a picked period, with `band`.
@@ -132,7 +132,7 @@ Each form needs its numbers ready from the model, in the shape the last column g
 - **Show the scope on the chart.** When the app's scope selects a period, every time chart shades it (`band`).
   Where a number has a meaning (a target, the national rate, last year's level), draw it as a labelled reference
   line (`refs`).
-- **Colours come from the kit's tokens** (`reference/dashboard-design.md`, "Colour"), each with one meaning across the app.
+- **Colours come from the kit's tokens** (`reference/data-app-design.md`, "Colour"), each with one meaning across the app.
   Neutral bars use `--c-bar`; the accent is for the lead number and the selection.
 - **Every chart's finding is also a sentence**: the block's headline, written from its rows, for readers who cannot
   see the chart.

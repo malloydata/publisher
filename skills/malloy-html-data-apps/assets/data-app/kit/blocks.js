@@ -1,10 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 //
-// Blocks: the sections a dashboard page is made of. Each has a kicker (what is measured), a headline written from its
+// Blocks: the sections a data app's page is made of. Each has a kicker (what is measured), a headline written from its
 // rows (what it shows), its evidence, and a back that says how it is made. Each loads as it nears the screen, keeps
 // loading, empty and error to itself, and draws again in place when the state changes. Every chart in one does
-// something when clicked: it filters the dashboard, opens an entity's page, or zooms the period.
+// something when clicked: it filters the app, opens an entity's page, or zooms the period.
 
 import { h, prose, asText, query, reason, answered, modelDocs, servedTables, inCredible, askCredible } from './core.js'
 import * as S from './state.js'
@@ -483,7 +483,7 @@ function rankList(body, rows, { col, n, field, entity, name, compare = true, ext
         tr.tabIndex = 0
         tr.setAttribute('role', 'button')
         tr.setAttribute('aria-pressed', act.kind === 'filter' ? String(on) : null)
-        tr.setAttribute('aria-label', `${label}: ${F.fmtMetric(n, r[n])}. ${act.kind === 'open' ? 'Open its page' : on ? 'Remove the filter' : 'Filter the dashboard to it'}`)
+        tr.setAttribute('aria-label', `${label}: ${F.fmtMetric(n, r[n])}. ${act.kind === 'open' ? 'Open its page' : on ? 'Remove the filter' : 'Filter the app to it'}`)
         tr.addEventListener('click', () => act.go(v))
         tr.addEventListener('keydown', (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), act.go(v)))
       }
@@ -496,7 +496,7 @@ function rankList(body, rows, { col, n, field, entity, name, compare = true, ext
 /**
  * rank({ field | entity, metric, top, kicker, headline, extra, span }) — a metric split by a field, largest first:
  * name, a thin bar over a pale one for the comparison, the value, the change. A row opens its entity's page when the
- * field has one, and filters the dashboard to it otherwise. The default headline names the leader and the fastest
+ * field has one, and filters the app to it otherwise. The default headline names the leader and the fastest
  * riser; write your own when the domain says what matters.
  */
 export function rank({ field, entity, metric: n, top = 10, kicker, headline, extra = [], span = 6, order, where, what } = {}) {

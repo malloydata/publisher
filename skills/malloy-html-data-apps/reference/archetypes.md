@@ -43,7 +43,7 @@ Anything below that says "drawer", "drill", or "cross-filter" has its mechanics 
 [ comparison tray: collected entities, side by side      ]
 ```
 
-In a frame as tall as its content, the drawer and tray float over a page that never scrolls (`reference/overlays.md`). The dashboard kit (`reference/app-frame.md`) builds the same Explorer without them: the entity is a page at its own address, reached from every list that names it.
+In a frame as tall as its content, the drawer and tray float over a page that never scrolls (`reference/overlays.md`). The data app kit (`reference/app-frame.md`) builds the same Explorer without them: the entity is a page at its own address, reached from every list that names it.
 
 **Leads with:** the ranked population, not a total. A total is the one number an explorer's user already knows.
 

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 //
 // Periods: what "last 30 days" and "compared with" mean, worked out from the data's latest date rather than today's,
-// so a dashboard over data that ends in the past still shows full periods. No DOM: test it with node.
+// so an app over data that ends in the past still shows full periods. No DOM: test it with node.
 //
 // A date is a 'YYYY-MM-DD' string, read and written in UTC. A range is { from, to } with `to` exclusive: the day after
 // the last day it covers. Every range a query gets comes from here.

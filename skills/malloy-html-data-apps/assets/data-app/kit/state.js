@@ -1,13 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 //
-// The dashboard's state and every query it runs. The state lives in the address, so any view can be linked and Back
+// The app's state and every query it runs. The state lives in the address, so any view can be linked and Back
 // works; a value from the address or a click reaches a query only when the model returned it at load (`known`).
 // No DOM: test it with node by calling configure() and setKnown() with sample values.
 
 import * as P from './period.js'
 
-/** The app's config, from dashboard(). */
+/** The app's config, from dataApp(). */
 export let config = null
 /** What the model returned at load: { span: { first, last } | null, [filter key]: [values], [`${key}__n`]: counts }. */
 export const known = { span: null }

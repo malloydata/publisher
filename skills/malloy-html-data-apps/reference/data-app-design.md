@@ -2,27 +2,31 @@
 Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
-# How a Credible dashboard looks and works, and why
+# How a Credible data app looks and works, and why
 
-> Read this before building any dashboard. The kit in `assets/data-app/` draws every element described here, so
+> Read this before building any data app. The kit in `assets/data-app/` draws every element described here, so
 > most of it is already true of what you build. Your job is what the kit cannot do: decide who it is for and what
 > leads, plan the pages and the paths between them, write the findings, and leave things out.
+>
+> A data app is not a dashboard. In Publisher a dashboard is a report: a `.malloy` file with an `## artifact` tag
+> and `layout=grid`, built with the `malloy-reports` skill (`docs/choosing-a-surface.md`). `SKILL.md`, "When this is
+> the right tool", says which to build.
 
 ## The idea
 
-A Credible dashboard is a set of pages from a well-run business's own report, not a control panel. It is printed on
+A Credible data app reads like the pages a well-run business prints for itself, not like a control panel. It is printed on
 warm paper in ink, the way Credible itself is. Each page has one subject, stated as a number and a sentence at the
 top; every other element is evidence for it or a way deeper into it. Sections are separated by space and hairline
 rules, never boxed. Headings say what the data shows, not what the chart is. Colour is spent on meaning.
 
 A reader who opens it knows in two seconds what it is about and whether things are going well. From there every
-chart takes them somewhere: a click filters the dashboard, opens the page of the thing they clicked, or zooms the
+chart takes them somewhere: a click filters the data app, opens the page of the thing they clicked, or zooms the
 period. And on every section they can ask how it is made, and get the period, the filters, what each number means in
 the model's own words, how fresh it is, and the query.
 
 ## Decide, then build
 
-Do not stop to ask what the dashboard should show. Read the model (its sources, measures, dimensions and docs) and
+Do not stop to ask what the data app should show. Read the model (its sources, measures, dimensions and docs) and
 the request, and decide:
 
 - **Who opens it and how often.** An owner checking weekly, an operator watching daily, an analyst digging.
@@ -40,12 +44,12 @@ one reply. An app built on a stated guess is useful; an app waiting for an answe
 
 ## Make it about this subject
 
-Two dashboards built with this kit share a grammar, not a page. What makes one about bike share and the other about
+Two data apps built with this kit share a grammar, not a page. What makes one about bike share and the other about
 hospital bills:
 
 - **One form native to the field**, drawn as a block of your own (`reference/app-frame.md`): net arrivals per
   station for a bike share, a price index against the national price for hospital charges, a cohort grid for
-  subscriptions, an hour-by-weekday grid for operations. Every dashboard has at least one.
+  subscriptions, an hour-by-weekday grid for operations. Every data app has at least one.
 - **Its own sections**, chosen from what the data shows, in the order the reader needs them. The page plans in the
   kit reference are examples of a shape; never copy one section for section.
 - **Its own words.** Kickers and headlines in the reader's vocabulary ("trips", "stays", "pull requests"), headlines
@@ -53,7 +57,7 @@ hospital bills:
 
 ## Pages, and the paths between them
 
-A dashboard is never one long page. Plan it as pages a reader moves between:
+A data app is never one long page. Plan it as pages a reader moves between:
 
 - **The first page** answers the reader's first question. It leads with the subject and the supporting figures,
   then four to six sections of evidence: where the number comes from, what is moving it, what needs attention.
@@ -76,7 +80,7 @@ which page a click opens. If a page has nothing a reader would click into, it is
 This is not optional. A chart that only shows is half a chart.
 
 - A row of a ranked list, a part of a share bar, a line of a multi-line chart: opens that value's page when it is an
-  entity, filters the whole dashboard to it otherwise.
+  entity, filters the whole data app to it otherwise.
 - A point on a line over time: zooms the period to that week or month. Dragging across several zooms to those.
 - A cell of a grid: filters to its row's value.
 - A figure in the ledger: makes it the subject.
@@ -97,7 +101,7 @@ and its rows with a CSV. Inside Credible it also offers "Ask Credible about this
 question about the section and its queries attached. Write `what` for every block you add, and a `doc` for every
 metric the app defines itself.
 
-## What makes a dashboard look generated, so you can avoid it
+## What makes a data app look generated, so you can avoid it
 
 - A row of equal boxes, each with one number. It says the page has no subject.
 - Every chart in its own bordered card with a shadow, an info icon and a title like "Revenue by category".
@@ -110,7 +114,7 @@ None of these are in the kit. Do not add them back.
 
 ## The page, top to bottom
 
-1. **The masthead.** The dashboard's name, a few words on what it covers, its pages, and how fresh the data is.
+1. **The masthead.** The data app's name, a few words on what it covers, its pages, and how fresh the data is.
 2. **The controls**, read as a sentence: *Last 13 weeks compared with the 13 weeks before · by week*. Filters are
    added with Filter (a field, then its values) and shown as tokens. Copy link copies this exact view.
 3. **The subject.** One large number, its change in words and colour, the period it is compared with, a sentence
@@ -123,7 +127,7 @@ None of these are in the kit. Do not add them back.
 
 ## Each element
 
-**A look of its own.** Every dashboard follows the same rules and none should look like the last one. Its theme,
+**A look of its own.** Every data app follows the same rules and none should look like the last one. Its theme,
 chosen from the subject, sets the paper, the inks, the accent, the chart colours, the masthead, the weight of the
 rules between sections and the face of the large numbers:
 
@@ -171,7 +175,7 @@ belong to the metric, so every list and figure of it uses the same lines.
 
 ## Fast, and saying why
 
-A dashboard over a warehouse or a large file is answered from tables Credible builds ahead of time: a stored copy of
+A data app over a warehouse or a large file is answered from tables Credible builds ahead of time: a stored copy of
 the app's source, and rollups of the figures it adds up (`reference/app-frame.md`, "Make it fast"). Readers never see
 a spinner for long, and the info mark says which table answered and how it was made, in words: one row for each day,
 category and channel, with revenue already added up, last built on a date. Design the model for it: the app's
