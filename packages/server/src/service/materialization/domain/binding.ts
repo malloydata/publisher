@@ -527,7 +527,7 @@ export function bindingServesModelSource(
  * primary key checks by sourceID (`parentKeys`), and the column each read
  * (`parentKeyColumns`). Undefined when no part is.
  */
-export function parseKeyUniqueness(raw: unknown): KeyUniqueness | undefined {
+function parseKeyUniqueness(raw: unknown): KeyUniqueness | undefined {
    if (!raw || typeof raw !== "object") return undefined;
    const k = raw as Record<string, unknown>;
    const own =
@@ -561,9 +561,8 @@ function recordOf(
 }
 
 /**
- * The primary key checks a local run recorded on a stored entry (its own
- * source's, by sourceID): internal, set only by the committing run or a
- * restore from the store, never by a host's manifest.
+ * The primary key checks a stored entry carries, by sourceID: internal, set
+ * only by a bind, off the table's contract (`keyUniquenessOfContract`).
  */
 export function primaryKeysOf(
    entry: object,

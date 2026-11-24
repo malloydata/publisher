@@ -475,9 +475,8 @@ export function deriveDatabaseServeBindings(args: {
          ...(entry.freshnessFallback !== undefined
             ? { freshnessFallback: entry.freshnessFallback }
             : {}),
-         // The key checks the run that wrote the table recorded beside it
-         // (a pair table's leaf key); internal, never
-         // from a host's manifest.
+         // The key checks the table's contract records (a pair table's leaf
+         // key), as a bind read them off it; internal, never on the wire.
          ...(primaryKeysOf(entry) ? { primaryKeys: primaryKeysOf(entry) } : {}),
          ...(primaryKeyColumnsOf(entry)
             ? { primaryKeyColumns: primaryKeyColumnsOf(entry) }

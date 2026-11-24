@@ -29,6 +29,7 @@
 import {
    type ColumnContract,
    compatible,
+   contractWithoutPassedKeys,
    type KeyedSource,
    keyUniquenessOfContract,
    parseContract,
@@ -125,7 +126,11 @@ import {
    incrementalEntriesOf,
    type UnprovenGeneration,
 } from "./run/incremental_upstream";
-import { isRollupOrigin, originOfTable } from "./domain/table_plans";
+import {
+   isRollupOrigin,
+   originOfTable,
+   pairLeavesOf,
+} from "./domain/table_plans";
 import { queryTimezoneOf } from "../governance/ir/compiled_model";
 import type {
    BuildManifest,
@@ -1120,45 +1125,38 @@ export class PackageMaterialization {
    }
 
    /**
-    * The key checks {@link withRecordedKeyChecks} read off a contract, by
-    * identity: never a local run's record, so each is read again, under the
-    * primary keys the models declare then, whenever its entry is.
-    */
-   private readonly contractKeyChecks = new WeakSet<object>();
-
-   /**
-    * `entries`, each that carries no key check record of a local run
-    * (`keyUniqueness`) given the rollup and source key checks its contract
-    * records (`keyUniquenessOfContract`), for the sources the models declare
-    * now: so a table a host built and bound serves a join to a rollup as one
-    * this server built does. A local record, when there is one, stands. One
-    * read off a contract before is read again, never kept: a primary key the
-    * models moved since then finds no check recorded under it, and its joins
-    * to rollups answer live.
+    * `entries`, each given the key checks its contract records
+    * (`keyUniquenessOfContract`): the rollup and source checks, and a pair
+    * table's leaf checks, named through the current plan's pair paths, all
+    * under the primary keys the models declare now. The contract is the one
+    * store of key verdicts, for a table this server built and one a host
+    * built alike; a verdict an entry brings any other way is dropped. Read
+    * again on every bind and every change of the models, never kept: a
+    * primary key the models moved finds no check recorded under it, and its
+    * joins to rollups and through pair tables answer live.
     */
    private withRecordedKeyChecks<
       E extends { contract?: unknown; keyUniqueness?: unknown },
    >(entries: Readonly<Record<string, E>>): Readonly<Record<string, E>> {
       let sources: KeyedSource[] | undefined;
+      let leaves:
+         | ReadonlyMap<string, ReturnType<typeof pairLeavesOf>>
+         | undefined;
       let out: Record<string, E> | undefined;
       for (const [id, entry] of Object.entries(entries)) {
-         const previous = entry.keyUniqueness;
-         const fromContract =
-            typeof previous === "object" &&
-            previous !== null &&
-            this.contractKeyChecks.has(previous);
-         if (
-            (previous !== undefined && !fromContract) ||
-            entry.contract === undefined
-         ) {
-            continue;
+         let keyUniqueness;
+         if (entry.contract !== undefined) {
+            sources ??= this.keyedSources();
+            leaves ??= this.pairLeavesByAddress();
+            keyUniqueness = keyUniquenessOfContract(
+               entry.contract,
+               sources,
+               leaves.get(id),
+            );
          }
-         sources ??= this.keyedSources();
-         const keyUniqueness = keyUniquenessOfContract(entry.contract, sources);
-         if (!keyUniqueness && !fromContract) continue;
+         if (!keyUniqueness && entry.keyUniqueness === undefined) continue;
          out ??= { ...entries };
          if (keyUniqueness) {
-            this.contractKeyChecks.add(keyUniqueness);
             out[id] = { ...entry, keyUniqueness };
          } else {
             const { keyUniqueness: _stale, ...rest } = entry;
@@ -1166,6 +1164,20 @@ export class PackageMaterialization {
          }
       }
       return out ?? entries;
+   }
+
+   /** Each pair table's leaves in the current plan ({@link pairLeavesOf}), by the table's content address. */
+   private pairLeavesByAddress(): Map<string, ReturnType<typeof pairLeavesOf>> {
+      const out = new Map<string, ReturnType<typeof pairLeavesOf>>();
+      const plans = this.plan.materializePlans;
+      for (const [sourceID, source] of Object.entries(
+         this.plan.buildPlan?.sources ?? {},
+      )) {
+         const plan = plans[sourceID];
+         const leaves = plan ? pairLeavesOf(plan) : [];
+         if (leaves.length > 0) out.set(source.sourceEntityId, leaves);
+      }
+      return out;
    }
 
    /** Every source the models declare with a primary key, as a contract's key checks name it. */
@@ -1456,7 +1468,6 @@ export class PackageMaterialization {
       const { tableNameManifest, storageEntries } = splitManifestEntries(
          { ...prior },
          `prior entries (package ${this.owner.packageName()})`,
-         "store",
          { quiet: true },
       );
       const observed = new Map<string, ObservedColumns>();
@@ -1738,42 +1749,33 @@ export class PackageMaterialization {
    }
 
    /**
-    * Drop the rollup key checks bound for these content
-    * addresses: a run is about to write their tables, so what a check found
-    * over the rows before no longer describes them. The routing itself is
-    * kept; the join-to-rollup branch reads the table as unknown until a run
-    * binds a new check.
+    * Drop the passed key checks bound for these content addresses: a run is
+    * about to write their tables, so what a check found over the rows before
+    * no longer describes them. They are stripped from the entries' contracts
+    * ({@link contractWithoutPassedKeys}), the one store every bind reads, so
+    * no later bind before the run's own (a reload's, for one) reads them
+    * back. A check that found its key repeated, or could not run, stays: it
+    * only declines. The routing itself is kept; a join that needs a passed
+    * check answers live until the run binds a new one.
     */
    forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
       const ids = new Set(sourceEntityIds);
-      // A stored table's own primary key check, and a stored rollup's key
-      // check, on its storage binding.
-      const checked = (b: Binding) =>
-         (b.primaryKeys || b.rollupKey) && ids.has(b.virtualHandle);
-      if (this.storageBindings.some(checked)) {
+      const storage = withoutPassedKeysAt(this.storageEntries, ids);
+      if (storage !== this.storageEntries) {
+         const rechecked = this.withRecordedKeyChecks(storage);
+         this.storageEntries = rechecked;
          this.storageBindings = this.storageBindings.map((b) => {
-            if (!checked(b)) return b;
-            const {
-               primaryKeys: _forgotten,
-               primaryKeyColumns: _forgottenColumns,
-               rollupKey: _forgottenKey,
-               ...rest
-            } = b;
-            return rest;
+            const entry = rechecked[b.virtualHandle];
+            return ids.has(b.virtualHandle) && entry
+               ? withEntryKeyChecks(b, entry)
+               : b;
          });
       }
-      const entries = this.databaseEntries;
-      let next: FreshnessManifest | undefined;
-      for (const id of ids) {
-         const entry = entries?.[id];
-         if (!entry?.keyUniqueness) continue;
-         next ??= { ...entries };
-         const { keyUniqueness: _forgotten, ...rest } = entry;
-         next[id] = rest;
+      const database =
+         this.databaseEntries && withoutPassedKeysAt(this.databaseEntries, ids);
+      if (database && database !== this.databaseEntries) {
+         this.databaseEntries = this.withRecordedKeyChecks(database);
       }
-      // A database pair table's leaf key check rides on its binding
-      // (`primaryKeys`): the snapshot drops it too.
-      if (next) this.databaseEntries = next;
       this.publish();
    }
 
@@ -2471,4 +2473,25 @@ export class PackageMaterialization {
          this.plan.versionOwnsTables(),
       );
    }
+}
+
+/**
+ * `entries`, each at one of `ids` without the key checks its contract
+ * records as passed ({@link contractWithoutPassedKeys}); `entries` itself
+ * when none had one.
+ */
+function withoutPassedKeysAt<E extends { contract?: unknown }>(
+   entries: Readonly<Record<string, E>>,
+   ids: ReadonlySet<string>,
+): Readonly<Record<string, E>> {
+   let out: Record<string, E> | undefined;
+   for (const id of ids) {
+      const entry = entries[id];
+      if (entry?.contract === undefined) continue;
+      const contract = contractWithoutPassedKeys(entry.contract);
+      if (contract === entry.contract) continue;
+      out ??= { ...entries };
+      out[id] = { ...entry, contract };
+   }
+   return out ?? entries;
 }

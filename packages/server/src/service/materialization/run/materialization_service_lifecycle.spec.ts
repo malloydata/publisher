@@ -788,7 +788,7 @@ describe("runBuild (branch behavior)", () => {
    it("auto-run: a stop that lands while the manifest loads does not cut it short, and the run says so", async () => {
       const svc = stubEngine();
       svc.autoLoadManifest.callsFake(async (...args: unknown[]) => {
-         const finish = args[5] as (s: {
+         const finish = args[4] as (s: {
             metadata: Record<string, unknown>;
          }) => Promise<void>;
          await finish({ metadata: { autoLoad: "loaded" } });

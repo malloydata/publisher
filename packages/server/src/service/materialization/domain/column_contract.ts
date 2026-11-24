@@ -121,15 +121,19 @@ export interface KeyedSource {
 }
 
 /**
- * The rollup and source key checks `contract` records, in the shape a bind
- * gives a table (`KeyUniqueness`): its own key check (`rollup:`), and the
- * checks of `sources` it holds under their current primary key (`parent:`
- * and `stored:`, by sourceID). A check of another key, or of a source the
- * model no longer declares, is not one. Undefined when it records none.
+ * The key checks `contract` records, in the shape a bind gives a table
+ * (`KeyUniqueness`): its own key check (`rollup:`), the checks of `sources`
+ * it holds under their current primary key (`parent:` and `stored:`, by
+ * sourceID), and the check of each pair leaf `leaves` names (`leaf:` under
+ * its join path, by the leaf's sourceID), also under the leaf's current
+ * primary key. A check of another key, or of a source the model no longer
+ * declares, is not one; one that could not run (`unverified`) reads as not
+ * passed. Undefined when it records none.
  */
 export function keyUniquenessOfContract(
    contract: unknown,
    sources: readonly KeyedSource[],
+   leaves: readonly { joinPath: string; sourceID: string }[] = [],
 ):
    | {
         keyColumn?: string;
@@ -147,15 +151,26 @@ export function keyUniquenessOfContract(
    );
    const parentKeys: Record<string, boolean> = {};
    const parentKeyColumns: Record<string, string> = {};
+   const read = (
+      level: ContractKeyLevel,
+      subject: string,
+      source: KeyedSource,
+   ) => {
+      const check = keys[contractKeyName(level, subject, source.primaryKey)];
+      if (check?.level !== level) return;
+      // Every check of a source must pass: one checked twice is unique only if both say so.
+      parentKeys[source.sourceID] =
+         (parentKeys[source.sourceID] ?? true) && passed(check);
+      parentKeyColumns[source.sourceID] = source.primaryKey;
+   };
    for (const s of sources) {
-      for (const level of ["parent", "stored"] as const) {
-         const check = keys[contractKeyName(level, s.relativeID, s.primaryKey)];
-         if (check?.level !== level) continue;
-         // Both must hold: a source checked as both is unique only if both say so.
-         parentKeys[s.sourceID] =
-            (parentKeys[s.sourceID] ?? true) && check.unique;
-         parentKeyColumns[s.sourceID] = s.primaryKey;
-      }
+      read("parent", s.relativeID, s);
+      read("stored", s.relativeID, s);
+   }
+   const bySourceID = new Map(sources.map((s) => [s.sourceID, s]));
+   for (const leaf of leaves) {
+      const source = bySourceID.get(leaf.sourceID);
+      if (source) read("leaf", leaf.joinPath, source);
    }
    const anyParent = Object.keys(parentKeys).length > 0;
    if (!own && !anyParent) return undefined;
@@ -163,11 +178,47 @@ export function keyUniquenessOfContract(
       ...(own
          ? {
               keyColumn: contractKeyWithoutLevel(own[0], "rollup")!,
-              unique: own[1].unique,
+              unique: passed(own[1]),
            }
          : {}),
       ...(anyParent ? { parentKeys, parentKeyColumns } : {}),
    };
+}
+
+/** Whether `check` ran and found its key unique and never NULL. */
+function passed(check: ContractKeyCheck): boolean {
+   return check.unique && check.unverified !== true;
+}
+
+/**
+ * `raw` (a contract as a host or the store holds it) without the key checks
+ * that passed, everything else as it was: so a bind finds no verdict in it
+ * that would serve. A check that found its key repeated, or could not run,
+ * stays, so what it declined still declines. `raw` itself when it records no
+ * passed check, or is not a contract.
+ */
+export function contractWithoutPassedKeys(raw: unknown): unknown {
+   let value = raw;
+   if (typeof value === "string") {
+      try {
+         value = JSON.parse(value);
+      } catch {
+         return raw;
+      }
+   }
+   if (!isRecord(value) || !isRecord(value.keys)) return raw;
+   const all = Object.entries(value.keys);
+   const kept = all.filter(
+      ([, check]) =>
+         !(
+            isRecord(check) &&
+            check.unique === true &&
+            check.unverified !== true
+         ),
+   );
+   if (kept.length === all.length) return raw;
+   const { keys: _dropped, ...rest } = value;
+   return kept.length > 0 ? { ...rest, keys: Object.fromEntries(kept) } : rest;
 }
 
 /** A table's contract, as {@link parseContract} reads it. */
@@ -317,7 +368,7 @@ export function keyCheckPassed(
    key: string,
 ): boolean {
    const check = contract?.keys?.[key];
-   return check?.unique === true && check.unverified !== true;
+   return check !== undefined && passed(check);
 }
 
 /** Whether the key check named `key` ran and found the key repeated or NULL. */
