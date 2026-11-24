@@ -64,7 +64,7 @@ export async function dataApp(cfg) {
   const main = h('main', { id: 'main', class: 'wrap', tabindex: '-1' }, h('div', { class: 'state state--loading', style: { '--reserve': '560px' } }))
   const srcs = Object.values(cfg.sources || {})
   const foot = h('footer', { class: 'wrap colophon', hidden: true }, cfg.footer && h('span', { text: cfg.footer }),
-    srcs.length > 0 && h('span', {}, 'Data: ', ...srcs.flatMap((x, i) => [i ? '; ' : '', /^https?:\/\//i.test(x.url || '') ? h('a', { href: x.url, target: '_blank', rel: 'noopener', text: x.by || x.name }) : x.by || x.name, x.license ? ` (${x.license})` : '']))))
+    srcs.length > 0 && h('span', {}, 'Data: ', ...srcs.flatMap((x, i) => [i ? '; ' : '', /^https?:\/\//i.test(x.url || '') ? h('a', { href: x.url, target: '_blank', rel: 'noopener', text: x.by || x.name }) : x.by || x.name, x.license ? ` (${x.license})` : ''])))
   app.replaceChildren(mast, ctl, main, foot)
   try {
     const lists = cfg.filters.map((f) => (f.values ? Promise.resolve(f.values.map((v) => ({ v, n: null })))

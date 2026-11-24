@@ -192,11 +192,11 @@ function howMade(spec, qs, results, said = '') {
   const defs = h('dl', { class: 'back__defs' })
   const names = spec.metrics || []
   modelDocs().then((docs) => {
-    const src = docs.get(S.config.source)
+    const src = docs?.get(S.config.source)
     defs.replaceChildren(...names.flatMap((n) => {
       const m = F.metric(n)
       const doc = m.doc || src?.fields.get(n)
-      return [h('dt', { text: m.label }), h('dd', {}, ...(doc ? withCode(doc) : ['The model does not describe it yet.']), ' ', h('code', { class: 'back__name', text: n }))]
+      return [h('dt', { text: m.label }), h('dd', {}, ...(doc ? withCode(doc) : docs ? ['The model does not describe it yet.'] : []), ' ', h('code', { class: 'back__name', text: n }))]
     }))
   })
   // Where the answer came from: the table Publisher says answered each query (its path report), described from the
@@ -205,7 +205,8 @@ function howMade(spec, qs, results, said = '') {
   const where = h('p', { class: 'back__where' })
   const fresh = S.dated() ? `The data runs to ${P.longDate(S.known.span.last)}.` : ''
   const kinds = seen.map((a) => a.path?.servedBy?.kind || (a.servedFrom ? 'materialized' : 'live'))
-  const ms = seen.length ? Math.max(...seen.map((a) => a.ms || 0)) : null
+  const times = seen.map((a) => a.ms).filter((x) => x !== null)
+  const ms = times.length ? Math.max(...times) : null
   const say = (parts) => where.replaceChildren(...prose([...parts, ms !== null ? ` Answered in ${ms} ms.` : '', fresh ? ` ${fresh}` : '']))
   const words = (name) => {
     const f = S.config.filters.find((x) => x.field === name || S.colOf(x.field) === name)
@@ -242,7 +243,7 @@ function howMade(spec, qs, results, said = '') {
       const sb = a?.path?.servedBy
       const skipped = (a?.path?.considered || []).filter((c) => c.outcome !== 'used').map((c) => `${c.kind} skipped: ${c.reason}${c.detail ? ` (${c.detail})` : ''}`)
       return h('div', { class: 'back__query' },
-        a && h('p', { class: 'back__path', text: `Answered from ${sb?.kind || (a.servedFrom ? 'a stored table' : 'live')}${sb?.tableId ? ` ${sb.tableId.slice(0, 12)}` : ''} in ${a.ms} ms${skipped.length ? `; ${skipped.join('; ')}` : ''}.` }),
+        a && h('p', { class: 'back__path', text: `Answered from ${sb?.kind || (a.servedFrom ? 'a stored table' : 'live')}${sb?.tableId ? ` ${sb.tableId.slice(0, 12)}` : ''}${a.ms !== null ? ` in ${a.ms} ms` : ''}${skipped.length ? `; ${skipped.join('; ')}` : ''}.` }),
         h('pre', { text: q }),
         h('div', { class: 'back__meta' }, h('span', { text: `${rows.length} row${rows.length === 1 ? '' : 's'}` }), cols.length > 0 && h('button', { type: 'button', class: 'ghost ghost--small', text: 'Download CSV', onclick: () => downloadCsv(rows, cols, `query-${i + 1}`) })),
         cols.length > 0 && h('div', { class: 'back__rows' }, h('table', {}, h('thead', {}, h('tr', {}, ...cols.map((c) => h('th', { text: c })))),

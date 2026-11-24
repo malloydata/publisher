@@ -43,12 +43,14 @@ export const reason = (err) => err?.response?.message ?? err?.message ?? String(
 // long it took, and the path report. The runtime hands it back through Publisher.query's `meta`.
 export const answered = new Map() // query text -> { servedFrom, ms, path }
 
-/** The model's own words: each source's and field's #(doc), fetched once, when a reader first turns a card over. */
+/** The model's own words: each source's and field's #(doc), fetched once, when a reader first turns a card over; null
+ *  when the model could not be read, so a block never says the model is silent when it was not asked. */
 let docsP = null
 export function modelDocs() {
   if (!docsP) {
     docsP = (typeof Publisher.model === 'function' ? Publisher.model(config.model) : Promise.resolve(null))
       .then((m) => {
+        if (!m) return null
         const docs = new Map()
         const infos = (m?.sourceInfos || []).map((raw) => (typeof raw === 'string' ? JSON.parse(raw) : raw))
         const lines = (anns) => (anns || []).map((a) => a.value.trim()).filter((v) => v.startsWith('#(doc)'))
@@ -77,7 +79,7 @@ export function modelDocs() {
         })
         return docs
       })
-      .catch(() => new Map())
+      .catch(() => null)
   }
   return docsP
 }
@@ -119,7 +121,8 @@ export function query(q) {
       const meta = {}
       queue.push(() =>
         Publisher.query(config.model, q, { meta }).then((rows) => {
-          answered.set(q, { servedFrom: meta.servedFrom ?? null, ms: meta.executionTimeMs ?? null, path: meta.path ?? null })
+          // A runtime older than `meta` leaves it empty: then nothing is known about where the answer came from.
+          if (Object.keys(meta).length) answered.set(q, { servedFrom: meta.servedFrom ?? null, ms: meta.executionTimeMs ?? null, path: meta.path ?? null })
           resolve(rows)
         }, reject),
       )
