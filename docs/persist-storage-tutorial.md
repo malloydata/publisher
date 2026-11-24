@@ -614,9 +614,9 @@ as `upstream_table_unusable`; what only a run finds (an upstream the build
 neither materialized nor was handed by reference, or a shape over stored
 upstreams the build could not carry) fails that build. The source answers live
 until it can be built. `strictUpstreams` is accepted and ignored, and
-`warehouseReach` is refused (400). Each entry says which happened: `upstreamReuse` is `reused` when
-every persisted upstream was read from its table and `recomputed` when one was
-inlined, with `upstreamRecomputeReason` naming it. The
+`warehouseReach` is refused (400). A built entry says `upstreamReuse: reused`: every persisted
+upstream was read from its table (`recomputed` is retained for entries older
+releases wrote, and never written). The
 `publisher_storage_chained_build_total` counter (labeled `parent_reuse` /
 `strict_refused` / `infra_failure`) reports which path each chained build
 took.
