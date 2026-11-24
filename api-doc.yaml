@@ -5051,13 +5051,11 @@ components:
           type: boolean
           deprecated: true
           description: >-
-            DEPRECATED, removed in a later release: a bind now compiles every
-            model's served copy over the new tables before they are swapped
-            in, and models read the previous tables until then, so a verdict
-            read after a bind returns is never pending. Present, and `true`,
-            only while some model holding this source has yet to compile its
-            copy over the tables bound now, which a server's own binds never
-            leave behind.
+            Retained, no longer produced. Every change to the tables a query
+            reads is a commit that compiles each model's served copy over the
+            new tables before they are swapped in: a bind, and a freshness
+            window that lapses (compiled at the window's edge). A verdict is
+            therefore never pending, and this field is never present.
         message:
           type: string
           description: What the verdict means for this source, in a sentence.

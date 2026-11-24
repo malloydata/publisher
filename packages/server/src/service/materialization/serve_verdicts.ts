@@ -436,15 +436,13 @@ export class ServeVerdicts {
             return servedCopy.on ? "serves" : "off";
          },
          servedCopyOnDatabaseOnly: (sourceID) =>
-            servedCopy.on && !servedCopy.pending
+            servedCopy.on && !servedCopy.uncompiled
                ? servedCopy.databaseOnly.has(sourceID)
                : undefined,
-         // Judged per source: a model still compiling (or holding a copy over
-         // the previous bind's bindings) blanks the judgement only of the
-         // sources it holds, and marks those pending.
-         servedCopyPending: (sourceID) => servedCopy.pendingHolds(sourceID),
+         // Judged per source: a model whose copy has yet to compile for the
+         // first time blanks the judgement only of the sources it holds.
          servedCopyOutcome: (sourceID) =>
-            servedCopy.on && !servedCopy.pendingHolds(sourceID)
+            servedCopy.on && !servedCopy.uncompiledHolds(sourceID)
                ? servedCopyOutcomeOf(
                     sourceID,
                     buildPlan?.sources?.[sourceID]?.modelPath,
@@ -832,38 +830,39 @@ export class ServeVerdicts {
 }
 
 /**
- * What the models' served copies answer from storage, by author `sourceID`:
- * `on` when any model's served copy is enabled, `pending` when one has yet to
- * compile, and a `signature` that changes whenever either does.
- * `pendingHolds` says whether a pending model holds a source, so its
- * judgement waits for that model's compile.
+ * What the models' served copies answer from storage, by author `sourceID`,
+ * as each one's last committed compile left them: `on` when any model's
+ * served copy is enabled, `uncompiled` when one has yet to compile for the
+ * first time, and a `signature` that changes whenever either does.
+ * `uncompiledHolds` says whether such a model holds a source, so its
+ * judgement waits for that model's first compile.
  */
 function servedCopyState(models: ReadonlyMap<string, Model>): {
    on: boolean;
-   pending: boolean;
+   uncompiled: boolean;
    ids: ReadonlySet<string>;
    /** Re-rooted on a database table by some model, on a storage table by none. */
    databaseOnly: ReadonlySet<string>;
    /** Each model whose served copy has compiled, and what it left. */
    compiled: readonly CompiledServedCopy[];
-   pendingHolds: (sourceID: string) => boolean;
+   uncompiledHolds: (sourceID: string) => boolean;
    signature: string;
 } {
    let on = false;
-   let pending = false;
+   let uncompiled = false;
    const ids = new Set<string>();
    const onDatabase = new Set<string>();
    const onStorage = new Set<string>();
    const compiled: CompiledServedCopy[] = [];
    const parts: string[] = [];
-   const pendingModels: Model[] = [];
+   const uncompiledModels: Model[] = [];
    for (const [modelPath, model] of models) {
       const reread = model.servedCopySourceIDs?.();
       if (reread === undefined) continue;
       on = true;
-      if (reread === "pending") {
-         pending = true;
-         pendingModels.push(model);
+      if (reread === "uncompiled") {
+         uncompiled = true;
+         uncompiledModels.push(model);
          continue;
       }
       const databaseOnly = model.servedCopyDatabaseOnlyIDs?.() ?? new Set();
@@ -890,21 +889,21 @@ function servedCopyState(models: ReadonlyMap<string, Model>): {
       [...onDatabase].filter((id) => !onStorage.has(id)),
    );
    const signature = on
-      ? `${pending ? "pending" : "compiled"}:${[...ids].sort().join(",")}:${[...databaseOnly].sort().join(",")}:${parts.join("|")}`
+      ? `${uncompiled ? "uncompiled" : "compiled"}:${[...ids].sort().join(",")}:${[...databaseOnly].sort().join(",")}:${parts.join("|")}`
       : "off";
    // Holds as `servedCopyOutcomeOf` reads it: the model declares or
    // imports the source.
-   const pendingHolds = (sourceID: string) =>
-      pendingModels.some(
+   const uncompiledHolds = (sourceID: string) =>
+      uncompiledModels.some(
          (model) => sourceMapOf(model).node(sourceID) !== undefined,
       );
    return {
       on,
-      pending,
+      uncompiled,
       ids,
       databaseOnly,
       compiled,
-      pendingHolds,
+      uncompiledHolds,
       signature,
    };
 }

@@ -207,13 +207,6 @@ export interface ServeVerdict {
     */
    notServedIn?: NotServedIn[];
    /**
-    * Some model that holds this source, which its served copy reads, has
-    * yet to compile its copy over the tables bound now (a bind returns
-    * before that compile), so the verdict carries no served-copy judgement
-    * yet: re-read it. Absent once every such model's copy is current.
-    */
-   servedCopyPending?: true;
-   /**
     * With `contract_missing` or `incompatible`: the table generation the
     * verdict judged, so a consumer drops a verdict about a table it has
     * since replaced: its `physicalTableName`, and the `builtAt` its entry
@@ -328,12 +321,6 @@ export interface ServeVerdictFacts {
     * nothing. Absent: never judged.
     */
    servedCopyOutcome?(sourceID: string): ServedCopyOutcome | undefined;
-   /**
-    * Whether a model holding this source has a served copy that is not yet
-    * compiled over the bindings bound now ({@link ServeVerdict.servedCopyPending}).
-    * Absent: never.
-    */
-   servedCopyPending?(sourceID: string): boolean;
    /**
     * A persisted view's generated build source (`#@ persist` on a view),
     * by its plan sourceID: the source and view it stores. A query reaches it
@@ -722,15 +709,10 @@ function boundVerdict(
    const { sourceID, source, facts, origin, tier, subject, live } = s;
    // Every source the served copy reads, `#(materialize)` or `#@ persist`,
    // is judged by what its compile did, the same fact its
-   // `served-copy-not-served` warnings are read from; a compile still
-   // pending judges nothing.
+   // `served-copy-not-served` warnings are read from; a copy yet to
+   // compile for the first time judges nothing.
    const copy = s.servedCopy ? facts.servedCopyOutcome?.(sourceID) : undefined;
-   const pending =
-      s.servedCopy && facts.servedCopyPending?.(sourceID) === true
-         ? { servedCopyPending: true as const }
-         : {};
    const where = {
-      ...pending,
       ...(copy && copy.notServedIn.length > 0
          ? { notServedIn: copy.notServedIn }
          : {}),

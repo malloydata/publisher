@@ -34,6 +34,7 @@ import {
 } from "./domain/column_contract";
 import { packageRelativeSourceID } from "./text/read_text";
 import { refreshStringCapabilities } from "./serve/source_capability";
+import { stopsReadAt } from "./domain/freshness";
 import { recordScopeFacts } from "./serve/scope_facts";
 import type { Connection, MalloyConfig } from "@malloydata/malloy";
 import { components } from "../../api";
@@ -285,6 +286,12 @@ export class PackageMaterialization {
    private commitChain: Promise<void> = Promise.resolve();
    /** The snapshot from before a bind that is compiling ({@link servedSnapshot}). */
    private committing: Snapshot | undefined;
+   /**
+    * The commit at the next freshness edge ({@link scheduleLapse}): when a
+    * bound table's window lapses, the tables a query reads change with no
+    * bind, so the served copy is compiled over them then.
+    */
+   private lapseTimer: ReturnType<typeof setTimeout> | undefined;
    /** The pending re-read of the `storage=` tables the last bind left unread. */
    private storageRetry: ReturnType<typeof setTimeout> | undefined;
    /** The `storage=` entries {@link storageBindings} were made from, by address. */
@@ -1003,6 +1010,57 @@ export class PackageMaterialization {
          }
       } finally {
          this.committing = undefined;
+         this.scheduleLapse();
+      }
+   }
+
+   /**
+    * Arm the commit at the next instant a bound table stops being read (its
+    * freshness window lapses, and its fallback does not serve stale): the
+    * bindings a query pins change then with no bind, so each model's served
+    * copy, its problems and its scope facts are compiled over the tables
+    * read from that edge, as a bind's commit compiles them. Re-armed after
+    * every commit; one timer per package, never holding the process open.
+    */
+   private scheduleLapse(): void {
+      if (this.lapseTimer) clearTimeout(this.lapseTimer);
+      this.lapseTimer = undefined;
+      if (this.disposed) return;
+      const now = Date.now();
+      let edge: number | undefined;
+      for (const b of this.snapshot().bindings) {
+         const at = stopsReadAt({
+            dataAsOf: b.freshAsOf,
+            freshnessWindowSeconds: b.freshnessWindowSeconds,
+            freshnessFallback: b.freshnessFallback,
+         });
+         if (at !== undefined && at > now && (edge === undefined || at < edge)) {
+            edge = at;
+         }
+      }
+      if (edge === undefined) return;
+      // setTimeout's longest delay; a later edge re-arms when this fires.
+      const delay = Math.min(edge - now, 2_147_483_647);
+      const timer = setTimeout(() => {
+         this.lapseTimer = undefined;
+         const run = this.commitChain.then(() => this.commitLapse());
+         this.commitChain = run.catch(() => undefined);
+      }, delay);
+      (timer as { unref?: () => void }).unref?.();
+      this.lapseTimer = timer;
+   }
+
+   /** The commit {@link scheduleLapse} arms: every model compiled over the tables read now. */
+   private async commitLapse(): Promise<void> {
+      if (this.disposed) return;
+      try {
+         await Promise.all(
+            [...this.owner.models().values()].map((model) =>
+               model.prepareServedCopy(),
+            ),
+         );
+      } finally {
+         this.scheduleLapse();
       }
    }
 
@@ -1197,6 +1255,8 @@ export class PackageMaterialization {
     */
    dispose(): void {
       this.disposed = true;
+      if (this.lapseTimer) clearTimeout(this.lapseTimer);
+      this.lapseTimer = undefined;
       this.cancelUnreadRetry();
       this.cancelStorageRetry();
    }
@@ -1817,6 +1877,7 @@ export class PackageMaterialization {
          void model.prepareServedCopy();
       }
       this.bindTypeFindings(bindings);
+      this.scheduleLapse();
    }
 
    /**
