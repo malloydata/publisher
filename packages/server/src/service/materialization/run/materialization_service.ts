@@ -1213,11 +1213,17 @@ export class MaterializationService {
             const failed = failedRunManifestOf(err);
             if (failed) {
                // failedRunManifestOf found it on an error that carries one.
+               const relative = packageRelativeRun(
+                  {
+                     entries: {},
+                     failures: failed.failures,
+                     refused: failed.refusedSources ?? {},
+                  },
+                  state.packagePath,
+               );
                withFailedRunManifest(err as BuildRunFailedError, {
-                  failures: packageRelativeRun(
-                     { entries: {}, failures: failed.failures, refused: {} },
-                     state.packagePath,
-                  ).failures,
+                  failures: relative.failures,
+                  refusedSources: relative.refused,
                });
             }
          }
@@ -1748,7 +1754,7 @@ export class MaterializationService {
          entries: builtEntries,
          failures: builtFailures,
          sourcesRefused: instructedRefused,
-         refusedBesideBuilt: builtRefusedBeside = {},
+         refusedSources: builtRefused = {},
          uniquenessChecks,
       } = built;
 
@@ -1758,12 +1764,12 @@ export class MaterializationService {
       const {
          entries,
          failures,
-         refused: refusedBesideBuilt,
+         refused: refusedInstructed,
       } = packageRelativeRun(
          {
             entries: builtEntries,
             failures: builtFailures,
-            refused: builtRefusedBeside,
+            refused: builtRefused,
          },
          pkg.getPackagePath(),
       );
@@ -1780,7 +1786,8 @@ export class MaterializationService {
       // Auto-run refusals ride the run's free-form metadata, not the manifest
       // a strict-schema caller parses. Orchestrated refusals are in
       // `failures`, where that caller already looks, unless an eligible
-      // sibling built their table (then in `refusedSources`).
+      // sibling built their table or another outcome holds their address
+      // (then in `refusedSources`).
       const sourcesRefused =
          Object.keys(derivedRefused).length + instructedRefused;
       const durationMs = Date.now() - startedAt;
@@ -1818,15 +1825,16 @@ export class MaterializationService {
             sourcesBuilt,
             sourcesReused,
             ...(sourcesRefused > 0 ? { sourcesRefused } : {}),
-            // Auto-run's refusals, plus instructed sources refused beside a
-            // table an eligible sibling built, which are not in `failures`.
+            // Auto-run's refusals, plus instructed refusals `failures` does
+            // not report (beside a table an eligible sibling built, or
+            // another source's failure on their address).
             ...(Object.keys(derivedRefused).length +
-               Object.keys(refusedBesideBuilt).length >
+               Object.keys(refusedInstructed).length >
             0
                ? {
                     refusedSources: {
                        ...derivedRefused,
-                       ...refusedBesideBuilt,
+                       ...refusedInstructed,
                     },
                  }
                : {}),

@@ -8,6 +8,10 @@
  * extension's refusal is reported with the plan's reason in the run's
  * `refusedSources`, never dropped because the base's instruction on the same
  * address applied: every instructed source ends in an entry or a failure.
+ * When the base's build then fails on that address, the base's failure
+ * stands in `failures` and the extension's refusal is still reported, with
+ * its own reason, on the FAILED run's `refusedSources`: never folded into
+ * the base's failure.
  * DuckDB. The run's plan is made to hold no table for the extension, as a
  * plan that refused it after the host read it holds none.
  */
@@ -146,7 +150,11 @@ describe("a host instructing a base and its refused extension on one address", (
       await freshLoadPool();
    });
 
-   it("builds the base's table and reports the extension's plan refusal, beside it", async () => {
+   const instructBoth = async (): Promise<{
+      run: Materialization;
+      address: string;
+      refusal: { sourceID: string };
+   }> => {
       const plan = pkg.getBuildPlan()!;
       const a = Object.values(plan.sources).find((x) => x.name === "a")!;
       const refusal = Object.values(plan.refusedSources ?? {}).find(
@@ -176,17 +184,45 @@ describe("a host instructing a base and its refused extension on one address", (
          if (Date.now() > deadline) throw new Error("run never settled");
          await new Promise((r) => setTimeout(r, 20));
       }
-      const manifest = run!.manifest as {
+      return { run: run!, address: a.sourceEntityId, refusal };
+   };
+
+   it("builds the base's table and reports the extension's plan refusal, beside it", async () => {
+      const { run, address, refusal } = await instructBoth();
+      const manifest = run.manifest as {
          entries?: Record<string, { physicalTableName?: string }>;
          failures?: Record<string, unknown>;
       };
-      expect(run!.status).toBe("MANIFEST_FILE_READY");
-      expect(manifest.entries?.[a.sourceEntityId]?.physicalTableName).toBe(
-         "host_a",
-      );
-      expect(manifest.failures?.[a.sourceEntityId]).toBeUndefined();
+      expect(run.status).toBe("MANIFEST_FILE_READY");
+      expect(manifest.entries?.[address]?.physicalTableName).toBe("host_a");
+      expect(manifest.failures?.[address]).toBeUndefined();
       const refused = (
-         run!.metadata as {
+         run.metadata as {
+            refusedSources?: Record<string, { reason?: string }>;
+         } | null
+      )?.refusedSources;
+      expect(refused?.[refusal.sourceID]).toMatchObject({
+         reason: "storage_source_unsupported",
+      });
+   });
+
+   it("reports the extension's plan refusal beside its base's build failure, never folded into it", async () => {
+      const warehouse = await env.getMalloyConnection("warehouse");
+      await warehouse.runSQL("DROP TABLE main.ir_raw");
+      const { run, address, refusal } = await instructBoth();
+      expect(run.status).toBe("FAILED");
+      const failure = (
+         run.manifest as {
+            failures?: Record<
+               string,
+               { sourceName?: string; refused?: boolean }
+            >;
+         }
+      ).failures?.[address];
+      expect(failure?.sourceName).toBe("a");
+      expect(failure?.refused).toBeUndefined();
+      const refused = (
+         run.metadata as {
             refusedSources?: Record<string, { reason?: string }>;
          } | null
       )?.refusedSources;

@@ -10135,7 +10135,12 @@ components:
             recorded on the run instead: as a `SourceFailure` with `refused`
             and `refusalReason` on a run with `buildInstructions`, otherwise
             in the run's `metadata.refusedSources`, or its `error` when
-            nothing else was left to build.
+            nothing else was left to build. `failures` holds one outcome per
+            address, so on a run with `buildInstructions` a refused source
+            whose address holds another outcome (a table an eligible source
+            built, another source's build failure, or another source's
+            refusal) is in `metadata.refusedSources` instead, with its own
+            reason, on a FAILED run too.
 
             TABLE_OWNED_ELSEWHERE and TABLE_OWNERSHIP_UNVERIFIED, on a 400,
             mean a build was refused before it wrote because its `name=` is

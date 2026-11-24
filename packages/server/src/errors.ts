@@ -1117,6 +1117,12 @@ export class MaterializationEligibilityError extends Error {
     */
    runFailures?: Record<string, object>;
 
+   /**
+    * The refused sources `runFailures` does not report, by sourceID, which
+    * the FAILED run records as `metadata.refusedSources`.
+    */
+   runRefused?: Record<string, object>;
+
    constructor(error: { message: string; reason?: EligibilityRefusalReason }) {
       super(error.message);
       this.name = "MaterializationEligibilityError";

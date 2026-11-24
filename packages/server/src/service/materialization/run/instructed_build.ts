@@ -503,17 +503,19 @@ export class InstructedBuild {
       failures: Record<string, SourceFailure>;
       /**
        * Instructed sources the eligibility gate refused, metered as refused.
-       * `refusalsInFailures` of them are also in `failures` (no sibling built
-       * their address); the rest are in `refusedBesideBuilt`.
+       * `refusalsInFailures` of them are also in `failures` (the one failure
+       * of an address nothing built); the rest are in `refusedSources`.
        */
       sourcesRefused: number;
       refusalsInFailures: number;
       /**
-       * Refused sources whose table an eligible sibling built, by sourceID:
-       * the table stands and serves its eligible sources, and only these
-       * answer live.
+       * Refused sources `failures` does not report, by sourceID, each with its
+       * own reason ({@link settleRefusals}): one whose table an eligible
+       * sibling built (the table stands and serves its eligible sources, and
+       * only these answer live), and one on an address whose failure is
+       * another source's.
        */
-      refusedBesideBuilt: Record<string, RefusedSource>;
+      refusedSources: Record<string, RefusedSource>;
       /** The run metadata value for the uniqueness checks, when any ran. */
       uniquenessChecks?: ReturnType<UniquenessLedger["toMetadata"]>;
       /** See {@link InstructedRun.readFrom}. */
@@ -594,7 +596,7 @@ export class InstructedBuild {
 
       let settled: ReturnType<typeof settleRefusals> = {
          refusalsInFailures: 0,
-         refusedBesideBuilt: {},
+         refusedSources: {},
       };
       try {
          await this.buildEveryTable(run, builds, tables, connections);
@@ -612,6 +614,7 @@ export class InstructedBuild {
          if (run.builtSources.length === 0 && run.failedReasons.length > 0) {
             throw failedRunError(
                run,
+               settled,
                new BuildRunFailedError(
                   [
                      ...run.failedReasons,
@@ -638,7 +641,11 @@ export class InstructedBuild {
             run.refusals.length > 0 &&
             !run.heldBackBySibling
          ) {
-            throw failedRunError(run, allSourcesRefusedError(run.refusals));
+            throw failedRunError(
+               run,
+               settled,
+               allSourcesRefusedError(run.refusals),
+            );
          }
       } catch (err) {
          // A failed run's manifest records no entry, so its written tables are
@@ -1506,26 +1513,33 @@ export function tableSiteContext(
 
 /**
  * Record the run's gate refusals against their addresses, now that the loop
- * knows which addresses it built (instructed_refused_sibling.spec.ts). A
- * base and its `extend` share one content address, and the gate decides per
- * source. A
- * refusal on an address an eligible sibling built fails only the refused
- * source: the table stands, its eligible sources serve it, and the refused
- * one answers live (routing skips a gated entry point). It stays out of
- * `failures` and `entries`, which the control plane reads by address, and is
- * reported per source instead. A refusal on an address nothing built is
- * recorded once per address. Neither depends on run order.
+ * knows which addresses it built (instructed_refused_sibling.spec.ts), so
+ * every refused source is reported once, with its own reason. A base and
+ * its `extend` share one content address, and the gate decides per source,
+ * while `failures` and `entries`, which the control plane reads by address,
+ * hold one outcome per address:
+ *
+ *  - On an address an eligible sibling built, the table stands, its eligible
+ *    sources serve it, and the refused one answers live (routing skips a
+ *    gated entry point): it is reported in `refusedSources` alone.
+ *  - On an address nothing built, one refusal is the address's failure (an
+ *    own refusal before one refused only for sharing the table, then by
+ *    sourceID), and every other refusal there is in `refusedSources`.
+ *  - On an address whose build failed, or that holds another failure, that
+ *    failure stands, and every refusal there is in `refusedSources`.
+ *
+ * None depends on run order.
  */
 function settleRefusals(run: InstructedRun): {
    refusalsInFailures: number;
-   refusedBesideBuilt: Record<string, RefusedSource>;
+   refusedSources: Record<string, RefusedSource>;
 } {
    let refusalsInFailures = 0;
-   const refusedBesideBuilt: Record<string, RefusedSource> = {};
+   const refusedSources: Record<string, RefusedSource> = {};
    const unbuilt = new Map<string, PendingRefusal[]>();
    for (const pending of run.pendingRefusals) {
       if (run.builtAddresses.has(pending.failedKey)) {
-         refusedBesideBuilt[pending.refused.sourceID] = pending.refused;
+         refusedSources[pending.refused.sourceID] = pending.refused;
          logger.warn(
             "A refused source shares a table an eligible source built; the table stands and only the refused source answers live",
             {
@@ -1542,21 +1556,24 @@ function settleRefusals(run: InstructedRun): {
       else unbuilt.set(pending.failedKey, [pending]);
    }
    for (const [address, pendings] of unbuilt) {
-      // Once per address; a build failure already there stands.
-      if (run.failures[address]) continue;
-      // The same failure whatever the run order: a source its own gate refused
-      // before one refused only for sharing the table, then by sourceID.
-      const chosen = [...pendings].sort(
+      const ordered = [...pendings].sort(
          (a, b) =>
             Number(b.own) - Number(a.own) ||
             (a.sourceID < b.sourceID ? -1 : a.sourceID > b.sourceID ? 1 : 0),
-      )[0];
-      refusalsInFailures++;
-      run.failures[address] = chosen.failure;
-      run.entries[address] = chosen.errorEntry;
+      );
+      // A failure already on the address (its build's) stands.
+      const others = run.failures[address] ? ordered : ordered.slice(1);
+      if (!run.failures[address]) {
+         refusalsInFailures++;
+         run.failures[address] = ordered[0].failure;
+         run.entries[address] = ordered[0].errorEntry;
+      }
+      for (const other of others) {
+         refusedSources[other.refused.sourceID] = other.refused;
+      }
    }
    run.pendingRefusals = [];
-   return { refusalsInFailures, refusedBesideBuilt };
+   return { refusalsInFailures, refusedSources };
 }
 
 /** `SourceFailure.code` of an instruction no planned source resolves to. */
@@ -1601,9 +1618,10 @@ function recordUnresolvedInstructions(
       if (applied(instruction)) continue;
       const key = instruction.sourceEntityId;
       const refused = refusedAtPlan?.(instruction);
-      // A source the plan refused is reported even beside a table its
-      // address's other source built (settleRefusals, refusedBesideBuilt).
-      if (run.failures[key]) continue;
+      // A source the plan refused is reported with its own reason, beside a
+      // table its address's other source built or another source's failure
+      // there (settleRefusals, refusedSources).
+      if (!refused && run.failures[key]) continue;
       if (
          refused && instruction.sourceID !== undefined
             ? pendingSources.has(refused.sourceID)
@@ -1707,8 +1725,15 @@ function recordUnresolvedInstructions(
  */
 function failedRunError<
    E extends BuildRunFailedError | MaterializationEligibilityError,
->(run: InstructedRun, err: E): E {
-   return withFailedRunManifest(err, { failures: { ...run.failures } });
+>(
+   run: InstructedRun,
+   settled: { refusedSources: Record<string, RefusedSource> },
+   err: E,
+): E {
+   return withFailedRunManifest(err, {
+      failures: { ...run.failures },
+      refusedSources: { ...settled.refusedSources },
+   });
 }
 
 /**
