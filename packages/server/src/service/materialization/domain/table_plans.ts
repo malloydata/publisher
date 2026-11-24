@@ -18,6 +18,7 @@
  * Pure.
  */
 
+import { contractKeyName } from "./column_contract";
 import type { StringReads } from "./string_reads";
 import type { UpstreamColumn } from "./upstream_schemas";
 import type { TableKind as StoredTableKind } from "./vocabulary";
@@ -952,6 +953,21 @@ export interface OverStoredBase {
     * null), and never builds from raw instead.
     */
    pairLeafKeys?: readonly string[];
+}
+
+/**
+ * The contract keys (`ColumnContract.keys`) of the leaf checks a build over
+ * the pair table needs passed (unique and never null): one per path, as
+ * `run/inline_uniqueness.ts` records them (`leaf:items.options.option_id`).
+ */
+export function pairLeafContractKeys(plan: MaterializePlan): string[] {
+   const pairs = plan.pairBlocks?.blocks ?? (plan.pair ? [plan.pair] : []);
+   return pairs.map((p) => {
+      const names = [p.join, ...(p.hops ?? []).map((h) => h.join)];
+      const hops = p.hops ?? [];
+      const key = hops.length > 0 ? hops[hops.length - 1].key : p.childKey;
+      return contractKeyName("leaf", names.join("."), key);
+   });
 }
 
 /** A `#(materialize)` plan's kind: `pair` when it stores an inlined join_many. */

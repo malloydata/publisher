@@ -61,11 +61,11 @@ const RAW = (duplicateLeaf: boolean): Record<string, string> => ({
     (4, 'z', CAST(7.0 AS DECIMAL(10,1)))
   ) AS t(id, cust, amount)`,
    pv_items: `SELECT * FROM (VALUES
-    (100, 1, CAST(3.00 AS DECIMAL(10,2))),
-    (101, 1, CAST(4.50 AS DECIMAL(10,2))),
-    (102, 2, CAST(6.00 AS DECIMAL(10,2))),
-    (${duplicateLeaf ? 102 : 103}, 4, CAST(1.25 AS DECIMAL(10,2)))
-  ) AS t(item_id, order_id, price)`,
+    (100, 1, CAST(3.00 AS DECIMAL(10,2)), 5100),
+    (101, 1, CAST(4.50 AS DECIMAL(10,2)), 5101),
+    (102, 2, CAST(6.00 AS DECIMAL(10,2)), 5102),
+    (${duplicateLeaf ? 102 : 103}, 4, CAST(1.25 AS DECIMAL(10,2)), 5103)
+  ) AS t(item_id, order_id, price, sku)`,
    pv_opts: `SELECT * FROM (VALUES
     (1000, 100, CAST(0.50 AS DECIMAL(10,2))),
     (1001, 100, CAST(0.25 AS DECIMAL(10,2))),
@@ -347,12 +347,7 @@ class Fixture {
       writePackageFiles(
          path.join(envPath, PKG),
          {
-            "m.malloy": this.model
-               .replace(
-                  /__T__pv_(orders|items|opts)/g,
-                  `${this.tier.tablePrefix}pv_$1`,
-               )
-               .replace(/__T__/g, this.tier.namePrefix),
+            "m.malloy": this.tableNames(this.model),
          },
          { manifest: { name: PKG, description: "fixture" } },
       );
@@ -388,6 +383,24 @@ class Fixture {
 
    warehouse() {
       return this.env.getMalloyConnection("warehouse");
+   }
+
+   /** Writes `model` over the package's model and reloads the package, as `?reload=true` does. */
+   async edit(model: string): Promise<void> {
+      fs.writeFileSync(
+         path.join(this.pkg.getPackagePath(), "m.malloy"),
+         this.tableNames(model),
+      );
+      this.pkg = await this.env.getPackage(parsePackageName(PKG), true);
+   }
+
+   private tableNames(model: string): string {
+      return model
+         .replace(
+            /__T__pv_(orders|items|opts)/g,
+            `${this.tier.tablePrefix}pv_$1`,
+         )
+         .replace(/__T__/g, this.tier.namePrefix);
    }
 
    /** Empties every raw table out of band. */
@@ -667,6 +680,87 @@ for (const tier of tiers) {
          );
          expect(refusal?.reason).toBe("upstream_table_unusable");
          expect(refusal?.message).toMatch(/'orders'.*does not compile/);
+      });
+   });
+}
+
+for (const tier of tiers) {
+   describe(`a reload that moves the pair table's leaf key rebuilds it, and the view over it, in the next run (${tier.label})`, () => {
+      // The run checked `items`'s key `item_id`. An edit makes `sku`, also
+      // unique, its key: the pair table's address is unchanged, but its
+      // contract records no check of `sku`, so the view over it can neither
+      // serve nor build until the pair table is rebuilt and checks it.
+      const model = MECHANISMS[0].model;
+      const moved = model.replace("primary_key: item_id", "primary_key: sku");
+      const f = new Fixture(tier, model);
+      const query = asText(MECHANISMS[0]);
+      let live: Answer;
+      let first: Materialization;
+      let afterMove: Answer;
+      let next: Materialization;
+      let recovered: Answer;
+      let again: Materialization;
+      let stillServed: Answer;
+
+      beforeAll(async () => {
+         await f.open();
+         live = await f.ask(query);
+         first = await f.build({});
+         await f.edit(moved);
+         afterMove = await f.ask(query);
+         next = await f.build({});
+         recovered = await f.ask(query);
+         again = await f.build({});
+         stillServed = await f.ask(query);
+      }, 300_000);
+      afterAll(() => f.close());
+
+      const pairOf = (m: Materialization) =>
+         Object.values(entriesOf(m)).find(
+            (e) => e.sourceName?.startsWith("orders") ?? false,
+         );
+      const viewOf = (m: Materialization) =>
+         Object.values(entriesOf(m)).find((e) =>
+            MECHANISMS[0].downstream.test(e.sourceName ?? ""),
+         );
+
+      it("answers equal to live throughout", () => {
+         expect(afterMove.rows).toEqual(live.rows);
+         expect(recovered.rows).toEqual(live.rows);
+         expect(stillServed.rows).toEqual(live.rows);
+      });
+
+      it("rebuilds the pair table in the first run after the reload, checking the new key", () => {
+         expect([next.status, (next as { error?: unknown }).error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         const was = pairOf(first)!;
+         const now = pairOf(next)!;
+         expect(now.builtAt).not.toBe(was.builtAt);
+         expect(now.contract?.keys?.["leaf:items.sku"]).toEqual({
+            unique: true,
+            level: "leaf",
+         });
+      });
+
+      it("builds the view over the rebuilt pair table in that same run, and serves it", () => {
+         const view = viewOf(next)!;
+         expect(view.builtAt).toEqual(expect.any(String));
+         expect(view.upstreamReuse).toBe("reused");
+         expect(view.builtFrom?.[0]?.builtAt).toBe(pairOf(next)!.builtAt);
+         expect(failuresOf(next)).toEqual([]);
+         const kinds: (string | undefined)[] =
+            tier.label === "DuckDB"
+               ? [MECHANISMS[0].servedBy]
+               : [MECHANISMS[0].servedBy, "materialized"];
+         expect(kinds).toContain(recovered.kind);
+      });
+
+      it("carries both tables in the run after that", () => {
+         expect(pairOf(again)!.builtAt).toBe(pairOf(next)!.builtAt);
+         expect(viewOf(again)!.builtAt).toBe(viewOf(next)!.builtAt);
+         expect(failuresOf(again)).toEqual([]);
       });
    });
 }

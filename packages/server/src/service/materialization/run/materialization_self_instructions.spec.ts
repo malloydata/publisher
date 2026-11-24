@@ -682,6 +682,66 @@ describe("a prior table its bind cannot serve is rebuilt in full", () => {
       expect(instructions).toEqual([]);
       expect(Object.keys(carried)).toEqual(["b1aaaaaaaaaaaaaa"]);
    });
+
+   describe("a pair table", () => {
+      // `s1` stores the inlined join_many `items`, whose key the model
+      // declares now as `childKey`.
+      const pairCompiled = (childKey: string) => {
+         const c = compiled();
+         for (const table of Object.values(c.tables)) {
+            (table as { materialize?: unknown }).materialize = {
+               pair: {
+                  join: "items",
+                  parentKey: "id",
+                  childKey,
+                  childSourceID: "items@m.malloy",
+                  parentRowColumn: "__parent_row",
+               },
+            };
+         }
+         return c;
+      };
+      const checked = (key: string) => ({
+         ...contractFor(),
+         keys: { [key]: { unique: true, level: "leaf" } },
+      });
+
+      it("is carried while its contract records a check of the leaf key the model declares", () => {
+         const { instructions, carried } = deriveSelfInstructions(
+            pairCompiled("item_id"),
+            undefined,
+            prior(checked("leaf:items.item_id")) as never,
+         );
+         expect(instructions).toEqual([]);
+         expect(Object.keys(carried)).toEqual(["b1aaaaaaaaaaaaaa"]);
+      });
+
+      it("is rebuilt once a reload moves the leaf key to one its contract records no check of", () => {
+         const { instructions, carried } = deriveSelfInstructions(
+            pairCompiled("sku"),
+            undefined,
+            prior(checked("leaf:items.item_id")) as never,
+         );
+         expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+            "b1aaaaaaaaaaaaaa",
+         ]);
+         expect(carried).toEqual({});
+      });
+
+      it("is carried when its check of the declared key recorded a failure, which a rebuild would not change", () => {
+         const { carried } = deriveSelfInstructions(
+            pairCompiled("item_id"),
+            undefined,
+            prior({
+               ...contractFor(),
+               keys: {
+                  "leaf:items.item_id": { unique: false, level: "leaf" },
+               },
+            }) as never,
+         );
+         expect(Object.keys(carried)).toEqual(["b1aaaaaaaaaaaaaa"]);
+      });
+   });
 });
 
 describe("a run of named sources pulls in their upstreams", () => {

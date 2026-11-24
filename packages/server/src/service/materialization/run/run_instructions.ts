@@ -35,7 +35,10 @@ import {
    hasReservedTableSuffix,
    tableNameParts,
 } from "../domain/table_name";
-import { isPersistedQuerySourceID } from "../domain/table_plans";
+import {
+   isPersistedQuerySourceID,
+   pairLeafContractKeys,
+} from "../domain/table_plans";
 import { getPersistStorageMode } from "../../../config";
 import {
    BuildInstructionsInvalidError,
@@ -803,17 +806,24 @@ interface SelfInstructions {
  * Whether a prior table must be rebuilt in full: one with no contract
  * (built before contracts were recorded), or one a bind found incompatible
  * with its contract, is never served from, so it is never carried, and an
- * incremental one is reseeded rather than advanced by a delta.
+ * incremental one is reseeded rather than advanced by a delta. So is a pair
+ * table whose contract records no check of a leaf key the model declares
+ * now (`leafKeys`): a reload that moves the leaf's primary key leaves its
+ * address alone, and nothing reads or builds over it until a build checks
+ * the new key.
  */
 function rebuiltInFull(
    prior: ManifestEntry | undefined,
    sourceEntityId: string,
    options: { incompatible?: ReadonlySet<string> },
+   leafKeys: readonly string[] = [],
 ): boolean {
+   if (prior === undefined) return false;
+   const contract = parseContract(prior.contract);
    return (
-      prior !== undefined &&
-      (parseContract(prior.contract) === undefined ||
-         options.incompatible?.has(sourceEntityId) === true)
+      contract === undefined ||
+      options.incompatible?.has(sourceEntityId) === true ||
+      leafKeys.some((k) => contract.keys?.[k] === undefined)
    );
 }
 
@@ -959,7 +969,13 @@ export function deriveSelfInstructions(
             ? previous!
             : tableName;
 
-      const mustRebuild = rebuiltInFull(prior, sourceEntityId, options);
+      const materialize = compiled.tables[persistSource.sourceID]?.materialize;
+      const mustRebuild = rebuiltInFull(
+         prior,
+         sourceEntityId,
+         options,
+         materialize ? pairLeafContractKeys(materialize) : [],
+      );
       const instruction: BuildInstruction = {
          sourceEntityId,
          materializedTableId: `local-${sourceEntityId.substring(
