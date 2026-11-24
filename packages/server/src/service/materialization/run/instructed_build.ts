@@ -2157,7 +2157,7 @@ async function checkParentKeys(
 }
 
 /** One leaf key check of a built pair table, and what it found (undefined: it did not run). */
-export interface PairLeafCheck {
+interface PairLeafCheck {
    check: ReturnType<typeof pairLeafKeyChecksOf>[number];
    record: KeyCheckRecord | undefined;
 }
