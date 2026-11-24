@@ -349,6 +349,68 @@ describe("a standalone run reads only the tables it would carry", () => {
       m.dispose();
    });
 
+   it("holds an advanced table whose entry an earlier run recorded, not the last one", async () => {
+      // The last run was of other named sources, so it recorded no entry
+      // for these: each delta's table is known only from an earlier run.
+      const { plan, context } = incremental([
+         "altered",
+         "intact",
+         "unrecorded",
+      ]);
+      const incrementalPriors = {
+         altered: built("altered"),
+         intact: built("intact"),
+         unrecorded: { ...built("unrecorded"), contract: undefined },
+      };
+      const { connection, statements } = spied();
+      const m = await facade(connection);
+      const derived = await deriveHoldingCarried(
+         (incompatible) =>
+            deriveSelfInstructions(plan, undefined, {}, context, undefined, {
+               incompatible,
+               incrementalPriors,
+            }),
+         () => m.incompatibleTables({}),
+         (kept) => m.holdCarriedToContracts(kept),
+         "pkg",
+      );
+      const reseed = Object.fromEntries(
+         derived.instructions.map((i) => [i.sourceEntityId, i.reseed === true]),
+      );
+      // Moved: reseeded. No contract: reseeded unread. Intact: advanced.
+      expect(reseed).toEqual({
+         altered: true,
+         intact: false,
+         unrecorded: true,
+      });
+      expect(Object.keys(derived.advanced)).toEqual(["intact"]);
+      const read = statements.join("\n");
+      expect(read).toContain("altered");
+      expect(read).not.toContain("unrecorded");
+      m.dispose();
+   });
+
+   it("reseeds an advanced table from an earlier run's entry it could not read", async () => {
+      const { plan, context } = incremental(["intact"]);
+      const m = await facade({
+         dialectName: warehouse.dialectName,
+         runSQL: () => new Promise(() => undefined),
+      });
+      const derived = await deriveHoldingCarried(
+         (incompatible) =>
+            deriveSelfInstructions(plan, undefined, {}, context, undefined, {
+               incompatible,
+               incrementalPriors: { intact: built("intact") },
+            }),
+         () => m.incompatibleTables({}),
+         (kept) => m.holdCarriedToContracts(kept, undefined, { budgetMs: 50 }),
+         "pkg",
+      );
+      expect(derived.instructions[0].reseed).toBe(true);
+      expect(derived.advanced).toEqual({});
+      m.dispose();
+   });
+
    it("stops reading at the run's cancel, judging nothing", async () => {
       const m = await facade({
          dialectName: warehouse.dialectName,

@@ -124,6 +124,13 @@ export interface InstructedBuildOptions {
     */
    hostInstructed?: boolean;
    /**
+    * Auto-run only: the pair tables this run rebuilds to run a leaf key
+    * check their last build could not run, by content address
+    * (deriveSelfInstructions). A check such a rebuild still cannot run is
+    * recorded `rebuiltToVerify`, so the table is not rebuilt for it again.
+    */
+   rebuiltToVerify?: ReadonlySet<string>;
+   /**
     * Auto-run only: the inline uniqueness checks' passes, read from the run
     * before and recorded for the run after (inline_uniqueness.ts). Undefined
     * runs every check as compiled.
@@ -168,6 +175,7 @@ export interface InstructedRun
       | "uniqueness"
       | "freshness"
       | "onBuildStarted"
+      | "rebuiltToVerify"
    > {
    planFacts: ChainedPlanFacts;
    index: InstructionIndex;

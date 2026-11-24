@@ -728,23 +728,52 @@ describe("a prior table its bind cannot serve is rebuilt in full", () => {
          expect(carried).toEqual({});
       });
 
-      it("is carried when its check of the declared key could not run, recorded unverified, so a check that keeps failing to run does not rebuild it every run", () => {
-         const { instructions, carried } = deriveSelfInstructions(
-            pairCompiled("item_id"),
-            undefined,
-            prior({
-               ...contractFor(),
-               keys: {
-                  "leaf:items.item_id": {
-                     unique: false,
-                     level: "leaf",
-                     unverified: true,
-                  },
-               },
-            }) as never,
-         );
+      const unverified = (rebuiltToVerify: boolean) => ({
+         ...contractFor(),
+         keys: {
+            "leaf:items.item_id": {
+               unique: false,
+               level: "leaf",
+               unverified: true,
+               ...(rebuiltToVerify ? { rebuiltToVerify: true } : {}),
+            },
+         },
+      });
+
+      it("is rebuilt once to verify when its check of the declared key could not run, recorded unverified", () => {
+         const { instructions, carried, rebuiltToVerify } =
+            deriveSelfInstructions(
+               pairCompiled("item_id"),
+               undefined,
+               prior(unverified(false)) as never,
+            );
+         expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+            "b1aaaaaaaaaaaaaa",
+         ]);
+         expect(carried).toEqual({});
+         expect([...rebuiltToVerify]).toEqual(["b1aaaaaaaaaaaaaa"]);
+      });
+
+      it("is carried, not rebuilt again, when the table was itself rebuilt to verify and the check still could not run", () => {
+         const { instructions, carried, rebuiltToVerify } =
+            deriveSelfInstructions(
+               pairCompiled("item_id"),
+               undefined,
+               prior(unverified(true)) as never,
+            );
          expect(instructions).toEqual([]);
          expect(Object.keys(carried)).toEqual(["b1aaaaaaaaaaaaaa"]);
+         expect(rebuiltToVerify.size).toBe(0);
+      });
+
+      it("names no table rebuilt to verify when one is rebuilt for another reason", () => {
+         const { instructions, rebuiltToVerify } = deriveSelfInstructions(
+            pairCompiled("sku"),
+            undefined,
+            prior(checked("leaf:items.item_id")) as never,
+         );
+         expect(instructions).toHaveLength(1);
+         expect(rebuiltToVerify.size).toBe(0);
       });
 
       it("is carried when its check of the declared key recorded a failure, which a rebuild would not change", () => {

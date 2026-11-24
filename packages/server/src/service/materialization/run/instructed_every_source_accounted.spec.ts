@@ -278,7 +278,7 @@ describe("a host instructing a base and its refused extension on one address", (
          sourceName: "daily",
       });
       expect(result.failures["addr-daily"]).toBeUndefined();
-      expect(result.refusedBesideBuilt[extension.sourceID]).toEqual(extension);
+      expect(result.refusedSources[extension.sourceID]).toEqual(extension);
       expect(result.sourcesRefused).toBe(1);
    });
 });

@@ -274,6 +274,12 @@ export class RunLifecycle {
                ...(cancelled && !isOwnCancellation(err)
                   ? { errorAtCancel: message }
                   : {}),
+               // Refused sources its `failures` does not report (one beside
+               // another source's failure on its address), as a committed
+               // run records them.
+               ...(failed?.refusedSources
+                  ? { refusedSources: failed.refusedSources }
+                  : {}),
             };
             // A background throw answers no request, so log it (with the
             // stack's frames) or it is invisible in the server's output,

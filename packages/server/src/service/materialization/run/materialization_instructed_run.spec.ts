@@ -2042,7 +2042,7 @@ describe("executeInstructedBuild", () => {
                {},
             )) as ExecuteResult & {
                refusalsInFailures: number;
-               refusedBesideBuilt: Record<string, unknown>;
+               refusedSources: Record<string, unknown>;
             };
             expect(result.entries["b0k0k0k0k0k0k0k0"].physicalTableName).toBe(
                "ok_v1",
@@ -2060,7 +2060,13 @@ describe("executeInstructedBuild", () => {
             );
             expect(result.refusalsInFailures).toBe(1);
             expect(result.sourcesRefused).toBe(2);
-            expect(result.refusedBesideBuilt).toEqual({});
+            // The base, held back only for sharing the address, is reported
+            // too, by its own record, never dropped.
+            expect(
+               Object.values(
+                  result.refusedSources as Record<string, { name: string }>,
+               ).map((r) => r.name),
+            ).toEqual(["base"]);
             expect(
                createsFrom(runSQL).some((sql) => sql.includes("shared_v1")),
                "nothing is built on a refused database address",
