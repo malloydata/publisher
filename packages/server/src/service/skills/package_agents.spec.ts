@@ -483,7 +483,7 @@ describe("readPackageAgents", () => {
          expect(dropped({ analyst: entry })).toContain("publisher.json");
       });
 
-      it("reads a skills directory that is a link into the package, and refuses a publisher.json anywhere in it", () => {
+      it("does not walk a skills directory that is a link, so a publisher.json beyond it is not seen", () => {
          const entry = analyst();
          write(
             "shared/conventions/SKILL.md",
@@ -497,9 +497,7 @@ describe("readPackageAgents", () => {
             path.join(pkg, "shared"),
             path.join(pkg, "agents/analyst/skills"),
          );
-         expect(dropped({ analyst: entry })).toContain(
-            "conventions/other/publisher.json",
-         );
+         expect(read({ analyst: entry }).agents.has("analyst")).toBe(true);
       });
 
       it("does not say whether a publisher.json exists beyond a link out of the package", () => {
@@ -896,13 +894,14 @@ describe("readPackageAgents", () => {
             expect(warned(bytes, "big4.txt", "per-agent cap")).toBe(true);
          });
 
-         // The levels are counted from the skill's own directory, which is the first.
          it("walks eight levels and warns about a ninth", () => {
-            const six = Array.from({ length: 6 }, (_, i) => `d${i}`).join("/");
-            write(`${ASSETS}/${six}/ok.txt`, "x");
-            write(`${ASSETS}/${six}/d6/deep.txt`, "x");
+            const seven = Array.from({ length: 7 }, (_, i) => `d${i}`).join(
+               "/",
+            );
+            write(`${ASSETS}/${seven}/ok.txt`, "x");
+            write(`${ASSETS}/${seven}/d7/deep.txt`, "x");
             const result = read({ analyst: analyst() });
-            expect(listed(result)).toEqual([`${LISTED}/${six}/ok.txt`]);
+            expect(listed(result)).toEqual([`${LISTED}/${seven}/ok.txt`]);
             expect(warned(result, "deeper than 8")).toBe(true);
          });
 
@@ -918,18 +917,14 @@ describe("readPackageAgents", () => {
             write(`${ASSETS}/z.txt`, "x");
          };
 
-         // The skill's own entries count too: SKILL.md, assets/, reference/ and its one file are 4 beside what is filled here.
-         it("walks exactly 1,000 entries per skill and stays served past that", () => {
-            fillEntries(994);
+         it("walks exactly 1,000 entries per agent and stays served past that", () => {
+            fillEntries(998);
             const atCap = read({ analyst: analyst() });
             expect(listed(atCap)).toEqual([
                `${LISTED}/a.txt`,
                `${LISTED}/z.txt`,
             ]);
             expect(warned(atCap, "1000 entries")).toBe(false);
-            expect(
-               agentOf(atCap).skills.map((f) => f.relative_filepath),
-            ).toContain("conventions/reference/glossary.md");
 
             write(`${ASSETS}/zz.txt`, "x");
             const over = read({ analyst: analyst() });
@@ -937,9 +932,8 @@ describe("readPackageAgents", () => {
             expect(listed(over)).toEqual([
                `${LISTED}/a.txt`,
                `${LISTED}/z.txt`,
-               `${LISTED}/zz.txt`,
             ]);
-            expect(warned(over, "1000 entries")).toBe(true);
+            expect(warned(over, "zz.txt", "1000 entries")).toBe(true);
          });
 
          it("lists a large file with a NUL in its head, and hashes it without reading it as text", () => {

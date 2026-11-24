@@ -6,7 +6,12 @@ import { execFileSync } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { ASSET_MAX_DEPTH, ASSET_MAX_ENTRIES, skillFiles } from "./skill_files";
+import {
+   ASSET_MAX_DEPTH,
+   ASSET_MAX_ENTRIES,
+   newWalkBudget,
+   skillFiles,
+} from "./skill_files";
 
 describe("skillFiles", () => {
    let dir: string;
@@ -347,6 +352,134 @@ describe("skillFiles", () => {
          const { files, warnings } = skillFiles(dir);
          expect(files).toEqual(["SKILL.md"]);
          expect(warnings).toHaveLength(1);
+      });
+   });
+
+   describe("entry budgets", () => {
+      const fill = (folder: string, count: number) => {
+         for (let i = 0; i < count; i++) write(`${folder}/f${i}.txt`);
+      };
+
+      it("walks SKILL.md, reference/ and assets/ before the rest, so a bound cuts the rest first", () => {
+         fill("Examples", ASSET_MAX_ENTRIES);
+         write("reference/a.md");
+         write("assets/b.txt");
+         write("SKILL.md");
+         const { files, warnings } = skillFiles(dir);
+         expect(files).toEqual(
+            expect.arrayContaining([
+               "SKILL.md",
+               "reference/a.md",
+               "assets/b.txt",
+            ]),
+         );
+         expect(
+            files.filter((f) => f.startsWith("Examples/")).length,
+         ).toBeLessThan(ASSET_MAX_ENTRIES);
+         expect(warnings).toHaveLength(1);
+      });
+
+      it("charges entries below assets/ and every other entry to separate budgets", () => {
+         fill("assets", ASSET_MAX_ENTRIES);
+         fill("other", ASSET_MAX_ENTRIES - 1);
+         const budget = newWalkBudget();
+         const { files, warnings } = skillFiles(dir, { budget });
+         expect(files).toHaveLength(2 * ASSET_MAX_ENTRIES - 1);
+         expect(warnings).toEqual([]);
+         expect(budget.assets.left).toBe(0);
+         expect(budget.other.left).toBe(0);
+      });
+
+      it("takes from a budget shared by several walks, and says where each is cut", () => {
+         const budget = newWalkBudget();
+         for (const skill of ["a", "b"]) {
+            fs.mkdirSync(path.join(dir, skill));
+            for (let i = 0; i < 600; i++) {
+               fs.writeFileSync(path.join(dir, skill, `f${i}.txt`), "x");
+            }
+         }
+         const first = skillFiles(path.join(dir, "a"), { budget });
+         const second = skillFiles(path.join(dir, "b"), { budget });
+         expect(first.files).toHaveLength(600);
+         expect(first.warnings).toEqual([]);
+         expect(second.files).toHaveLength(ASSET_MAX_ENTRIES - 600);
+         expect(second.warnings).toHaveLength(1);
+         expect(second.warnings[0]).toContain("more than 1000 entries");
+      });
+
+      it("never charges SKILL.md or a Markdown file directly in reference/, even with nothing left", () => {
+         write("SKILL.md");
+         write("reference/a.md");
+         write("reference/data.csv");
+         write("reference/sub/b.md");
+         write("assets/c.txt");
+         write("other.txt");
+         const { files, warnings } = skillFiles(dir, {
+            budget: { assets: { left: 0 }, other: { left: 0 } },
+         });
+         expect(files).toEqual(["SKILL.md", "reference/a.md"]);
+         expect(warnings).toHaveLength(2);
+      });
+
+      it("counts the depth below assets/ from assets/, and from the skill elsewhere", () => {
+         const nested = (root: string, levels: number) =>
+            [root, ...Array.from({ length: levels }, (_, i) => `d${i}`)].join(
+               "/",
+            );
+         write(`${nested("assets", ASSET_MAX_DEPTH - 1)}/ok.txt`);
+         write(`${nested("assets", ASSET_MAX_DEPTH)}/deep.txt`);
+         write(`${nested("scripts", ASSET_MAX_DEPTH - 2)}/ok.txt`);
+         write(`${nested("scripts", ASSET_MAX_DEPTH - 1)}/deep.txt`);
+         const { files, warnings } = skillFiles(dir);
+         expect(files).toEqual([
+            `${nested("assets", ASSET_MAX_DEPTH - 1)}/ok.txt`,
+            `${nested("scripts", ASSET_MAX_DEPTH - 2)}/ok.txt`,
+         ]);
+         expect(warnings).toHaveLength(2);
+      });
+
+      it("reads a root reference/ that is a link only when told where it leads, and then only its flat Markdown", () => {
+         write("shared/a.md");
+         write("shared/b.txt");
+         write("shared/sub/c.md");
+         fs.symlinkSync(
+            path.join(dir, "shared"),
+            path.join(dir, "reference"),
+            "dir",
+         );
+         expect(skillFiles(dir).files).toEqual([
+            "reference",
+            "shared/a.md",
+            "shared/b.txt",
+            "shared/sub/c.md",
+         ]);
+         const followed = skillFiles(dir, {
+            followReference: (link) =>
+               link === path.join(dir, "reference") ? link : undefined,
+         });
+         expect(followed.files).toEqual([
+            "reference/a.md",
+            "shared/a.md",
+            "shared/b.txt",
+            "shared/sub/c.md",
+         ]);
+      });
+
+      it("applies .skillignore to the Markdown it reads through a reference/ link", () => {
+         write("shared/a.md");
+         write("shared/b.md");
+         fs.symlinkSync(
+            path.join(dir, "shared"),
+            path.join(dir, "reference"),
+            "dir",
+         );
+         skillignore("reference/b.md");
+         const { files } = skillFiles(dir, {
+            followReference: (link) => link,
+         });
+         expect(files.filter((f) => f.startsWith("reference/"))).toEqual([
+            "reference/a.md",
+         ]);
       });
    });
 

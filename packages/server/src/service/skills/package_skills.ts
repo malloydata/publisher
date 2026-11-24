@@ -15,8 +15,9 @@ import {
    ASSET_MAX_DEPTH,
    ASSET_MAX_ENTRIES,
    ASSET_PATH_MAX_CHARS,
-   builtInExcluded,
+   newWalkBudget,
    skillFiles,
+   type WalkBudget,
 } from "./skill_files";
 import skillsBundle from "./skills_bundle.json";
 import { compareText } from "../../compare_text";
@@ -92,16 +93,15 @@ const sha256 = (data: string | Buffer) =>
    createHash("sha256").update(data).digest("hex");
 
 /**
- * A Markdown file's text, or why it cannot be served. The real path must sit
- * inside the real package root: a symlink in a package can point anywhere, and
- * this text is returned over unauthenticated MCP and REST. An in-package link
- * to a `.md` file is followed.
+ * Where a Markdown file really is and how big, or why it cannot be served; no
+ * byte is read. The real path must sit inside the real package root: a symlink
+ * in a package can point anywhere, and this text is returned over
+ * unauthenticated MCP and REST. An in-package link to a `.md` file is followed.
  */
-function readFileInside(
+function markdownInside(
    packageRoot: string,
    file: string,
-   maxBytes: number,
-): { text: string; raw: Buffer } | { problem: string; link?: true } {
+): { real: string; size: number } | { problem: string; link?: true } {
    try {
       const real = insidePackage(packageRoot, file);
       if (real === undefined) {
@@ -119,12 +119,32 @@ function readFileInside(
       if (!stat.isFile()) {
          return { problem: "resolves to something that is not a regular file" };
       }
-      if (stat.size > maxBytes) {
-         return {
-            problem: `is ${stat.size} bytes, over the ${maxBytes} byte cap`,
-         };
-      }
-      const raw = fs.readFileSync(real);
+      return { real, size: stat.size };
+   } catch (error) {
+      return {
+         problem: `cannot be read (${callerVisibleText((error as Error).message, packageRoot)})`,
+      };
+   }
+}
+
+/** A Markdown file's text, or why it cannot be served; `size` is set when the file is over `maxBytes`, which is checked before it is read. */
+function readFileInside(
+   packageRoot: string,
+   file: string,
+   maxBytes: number,
+):
+   | { text: string; raw: Buffer }
+   | { problem: string; link?: true; size?: number } {
+   const found = markdownInside(packageRoot, file);
+   if ("problem" in found) return found;
+   if (found.size > maxBytes) {
+      return {
+         problem: `is ${found.size} bytes, over the ${maxBytes} byte cap`,
+         size: found.size,
+      };
+   }
+   try {
+      const raw = fs.readFileSync(found.real);
       return { text: raw.toString("utf8"), raw };
    } catch (error) {
       return {
@@ -228,11 +248,23 @@ interface PackageAssetBudget {
    paths: Set<string>;
    /** Each listed file's hash by package path, so a skill shared by several agents is read and hashed once. */
    reads: Map<string, AssetRead>;
+   /** Each skills root by its manifest path, read once for every agent that names it. */
+   roots: Map<string, ReadRoot>;
 }
 
 type AssetRead =
-   | { sha256: string; bytes: number }
+   | { sha256: string; bytes: number; binary: boolean }
    | { problem: string; link?: true };
+
+/**
+ * A skills root as every agent naming it sees it: the publisher.json its served
+ * tree holds, and its scan for each entry budget it was walked with (the walk
+ * takes from the agent's budget, so the same scan holds only for the same one).
+ */
+interface ReadRoot {
+   manifest: string | undefined;
+   scans: Map<string, { scan: Scan; used: { assets: number; other: number } }>;
+}
 
 const SKILL_MD = "SKILL.md";
 const RESERVED_WHY =
@@ -263,6 +295,8 @@ interface AssetWalk {
    lower: Map<string, string>;
    charges: AssetCharges;
    skipped: string[];
+   /** Each listed file's read by package path: shared across agents when `shared` is set, so a file the first pass read is not read again. */
+   reads: Map<string, AssetRead>;
    /** What agents share across the package; a package's own skills have only the caps above. */
    shared?: PackageAssetBudget;
 }
@@ -294,6 +328,7 @@ function newWalk(
       lower: new Map(),
       charges: new Map(),
       skipped: [],
+      reads: shared?.reads ?? new Map(),
       shared,
    };
 }
@@ -314,6 +349,22 @@ const underAssets = (relative: string) => relative.startsWith("assets/");
 /** Markdown outside `assets/` is inlined; everything else is listed. */
 const isInlineMarkdown = (relative: string) =>
    relative.endsWith(".md") && !underAssets(relative);
+
+/** A Markdown file directly in `reference/`: the one place a skill's Markdown beside SKILL.md was always served. */
+const isReferenceMarkdown = (relative: string) =>
+   /^reference\/[^/]+\.md$/.test(relative);
+
+/** `p` resolved, when it leads to a directory inside the package; undefined for anything else. */
+function directoryInside(packageRoot: string, p: string): string | undefined {
+   try {
+      const real = insidePackage(packageRoot, p);
+      return real !== undefined && fs.statSync(real).isDirectory()
+         ? real
+         : undefined;
+   } catch {
+      return undefined;
+   }
+}
 
 /**
  * Why an agent must refuse a skill whose `assets/` is a link, or a directory
@@ -376,9 +427,14 @@ const skillNotServed = (rel: string, problem: string) =>
  *
  * Parsing is shared with the repo's own skills; selection is not. A package
  * ships what it contains: no manifest gating, and no `credible-*` exclusion,
- * which would silently drop a customer's skill by name.
+ * which would silently drop a customer's skill by name. Each skill's walk takes
+ * from `budget`, which the caller shares across the skills it reads.
  */
-function scanSkills(packagePath: string, dirRel: string): Scan {
+function scanSkills(
+   packagePath: string,
+   dirRel: string,
+   budget: WalkBudget,
+): Scan {
    const root = path.join(packagePath, dirRel);
    const scan: Scan = {
       packageRoot: path.resolve(packagePath),
@@ -470,7 +526,10 @@ function scanSkills(packagePath: string, dirRel: string): Scan {
          continue;
       }
 
-      const found = skillFiles(skillDir);
+      const found = skillFiles(skillDir, {
+         budget,
+         followReference: (link) => directoryInside(packageRoot, link),
+      });
       for (const w of found.warnings) {
          scan.warnings.push(`Package skill '${rel}': ${w}.`);
       }
@@ -490,6 +549,36 @@ function scanSkills(packagePath: string, dirRel: string): Scan {
          assetsRefusal: assetsRefusal(skillInside, skillDir, rel),
       });
    }
+   return scan;
+}
+
+/**
+ * The scan of a skills root, reused from an earlier agent that named it when
+ * that scan started with the same entries left in its budget, which it then
+ * takes from `budget` as the walk would have.
+ */
+function scanOnce(
+   known: ReadRoot,
+   packagePath: string,
+   root: string,
+   budget: WalkBudget,
+): Scan {
+   const key = `${budget.assets.left}/${budget.other.left}`;
+   const earlier = known.scans.get(key);
+   if (earlier) {
+      budget.assets.left -= earlier.used.assets;
+      budget.other.left -= earlier.used.other;
+      return earlier.scan;
+   }
+   const before = { assets: budget.assets.left, other: budget.other.left };
+   const scan = scanSkills(packagePath, root, budget);
+   known.scans.set(key, {
+      scan,
+      used: {
+         assets: before.assets - budget.assets.left,
+         other: before.other - budget.other.left,
+      },
+   });
    return scan;
 }
 
@@ -517,29 +606,96 @@ interface FinishContext {
 }
 
 /**
- * Check and read what a scanned skill's directory holds. Markdown outside
- * `assets/` is read and inlined while it fits `ctx.inline`, and listed when it
- * does not; every other file is listed, its bytes hashed and not kept. Under
- * `assets/` a link, a `..` name, a manifest-shaped name or a case collision
- * refuses an agent; anywhere else the same finding skips the file with a warning.
+ * A skill between its two passes. Every skill's first pass runs before any
+ * second, so what a skill has always served is charged to the budgets before
+ * anything its whole directory adds, and a new file can never push an old one out.
  */
-function finishSkill(s: ScannedSkill, ctx: FinishContext): ReadSkill {
-   const inline: ReadSkill["inline"] = [
-      { relative: SKILL_MD, text: s.skillMd.text },
-   ];
-   const files: SkillCatalogEntry["files"] = {
-      [SKILL_MD]: {
-         digest: `sha256:${sha256(s.skillMd.raw)}`,
-         size: s.skillMd.raw.length,
-      },
+interface SkillDraft {
+   s: ScannedSkill;
+   inline: ReadSkill["inline"];
+   files: SkillCatalogEntry["files"];
+   listed: PackageAgentAsset[];
+   /** What the second pass reads: Markdown outside `reference/`, and every file to list, which includes Markdown that did not fit and a binary under `assets/`. */
+   later: { markdown: string[]; list: string[] };
+}
+
+/**
+ * Inline a Markdown file while it fits `ctx.inline` and warn that it is listed
+ * instead when it does not, judged by its size before it is read. Warn when it
+ * cannot be read at all.
+ */
+function inlineMarkdown(
+   d: SkillDraft,
+   relative: string,
+   ctx: FinishContext,
+): void {
+   const shown = `${d.s.rel}/${relative}`;
+   const read = readFileInside(
+      ctx.packageRoot,
+      path.join(d.s.dir, relative),
+      Math.min(ctx.inline.left, PACKAGE_SKILL_FILE_MAX_BYTES),
+   );
+   if ("problem" in read && read.size === undefined) {
+      ctx.warnings.push(
+         `Package skill reference '${shown}' ${read.problem}, so it is not served.`,
+      );
+      return;
+   }
+   // Decoded text can outgrow the bytes it came from, so the size alone is not the last word.
+   if ("problem" in read || Buffer.byteLength(read.text) > ctx.inline.left) {
+      ctx.warnings.push(
+         `Package skill file '${shown}' would take the skill Markdown over the ${PACKAGE_AGENT_SKILLS_MAX_BYTES} byte cap, so it is listed instead of inlined.`,
+      );
+      d.later.list.push(relative);
+      return;
+   }
+   ctx.inline.left -= Buffer.byteLength(read.text);
+   d.inline.push({ relative, text: read.text });
+   d.files[relative] = {
+      digest: `sha256:${sha256(read.raw)}`,
+      size: read.raw.length,
    };
-   const markdown: string[] = [];
-   const toList: string[] = [];
+}
+
+const recordListed = (
+   d: SkillDraft,
+   relative: string,
+   asset: PackageAgentAsset,
+) => {
+   d.listed.push(asset);
+   d.files[relative] = { digest: `sha256:${asset.sha256}`, size: asset.bytes };
+};
+
+/**
+ * A scanned skill's first pass: what a skill has always served. A Markdown file
+ * directly in `reference/` is inlined while it fits `ctx.inline`, and a text
+ * file below `assets/` is listed within the caps; every other file is left for
+ * `readRest`. A file named like one the agent computer reads with authority, or
+ * with a control character in its path, is skipped here with a warning.
+ */
+function readFirst(s: ScannedSkill, ctx: FinishContext): SkillDraft {
+   const d: SkillDraft = {
+      s,
+      inline: [{ relative: SKILL_MD, text: s.skillMd.text }],
+      files: {
+         [SKILL_MD]: {
+            digest: `sha256:${sha256(s.skillMd.raw)}`,
+            size: s.skillMd.raw.length,
+         },
+      },
+      listed: [],
+      later: { markdown: [], list: [] },
+   };
+   const references: string[] = [];
+   const assetFiles: string[] = [];
    for (const relative of s.candidates) {
       const lowerName = path.posix.basename(relative).toLowerCase();
       const controlChar = CONTROL_CHARS.test(relative);
       if (!controlChar && !RESERVED_BASENAMES.has(lowerName)) {
-         (isInlineMarkdown(relative) ? markdown : toList).push(relative);
+         if (isReferenceMarkdown(relative)) references.push(relative);
+         else if (isInlineMarkdown(relative)) d.later.markdown.push(relative);
+         else if (underAssets(relative)) assetFiles.push(relative);
+         else d.later.list.push(relative);
          continue;
       }
       const shown = displayPath(`${s.rel}/${relative}`);
@@ -550,10 +706,11 @@ function finishSkill(s: ScannedSkill, ctx: FinishContext): ReadSkill {
          );
       } else {
          ctx.walk.skipped.push(`asset '${shown}' is not served: it ${why}`);
+         // A publisher.json below assets/ is refused with the rest of the tree, before any skill is read.
          if (
             !controlChar &&
             underAssets(relative) &&
-            (lowerName === "publisher.json" || lowerName === "skill.md")
+            lowerName === "skill.md"
          ) {
             ctx.refusals.push(
                `asset '${shown}' is named like a package manifest or skill; remove or rename it`,
@@ -561,73 +718,66 @@ function finishSkill(s: ScannedSkill, ctx: FinishContext): ReadSkill {
          }
       }
    }
-
-   for (const relative of markdown) {
-      const shown = `${s.rel}/${relative}`;
-      const read = readFileInside(
-         ctx.packageRoot,
-         path.join(s.dir, relative),
-         PACKAGE_SKILL_FILE_MAX_BYTES,
-      );
-      if ("problem" in read) {
-         ctx.warnings.push(
-            `Package skill reference '${shown}' ${read.problem}, so it is not served.`,
-         );
-         continue;
-      }
-      const bytes = Buffer.byteLength(read.text);
-      if (bytes > ctx.inline.left) {
-         ctx.warnings.push(
-            `Package skill file '${shown}' would take the agent's skill Markdown over the ${PACKAGE_AGENT_SKILLS_MAX_BYTES} byte cap, so it is listed instead of inlined.`,
-         );
-         toList.push(relative);
-         continue;
-      }
-      ctx.inline.left -= bytes;
-      inline.push({ relative, text: read.text });
-      files[relative] = {
-         digest: `sha256:${sha256(read.raw)}`,
-         size: read.raw.length,
-      };
+   for (const relative of references) inlineMarkdown(d, relative, ctx);
+   for (const relative of assetFiles) {
+      const asset = listFile(s, relative, ctx, d.later.list);
+      if (asset) recordListed(d, relative, asset);
    }
+   return d;
+}
 
-   const listed: PackageAgentAsset[] = [];
-   for (const relative of toList.sort(compareText)) {
-      const asset = listFile(s, relative, ctx);
-      if (!asset) continue;
-      listed.push(asset);
-      files[relative] = {
-         digest: `sha256:${asset.sha256}`,
-         size: asset.bytes,
-      };
+/**
+ * A skill's second pass: what its whole directory adds. Markdown outside
+ * `reference/` is inlined while it fits and listed when it does not; every file
+ * left to list has its checks and caps applied and its bytes hashed, not kept.
+ * Under `assets/` a link, a `..` name or a case collision refuses an agent;
+ * anywhere else the same finding skips the file with a warning.
+ */
+function readRest(d: SkillDraft, ctx: FinishContext): ReadSkill {
+   for (const relative of d.later.markdown) inlineMarkdown(d, relative, ctx);
+   for (const relative of d.later.list.sort(compareText)) {
+      const asset = listFile(d.s, relative, ctx);
+      if (asset) recordListed(d, relative, asset);
    }
-
+   const { s } = d;
    return {
       dirName: s.dirName,
       rel: s.rel,
       meta: s.meta,
       skillignore: s.skillignore,
-      inline,
-      listed,
+      inline: d.inline.sort(
+         (a, b) =>
+            Number(b.relative === SKILL_MD) - Number(a.relative === SKILL_MD) ||
+            compareText(a.relative, b.relative),
+      ),
+      listed: d.listed.sort((a, b) =>
+         compareText(a.relative_filepath, b.relative_filepath),
+      ),
       catalog: {
          name: s.meta.name,
          frontmatter: s.frontmatter,
          files: Object.fromEntries(
-            Object.entries(files).sort(([a], [b]) => compareText(a, b)),
+            Object.entries(d.files).sort(([a], [b]) => compareText(a, b)),
          ),
       },
    };
 }
 
+/** Both passes over every skill, in order. */
+const readSkills = (skills: ScannedSkill[], ctx: FinishContext) =>
+   skills.map((s) => readFirst(s, ctx)).map((d) => readRest(d, ctx));
+
 /**
  * One file of a skill listed for an agent to copy: its checks, its caps, then
  * its bytes hashed. Undefined when it is skipped (warned, named) or, under
- * `assets/`, refused (`ctx.refusals`).
+ * `assets/`, refused (`ctx.refusals`). A binary file is hashed and then, given
+ * `defer`, put there to be charged later instead of now.
  */
 function listFile(
    s: ScannedSkill,
    relative: string,
    ctx: FinishContext,
+   defer?: string[],
 ): PackageAgentAsset | undefined {
    const { walk } = ctx;
    const shown = `${s.rel}/${relative}`;
@@ -639,6 +789,14 @@ function listFile(
       skip(why);
       if (strict) ctx.refusals.push(refusal);
    };
+
+   // Nothing more fits once the file cap is reached; only a file below assets/ is still looked at, for the findings that refuse an agent.
+   if (!strict && walk.files >= walk.maxFiles) {
+      skip(
+         `${walk.scope.holds} ${walk.maxFiles} assets, the ${walk.scope.cap} file cap`,
+      );
+      return undefined;
+   }
 
    const absolute = path.join(s.dir, relative);
    let stat: fs.Stats;
@@ -724,7 +882,7 @@ function listFile(
          `it would take the package's assets over the ${PACKAGE_ASSETS_MAX_BYTES} byte per-package cap`,
       );
    } else {
-      let read = walk.shared?.reads.get(shown);
+      let read = walk.reads.get(shown);
       if (!read) {
          const fresh = readListedBytes(
             ctx.packageRoot,
@@ -735,8 +893,12 @@ function listFile(
          read =
             "problem" in fresh
                ? fresh
-               : { sha256: sha256(fresh.bytes), bytes: fresh.bytes.length };
-         walk.shared?.reads.set(shown, read);
+               : {
+                    sha256: sha256(fresh.bytes),
+                    bytes: fresh.bytes.length,
+                    binary: decodeText(fresh.bytes) === undefined,
+                 };
+         walk.reads.set(shown, read);
       }
       if ("problem" in read) {
          // A link or an escape that appeared after the listing is the same threat as one found in it.
@@ -748,6 +910,10 @@ function listFile(
          } else {
             skip(read.problem);
          }
+         return undefined;
+      }
+      if (defer && read.binary) {
+         defer.push(relative);
          return undefined;
       }
       walk.files++;
@@ -773,7 +939,7 @@ export function readSkillsDir(
    packagePath: string,
    dirRel: string = PACKAGE_SKILLS_DIR,
 ): PackageSkills {
-   const scan = scanSkills(packagePath, dirRel);
+   const scan = scanSkills(packagePath, dirRel, newWalkBudget());
    const walk = newWalk(
       SKILLS_SCOPE,
       PACKAGE_SKILLS_ASSETS_MAX_FILES,
@@ -795,8 +961,7 @@ export function readSkillsDir(
       warnings: scan.warnings,
       refusals: [],
    };
-   for (const s of scan.skills) {
-      const read = finishSkill(s, ctx);
+   for (const read of readSkills(scan.skills, ctx)) {
       const references = read.inline.flatMap((f) => {
          const file = /^reference\/([^/]+)$/.exec(f.relative)?.[1];
          return file === undefined ? [] : [{ file, text: f.text }];
@@ -928,30 +1093,46 @@ function agentPath(value: unknown, what: string): string {
    return normalized;
 }
 
-/** True when a publisher.json sits directly in `dir`, which must resolve inside the package. */
-function holdsManifest(packageRoot: string, dir: string): boolean {
+/** The name of a publisher.json sitting directly in `dir`, which must resolve inside the package; undefined when there is none. */
+function manifestIn(packageRoot: string, dir: string): string | undefined {
    try {
       const inside = insidePackage(packageRoot, dir);
-      if (inside === undefined) return false;
+      if (inside === undefined) return undefined;
       return fs
          .readdirSync(inside)
-         .some((f) => f.toLowerCase() === "publisher.json");
+         .find((f) => f.toLowerCase() === "publisher.json");
    } catch {
-      return false;
+      return undefined;
    }
 }
 
+const holdsManifest = (packageRoot: string, dir: string) =>
+   manifestIn(packageRoot, dir) !== undefined;
+
 /**
- * The path, relative to `root`, of the first publisher.json anywhere below it,
- * or undefined. It walks the real tree, folders a `.skillignore` ignores
- * included: that file decides what a skill is made of, never what may sit in
- * it. It follows a link only to a skill directory inside the package, and stops
- * at the bounds skillFiles has, so a link cannot make it scan the filesystem
- * or report on files outside the package.
+ * The path, relative to `root`, of the first publisher.json where one has always
+ * refused an agent, or undefined: in the skills root, in a skill directory, in
+ * its `reference/`, or anywhere below its `assets/`. A publisher.json anywhere
+ * else is skipped with the rest of the files a skill may not hold. It reads the
+ * real tree, folders a `.skillignore` ignores included: that file decides what
+ * a skill is made of, never what may sit in it. It follows a link only to a
+ * skill directory inside the package, and bounds what it walks under `assets/`
+ * the way skillFiles does, so a link cannot make it scan the filesystem or
+ * report on files outside the package.
  */
-function manifestBelow(packageRoot: string, root: string): string | undefined {
-   let visited = 0;
-   const visit = (
+function servedManifest(packageRoot: string, root: string): string | undefined {
+   const atRoot = manifestIn(packageRoot, root);
+   if (atRoot !== undefined) return atRoot;
+   let skills: fs.Dirent[];
+   try {
+      const inside = insidePackage(packageRoot, root);
+      if (inside === undefined) return undefined;
+      skills = fs.readdirSync(inside, { withFileTypes: true });
+   } catch {
+      return undefined;
+   }
+   let left = ASSET_MAX_ENTRIES;
+   const below = (
       dir: string,
       rel: string,
       depth: number,
@@ -965,18 +1146,12 @@ function manifestBelow(packageRoot: string, root: string): string | undefined {
          return undefined;
       }
       for (const entry of entries.sort((a, b) => compareText(a.name, b.name))) {
-         if (++visited > ASSET_MAX_ENTRIES) return undefined;
-         const relative = rel ? `${rel}/${entry.name}` : entry.name;
+         if (entry.name.startsWith(".")) continue;
+         if (left-- <= 0) return undefined;
+         const relative = `${rel}/${entry.name}`;
          if (entry.name.toLowerCase() === "publisher.json") return relative;
-         // A link to a directory is a skill dir readSkillsDir follows; deeper, a link is never followed.
-         const descends =
-            entry.isDirectory() || (depth === 1 && entry.isSymbolicLink());
-         if (
-            descends &&
-            depth < ASSET_MAX_DEPTH &&
-            !builtInExcluded(entry.name, true)
-         ) {
-            const found = visit(
+         if (entry.isDirectory() && depth < ASSET_MAX_DEPTH) {
+            const found = below(
                path.join(dir, entry.name),
                relative,
                depth + 1,
@@ -986,7 +1161,20 @@ function manifestBelow(packageRoot: string, root: string): string | undefined {
       }
       return undefined;
    };
-   return visit(root, "", 1);
+   for (const skill of skills.sort((a, b) => compareText(a.name, b.name))) {
+      // A link to a directory is a skill dir that readSkillsDir follows.
+      if (!skill.isDirectory() && !skill.isSymbolicLink()) continue;
+      const dir = path.join(root, skill.name);
+      for (const place of ["", "reference"]) {
+         const found = manifestIn(packageRoot, path.join(dir, place));
+         if (found !== undefined) {
+            return path.posix.join(skill.name, place, found);
+         }
+      }
+      const found = below(path.join(dir, "assets"), `${skill.name}/assets`, 1);
+      if (found !== undefined) return found;
+   }
+   return undefined;
 }
 
 /** Read a Markdown file the agent serves as text, capped at 16 KB. */
@@ -1191,6 +1379,7 @@ function readAgentSkills(
       PACKAGE_AGENT_ASSETS_MAX_BYTES,
       assetBudget,
    );
+   const entryBudget = newWalkBudget();
    const scanned: ScannedSkill[] = [];
    for (const root of roots) {
       // Settled before it is looked at: one that leads out of the package
@@ -1211,15 +1400,19 @@ function readAgentSkills(
       } catch {
          throw new AgentProblem(`skills directory '${root}' does not exist`);
       }
+      let known = assetBudget.roots.get(root);
+      if (!known) {
+         known = {
+            manifest: servedManifest(packageRoot, path.join(packagePath, root)),
+            scans: new Map(),
+         };
+         assetBudget.roots.set(root, known);
+      }
       for (let dir = root; dir !== "."; dir = path.posix.dirname(dir)) {
          if (dir === root) {
-            const manifest = manifestBelow(
-               packageRoot,
-               path.join(packagePath, dir),
-            );
-            if (manifest !== undefined) {
+            if (known.manifest !== undefined) {
                throw new AgentProblem(
-                  `skills directory '${root}' contains a nested publisher.json at '${displayPath(manifest)}'`,
+                  `skills directory '${root}' contains a nested publisher.json at '${displayPath(known.manifest)}'`,
                );
             }
          } else if (holdsManifest(packageRoot, path.join(packagePath, dir))) {
@@ -1228,7 +1421,7 @@ function readAgentSkills(
             );
          }
       }
-      const scan = scanSkills(packagePath, root);
+      const scan = scanOnce(known, packagePath, root, entryBudget);
       if (scan.blocking.length > 0) {
          throw new AgentProblem(scan.blocking.join(" "));
       }
@@ -1277,8 +1470,7 @@ function readAgentSkills(
    const skillignores = new Map<string, string>();
    const assets = new Map<string, PackageAgentAsset>();
    const assetRoots = new Map<string, string>();
-   for (const s of scanned) {
-      const read = finishSkill(s, ctx);
+   for (const read of readSkills(scanned, ctx)) {
       for (const f of read.inline) {
          const relative = `${read.dirName}/${f.relative}`;
          paths.push(`${read.rel}/${f.relative}`);
@@ -1456,6 +1648,7 @@ export function readPackageAgents(
       bytes: 0,
       paths: new Set(),
       reads: new Map(),
+      roots: new Map(),
    };
    if (raw === undefined) return result;
    if (!isObject(raw)) {

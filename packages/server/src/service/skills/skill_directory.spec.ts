@@ -19,6 +19,7 @@ import {
    PNG,
    SKILL,
    SKILLIGNORE,
+   SKILLS_ROOT,
    writeAgent,
    writeSkill,
 } from "./__fixtures__/skill-directory/fixture";
@@ -86,7 +87,7 @@ describe("a skill is its whole directory", () => {
       fs.rmSync(pkg, { recursive: true, force: true });
    });
 
-   it("inlines Markdown outside assets/, lists every other file, and skips each file decision 1 refuses, with a warning that names it", () => {
+   it("inlines Markdown outside assets/, lists every other file, and skips each file a skill may not hold, with a warning that names it", () => {
       const agent = agentOf();
       expect(agent.skills.map((f) => f.relative_filepath)).toEqual([
          "pricing/NOTES.md",
@@ -157,7 +158,7 @@ describe("a skill is its whole directory", () => {
       ].map((p) => p.slice("pricing/".length));
       const warned = read().warnings.join("\n");
 
-      // Served is the candidates less what decision 1 skips, each skip named.
+      // Served is the candidates less what a skill may not hold, each skip named.
       const skipped = candidates.filter((c) => !served.includes(c));
       expect(skipped).toEqual(["scripts/run-link.sh", "templates/CLAUDE.md"]);
       for (const file of skipped) expect(warned).toContain(file);
@@ -214,7 +215,14 @@ describe("a skill is its whole directory", () => {
       expect(definitionSha()).toBe(afterScript.definition);
       expect(contentSha()).toBe(afterScript.content);
 
-      write(".skillignore", `${SKILLIGNORE}*.csv\n`);
+      // A comment leaves the same files, so only the hashed text can have moved.
+      const files = () => [
+         ...agentOf().skills.map((f) => f.relative_filepath),
+         ...agentOf().assets!.map((a) => a.relative_filepath),
+      ];
+      const before = files();
+      write(".skillignore", `${SKILLIGNORE}# a note\n`);
+      expect(files()).toEqual(before);
       expect(definitionSha()).not.toBe(afterScript.definition);
       expect(contentSha()).not.toBe(afterScript.content);
    });
@@ -327,12 +335,20 @@ describe("a skill is its whole directory", () => {
          }
       });
 
-      it("refuses an agent with a publisher.json inside a folder .skillignore ignores", () => {
-         write("fixtures/deep/Publisher.JSON", "{}");
-         write(".skillignore", "fixtures/\n");
+      it("refuses an agent with a publisher.json inside an assets/ folder .skillignore ignores", () => {
+         write("assets/hidden/Publisher.JSON", "{}");
+         write(".skillignore", "assets/hidden/\n");
          const result = read();
          expect(result.agents.has("analyst")).toBe(false);
-         expect(result.warnings[0]).toContain("fixtures/deep/Publisher.JSON");
+         expect(result.warnings[0]).toContain("assets/hidden/Publisher.JSON");
+      });
+
+      it("refuses an agent with a publisher.json in a reference/ that .skillignore ignores", () => {
+         write("reference/publisher.json", "{}");
+         write(".skillignore", "reference/\n");
+         const result = read();
+         expect(result.agents.has("analyst")).toBe(false);
+         expect(result.warnings[0]).toContain("reference/publisher.json");
       });
 
       it("cannot bring a dotfile back with a negation", () => {
@@ -344,6 +360,51 @@ describe("a skill is its whole directory", () => {
          expect(
             agent.assets!.every((a) => !a.relative_filepath.includes("/.")),
          ).toBe(true);
+      });
+   });
+
+   describe("a publisher.json", () => {
+      it("refuses the agent in the skills root, in a skill directory, in reference/ and anywhere below assets/", () => {
+         for (const where of [
+            path.join(pkg, SKILLS_ROOT, "publisher.json"),
+            path.join(skillDir(), "publisher.json"),
+            path.join(skillDir(), "reference/publisher.json"),
+            path.join(skillDir(), "assets/a/b/publisher.json"),
+         ]) {
+            fs.mkdirSync(path.dirname(where), { recursive: true });
+            fs.writeFileSync(where, "{}");
+            const result = read();
+            expect(result.agents.has("analyst")).toBe(false);
+            expect(result.warnings[0]).toContain("nested publisher.json");
+            fs.rmSync(where);
+         }
+         expect(agentOf()).toBeDefined();
+      });
+
+      it("is skipped with a warning anywhere else below a skill, and the agent is served", () => {
+         const nested = [
+            "templates/publisher.json",
+            "reference/sub/publisher.json",
+            "scripts/deep/er/Publisher.JSON",
+         ];
+         for (const file of nested) write(file, "{}");
+         const agent = agentOf();
+         const served = [
+            ...agent.skills.map((f) => f.relative_filepath),
+            ...agent.assets!.map((a) => a.relative_filepath),
+         ];
+         for (const file of nested) {
+            expect(served).not.toContain(`pricing/${file}`);
+            expect(agent.warnings.join("\n")).toContain(`${SKILL}/${file}`);
+         }
+         expect(served).toContain("pricing/scripts/run.py");
+      });
+
+      it("is neither refused nor named when it sits in a folder .skillignore ignores", () => {
+         write("fixtures/deep/Publisher.JSON", "{}");
+         const result = read();
+         expect(agentOf(result)).toBeDefined();
+         expect(result.warnings.join("\n")).not.toContain("Publisher.JSON");
       });
    });
 
@@ -434,7 +495,7 @@ describe("a skill is its whole directory", () => {
             "pricing/references/big.md",
          );
          expect(agent.warnings.join("\n")).toContain(
-            `Package skill file '${SKILL}/references/big.md' would take the agent's skill Markdown over the ${PACKAGE_AGENT_SKILLS_MAX_BYTES} byte cap`,
+            `Package skill file '${SKILL}/references/big.md' would take the skill Markdown over the ${PACKAGE_AGENT_SKILLS_MAX_BYTES} byte cap`,
          );
          // SKILL.md is re-emitted, so its bytes are a little off the raw ones the cap counts.
          const inlineBytes = agent.skills.reduce(
@@ -628,5 +689,208 @@ describe("a package's own skills", () => {
          expect(warnings[0]).toContain("skills/My_Skill/SKILL.md");
          expect(warnings[0]).toContain('"My_Skill"');
       });
+   });
+});
+
+describe("a skill read whole still serves what it served before", () => {
+   let pkg: string;
+   const ROOT = SKILLS_ROOT;
+   const write = (relative: string, contents: string | Buffer = "x") => {
+      const file = path.join(pkg, relative);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, contents);
+   };
+   const skill = (name: string, root: string = ROOT) =>
+      write(
+         `${root}/${name}/SKILL.md`,
+         `---\nname: ${name}\ndescription: d\n---\n\nbody\n`,
+      );
+   const pad = (i: number) => String(i).padStart(3, "0");
+   const manifest = (roots: string[] = [ROOT]) => ({
+      analyst: {
+         description: "d",
+         instructions: "agents/analyst/instructions.md",
+         skills: roots,
+      },
+   });
+   const read = (agents: unknown = manifest()) =>
+      readPackageAgents(pkg, agents);
+   const agentOf = (result = read()) => result.agents.get("analyst")!;
+   const inline = (agent: PackageAgent) =>
+      agent.skills.map((f) => f.relative_filepath);
+   const listed = (agent: PackageAgent) =>
+      (agent.assets ?? []).map((a) => a.relative_filepath);
+
+   beforeEach(() => {
+      pkg = fs.mkdtempSync(path.join(os.tmpdir(), "skill-compat-"));
+      write("agents/analyst/instructions.md", "Be careful.");
+   });
+
+   afterEach(() => {
+      fs.rmSync(pkg, { recursive: true, force: true });
+   });
+
+   it("keeps reference/*.md when a thousand entries sit in a folder beside it", () => {
+      skill("s");
+      write(`${ROOT}/s/reference/keep.md`, "# keep\n");
+      for (let i = 0; i < 1000; i++) write(`${ROOT}/s/examples/e${i}.txt`);
+      const result = read();
+      expect(inline(agentOf(result))).toContain("s/reference/keep.md");
+      expect(result.warnings.join("\n")).toContain("more than 1000 entries");
+   });
+
+   it("keeps a later skill's assets/ when an earlier skill's scripts fill the file cap", () => {
+      skill("aa");
+      skill("bb");
+      for (let i = 0; i < 200; i++) write(`${ROOT}/aa/scripts/f${pad(i)}.py`);
+      write(`${ROOT}/bb/assets/keep.txt`, "keep");
+      const agent = agentOf();
+      expect(listed(agent)).toContain("bb/assets/keep.txt");
+      expect(listed(agent)).toHaveLength(200);
+   });
+
+   it("keeps assets/ when a folder that sorts before it fills the file cap", () => {
+      skill("s");
+      for (let i = 0; i < 200; i++) write(`${ROOT}/s/Examples/f${pad(i)}.txt`);
+      write(`${ROOT}/s/assets/keep.txt`, "keep");
+      expect(listed(agentOf())).toContain("s/assets/keep.txt");
+   });
+
+   it("keeps a text asset when binaries beside it fill the file cap", () => {
+      skill("s");
+      for (let i = 0; i < 200; i++) {
+         write(`${ROOT}/s/assets/a${pad(i)}.png`, Buffer.from([0x89, 0, 1, 2]));
+      }
+      write(`${ROOT}/s/assets/z.txt`, "keep");
+      const agent = agentOf();
+      expect(listed(agent)).toContain("s/assets/z.txt");
+      expect(listed(agent)).toHaveLength(200);
+   });
+
+   it("keeps reference/*.md inline when a larger Markdown file beside SKILL.md would take its bytes", () => {
+      skill("s");
+      write(`${ROOT}/s/README.md`, `#\n${"r".repeat(230_000)}`);
+      write(`${ROOT}/s/reference/keep.md`, `#\n${"k".repeat(50_000)}`);
+      const result = read();
+      const agent = agentOf(result);
+      expect(inline(agent)).toContain("s/reference/keep.md");
+      expect(inline(agent)).not.toContain("s/README.md");
+      expect(listed(agent)).toContain("s/README.md");
+      expect(result.warnings.join("\n")).toContain("s/README.md");
+   });
+
+   it("lists a Markdown file over the inline cap instead of dropping it", () => {
+      skill("s");
+      write(`${ROOT}/s/references/big.md`, `#\n${"x".repeat(300 * 1024)}`);
+      const result = read();
+      const agent = agentOf(result);
+      expect(inline(agent)).not.toContain("s/references/big.md");
+      expect(listed(agent)).toContain("s/references/big.md");
+      expect(result.warnings.join("\n")).toContain(
+         "s/references/big.md' would take the skill Markdown over",
+      );
+   });
+
+   it("takes the newly covered entries of all an agent's skills from one budget of 1,000, and still serves each skill's own folders", () => {
+      for (const name of ["a", "b", "c"]) {
+         skill(name);
+         write(`${ROOT}/${name}/reference/keep.md`, "# keep\n");
+         write(`${ROOT}/${name}/assets/keep.txt`, "keep");
+         for (let i = 0; i < 600; i++) {
+            write(`${ROOT}/${name}/data/f${pad(i)}.txt`);
+         }
+      }
+      const result = read();
+      const agent = agentOf(result);
+      for (const name of ["a", "b", "c"]) {
+         expect(inline(agent)).toContain(`${name}/reference/keep.md`);
+         expect(listed(agent)).toContain(`${name}/assets/keep.txt`);
+      }
+      const stopped = result.warnings.filter((w) =>
+         w.includes("more than 1000 entries"),
+      );
+      expect(stopped).toHaveLength(2);
+      expect(stopped[0]).toContain(`${ROOT}/b'`);
+      expect(stopped[1]).toContain(`${ROOT}/c'`);
+   });
+
+   describe("a reference/ that is a link", () => {
+      it("is read through, flat Markdown only, when it leads to a directory in the package", () => {
+         skill("s");
+         write("shared-ref/a.md", "# A\n");
+         write("shared-ref/b.txt", "not Markdown");
+         write("shared-ref/sub/c.md", "# C\n");
+         fs.symlinkSync(
+            path.join(pkg, "shared-ref"),
+            path.join(pkg, ROOT, "s/reference"),
+         );
+         const agent = agentOf();
+         expect(inline(agent)).toEqual(["s/SKILL.md", "s/reference/a.md"]);
+         expect(listed(agent)).toEqual([]);
+         expect(readSkillsDir(pkg, ROOT).skills.map((s) => s.name)).toEqual([
+            "s",
+            "s/a",
+         ]);
+      });
+
+      it("is not served, with a warning, when it leads out of the package", () => {
+         const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ref-out-"));
+         try {
+            fs.writeFileSync(path.join(outside, "a.md"), "# Out\n");
+            skill("s");
+            fs.symlinkSync(outside, path.join(pkg, ROOT, "s/reference"));
+            const result = read();
+            expect(inline(agentOf(result))).toEqual(["s/SKILL.md"]);
+            expect(result.warnings.join("\n")).toContain("s/reference");
+            // What lies beyond the link is not looked at, so it is not named either.
+            expect(result.warnings.join("\n")).not.toContain("a.md");
+         } finally {
+            fs.rmSync(outside, { recursive: true, force: true });
+         }
+      });
+
+      it("is skipped with a warning, and the agent is served, when it leads nowhere", () => {
+         skill("s");
+         fs.symlinkSync(
+            path.join(pkg, "gone"),
+            path.join(pkg, ROOT, "s/reference"),
+         );
+         const result = read();
+         expect(inline(agentOf(result))).toEqual(["s/SKILL.md"]);
+         expect(result.warnings.join("\n")).toContain("s/reference");
+      });
+
+      it("is the only directory link that is read through", () => {
+         skill("s");
+         write("shared-scripts/run.py", "print()\n");
+         fs.symlinkSync(
+            path.join(pkg, "shared-scripts"),
+            path.join(pkg, ROOT, "s/scripts"),
+         );
+         const result = read();
+         expect(listed(agentOf(result))).toEqual([]);
+         expect(result.warnings.join("\n")).toContain(
+            "s/scripts' is not served: it is a link",
+         );
+      });
+   });
+
+   it("reloads eight agents that share a root of sixteen skills of about a thousand entries each in a fraction of a second", () => {
+      for (let k = 0; k < 16; k++) {
+         skill(`k${k}`);
+         for (let i = 0; i < 990; i++) write(`${ROOT}/k${k}/data/f${i}.txt`);
+      }
+      const agents = Object.fromEntries(
+         Array.from({ length: 8 }, (_, i) => [
+            `a${i}`,
+            { ...manifest().analyst },
+         ]),
+      );
+      read(agents);
+      const started = performance.now();
+      const result = read(agents);
+      const elapsed = performance.now() - started;
+      expect(result.agents.size).toBe(8);
+      expect(elapsed).toBeLessThan(800);
    });
 });

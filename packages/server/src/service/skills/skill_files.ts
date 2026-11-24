@@ -15,6 +15,8 @@ export const ASSET_MAX_DEPTH = 8;
 export const ASSET_MAX_ENTRIES = 1000;
 
 const SKILL_MD = "SKILL.md";
+const REFERENCE_DIR = "reference";
+const ASSETS_DIR = "assets";
 const SKILLIGNORE = ".skillignore";
 const SKILLIGNORE_MAX_BYTES = 16 * 1024;
 const SKILLIGNORE_MAX_PATTERNS = 200;
@@ -30,6 +32,34 @@ export interface SkillFilesResult {
    skillignore: string | null;
 }
 
+/** How many more entries a walk may take. */
+export interface EntryBudget {
+   left: number;
+}
+
+/**
+ * What the walks of one reader's skills may still take together. An entry below
+ * `assets/` is charged to `assets` and any other to `other`, so a file outside
+ * `assets/` can never cost one inside it. `SKILL.md` and a Markdown file
+ * directly in `reference/` are charged to neither: they are always walked.
+ */
+export interface WalkBudget {
+   assets: EntryBudget;
+   other: EntryBudget;
+}
+
+export const newWalkBudget = (): WalkBudget => ({
+   assets: { left: ASSET_MAX_ENTRIES },
+   other: { left: ASSET_MAX_ENTRIES },
+});
+
+export interface SkillFilesOptions {
+   /** Shared by the walks of every skill a reader reads. Omitted, one fresh budget bounds this skill alone. */
+   budget?: WalkBudget;
+   /** Given a root `reference/` that is a link, the directory to read its Markdown from, or undefined to leave the link a plain candidate. */
+   followReference?: (absolute: string) => string | undefined;
+}
+
 function errorCode(error: unknown): string {
    return (error as NodeJS.ErrnoException).code ?? "unknown error";
 }
@@ -41,7 +71,7 @@ function shown(pattern: string): string {
 }
 
 /** Dot names are where harness config lives, so no `.skillignore` rule can bring one back. */
-export function builtInExcluded(name: string, isDirectory: boolean): boolean {
+function builtInExcluded(name: string, isDirectory: boolean): boolean {
    if (name.startsWith(".")) return true;
    const lower = name.toLowerCase();
    return isDirectory
@@ -135,22 +165,55 @@ function readSkillignore(
    return text;
 }
 
+/** Where a directory sits, which decides what an entry in it is charged to. */
+type Zone = "root" | "reference" | "linked reference" | "assets" | "other";
+
 /**
  * The files of one skill directory: everything under it, minus the built-in
  * excludes and what its root `.skillignore` matches. A symlink is returned as a
- * candidate and never followed. An ignored directory is not descended, but
- * every entry seen still counts toward ASSET_MAX_ENTRIES; hitting a bound adds
- * a warning and keeps what was found so far.
+ * candidate and never followed, but for a root `reference/` that
+ * `followReference` resolves, which is read for its Markdown alone. At the root
+ * `SKILL.md` comes first, then `reference/`, then `assets/`, then the rest, so
+ * a bound cuts the newest locations first. An ignored directory is not
+ * descended, but every entry seen still counts against the budget; hitting a
+ * bound adds a warning and keeps what was found so far.
  */
-export function skillFiles(dir: string): SkillFilesResult {
+export function skillFiles(
+   dir: string,
+   options: SkillFilesOptions = {},
+): SkillFilesResult {
    const warnings: string[] = [];
    const matcher = ignore({ ignorecase: true });
    const skillignore = readSkillignore(dir, matcher, warnings);
 
+   const alone = { left: ASSET_MAX_ENTRIES };
+   const budget = options.budget ?? { assets: alone, other: alone };
+   const exhausted = new Set<EntryBudget>();
+   const take = (counter: EntryBudget, relative: string): boolean => {
+      if (counter.left > 0) {
+         counter.left--;
+         return true;
+      }
+      if (!exhausted.has(counter)) {
+         exhausted.add(counter);
+         warnings.push(
+            `skill walk stopped at '${relative}': more than ${ASSET_MAX_ENTRIES} entries were walked, so the rest are not included`,
+         );
+      }
+      return false;
+   };
+   const rank = (name: string) => {
+      const place = [SKILL_MD, REFERENCE_DIR, ASSETS_DIR].indexOf(name);
+      return place < 0 ? 3 : place;
+   };
+
    const files: string[] = [];
-   let visited = 0;
-   let stopped = false;
-   const visit = (absolute: string, rel: string, depth: number): void => {
+   const visit = (
+      absolute: string,
+      rel: string,
+      depth: number,
+      zone: Zone,
+   ): void => {
       let entries: fs.Dirent[];
       try {
          entries = fs.readdirSync(absolute, { withFileTypes: true });
@@ -160,24 +223,55 @@ export function skillFiles(dir: string): SkillFilesResult {
          );
          return;
       }
-      // At the root SKILL.md goes first so the entry limit can never cut it.
-      entries.sort(
-         (a, b) =>
-            (rel === ""
-               ? Number(b.name === SKILL_MD) - Number(a.name === SKILL_MD)
-               : 0) || compareText(a.name, b.name),
-      );
+      if (zone === "root") {
+         entries.sort(
+            (a, b) =>
+               rank(a.name) - rank(b.name) || compareText(a.name, b.name),
+         );
+      } else {
+         entries.sort((a, b) => compareText(a.name, b.name));
+      }
       for (const entry of entries) {
-         if (stopped) return;
          const relative = rel ? `${rel}/${entry.name}` : entry.name;
-         if (++visited > ASSET_MAX_ENTRIES) {
-            stopped = true;
-            warnings.push(
-               `skill walk stopped at '${relative}': the skill holds more than ${ASSET_MAX_ENTRIES} entries, so the rest are not included`,
-            );
-            return;
+         const linked =
+            zone === "root" &&
+            entry.name === REFERENCE_DIR &&
+            entry.isSymbolicLink()
+               ? options.followReference?.(path.join(absolute, entry.name))
+               : undefined;
+         const isDirectory = entry.isDirectory() || linked !== undefined;
+         // What this entry costs the budget, and the zone of what it holds.
+         let cost: EntryBudget | undefined = budget.other;
+         let inside: Zone = "other";
+         let childDepth = depth + 1;
+         switch (zone) {
+            case "linked reference":
+               if (isDirectory || !entry.name.endsWith(".md")) continue;
+               cost = undefined;
+               break;
+            case "reference":
+               if (!isDirectory && entry.name.endsWith(".md")) cost = undefined;
+               break;
+            case "assets":
+               inside = "assets";
+               cost = entry.name.startsWith(".") ? undefined : budget.assets;
+               break;
+            case "root":
+               if (entry.name === SKILL_MD && !isDirectory) {
+                  cost = undefined;
+               } else if (entry.name === REFERENCE_DIR && isDirectory) {
+                  cost = undefined;
+                  inside =
+                     linked === undefined ? "reference" : "linked reference";
+               } else if (entry.name === ASSETS_DIR && isDirectory) {
+                  cost = undefined;
+                  inside = "assets";
+                  // Depth below assets/ is counted from assets/ itself.
+                  childDepth = 1;
+               }
+               break;
          }
-         const isDirectory = entry.isDirectory();
+         if (cost && !take(cost, relative)) continue;
          if (builtInExcluded(entry.name, isDirectory)) continue;
          if (matcher.ignores(isDirectory ? `${relative}/` : relative)) {
             if (relative !== SKILL_MD || isDirectory) continue;
@@ -192,11 +286,16 @@ export function skillFiles(dir: string): SkillFilesResult {
                `directory '${relative}' is nested deeper than ${ASSET_MAX_DEPTH} levels, so its files are not included`,
             );
          } else {
-            visit(path.join(absolute, entry.name), relative, depth + 1);
+            visit(
+               linked ?? path.join(absolute, entry.name),
+               relative,
+               childDepth,
+               inside,
+            );
          }
       }
    };
-   visit(dir, "", 1);
+   visit(dir, "", 1, "root");
 
    files.sort(compareText);
    return { files, warnings, skillignore };
