@@ -225,9 +225,22 @@ export function heat(el, o) {
     // Every nth column labelled, n wide enough that the longest label clears its neighbour.
     const longest = d3.max(o.cols, (c) => String(o.colLabel ? o.colLabel(c) : c).length)
     const every = Math.max(Math.ceil(o.cols.length / Math.max(1, Math.floor((w - lw) / 34))), Math.ceil((longest * 6.6 + 10) / cw))
-    svg.append('g').attr('class', 'ax').selectAll('text').data(o.cols.map((c, i) => [c, i]).filter(([, i]) => i % every === 0)).join('text')
+    const colTexts = svg.append('g').attr('class', 'ax').selectAll('text').data(o.cols.map((c, i) => [c, i]).filter(([, i]) => i % every === 0)).join('text')
       .attr('x', ([, i]) => (i === 0 ? lw : lw + i * cw + cw / 2)).attr('y', 12).attr('text-anchor', ([, i]) => (i === 0 ? 'start' : 'middle')).text(([c]) => (o.colLabel ? o.colLabel(c) : c))
-    svg.append('g').attr('class', 'ax ax--rows').selectAll('text').data(o.rows).join('text').attr('x', lw - 10).attr('y', (_, j) => 22 + j * ch + ch / 2).attr('dy', '0.32em').attr('text-anchor', 'end').text((r) => (o.rowLabel ? o.rowLabel(r) : r))
+    // Measured, not guessed: a label that would touch the one before it, or pass the edge, is left out.
+    let right = -Infinity
+    colTexts.each(function () {
+      const b = this.getBBox()
+      if (b.x < right + 6 || b.x + b.width > w) this.remove()
+      else right = b.x + b.width
+    })
+    const fitRow = (t) => {
+      const full = String(t)
+      const room = Math.floor((lw - 14) / 7)
+      return full.length > room ? `${full.slice(0, Math.max(1, room - 1))}…` : full
+    }
+    svg.append('g').attr('class', 'ax ax--rows').selectAll('text').data(o.rows).join('text').attr('x', lw - 10).attr('y', (_, j) => 22 + j * ch + ch / 2).attr('dy', '0.32em').attr('text-anchor', 'end').text((r) => fitRow(o.rowLabel ? o.rowLabel(r) : r))
+      .append('title').text((r) => String(o.rowLabel ? o.rowLabel(r) : r))
     const accent = css('--accent')
     const paper = css('--paper')
     const cells = o.rows.flatMap((r, j) => o.cols.map((c, i) => ({ r, c, i, j, v: o.value(r, c) })))

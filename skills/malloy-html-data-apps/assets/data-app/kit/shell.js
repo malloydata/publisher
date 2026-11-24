@@ -93,7 +93,8 @@ export async function dashboard(cfg) {
       // A list cut at its limit may not hold a default value: ask the model for the ones it lacks, and add them.
       const lacking = vs.filter((v) => !(known[k] || []).map(String).includes(String(v)))
       if (lacking.length && known[k]?.length >= (f.limit || (f.hidden ? 2000 : 500))) {
-        const found = await query(`run: ${S.src()} -> { where: ${f.field} in (${lacking.map(S.lit).join(', ')}); group_by: v is ${f.field} }`)
+        // A value of the wrong type fails the query; it is then simply not found.
+        const found = await query(`run: ${S.src()} -> { where: ${f.field} in (${lacking.map(S.lit).join(', ')}); group_by: v is ${f.field} }`).catch(() => [])
         known[k].push(...found.map((r) => r.v))
       }
       const have = new Set((known[k] || []).map(String))
@@ -157,10 +158,10 @@ function searchBox(key) {
     const local = q ? vals.filter((v) => name(v).toLowerCase().includes(q)).sort((a, b) => name(a).toLowerCase().indexOf(q) - name(b).toLowerCase().indexOf(q)).slice(0, 8) : []
     show(local)
     const cut = vals.length >= (f()?.limit || (f()?.hidden ? 2000 : 500))
-    if (!q.replace(/[%_\\]/g, '') || !cut || local.length >= 8) return
-    const mine = ++asked
-    const by = e.nameField || e.field
+    const mine = ++asked   // any answer still on its way is now stale
     clearTimeout(input.__t)
+    if (!q.replace(/[%_\\]/g, '') || !cut || local.length >= 8) return
+    const by = e.nameField || e.field
     input.__t = setTimeout(() => query(`run: ${S.src()} -> { where: lower(${by}::string) ~ ${S.lit(`%${q.replace(/[%_\\]/g, '')}%`)}; group_by: v is ${e.field}${e.nameField ? `, nm is ${e.nameField}` : ''}; aggregate: n is count(); order_by: n desc; limit: 8 }`).then((rows) => {
       if (mine !== asked) return
       for (const r of rows) if (r.nm !== undefined) more.set(String(r.v), r.nm)
@@ -169,8 +170,8 @@ function searchBox(key) {
     }, () => {}), 200)
   }
   input.onkeydown = (ev) => {
-    if (ev.key === 'Enter' && hits.length) pick(hits[at])
-    else if (ev.key === 'Escape') show([])
+    if (ev.key === 'Enter' && hits.length && input.value.trim()) pick(hits[at])
+    else if (ev.key === 'Escape') (asked++, show([]))
     else if ((ev.key === 'ArrowDown' || ev.key === 'ArrowUp') && hits.length) {
       ev.preventDefault()
       at = (at + (ev.key === 'ArrowDown' ? 1 : -1) + hits.length) % hits.length
@@ -178,7 +179,7 @@ function searchBox(key) {
       input.setAttribute('aria-activedescendant', `mast-found-${at}`)
     }
   }
-  input.onblur = () => setTimeout(() => show([]), 100)
+  input.onblur = () => setTimeout(() => (asked++, show([])), 100)
   return h('div', { class: 'mast__search' }, input, list)
 }
 

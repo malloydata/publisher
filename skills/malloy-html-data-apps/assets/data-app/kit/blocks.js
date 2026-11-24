@@ -508,9 +508,9 @@ export function rank({ field, entity, metric: n, top = 10, kicker, headline, ext
   const name = nameOf(fieldName, entity)
   return block({
     compare: true, key: `rank|${fieldName}|${n}|${top}|${order || ''}|${kicker || ''}`, kicker: kicker || `${F.metric(n).label} by ${(e?.label || filter?.label || col.replace(/_/g, ' ')).toLowerCase()}`, span, reserve: 30 + 35 * top + 30,
-    metrics: [n, ...extra], ignore: filter && !e ? [filter.key] : [],
+    metrics: [n, ...extra], ignore: filter ? [filter.key] : [],
     what: what || `The ${top} ${plural} with the most ${lower(F.metric(n).label)} in the period. The pale bar behind each is its figure in the comparison period, so a bar that reaches past its pale one grew.`,
-    queries: (s) => [S.breakdownQuery(fieldName, [n], s, { top, order, extra, where }), S.partsQuery(fieldName, n, s, { ignore: filter && !e ? [filter.key] : [], where }), S.breakdownCompareQuery(fieldName, [n], s, { where })].filter(Boolean),
+    queries: (s) => [S.breakdownQuery(fieldName, [n], s, { top, order, extra, where }), S.partsQuery(fieldName, n, s, { ignore: filter ? [filter.key] : [], where }), S.breakdownCompareQuery(fieldName, [n], s, { where })].filter(Boolean),
     of: ([rows, [c]]) => (c?.n > rows.length ? ` · top ${rows.length} of ${c.n.toLocaleString()}` : ''),
     draw: ([rows, , cmp], body) => rankList(body, S.withCompare(rows, cmp, fieldName), { col, n, field: fieldName, entity, name, extra }),
     headline: headline ? (rs, s) => headline(S.withCompare(rs[0], rs[2], fieldName), s) : ([cur, [c], cmp]) => {
@@ -552,9 +552,9 @@ export function share({ field, entity, metric: n, top = 6, kicker, headline, spa
   const name = nameOf(fieldName, entity)
   return block({
     compare: true, key: `share|${fieldName}|${n}`, kicker: kicker || `${F.metric(n).label} by ${(e?.label || filter?.label || col).toLowerCase()}`, span, reserve: 60 + 35 * top,
-    metrics: [n], ignore: filter && !e ? [filter.key] : [],
+    metrics: [n], ignore: filter ? [filter.key] : [],
     what: `How ${lower(F.metric(n).label)} splits across ${(e?.label || filter?.label || col).toLowerCase()}, as shares of the whole, with each part's change on the comparison period. Parts past the first ${top} are grouped as Other.`,
-    queries: (s) => [S.breakdownQuery(fieldName, [n], s, { top: 50, where }), S.kpiQuery([n], s, { ignore: filter && !e ? [filter.key] : [], where }), S.breakdownCompareQuery(fieldName, [n], s, { where })].filter(Boolean),
+    queries: (s) => [S.breakdownQuery(fieldName, [n], s, { top: 50, where }), S.kpiQuery([n], s, { ignore: filter ? [filter.key] : [], where }), S.breakdownCompareQuery(fieldName, [n], s, { where })].filter(Boolean),
     draw: ([cur, [k], cmp], body) => {
       const rows = S.withCompare(cur, cmp, fieldName)
       const total = k[`${n}__cur`]

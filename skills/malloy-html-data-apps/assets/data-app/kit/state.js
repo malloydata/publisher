@@ -90,7 +90,14 @@ export function fromHash(hash) {
   const s = DEFAULT()
   const raw = String(hash || '').replace(/^#\/?/, '')
   const [path, qs = ''] = raw.split('?')
-  const [page, id] = path.split('/').map((x) => (x === undefined ? x : decodeURIComponent(x)))
+  const decode = (x) => {
+    try {
+      return decodeURIComponent(x)
+    } catch {
+      return x   // a stray % in an address typed by hand
+    }
+  }
+  const [page, id] = path.split('/').map((x) => (x === undefined ? x : decode(x)))
   const p = config.pages.find((x) => x.id === page)
   if (p && !p.entity) s.page = p.id
   // Any id is accepted for an entity's page: it reaches a query only as a quoted literal, and a page whose id matches
@@ -144,8 +151,11 @@ export function clauses(s, { which = 'current', ignore = [], entity = true } = {
   }
   const e = entity ? entityOf(s) : null
   if (e && s.id !== null) out.push(`${e.field} = ${lit(s.id)}`)
+  // On an entity's page, a filter on the entity's own field never applies: the page is scoped to the entity, and a
+  // query that sets entity: false compares it with its peers, which that filter would hide.
+  const here = entityOf(s)
   for (const f of config.filters) {
-    if (ignore.includes(f.key) || (e && f.field === e.field)) continue
+    if (ignore.includes(f.key) || (here && s.id !== null && f.field === here.field)) continue
     const vals = (s.filters[f.key] || []).filter((v) => isKnown(f.key, v))
     // `in (…)`, never `= 'x' | 'y' | …`: Malloy's time to compile an alternation grows with the cube of its length.
     if (vals.length) out.push(`${f.field} in (${vals.map(lit).join(', ')})`)
