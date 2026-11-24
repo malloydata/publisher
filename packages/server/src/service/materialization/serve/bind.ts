@@ -44,6 +44,7 @@ import {
    declaredMoves as contractDeclaredMoves,
    type IncompatibleCode,
    parseContract,
+   servableContract,
 } from "../domain/column_contract";
 import {
    spelledNativeType,
@@ -725,9 +726,10 @@ export function applyObservedColumns(args: {
    const contractMissing: string[] = [];
    const incompatible: IncompatibleTable[] = [];
    for (const [id, entry] of Object.entries(args.entries)) {
-      // A table with no contract is never served from (contract_missing):
-      // it answers live, and the next build rebuilds it in full.
-      const contract = parseContract(entry.contract);
+      // A table with no contract, or one listing no column, is never served
+      // from (contract_missing): it answers live, and the next build
+      // rebuilds it in full.
+      const contract = servableContract(entry.contract);
       if (!contract) {
          contractMissing.push(id);
          left.add(id);
@@ -969,7 +971,7 @@ function asBound(
    bindings: readonly Binding[],
 ): ReturnType<typeof applyObservedColumns> {
    const contractMissing = Object.entries(entries)
-      .filter(([, e]) => !parseContract(e.contract))
+      .filter(([, e]) => !servableContract(e.contract))
       .map(([id]) => id);
    const missing = new Set(contractMissing);
    return {

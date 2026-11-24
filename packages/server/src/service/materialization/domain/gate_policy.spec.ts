@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import {
    answerKeepsGates,
+   gateColumnTypeExact,
    legMayPassGate,
    tableKeepsGates,
    type GatedTable,
@@ -357,7 +358,8 @@ describe("the gate policy at the router", () => {
             tier: "storage" as const,
             ownGateKept: true,
             gateColumnTypes: ["BIGINT", stored],
-            gateColumnUpstreamTypes: [undefined, upstream],
+            // As the build records it (`gateExact`).
+            gateColumnsExactRecorded: gateColumnTypeExact(stored, upstream),
          },
       ];
       const keeps = (

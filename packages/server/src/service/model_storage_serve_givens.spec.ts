@@ -21,6 +21,8 @@ import {
 } from "@malloydata/malloy";
 import { afterEach, describe, expect, it } from "bun:test";
 import type { Binding } from "./materialization/domain/binding";
+import { parseContract } from "./materialization/domain/column_contract";
+import { contractFor } from "../test_helpers/contract_fixture";
 import { malloyGivenToApi } from "./given";
 import { Model } from "./model";
 import { installSettings } from "../test_helpers/settings_env";
@@ -118,7 +120,14 @@ async function buildModel(): Promise<Model> {
    serveConfig.wrapConnections(() => new FixedConnectionMap(connMap, "duckdb"));
    model.setServeDestinationConfig(() => serveConfig);
    model.setServedCopyContext(files.dir, connMap);
-   model.setServeBindings([BINDING]);
+   // The table's contract, as its build records it: the gate's `org_id`
+   // stored exact.
+   model.setServeBindings(
+      [BINDING],
+      new Map([
+         [BINDING.virtualHandle, parseContract(contractFor(BINDING.schema))!],
+      ]),
+   );
    return model;
 }
 

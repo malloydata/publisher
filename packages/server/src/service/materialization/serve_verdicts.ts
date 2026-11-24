@@ -52,10 +52,10 @@ import type { ServedCopyProblem } from "./serve/served_copy_types";
 import { byActionability } from "./domain/source_decline";
 import { previewNativeSchema } from "./stored_column_types";
 import { reachableSourceIDs, SourceMap } from "./text/source_map";
+import type { ColumnContract } from "./domain/column_contract";
 import {
    entryPointGateExprs,
-   gateColumnTypesOf,
-   gateColumnUpstreamTypesOf,
+   gateColumnsExactOf,
    gateReads,
 } from "./serve/gate_reads";
 import { ownLevelNotes, type AnnotationsDef } from "../annotations";
@@ -370,6 +370,7 @@ export class ServeVerdicts {
                  ...storageGateRead(
                     sourceID,
                     storageBindings,
+                    host.snapshot().contracts,
                     buildPlan,
                     models,
                  ),
@@ -1038,7 +1039,8 @@ function servePathOf(
 
 /**
  * The stored types of the columns a bound `storage=` table's own gate
- * reads, for the policy's exactness rule; the router reads each query's. A
+ * reads, and whether its column contract records each exact (`gateExact`),
+ * for the policy's exactness rule, as the router reads each query's. A
  * table not bound yet has none to read, and is judged once it is bound.
  *
  * A rollup's gates are its base's, read off the base's def in the rollup's
@@ -1048,11 +1050,12 @@ function servePathOf(
 function storageGateRead(
    sourceID: string,
    storageBindings: readonly Binding[],
+   contracts: ReadonlyMap<string, ColumnContract> | undefined,
    buildPlan: BuildPlan | undefined,
    models: Map<string, Model>,
 ): Pick<
    TableRead,
-   "gateColumnTypes" | "gateColumnUpstreamTypes" | "gatesReadNoColumn"
+   "gateColumnTypes" | "gateColumnsExactRecorded" | "gatesReadNoColumn"
 > {
    const bound = storageBindings.filter((b) => b.sourceIDs?.includes(sourceID));
    if (bound.length === 0) return { gateColumnTypes: [] };
@@ -1064,26 +1067,20 @@ function storageGateRead(
          ? undefined
          : // Its own `where:` terms were applied by the build.
            gateReads(found.def, exprs, found.modelDef, new Set([sourceID]));
-   const types = gateColumnTypesOf(
+   const { types, exact } = gateColumnsExactOf(
       reads,
-      bound.map((b) => b.schema),
+      bound.map((b) => contracts?.get(b.virtualHandle)),
    );
    const readsNoColumn =
       reads !== undefined &&
       !reads.unresolved &&
       reads.columns.length === 0 &&
       reads.names.size === 0;
-   // What each stored gate column copies, aligned with the types.
-   const upstream = gateColumnUpstreamTypesOf(
-      reads,
-      bound.map((b) => b.schema),
-      bound.map((b) => b.upstreamSchemas),
-   );
    const listed = !types.some((t) => t === undefined);
    return {
       gateColumnTypes: listed ? types.flatMap((t) => t ?? []) : undefined,
       ...(listed
-         ? { gateColumnUpstreamTypes: upstream.flatMap((u) => u ?? []) }
+         ? { gateColumnsExactRecorded: exact.every((e) => e === true) }
          : {}),
       ...(readsNoColumn ? { gatesReadNoColumn: true } : {}),
    };

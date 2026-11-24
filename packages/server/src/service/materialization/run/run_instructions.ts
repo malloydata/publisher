@@ -12,7 +12,11 @@
  * refuses. A source the eligibility gate refuses is returned as refused and serves live.
  */
 
-import { contractDigest, parseContract } from "../domain/column_contract";
+import {
+   contractDigest,
+   parseContract,
+   servableContract,
+} from "../domain/column_contract";
 import { PACKAGE_SANDBOX_CONNECTION } from "../../connection_config";
 import { storageWritable } from "../domain/placement";
 import { freshnessOf } from "../domain/freshness";
@@ -812,7 +816,7 @@ function rebuiltInFull(
 ): boolean {
    return (
       prior !== undefined &&
-      (parseContract(prior.contract) === undefined ||
+      (servableContract(prior.contract) === undefined ||
          options.incompatible?.has(sourceEntityId) === true)
    );
 }

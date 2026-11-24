@@ -11,7 +11,8 @@
  * - An entry with no contract, an empty one, or one with no `v` HAS NO
  *   contract ({@link parseContract} answers undefined): its table is never
  *   served from, and the next build rebuilds it in full
- *   (`contract_missing`).
+ *   (`contract_missing`). Nor is one that lists no column (its capture
+ *   read nothing): {@link servableContract}.
  * - A column the contract does not list is unknown: compared `none`, its
  *   gate not exact ({@link contractColumn}).
  * - Keys a reader does not know are ignored at every level; an unknown
@@ -219,6 +220,17 @@ export function parseContract(raw: unknown): ColumnContract | undefined {
       columns,
       ...(Object.keys(keys).length > 0 ? { keys } : {}),
    };
+}
+
+/**
+ * The contract a bound table may be served under: {@link parseContract}'s,
+ * when it lists at least one column. A contract that lists none (its
+ * capture read nothing) proves nothing about any column, so its table is
+ * `contract_missing` as one with no contract is.
+ */
+export function servableContract(raw: unknown): ColumnContract | undefined {
+   const contract = parseContract(raw);
+   return contract && contract.columns.length > 0 ? contract : undefined;
 }
 
 /**

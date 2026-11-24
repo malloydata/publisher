@@ -33,12 +33,7 @@ import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { installSettings } from "../../test_helpers/settings_env";
 import { routeQuery } from "../query_router";
 import { variantsOf } from "../query_serving";
-import {
-   type Binding,
-   EMPTY_SNAPSHOT,
-   makeSnapshot,
-   pin,
-} from "./domain/binding";
+import { type Binding, makeSnapshot, pin } from "./domain/binding";
 import type { ColumnContract } from "./domain/column_contract";
 import {
    readStringCapabilities,
@@ -1782,7 +1777,17 @@ describe("the admission shell gathers the facts admitRead is held to", () => {
             for (const shape of Object.keys(SHAPES) as Shape[]) {
                for (const leg of LEGS) {
                   for (const [read, bindings] of Object.entries(READS)) {
-                     const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
+                     // Each table's contract, as its build records it.
+                     const pinned = pin(
+                        makeSnapshot(
+                           [],
+                           {},
+                           undefined,
+                           undefined,
+                           contractsOf({ tables: bindings }),
+                        ),
+                        new Date(0),
+                     );
                      const authorRunnable = authorOf(SHAPES[shape]);
                      const query = {
                         queryString: `run: ${SHAPES[shape]} -> v`,
@@ -1798,6 +1803,7 @@ describe("the admission shell gathers the facts admitRead is held to", () => {
                         query,
                         { materialize: true, gatedSources },
                         probeAll,
+                        pinned.snapshot,
                      ).decide(leg, answer, GATED(shape));
                      const hand = handFacts({ shape, tables: bindings });
                      const row = `${shape} | ${leg}, ${read}`;
