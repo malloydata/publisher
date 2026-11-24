@@ -36,13 +36,30 @@ export const admin = [
       defaultText: "`600000` (10 min)",
       notes: "How long the admin listener lets a request run before closing its connection. A table copy or a file load answers only when the table is written, so a large table needs longer than the main API's ten minutes; raise this for the caller's largest copy, and keep the caller's own timeout above it. Applies to the admin listener alone: the main API and MCP listeners keep ten minutes.",
    }),
+   // Strings because DuckDB parses them; assertDuckDBResourceConfig checks them at boot.
+   setting({
+      key: "admin.memoryLimit",
+      type: string(),
+      default: "1.5GB",
+      description:
+         "Most memory one admin table load or copy session may use, as a DuckDB size (1.5GB).",
+      notes: "The `memory_limit` of the DuckDB session an admin table load or copy runs in, as a flat DuckDB size (`1.5GB`, `512MB`). The session uses the lower of this and `PUBLISHER_DUCKDB_MEMORY_LIMIT`, so a pod whose general limit is smaller is never raised by the default: to give a load more than 1.5GB, raise both. A keyed load and a keyless replace both size their comparison passes to half of the session's effective limit. Validated at startup.",
+   }),
+   setting({
+      key: "admin.maxTempDirectorySize",
+      type: string(),
+      default: "6GiB",
+      description:
+         "Most spill one admin table load or copy session may write, as a DuckDB size (6GiB).",
+      notes: "The `max_temp_directory_size` of the DuckDB session an admin table load or copy runs in, as a flat DuckDB size (`6GiB`, `20GB`). Keep it under the pod's ephemeral storage. A load or table PUT that outgrows it (or the memory limit) answers `422 LOAD_TOO_LARGE`; a full disk is a `500`. Validated at startup.",
+   }),
    setting({
       key: "admin.catalogDatabase",
       type: string(),
       secret: true,
       description:
          "libpq connection string of the database the admin API finds DuckLake catalogs in.",
-      notes: "A libpq connection string (keyword or `postgres://` form) for the Postgres database holding the catalogs the admin API manages. Unset, the admin API's catalog routes answer `503 CATALOG_DATABASE_NOT_CONFIGURED`.",
+      notes: "A libpq connection string (keyword or `postgres://` form) for the Postgres database holding the catalogs the admin API manages. Unset, the admin API's catalog routes answer `503 CATALOG_DATABASE_NOT_CONFIGURED`. The string also opens the connection that holds a table load's advisory lock, so it must name one host (no `service`, `hostaddr` or list of hosts, and no `PGSERVICE` or `PGHOSTADDR` in the environment; either fails startup). It also refuses what the lock connection cannot honor: `channel_binding=require`, `gssencmode=require`, any `require_auth`, `sslcrl`, `sslcrldir`, an `ssl_min_protocol_version` of `TLSv1.3` (from the string or the matching `PG*` variable), a missing or unreadable `sslrootcert`, `sslcert` or `sslkey` file, and `sslmode=verify-ca` with no `sslrootcert` while `NODE_EXTRA_CA_CERTS` is unset. It must reach Postgres directly or through a session-mode pooler, not a transaction-mode one such as PgBouncer.",
       aliases: { env: ["PUBLISHER_ADMIN_CATALOG_DATABASE"] },
    }),
    setting({

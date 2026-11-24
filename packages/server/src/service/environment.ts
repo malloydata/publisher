@@ -71,7 +71,6 @@ import { isDeepStrictEqual } from "util";
 import { pathToFileURL } from "url";
 import {
    buildEnvironmentMalloyConfig,
-   deleteDuckLakeConnectionFile,
    EnvironmentMalloyConfig,
    InternalConnection,
 } from "./connection";
@@ -90,7 +89,10 @@ import {
 import type { RunManifestLoad } from "./materialization/domain/types";
 import type { KeptTable } from "./materialization/domain/types";
 import { ApiConnection } from "./model";
-import { destinationOverlaps } from "./destination_overlap";
+import {
+   destinationOverlaps,
+   refuseListedDestinationSchema,
+} from "./destination_overlap";
 import type { PackageMaterialization } from "./materialization";
 import { Package } from "./package";
 import { canonicalJson } from "./package_revision";
@@ -654,57 +656,73 @@ export class Environment {
    }
 
    public async update(payload: ApiEnvironment) {
-      // First, so an unreadable destination list is refused before anything
-      // changes. Absent leaves the list alone; an unreadable shape is
-      // rejected rather than read as "keep none"; an explicit [] clears.
-      if (payload.storageDestinations !== undefined) {
-         this.setStorageDestinations(payload.storageDestinations, {
-            rejectInvalid: true,
-         });
-      }
-
-      if (payload.readme !== undefined) {
-         this.metadata.readme = payload.readme;
-         await this.writeEnvironmentReadme(payload.readme);
-      }
-
-      if (payload.connections) {
-         const payloadConnections = payload.connections;
+      const payloadConnections = payload.connections;
+      if (payloadConnections || payload.storageDestinations !== undefined) {
          await this.runConnectionUpdateExclusive(async () => {
-            logger.info(
-               `Updating ${payloadConnections.length} connections for environment ${this.environmentName}`,
-            );
-            // The list replaces the stored one wholesale, but reads carry no
-            // credentials, so an echoed entry arrives without them. Merging
-            // against the stored entry keeps one connection edit in the app
-            // from stripping every other connection's credentials.
-            const mergedConnections = payloadConnections.map((incoming) => {
-               const stored = this.apiConnections.find(
-                  (existing) => existing.name === incoming.name,
+            // Resolved under the lock so a keep reference reads the previous update's result; refused before anything changes.
+            const nextDestinations =
+               payload.storageDestinations === undefined
+                  ? undefined
+                  : this.resolveStorageDestinations(
+                       payload.storageDestinations,
+                       true,
+                    );
+            let nextMalloyConfig:
+               | ReturnType<typeof buildEnvironmentMalloyConfig>
+               | undefined;
+            if (payloadConnections) {
+               logger.info(
+                  `Updating ${payloadConnections.length} connections for environment ${this.environmentName}`,
                );
-               return stored
-                  ? mergeConnectionUpdate(stored, incoming)
-                  : incoming;
-            });
-            const isUpdateConnectionRequest = true;
-            const nextMalloyConfig = buildEnvironmentMalloyConfig(
-               mergedConnections,
-               this.environmentPath,
-               isUpdateConnectionRequest,
-            );
+               // The list replaces the stored one wholesale, but reads carry no
+               // credentials, so an echoed entry arrives without them. Merging
+               // against the stored entry keeps one connection edit in the app
+               // from stripping every other connection's credentials.
+               const mergedConnections = payloadConnections.map((incoming) => {
+                  const stored = this.apiConnections.find(
+                     (existing) => existing.name === incoming.name,
+                  );
+                  return stored
+                     ? mergeConnectionUpdate(stored, incoming)
+                     : incoming;
+               });
+               const isUpdateConnectionRequest = true;
+               nextMalloyConfig = buildEnvironmentMalloyConfig(
+                  mergedConnections,
+                  this.environmentPath,
+                  isUpdateConnectionRequest,
+               );
+            }
 
-            this.updateConnections(nextMalloyConfig);
-            // A wholesale replacement: the list is now the desired state.
-            this.connectionsAuthoritative = true;
-
-            logger.info(
-               `Successfully updated connections for environment ${this.environmentName}`,
-               {
-                  apiConnections: this.apiConnections.length,
-                  internalConnections: this.apiConnections.length,
-               },
+            // Everything that can refuse runs before anything is assigned, and the lock keeps a connection add from checking against the pair this replaces.
+            refuseListedDestinationSchema(
+               nextMalloyConfig?.apiConnections ?? this.apiConnections,
+               nextDestinations ?? this.destinations,
             );
+            if (payload.readme !== undefined) {
+               await this.writeEnvironmentReadme(payload.readme);
+               this.metadata.readme = payload.readme;
+            }
+            if (nextDestinations) {
+               this.applyStorageDestinations(nextDestinations);
+            }
+            if (nextMalloyConfig) {
+               this.updateConnections(nextMalloyConfig);
+               // A wholesale replacement: the list is now the desired state.
+               this.connectionsAuthoritative = true;
+
+               logger.info(
+                  `Successfully updated connections for environment ${this.environmentName}`,
+                  {
+                     apiConnections: this.apiConnections.length,
+                     internalConnections: this.apiConnections.length,
+                  },
+               );
+            }
          });
+      } else if (payload.readme !== undefined) {
+         await this.writeEnvironmentReadme(payload.readme);
+         this.metadata.readme = payload.readme;
       }
 
       return this;
@@ -874,13 +892,26 @@ export class Environment {
     * arrived. An entry carrying only the fields a read reports is resolved
     * against the stored list, so a read-modify-write keeps configs it was never
     * shown. `rejectInvalid` refuses a bad entry (a request body) instead of
-    * dropping it (config or a restored row, which cannot be asked to fix it).
+    * dropping it (config or a restored row); either way, a destination whose
+    * build schema a connection's `readableSchemas` lists throws, which fails an
+    * environment's load.
     */
    public setStorageDestinations(
       storageDestinations: ApiConnection[],
       { rejectInvalid = false }: { rejectInvalid?: boolean } = {},
    ): void {
-      const previous = this.destinations;
+      const next = this.resolveStorageDestinations(
+         storageDestinations,
+         rejectInvalid,
+      );
+      refuseListedDestinationSchema(this.apiConnections, next);
+      this.applyStorageDestinations(next);
+   }
+
+   private resolveStorageDestinations(
+      storageDestinations: ApiConnection[],
+      rejectInvalid: boolean,
+   ): ApiConnection[] {
       // Resolved first so a "keep this one" reference validates as the stored
       // destination it names.
       const requested = Array.isArray(storageDestinations)
@@ -888,10 +919,14 @@ export class Environment {
               this.resolveDestinationReference(destination),
            )
          : storageDestinations;
-      // Throws before anything is assigned.
-      this.destinations = rejectInvalid
+      return rejectInvalid
          ? processStorageDestinationsOrThrow(requested)
          : processStorageDestinations(requested);
+   }
+
+   private applyStorageDestinations(next: ApiConnection[]): void {
+      const previous = this.destinations;
+      this.destinations = next;
       this.destinationsAuthoritative = true;
       this.warnOnDestinationOverlap();
 
@@ -926,14 +961,16 @@ export class Environment {
          this.apiConnections ?? [],
          this.destinations ?? [],
       )) {
-         logger.warn(
-            `Connection "${overlap.connection}" reaches storage destination "${overlap.destination}": ${overlap.reason}. A destination holds stored tables, gated sources' rows among them with no gate, and models can read them through the connection by name. Never configure a destination's catalog or data path as a connection models can name.`,
-            {
-               environmentName: this.environmentName,
-               connection: overlap.connection,
-               destinationName: overlap.destination,
-            },
-         );
+         if (overlap.readable) {
+            logger.warn(
+               `Connection "${overlap.connection}" reaches storage destination "${overlap.destination}": ${overlap.reason}. A destination holds stored tables, gated sources' rows among them with no gate, and models can read them through the connection by name. Never configure a destination's catalog or data path as a connection models can name.`,
+               {
+                  environmentName: this.environmentName,
+                  connection: overlap.connection,
+                  destinationName: overlap.destination,
+               },
+            );
+         }
       }
    }
 
@@ -5651,15 +5688,6 @@ export class Environment {
             { error },
          );
       }
-   }
-
-   public async deleteDuckLakeConnection(
-      connectionName: string,
-   ): Promise<void> {
-      await deleteDuckLakeConnectionFile(connectionName, this.environmentPath);
-      logger.info(
-         `Removed DuckLake connection ${connectionName} from environment ${this.environmentName}`,
-      );
    }
 }
 

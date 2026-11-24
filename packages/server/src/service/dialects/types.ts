@@ -156,7 +156,8 @@ export interface DestinationAttachMode {
    origin?: ConnectionOrigin;
    /**
     * A catalog served as its own tables (the connection's `managed`). Attached
-    * read-only, its storage secret reaches only the `main` schema's files.
+    * read-only, its storage secret reaches only the files of `main` and of the
+    * config's `readableSchemas`.
     */
    managed?: boolean;
    /**
@@ -188,12 +189,13 @@ export interface DestinationDialect {
    /**
     * Why `connection`, of this type, reaches the tables of `destination`, of
     * this type too, or undefined when the comparison finds no overlap
-    * (destination_overlap.ts).
+    * (destination_overlap.ts). `sameCatalog` is whether it names the same
+    * catalog, so the destination's schema names are the connection's own.
     */
    overlap(
       connection: ApiConnection,
       destination: ApiConnection,
-   ): string | undefined;
+   ): { reason: string; sameCatalog: boolean } | undefined;
    /**
     * The settings a build session that writes into this catalog runs with,
     * set after the catalog is attached and its schema checked.
@@ -205,7 +207,7 @@ export interface DestinationDialect {
  * The environment's release of a deleted connection's local DuckDB file,
  * by the method that runs it (connection_service.ts).
  */
-export type FileCleanup = "deleteDuckDBConnection" | "deleteDuckLakeConnection";
+export type FileCleanup = "deleteDuckDBConnection";
 
 /** How one connection type lists its schemas and the tables in one schema. */
 export interface Introspector {

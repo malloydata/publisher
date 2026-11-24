@@ -82,10 +82,7 @@ import {
    checkCompileServedCopyResult,
    checkLoadPackageResult,
 } from "./protocol_decode";
-import {
-   connectionTypeOf,
-   isManagedConnection,
-} from "../service/connection_type";
+import { connectionTypeOf, managedSchemasOf } from "../service/connection_type";
 import { SchemaRefetches } from "./schema_refetch";
 import { sqlKey } from "@malloydata/malloy";
 
@@ -948,6 +945,7 @@ export class PackageLoadPool {
          const conn = await ctx.connections.lookupConnection(
             msg.connectionName,
          );
+         const schemas = managedSchemasOf(conn);
          reply({
             type: "connection-metadata-response",
             requestId: msg.requestId,
@@ -956,7 +954,7 @@ export class PackageLoadPool {
                name: msg.connectionName,
                dialectName: conn.dialectName,
                connectionType: connectionTypeOf(conn),
-               ...(isManagedConnection(conn) ? { managed: true } : {}),
+               ...(schemas ? { managedSchemas: [...schemas] } : {}),
                digest:
                   typeof conn.getDigest === "function"
                      ? conn.getDigest()

@@ -6,7 +6,11 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import type { Mutex } from "async-mutex";
-import { ConnectionSaveError, internalErrorToHttpError } from "../errors";
+import {
+   BadRequestError,
+   ConnectionSaveError,
+   internalErrorToHttpError,
+} from "../errors";
 import { resetInstrumentsForTesting } from "../telemetry";
 import {
    type MetricsHarness,
@@ -156,6 +160,52 @@ describe("environment connection list persistence", () => {
 
       const second = await restart();
       expect(await connectionNames(second)).toEqual(["a", "b"]);
+   });
+
+   it("refuses a re-pushed config whose connection lists a schema its destination builds into, and keeps the stored list", async () => {
+      const lake = (name: string, extra: object, ducklake: object) => ({
+         name,
+         type: "ducklake",
+         ...extra,
+         ducklakeConnection: {
+            catalog: {
+               postgresConnection: {
+                  host: "catalog.internal",
+                  databaseName: "ducklake",
+                  userName: "publisher",
+                  password: "catalog-secret",
+               },
+            },
+            storage: { bucketUrl: `gs://managed-tier/${name}` },
+            ...ducklake,
+         },
+      });
+      const destination = lake(
+         "lake",
+         {},
+         { destinationSchema: "materialized" },
+      );
+      const first = await openStore();
+      await first.addEnvironment({
+         name: ENV,
+         connections: [pg("a")],
+         storageDestinations: [destination],
+      } as never);
+
+      await expect(
+         first.addEnvironment({
+            name: ENV,
+            connections: [
+               lake(
+                  "models",
+                  { managed: true },
+                  { readableSchemas: ["materialized"] },
+               ),
+            ],
+            storageDestinations: [destination],
+         } as never),
+      ).rejects.toThrow(BadRequestError);
+      expect(await connectionNames(first)).toEqual(["a"]);
    });
 
    async function storedConnectionNames(current: EnvironmentStore) {

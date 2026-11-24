@@ -3,21 +3,23 @@
 
 /**
  * What SQL on a `managed` DuckLake connection may name: the catalog's own
- * `main` schema, and nothing else.
+ * `main` schema and the schemas its config lists in `readableSchemas`
+ * ({@link managedSchemas}), and nothing else.
  *
- * A managed connection's storage secret and file allowlist reach only the
- * `main` schema's files (dialects/ducklake_catalog.ts, `storageSecretScope`), but DuckLake
+ * A managed connection's storage secret and file allowlist reach only those
+ * schemas' files (dialects/ducklake_catalog.ts, `storageSecretScope`), but DuckLake
  * answers a good deal without opening a file: a table's columns and types, its
  * row count, unfiltered min and max from file statistics, the catalog listing,
  * and every row of a table small enough that the catalog keeps it inline. When
  * the catalog is also a storage destination, the other schemas hold stored
  * copies of other models' sources, with no gate of this model's. So author and
  * caller SQL on a managed connection is held, before it runs, to references
- * this module can place in `main`:
+ * this module can place in an allowed schema:
  *
- * - a table as `t`, `main.t`, `<alias>.t` or `<alias>.main.t` (case-insensitive,
- *   as DuckDB resolves names), whose name is a plain table name
- *   ({@link isPlainTableName}). A name the catalog's `main` lacks falls through
+ * - a table as `t`, `main.t`, `<alias>.t` or `<alias>.main.t`, or as `s.t` or
+ *   `<alias>.s.t` for a readable schema `s` (case-insensitive, as DuckDB
+ *   resolves names), whose name is a plain table name
+ *   ({@link isPlainTableName}). A name the allowed schema lacks falls through
  *   the search path, however it is qualified: to DuckDB's own catalog views
  *   (every one starts with a {@link SYSTEM_RELATION_PREFIXES} prefix), or to a
  *   replacement scan that reads a file. A two-part name whose first part is
@@ -25,8 +27,8 @@
  *   as ambiguous should a schema of that name exist.
  * - no `DESCRIBE`, `SHOW` or `SUMMARIZE`;
  * - a table function only from {@link ALLOWED_TABLE_FUNCTIONS};
- * - no function call qualified with a catalog or a schema other than `main`,
- *   and no function that reads the catalog ({@link isCatalogFunction}).
+ * - no function call qualified with a catalog or a schema other than DuckDB's
+ *   own `main`, and no function that reads the catalog ({@link isCatalogFunction}).
  *
  * Anything DuckDB's parser cannot serialize as SELECT statements is refused.
  * Checked against DuckDB 1.5.5. DuckDB and DuckLake offer no attach option or
@@ -34,6 +36,7 @@
  * inlined rows from a read-only attach, so this check is the control.
  */
 
+import { MAIN_ONLY } from "./connection_type";
 import { serializeSQL } from "./single_select";
 
 /**
@@ -95,11 +98,13 @@ function unqualified(fn: Record<string, unknown>): boolean {
 /**
  * The first reference in DuckDB's serialized parse (`json_serialize_sql`) that
  * a managed connection named `alias` may not make, described for the author
- * as they wrote it; undefined when every reference is in `main`.
+ * as they wrote it; undefined when every reference is in one of `schemas`
+ * ({@link managedSchemas}).
  */
 export function managedCatalogRefusalInParse(
    statements: unknown,
    alias: string,
+   schemas: ReadonlySet<string> = MAIN_ONLY,
 ): string | undefined {
    const catalog = alias.toLowerCase();
    let refused: string | undefined;
@@ -110,7 +115,7 @@ export function managedCatalogRefusalInParse(
          return;
       }
       const record = node as Record<string, unknown>;
-      refused = refusalOfNode(record, catalog);
+      refused = refusalOfNode(record, catalog, schemas);
       if (refused) return;
       Object.values(record).forEach(walk);
    };
@@ -121,6 +126,7 @@ export function managedCatalogRefusalInParse(
 function refusalOfNode(
    record: Record<string, unknown>,
    catalog: string,
+   schemas: ReadonlySet<string>,
 ): string | undefined {
    switch (record.type) {
       case "SHOW_REF":
@@ -135,13 +141,13 @@ function refusalOfNode(
             str(record.table_name),
          ];
          const shown = `'${[c, s, t].filter(Boolean).join(".")}'`;
-         // However it is qualified, a name the catalog's `main` lacks falls
-         // through the search path (to `system.main`, `system.pg_catalog` or
-         // a replacement scan), so the name itself must be one only a table
-         // of the catalog can answer to.
+         // However it is qualified, a name the catalog lacks falls through
+         // the search path (to `system.main`, `system.pg_catalog` or a
+         // replacement scan), so the name itself must be one only a table of
+         // the catalog can answer to.
          if (!isPlainTableName(t)) return shown;
-         if (c) return c === catalog && s === "main" ? undefined : shown;
-         if (s) return s === "main" || s === catalog ? undefined : shown;
+         if (c) return c === catalog && schemas.has(s) ? undefined : shown;
+         if (s) return schemas.has(s) || s === catalog ? undefined : shown;
          return undefined;
       }
       case "TABLE_FUNCTION": {
@@ -170,27 +176,29 @@ function refusalOfNode(
 
 /**
  * Why `sql` may not run on the managed connection `alias`, or undefined when
- * every reference it makes is in the catalog's `main` schema
+ * every reference it makes is in one of `schemas`
  * ({@link managedCatalogRefusalInParse}). SQL DuckDB's parser does not
  * serialize as SELECT statements is refused.
  */
 export async function managedCatalogRefusal(
    sql: string,
    alias: string,
+   schemas: ReadonlySet<string> = MAIN_ONLY,
 ): Promise<string | undefined> {
    const parsed = await serializeSQL(sql);
    if (parsed.error || !Array.isArray(parsed.statements)) {
       return "SQL it cannot read as a SELECT";
    }
-   return managedCatalogRefusalInParse(parsed.statements, alias);
+   return managedCatalogRefusalInParse(parsed.statements, alias, schemas);
 }
 
 /** {@link managedCatalogRefusal} of a `.table()` path, read as Malloy places it, after FROM. */
 export function managedTablePathRefusal(
    tablePath: string,
    alias: string,
+   schemas: ReadonlySet<string> = MAIN_ONLY,
 ): Promise<string | undefined> {
-   return managedCatalogRefusal(`SELECT * FROM ${tablePath}`, alias);
+   return managedCatalogRefusal(`SELECT * FROM ${tablePath}`, alias, schemas);
 }
 
 /** The author-facing message for a refusal on managed connection `connection`. */
@@ -202,7 +210,7 @@ export function managedCatalogMessage(
    return (
       `${what} on managed connection '${connection}' names ${refused}, which ` +
       `it may not: a managed connection reads only its own catalog's tables, ` +
-      `in the catalog's main schema.`
+      `in the catalog's main schema or one its readableSchemas lists.`
    );
 }
 

@@ -58,6 +58,7 @@ function adminRoute(
                code: error.status,
                message: error.message,
                reason: error.reason,
+               ...(error.detail ? { detail: error.detail } : {}),
             });
             return;
          }
@@ -66,13 +67,41 @@ function adminRoute(
    };
 }
 
+/** A list's page size: `limit`, an integer from 1 to 1000, default 100. */
+function listLimit(req: express.Request): number {
+   const raw = req.query.limit;
+   const limit = raw === undefined ? 100 : Number(raw);
+   if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+      throw new CatalogAdminError(
+         400,
+         "INVALID_REQUEST",
+         "'limit' must be an integer from 1 to 1000.",
+      );
+   }
+   return limit;
+}
+
+/** A list's `after`: one cursor, or none. */
+function listAfter(req: express.Request): string | undefined {
+   const raw = req.query.after;
+   if (raw !== undefined && typeof raw !== "string") {
+      throw new CatalogAdminError(
+         400,
+         "INVALID_REQUEST",
+         "'after' must be given once, as the `nextCursor` of the page before.",
+      );
+   }
+   return raw;
+}
+
 export function registerAdminRoutes(
    app: express.Express,
    apiPrefix: string,
    catalogs: CatalogAdmin | null,
 ): void {
    const catalog = `${apiPrefix}/catalogs/:catalogName`;
-   const table = `${catalog}/schemas/:schemaName/tables/:tableName`;
+   const schema = `${catalog}/schemas/:schemaName`;
+   const table = `${schema}/tables/:tableName`;
 
    app.get(
       `${apiPrefix}/catalogs`,
@@ -94,8 +123,31 @@ export function registerAdminRoutes(
          c.updateCatalog(req.params.catalogName, req.body ?? {}),
       ),
    );
+   app.put(
+      schema,
+      adminRoute(catalogs, async (c, req, res) => {
+         const { schema: result, created } = await c.createSchema(
+            req.params.catalogName,
+            req.params.schemaName,
+            req.body,
+            req.get("If-None-Match") === "*",
+         );
+         res.status(created ? 201 : 200).json(result);
+      }),
+   );
+   app.delete(
+      schema,
+      adminRoute(catalogs, async (c, req, res) => {
+         await c.deleteSchema(req.params.catalogName, req.params.schemaName);
+         res.status(204).send();
+      }),
+   );
    app.get(
-      `${catalog}/schemas/:schemaName/tables`,
+      `${catalog}/tables`,
+      adminRoute(catalogs, (c, req) => c.listTables(req.params.catalogName)),
+   );
+   app.get(
+      `${schema}/tables`,
       adminRoute(catalogs, (c, req) =>
          c.listTables(req.params.catalogName, req.params.schemaName),
       ),
@@ -123,6 +175,46 @@ export function registerAdminRoutes(
          res.status(created ? 201 : 200).json(result);
       }),
    );
+   app.post(
+      `${table}/loads`,
+      adminRoute(catalogs, async (c, req, res) => {
+         const { load, created } = await c.loadTable(
+            req.params.catalogName,
+            req.params.schemaName,
+            req.params.tableName,
+            req.body,
+            req.get("Idempotency-Key"),
+         );
+         // Relative, so a gateway that rewrites the path keeps it; a trailing slash moves the base it resolves against.
+         if (created) {
+            res.location(`${req.path.endsWith("/") ? "" : "loads/"}${load.id}`);
+         }
+         res.status(created ? 201 : 200).json(load);
+      }),
+   );
+   app.get(
+      `${table}/loads`,
+      adminRoute(catalogs, (c, req) =>
+         c.listLoads(
+            req.params.catalogName,
+            req.params.schemaName,
+            req.params.tableName,
+            listLimit(req),
+            listAfter(req),
+         ),
+      ),
+   );
+   app.get(
+      `${table}/loads/:loadId`,
+      adminRoute(catalogs, (c, req) =>
+         c.getLoad(
+            req.params.catalogName,
+            req.params.schemaName,
+            req.params.tableName,
+            req.params.loadId,
+         ),
+      ),
+   );
    app.delete(
       table,
       adminRoute(catalogs, async (c, req, res) => {
@@ -136,18 +228,9 @@ export function registerAdminRoutes(
    );
    app.get(
       `${catalog}/snapshots`,
-      adminRoute(catalogs, async (c, req) => {
-         const raw = req.query.limit;
-         const limit = raw === undefined ? 100 : Number(raw);
-         if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
-            throw new CatalogAdminError(
-               400,
-               "INVALID_REQUEST",
-               "'limit' must be an integer from 1 to 1000.",
-            );
-         }
-         return c.listSnapshots(req.params.catalogName, limit);
-      }),
+      adminRoute(catalogs, (c, req) =>
+         c.listSnapshots(req.params.catalogName, listLimit(req)),
+      ),
    );
    app.delete(
       `${catalog}/snapshots`,
