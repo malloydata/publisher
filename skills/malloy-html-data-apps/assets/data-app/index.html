@@ -1,49 +1,19 @@
 <!doctype html>
 <!-- Copyright (c) Credible Data Inc. SPDX-License-Identifier: MIT -->
-<!-- ADAPT: data-theme is the app's theme, chosen from the subject (reference/app-frame.md, "Look and colour"). -->
-<html lang="en" data-theme="harbor">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Rats in New York: 311 rodent complaints explorer</title>
-  <!-- fonts.py writes fonts.css (reference/app-frame.md, "Fonts"); without it, delete this line. -->
-  <link rel="stylesheet" href="./fonts.css">
-  <link rel="stylesheet" href="./styles.css">
-  <link rel="stylesheet" href="./themes.css">
-  <link rel="stylesheet" href="./charts.css">
-  <!-- d3 downloads while the first queries run; app.js loads it and waits for it before drawing. -->
-  <link rel="preload" href="./vendor/d3.min.js" as="script">
+  <title>Sales performance</title> <!-- ADAPT: the dashboard's name -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%2321201c'/%3E%3Cpath d='M4 11l3-3 2 2 3-4' stroke='%23f8f7f4' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./kit/fonts.css">
+  <link rel="stylesheet" href="./kit/kit.css">
+  <link rel="stylesheet" href="./kit/charts.css">
+  <link rel="preload" href="./kit/vendor/d3.min.js" as="script">
 </head>
-<!-- The app's look: attributes from reference/app-frame.md's "Look and colour", chosen for this app; none is the Band look. -->
-<body data-masthead="bar" data-numbers="rules" data-sections="numbered" data-buttons="square" data-cards="headline">
-  <header class="app-header">
-    <div class="wrap">
-      <a class="app-name" href="#/">
-        <!-- ADAPT: an optional credit line above the name, such as "Made by <your team>"; delete it for none. -->
-        <span class="app-name__eyebrow">Made by your team</span>
-        <span class="app-name__title">Rats in New York</span>
-        <span class="data-through" id="data-through"></span>
-      </a>
-      <nav class="app-nav" aria-label="Views">
-        <a data-view="overview" href="#/">Overview</a>
-        <a data-view="explore" href="#/explore">Explore</a>
-        <a data-view="records" href="#/records">Records</a>
-        <a data-view="compare" href="#/compare">Compare</a>
-        <a data-view="about" href="#/about">About the data</a>
-      </nav>
-      <div class="search" role="search">
-        <label class="visually-hidden" for="search">Find a ZIP code</label>
-        <input id="search" type="search" placeholder="Find a ZIP code" autocomplete="off" role="combobox"
-          aria-expanded="false" aria-controls="search-list" aria-autocomplete="list">
-        <ul id="search-list" role="listbox" hidden></ul>
-      </div>
-    </div>
-  </header>
-  <div class="scope" id="scope" hidden><div class="wrap" id="scope-bar"></div></div>
-  <main id="main" tabindex="-1"></main>
-  <footer class="app-footer" hidden><div class="wrap" id="footer"></div></footer>
+<body>
+  <div id="app"></div>
   <script src="/sdk/publisher.js"></script>
-  <!-- In an app that draws a boundary map (reference/maps.md): <script src="./vendor/topojson-client.min.js"></script> -->
   <script type="module" src="./app.js"></script>
 </body>
 </html>

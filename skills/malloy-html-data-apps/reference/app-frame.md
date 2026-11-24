@@ -3,252 +3,172 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# The App Frame Template
+# The dashboard kit
 
-> For an app with views, filters or an entity to look up, start from this skill's `assets/data-app/`: a page, a frame
-> module, a query and address module, a stylesheet, the d3 chart module and two check scripts. They come from apps
-> built and shipped with this skill. Copy them, keep the frame, and write the views for your app. The example views
-> they ship with (NYC rodent complaints by ZIP code) show the shape; replace them.
+> Every data app starts from this skill's `assets/data-app/`: a kit of blocks (a subject with its figures, ranked
+> lists, shares, lines over time, tables, grids, watchlists, entity pages) and a worked example app. You write one
+> config and the pages; the kit draws them to Credible's design (`reference/dashboard-design.md`), keeps the state
+> in the address, makes every chart clickable and every section explain itself.
 
 ## What is in `assets/data-app/`
 
 | File | What it is | Copy into `public/` |
 |---|---|---|
-| `index.html` | The page: header with name, views and search; scope bar; main; footer | Once, then it is the app's own |
-| `app.js` | The frame above `// ---- Views`, then example views (marked ADAPT) | Once, then it is the app's own |
-| `scope.js` | Every query the app runs and its address; no DOM | Once, then it is the app's own |
-| `styles.css` | The design system: tokens, frame, cards, states, phone layout, looks | Once, then it is the app's own |
-| `charts.js`, `charts.css` | The d3 chart module (`reference/charts.md`) | Whole; never edit, copy again to take a fix |
-| `themes.css` | Ten colour themes, each light and dark (below) | Whole; never edit, copy again to take new themes |
-| `vendor/d3.min.js`, `vendor/LICENSE-d3.txt` | d3 v7.9.0 and its ISC license | Whole |
-| `vendor/topojson-client.min.js`, `vendor/LICENSE-topojson-client.txt` | topojson-client 3.1.0 and its ISC license, for boundary maps only | Only with a map (`reference/maps.md`) |
-| `palette.py` | Checks the colour tokens (below) | Never: run it from here |
-| `themes.py` | Writes and checks `themes.css`; where a theme is added or changed | Never: run it from here |
-| `fonts.py` | Writes `fonts.css`, the faces as base64 text (below) | Never: run it from here |
+| `kit/` | The kit: `kit.js` (import everything from it), its modules, `kit.css`, `charts.js`/`charts.css` (more chart forms), `fonts.css` (Geist, inlined), `vendor/` (d3, topojson-client, the font licences) | Whole; never edit, copy again to take a fix |
+| `index.html` | The page: links the kit's styles, loads `/sdk/publisher.js` and `app.js` | Once, then it is the app's own |
+| `app.js` | A worked dashboard over an online store's orders: three pages and three entity pages | Once, then rewrite it for your data |
 
 Run the copy from the package's own directory, the one holding `publisher.json`. The first line finds where the
 skill is installed: in this directory or one above it (a workspace's `.claude/skills` or `.agents/skills`), else in
-your home directory. A shell variable does not outlive its command, so every snippet below that uses `$T` starts
-with the same line. A file already in `public/` is the app's own and stays:
+your home directory:
 
 ```sh
 T=$(d=$PWD; while :; do for s in "$d/.claude/skills" "$d/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done; [ "$d" = / ] && break; d=$(dirname "$d"); done; for s in "$HOME/.claude/skills" "$HOME/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done)
 test -f publisher.json || { echo "run this from the package directory, the one with publisher.json"; exit 1; }
 test -n "$T" || { echo "assets/data-app is not on disk: build from the minimal scaffold in SKILL.md"; exit 1; }
-mkdir -p public/vendor
-for f in index.html app.js scope.js styles.css; do [ -e "public/$f" ] || cp "$T/$f" public/; done
-cp "$T/charts.js" "$T/charts.css" "$T/themes.css" public/ && cp "$T/vendor/d3.min.js" "$T/vendor/LICENSE-d3.txt" public/vendor/
+mkdir -p public && rm -rf public/kit && cp -R "$T/kit" public/kit
+for f in index.html app.js; do [ -e "public/$f" ] || cp "$T/$f" public/; done
 chmod -R u+w public
 ```
 
-When the skill reached you only as text (MCP prompts), `assets/` is not on disk: say so, and build from the minimal
-scaffold in `SKILL.md` and `reference/runtime.md`.
+When the skill reached you only as text, `assets/` is not on disk: say so, and build from the minimal scaffold in
+`SKILL.md` to the same design.
 
-## The model the frame needs
+## The model the kit needs
 
-An app is only as deep as its model. Before writing the views:
+Read the model first and query it. The kit asks for:
 
-- **Record grain.** The main source is one row per record, with a `primary_key` when the data has one. Lookup
-  tables are joined and decoded into readable dimensions.
-- **Every number from the model.** Rates are measures whose doc names the numerator and denominator; subsets are
-  filtered measures (`count() { where: ... }`), never arithmetic in JavaScript.
-- **The headline question is a source.** When the question has a scope of its own (passenger cars, one state), it
-  is a source that extends the main one with that `where:`, exported first. Its `kpis` view is the app's headline,
-  run bare, so the page, an agent and an analyst asking the model get the same numbers. `scope.js` names it
-  `HEADLINE`.
-- **A date in one place.** A date the story turns on (a policy's end) is written once, in the dimension that splits
-  the periods. A story around a date compares like for like: each month beside the same month a year earlier
-  (`calculate: prior is lag(m, 12)`).
-- **Thresholds carry their evidence.** A minimum count for a change between groups is a documented field, and a
-  card that applies it says how many groups it left out.
-- **One view per card**, named for what it shows; a `kpis` view with every headline measure; a `records` view of
-  the fields a reader would check, newest first.
-- **Codes are strings.** ZIP codes and FIPS codes are string dimensions, because the address holds strings.
+- **One source at record grain** (one row per order line, flight, claim, pull request), with its joins. Every query
+  starts from it. Name it in `source`.
+- **A measure for every number on the page.** Use the model's; when you need one it lacks (net of returns, a rate),
+  define it in `extend` (`measure: net_sales is total_sales { where: status != 'Cancelled' }`) and give it a `doc`
+  in `metrics`. Ratios must be measures (`a / nullif(b, 0)`) so the kit can filter them to a period. Check a measure
+  against the raw values before it leads a page (`reference/design.md`, the inventory).
+- **The date** every period filters on (`date: { field, label }`), a date or timestamp dimension. Data with no time
+  dimension sets `date: null`: the period controls go, the subject stands alone, and `subject({ by })` ranks it.
+- **The entities**, each a dimension whose values a reader wants to open one at a time.
 
-Query every view and look at the rows before building on them.
+Query the model once for each measure and dimension you plan to use, and look at the rows.
 
-## Plan from what the data shows
+## The config
 
-The job and the question come first (`reference/design.md`). Then look for what stands out, with queries: the
-biggest movers, a break in a trend, a share that flipped, an entity far from its peers. Check each against its
-denominator and threshold; a fall from five to two is not a finding. Write the plan down before building: the lead
-finding with its number; each card's finding, two or three forms that could show it and the one picked; the one
-chart form native to the field (a rose of slope aspect, an hour-by-weekday grid, an epidemic curve) and why; and
-what was left out. A card whose finding turns out weak is cut, not padded.
+```js
+import { dashboard, subject, rank, share, trend, table, heat, watch, entityHead, pageHead, blocks, block, S, F, C } from './kit/kit.js'
 
-## The views
+dashboard({
+  title: 'Sales performance', sub: 'Online store',          // the masthead; keep `sub` to a few words
+  model: 'ecommerce.malloy', source: 'order_items',
+  extend: `measure: net_sales is total_sales { where: status != 'Cancelled' }, aov is net_sales / nullif(order_count, 0)`,
+  date: { field: 'created_at', label: 'Order date' },        // or null
+  recordNoun: 'order lines',                                 // what a row is, for counts in menus
+  accent: 'steel',                                           // steel | indigo | teal | plum | ochre | graphite
+  metrics: {
+    net_sales: { label: 'Net revenue', format: 'usd', good: 'up', doc: 'What customers paid, less cancellations.' },
+    return_rate: { label: 'Return rate', format: 'percent', good: 'down' },
+    on_time_rate: { label: 'On-time rate', format: 'percent', good: 'up', thresholds: { watch: 0.8, breach: 0.7 } },
+    flight_count: { label: 'Flights', format: 'number', good: null },
+  },
+  filters: [{ key: 'channel', field: 'users.traffic_source', label: 'Channel', plural: 'channels' }],
+  entities: {
+    category: { field: 'inventory_items.product_category', label: 'Category', plural: 'categories' },
+    customer: { field: 'user_id', label: 'Customer', plural: 'customers', nameField: 'users.full_name' },
+  },
+  defaults: { period: 'last_91', compare: 'previous' },
+  pages: [
+    { id: 'overview', title: 'Overview', render: overview },
+    { id: 'products', title: 'Products', lists: 'category', render: products },
+    { id: 'category', title: 'Category', entity: 'category', render: category },
+  ],
+  footer: 'Where the data comes from, in one line.',
+})
+```
 
-Each view has its own address, so every view and filter can be shared and Back works:
+- **`metrics`**: every measure a block shows. `format`: `usd` (or any currency code in lower case), `number`,
+  `percent` (a fraction), `decimal`, or `{ unit: 'min' }`; copy it from the model's tag (`# currency=usd` is `usd`,
+  `# percent` is `percent`). `good`: `'up'`, `'down'` or `null`, which colours every change. `thresholds` give a
+  monitor its statuses. `doc` is what "How it's made" says the number means, when the model has no `#(doc)` for it.
+- **`filters`**: the fields a reader can filter by, offered in the Filter menu with their values and counts.
+- **`entities`**: things with a page. An entity is also a filter, so its values are known. `nameField` names a
+  dimension holding what to call an entity whose id is a number.
+- **`pages`**: each `render(state)` returns its blocks. A page with `entity` is that entity's page, reached at
+  `#/<id>/<value>` and not listed in the navigation; every query on it is scoped to the entity. `lists: 'category'`
+  marks the page that lists an entity, which its pages' breadcrumbs return to.
+- **Periods** (`defaults.period`): `last_7`, `last_28`, `last_91`, `last_364` (days counted back from the data's
+  latest day, so weeks are whole and line up with the comparison), `mtd`, `qtd`, `ytd`, `last_month`,
+  `last_quarter`, `last_year`, `all`. **Compare**: `previous`, `year`, `none`. Pick the default from how often the
+  reader opens it: weekly readers `last_91`, daily ones `last_28`.
 
-- **Overview** (`#/`): the question, the answer in a sentence or two built from the rows, headline numbers from
-  bare views of the headline source, the chart for the lead finding, and links into the app.
-- **Explore** (`#/explore`): the scope bar, then sections named for what the plan found, six to ten cards. Every
-  card with a category or time axis filters the app on click; a second click clears it. A click filters in place;
-  only a name drawn as a link opens a page.
-- **An entity's page** (`#/<entity>/<id>`): its numbers against the whole, its trend, its latest records. Reached
-  from search, every ranked list and the records.
-- **Compare** (`#/compare?ids=a,b`): up to four entities side by side.
-- **Records** (`#/records`): the rows in scope, 50 more at a time.
-- **About the data** (`#/about`): sources and licenses with attribution, what was reshaped, caveats, the date of the
-  latest record, read from a query and never typed.
+## The blocks
 
-This is the Explorer archetype (`reference/archetypes.md`) built as views at their own addresses rather than
-drawers, which is what works in a frame as tall as its content (`reference/embedding.md`).
+Shares of a total, in the kit's headlines and on entity pages, are said only for metrics that add up (sums and
+counts); the kit checks, so an average or a rate never reads as "180% of the total".
 
-## What `app.js` holds
+Every block takes `kicker` (what is measured; the kit writes one when you leave it out), `headline` (a function of
+its rows returning a sentence or `prose()` parts; the kit writes a standard one; `null` for none), and `span` (12,
+the full width, or 6, half). Every block loads as it nears the screen, holds its height while loading, says when
+nothing matches, and has "How it's made".
 
-Everything above `// ---- Views` is the frame. Keep it as it is:
-
-- **Queries**: `query()` sends one request per distinct text, at most four in flight, cached for the session, and
-  evicts a failed one.
-- **The address**: `go()`, `setScope()` and `toggleScope()`. A view change pushes history; a filter replaces it.
-- **Compare**: `picked`, `inCompare()`, `toggleCompare()` and `goCompare()`. The header's Compare link carries the
-  picks and counts them ("Compare · 2"). Every ranked list of entities passes `inCompare` and
-  `onCompare: toggleCompare`, so its + adds there. Never declare these names again in the views: the module stops
-  with a SyntaxError and the page is blank. An app with nothing to compare drops the link, the +, "Add to compare"
-  and `compare` from `VIEWS` in `scope.js`, and keeps the `compare()` function, which the frame names.
-- **`tile()`**: a card that loads as it nears the screen, with loading, empty and error states, a finding sentence,
-  a method note and its working (each query, what it counts, its rows and a CSV of them). Its loading state keeps
-  240 px; pass `reserve` with the chart's height for a card that is shorter or taller. It does not remember settled heights
-  between visits, which `reference/performance.md` describes. When the scope changes on the
-  same view, every card is drawn again in place: the chart stays, dimmed, until the rows arrive, then marks move
-  and numbers count.
-- **`paint()` and `keepInView()`**: a new scope never takes a card out of the page, and the card the reader clicked
-  keeps its place. That holds standalone; in a content-height frame the host scrolls and `scrollBy` does nothing,
-  so the page may move. A part of a view that follows the address but is not a card, such as Compare's picks, is marked
-  `data-redraw="<name>"` and swapped in place.
-- **`body[data-ready="true"]`**: set once every card on the view has drawn or failed, and nothing marked
-  `data-pending` is waiting. A line drawn from a query outside a card, like the Overview's answer, carries
-  `data-pending` until it is drawn. A screenshot waits on it.
-- **`selfCheck()`**: open the app at `?check=1#/` and a banner says whether every number in the answer and the
-  headline card is a value bare views of the model return, and that no placeholder (`undefined`, `NaN`) is on the
-  page.
-- **d3** loads beside `boot()`'s first queries rather than ahead of them; nothing draws before it is in.
-
-Below it, `boot()` (its distinct-value lists and the "Data through" line are marked ADAPT) and the views. The
-example's Overview, Explore, entity page and Compare are worked; its Records and About are headings to fill.
-
-## `scope.js`: queries and the address
-
-It builds every query and the address and holds no DOM, so test it with `node` before any page exists: import it
-with a sample `known`, parse a few hand-written addresses (one with a quote in a value, one with an unknown id), and
-run two or three of the strings it builds against the model.
-
-- `known` holds what distinct-value queries returned at load: each pick key's values, the `[min, max]` of the
-  period, the entity's ids. Nothing from the address or a click reaches a query unless it is in `known`. Drop nulls
-  from those lists: a null becomes a blank option that matches "nothing selected".
-- The address is the route, then the scope: `#/explore?borough=BROOKLYN&from=2023`, `#/zip/10035?from=2023`.
-  Defaults are left out of it.
-- A scope key on the entity's own field (a `state` pick when the entity is a state) goes in `ENTITY_KEYS`. The
-  entity's page and Compare choose the entity themselves, so they leave it out, through `S.skipFor(route.view)`.
-
-## Look and colour
-
-`styles.css` is one frame with nine choices, each an attribute on `<body>`; with none, a choice takes its first
-option. Choose a look from the data and its reader, then change one or two choices so the app is its own.
-
-| Attribute | Options | What changes |
+| Block | What it draws | A click |
 |---|---|---|
-| `data-masthead` | `band`, `light`, `bar` | A dark band; a light masthead; one slim light row |
-| `data-face` | `sans`, `serif` | The face of titles, section heads and headline numbers |
-| `data-filters` | `selects`, `sentence` | Labelled selects, or a sentence ("Showing … in …") |
-| `data-numbers` | `panel`, `rules` | Headline numbers on a tinted panel, or between rules |
-| `data-sections` | `plain`, `numbered` | Section heads plain, or numbered under a heavy rule |
-| `data-cards` | `caps`, `headline` | Card titles in small capitals, or a headline |
-| `data-buttons` | `pills`, `links`, `square` | Buttons and selects |
-| `data-footer` | `panel`, `colophon` | The footer |
-| `data-lede` | `plain`, `dropcap` | The lede |
+| `subject({ metrics, by })` | The first metric (or the one the reader picked) large, its change, a sentence, and its line over the period with the comparison; the rest in a ledger under it. With no date, `by` ranks it beside the figure | A ledger figure becomes the subject; a point zooms the period to it; a drag zooms to a range |
+| `rank({ field \| entity, metric, top, extra, order })` | A ranked list: name, a thin bar over a pale one for the comparison, value, change. `extra` adds metric columns. `order` sorts by another expression (`'on_time_rate asc'`) | Opens the entity's page, or filters to the value |
+| `share({ field \| entity, metric, top })` | One whole split into parts: a segmented bar, then each part's share, value and change | As rank |
+| `trend({ metric, by, top })` | The metric over time; with `by`, one line per top value, the leader in the accent | A point zooms; with `by`, a line opens or filters |
+| `table({ kicker, query, columns, open, sort })` | Dense rows, sortable, searchable, 25 a page, CSV of all. `columns`: `{ key, label, metric \| format, bar, status }`. `open: { entity, key }` makes rows open that entity's page | Opens the row's entity |
+| `heat({ rows, cols, metric, volume, min })` | A metric across two dimensions (weekday by hour). `rows`/`cols`: `{ expr, label, name, count }` | Filters to the row's value when it is a filter |
+| `watch({ field \| entity, metric, volume, min, extra, limit })` | A monitor's list: each value's status against the metric's thresholds, the worst first, values under `min` of `volume` counted and left out | As rank |
+| `entityHead({ metric })` | An entity page's top: breadcrumb, name, and its rank among its peers by the metric, its share and its change | (Breadcrumb back) |
+| `pageHead(title, lede)` | A page's title and a sentence under it | |
+| `blocks(...)` | Lays blocks out: span-12 ones take the row, span-6 ones pair | |
 
-Three starting looks: **Band** (no attributes); **Masthead** (`data-masthead="light" data-face="serif"
-data-filters="sentence" data-numbers="rules" data-sections="numbered" data-cards="headline" data-buttons="links"
-data-footer="colophon" data-lede="dropcap"`), for a subject read slowly; **Ledger** (`data-masthead="bar"
-data-numbers="rules" data-sections="numbered" data-buttons="square"`), for numbers read side by side.
+`S.run(view, state, opts)` writes a query over the source with the state's period and filters: `view` is a view the
+model names or a block in braces. `S.breakdownQuery`, `S.kpiQuery` and `S.seriesQuery` are what the blocks use.
 
-Colour comes from a theme, chosen from the subject. `themes.css` holds ten, each a complete palette for a light
-page and a dark one: the page tone, the accent, six categories, the ramp, and good and bad news. Every one passes
-the palette check in both modes. Set it on `<html>`, `<html data-theme="lagoon">`.
+### Page plans that work
 
-| Theme | Page | Accent | Suits |
-|---|---|---|---|
-| `ember` | warm paper | rust | heat, fire, energy, prices, the cost of living |
-| `harbor` | cool grey | navy | water, shipping, weather, cities, transport |
-| `meadow` | warm paper | forest green | nature, farming, food, birds, land, health |
-| `dusk` | cool grey | indigo | space, night, sleep, technology, science, culture |
-| `coral` | white | coral, with teal | oceans, beaches, tourism, people and places |
-| `ink` | white | newspaper red | politics, elections, courts, news, history |
-| `desert` | sand | gold | drought, mining, the West, dry land |
-| `orchard` | warm paper | plum | wine, fruit, fashion, the arts, retail |
-| `lagoon` | cool grey | teal | climate, coasts, public health, ecology |
-| `graphite` | cool grey | electric blue | technology, finance, markets, infrastructure |
+- **Overview (performance)**: `subject` with 4 to 6 metrics; `rank` of the main entity and `share` of how it splits,
+  side by side; `rank` of a second entity and of a place, side by side; `trend` of the subject by the main entity.
+- **Monitor**: `subject` with the status metrics (they carry thresholds); `watch` for each entity that can breach,
+  side by side; `heat` of when it happens; `trend` of the status metric by the entity.
+- **An area's page** (`lists: '<entity>'`): `pageHead`; a full-width `rank` of every entity with `extra` columns;
+  two `rank`s by the other metrics that matter, side by side; a `table` of the rows below.
+- **An entity's page**: `entityHead`; `subject` scoped to it; `rank`s of the entities inside it (a category's brands)
+  and a `share` of how it splits; a `table` of its rows that opens the next level down.
 
-- **Choose from the subject, not from habit.** Where several apps are seen side by side, as in a gallery, don't
-  repeat the theme of the apps before it unless the subject calls for that theme alone.
-- **Light and dark.** With no `data-mode`, the reader's system setting decides; `data-mode="dark"` or `"light"`
-  fixes it, and `?mode=dark` in the address previews it, as `?theme=` previews another theme. The frame draws every
-  chart again when either changes, since charts read their colours when they draw. Shoot the app in both modes.
-- **Meanings are the app's; colours are the theme's.** List what each category means in a comment at the top of
-  `styles.css` (`/* --c1 as paid, --c2 in today's dollars, --c6 a year ago */`) and keep it the same on every view.
-  Only `--c1` may be the accent. Fewer categories are better.
-- **The tokens:** `--accent` for the lead number, links and the selection; `--c1` to `--c6` for categories;
-  `--c-bar` for a count with no category; `--seq-0` to `--seq-5` for the ramp, light to dark on a light page and dark
-  to light on a dark one; `--up` and `--down` for bad news and good news, not up and down (a falling price is good for
-  a buyer; keep a change neutral when its meaning is unclear).
-- **Overriding a colour** is for a subject with its own (a party, a client's brand): set the token on
-  `:root[data-theme="<theme>"]` and on `:root[data-theme="<theme>"][data-mode="dark"]` in `styles.css`, never in
-  `themes.css`, and check both modes. `themes.css` is written by `themes.py`; a new or changed theme goes there.
+## A block of your own
 
-The app is not the data's publisher: never use their logo, their name as a brand, their palette or their fonts.
-Credit them as a source in About. A client's own identity is different (`reference/token-contract.md`).
+When a question needs a form the blocks do not have (a dumbbell, a slope, a bump chart, a map), use `block()` with
+a chart from `charts.js` (`reference/charts.md` lists them, `reference/maps.md` the maps). It must say what it shows
+and it must do something when clicked:
 
-Check the colours in both modes after any override, until each prints `palette ok`:
-
-```sh
-T=$(d=$PWD; while :; do for s in "$d/.claude/skills" "$d/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done; [ "$d" = / ] && break; d=$(dirname "$d"); done; for s in "$HOME/.claude/skills" "$HOME/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done)
-python3 -I "$T/palette.py" public/styles.css public/themes.css --theme lagoon --mode light
-python3 -I "$T/palette.py" public/styles.css public/themes.css --theme lagoon --mode dark
+```js
+block({
+  kicker: 'Margin against volume by category', span: 12, reserve: 340, metrics: ['margin_pct', 'net_sales'],
+  what: 'Each category placed by its sales and its margin, so the big low-margin ones stand out.',
+  queries: (s) => [S.breakdownQuery('inventory_items.product_category', ['net_sales', 'margin_pct'], s, { top: 30 })],
+  draw: ([rows], body) => C.scatterChange(body.appendChild(document.createElement('div')), rows.map((r) => ({ id: r.product_category, label: r.product_category, x: r.net_sales, y: r.margin_pct })), {
+    onPick: (id) => store.open('category', id),   // every chart does something when clicked
+  }),
+  headline: ([rows]) => [/* a sentence from the rows */],
+})
 ```
 
-It checks text contrast on the page and panel, marks at 3:1, categories far enough apart in colour, `--up` and
-`--down` apart in lightness, and a ramp that steps evenly in the mode's direction; each failure exits 1. Categories
-too close under red-green colour blindness are a note, not a failure, since no six colours separate fully for every
-reader: label those two directly wherever both appear.
-
-## Fonts
-
-A sans for everything that is not prose, a serif for ledes, findings and method notes. The faces ship inside
-`public/fonts.css` as base64 text, so the app needs no font host and the package holds only text files. Every face
-is under the SIL Open Font License, which travels with it:
-
-```sh
-T=$(d=$PWD; while :; do for s in "$d/.claude/skills" "$d/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done; [ "$d" = / ] && break; d=$(dirname "$d"); done; for s in "$HOME/.claude/skills" "$HOME/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done)
-python3 -I "$T/fonts.py" public figtree source-serif-4   # add inter or fraunces when the look uses one
-```
-
-It fetches each pinned file, checks its sum, and writes `public/fonts.css` and the licenses to
-`public/vendor/fonts/`. Load `fonts.css` before `styles.css`. The stacks fall back to system faces, so if the font
-host does not answer, ship without `fonts.css`, remove its `<link>` from `index.html` so the page does not ask for a missing file, and say so; never keep a file whose sum differs.
-
-## Before you build on it
-
-- Load each view from its address alone: `#/`, `#/explore`, an entity's page, `#/about`. Each shows data and the
-  console has no errors.
-- Press the + on a ranked list: the Compare link counts it and opens Compare with it.
-- Change a filter on Explore, open an entity, go back: the filter is still set and the address says so.
-- After editing a module, check it as a module: `node --input-type=module --check < public/app.js`. A plain
-  `node --check` on a `.js` file misses a name declared twice.
+`block()` takes `kicker`, `what`, `metrics`, `queries(state)`, `draw(results, body, state)`, `headline(results,
+state)`, `of(results)` (a few words after the kicker), `span`, `reserve` (its height while loading), `ignore`
+(filter keys its queries leave out), `compare: true` when it shows the comparison period (so "How it's made" says
+what it is compared with) and `period: false` when its queries ignore the period. Import `store` from the kit for `store.open(page, id)`,
+`store.toggleFilter(key, value)` and `store.setPeriod(...)`.
 
 ## Before you call it done
 
-On top of `SKILL.md`'s recipe:
+Serve it and look at every page, at 1280 and 390 wide, light and dark (`?mode=dark`):
 
-- `?check=1#/` shows the passing banner.
-- The fonts loaded: `[...document.fonts].some((f) => f.family === 'Source Serif 4 Variable' && f.status === 'loaded')`
-  is true. `document.fonts.check` is true even when the face is missing.
-- Shoot every view, Explore with each scope control set, Explore after a click, and an entity with a scope, at 1280
-  and 390 px wide, in light mode and again with `?mode=dark`. Cards load as they near the screen, so shoot with a viewport taller than the view and wait for
-  `body[data-ready="true"]`, which the frame sets once every card on the view has drawn or failed
-  (`reference/verification-harness.md`). No label overlaps or runs off its chart.
-- Every card has a finding and a method note, and its working opens with a definition for every query.
-- Every scope control changes every card that should respond; a card that ignores a key says so.
-- A nav link opened from low on a view lands at the top of the next view.
-- Search finds an entity by part of its name and opens its page; Back returns to where the reader was.
+- Open each page from its address alone, and an entity page for a real value and for a value that does not exist.
+- Click through every path in the plan: a row to its page, that page's row to the next, the breadcrumb back. Pick a
+  filter, change the period, make another figure the subject: every block redraws and the address keeps it.
+- Open "How it's made" on a block of each kind: the definitions are filled and the query runs.
+- `?check=1` puts a banner on the page saying whether any block failed or shows `undefined`, `NaN` or `null`.
+- `body[data-ready="true"]` is set once every block on the page has drawn. Blocks below the fold load only as they
+  near the screen, so on a short window it waits for a scroll: scroll to the bottom first, then wait on it. Inside
+  Credible's frame the host page is what scrolls.
+- No console errors, no horizontal scroll at 390, layout shift under 0.1 (`reference/performance.md`).

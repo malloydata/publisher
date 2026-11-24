@@ -27,14 +27,11 @@ Canadian provinces and other regions have no packaged open file here; draw those
 
 ## Vendor
 
-d3 is already in the page (`reference/charts.md`). Copy topojson-client from this skill's `assets/data-app/`, and fetch
-the one boundary file the app needs. Run it from the package directory; the first line finds the template as
-`reference/app-frame.md` says:
+d3 and topojson-client are already in the kit (`public/kit/vendor/`). Fetch the one boundary file the app needs, from
+the package directory:
 
 ```sh
-T=$(d=$PWD; while :; do for s in "$d/.claude/skills" "$d/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done; [ "$d" = / ] && break; d=$(dirname "$d"); done; for s in "$HOME/.claude/skills" "$HOME/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done)
-test -n "$T" || { echo "assets/data-app is not on disk"; exit 1; }
-mkdir -p public/vendor/maps && cp "$T/vendor/topojson-client.min.js" "$T/vendor/LICENSE-topojson-client.txt" public/vendor/ && chmod -R u+w public
+mkdir -p public/vendor/maps
 cd public/vendor
 base=https://cdn.jsdelivr.net/npm
 curl -sSL --fail --max-time 60 -o maps/states-albers-10m.json $base/us-atlas@3.0.1/states-albers-10m.json
@@ -59,17 +56,18 @@ a674dfa31b625e92635f32684a61ae135b05a91507f17f2d5164833237fecf46  maps/counties-
 Never keep a file whose sum differs. If the fetch fails or the sum differs, draw the places as a ranked table instead and say so. Add to `public/vendor/README.md`: topojson-client 3.1.0, ISC license, by Mike
 Bostock; the boundary file, ISC license, from us-atlas (US Census Bureau cartographic boundaries, public domain) or
 world-atlas (Natural Earth, public domain). Credit the boundaries in About the data. Load topojson-client with a
-plain script before `app.js`, as the frame's `index.html` comment shows: `<script src="./vendor/topojson-client.min.js"></script>`.
+plain script before `app.js` in `index.html`: `<script src="./kit/vendor/topojson-client.min.js"></script>`.
 It is 7 KB, and the module calls it only once d3 is in.
 
 ## Drawing a map
 
-A tile draws a choropleth like this; the SVG keeps its proportions as the width changes:
+A `block()` of your own draws a choropleth like this; the SVG keeps its proportions as the width changes, and a
+click filters or opens the place:
 
 ```js
 draw: ([rows], body) => C.loadTopo('./vendor/maps/states-albers-10m.json').then((topo) =>
-  C.choropleth(chartBox(body), topo, new Map(rows.map((r) => [r.state, r.production])), {
-    object: 'states', legendTitle: 'Million lb', selected: scope.state, onPick: (s) => toggleScope('state', s),
+  C.choropleth(body.appendChild(document.createElement('div')), topo, new Map(rows.map((r) => [r.state, r.production])), {
+    object: 'states', legendTitle: 'Million lb', onPick: (s) => store.toggleFilter('state', s),
   })),
 ```
 

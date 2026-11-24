@@ -7,7 +7,22 @@
 
 // ---- Numbers and colours ----
 
-export const token = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim()
+const cvs = typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d', { willReadFrequently: true }) : null
+const resolved = new Map()
+/** A CSS colour as rgb() that d3 can interpolate: color-mix() and color() come back from the browser unparsed. */
+function rgbOf(v) {
+  if (!v || /^(#|rgb|hsl)/.test(v) || !cvs) return v
+  if (!resolved.has(v)) {
+    cvs.clearRect(0, 0, 1, 1)
+    cvs.fillStyle = '#000'
+    cvs.fillStyle = v
+    cvs.fillRect(0, 0, 1, 1)
+    const [r, g, b, a] = cvs.getImageData(0, 0, 1, 1).data
+    resolved.set(v, a === 255 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(3)})`)
+  }
+  return resolved.get(v)
+}
+export const token = (n) => rgbOf(getComputedStyle(document.documentElement).getPropertyValue(n).trim())
 const nf = new Intl.NumberFormat('en-US')
 export const fmt = (v) => (Number.isFinite(v) ? nf.format(v) : 'n/a')
 export const pct = (v, d = 1) => (Number.isFinite(v) ? `${(v * 100).toFixed(d)}%` : 'n/a')
@@ -287,12 +302,12 @@ function nothing(el, text = 'Nothing to draw for these filters.') {
   el.replaceChildren(h('p', { class: 'fx-empty', text }))
 }
 const leftOut = (text) => (text ? h('p', { class: 'fx-left-out', text }) : null)
-const noValue = (n) => (n ? `${n} with no value left out.` : '')
+const noValue = (n) => (n ? `${n} missing value${n > 1 ? 's are' : ' is'} not drawn.` : '')
 const unsaid = (refs) => (refs.length ? `No value for ${refs.map((r) => r.label || 'a reference').join(', ')}, so not drawn.` : '')
 const repeats = (ls) => { const t = [...new Set(ls.filter((l, i) => ls.indexOf(l) !== i))]; return t.length ? `Labels that repeat, drawn once: ${t.join(', ')}.` : '' }
 const offBand = (x, band) => (band && (x(band.from) === undefined || x(band.to) === undefined) ? 'The selected period is not on this axis.' : '')
 // Values missing inside a line; a line that starts late or ends early (a season still under way) has none missing.
-const gaps = (labels, series) => noValue(d3.sum(series, (s) => {
+const gaps = (labels, series) => noValue(d3.sum(series.filter((s) => s.gaps !== false), (s) => {
   const has = labels.map((_, i) => num(s.values[i]))
   const first = has.indexOf(true)
   return first < 0 ? 0 : has.slice(first, has.lastIndexOf(true) + 1).filter((x) => !x).length
@@ -427,7 +442,7 @@ const room = (labels, px = 12) => Math.ceil(d3.max(labels, (l) => textW(l, px)) 
 // ---- The standard charts ----
 
 /**
- * Bars. rows: [{ label, value, ...extra }]. opts: color (a token name), horizontal, format, direct (each value
+ * Bars. rows: [{ label, value, color (a token name for this bar alone), ...extra }]. opts: color (a token name), horizontal, format, direct (each value
  * written at its bar's end, and no value axis), selected (the label in scope; the rest fade), onPick(label),
  * tip(row) -> extra tooltip lines, refs ([{ value, label }]), height (vertical bars), label.
  */
@@ -443,20 +458,22 @@ export function bars(el, rows, opts = {}) {
     let svg
     if (horizontal) {
       const step = 26
-      const m = { t: direct ? 4 : 22, r: direct ? Math.min(room(data.map((r) => format(r.value))), w / 4) : Math.max(12, textW(format(ext[1])) / 2 + 4), b: 4, l: Math.min(room(data.map((r) => r.label)), w * 0.38) }
+      // With a reference line the labels' row needs room above the bars for its label.
+      const m = { t: direct ? (marks.length ? 20 : 4) : 22, r: direct ? Math.min(room(data.map((r) => format(r.value))), w / 4) : Math.max(12, textW(format(ext[1])) / 2 + 4), b: 4, l: Math.min(room(data.map((r) => r.label)), w * 0.38) }
       const ht = m.t + step * data.length + m.b
       svg = svgIn(w, ht, label)
       const x = d3.scaleLinear(ext, [m.l, w - m.r])
       const y = d3.scaleBand(data.map((r) => r.label), [m.t, ht - m.b]).padding(0.25)
       if (!direct) svg.append('g').attr('class', 'fx-ax').attr('transform', `translate(0,${m.t - 4})`).call(d3.axisTop(x).ticks(Math.max(2, Math.floor(w / 110))).tickSize(-(ht - m.t)).tickFormat(format)).call((a) => a.select('.domain').remove())
+      // Reference lines behind the bars, labelled above them, so no value is struck through.
+      for (const ref of marks) refLine(svg, { x: x(ref.value), y0: m.t - (direct ? 2 : 0), y1: ht - m.b, label: ref.label, top: true })
       const g = svg.append('g').selectAll('g').data(data).join('g')
       g.append('text').attr('class', 'fx-lab').attr('x', m.l - 8).attr('y', (r) => y(r.label) + y.bandwidth() / 2).attr('dy', '0.35em').attr('text-anchor', 'end').text((r) => fit(r.label, m.l - 10, 12))
       g.append('rect').attr('class', 'fx-mark').attr('x', (r) => x(Math.min(0, r.value))).attr('y', (r) => y(r.label)).attr('height', y.bandwidth()).attr('width', (r) => Math.abs(x(r.value) - x(0))).attr('rx', 1)
-        .style('fill', paint(color)).style('opacity', (r) => (selected === null || r.label === selected ? 1 : 0.35))
+        .style('fill', (r) => paint(r.color || color)).style('opacity', (r) => (selected === null || r.label === selected ? 1 : 0.35))
         .each(function (r) { pickable(this, r.label, onPick, `${r.label}: ${format(r.value)}`, r.label === selected) })
         .call(hover, lines)
-      if (direct) g.append('text').attr('class', 'fx-num').attr('x', (r) => x(Math.max(0, r.value)) + 6).attr('y', (r) => y(r.label) + y.bandwidth() / 2).attr('dy', '0.35em').text((r) => format(r.value))
-      for (const ref of marks) refLine(svg, { x: x(ref.value), y0: m.t, y1: ht - m.b, label: ref.label })
+      if (direct) g.append('text').attr('class', 'fx-num fx-halo').attr('x', (r) => x(Math.max(0, r.value)) + 6).attr('y', (r) => y(r.label) + y.bandwidth() / 2).attr('dy', '0.35em').text((r) => format(r.value))
     } else {
       const m = { t: direct ? 20 : 10, r: 8, b: 26, l: direct ? 4 : room([format(ext[0]), format(ext[1])], 11) }
       svg = svgIn(w, height, label)
@@ -466,7 +483,7 @@ export function bars(el, rows, opts = {}) {
       const shown = everyNth(x.domain(), Math.max(2, Math.floor((w - m.l) / 70)))
       xAxis(svg.append('g').attr('transform', `translate(0,${height - m.b})`), x, { values: shown, format: (l) => fit(l, Math.max(x.step() * Math.ceil(x.domain().length / shown.length) - 4, 30)) })
       svg.append('g').selectAll('rect').data(data).join('rect').attr('class', 'fx-mark').attr('x', (r) => x(r.label)).attr('width', x.bandwidth()).attr('y', (r) => y(Math.max(0, r.value))).attr('height', (r) => Math.abs(y(r.value) - y(0))).attr('rx', 1)
-        .style('fill', paint(color)).style('opacity', (r) => (selected === null || r.label === selected ? 1 : 0.35))
+        .style('fill', (r) => paint(r.color || color)).style('opacity', (r) => (selected === null || r.label === selected ? 1 : 0.35))
         .each(function (r) { pickable(this, r.label, onPick, `${r.label}: ${format(r.value)}`, r.label === selected) })
         .call(hover, lines)
       if (direct && x.bandwidth() > 24) svg.append('g').selectAll('text').data(data).join('text').attr('class', 'fx-num').attr('x', (r) => x(r.label) + x.bandwidth() / 2).attr('y', (r) => y(Math.max(0, r.value)) - 4).attr('text-anchor', 'middle').text((r) => format(r.value))
@@ -477,13 +494,18 @@ export function bars(el, rows, opts = {}) {
 }
 
 /** A dashed reference line with its label: horizontal at y, vertical at x. */
-function refLine(svg, { x, y, x0, x1, y0, y1, label, color = '--text-muted' }, boxes = []) {
+function refLine(svg, { x, y, x0, x1, y0, y1, label, color = '--text-muted', top = false }, boxes = []) {
   const right = Number(svg.attr('width')) || 600
   const g = svg.append('g').attr('class', 'fx-ref')
   if (y !== undefined) g.append('line').attr('x1', x0).attr('x2', x1).attr('y1', y).attr('y2', y)
   else g.append('line').attr('x1', x).attr('x2', x).attr('y1', y0).attr('y2', y1)
   g.select('line').style('stroke', paint(color))
-  if (label) put(boxes, g, y !== undefined ? x0 + 4 : x + 4, y !== undefined ? y - 5 : y1 - 6, fit(label, (y !== undefined ? x1 - x0 : (x1 ?? right) - x) - 10, 11.5), { cls: 'fx-note' })
+  if (!label) return
+  if (y !== undefined) { halo(g, x1 - 4, y - 5, fit(label, x1 - x0 - 10, 11.5), { cls: 'fx-note', anchor: 'end' }); return }
+  // A vertical line's label goes on whichever side has room for it, the right first.
+  const room = (x1 ?? right) - x - 10
+  const left = room < textW(label, 11.5) && x - (x0 ?? 0) - 10 > room
+  put(boxes, g, left ? x - 4 : x + 4, top ? y0 - 6 : y1 - 6, fit(label, (left ? x - (x0 ?? 0) : (x1 ?? right) - x) - 10, 11.5), { cls: 'fx-note', anchor: left ? 'end' : undefined })
 }
 
 /** The shaded selected period on a category axis, labelled at its foot. */
@@ -502,7 +524,9 @@ function periodBand(svg, x, from, to, top, bottom, text = 'Selected', boxes = []
 /** A brush across a category axis: onBrush(fromLabel, toLabel), or (null, null) when cleared. */
 function brushAcross(svg, x, top, bottom, labels, band, onBrush) {
   const near = (px) => labels[Math.max(0, Math.min(labels.length - 1, Math.round((px - x.range()[0]) / x.step())))]
-  const brush = d3.brushX().extent([[x.range()[0] - x.step() / 2, top], [x.range()[1] + x.step() / 2, bottom]]).on('end', (e) => {
+  const x0 = x.range()[0] - x.step() / 2
+  // Never narrower than a pixel: a redraw at a passing width can otherwise give the overlay a negative width.
+  const brush = d3.brushX().extent([[x0, top], [Math.max(x0 + 1, x.range()[1] + x.step() / 2), bottom]]).on('end', (e) => {
     if (!e.sourceEvent) return
     if (!e.selection) return onBrush(null, null)
     onBrush(near(e.selection[0]), near(e.selection[1]))
@@ -512,15 +536,36 @@ function brushAcross(svg, x, top, bottom, labels, band, onBrush) {
   return g
 }
 
+const ISO_DAY = /^\d{4}-\d{2}(-\d{2})?/
+/**
+ * Calendar ticks for labels that are ISO dates (`2024-05-13`, `2024-05`): the first label of a year, every few years
+ * to fit `max` ticks, shown as the year; within two years, the first label of each month, shown as "May 2024".
+ * Null when the labels are not dates, so the caller keeps its own ticks. tickFormat(label) in opts overrides the text.
+ */
+function dateTicks(labels, max, tickFormat) {
+  const uniq = [...new Set(labels)]
+  if (uniq.length < 2 || !uniq.every((l) => ISO_DAY.test(String(l)))) return null
+  const year = (l) => String(l).slice(0, 4)
+  const month = (l) => String(l).slice(0, 7)
+  const years = new Set(uniq.map(year)).size
+  const key = years > 2 ? year : month
+  const firsts = uniq.filter((l, i) => i === 0 || key(l) !== key(uniq[i - 1]))
+  const step = Math.max(1, Math.ceil(firsts.length / Math.max(2, max)))
+  const values = firsts.filter((_, i) => i % step === 0)
+  const text = (l) => (years > 2 ? year(l) : new Date(`${month(l)}-01T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' }))
+  return { values, format: tickFormat || text }
+}
+
+
 /**
  * Lines. labels: the x categories. series: [{ name, values, color (a token name), dashed, width }].
  * opts: format, endLabels (default: on when there are two or more series), band ({ from, to, label }: x labels),
  * refs ([{ y, label } | { x, label }]), beginAtZero (default true), points ([{ series, index, text }]: notes beside
  * points), corners ({ tl, tr, bl, br }), onPick(label), onBrush(fromLabel, toLabel) (drag to choose a period),
- * maxTicks, height, label.
+ * markers ([{ series, indexes, label, color }]: dots on chosen points, with a key), maxTicks, height, label, tickFormat(label) (axis text; ISO date labels get calendar ticks shown as years or months).
  */
 export function lines(el, labels, series, opts = {}) {
-  const { format = fmt, onPick, onBrush, maxTicks = 8, band, refs = [], beginAtZero = true, points = [], corners = {}, height = 280, label = 'Line chart' } = opts
+  const { format = fmt, onPick, onBrush, maxTicks = 8, band, refs = [], beginAtZero = true, points = [], corners = {}, height = 280, label = 'Line chart', tickFormat, markers = [] } = opts
   const all = series.flatMap((s) => s.values.filter(num))
   if (!labels.length || !all.length) return nothing(el)
   const endLabels = opts.endLabels ?? series.length > 1
@@ -532,11 +577,13 @@ export function lines(el, labels, series, opts = {}) {
     const y0 = d3.scaleLinear([lo, d3.max(span)], [height - 26, 10]).nice()
     const m = { t: 10, b: 26, l: room(y0.ticks(5).map(format), 11), r: endLabels ? Math.min(room(series.map((s) => s.name)), Math.round(w / 3)) : 10 }
     const svg = svgIn(w, height, label)
-    const shown = everyNth([...new Set(labels)], Math.min(maxTicks, Math.floor((w - m.l - m.r) / 70)))
+    const fitTicks = Math.min(maxTicks, Math.floor((w - m.l - m.r) / 70))
+    const dated = dateTicks(labels, fitTicks, tickFormat)
+    const shown = dated ? dated.values : everyNth([...new Set(labels)], fitTicks)
     const x = d3.scalePoint(labels, insetPoints(labels, shown, m.l + 4, w - m.r - 4))
     const y = y0.range([height - m.b, m.t])
     yAxis(svg.append('g').attr('transform', `translate(${m.l},0)`), y, w - m.l - m.r, format)
-    xAxis(svg.append('g').attr('transform', `translate(0,${height - m.b})`), x, { values: shown })
+    xAxis(svg.append('g').attr('transform', `translate(0,${height - m.b})`), x, { values: shown, ...(dated ? { format: dated.format } : tickFormat ? { format: tickFormat } : {}) })
     const boxes = []
     if (band) periodBand(svg, x, band.from, band.to, m.t, height - m.b, band.label, boxes)
     for (const ref of yr) refLine(svg, { y: y(ref.y), x0: m.l, x1: w - m.r, label: ref.label }, boxes)
@@ -547,13 +594,27 @@ export function lines(el, labels, series, opts = {}) {
       const pts = labels.map((l, i) => [l, s.values[i]])
       const g = svg.append('g').attr('class', 'fx-series')
       g.append('path').attr('d', line(pts)).style('fill', 'none').style('stroke', paint(s.color)).style('stroke-width', s.width || 2).style('stroke-dasharray', s.dashed ? '5 4' : null)
-      if (few) g.selectAll('circle').data(pts.filter((p) => num(p[1]))).join('circle').attr('cx', (p) => x(p[0])).attr('cy', (p) => y(p[1])).attr('r', 2.5).style('fill', paint(s.color))
+      if (few && s.dots !== false) g.selectAll('circle').data(pts.filter((p) => num(p[1]))).join('circle').attr('cx', (p) => x(p[0])).attr('cy', (p) => y(p[1])).attr('r', s.hollow ? 3 : 2.5).style('fill', s.hollow ? paint('--surface') : paint(s.color)).style('stroke', s.hollow ? paint(s.color) : null).style('stroke-width', s.hollow ? 1.5 : null)
     }
     if (endLabels) {
       const ends = series.map((s) => { let k = s.values.length - 1; while (k >= 0 && !num(s.values[k])) k--; return k < 0 ? null : { s, y: y(s.values[k]) } }).filter(Boolean)
       const ys = dodge(ends.map((e) => e.y), 15, m.t + 6, height - m.b - 6)
       ends.forEach((e, i) => halo(svg, w - m.r + 8, ys[i], fit(e.s.name, m.r - 10, 12), { base: 'middle', cls: 'fx-end', fill: readable(paint(e.s.color)) }))
     }
+    // Markers: dots on chosen points of a series (every Thanksgiving week), with a one-line key at the top left.
+    markers.forEach((mk, n) => {
+      const s = series[mk.series ?? 0]
+      const at = (mk.indexes || []).filter((i) => num(s?.values[i]))
+      svg.append('g').attr('class', 'fx-markers').selectAll('circle').data(at).join('circle')
+        .attr('cx', (i) => x(labels[i])).attr('cy', (i) => y(s.values[i])).attr('r', mk.r || 3.5)
+        .style('fill', paint(mk.color || s.color)).style('stroke', paint('--bg')).style('stroke-width', 1.5)
+      if (mk.label) {
+        const key = svg.append('g').attr('class', 'fx-key').attr('transform', `translate(${m.l + 10},${m.t + 12 + n * 16})`)
+        key.append('circle').attr('r', mk.r || 3.5).style('fill', paint(mk.color || s.color)).style('stroke', paint('--bg')).style('stroke-width', 1.5)
+        halo(key, 9, 0, mk.label, { base: 'middle', cls: 'fx-note' })
+        boxes.push({ x0: m.l + 4, x1: m.l + 24 + textW(mk.label, 11.5), y0: m.t + 2 + n * 16, y1: m.t + 18 + n * 16 })
+      }
+    })
     for (const p of points) {
       const s = series[p.series ?? 0]
       const v = s?.values[p.index]
@@ -572,7 +633,7 @@ export function lines(el, labels, series, opts = {}) {
       const i = labels.indexOf(l)
       rule.attr('x1', x(l)).attr('x2', x(l)).style('opacity', 1)
       dots.selectAll('circle').data(series.filter((s) => num(s.values[i]))).join('circle').attr('cx', x(l)).attr('cy', (s) => y(s.values[i])).attr('r', 4).style('fill', (s) => paint(s.color))
-      tipShow(ev, [l, ...series.map((s) => `${s.name}: ${num(s.values[i]) ? format(s.values[i]) : 'no value'}`), onPick ? 'Click to choose this period.' : onBrush ? 'Drag to choose a period.' : ''])
+      tipShow(ev, [l, ...series.filter((s) => s.tip !== false).map((s) => `${s.name}: ${num(s.values[i]) ? format(s.values[i]) : num(series.find((t) => t.tip === false && t.color === s.color)?.values[i]) ? `${format(series.find((t) => t.tip === false && t.color === s.color).values[i])} (partial)` : 'no value'}`), onPick ? 'Click to choose this period.' : onBrush ? 'Drag to zoom to a period.' : ''])
     }).on('mouseleave.tip', () => { rule.style('opacity', 0); dots.selectAll('*').remove(); tipHide() })
     if (onPick && !onBrush) surface.style('cursor', 'pointer').on('click', (ev) => onPick(nearest(d3.pointer(ev, svg.node())[0])))
     const off = xr.filter((r) => x(r.x) === undefined).map((r) => r.label || r.x)
@@ -594,7 +655,7 @@ function cornerNotes(svg, corners, m, w, ht, boxes = []) {
  * onBrush(fromLabel, toLabel), height, label.
  */
 export function area(el, labels, series, opts = {}) {
-  const { format = fmt, onPick, onBrush, maxTicks = 8, band, height = 280, label = 'Stacked area chart' } = opts
+  const { format = fmt, onPick, onBrush, maxTicks = 8, band, height = 280, label = 'Stacked area chart', tickFormat } = opts
   if (!labels.length || !series.some((s) => s.values.some(num))) return nothing(el)
   mount(el, 'fx-area', (w) => {
     const rows = labels.map((l, i) => Object.fromEntries([['label', l], ...series.map((s) => [s.name, Math.max(0, num(s.values[i]) ? s.values[i] : 0)])]))
@@ -603,10 +664,11 @@ export function area(el, labels, series, opts = {}) {
     const y = d3.scaleLinear([0, top], [height - 26, 10]).nice()
     const m = { t: 10, b: 26, l: room(y.ticks(5).map(format), 11), r: 10 }
     const svg = svgIn(w, height, label)
-    const shown = everyNth([...new Set(labels)], Math.min(maxTicks, Math.floor((w - m.l) / 70)))
+    const dated = dateTicks(labels, Math.min(maxTicks, Math.floor((w - m.l) / 70)), tickFormat)
+    const shown = dated ? dated.values : everyNth([...new Set(labels)], Math.min(maxTicks, Math.floor((w - m.l) / 70)))
     const x = d3.scalePoint(labels, insetPoints(labels, shown, m.l, w - m.r))
     yAxis(svg.append('g').attr('transform', `translate(${m.l},0)`), y, w - m.l - m.r, format)
-    xAxis(svg.append('g').attr('transform', `translate(0,${height - m.b})`), x, { values: shown })
+    xAxis(svg.append('g').attr('transform', `translate(0,${height - m.b})`), x, { values: shown, ...(dated ? { format: dated.format } : tickFormat ? { format: tickFormat } : {}) })
     const shape = d3.area().x((d) => x(d.data.label)).y0((d) => y(d[0])).y1((d) => y(d[1]))
     const paths = svg.append('g').selectAll('path').data(stack).join('path').attr('class', 'fx-mark').attr('d', shape).style('fill', (d, i) => paint(series[i].color)).style('fill-opacity', 0.85)
       .each(function (d, i) { pickable(this, series[i].name, onPick, series[i].name) })
@@ -700,17 +762,17 @@ export function scatterChange(el, points, opts = {}) {
 /**
  * With and without: for each row, a dot for each of two values on one line, joined, and the difference written
  * at the right. rows: [{ label, a, b, id }]. opts: aName, bName, aColor, bColor (token names), format,
- * diff(row) -> text, selected (id or label), onPick(id or label), label.
+ * diff(row) -> text, diffLabel (a heading over that column), selected (id or label), onPick(id or label), label.
  */
 export function dumbbell(el, rows, opts = {}) {
-  const { aName = 'Without', bName = 'With', aColor = '--text-soft', bColor = '--accent', format = fmt, diff, selected = null, onPick, label = 'Dumbbell chart' } = opts
+  const { aName = 'Without', bName = 'With', aColor = '--text-soft', bColor = '--accent', format = fmt, diff, diffLabel, selected = null, onPick, label = 'Dumbbell chart' } = opts
   const both = (r) => num(r.a) && num(r.b)
   const data = rows.filter((r) => num(r.a) || num(r.b))
   if (!data.length) return nothing(el)
   const say = (r) => (!both(r) ? '' : diff ? diff(r) : `${r.b > r.a ? '+' : r.b < r.a ? '−' : ''}${format(Math.abs(r.b - r.a))}`)
   mount(el, 'fx-dumbbell', (w) => {
     const step = 26
-    const m = { t: 30, b: 22, l: Math.min(room(data.map((r) => r.label)), w * 0.36), r: Math.min(room(data.map(say)), w / 4) }
+    const m = { t: 30, b: 22, l: Math.min(room(data.map((r) => r.label)), w * 0.36), r: Math.min(Math.max(room(data.map(say)), diffLabel ? room([diffLabel], 11) : 0), w / 4) }
     const ht = m.t + step * data.length + m.b
     const svg = svgIn(w, ht, label)
     const x = d3.scaleLinear(zeroSpan(data.flatMap((r) => [r.a, r.b])), [m.l, w - m.r])
@@ -721,7 +783,7 @@ export function dumbbell(el, rows, opts = {}) {
       .each(function (r) { pickable(this, id(r), onPick, `${r.label}: ${aName} ${format(r.a)}, ${bName} ${format(r.b)}`, id(r) === selected) })
     hover(g.select('rect'), (r) => [r.label, `${aName}: ${format(r.a)}`, `${bName}: ${format(r.b)}`, say(r)])
     g.append('text').attr('class', 'fx-lab').attr('x', m.l - 10).attr('dy', '0.35em').attr('text-anchor', 'end').text((r) => fit(r.label, m.l - 12, 12))
-    g.filter(both).append('line').attr('class', 'fx-join').attr('x1', (r) => x(r.a)).attr('x2', (r) => x(r.b))
+    g.filter(both).append('line').attr('class', 'fx-join').style('pointer-events', 'none').attr('x1', (r) => x(r.a)).attr('x2', (r) => x(r.b))
     g.filter((r) => num(r.a)).append('circle').attr('cx', (r) => x(r.a)).attr('r', 5).style('fill', paint(aColor))
     g.filter((r) => num(r.b)).append('circle').attr('cx', (r) => x(r.b)).attr('r', 5.5).style('fill', paint(bColor))
     g.append('text').attr('class', 'fx-num').attr('x', w - m.r + 8).attr('dy', '0.35em').text(say)
@@ -731,6 +793,8 @@ export function dumbbell(el, rows, opts = {}) {
       svg.append('text').attr('class', 'fx-lab').attr('x', lx + 14).attr('y', 12).attr('dy', '0.35em').text(t)
       lx += 30 + textW(t, 12)
     }
+    // What the right-hand column is: a heading over it, so a reader is not left to guess.
+    if (diffLabel) svg.append('text').attr('class', 'fx-lab fx-diff-head').attr('x', w - m.r + 8).attr('y', 12).attr('dy', '0.35em').text(fit(diffLabel, m.r - 8, 11))
     return svg.node()
   })
 }

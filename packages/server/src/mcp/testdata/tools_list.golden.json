@@ -975,7 +975,7 @@
     },
     {
       "name": "malloy-html-data-apps/app-frame",
-      "description": "The App Frame Template. Reference detail for the malloy-html-data-apps skill."
+      "description": "The dashboard kit. Reference detail for the malloy-html-data-apps skill."
     },
     {
       "name": "malloy-html-data-apps/archetypes",
@@ -984,6 +984,10 @@
     {
       "name": "malloy-html-data-apps/charts",
       "description": "The d3 Chart Module. Reference detail for the malloy-html-data-apps skill."
+    },
+    {
+      "name": "malloy-html-data-apps/dashboard-design",
+      "description": "How a Credible dashboard looks and works, and why. Reference detail for the malloy-html-data-apps skill."
     },
     {
       "name": "malloy-html-data-apps/depth-patterns",

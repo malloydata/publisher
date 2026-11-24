@@ -10,31 +10,21 @@ lines, areas, scatters, heatmaps, maps, the ranked table, and the forms a specia
 beeswarm, flow, treemap, waterfall and the rest). Each sizes itself to its box, redraws when the box changes width,
 takes a click (`onPick`; not `sparkline`, `waterfall`, `multiples` or `connectedScatter`, and `rankTable` opens a row
 with `onOpen`), shows a tooltip on hover and on keyboard focus, and writes under itself what it could not
-draw. It ships in this skill's `assets/data-app/` (`reference/app-frame.md`).
+draw. It ships inside the dashboard kit, `assets/data-app/kit/charts.js` (`reference/app-frame.md`), and the kit's own
+blocks cover the common forms (the subject's line, ranked lists, shares, lines by a field, tables, grids, watchlists).
+Reach for this module for the rest, inside a `block()` of your own.
 
-It is the exception to `SKILL.md`'s "trim the chart library" rule: copy it whole and never trim or edit it, so a fixed
-version can be copied over it. The frame loads d3 beside its first queries, not ahead of them (`reference/performance.md`).
+It is the exception to `SKILL.md`'s "trim the chart library" rule: it is part of the kit, copied whole and never
+edited, so a fixed version can be copied over it. The kit loads d3 beside its first queries (`reference/performance.md`).
 
-## Copy the module and d3
+## Using it from the kit
 
-The frame's copy step (`reference/app-frame.md`) copies the module, its styles and d3. d3 is vendored into the
-package, never loaded from a CDN: the app runs with its viewer's data authority, and a blocked CDN leaves every chart
-blank. Never edit the module in the app; copy it again to take a fixed one. Record it beside the app's other vendored
-files:
-
-```sh
-grep -qs "^d3.min.js:" public/vendor/README.md || echo "d3.min.js: d3 v7.9.0, ISC license, unmodified." >> public/vendor/README.md
-```
-
-The frame's `index.html` preloads d3 and `app.js` loads it; an app built without the frame loads it before the
-first chart draws, and keeps the frame's `styles.css` `:root` tokens and its `.rt` rules, which the module reads.
-
-Link the styles after `styles.css`, `<link rel="stylesheet" href="./charts.css">`, and import the module as
-`import * as C from './charts.js'`. To learn a function's arguments, read only its comment and signature, never the code:
-`awk -v f=bump '/^\/\*\*/{b="";c=1} c{b=b $0 "\n"; if (/\*\//) c=0; next} $0 ~ "^export (function|const) " f "[ (=]" {i=index($0, "){"); printf "%s%s\n", b, substr($0, 1, i && i < 200 ? i + 1 : 200); exit} {b=""}' public/charts.js`.
-Its helpers are `C.fmt`, `C.pct`, `C.token`, `C.sparkline`
-(for a headline number's trend), `C.loadTopo` (boundary files) and `C.tercile`; `C.ABBR` maps state names to
-postal codes. Add to the module only what no function covers, in its own file.
+The kit's copy step copies it with d3 and the styles it reads; `index.html` already links `kit/charts.css`, and
+`kit.css` maps the module's colour names onto the kit's palette. Import it from the kit, `import { C } from
+'./kit/kit.js'`. To learn a function's arguments, read only its comment and signature, never the code:
+`awk -v f=bump '/^\/\*\*/{b="";c=1} c{b=b $0 "\n"; if (/\*\//) c=0; next} $0 ~ "^export (function|const) " f "[ (=]" {i=index($0, "){"); printf "%s%s\n", b, substr($0, 1, i && i < 200 ? i + 1 : 200); exit} {b=""}' public/kit/charts.js`.
+Its helpers are `C.fmt`, `C.pct`, `C.token`, `C.loadTopo` (boundary files) and `C.tercile`; `C.ABBR` maps state
+names to postal codes. Its `rankTable` is superseded by the kit's `rank()` block; use that.
 
 ## Choose the form by the question
 
@@ -72,16 +62,13 @@ postal codes. Add to the module only what no function covers, in its own file.
 
 Pick the form a specialist in the field would draw, not the first one the columns suggest and not the one the
 template already holds. This table is where you start, not the whole choice: when a finding deserves a form it lacks,
-draw it, as `reference/app-frame.md`'s "Plan from what the data shows" says. Never the same form for two questions next to each other.
+draw it in a `block()` of your own (`reference/app-frame.md`, "A block of your own"). Never the same form for two questions next to each other.
 
-## The ranked table
+## The ranked list
 
-Most apps have one list readers come for: the species, the states, the ZIP codes, ranked. Draw it as a ranked table,
-not a bar chart: each row carries the value as a bar with its number, its trend as a sparkline, its change since a
-baseline as a bar either side of zero, and a button to add it to Compare. The first rows show; "Show all" opens the
-rest. On the Overview a click on a row opens the entity's page; on a view with filters it filters, and `href`
-makes the name a link to the page. Use it where a ranking is part of the answer; it needs no map beside it.
-It is `C.rankTable`; its styles are the `.rt` rules in the frame's `styles.css`.
+Most apps have one list readers come for: the categories, the carriers, the hospitals, ranked. Draw it with the
+kit's `rank()` block: each row carries its value as a thin bar over a pale one for the comparison, its number and
+its change, and opens the entity's page (or filters) on a click. Use `extra` for a second metric column.
 
 ## Everything clicks
 
@@ -103,7 +90,7 @@ It is `C.rankTable`; its styles are the `.rt` rules in the frame's `styles.css`.
 
 ## Using the module
 
-- Draw into `chartBox(body)` from the frame: a box with no fixed height, which each chart fills at its own height.
+- Draw into a box you append to the block's body, `body.appendChild(document.createElement('div'))`: no fixed height, the chart fills it at its own height. Give the block a `reserve` close to that height.
 - Colours are token names (`'--accent'`, `'--c2'`), so a part keeps one colour on every chart. The bivariate map's
   nine colours mix `--accent` and `--c2`, so the app's accent reaches them.
 - Changes are neutral unless `good` ('rise' or 'fall') says which way is good news.
@@ -145,7 +132,7 @@ Each form needs its numbers ready from the model, in the shape the last column g
 - **Show the scope on the chart.** When the app's scope selects a period, every time chart shades it (`band`).
   Where a number has a meaning (a target, the national rate, last year's level), draw it as a labelled reference
   line (`refs`).
-- **Colours come from the design tokens** (`reference/app-frame.md`, "Look and colour"), each with one meaning across the app.
+- **Colours come from the kit's tokens** (`reference/dashboard-design.md`, "Colour"), each with one meaning across the app.
   Neutral bars use `--c-bar`; the accent is for the lead number and the selection.
 - **Every chart's finding is also a sentence** in the tile, from a query, for readers who cannot see the chart.
 - **Every query behind a chart says what it counts**, in the tile's `explain`, so the working under the card reads
