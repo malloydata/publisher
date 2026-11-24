@@ -181,6 +181,12 @@ interface Mechanism {
     * this; built over the upstream's table when absent.
     */
    refused?: string;
+   /**
+    * For a refusal whose query answers from the upstream's served table:
+    * the raw rows are emptied after the upstream's build, as for a build,
+    * so an answer recomputed from raw (empty) cannot pass as live.
+    */
+   dropRaw?: true;
 }
 
 const MECHANISMS: Mechanism[] = [
@@ -338,6 +344,10 @@ source: p is orders -> { ${PLAIN_AGGREGATES} }
       query: `run: p ${PLAIN_AS_TEXT}`,
       refused:
          "its upstream 'orders' is a #(materialize) table in its storage= destination 'lake', which a #@ persist source is not yet built over",
+      // Before the refusal, `p` was built from the emptied raw rows,
+      // labelled `reused`, and served with no rows. Refused, it answers
+      // over `orders`'s stored table.
+      dropRaw: true,
    },
    {
       label: "a storage= persisted view over a #(materialize) extension table in its destination",
@@ -584,9 +594,10 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
          liveBefore = (await ask(mechanism.query)).rows;
          first = await build({ sourceNames: [mechanism.upstream] });
          // Out of band: the raw rows are gone, unless the downstream is
-         // refused (then its query answers live, from them). A downstream
-         // that recomputed its upstream from raw would hold no rows.
-         if (!mechanism.refused) {
+         // refused (then its query answers live, from them) and does not
+         // answer from its upstream's table. A downstream that recomputed
+         // its upstream from raw would hold no rows.
+         if (!mechanism.refused || mechanism.dropRaw) {
             for (const name of Object.keys(RAW)) {
                await warehouse.runSQL(`DELETE FROM public.${name}`);
             }
