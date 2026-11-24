@@ -251,7 +251,12 @@ interface Entry {
    contract?: {
       keys?: Record<
          string,
-         { unique: boolean; level: string; unverified?: true }
+         {
+            unique: boolean;
+            level: string;
+            unverified?: true;
+            rebuiltToVerify?: true;
+         }
       >;
    };
 }
