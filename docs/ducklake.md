@@ -312,11 +312,12 @@ stream in batches:
   compares whole rows as a multiset: a stored row with no identical row in the objects counts as deleted,
   an object row with no identical stored row as inserted (an edited row is one of each, and
   `rowsReplaced` is 0), and `maxDeletedRows` guards the deleted count.
-- A load that changes no row, keyed or keyless, writes nothing and takes no snapshot, so a load retried
-  after it committed writes nothing. It reports the same `rowCount` and `cursorMax` as the first call,
-  with every row counted in `rowsUnchanged` and none inserted, replaced or deleted, and it answers `200`,
-  with no `id`. A retry is safe because it finds nothing to change, provided no other load of the table
-  committed in between; an `Idempotency-Key` (below) makes it safe even then. When some row does change,
+- A load that changes no row and adds or widens no column, keyed or keyless, writes nothing and takes no
+  snapshot, so a load retried after it committed writes nothing. It reports the same `rowCount` and
+  `cursorMax` as the first call, with every row counted in `rowsUnchanged` and none inserted, replaced or
+  deleted, and it answers `200`, with no `id`. A retry is safe because it finds nothing to change,
+  provided no other load of the table committed in between; an `Idempotency-Key` (below) covers a load
+  that committed, but not this one. When some row does change,
   a keyed load rewrites only the rows it changes, and a keyless replace rewrites the whole table, so
   there `rowsUnchanged` counts the rows matched, not rows left in place.
   Of two rows with one key, the later object in `objects` wins, then the later row of an object.
@@ -329,18 +330,27 @@ stream in batches:
   every replica, and kept in no table of its own. `GET …/loads/{id}` answers the load with the snapshot's
   `author` and `commitMessage` (`404 LOAD_NOT_FOUND` when there is none), and `GET …/loads` lists the
   table's loads newest first as `{items, nextCursor}`, paged by `limit` (1 to 1000, default 100) and the
-  opaque `after`. A table dropped and created again under its name shares one history. A load is readable
+  opaque `after`. Only a missing catalog is a `404` there: a table with no recorded loads, or none yet,
+  lists as empty. A table dropped and created again under its name shares one history. A load is readable
   for as long as its snapshot: `DELETE …/snapshots` (and a storage destination's cleanup) expires both.
-- `Idempotency-Key` (optional, at most 255 characters) makes a retried load safe after other loads
-  committed. A load that repeats a key an earlier committed load of this table was sent under, with the
-  same body, writes nothing and answers that load's `201`, `Location` and body again, after flushing any
-  rows the table holds inlined (so a retry still heals a load that failed after its commit). The same key
-  with a different body is `409 IDEMPOTENCY_KEY_REUSED`. A key belongs to its table and does not outlive a
-  table DELETE or a PUT that replaces it; the server keeps only its SHA-256. It differs from the v1 API's
-  `Idempotency-Key` in three ways: a record lasts as long as its snapshot, not 24 hours; a duplicate that
-  arrives while the first is running is `503 LOAD_BUSY`, not made to wait, and its retry replays; and a
-  load that changed nothing stores nothing, so its key, sent again after another load committed, runs
-  again.
+- `Idempotency-Key` (optional, at most 255 characters) makes the retry of a load that committed safe even
+  after other loads committed. A load that repeats a key an earlier committed load of this table was sent
+  under, with the same body (`key` and `objects` in the order sent), writes nothing and answers that
+  load's `201`, `Location` and body again, after flushing any rows the table holds inlined (so a retry
+  still heals a load that failed after its commit). The same key with a different body is `409
+  IDEMPOTENCY_KEY_REUSED`. A key belongs to its table and does not outlive a table DELETE or a PUT that
+  replaces it; the server keeps only its SHA-256.
+  The key replays a load that committed, for as long as its snapshot is kept. A load that changed nothing
+  stores no record, and a key whose snapshot an expiry removed has none, so either runs again: a retry
+  of such a load, sent after another load committed, can revert it. A table with more than one writer
+  therefore needs its loads serialized by the caller. A record is found by a text match on the snapshots'
+  commit metadata, with no index, so each keyed load scans the catalog's snapshots since the table was
+  created; expiring old snapshots (`DELETE …/snapshots`) bounds that cost, as it bounds the keys.
+  The key differs from the v1 API's `Idempotency-Key` in three ways: a record lasts as long as its
+  snapshot, which may be shorter or longer than 24 hours (a storage destination's cleanup expires
+  snapshots on the caller's `snapshotsOlderThan`); a duplicate that arrives while the first is running is
+  `503 LOAD_BUSY`, not made to wait, and its retry replays; and a load that changed nothing stores
+  nothing, so its key, sent again after another load committed, runs again.
 - A new column is added, even when no row changes. An existing one keeps its type when the objects type
   it the same or narrower, losslessly, and is widened to the objects' type when that is a lossless widening
   of the table's: a wider integer, a decimal with no fewer integer or fraction digits, an integer into a
@@ -384,8 +394,10 @@ stream in batches:
   memory; an empty extract, or an empty table, needs no compare. A load or table PUT that outgrows the
   memory or spill limit anyway answers `422 LOAD_TOO_LARGE` and writes nothing, and a retry fails the
   same way: give the load a `key`, split its objects across loads, or raise
-  `PUBLISHER_ADMIN_MEMORY_LIMIT` (and `PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE`). A failure after the load
-  committed, and a full spill disk, are a `500`, to retry.
+  `PUBLISHER_ADMIN_MEMORY_LIMIT` and `PUBLISHER_DUCKDB_MEMORY_LIMIT` (the session uses the lower) or
+  `PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE`. It is `422` because the work outgrew the session, not because
+  the request body was too large. A failure after the load committed, and a full spill disk, are a
+  `500`, to retry.
 
 **History.** Dropping or replacing a table only retires its files: they stay readable at earlier
 snapshots. `DELETE …/snapshots?olderThan=` expires older snapshots (never the latest) and deletes files
@@ -414,9 +426,11 @@ it, so in a mixed-version deployment upgrade every server before any config leav
 
 **Keep built tables apart from people's.** `ducklakeConnection.destinationSchema` on a storage
 destination puts every table a build writes in that schema (`materialized`, say) instead of `main`, and
-the serve binding reads it from there. People's own tables stay in `main`. A destination that shares its
-catalog with a managed read-only connection must set `destinationSchema`, since every managed connection
-reads `main`, and a build without one writes there. A `#@ persist name=` that already names a schema keeps
+the serve binding reads it from there. A table PUT may write people's own tables in `main` (an upload lands
+there); a load may not, so loads, and the tables a load will later merge into, go in a schema you create with
+`PUT /catalogs/{catalog}/schemas/{schema}`. A destination that shares its catalog with a managed read-only
+connection must set `destinationSchema`, since every managed connection reads `main`, and a build without one
+writes there. A `#@ persist name=` that already names a schema keeps
 it. No build creates the schema: the catalog's owner does, and a build into a destination whose
 `destinationSchema` the catalog lacks is refused with a message naming both.
 
@@ -427,14 +441,20 @@ be served as the build's. A table DELETE there is still allowed, which is how a 
 and a copy may still read its source from it. A destination that builds into `main` therefore makes
 `main` read-only to a table PUT, so give a destination that shares a catalog with people's tables a
 `destinationSchema`. Only the storage destinations of the environments this server serves count, so an
-admin-only listener (`servingApiEnabled: false`) refuses nothing, and a connection that carries
-`destinationSchema` is not a destination. A destination is on the catalog when its `catalog` names the
+admin-only listener (`servingApiEnabled: false`), which loads no environments, refuses nothing, and a
+connection that carries `destinationSchema` is not a destination. A destination is on the catalog when its `catalog` names the
 same host, port and database as `PUBLISHER_ADMIN_CATALOG_DATABASE`, whatever role, credentials or form
 (a connection string or fields) it connects with, and has the catalog's name as its `metadataSchema`. A
 write that arrives before the environments finish loading is not checked, and the check sees only the
-destinations an environment holds, so it misses those of one whose stored destinations could not be read
-(its list is not yet authoritative, `hasAuthoritativeStorageDestinations()`). A load also refuses `main`
-itself, with `400 SCHEMA_RESERVED`.
+destinations an environment holds, so it misses those of an environment that failed to load or whose stored
+destinations could not be read (its list is not yet authoritative, `hasAuthoritativeStorageDestinations()`).
+A schema DELETE is refused there too, since it would drop every build table. A load also refuses `main`
+itself, with `400 SCHEMA_RESERVED`: every managed connection reads `main`, and a destination with no
+`destinationSchema` builds there.
+
+The target is that the check no longer depends on which process answers: a destination records its claim
+on its schema in the catalog itself, in a marker the build writes, and every writer of the catalog checks
+the marker. Until then the check is only as complete as the memory of the process that receives the write.
 
 A connection's `readableSchemas` may not list a schema a storage destination of its environment builds
 into, when both name the same catalog (database and metadata schema; a connection that only shares a data
