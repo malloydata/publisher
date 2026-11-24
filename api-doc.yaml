@@ -6181,6 +6181,24 @@ components:
                   `malloynb-cell-refused` (`off_surface`, `caller_annotation`,
                   `required_filter`, `restricted_mode`, `compile_error`). Always snake_case. An open
                   string; absent on a finding that has none.
+              sourceEntityId:
+                type: string
+                description: >-
+                  The content address (its manifest key) of the stored table a
+                  finding is about, so a client routes it without reading the
+                  message: set on `database-table-unread` and
+                  `storage-table-unread`, where `subject` names the source a
+                  query names (a rollup's base) and this names the unread
+                  table's own source. Absent on every other finding.
+              sourceName:
+                type: string
+                description: >-
+                  The name of the source whose stored table a finding is about,
+                  beside `sourceEntityId`: for a rollup's table, the rollup's
+                  own source (`<base>__rollup__…`), not the base `subject`
+                  names. Set on `database-table-unread` and
+                  `storage-table-unread` when the build plan knows the table;
+                  absent otherwise.
               severity:
                 type: string
                 enum:
