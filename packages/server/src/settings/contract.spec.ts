@@ -349,6 +349,35 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("x-publisher-caller"),
       },
    ],
+   trustPageContextHeader: [
+      { name: "unset", expect: value(false) },
+      {
+         name: "PUBLISHER_TRUST_PAGE_CONTEXT_HEADER",
+         env: { PUBLISHER_TRUST_PAGE_CONTEXT_HEADER: "true" },
+         expect: value(true),
+      },
+      {
+         name: "--trust-page-context-header",
+         argv: ["--trust-page-context-header"],
+         expect: value(true),
+      },
+      {
+         name: "--no-trust-page-context-header beats the variable",
+         env: { PUBLISHER_TRUST_PAGE_CONTEXT_HEADER: "true" },
+         argv: ["--no-trust-page-context-header"],
+         expect: value(false),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_TRUST_PAGE_CONTEXT_HEADER: "" },
+         expect: value(false),
+      },
+      {
+         name: "not a boolean fails",
+         env: { PUBLISHER_TRUST_PAGE_CONTEXT_HEADER: "maybe" },
+         expect: fails("PUBLISHER_TRUST_PAGE_CONTEXT_HEADER"),
+      },
+   ],
    packageVersioning: [
       { name: "unset", expect: value(true) },
       {

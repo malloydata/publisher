@@ -42,3 +42,52 @@ export function parseFrameAncestors(raw: string | undefined): string {
    if (raw === undefined || raw.trim() === "") return "'self'";
    return raw.trim();
 }
+
+/**
+ * One frame-ancestors source as a page-context host pattern, or undefined when
+ * it cannot name an embedding origin. Kept: `'self'` (the runtime maps it to
+ * its own origin), `scheme://host[:port]` for http(s), and the same with a
+ * leading `*.` host label. Dropped: `*`, scheme-only sources, anything with a
+ * path, query or credentials, a wildcard anywhere but the leading label, and
+ * anything unparseable. Normalized to what a browser reports as
+ * `MessageEvent.origin` (lowercase, default port omitted).
+ */
+export function hostOriginPattern(source: string): string | undefined {
+   if (source.toLowerCase() === "'self'") return "'self'";
+   const match = /^(https?):\/\/(\*\.)?([^/?#@*\s]+)$/i.exec(source);
+   if (!match) return undefined;
+   const [, scheme, wildcard, authority] = match;
+   try {
+      // A real label stands in for the wildcard so URL does the host parsing.
+      const url = new URL(`${scheme}://${wildcard ? "w." : ""}${authority}`);
+      const host = wildcard ? url.host.slice("w.".length) : url.host;
+      return `${url.protocol}//${wildcard ? "*." : ""}${host}`;
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * The page-context `hostOrigins` a frame-ancestors value yields: the sources
+ * {@link hostOriginPattern} keeps, deduplicated, in order. Empty when none is
+ * usable, which turns the page's host bus off.
+ */
+export function frameAncestorHostOrigins(raw: string | undefined): string[] {
+   const patterns = frameAncestorSources(raw)
+      .map(hostOriginPattern)
+      .filter((pattern): pattern is string => pattern !== undefined);
+   return [...new Set(patterns)];
+}
+
+/** The configured sources {@link hostOriginPattern} drops: they stay in the CSP but never become bus origins. `'none'` is no source, so it is never reported. */
+export function droppedFrameAncestorSources(raw: string | undefined): string[] {
+   return frameAncestorSources(raw).filter(
+      (source) =>
+         source.toLowerCase() !== "'none'" &&
+         hostOriginPattern(source) === undefined,
+   );
+}
+
+function frameAncestorSources(raw: string | undefined): string[] {
+   return parseFrameAncestors(raw).split(/\s+/);
+}

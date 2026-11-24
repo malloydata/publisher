@@ -80,11 +80,9 @@ The package resource says which version answered: `versionId` is the version des
 
 ### Static files and data apps
 
-A data app's page is opened at `…/packages/{pkg}/index.html?versionId=1.2.0`, and its links carry the version the list was read from. The bundled runtime pins the page's queries to that version.
+A package's `public/` is also served per version, at `…/packages/{pkg}/versions/{version}/public/{file}`, and a data app's page is opened at one. The short URL `…/packages/{pkg}/index.html` serves `latest` directly, with `Cache-Control: no-cache` and no redirect, so a bookmark follows `latest`; an `.html` or `.htm` page (or a directory's `index.html`) carries a context whose `versionId` names the version served, and the bundled runtime pins the page's queries to it. `…/versions/latest/public/…` likewise serves the version `latest` names now, directly. Only `?versionId=1.2.0` on the short URL, when the package has that version, answers 302 to that version's URL, with `Cache-Control: no-store`, keeping the rest of the query string; that is how a data-app listing's links pin their version, and it makes the page's relative requests (`./app.js`, a stylesheet's `url()`) resolve under the versioned path, so they come from that version too.
 
-Only the URL pins a version. The page's own relative requests (`./app.js`, a stylesheet's `url()`) carry no query string, so they are served from `latest`. A page that must stay on one version end to end puts `?versionId=` on those URLs itself.
-
-A `versionId` on a static file pins only a version the package has; anything else serves `latest` rather than 404. A proxy that resolves versions itself may forward a page's query string unchanged, with a `versionId` of its own, and refusing it would break every page it serves. A pinned version that is archived answers 410.
+On a versioned URL the path wins over `?versionId=`. A non-HTML file at the short URL is served directly, from `latest` or from the version `?versionId=` names. A `versionId` on the short URL pins only a version the package has; anything else serves `latest` rather than 404. A proxy that resolves versions itself may forward a page's query string unchanged, with a `versionId` of its own, and refusing it would break every page it serves. A pinned version that is archived answers 410. A package with no version records serves every file directly, with no redirect.
 
 ### A version named in the package name (transition)
 

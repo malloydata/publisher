@@ -77,7 +77,7 @@ export const server = [
       default: "'self'",
       description:
          "The Content-Security-Policy frame-ancestors source list: who may embed the app.",
-      notes: "`Content-Security-Policy: frame-ancestors` value sent on **every** document this server returns -- the Console and in-package `public/` files alike -- controlling which origins may embed a page in an iframe. Defaults to same-origin only; set it to the origins that embed you (`https://app.example.com`), or to `*` to restore the previous any-origin behaviour.",
+      notes: "`Content-Security-Policy: frame-ancestors` value sent on **every** document this server returns -- the Console and in-package `public/` files alike -- controlling which origins may embed a page in an iframe. Defaults to same-origin only; set it to the origins that embed you (`https://app.example.com`), or to `*` to restore the previous any-origin behaviour. A data app's host bus talks only to the sources that name an origin or a subdomain wildcard of one (`'self'`, `https://app.example.com`, `https://*.example.com`); the others (`*`, a bare scheme, a source with a path) still apply to the CSP, and startup logs a warning naming each source the bus drops (`'none'` is no source and is not named).",
       aliases: { env: ["PUBLISHER_FRAME_ANCESTORS"] },
    }),
    setting({
@@ -88,6 +88,14 @@ export const server = [
          "Request header the access record copies as the caller: the identity the gateway in front of Publisher asserts.",
       notes: "The request header whose value the per-query access record copies as `caller`: the identity the gateway in front of Publisher asserts. Opaque to Publisher; see [access-record.md](access-record.md).",
       aliases: { env: ["PUBLISHER_CALLER_HEADER"] },
+   }),
+   setting({
+      key: "trustPageContextHeader",
+      type: boolean(),
+      default: false,
+      description:
+         "Let the gateway override the page context injected into data apps, through the x-publisher-page-context request header.",
+      notes: "Data-app pages carry an injected `publisher-context` block naming their environment, package, version, API base and the hosts that may embed them. With this on, the request header `x-publisher-page-context` (JSON with any of `environment`, `package`, `apiBase`, `hostOrigins`) overrides those fields, for a gateway that serves Publisher under other names or paths. An invalid header is ignored whole and logged. Responses that read it carry `Vary: x-publisher-page-context`. Leave it off unless the gateway strips the header from client requests, since any client could otherwise set it.",
    }),
    setting({
       key: "packageVersioning",

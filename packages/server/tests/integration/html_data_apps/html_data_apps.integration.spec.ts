@@ -324,6 +324,20 @@ describe("In-package HTML data apps (E2E)", () => {
       }
    });
 
+   it("400s a path whose .. segments climb above public/ and walk back in, on both URL shapes", async () => {
+      for (const p of [
+         "..%2f..%2f..%2f..%2fpublic%2findex.html",
+         "sub%2f..%2f..%2fpublic%2findex.html",
+      ]) {
+         for (const prefix of ["", "versions/1.0.0/public/"]) {
+            const res = await fetch(
+               `${baseUrl}/environments/${ENV_NAME}/packages/${PACKAGE_NAME}/${prefix}${p}`,
+            );
+            expect(res.status).toBe(400);
+         }
+      }
+   });
+
    itEscape(
       "rejects a symlink in public/ that escapes the package with 403",
       async () => {
@@ -359,9 +373,14 @@ describe("In-package HTML data apps (E2E)", () => {
       // Only HTML files under public/ are listed; the toEqual pins the exact
       // set, so non-public files (manifest, models, data) can't appear.
       expect(paths).toEqual([
+         "Upper.HTML",
          "barehtml.html",
          "bodymeta.html",
+         "fitattr.html",
          "fitcomment.html",
+         "fitdecoy.html",
+         "fitmanyattrs.html",
+         "fitquoted.html",
          "index.html",
          "nohead.html",
          "notfit.html",
@@ -370,6 +389,9 @@ describe("In-package HTML data apps (E2E)", () => {
          "unterminated.html",
       ]);
 
+      expect(dataApps.find((a) => a.path === "Upper.HTML")?.title).toBe(
+         "Upper Case Extension",
+      );
       const index = dataApps.find((a) => a.path === "index.html");
       expect(index?.title).toBe("Carrier Dashboard");
       expect(index?.packageName).toBe(PACKAGE_NAME);
@@ -396,6 +418,25 @@ describe("In-package HTML data apps (E2E)", () => {
       expect(dataApps.find((a) => a.path === "fitcomment.html")?.fit).toBe(
          "viewport",
       );
+
+      // fitattr.html has a `<script>` literal inside an attribute value of
+      // <html>; it is not a live tag, so it must not hide the real meta.
+      expect(dataApps.find((a) => a.path === "fitattr.html")?.fit).toBe(
+         "viewport",
+      );
+
+      // A `</head>` inside an attribute value must not end the head scan early,
+      // and a fit meta written inside one is not a tag.
+      expect(dataApps.find((a) => a.path === "fitquoted.html")?.fit).toBe(
+         "viewport",
+      );
+      expect(
+         dataApps.find((a) => a.path === "fitdecoy.html")?.fit,
+      ).toBeUndefined();
+      // Many quoted attribute values on <html> must not skip the comment after it.
+      expect(
+         dataApps.find((a) => a.path === "fitmanyattrs.html")?.fit,
+      ).toBeUndefined();
 
       // notfit.html carries the STANDARD <meta name="viewport"> (device-width),
       // a decoy <meta data-name="publisher:fit"> in <head>, and the real tag as

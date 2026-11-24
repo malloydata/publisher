@@ -18,7 +18,9 @@ The runtime loads from the root-relative `<script src="/sdk/publisher.js">` and 
 
 - `modelPath` is the model FILE path within the package, with `/` separators (`"subscriptions.malloy"`, `"models/events.malloy"`). It is not the source name.
 - `malloy` is any query string, written in standard Malloy. This skill covers only the JavaScript glue, not Malloy syntax.
-- `opts` (all optional): `sourceName`, `queryName` (`queryName` runs a saved query, with `sourceName` qualifying the source a view hangs off; `sourceName` on its own is a 400), `givens` (a `{ name: value }` map bound to the model's Malloy `given:` runtime parameters for this query; safe parameterization, values are bound by Publisher server-side, not string-interpolated), `filterParams` (values for the model's legacy `#(filter)` source filters), `bypassFilters`, and `environment` / `package` (only if the page is served from outside `/environments/<env>/packages/<pkg>/`). `givens` and `filterParams` compose (both apply). With package versioning on, `versionId` queries one published version instead of the package's `latest`; a page opened with `?versionId=` in its URL already pins every query to its own package to that version, once a read of the package confirms it has it (otherwise the page queries `latest`; a query that names another `package` gets that package's `latest`), but its own relative files (`./app.js`, stylesheets) are served from `latest` unless their URLs carry `?versionId=` too.
+- `opts` (all optional): `sourceName`, `queryName` (`queryName` runs a saved query, with `sourceName` qualifying the source a view hangs off; `sourceName` on its own is a 400), `givens` (a `{ name: value }` map bound to the model's Malloy `given:` runtime parameters for this query; safe parameterization, values are bound by Publisher server-side, not string-interpolated), `filterParams` (values for the model's legacy `#(filter)` source filters), `bypassFilters`, and `environment` / `package` (only if the page is served from outside `/environments/<env>/packages/<pkg>/`). `givens` and `filterParams` compose (both apply). With package versioning on, `versionId` queries one published version instead of the package's `latest`. A page served from a package that has versions is served from `latest` (no redirect), and pins every query to its own package to the version it was served from; opened with `?versionId=<v>`, it is redirected to that version's own URL (`/environments/<env>/packages/<pkg>/versions/<v>/public/...`), so its relative files (`./app.js`, stylesheets) come from that version too; a query that names another `package` gets that package's `latest`. Write relative URLs and nothing else changes.
+
+The runtime also keeps a givens store, so filter state lives in one place and a host can drive it: `Publisher.setGivens({ region: "EMEA" })` merges into the store (`{ region: null }` removes the key), `Publisher.givens` reads a copy, and every `query` / `queryFull` on the page's own package binds the store's givens under `opts.givens` (a key in `opts.givens` wins; a query aimed at another `package` carries only its own `opts.givens`; a page served from outside any package has no own package, so it never sends the store and must pass `opts.givens` on each query, and `setGivens` there logs a one-time console warning). Publisher rejects a given name a model does not declare, so every model of the page's own package that the page queries must declare every given the store holds. `setGivens` of what the store already holds does nothing. Nothing re-runs by itself: subscribe with `Publisher.onGivensChange((givens) => refresh(givens))`, which returns an unsubscribe function, and re-query there. Route the page's own filter controls through `setGivens` too, so a click and a command from the host take the same path.
 
 ## Structure the app as modules, not one inline script
 
@@ -167,9 +169,23 @@ If you validate the rendered page in a headless browser (Playwright or Puppeteer
 
 ## Context, auth, live reload (all automatic)
 
-- Context. A page served under `/environments/<env>/packages/<pkg>/...` infers its environment and package, so `query` needs no env or package args. Serving from elsewhere? Pass `opts.environment` and `opts.package`.
-- Auth. By default the runtime sends cookies (`credentials: include`), so a signed-in user is authenticated with no code. For a bearer token, call `Publisher.setToken(token)` first; `Publisher.setToken(null)` reverts to cookies.
-- Live reload. Under `--watch-env`, the page reloads on package changes by itself. Nothing to wire.
+- Context. `Publisher.context` is `{ environment, package }`, read from the page's URL when it is served under `/environments/<env>/packages/<pkg>/...` (also `/versions/<v>/public/`) or `/apps/<env>/<pkg>/...`, and otherwise from the `publisher-context` block the server injects (which also supplies the version and API base). So `query` needs no env or package args. Serving from elsewhere? Pass `opts.environment` and `opts.package`.
+- Auth. By default the runtime sends cookies (`credentials: include`), so a signed-in user is authenticated with no code. For a bearer token, call `Publisher.setToken(token)` first; `Publisher.setToken(null)` reverts to cookies. An embedding host can also hand over a token itself (see "Talking to the host" below), and a query that gets a 401 asks the host for one and retries once (it fails at once if the host has none to give).
+- Live reload. Under `--watch-env`, the page reloads on package changes by itself, except a page served at a version's own URL, which never changes. Nothing to wire.
+
+## Talking to the host
+
+When a page is embedded (`reference/embedding.md`), the host and the page can exchange messages. The runtime does the protocol; the page adds only handlers and emits.
+
+- `Publisher.onGivensChange(fn)` is how a host or an agent drives the page's filters. Register it and the page advertises a `givens.set` command (until then the host's `givens.set` is answered `unhandled`): when the host sends `{ givens: { region: "EMEA" } }` the runtime merges it into the givens store and calls `fn` with the whole store, so `fn` re-runs the tiles. A page that never registers it is never offered the command, so an agent knows not to try. Any filter the page wants a host to be able to set should therefore be a given held in the store, not private variables.
+- `Publisher.on(type, fn)` registers a handler for any other message type from the host; `fn(payload)` may return a value, which becomes the reply to a request. Handlers are the page's advertised capabilities: the host sees the registered types in the `ready` event.
+- `Publisher.emit(type, payload)` tells the host something. The runtime already emits `ready`, `givens.changed` (after a `setGivens` that changes the store), `query.ran` (model, source and view names, givens, row count, milliseconds, and the first 2000 characters of the query text, after every query) and `version.unavailable`.
+- `on` and `emit` do nothing when the page is not embedded, or the host is not one the server was configured to allow, so write them without checking. The givens store works either way.
+
+```js
+Publisher.onGivensChange((givens) => refresh(givens)); // host commands and clicks both land here
+regionSelect.onchange = () => Publisher.setGivens({ region: regionSelect.value });
+```
 
 ## When the app fails
 

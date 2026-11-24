@@ -14,9 +14,52 @@
 //               package at that version by default. givens is a name→value map bound as
 //               Malloy given: runtime parameters for this query (safe parameterization,
 //               not string interpolation) — see the malloy-html-data-apps skill (reference/runtime.md).
-//   - Publisher.embed(selector, { src, height?, token? })
-//   - Publisher.context  ({ environment, package } inferred from URL)
+//   - Publisher.embed(selector, { src, height?, token?, getToken? })
+//       → { iframe, destroy(), send(type, payload) → Promise, on(type, fn) → unsubscribe }.
+//       getToken() (a string or a Promise) feeds the page its bearer token over the bus:
+//       first on ready, again whenever the page asks. `token` appends ?embed_token= to
+//       the URL instead and is deprecated. Every embed adds a random #publisher-nonce=<n> to src; the host accepts
+//       bus messages only from that window, at src's origin, echoing that nonce. The host
+//       never sends the nonce: a document that navigated into the frame cannot learn it.
+//   - Publisher.context  ({ environment, package } inferred from the URL, else from the injected page context)
 //   - Publisher.setToken(token)  (override Bearer token; default uses cookies)
+//   - Publisher.on(type, fn) → unsubscribe  (host → page messages; fn(payload, meta) may
+//       return a value or promise, which answers a request)
+//   - Publisher.emit(type, payload)  (page → host event; dropped until the host has said hello)
+//   - Publisher.givens (a copy), setGivens(g), onGivensChange(fn) → unsubscribe
+//       A page-held name→value map, merged under opts.givens of every query on the page's own
+//       package once non-empty (never on a query aimed at another package). A null value removes
+//       its key; setting what is already held does nothing.
+//
+// Server-injected context: Publisher serves every data-app HTML page with
+// <script type="application/json" id="publisher-context"> carrying
+// { v, environment, package, versionId|null, apiBase, hostOrigins }. Names parsed from
+// the page's own URL win (a gateway may rename paths, so the context's names are the
+// ones behind it); the context's names are used only when the URL has none. Its
+// versionId replaces the ?versionId= probe: it pins every query to the page's own
+// package, and a versioned page never live-reloads. A page served from
+// /environments/<e>/packages/<p>/versions/<v>/public/ pins <v> even with no context.
+//
+// Host bus (only in an iframe whose context has hostOrigins, patterns from the server's
+// frame-ancestors setting). Envelope { protocol: "publisher", v: 1, type, id?, nonce?,
+// payload }; a reply adds reply: true and carries payload or error: { code, message }.
+// The host sends `hello`; the runtime binds to that message's origin, replies with
+// { handles, runtime }, and from then on posts only to that origin. Inbound messages are
+// accepted from window.parent at an allowed origin only. Every page → host envelope
+// echoes the nonce from #publisher-nonce= when the URL has one (read once, then removed
+// from the URL; restored before the runtime's own reload); host → page ones carry none.
+// The host says hello on every iframe load and answers the page's `ready` with one; nothing
+// retries, so load the runtime with a script tag, not after the frame's load event. After a
+// reload the host replays the givens it last sent or received, with givens.set, once the
+// page's handles include givens.set.
+// Page → host events: ready, query.ran, givens.changed, version.unavailable. Host → page:
+// auth.token (built in), givens.set (built in; applies only once the page has called
+// onGivensChange, which also advertises it), and whatever the page registers with on(). A
+// request nobody handles gets error "unhandled".
+// On a 401 a page that holds a nonce waits up to 5 s for the host to bind, sends the request
+// auth.token.request, which the host answers with { token } (or "unhandled" when it has no
+// getToken, which fails the query at once), waits up to 10 s for that or an auth.token event,
+// and retries once. A page with no nonce has no host to ask and fails at once.
 //
 // When loaded inside an iframe served from /environments/<env>/packages/<pkg>/...,
 // the runtime auto-subscribes to a Server-Sent Events live-reload stream
@@ -56,15 +99,68 @@
          return s;
       }
    }
+   function isString(v) {
+      return typeof v === "string";
+   }
+   function isPlainObject(v) {
+      return !!v && typeof v === "object" && !Array.isArray(v);
+   }
+   // The server-injected context; null when the page predates it or it is malformed.
+   function readPageContext() {
+      try {
+         if (typeof document === "undefined") return null;
+         var el = document.getElementById("publisher-context");
+         var parsed = el ? JSON.parse(el.textContent) : null;
+         return parsed && typeof parsed === "object" ? parsed : null;
+      } catch (_e) {
+         return null;
+      }
+   }
+   var pageContext = readPageContext();
+   // The URL's names win: behind a gateway that renames paths they are the ones the API knows.
    var ctx = pathMatch
       ? {
            environment: safeDecode(pathMatch[1]),
            package: safeDecode(pathMatch[2]),
         }
-      : {};
+      : pageContext &&
+          isString(pageContext.environment) &&
+          isString(pageContext.package) &&
+          pageContext.environment &&
+          pageContext.package
+        ? {
+             environment: pageContext.environment,
+             package: pageContext.package,
+          }
+        : {};
+   // A version in the path never changes, so it pins queries and needs no live reload, context or not.
+   // `latest` and `live` name no version, so they pin nothing and keep live reload on.
+   var pathVersion = location.pathname.match(
+      /^\/environments\/[^/]+\/packages\/[^/]+\/versions\/(?!(?:latest|live)\/)([^/]+)\/public\//,
+   );
+   var fixedVersion =
+      pageContext && isString(pageContext.versionId) && pageContext.versionId
+         ? pageContext.versionId
+         : pathVersion
+           ? safeDecode(pathVersion[1])
+           : undefined;
 
-   var apiBase = location.origin + "/api/v0";
+   // Only a same-origin path is honored: the API base is never taken from another origin.
+   var configuredApiBase = pageContext && pageContext.apiBase;
+   var apiBase =
+      location.origin +
+      (isString(configuredApiBase) && /^\/(?!\/)/.test(configuredApiBase)
+         ? configuredApiBase.replace(/\/+$/, "")
+         : "/api/v0");
    var bearerToken = null;
+
+   var inIframe = (function () {
+      try {
+         return window.self !== window.top;
+      } catch (_e) {
+         return true; // cross-origin parent — assume embedded
+      }
+   })();
 
    function authHeaders() {
       return bearerToken ? { Authorization: "Bearer " + bearerToken } : {};
@@ -88,6 +184,7 @@
    var pageVersion = pageVersionParam();
    var pagePin = null;
    function pinnedVersion() {
+      if (fixedVersion) return Promise.resolve(fixedVersion);
       if (!pageVersion || !ctx.environment || !ctx.package) {
          return Promise.resolve(undefined);
       }
@@ -115,6 +212,411 @@
             });
       }
       return pagePin;
+   }
+
+   // --- Host bus (page side) ----------------------------------------------
+   var RUNTIME_VERSION = "1";
+   var QUERY_TEXT_LIMIT = 2000;
+   var TOKEN_WAIT_MS = 10000;
+   var BIND_WAIT_MS = 5000;
+
+   var hostOrigins =
+      pageContext && Array.isArray(pageContext.hostOrigins)
+         ? pageContext.hostOrigins.filter(isString)
+         : [];
+   // `fragment` (no leading #) without the nonce parameter, every other byte untouched.
+   function withoutNonce(fragment) {
+      return fragment
+         .replace(/(^|&)publisher-nonce=[^&]*/g, "")
+         .replace(/^&/, "");
+   }
+   function setFragment(fragment) {
+      try {
+         history.replaceState(
+            history.state,
+            "",
+            location.pathname +
+               location.search +
+               (fragment ? "#" + fragment : ""),
+         );
+      } catch (_e) {
+         /* a frame that cannot rewrite its URL keeps the nonce in it */
+      }
+   }
+   // Read once at load; the host puts it in the fragment so it never reaches a log or Referer,
+   // and the page drops it from the URL so its own scripts and router never see it.
+   var pageNonce = (function () {
+      var m = /[#&]publisher-nonce=([^&]*)/.exec(location.hash || "");
+      if (!m || !m[1]) return null;
+      setFragment(withoutNonce(location.hash.slice(1)));
+      return safeDecode(m[1]);
+   })();
+   // A reload re-reads the URL, so the nonce goes back into it first.
+   function reloadWithNonce() {
+      if (pageNonce) {
+         var rest = location.hash.slice(1);
+         setFragment(
+            (rest ? rest + "&" : "") +
+               "publisher-nonce=" +
+               encodeURIComponent(pageNonce),
+         );
+      }
+      location.reload();
+   }
+   var busEnabled =
+      inIframe &&
+      hostOrigins.length > 0 &&
+      typeof window.addEventListener === "function";
+   var boundOrigin = null; // set by the first valid `hello`; every post targets it
+   var handlers = new Map();
+   var givensStore = {};
+   var givensListeners = [];
+   var readyScheduled = false;
+   var boundWaiters = [];
+   var unscopedWarned = false;
+   var tokenWait = null;
+   var tokenSettle = null;
+   var tokenRequestId = null;
+   var requestSeq = 0;
+   var versionUnavailableSent = false;
+
+   // 'self' is this page's origin; `https://*.suffix[:port]` matches the scheme, the port and
+   // any host ending in ".suffix" (a label boundary); anything else is an exact origin.
+   function originMatches(origin, pattern) {
+      if (pattern === "'self'") {
+         return location.origin !== "null" && origin === location.origin;
+      }
+      var wild = /^(https?):\/\/\*\.([^/:]+)(?::(\d+))?$/.exec(pattern);
+      if (!wild) return origin === pattern;
+      var o = /^(https?):\/\/([^/:]+)(?::(\d+))?$/.exec(origin);
+      var tail = "." + wild[2];
+      return (
+         !!o &&
+         o[1] === wild[1] &&
+         o[3] === wild[3] &&
+         o[2].length > tail.length &&
+         o[2].slice(-tail.length) === tail
+      );
+   }
+   function originAllowed(origin) {
+      if (!isString(origin)) return false;
+      for (var i = 0; i < hostOrigins.length; i++) {
+         if (originMatches(origin, hostOrigins[i])) return true;
+      }
+      return false;
+   }
+   // Patterns that name one origin: the only places a page may speak before it is bound.
+   function exactOrigins() {
+      var out = [];
+      for (var i = 0; i < hostOrigins.length; i++) {
+         var p = hostOrigins[i];
+         var origin = p === "'self'" ? location.origin : p;
+         if (origin === "null" || origin.indexOf("*") !== -1) continue;
+         if (out.indexOf(origin) === -1) out.push(origin);
+      }
+      return out;
+   }
+
+   function isEnvelope(m) {
+      return (
+         !!m &&
+         typeof m === "object" &&
+         m.protocol === "publisher" &&
+         m.v === 1 &&
+         isString(m.type) &&
+         m.type !== "" &&
+         (m.id === undefined || isString(m.id) || typeof m.id === "number")
+      );
+   }
+
+   // extra: { id?, reply?, error? }. Never posts to "*"; false when nothing could be sent.
+   function post(type, payload, extra, target) {
+      var origin = target || boundOrigin;
+      if (!busEnabled || !origin) return false;
+      var msg = { protocol: "publisher", v: 1, type: type };
+      if (extra) {
+         if (extra.id !== undefined) msg.id = extra.id;
+         if (extra.reply) msg.reply = true;
+         if (extra.error) msg.error = extra.error;
+      }
+      if (pageNonce) msg.nonce = pageNonce;
+      if (payload !== undefined) msg.payload = payload;
+      try {
+         window.parent.postMessage(msg, origin);
+         return true;
+      } catch (_e) {
+         return false;
+      }
+   }
+
+   function handleTypes() {
+      var types = Array.from(handlers.keys()).filter(function (t) {
+         return handlers.get(t).length > 0;
+      });
+      if (givensListeners.length > 0 && types.indexOf("givens.set") === -1) {
+         types.push("givens.set");
+      }
+      return types;
+   }
+   function readyPayload() {
+      return { handles: handleTypes(), runtime: RUNTIME_VERSION };
+   }
+   // One `ready` per task however many handlers a page adds in a row.
+   function scheduleReady() {
+      if (!boundOrigin || readyScheduled) return;
+      readyScheduled = true;
+      Promise.resolve().then(function () {
+         readyScheduled = false;
+         post("ready", readyPayload());
+      });
+   }
+
+   function on(type, fn) {
+      if (!isString(type) || typeof fn !== "function") {
+         throw new TypeError(
+            "Publisher.on(type, fn): type must be a string and fn a function",
+         );
+      }
+      var list = handlers.get(type);
+      if (!list) handlers.set(type, (list = []));
+      list.push(fn);
+      scheduleReady();
+      return function () {
+         var i = list.indexOf(fn);
+         if (i === -1) return;
+         list.splice(i, 1);
+         scheduleReady();
+      };
+   }
+   function emit(type, payload) {
+      return isString(type) && post(type, payload);
+   }
+
+   // --- Givens store ------------------------------------------------------
+   function cloneGivens(g) {
+      return JSON.parse(JSON.stringify(g));
+   }
+   function sameValue(a, b) {
+      if (a === b) return true;
+      if (!a || !b || typeof a !== "object" || typeof b !== "object") {
+         return false;
+      }
+      if (Array.isArray(a) !== Array.isArray(b)) return false;
+      var keys = Object.keys(a);
+      return (
+         keys.length === Object.keys(b).length &&
+         keys.every(function (k) {
+            return (
+               Object.prototype.hasOwnProperty.call(b, k) &&
+               sameValue(a[k], b[k])
+            );
+         })
+      );
+   }
+   function setGivens(g) {
+      if (!g || typeof g !== "object" || Array.isArray(g)) {
+         throw new TypeError("Publisher.setGivens(g): g must be an object");
+      }
+      var patch = cloneGivens(g);
+      var next = Object.assign({}, givensStore);
+      Object.keys(patch).forEach(function (k) {
+         if (patch[k] === null) delete next[k];
+         else next[k] = patch[k];
+      });
+      if (sameValue(next, givensStore)) return;
+      givensStore = next;
+      if (!unscopedWarned && !(ctx.environment && ctx.package)) {
+         unscopedWarned = true;
+         console.warn(
+            "Publisher.setGivens: this page names no environment/package, so held givens are not sent with queries; pass opts.givens to each query.",
+         );
+      }
+      givensListeners.slice().forEach(function (fn) {
+         try {
+            fn(cloneGivens(givensStore));
+         } catch (_e) {
+            /* one listener must not stop the rest */
+         }
+      });
+      emit("givens.changed", { givens: cloneGivens(givensStore) });
+   }
+   function onGivensChange(fn) {
+      if (typeof fn !== "function") {
+         throw new TypeError(
+            "Publisher.onGivensChange(fn): fn must be a function",
+         );
+      }
+      givensListeners.push(fn);
+      scheduleReady();
+      return function () {
+         var i = givensListeners.indexOf(fn);
+         if (i === -1) return;
+         givensListeners.splice(i, 1);
+         scheduleReady();
+      };
+   }
+   function applyGivensSet(payload) {
+      setGivens(payload && payload.givens);
+      return { applied: true, givens: cloneGivens(givensStore) };
+   }
+
+   // --- Bearer token over the bus ----------------------------------------
+   function applyAuthToken(payload) {
+      var token = payload && payload.token;
+      if (!isString(token) || !token) {
+         throw new TypeError("auth.token needs payload.token (a string)");
+      }
+      bearerToken = token;
+      if (tokenSettle) tokenSettle(true);
+      return { applied: true };
+   }
+   // The host's answer to our auth.token.request: { token }, or an error ("unhandled" when it has no token to give).
+   function onHostReply(m) {
+      if (m.type !== "auth.token.request" || m.id !== tokenRequestId) return;
+      if (m.error) {
+         if (tokenSettle) tokenSettle(false);
+         return;
+      }
+      try {
+         applyAuthToken(m.payload);
+      } catch (_e) {
+         if (tokenSettle) tokenSettle(false);
+      }
+   }
+   // Resolves true once the host has bound, false after BIND_WAIT_MS or when no bus can bind.
+   function awaitBound() {
+      if (boundOrigin) return Promise.resolve(true);
+      if (!busEnabled) return Promise.resolve(false);
+      return new Promise(function (resolve) {
+         var timer = setTimeout(function () {
+            var queued = boundWaiters.indexOf(bound);
+            if (queued !== -1) boundWaiters.splice(queued, 1);
+            resolve(false);
+         }, BIND_WAIT_MS);
+         function bound() {
+            clearTimeout(timer);
+            resolve(true);
+         }
+         boundWaiters.push(bound);
+      });
+   }
+   // Resolves true when a token arrives (as the reply or an auth.token event), false on an error
+   // reply or after TOKEN_WAIT_MS. Concurrent callers share one wait.
+   function awaitToken() {
+      if (!tokenWait) {
+         tokenWait = new Promise(function (resolve) {
+            var timer = setTimeout(function () {
+               settle(false);
+            }, TOKEN_WAIT_MS);
+            function settle(ok) {
+               clearTimeout(timer);
+               tokenWait = null;
+               tokenSettle = null;
+               tokenRequestId = null;
+               resolve(ok);
+            }
+            tokenSettle = settle;
+         });
+         tokenRequestId = "p" + ++requestSeq;
+         post("auth.token.request", undefined, { id: tokenRequestId });
+      }
+      return tokenWait;
+   }
+
+   function handlersFor(type) {
+      var list = (handlers.get(type) || []).slice();
+      if (
+         type === "givens.set" &&
+         list.length === 0 &&
+         givensListeners.length > 0
+      ) {
+         list.push(applyGivensSet);
+      }
+      if (type === "auth.token") list.unshift(applyAuthToken);
+      return list;
+   }
+
+   function onHostMessage(e) {
+      if (e.source !== window.parent || !originAllowed(e.origin)) return;
+      if (boundOrigin && e.origin !== boundOrigin) return;
+      var m = e.data;
+      if (!isEnvelope(m)) return;
+      if (m.reply) {
+         if (boundOrigin) onHostReply(m);
+         return;
+      }
+      var isRequest = m.id !== undefined;
+      if (m.type === "hello") {
+         boundOrigin = e.origin;
+         boundWaiters.splice(0).forEach(function (fn) {
+            fn();
+         });
+         if (isRequest) {
+            post("hello", readyPayload(), { id: m.id, reply: true });
+         } else {
+            post("ready", readyPayload());
+         }
+         return;
+      }
+      if (!boundOrigin) return;
+      var list = handlersFor(m.type);
+      if (list.length === 0) {
+         if (isRequest) {
+            post(m.type, undefined, {
+               id: m.id,
+               reply: true,
+               error: {
+                  code: "unhandled",
+                  message: "No handler for '" + m.type + "'",
+               },
+            });
+         }
+         return;
+      }
+      var meta = { type: m.type, origin: e.origin, id: m.id };
+      var results = list.map(function (fn) {
+         try {
+            return Promise.resolve(fn(m.payload, meta));
+         } catch (err) {
+            return Promise.reject(err);
+         }
+      });
+      if (!isRequest) {
+         results.forEach(function (r) {
+            r.catch(function () {});
+         });
+         return;
+      }
+      Promise.all(results).then(
+         function (values) {
+            var answer = values.find(function (v) {
+               return v !== undefined;
+            });
+            post(m.type, answer === undefined ? null : answer, {
+               id: m.id,
+               reply: true,
+            });
+         },
+         function (err) {
+            post(m.type, undefined, {
+               id: m.id,
+               reply: true,
+               error: {
+                  code: "handler_error",
+                  message: String((err && err.message) || err),
+               },
+            });
+         },
+      );
+   }
+
+   function setUpHostBus() {
+      if (!busEnabled) return;
+      window.addEventListener("message", onHostMessage);
+      // A mismatched targetOrigin drops silently, so offering ready to each exact origin is safe.
+      exactOrigins().forEach(function (origin) {
+         post("ready", readyPayload(), null, origin);
+      });
    }
 
    // --- Query helpers -----------------------------------------------------
@@ -154,30 +656,36 @@
       if (opts.queryName) body.queryName = opts.queryName;
       if (opts.filterParams) body.filterParams = opts.filterParams;
       if (opts.bypassFilters) body.bypassFilters = true;
-      if (opts.givens) body.givens = opts.givens;
-      // The page's own version applies only to its own package; a query aimed
-      // elsewhere gets that package's latest unless it names one.
+      // The page's own version and held givens apply only to its own package: a
+      // query aimed elsewhere gets that package's latest, and only the givens it names.
+      var isOwnPackage =
+         target.env === ctx.environment && target.pkg === ctx.package;
+      var heldGivens = isOwnPackage && Object.keys(givensStore).length > 0;
+      if (opts.givens || heldGivens) {
+         body.givens = Object.assign(
+            {},
+            heldGivens ? givensStore : null,
+            opts.givens,
+         );
+      }
       var versionId =
-         opts.versionId ||
-         (target.env === ctx.environment && target.pkg === ctx.package
-            ? await pinnedVersion()
-            : undefined);
+         opts.versionId || (isOwnPackage ? await pinnedVersion() : undefined);
       if (versionId) body.versionId = versionId;
 
-      var headers = Object.assign(
-         { "content-type": "application/json" },
-         authHeaders(),
-      );
-      var res = await fetch(url, {
-         method: "POST",
-         credentials: "include",
-         headers: headers,
-         body: JSON.stringify(body),
-      });
-      var json;
-      try {
-         json = await res.json();
-      } catch (_e) {
+      var started = Date.now();
+      var out = await postQuery(url, body);
+      // Only a page with a nonce has a host to ask; a cookie-only page fails at once. The retry is never retried.
+      if (
+         out.res.status === 401 &&
+         pageNonce &&
+         (await awaitBound()) &&
+         (await awaitToken())
+      ) {
+         out = await postQuery(url, body);
+      }
+      var res = out.res;
+      var json = out.json;
+      if (out.malformed) {
          throw new Error(
             "Publisher: server returned non-JSON response (" + res.status + ")",
          );
@@ -187,11 +695,65 @@
          var err = new Error("Publisher.query: " + msg);
          err.response = json;
          err.status = res.status;
+         if (
+            isOwnPackage &&
+            versionId &&
+            versionId === (fixedVersion || pageVersion) &&
+            json &&
+            (json.reason === "VERSION_NOT_FOUND" ||
+               json.reason === "VERSION_ARCHIVED") &&
+            !versionUnavailableSent
+         ) {
+            versionUnavailableSent = emit("version.unavailable", {
+               versionId: versionId,
+               reason: json.reason,
+            });
+         }
          throw err;
       }
       // The server's QueryResult always has `result` as a JSON-encoded string.
       // Parse it before handing it back so callers see real JS values.
-      return JSON.parse(json.result);
+      var result = JSON.parse(json.result);
+      if (boundOrigin) {
+         var ran = {
+            model: modelPath,
+            givens: body.givens || {},
+            versionId: versionId || null,
+            rowCount: rowCountOf(result),
+            ms: Date.now() - started,
+         };
+         if (opts.sourceName) ran.sourceName = opts.sourceName;
+         if (opts.queryName) ran.queryName = opts.queryName;
+         if (isString(malloyQuery)) {
+            ran.query = malloyQuery.slice(0, QUERY_TEXT_LIMIT);
+         }
+         emit("query.ran", ran);
+      }
+      return result;
+   }
+
+   async function postQuery(url, body) {
+      var res = await fetch(url, {
+         method: "POST",
+         credentials: "include",
+         headers: Object.assign(
+            { "content-type": "application/json" },
+            authHeaders(),
+         ),
+         body: JSON.stringify(body),
+      });
+      try {
+         return { res: res, json: await res.json() };
+      } catch (_e) {
+         return { res: res, malformed: true };
+      }
+   }
+
+   // Rows of a compact result, or of a full Malloy result envelope; null when the shape is unknown.
+   function rowCountOf(result) {
+      if (Array.isArray(result)) return result.length;
+      var rows = result && result.data && result.data.array_value;
+      return Array.isArray(rows) ? rows.length : null;
    }
 
    function query(modelPath, malloyQuery, opts) {
@@ -202,6 +764,39 @@
    }
 
    // --- Embed helper (host page) -----------------------------------------
+   var SEND_TIMEOUT_MS = 5000;
+
+   function randomNonce() {
+      var bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      var out = "";
+      for (var i = 0; i < bytes.length; i++) {
+         out += (bytes[i] < 16 ? "0" : "") + bytes[i].toString(16);
+      }
+      return out;
+   }
+
+   // `src` with the embed token (deprecated; see getToken) in its query and the nonce in its
+   // fragment, merged with any fragment it already has.
+   function embedUrl(src, token, nonce) {
+      var hash = src.indexOf("#");
+      var base = hash === -1 ? src : src.slice(0, hash);
+      var fragment = hash === -1 ? "" : withoutNonce(src.slice(hash + 1));
+      if (token) {
+         base +=
+            (base.indexOf("?") === -1 ? "?" : "&") +
+            "embed_token=" +
+            encodeURIComponent(token);
+      }
+      return (
+         base +
+         "#" +
+         (fragment ? fragment + "&" : "") +
+         "publisher-nonce=" +
+         nonce
+      );
+   }
+
    function embed(selector, options) {
       options = options || {};
       var host =
@@ -214,13 +809,13 @@
       if (!options.src) {
          throw new Error("Publisher.embed: opts.src is required");
       }
+      var nonce = randomNonce();
+      var pageOrigin = new URL(options.src, location.href).origin;
+      if (pageOrigin === "null") {
+         throw new Error("Publisher.embed: opts.src needs an http(s) origin");
+      }
       var iframe = document.createElement("iframe");
-      iframe.src = options.token
-         ? options.src +
-           (options.src.indexOf("?") === -1 ? "?" : "&") +
-           "embed_token=" +
-           encodeURIComponent(options.token)
-         : options.src;
+      iframe.src = embedUrl(options.src, options.token, nonce);
       iframe.style.border = "0";
       iframe.style.width = "100%";
       iframe.style.display = "block";
@@ -238,21 +833,243 @@
          "allow-scripts allow-same-origin allow-forms",
       );
 
-      // Resize listener
-      function onMessage(e) {
-         if (!e.data || e.data.type !== "publisher:resize") return;
-         if (e.source !== iframe.contentWindow) return;
-         if (typeof e.data.height === "number") {
-            iframe.style.height = Math.max(0, e.data.height) + "px";
+      var pending = new Map();
+      var hostHandlers = new Map();
+      var ready = false;
+      var readyWaiters = [];
+      var seq = 0;
+      var binds = 0;
+      var pageHandles = [];
+      // A rebound page gets the held givens once it handles givens.set; a replay sooner would be dropped unheard.
+      var replayPending = false;
+      // The givens the page should hold: what the host last sent with givens.set (merged) or the page last reported.
+      var heldGivens = null;
+      var gone = false;
+      // Bumped on every load and on destroy: a token or a reply to a page request is dropped if the frame moved on while it was pending.
+      var generation = 0;
+
+      function hostPost(type, payload, extra) {
+         var msg = { protocol: "publisher", v: 1, type: type };
+         if (extra) {
+            if (extra.id !== undefined) msg.id = extra.id;
+            if (extra.reply) msg.reply = true;
+            if (extra.error) msg.error = extra.error;
+         }
+         if (payload !== undefined) msg.payload = payload;
+         try {
+            iframe.contentWindow.postMessage(msg, pageOrigin);
+            return true;
+         } catch (_e) {
+            return false;
          }
       }
+
+      function sayHello() {
+         if (!gone) hostPost("hello", undefined, { id: "hello" });
+      }
+
+      function holdGivens(payload) {
+         var patch = payload && payload.givens;
+         if (!isPlainObject(patch)) return;
+         var next = Object.assign({}, heldGivens);
+         Object.keys(patch).forEach(function (k) {
+            if (patch[k] === null) delete next[k];
+            else next[k] = patch[k];
+         });
+         heldGivens = next;
+      }
+
+      function sendToken() {
+         if (!options.getToken) return;
+         var gen = generation;
+         Promise.resolve()
+            .then(function () {
+               return options.getToken();
+            })
+            .then(
+               function (token) {
+                  if (token && gen === generation && !gone)
+                     hostPost("auth.token", { token: String(token) });
+               },
+               function () {
+                  /* the page's own 401 handling surfaces a missing token */
+               },
+            );
+      }
+
+      // The reply to the page's auth.token.request; a getToken that fails answers with handler_error.
+      function answerTokenRequest() {
+         return Promise.resolve()
+            .then(function () {
+               return options.getToken();
+            })
+            .then(function (token) {
+               if (!token) throw new Error("no token");
+               return { token: String(token) };
+            });
+      }
+
+      function noteHandles(payload) {
+         var h = payload && payload.handles;
+         pageHandles = Array.isArray(h) ? h : [];
+      }
+
+      function replayGivens() {
+         if (
+            !ready ||
+            !replayPending ||
+            pageHandles.indexOf("givens.set") === -1
+         )
+            return;
+         replayPending = false;
+         if (heldGivens) hostPost("givens.set", { givens: heldGivens });
+      }
+
+      function onReady() {
+         if (ready) return;
+         ready = true;
+         // A reloaded page starts with no givens; the first bind has none to replay.
+         if (++binds > 1) replayPending = true;
+         replayGivens();
+         sendToken();
+         readyWaiters.splice(0).forEach(function (fn) {
+            fn();
+         });
+      }
+
+      function onBusMessage(e) {
+         if (e.source !== iframe.contentWindow || e.origin !== pageOrigin)
+            return;
+         var m = e.data;
+         if (!isEnvelope(m) || m.nonce !== nonce) return;
+         var isRequest = m.id !== undefined && !m.reply;
+         if (m.reply) {
+            if (m.type === "hello") {
+               noteHandles(m.payload);
+               return onReady();
+            }
+            var waiting = pending.get(m.id);
+            if (!waiting) return;
+            pending.delete(m.id);
+            clearTimeout(waiting.timer);
+            if (m.error) {
+               var err = new Error(
+                  "Publisher.embed: " +
+                     ((m.error && m.error.message) || m.type),
+               );
+               err.code = m.error && m.error.code;
+               waiting.reject(err);
+            } else {
+               waiting.resolve(m.payload);
+            }
+            return;
+         }
+         // The page is up and offered itself before our hello landed; answer now.
+         if (m.type === "ready") {
+            noteHandles(m.payload);
+            if (!ready) sayHello();
+            replayGivens();
+         }
+         if (
+            m.type === "givens.changed" &&
+            isPlainObject(m.payload && m.payload.givens)
+         ) {
+            heldGivens = Object.assign({}, m.payload.givens);
+         }
+         var list = (hostHandlers.get(m.type) || []).slice();
+         if (m.type === "auth.token.request" && isRequest && options.getToken) {
+            list.unshift(answerTokenRequest);
+         }
+         if (list.length === 0) {
+            if (isRequest) {
+               hostPost(m.type, undefined, {
+                  id: m.id,
+                  reply: true,
+                  error: {
+                     code: "unhandled",
+                     message: "No handler for '" + m.type + "'",
+                  },
+               });
+            }
+            return;
+         }
+         var gen = generation;
+         var meta = { type: m.type, id: m.id };
+         var results = list.map(function (fn) {
+            try {
+               return Promise.resolve(fn(m.payload, meta));
+            } catch (err2) {
+               return Promise.reject(err2);
+            }
+         });
+         if (!isRequest) {
+            results.forEach(function (r) {
+               r.catch(function () {});
+            });
+            return;
+         }
+         Promise.all(results).then(
+            function (values) {
+               if (gen !== generation || gone) return;
+               var answer = values.find(function (v) {
+                  return v !== undefined;
+               });
+               hostPost(m.type, answer === undefined ? null : answer, {
+                  id: m.id,
+                  reply: true,
+               });
+            },
+            function (err3) {
+               if (gen !== generation || gone) return;
+               hostPost(m.type, undefined, {
+                  id: m.id,
+                  reply: true,
+                  error: {
+                     code: "handler_error",
+                     message: String((err3 && err3.message) || err3),
+                  },
+               });
+            },
+         );
+      }
+
+      // Resize listener (legacy envelope-less message) and the bus
+      function onMessage(e) {
+         if (e.data && e.data.type === "publisher:resize") {
+            if (e.source !== iframe.contentWindow) return;
+            if (typeof e.data.height === "number") {
+               iframe.style.height = Math.max(0, e.data.height) + "px";
+            }
+            return;
+         }
+         onBusMessage(e);
+      }
       window.addEventListener("message", onMessage);
+      // A (re)load is a fresh page that has not bound yet.
+      function onLoad() {
+         generation++;
+         ready = false;
+         replayPending = false;
+         sayHello();
+      }
+      iframe.addEventListener("load", onLoad);
+
+      function cleanup() {
+         gone = true;
+         generation++;
+         window.removeEventListener("message", onMessage);
+         iframe.removeEventListener("load", onLoad);
+         observer.disconnect();
+         pending.forEach(function (waiting) {
+            clearTimeout(waiting.timer);
+            waiting.reject(new Error("Publisher.embed: destroyed"));
+         });
+         pending.clear();
+         readyWaiters = [];
+      }
       // Best-effort cleanup if the host removes the iframe
       var observer = new MutationObserver(function () {
-         if (!host.contains(iframe)) {
-            window.removeEventListener("message", onMessage);
-            observer.disconnect();
-         }
+         if (!host.contains(iframe)) cleanup();
       });
       observer.observe(host, { childList: true, subtree: false });
 
@@ -260,9 +1077,49 @@
       return {
          iframe: iframe,
          destroy: function () {
-            window.removeEventListener("message", onMessage);
-            observer.disconnect();
+            cleanup();
             if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+         },
+         // A request to the page; sent once the page has answered hello, rejected after 5 s.
+         send: function (type, payload) {
+            return new Promise(function (resolve, reject) {
+               if (gone) {
+                  reject(new Error("Publisher.embed: destroyed"));
+                  return;
+               }
+               var id = "h" + ++seq;
+               if (type === "givens.set") holdGivens(payload);
+               var timer = setTimeout(function () {
+                  pending.delete(id);
+                  var queued = readyWaiters.indexOf(go);
+                  if (queued !== -1) readyWaiters.splice(queued, 1);
+                  reject(
+                     new Error(
+                        "Publisher.embed: no reply to '" + type + "' in 5 s",
+                     ),
+                  );
+               }, SEND_TIMEOUT_MS);
+               pending.set(id, {
+                  resolve: resolve,
+                  reject: reject,
+                  timer: timer,
+               });
+               // Not generation-guarded: a queued send posts once the current document has proved itself.
+               function go() {
+                  if (pending.has(id)) hostPost(type, payload, { id: id });
+               }
+               if (ready) go();
+               else readyWaiters.push(go);
+            });
+         },
+         on: function (type, fn) {
+            var list = hostHandlers.get(type);
+            if (!list) hostHandlers.set(type, (list = []));
+            list.push(fn);
+            return function () {
+               var i = list.indexOf(fn);
+               if (i !== -1) list.splice(i, 1);
+            };
          },
       };
    }
@@ -270,14 +1127,6 @@
    // --- When this runtime is itself inside an iframe ---------------------
    // Post size updates upstream + listen for live-reload SSE events.
    function setUpEmbeddedSelfBehaviors() {
-      var inIframe = (function () {
-         try {
-            return window.self !== window.top;
-         } catch (_e) {
-            return true; // cross-origin parent — assume embedded
-         }
-      })();
-
       if (inIframe) {
          var lastHeight = -1;
          function measureContentHeight() {
@@ -336,9 +1185,10 @@
             if (h === lastHeight) return;
             lastHeight = h;
             try {
+               // Bound: the host proved itself with a hello. Legacy hosts never say hello, and resize is only a height.
                window.parent.postMessage(
                   { type: "publisher:resize", height: h },
-                  "*",
+                  boundOrigin || "*",
                );
             } catch (_e) {
                /* ignore */
@@ -401,6 +1251,7 @@
    function setUpLiveReload() {
       if (!inAppMatch) return;
       if (!ctx.environment || !ctx.package) return;
+      if (fixedVersion) return; // a version never changes
       if (typeof EventSource === "undefined") return;
       var url =
          apiBase +
@@ -416,9 +1267,7 @@
             if (pending) return;
             pending = true;
             // Tiny debounce to coalesce a flurry of saves
-            setTimeout(function () {
-               location.reload();
-            }, 100);
+            setTimeout(reloadWithNonce, 100);
          });
          es.onerror = function () {
             // Browser will auto-reconnect; nothing to do.
@@ -437,10 +1286,18 @@
       setToken: function (token) {
          bearerToken = token || null;
       },
+      on: on,
+      emit: emit,
+      get givens() {
+         return cloneGivens(givensStore);
+      },
+      setGivens: setGivens,
+      onGivensChange: onGivensChange,
    };
 
-   // Auto-init the in-iframe behaviors and live-reload subscription.
-   // Both are no-ops if not applicable.
+   // Auto-init the in-iframe behaviors, the host bus and the live-reload subscription.
+   // All are no-ops if not applicable.
+   setUpHostBus();
    setUpEmbeddedSelfBehaviors();
    setUpLiveReload();
 })();
