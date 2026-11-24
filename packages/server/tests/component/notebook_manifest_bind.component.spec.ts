@@ -192,6 +192,71 @@ async function total(
    };
 }
 
+/**
+ * Manifests a caller named that hold no usable manifest, each with the
+ * answer it gets, and one the server could not read, which stays a 500.
+ */
+const REFUSALS: {
+   what: string;
+   location: () => string;
+   status: number;
+   reason: string;
+}[] = [
+   {
+      what: "nothing at the location",
+      location: () => path.join(root, "missing.json"),
+      status: 400,
+      reason: "MANIFEST_NOT_FOUND",
+   },
+   {
+      what: "a file that does not parse",
+      location: () => {
+         const file = path.join(root, "torn.json");
+         fs.writeFileSync(file, '{ "entries": {');
+         return file;
+      },
+      status: 422,
+      reason: "MANIFEST_INVALID",
+   },
+   {
+      what: "JSON that is not a manifest",
+      location: () => {
+         const file = path.join(root, "list.json");
+         fs.writeFileSync(file, "[1, 2]");
+         return file;
+      },
+      status: 422,
+      reason: "MANIFEST_INVALID",
+   },
+   {
+      what: "a location the server cannot read",
+      location: () => path.join(root, "unreadable.json"),
+      status: 500,
+      reason: "MANIFEST_BIND_FAILED",
+   },
+];
+
+/** Run `fn` with `unreadable.json`'s fetch failing as a refused read does. */
+async function withUnreadable<T>(fn: () => Promise<T>): Promise<T> {
+   const original = manifestLoader.fetchManifestEntries;
+   const fetches = spyOn(
+      manifestLoader,
+      "fetchManifestEntries",
+   ).mockImplementation(async (uri: string) => {
+      if (uri.endsWith("unreadable.json")) {
+         throw Object.assign(new Error("permission denied"), {
+            code: "EACCES",
+         });
+      }
+      return original(uri);
+   });
+   try {
+      return await fn();
+   } finally {
+      fetches.mockRestore();
+   }
+}
+
 describe("a manifest bound to a version holding empty and markdown-only notebooks", () => {
    it("binds, and its contract-bearing entry serves materialized", async () => {
       const { pkg, id } = await publishLive();
@@ -259,7 +324,7 @@ describe("a manifest whose bind fails", () => {
       expect(served.servedBy).not.toBe("live");
    });
 
-   it("answers 500 for a manifest that cannot be fetched, and a version bound to none stays live", async () => {
+   it("answers 400 for a manifest that is not there, and a version bound to none stays live", async () => {
       const { pkg } = await publishLive();
       const refused = await versions()
          .setManifest(PKG, "1.0.0", path.join(root, "missing.json"))
@@ -267,8 +332,8 @@ describe("a manifest whose bind fails", () => {
       expect(refused).toBeInstanceOf(ManifestBindFailedError);
       expect((refused as ManifestBindFailedError).applied).toBe(false);
       expect(
-         internalErrorToHttpError(refused as Error, { log: false }).status,
-      ).toBe(500);
+         internalErrorToHttpError(refused as Error, { log: false }).json,
+      ).toMatchObject({ code: 400, reason: "MANIFEST_NOT_FOUND" });
       expect((await versions().getVersion(PKG, "1.0.0")).manifestPath).toBe(
          null,
       );
@@ -404,6 +469,45 @@ describe("an unversioned package's manifest PATCH", () => {
          await plainEnv.closeAllConnections().catch(() => undefined);
       }
    });
+
+   for (const refusal of REFUSALS) {
+      it(`answers ${refusal.status} ${refusal.reason} for ${refusal.what}, and undoes the PATCH`, async () => {
+         const { plainEnv, pkg, id, publisherJson } = await plainPackage();
+         try {
+            await makeTable(pkg, "summary_host", 42);
+            const host = writeManifest("host.json", id, "summary_host");
+            await plainEnv.updatePackage("plain", {
+               name: "plain",
+               manifestLocation: host,
+            });
+            const fileBefore = publisherJson();
+
+            const refused = await withUnreadable(() =>
+               plainEnv
+                  .updatePackage("plain", {
+                     name: "plain",
+                     manifestLocation: refusal.location(),
+                  })
+                  .catch((error: unknown) => error),
+            );
+            expect(
+               internalErrorToHttpError(refused as Error, { log: false }).json,
+            ).toMatchObject({ code: refusal.status, reason: refusal.reason });
+
+            expect(publisherJson()).toBe(fileBefore);
+            expect(pkg.getPackageMetadata()).toMatchObject({
+               manifestLocation: host,
+            });
+            expect(pkg.materialization().bindingState()).toMatchObject({
+               manifestBindingStatus: "bound",
+               boundManifestUri: host,
+            });
+            expect((await total(pkg)).n).toBe(42);
+         } finally {
+            await plainEnv.closeAllConnections().catch(() => undefined);
+         }
+      });
+   }
 });
 
 describe("a manifest that cannot be fetched", () => {
@@ -522,4 +626,42 @@ describe("a refused PUT to a version that was not loaded", () => {
          fetches.mockRestore();
       }
    });
+});
+
+describe("a manifest PUT naming a location that holds no usable manifest", () => {
+   for (const refusal of REFUSALS) {
+      it(`answers ${refusal.status} ${refusal.reason} for ${refusal.what}, and keeps the manifest bound before`, async () => {
+         const { pkg, id } = await publishLive();
+         await makeTable(pkg, "summary_host", 42);
+         const host = writeManifest("host.json", id, "summary_host");
+         await versions().setManifest(PKG, "1.0.0", host);
+
+         const refused = await withUnreadable(() =>
+            versions()
+               .setManifest(PKG, "1.0.0", refusal.location())
+               .catch((error: unknown) => error),
+         );
+         expect(refused).toBeInstanceOf(ManifestBindFailedError);
+         const answer = internalErrorToHttpError(refused as Error, {
+            log: false,
+         });
+         expect(answer.status).toBe(refusal.status);
+         expect(answer.json).toMatchObject({
+            code: refusal.status,
+            reason: refusal.reason,
+         });
+
+         expect((await versions().getVersion(PKG, "1.0.0")).manifestPath).toBe(
+            host,
+         );
+         expect(pkg.getManifestLocation()).toBe(host);
+         expect(pkg.materialization().bindingState()).toMatchObject({
+            manifestBindingStatus: "bound",
+            boundManifestUri: host,
+         });
+         const served = await total(pkg);
+         expect(served.n).toBe(42);
+         expect(served.servedBy).not.toBe("live");
+      });
+   }
 });

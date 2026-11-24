@@ -85,6 +85,7 @@ import {
 } from "./connection_config";
 import {
    fetchManifestEntries,
+   ManifestUnusableError,
    splitManifestEntries,
    type FetchedManifest,
 } from "./materialization/run/manifest_loader";
@@ -4812,7 +4813,16 @@ export class Environment {
             },
          );
          if (onFailure === "refuse") {
-            throw new ManifestBindFailedError(manifestLocation, err, applying);
+            // Nothing at the location, or not a manifest, is the caller's to
+            // fix; only a fetch can find either.
+            throw new ManifestBindFailedError(
+               manifestLocation,
+               err,
+               applying,
+               !applying && err instanceof ManifestUnusableError
+                  ? err.problem
+                  : undefined,
+            );
          }
          pkg.materialization().markManifestBindFailed();
       }

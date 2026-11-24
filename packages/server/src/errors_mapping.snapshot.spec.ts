@@ -514,6 +514,26 @@ const CASES: Array<[string, () => unknown]> = [
          ),
    ],
    [
+      "ManifestBindFailedError (not found)",
+      () =>
+         new ManifestBindFailedError(
+            "s3://bucket/manifest.json",
+            new Error("No build manifest at s3://bucket/manifest.json"),
+            false,
+            "not_found",
+         ),
+   ],
+   [
+      "ManifestBindFailedError (invalid)",
+      () =>
+         new ManifestBindFailedError(
+            "s3://bucket/manifest.json",
+            new Error("not a JSON object"),
+            false,
+            "invalid",
+         ),
+   ],
+   [
       "WriteRollbackFailedError",
       () => new WriteRollbackFailedError("the restore failed"),
    ],

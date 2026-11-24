@@ -21,6 +21,20 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — breaking: a manifest `PUT` or package `PATCH` answers `400 MANIFEST_NOT_FOUND` or `422 MANIFEST_INVALID` for a manifest location the caller got wrong, and fetches the manifest once
+
+**Changed: a `manifestLocation` with nothing at it, or with something there that is not a build manifest, is refused as the caller's input, not as a `500`.** `PUT …/versions/{version}/manifest`, and the deprecated `PATCH …/packages/{pkg}` naming a `manifestLocation` on a versioned or an unversioned package, answer:
+
+- **`400` with `reason: MANIFEST_NOT_FOUND`** when nothing is at the location: a missing file or directory on the path, or an object store's "no such object" or "no such bucket". Not `404`, which on these routes says the package or version does not exist.
+- **`422` with `reason: MANIFEST_INVALID`** when what is there does not parse as JSON, is not a JSON object, has an `entries` that is not an object, or is a directory.
+- **`500` with `reason: MANIFEST_BIND_FAILED`**, as before, for everything else: a fetch that timed out or failed on the network, an object store or file system that refused the server's credentials (an object store answers "access denied" for a missing object when the credentials may not list the bucket, so a refusal cannot be read as "not there"), and a bind that threw on a manifest that read.
+
+Each applies nothing, exactly as `MANIFEST_BIND_FAILED` does: the `manifestLocation` stays what it was and the package or version serves what it served before. A publish that names a `manifestLocation` still reports any of them as `manifestBindingStatus` `bind_failed`. A manifest that is a JSON array, or whose `entries` is not an object, used to bind as empty; it is now refused, and a load or publish naming one reports `bind_failed`.
+
+**Fixed: one manifest `PUT` or republish fetches the manifest once.** A `PUT` to a version that was not loaded, and a publish again of a loaded version that names a manifest, read it twice when its bind failed, so an unreachable manifest cost two fetch timeouts while the version's lock was held. **Fixed: a refused `PUT` to a version that was not loaded no longer unloads the copy it loaded,** which could release connections under a query that had joined that load; the copy is rebound to the manifest the version had.
+
+**Who is affected:** a host that sets manifests and branches on the status or `reason` of a refusal. **What to do:** treat `400 MANIFEST_NOT_FOUND` and `422 MANIFEST_INVALID` as a location or file to fix before sending again (retrying unchanged fails the same way), and keep `500 MANIFEST_BIND_FAILED` as the retryable one.
+
 ## [Unreleased] — key-uniqueness verdicts are read only from the table's column contract
 
 **[change] Key-uniqueness verdicts have one store: each table's column contract (`contract.keys`).** A verdict a build recorded (a `#(rollup)` rollup's own key, a querying source's primary key, a stored source's primary key, a pair table's leaf key) is bound only when the contract records it for the primary key the model declares now and it passed (`unique: true`, not `unverified`); anything else, including a check that could not run, answers live. The bind decides; a query only looks the verdict up. What moves:

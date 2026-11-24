@@ -10,7 +10,12 @@ import path from "path";
 import { pathToFileURL } from "url";
 import { logger } from "../../../logger";
 import { ManifestEntry } from "../domain/types";
-import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
+import {
+   fetchManifestEntries,
+   isManifestNotFound,
+   ManifestUnusableError,
+   splitManifestEntries,
+} from "./manifest_loader";
 
 describe("fetchManifestEntries", () => {
    let dir: string;
@@ -181,9 +186,50 @@ describe("fetchManifestEntries", () => {
    });
 
    it("throws when the file does not exist", async () => {
-      await expect(
-         fetchManifestEntries(path.join(dir, "missing.json")),
-      ).rejects.toThrow();
+      const missing = await fetchManifestEntries(
+         path.join(dir, "missing.json"),
+      ).catch((error: unknown) => error);
+      expect(missing).toBeInstanceOf(ManifestUnusableError);
+      expect((missing as ManifestUnusableError).problem).toBe("not_found");
+   });
+
+   it("reads malformed JSON, a non-object, a non-object entries or a directory as invalid", async () => {
+      const bad = path.join(dir, "bad.json");
+      await fs.writeFile(bad, "{ not json", "utf8");
+      const refusals: unknown[] = [
+         await fetchManifestEntries(bad).catch((error: unknown) => error),
+         await fetchManifestEntries(dir).catch((error: unknown) => error),
+      ];
+      for (const contents of [
+         [],
+         "a string",
+         null,
+         { entries: "x" },
+         { entries: [] },
+      ]) {
+         const file = await writeManifest(contents);
+         refusals.push(
+            await fetchManifestEntries(file).catch((error: unknown) => error),
+         );
+      }
+      for (const refused of refusals) {
+         expect(refused).toBeInstanceOf(ManifestUnusableError);
+         expect((refused as ManifestUnusableError).problem).toBe("invalid");
+      }
+   });
+
+   it("reads an object store's 404 as not found, and a refusal as neither", () => {
+      // Classified on the error's shape, as each client throws it.
+      expect(isManifestNotFound({ code: 404 })).toBe(true);
+      expect(isManifestNotFound({ name: "NoSuchKey" })).toBe(true);
+      expect(isManifestNotFound({ name: "NoSuchBucket" })).toBe(true);
+      expect(isManifestNotFound({ $metadata: { httpStatusCode: 404 } })).toBe(
+         true,
+      );
+      expect(isManifestNotFound({ code: 403 })).toBe(false);
+      expect(isManifestNotFound({ name: "AccessDenied" })).toBe(false);
+      expect(isManifestNotFound({ code: "EACCES" })).toBe(false);
+      expect(isManifestNotFound(new Error("Timed out after 1ms"))).toBe(false);
    });
 
    it("rejects a malformed gs:// URI without a key", async () => {
