@@ -11768,17 +11768,6 @@ components:
             the upstreams a named source reads when it cannot carry them)
             fails the build, and a downstream is never built by recomputing
             its upstreams from raw.
-        warehouseReach:
-          type: string
-          default: recompute
-          deprecated: true
-          description: >-
-            Deprecated: accepted and ignored. No build recomputes a stored
-            upstream from the source warehouse, so there is nothing for it to
-            choose; a request that sends it (or `strictUpstreams`) logs one
-            deprecation warning. The values are still validated: `recompute`
-            and `refuse` are accepted, null reads as absent, and any other
-            value is a 400.
         ledger:
           type: array
           items:

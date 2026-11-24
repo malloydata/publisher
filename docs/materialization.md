@@ -1048,10 +1048,10 @@ that would rebuild a table nobody asked to rebuild, and store rows that need not
 every other reader of the upstream sees. A downstream that cannot be built over its upstream's
 table answers live instead, through the served copy, which reads that table.
 
-`strictUpstreams` and `warehouseReach` in `buildInstructions` are accepted and ignored. Both are
-still validated (a non-boolean `strictUpstreams`, or a `warehouseReach` other than `recompute` or
-`refuse`, is a 400), and a request that sends either logs one warning,
-`buildInstructions options are deprecated and ignored`. A later release removes them.
+`strictUpstreams` in `buildInstructions` is accepted and ignored. It is still validated (a
+non-boolean is a 400), and a request that sends it logs one warning, `buildInstructions options
+are deprecated and ignored`. A later release removes it. `warehouseReach` is removed: a request
+that sends it is a 400 that names it.
 
 **Refused when the package is planned.** What the plan can see, it refuses before any run, as
 `upstream_table_unusable` in `refusedSources`, with a `*-not-built` warning and a `message` naming

@@ -613,8 +613,8 @@ as compared otherwise than live), it is refused when the package is planned,
 as `upstream_table_unusable`; what only a run finds (an upstream the build
 neither materialized nor was handed by reference, or a shape over stored
 upstreams the build could not carry) fails that build. The source answers live
-until it can be built. `strictUpstreams` and `warehouseReach` are accepted and
-ignored. Each entry says which happened: `upstreamReuse` is `reused` when
+until it can be built. `strictUpstreams` is accepted and ignored, and
+`warehouseReach` is refused (400). Each entry says which happened: `upstreamReuse` is `reused` when
 every persisted upstream was read from its table and `recomputed` when one was
 inlined, with `upstreamRecomputeReason` naming it. The
 `publisher_storage_chained_build_total` counter (labeled `parent_reuse` /

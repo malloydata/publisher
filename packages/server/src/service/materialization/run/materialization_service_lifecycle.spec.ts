@@ -756,7 +756,6 @@ describe("runBuild (branch behavior)", () => {
       expect(svc.commitManifest.firstCall.args[4]).toBeUndefined();
    });
 
-   // ms2data/service#6756: the host's warehouseReach reaches the run, last.
    it("auto-run: derives instructions and auto-loads the manifest", async () => {
       const svc = stubEngine();
 
