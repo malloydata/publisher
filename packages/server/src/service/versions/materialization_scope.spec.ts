@@ -262,12 +262,38 @@ describe("storageBindingResolverFor", () => {
       expect(entries["eid-t_a"]?.contract).toEqual(keyed);
    });
 
-   it("binds no key check while a run may be rewriting a table, and keeps the rest of the contract", async () => {
+   it("binds no passed key check while a run may be rewriting a table, and keeps the rest of the contract", async () => {
       const entries = await resolve([
          committed(),
          run("b", { status: "PENDING", manifest: null, tables: [] }),
       ]);
       const { keys: _keys, ...rest } = keyed;
       expect(entries["eid-t_a"]?.contract).toEqual(rest);
+   });
+
+   it("keeps a check that found its key repeated, or could not run, while a run is active: it only declines", async () => {
+      const repeated = { unique: false, level: "parent" };
+      const unverified = { unique: false, level: "leaf", unverified: true };
+      const r = committed();
+      (
+         r.manifest as { entries: Record<string, Record<string, unknown>> }
+      ).entries["eid-t_a"]!.contract = {
+         ...keyed,
+         keys: {
+            ...keyed.keys,
+            "parent:orders@m.malloy.id": repeated,
+            "leaf:items.item_id": unverified,
+         },
+      };
+      const entries = await resolve([
+         r,
+         run("b", { status: "PENDING", manifest: null, tables: [] }),
+      ]);
+      expect(
+         (entries["eid-t_a"]?.contract as { keys?: unknown } | undefined)?.keys,
+      ).toEqual({
+         "parent:orders@m.malloy.id": repeated,
+         "leaf:items.item_id": unverified,
+      });
    });
 });

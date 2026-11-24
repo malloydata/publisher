@@ -191,11 +191,13 @@ function passed(check: ContractKeyCheck): boolean {
 }
 
 /**
- * `raw` (a contract as a host or the store holds it) without its key
- * checks, everything else as it was: so a bind finds no verdict in it. A
- * value that is not a contract is returned as it is.
+ * `raw` (a contract as a host or the store holds it) without the key checks
+ * that passed, everything else as it was: so a bind finds no verdict in it
+ * that would serve. A check that found its key repeated, or could not run,
+ * stays, so what it declined still declines. `raw` itself when it records no
+ * passed check, or is not a contract.
  */
-export function contractWithoutKeys(raw: unknown): unknown {
+export function contractWithoutPassedKeys(raw: unknown): unknown {
    let value = raw;
    if (typeof value === "string") {
       try {
@@ -204,9 +206,19 @@ export function contractWithoutKeys(raw: unknown): unknown {
          return raw;
       }
    }
-   if (!isRecord(value) || !("keys" in value)) return raw;
+   if (!isRecord(value) || !isRecord(value.keys)) return raw;
+   const all = Object.entries(value.keys);
+   const kept = all.filter(
+      ([, check]) =>
+         !(
+            isRecord(check) &&
+            check.unique === true &&
+            check.unverified !== true
+         ),
+   );
+   if (kept.length === all.length) return raw;
    const { keys: _dropped, ...rest } = value;
-   return rest;
+   return kept.length > 0 ? { ...rest, keys: Object.fromEntries(kept) } : rest;
 }
 
 /** A table's contract, as {@link parseContract} reads it. */
