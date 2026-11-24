@@ -9,12 +9,18 @@
  * not read, joins a compile in flight for the same tables, or starts one.
  * Each request has a turn, so an older request's compile, finishing last,
  * never replaces the copy a newer one kept; an invalidation starts a new
- * generation, so a compile it overtook is never kept.
+ * generation, so a compile it overtook is never kept. A freshness edge
+ * orders copies before turns do: a copy over a table that had stopped being
+ * read at the kept copy's pin never replaces it, and a kept copy over a
+ * table that has stopped being read at a newer copy's pin is always
+ * replaced, whatever their turns (a query pinned just before the edge must
+ * not re-keep the copy the commit at that edge replaced).
  *
  * The compile itself is the served copy's, handed in.
  */
 
 import type { Binding } from "../domain/binding";
+import { stopsReadAt } from "../domain/freshness";
 
 /** What the cache reads of a compiled copy. */
 export interface LaneCompiled {
@@ -79,6 +85,24 @@ function compileKeyOf(bindings: readonly Binding[]): string {
    return bindings.map(compileInputOf).sort().join("\u0000");
 }
 
+/**
+ * Whether `bindings` include a table that is no longer read at `atMs`: its
+ * window lapsed, and its fallback does not serve stale.
+ */
+export function readsLapsedAt(
+   bindings: readonly Binding[],
+   atMs: number,
+): boolean {
+   return bindings.some((b) => {
+      const at = stopsReadAt({
+         dataAsOf: b.freshAsOf,
+         freshnessWindowSeconds: b.freshnessWindowSeconds,
+         freshnessFallback: b.freshnessFallback,
+      });
+      return at !== undefined && at <= atMs;
+   });
+}
+
 /** Whether two binding lists are the same bindings, by identity, in order. */
 function sameBindings(a: readonly Binding[], b: readonly Binding[]): boolean {
    return a.length === b.length && a.every((x, i) => x === b[i]);
@@ -123,9 +147,12 @@ export class CompiledCopyLanes<C extends LaneCompiled> {
    >();
    /** Bumped on every invalidation, so a compile started before it is never kept. */
    private generation = 0;
-   /** Requests for a compiled copy so far, and the latest whose copy each lane keeps. */
+   /**
+    * Requests for a compiled copy so far, and, per lane, the turn and pin
+    * instant of the request whose copy it keeps.
+    */
    private turns = 0;
-   private keptTurn = new Map<number, number>();
+   private keptBy = new Map<number, { turn: number; asOfMs: number }>();
 
    constructor(private readonly compile: CompileCopy<C>) {}
 
@@ -168,8 +195,15 @@ export class CompiledCopyLanes<C extends LaneCompiled> {
       // replaces the copy a newer one kept.
       const turn = ++this.turns;
       const keep = (compiled: C): void => {
-         if ((this.keptTurn.get(lane) ?? 0) > turn) return;
-         this.keptTurn.set(lane, turn);
+         const by = this.keptBy.get(lane);
+         const kept = this.compiled.get(lane);
+         if (by && kept) {
+            // A freshness edge between the two pins decides, before turns:
+            // the copy over the table that lapsed is the outdated one.
+            if (readsLapsedAt(compiled.over, by.asOfMs)) return;
+            if (!readsLapsedAt(kept.over, asOfMs) && by.turn > turn) return;
+         }
+         this.keptBy.set(lane, { turn, asOfMs });
          this.compiled.set(lane, compiled);
       };
       const generation = this.generation;

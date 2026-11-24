@@ -3259,9 +3259,10 @@ export class Model {
     * The sources this model's served copy answers from storage, by author
     * `sourceID`, as its last committed compile left them: undefined when the
     * served copy is off for this model, and `uncompiled` before its first
-    * compile. Every commit compiles the copy before the tables it reads are
-    * swapped in (a bind's, and the one at each freshness edge), so the last
-    * compile is the copy queries read.
+    * compile. A bind's commit compiles the copy before the tables it reads
+    * are swapped in, so the last compile is the copy queries read; past a
+    * freshness edge, until the commit at that edge recompiles it, a table
+    * whose window lapsed is left out by its recorded window.
     */
    public servedCopySourceIDs():
       | ReadonlySet<string>

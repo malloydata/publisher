@@ -22,7 +22,7 @@
  */
 
 import { isDuckLakeCatalogUnavailable } from "../../ducklake_catalog_unavailable";
-import { CompiledCopyLanes } from "./served_copy_lanes";
+import { CompiledCopyLanes, readsLapsedAt } from "./served_copy_lanes";
 import { createHash } from "crypto";
 import { requireUnique, verdictOf } from "../domain/key_check";
 import {
@@ -553,14 +553,28 @@ export class ServedCopyServe {
    }
 
    /**
-    * The author `sourceID`s the compiled copy re-rooted on a stored table,
-    * which are the sources it answers from storage; undefined before the
-    * first compile.
+    * The bindings the compiled copy re-rooted that are still read now. Past
+    * a table's freshness edge, and before the commit at that edge replaces
+    * the copy, the copy kept still re-roots it; a query compiles its own
+    * copy over what it pins, so only what this copy reports must leave the
+    * lapsed table out. A recorded fact checked against the clock, no I/O.
+    */
+   private rerootedNow(compiled: Compiled): Binding[] {
+      const now = Date.now();
+      return compiled.rerooted.filter((b) => !readsLapsedAt([b], now));
+   }
+
+   /**
+    * The author `sourceID`s the compiled copy re-rooted on a stored table
+    * still read now, which are the sources it answers from storage;
+    * undefined before the first compile.
     */
    rerootedSourceIDs(): ReadonlySet<string> | undefined {
       const compiled = this.lanes.kept(0);
       if (!compiled) return undefined;
-      return new Set(compiled.rerooted.flatMap((b) => b.sourceIDs ?? []));
+      return new Set(
+         this.rerootedNow(compiled).flatMap((b) => b.sourceIDs ?? []),
+      );
    }
 
    /**
@@ -584,13 +598,14 @@ export class ServedCopyServe {
    rerootedOnDatabaseOnly(): ReadonlySet<string> | undefined {
       const compiled = this.lanes.kept(0);
       if (!compiled) return undefined;
+      const rerooted = this.rerootedNow(compiled);
       const onStorage = new Set(
-         compiled.rerooted
+         rerooted
             .filter((b) => !isDatabase(b))
             .flatMap((b) => b.sourceIDs ?? []),
       );
       return new Set(
-         compiled.rerooted
+         rerooted
             .filter(isDatabase)
             .flatMap((b) => b.sourceIDs ?? [])
             .filter((id) => !onStorage.has(id)),
@@ -607,8 +622,9 @@ export class ServedCopyServe {
    servedThroughBaseSourceIDs(): ReadonlySet<string> {
       const compiled = this.lanes.kept(0);
       if (!compiled?.throughBase) return new Set();
-      const ids = new Set(compiled.rerooted.flatMap((b) => b.sourceIDs ?? []));
-      const names = new Set(compiled.rerooted.map((b) => b.sourceName));
+      const rerooted = this.rerootedNow(compiled);
+      const ids = new Set(rerooted.flatMap((b) => b.sourceIDs ?? []));
+      const names = new Set(rerooted.map((b) => b.sourceName));
       const declined = (id: string) =>
          !!compiled.optOutIDs?.has(id) || !!compiled.unsafeIDs?.has(id);
       return new Set(

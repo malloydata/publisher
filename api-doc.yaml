@@ -5051,11 +5051,14 @@ components:
           type: boolean
           deprecated: true
           description: >-
-            Retained, no longer produced. Every change to the tables a query
-            reads is a commit that compiles each model's served copy over the
-            new tables before they are swapped in: a bind, and a freshness
-            window that lapses (compiled at the window's edge). A verdict is
-            therefore never pending, and this field is never present.
+            Retained, no longer produced. A bind compiles each model's served
+            copy over the new tables before they are swapped in. A freshness
+            window that lapses changes the tables a query reads with no bind:
+            from that edge, each query compiles its own copy without the
+            lapsed table, the package recompiles each served copy at the edge,
+            and until that compile lands a verdict leaves the lapsed table
+            out by its recorded window, judged against the clock. A verdict
+            is therefore never pending, and this field is never present.
         message:
           type: string
           description: What the verdict means for this source, in a sentence.
