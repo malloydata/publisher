@@ -110,7 +110,7 @@ counts); the kit checks, so an average or a rate never reads as "180% of the tot
 Every block takes `kicker` (what is measured; the kit writes one when you leave it out), `headline` (a function of
 its rows returning a sentence or `prose()` parts; the kit writes a standard one; `null` for none), and `span` (12,
 the full width, or 6, half). Every block loads as it nears the screen, holds its height while loading, says when
-nothing matches, and has "How it's made".
+nothing matches, and has an info mark that turns it over to "How it's made".
 
 | Block | What it draws | A click |
 |---|---|---|

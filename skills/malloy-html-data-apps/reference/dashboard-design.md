@@ -87,7 +87,7 @@ do one of them too, and say so in its tooltip.
 
 ## Every section explains itself
 
-Each block has "How it's made". It turns the section over and says: what it shows (one sentence you write for a
+Each block has an info mark (ⓘ) in its corner. It turns the section over to "How it's made", which says: what it shows (one sentence you write for a
 reader who does not know the data), what it covers (the period, the comparison and the filters, in words, written by
 the kit), what each number means (from the model's `#(doc)`, or the metric's `doc` when the app defines it), how
 fresh and how fast (from Publisher's answer), and the query and its rows with a CSV. Write `what` for every block

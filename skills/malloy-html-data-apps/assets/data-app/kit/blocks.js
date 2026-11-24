@@ -54,7 +54,8 @@ export function block(spec) {
   let current = spec
   let results = []
   const kick = h('span', { class: 'kicker__of' })
-  const how = h('button', { type: 'button', class: 'how', 'aria-expanded': 'false', text: 'How it’s made' })
+  // An info mark opens the back; it says what it does to a screen reader and on hover.
+  const how = h('button', { type: 'button', class: 'how', 'aria-expanded': 'false', 'aria-label': `How “${spec.kicker}” is made`, title: 'How it’s made' }, icon('info'))
   const head = h('div', { class: 'block__head' }, h('p', { class: 'kicker' }, spec.kicker, kick), how)
   const title = h('h2', { class: 'block__title is-loading', 'data-pending': '' }, h('span', { class: 'skel' }))
   const body = h('div', { class: 'block__body' }, h('div', { class: 'state state--loading', style: { '--reserve': `${spec.reserve ?? 240}px` } }, h('span', { class: 'visually-hidden', text: 'Loading' })))
@@ -80,7 +81,7 @@ export function block(spec) {
   how.onclick = () => open(true)
   back.addEventListener('keydown', (e) => e.key === 'Escape' && open(false))
   const fillBack = () => back.replaceChildren(
-    h('div', { class: 'back__head' }, h('h3', { text: `How “${current.kicker}” is made` }), h('button', { type: 'button', class: 'back__close', text: 'Close', onclick: () => open(false) })),
+    h('div', { class: 'back__head' }, h('h3', { text: `How “${current.kicker}” is made` }), h('button', { type: 'button', class: 'back__close', 'aria-label': 'Close', title: 'Close', onclick: () => open(false) }, icon('close'))),
     ...howMade(current, current.queries(store.state), results))
   el.__spec = spec
   const run = (updating) => {
@@ -154,6 +155,25 @@ export function block(spec) {
 }
 
 // ---- How it's made ----
+
+/** The info and close marks: drawn in the text colour, 18px in a 28px target. */
+function icon(kind) {
+  const ns = 'http://www.w3.org/2000/svg'
+  const svg = document.createElementNS(ns, 'svg')
+  for (const [k, v] of Object.entries({ viewBox: '0 0 20 20', width: 18, height: 18, 'aria-hidden': 'true' })) svg.setAttribute(k, v)
+  const add = (tag, attrs) => {
+    const el = document.createElementNS(ns, tag)
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v)
+    svg.append(el)
+  }
+  if (kind === 'close') add('path', { d: 'M6 6l8 8M14 6l-8 8' })
+  else {
+    add('circle', { cx: 10, cy: 10, r: 8.25 })
+    add('circle', { cx: 10, cy: 6.2, r: 1.1, class: 'fill' })
+    add('path', { d: 'M10 9v5.5' })
+  }
+  return svg
+}
 
 const part = (title, ...kids) => h('section', { class: 'back__part' }, h('h4', { text: title }), ...kids)
 const withCode = (t) => String(t).split(/`([^`]+)`/).map((p, i) => (i % 2 ? h('code', { text: p }) : p))

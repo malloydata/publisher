@@ -119,8 +119,10 @@ code, pre { font-family: var(--mono); }
 .block__head { display: flex; align-items: baseline; gap: 16px; min-height: 20px; }
 .kicker { margin: 0; font-size: 13px; font-weight: 500; color: var(--muted); }
 .kicker__of { color: var(--faint); font-weight: 400; }
-.how { margin-left: auto; font-size: 12px; color: var(--faint); font-weight: 500; white-space: nowrap; }
-.how:hover { color: var(--ink); }
+.how, .back__close { margin-left: auto; flex: none; width: 28px; height: 28px; margin-top: -6px; margin-bottom: -6px; display: grid; place-items: center; border-radius: 14px; color: var(--faint); }
+.how:hover, .how[aria-expanded="true"], .back__close:hover { color: var(--ink); background: var(--hover); }
+.how svg, .back__close svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+.how svg .fill { fill: currentColor; stroke: none; }
 .block__title { margin: 6px 0 20px; font-family: var(--headline); font-stretch: var(--display-stretch); font-size: 20px; font-weight: 500; line-height: 1.35; color: var(--ink); letter-spacing: -0.015em; text-wrap: balance; max-width: 40ch; }
 .block.span-12 .block__title { max-width: 60ch; }
 .block__title strong { font-weight: 500; }
@@ -141,8 +143,6 @@ code, pre { font-family: var(--mono); }
 .block.is-open { min-height: 460px; }
 .back__head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 4px; position: sticky; top: -20px; background: var(--surface); padding: 4px 0 8px; }
 .back__head h3 { font-size: 16px; font-weight: 500; color: var(--ink); }
-.back__close { margin-left: auto; font-size: 12px; color: var(--muted); font-weight: 500; }
-.back__close:hover { color: var(--ink); }
 .back__part { margin-top: 14px; }
 .back h4 { margin: 0 0 4px; font-size: 12px; font-weight: 500; color: var(--muted); }
 .back p, .back ul { margin: 0; color: var(--body); line-height: 1.55; }

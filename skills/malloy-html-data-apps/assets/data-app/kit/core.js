@@ -146,6 +146,21 @@ export const d3Ready = window.d3
   if (p.get('theme')) document.documentElement.dataset.theme = p.get('theme')
   if (['light', 'dark'].includes(p.get('mode'))) document.documentElement.dataset.mode = p.get('mode')
 }
+// The host's mode. Credible shows a data app in a frame and tells it which mode its reader chose
+// (credible:color-scheme, on load and on every change). The kit follows it unless the address fixes one (?mode=),
+// and answers credible:color-scheme-applied, so the host knows this app draws dark itself and stops holding its
+// frame light. It also asks once on start, in case the host spoke before the kit was listening.
+if (window.parent !== window) {
+  const fixed = ['light', 'dark'].includes(new URLSearchParams(location.search).get('mode'))
+  addEventListener('message', (e) => {
+    const d = e.data
+    if (e.source !== window.parent || !d || d.type !== 'credible:color-scheme' || !['light', 'dark'].includes(d.mode)) return
+    if (!fixed) document.documentElement.dataset.mode = d.mode
+    e.source.postMessage({ type: 'credible:color-scheme-applied', mode: fixed ? document.documentElement.dataset.mode : d.mode }, e.origin === 'null' ? '*' : e.origin)
+  })
+  window.parent.postMessage({ type: 'credible:color-scheme-request' }, '*')
+}
+
 /** Charts read their colours when they draw, so a new theme or mode draws every loaded card again, in place. */
 function recolour() {
   for (const c of document.querySelectorAll('#main .block')) if (c.__loaded && c.__spec) c.__update?.(c.__spec)
