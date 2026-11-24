@@ -865,6 +865,59 @@ interface SelfInstructionOptions {
     * reseeds).
     */
    incompatible?: ReadonlySet<string>;
+   /**
+    * Each incremental source's newest entry from any committed run, by
+    * address (materialization_scope.ts, `newestIncrementalEntries`): the
+    * table a delta advances when `priorEntries` has no entry for it (a run
+    * of other named sources left it out). It decides only whether that
+    * table is advanced or reseeded, and is held to its contract like any
+    * prior; never its name.
+    */
+   incrementalPriors?: Readonly<Record<string, ManifestEntry>>;
+}
+
+/**
+ * The entry recorded for the table a delta would advance in place: the
+ * source's prior, else its newest incremental entry from an earlier run
+ * (`incrementalPriors`: a run of other named sources records none for it,
+ * and the ledger still advances it), when it names the table this run
+ * writes (`logicalName`, in `destination`). Undefined when the source takes
+ * no delta, or the run writes another table, which a delta cannot advance.
+ */
+function advancedTableEntry(
+   deltaEligible: boolean,
+   prior: ManifestEntry | undefined,
+   table: {
+      sourceEntityId: string;
+      logicalName: string;
+      destination: string | undefined;
+      options: SelfInstructionOptions;
+   },
+): ManifestEntry | undefined {
+   if (!deltaEligible) return undefined;
+   const { sourceEntityId, logicalName, destination } = table;
+   const entry = prior ?? table.options.incrementalPriors?.[sourceEntityId];
+   return entry?.physicalTableName === logicalName &&
+      (entry.storageDestinationName ?? undefined) === destination
+      ? entry
+      : undefined;
+}
+
+/** The instruction that builds one source's table in an auto-run. */
+function selfInstruction(
+   sourceEntityId: string,
+   physicalTableName: string,
+   destination: string | undefined,
+   reseed: boolean,
+): BuildInstruction {
+   return {
+      sourceEntityId,
+      materializedTableId: `local-${sourceEntityId.substring(0, STAGING_ID_LEN)}`,
+      physicalTableName,
+      realization: "COPY",
+      ...(destination ? { destination } : {}),
+      ...(reseed ? { reseed: true } : {}),
+   };
 }
 
 /**
@@ -980,24 +1033,26 @@ export function deriveSelfInstructions(
          renaming && deltaEligible && !incremental?.forceRefresh
             ? previous!
             : tableName;
-
+      // The table a delta advances, held like any prior wherever its entry
+      // was recorded.
+      const inPlace = advancedTableEntry(deltaEligible, prior, {
+         sourceEntityId,
+         logicalName,
+         destination,
+         options,
+      });
       const mustRebuild = rebuiltInFull(
-         prior,
+         prior ?? inPlace,
          sourceEntityId,
          options,
          compiled.tables[persistSource.sourceID]?.materialize,
       );
-      const instruction: BuildInstruction = {
+      const instruction = selfInstruction(
          sourceEntityId,
-         materializedTableId: `local-${sourceEntityId.substring(
-            0,
-            STAGING_ID_LEN,
-         )}`,
-         physicalTableName: logicalName,
-         realization: "COPY",
-         ...(destination ? { destination } : {}),
-         ...(mustRebuild && deltaEligible ? { reseed: true } : {}),
-      };
+         logicalName,
+         destination,
+         mustRebuild && deltaEligible,
+      );
       // A source whose `storage=` or name changed is rebuilt, the old table
       // reclaimed once the run commits (supersededTable).
       if (
@@ -1048,15 +1103,12 @@ export function deriveSelfInstructions(
       if (superseded) renamed.push(superseded);
       // A delta appends to the table it holds, so the run keeps its rows.
       if (
-         deltaEligible &&
+         inPlace !== undefined &&
          !mustRebuild &&
          !incremental?.forceRefresh &&
-         !(options.forceRefresh && !pulledIn.has(persistSource.sourceID)) &&
-         prior !== undefined &&
-         sameDestination &&
-         prior.physicalTableName === logicalName
+         !(options.forceRefresh && !pulledIn.has(persistSource.sourceID))
       ) {
-         advanced[sourceEntityId] = prior;
+         advanced[sourceEntityId] = inPlace;
       }
       instructions.push(instruction);
    }

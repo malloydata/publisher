@@ -65,5 +65,7 @@ export async function deriveHoldingCarried<
       );
    }
    if (moved.size === 0 && unverified.length === 0) return derived;
-   return derive(new Set([...incompatible(), ...unverified]));
+   // `moved` directly too: an advanced table whose entry came from an
+   // earlier run than `incompatible`'s priors is not named there.
+   return derive(new Set([...incompatible(), ...moved, ...unverified]));
 }

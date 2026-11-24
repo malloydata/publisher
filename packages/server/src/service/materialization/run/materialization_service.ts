@@ -1446,19 +1446,21 @@ export class MaterializationService {
             id,
             reader,
          );
+         // Each incremental source's newest entry, over the bound
+         // manifest's: a run of some sources binds a manifest naming only
+         // those, while an extension's last read and its parent's last
+         // build are on the newest entry of each (incremental_upstream.ts),
+         // and a table a delta advances is held to its contract by it.
+         const incrementalPriors = incremental
+            ? await this.committer.newestIncrementalEntries(
+                 environmentId,
+                 packageName,
+                 id,
+                 reader,
+              )
+            : {};
          if (incremental) {
-            // Each incremental source's newest entry, over the bound
-            // manifest's: a run of some sources binds a manifest naming only
-            // those, while an extension's last read and its parent's last
-            // build are on the newest entry of each (incremental_upstream.ts).
-            const newest = Object.entries(
-               await this.committer.newestIncrementalEntries(
-                  environmentId,
-                  packageName,
-                  id,
-                  reader,
-               ),
-            );
+            const newest = Object.entries(incrementalPriors);
             incremental.boundParentReads = new Map([
                ...(incremental.boundParentReads ?? []),
                ...boundParentReads(newest),
@@ -1508,6 +1510,7 @@ export class MaterializationService {
                         at: new Date(run.startedAt),
                      },
                      incompatible,
+                     incrementalPriors,
                   },
                ),
             () => pkg.incompatibleTables?.(priorEntries) ?? new Set(),
