@@ -69,6 +69,7 @@ import {
    type LoadResult,
    CommittedLoadError,
    LoadRefusalError,
+   PostApplyError,
    copyStorageTable,
    flushStorageTable,
    loadStorageTable,
@@ -1159,8 +1160,8 @@ export class CatalogAdmin {
    /** A load's failure as an admin refusal: DuckLake's commit conflict, or a table another request created first, as a 409; a memory or spill failure before the commit as a 422; the load's own 422s come through {@link redacted}. */
    private loadFailure(error: unknown, keyed = false): unknown {
       const mapped = this.redacted(error);
-      // After the commit the rows are written, so a 409 or 422 that says otherwise would mislead.
-      if (error instanceof CommittedLoadError) return mapped;
+      // Past the apply, a 409 or 422 with this load's advice would mislead: the rows are written, or the flush after a no-op is sized by earlier loads.
+      if (error instanceof PostApplyError) return mapped;
       if (
          mapped instanceof Error &&
          !(mapped instanceof CatalogAdminError) &&

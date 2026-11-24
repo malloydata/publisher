@@ -124,10 +124,23 @@ describe("StorageDestinationController", () => {
       });
    });
 
-   it("drops in main on a destination that builds into main", async () => {
-      await seed("CREATE TABLE orders AS SELECT 1 AS x;");
-      await controller.dropTable("env", "lake", "main", "orders");
-      expect(await controller.listTables("env", "lake", "main")).toEqual([]);
+   it("drops in main on a destination that builds into main, however it spells it", async () => {
+      for (const destinationSchema of [undefined, "main", "Main"]) {
+         declared = {
+            name: "lake",
+            type: "duckdb",
+            ...(destinationSchema
+               ? { ducklakeConnection: { destinationSchema } }
+               : {}),
+         } as ApiConnection;
+         for (const schema of ["main", "Main"]) {
+            await seed("CREATE OR REPLACE TABLE orders AS SELECT 1 AS x;");
+            await controller.dropTable("env", "lake", schema, "orders");
+            expect(await controller.listTables("env", "lake", "main")).toEqual(
+               [],
+            );
+         }
+      }
    });
 
    it("answers an unknown destination as a 404, not the build path's 422", async () => {

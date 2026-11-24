@@ -573,14 +573,12 @@ paths:
         retry of such a load, sent after another load committed, can revert it.
         A table with more than one writer therefore needs its loads serialized
         by the caller. The key deviates from `Idempotency-Key` in
-        `api-doc.v1.yaml` in three ways: a record lasts as long as its
+        `api-doc.v1.yaml` in two further ways: a record lasts as long as its
         snapshot, which may be shorter or longer than 24 hours (`DELETE
         …/snapshots?olderThan` expires snapshots, and the key with them, as does
-        a storage destination's cleanup on the caller's `snapshotsOlderThan`); a
-        duplicate that arrives while the first is running is refused `503
-        LOAD_BUSY`, not made to wait, and its retry replays; and a load that
-        changed nothing stores nothing, so its key, sent again after another load
-        committed, runs again.
+        a storage destination's cleanup on the caller's `snapshotsOlderThan`);
+        and a duplicate that arrives while the first is running is refused `503
+        LOAD_BUSY`, not made to wait, and its retry replays.
       parameters:
         - $ref: "#/components/parameters/idempotencyKey"
       requestBody:
@@ -894,9 +892,8 @@ components:
         nothing, or whose snapshot has expired, has no record, so it runs again.
         Use a fresh UUID per logical load. Unlike `Idempotency-Key` in the v1
         API, a record lasts as long as its snapshot, which may be shorter or
-        longer than 24 hours, a duplicate that arrives while the first runs is
-        `503 LOAD_BUSY` (not made to wait), and a load that changed nothing
-        stores nothing.
+        longer than 24 hours, and a duplicate that arrives while the first runs
+        is `503 LOAD_BUSY` (not made to wait).
       schema:
         type: string
         minLength: 1

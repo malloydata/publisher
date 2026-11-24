@@ -346,11 +346,10 @@ stream in batches:
   therefore needs its loads serialized by the caller. A record is found by a text match on the snapshots'
   commit metadata, with no index, so each keyed load scans the catalog's snapshots since the table was
   created; expiring old snapshots (`DELETE …/snapshots`) bounds that cost, as it bounds the keys.
-  The key differs from the v1 API's `Idempotency-Key` in three ways: a record lasts as long as its
+  The key differs from the v1 API's `Idempotency-Key` in two further ways: a record lasts as long as its
   snapshot, which may be shorter or longer than 24 hours (a storage destination's cleanup expires
-  snapshots on the caller's `snapshotsOlderThan`); a duplicate that arrives while the first is running is
-  `503 LOAD_BUSY`, not made to wait, and its retry replays; and a load that changed nothing stores
-  nothing, so its key, sent again after another load committed, runs again.
+  snapshots on the caller's `snapshotsOlderThan`); and a duplicate that arrives while the first is
+  running is `503 LOAD_BUSY`, not made to wait, and its retry replays.
 - A new column is added, even when no row changes. An existing one keeps its type when the objects type
   it the same or narrower, losslessly, and is widened to the objects' type when that is a lossless widening
   of the table's: a wider integer, a decimal with no fewer integer or fraction digits, an integer into a

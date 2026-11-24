@@ -1341,7 +1341,7 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          [],
          [ducklakeDestination("managed", "org_a", "old-secret")],
       );
-      // The first update holds the update lock across its slow readme write.
+      // The rotation takes the update lock first and blocks in its readme write; the keep update queues behind it.
       let release!: () => void;
       const gate = new Promise<void>((resolve) => {
          release = resolve;

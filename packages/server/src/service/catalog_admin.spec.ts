@@ -20,6 +20,7 @@ import * as tableLoad from "./materialization/run/storage_table_load";
 import {
    CommittedLoadError,
    LoadRefusalError,
+   PostApplyError,
    loadLayout,
    objectUnreadable,
 } from "./materialization/run/storage_table_load";
@@ -822,6 +823,18 @@ describe("a load's failure as an admin refusal", () => {
       const mapped = failure(flush);
       expect(mapped).not.toBeInstanceOf(CatalogAdminError);
       expect((mapped as Error).message).toContain("failed to pin block");
+   });
+
+   it("leaves a failure in the flush after a load that changed nothing to answer 500, not a 422 or 409 whose advice is for the load", () => {
+      for (const message of [
+         "Out of Memory Error: failed to pin block of size 256.0 KiB",
+         "Transaction conflict - attempting to insert",
+      ]) {
+         const mapped = failure(new PostApplyError(new Error(message)));
+         expect(mapped).not.toBeInstanceOf(CatalogAdminError);
+         expect(mapped).not.toBeInstanceOf(CommittedLoadError);
+         expect((mapped as Error).message).toBe(message);
+      }
    });
 
    it("leaves a full spill disk, which a retry may cure, to answer 500", () => {

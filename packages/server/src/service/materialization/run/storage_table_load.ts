@@ -1524,12 +1524,15 @@ async function columnGroups(
 export const comparePasses = (rowBytes: number, rows: number, budget: number) =>
    Math.max(1, Math.ceil((rowBytes * rows) / budget));
 
-/** A failure after the load's rows were committed, which the admin API must not report as a load that wrote nothing. */
-export class CommittedLoadError extends Error {
+/** A failure after the load applied its rows, which the admin API answers as a 500 whatever the message says. */
+export class PostApplyError extends Error {
    constructor(cause: unknown) {
       super(cause instanceof Error ? cause.message : String(cause), { cause });
    }
 }
+
+/** A failure after the load's rows were committed, which the admin API must not report as a load that wrote nothing. */
+export class CommittedLoadError extends PostApplyError {}
 
 const afterCommit = (error: unknown): never => {
    throw new CommittedLoadError(error);
@@ -1695,8 +1698,10 @@ export async function mergeStorageTable(
             schemaName,
             tableName,
          ).catch((error: unknown) => {
-            // A load that changed nothing committed nothing, so this failure is not one after its commit.
-            if (outcome.committedAfter === undefined) throw error;
+            // A load that changed nothing committed nothing, so this is no failure after its commit.
+            if (outcome.committedAfter === undefined) {
+               throw new PostApplyError(error);
+            }
             return afterCommit(error);
          });
          return outcome;

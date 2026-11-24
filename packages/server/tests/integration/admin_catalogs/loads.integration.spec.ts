@@ -2844,6 +2844,35 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          expect(await snapshotId()).toBe(snapshot);
       });
 
+      it("answers an out-of-memory in the flush after a load that changed nothing as a 500, not a 422 whose advice is for the load", async () => {
+         const object = await parquet("SELECT 1 AS id, 'a' AS v");
+         await merge("noop_oom_flush", [object]);
+         const original = DuckDBConnection.prototype.runSQL;
+         const spy = spyOn(
+            DuckDBConnection.prototype,
+            "runSQL",
+         ).mockImplementation(function (
+            this: DuckDBConnection,
+            ...args: Parameters<typeof original>
+         ) {
+            return args[0].startsWith("CALL ducklake_flush_inlined_data")
+               ? Promise.reject(
+                    new Error(
+                       "Out of Memory Error: failed to pin block of size 256.0 KiB",
+                    ),
+                 )
+               : original.apply(this, args);
+         });
+         const error = await merge("noop_oom_flush", [object]).then(
+            () => undefined,
+            (e) => e,
+         );
+         spy.mockRestore();
+         expect(error).toBeInstanceOf(Error);
+         expect(error).not.toBeInstanceOf(CatalogAdminError);
+         expect(error.message).toContain("failed to pin block");
+      });
+
       it("answers a load that runs out of memory or spill with a 422 LOAD_TOO_LARGE, and writes nothing", async () => {
          await merge("oom", [
             await parquet(

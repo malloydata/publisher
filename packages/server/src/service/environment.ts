@@ -659,11 +659,7 @@ export class Environment {
       const payloadConnections = payload.connections;
       if (payloadConnections || payload.storageDestinations !== undefined) {
          await this.runConnectionUpdateExclusive(async () => {
-            // First, so an unreadable list is refused before anything changes,
-            // and under the lock, so a "keep" reference resolves against what
-            // the update before it applied. Absent leaves the list alone; an
-            // unreadable shape is rejected rather than read as "keep none"; an
-            // explicit [] clears.
+            // Resolved under the lock so a keep reference reads the previous update's result; refused before anything changes.
             const nextDestinations =
                payload.storageDestinations === undefined
                   ? undefined
