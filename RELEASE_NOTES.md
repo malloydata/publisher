@@ -47,8 +47,6 @@ Each applies nothing, exactly as `MANIFEST_BIND_FAILED` does: the `manifestLocat
 
 **How to tell:** a run logs `Rebuilding an incremental source in full` with `reasonCode` `ledger_unheld`. **What to do:** nothing; the reseed is one full rebuild of that table. No API change.
 
-## [Unreleased] — key-uniqueness verdicts are read only from the table's column contract
-
 ## [0.18.0] — key-uniqueness verdicts are read only from the table's column contract
 
 **[change] Key-uniqueness verdicts have one store: each table's column contract (`contract.keys`).** A verdict a build recorded (a `#(rollup)` rollup's own key, a querying source's primary key, a stored source's primary key, a pair table's leaf key) is bound only when the contract records it for the primary key the model declares now and it passed (`unique: true`, not `unverified`); anything else, including a check that could not run, answers live. The bind decides; a query only looks the verdict up. What moves:
