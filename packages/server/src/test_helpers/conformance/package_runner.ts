@@ -35,9 +35,10 @@
 import { capturedNativeSchema } from "../../service/materialization/run/database_native_types";
 import {
    pairLeafKeyChecksOf,
-   runRollupKeyCheck,
+   runKeyCheck,
 } from "../../service/materialization/run/inline_uniqueness";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
+import type { ColumnContract } from "../../service/materialization/domain/column_contract";
 import {
    FixedConnectionMap,
    type GivenValue,
@@ -824,37 +825,30 @@ async function buildAll(
             Number(a.annotationFields?.name === a.name),
       );
    // A pair table's leaf key check, run on the source's connection once its
-   // table is written and bound beside it, as an auto-run records it (known
-   // limitation 40). The package's own plans hold the check's compiled SQL.
+   // table is written and recorded in its contract, as a build records it
+   // (known limitation 40). The package's own plans hold the check's
+   // compiled SQL.
    const materializePlans = (
       pkg.materialization() as unknown as {
          plan: { materializePlans: Record<string, unknown> };
       }
    ).plan.materializePlans;
-   const leafKeys = async (
+   const withLeafChecks = async (
+      contract: ColumnContract,
       sourceID: string,
       warehouse: DuckDBConnection,
-   ): Promise<{
-      keyUniqueness?: {
-         parentKeys: Record<string, boolean>;
-         parentKeyColumns: Record<string, string>;
-      };
-   }> => {
+   ): Promise<ColumnContract> => {
       const checks = pairLeafKeyChecksOf(
          (materializePlans as Record<string, never>)[sourceID],
       );
-      const parentKeys: Record<string, boolean> = {};
-      const parentKeyColumns: Record<string, string> = {};
+      const keys = { ...contract.keys };
       for (const check of checks) {
-         const record = await runRollupKeyCheck(check, warehouse, "pair");
+         const record = await runKeyCheck(check, warehouse);
          if (record) {
-            parentKeys[check.sourceID] = record.unique;
-            parentKeyColumns[check.sourceID] = check.keyColumn;
+            keys[check.contractKey] = { unique: record.unique, level: "leaf" };
          }
       }
-      return Object.keys(parentKeys).length > 0
-         ? { keyUniqueness: { parentKeys, parentKeyColumns } }
-         : {};
+      return Object.keys(keys).length > 0 ? { ...contract, keys } : contract;
    };
    try {
       // Sources an author's name= puts on one table are refused by a
@@ -965,13 +959,16 @@ async function buildAll(
                         column_type: string;
                      }[]
                   ).map((r) => ({ name: r.column_name, type: r.column_type })),
-                  ...(await leafKeys(entry.sourceID, warehouse)),
                   // What the plan read of its upstream tables, as a build
                   // records it on its entry (instructed_build.ts).
                   ...(entry.upstreamSchemas
                      ? { upstreamSchemas: entry.upstreamSchemas }
                      : {}),
-                  contract,
+                  contract: await withLeafChecks(
+                     contract,
+                     entry.sourceID,
+                     warehouse,
+                  ),
                };
                built.push({ name: entry.name, tier: "storage" });
             } else {
@@ -1004,8 +1001,15 @@ async function buildAll(
                   tableName: table,
                   connectionName: entry.connectionName ?? "duckdb",
                   ...(nativeSchema ? { nativeSchema } : {}),
-                  ...(contract ? { contract } : {}),
-                  ...(await leafKeys(entry.sourceID, warehouse)),
+                  ...(contract
+                     ? {
+                          contract: await withLeafChecks(
+                             contract,
+                             entry.sourceID,
+                             warehouse,
+                          ),
+                       }
+                     : {}),
                };
                built.push({ name: entry.name, tier: "database" });
             }

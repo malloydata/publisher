@@ -54,6 +54,22 @@ export function freshnessOf(facts: FreshnessFacts, at: Date): Freshness {
    return facts.freshnessFallback === "stale_ok" ? "stale_ok" : "stale";
 }
 
+/**
+ * The instant, in epoch milliseconds, a table with `facts` stops being read
+ * ({@link freshnessOf} turns `stale`): the first moment its age exceeds its
+ * window. Undefined when it never does (no window, no anchor, or a
+ * `stale_ok` fallback, which keeps it read).
+ */
+export function stopsReadAt(facts: FreshnessFacts): number | undefined {
+   if (facts.freshnessWindowSeconds == null || facts.dataAsOf == null) {
+      return undefined;
+   }
+   if (facts.freshnessFallback === "stale_ok") return undefined;
+   const dataAsOfMs = Date.parse(facts.dataAsOf);
+   if (Number.isNaN(dataAsOfMs)) return undefined;
+   return dataAsOfMs + facts.freshnessWindowSeconds * 1000 + 1;
+}
+
 /** The `fallback` values a declaration may give. */
 export const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
 type FreshnessFallback = (typeof FRESHNESS_FALLBACKS)[number];

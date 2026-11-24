@@ -3,14 +3,19 @@
 
 /**
  * What an attached DuckLake catalog records about itself, read from its
- * metadata catalog (its settings, a schema's path, a table's partition spec),
- * and the storage-secret scope derived from its data path.
+ * metadata catalog (its settings, its schemas' paths, a table's partition
+ * spec), and the storage-secret scope derived from its data path.
  */
 
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
+import { logger } from "../../logger";
 import { runInternalSQL } from "../duckdb_lockdown";
+import { managedSchemas } from "../connection_type";
 import { escapeSQL, runSQLRows } from "../duckdb_session_setup";
 import { quoteIdentifier } from "../quoting";
+
+/** The prefix of an attached catalog's metadata catalog name, whose tables hold every schema's file lists. */
+export const METADATA_CATALOG_PREFIX = "__ducklake_metadata_";
 
 /**
  * The metadata catalog of a DuckLake catalog attached as `alias`: DuckLake
@@ -23,7 +28,7 @@ export function metadataCatalogRef(
    metadataSchema: string | undefined,
 ): string {
    return [
-      `__ducklake_metadata_${alias}`,
+      `${METADATA_CATALOG_PREFIX}${alias}`,
       ...(metadataSchema ? [metadataSchema] : []),
    ]
       .map((part) => quoteIdentifier(part, "duckdb"))
@@ -57,28 +62,41 @@ export async function recordedCatalogSettings(
    return settings;
 }
 
+/** The path a catalog records for a schema, and whether it is relative to the data path. */
+export interface RecordedSchemaPath {
+   path: string;
+   relative: boolean;
+}
+
 /**
- * The path a catalog attached as `alias` records for one of its schemas in
- * `ducklake_schema`, and whether it is relative to the data path, or undefined
- * when the schema is not recorded. A path of `''` is what a catalog migrated
- * from DuckLake 0.2 records for `main`: its files sit directly under the data
- * path. A NULL `path_is_relative` reads as relative, the recorded default.
+ * The paths a catalog attached as `alias` records in `ducklake_schema` for every
+ * live schema, in one query, keyed by schema name. A path of `''` is
+ * what a catalog migrated from DuckLake 0.2 records for `main`: its files sit
+ * directly under the data path. A NULL `path_is_relative` reads as relative, the
+ * recorded default.
  */
-export async function recordedSchemaPath(
+export async function recordedSchemaPaths(
    connection: DuckDBConnection,
    alias: string,
    metadataSchema: string | undefined,
-   schemaName: string,
-): Promise<{ path: string; relative: boolean } | undefined> {
-   const row = runSQLRows(
+): Promise<Map<string, RecordedSchemaPath>> {
+   const rows = runSQLRows(
       await runInternalSQL(
          connection,
-         `SELECT path, path_is_relative FROM ${metadataCatalogRef(alias, metadataSchema)}.ducklake_schema ` +
-            `WHERE schema_name = '${escapeSQL(schemaName)}' AND end_snapshot IS NULL LIMIT 1`,
+         `SELECT schema_name, path, path_is_relative FROM ${metadataCatalogRef(alias, metadataSchema)}.ducklake_schema ` +
+            "WHERE end_snapshot IS NULL",
       ),
-   )[0];
-   if (!row || typeof row.path !== "string") return undefined;
-   return { path: row.path, relative: row.path_is_relative !== false };
+   );
+   const recorded = new Map<string, RecordedSchemaPath>();
+   for (const row of rows) {
+      if (typeof row.schema_name === "string" && typeof row.path === "string") {
+         recorded.set(row.schema_name, {
+            path: row.path,
+            relative: row.path_is_relative !== false,
+         });
+      }
+   }
+   return recorded;
 }
 
 /**
@@ -153,40 +171,121 @@ function isBucketlessUrl(url: string): boolean {
 }
 
 /**
- * The URL prefix a DuckLake catalog's storage secret is scoped to, with exactly
- * one trailing slash so `…/org_a/` never matches `…/org_ab`. The configured data
- * path when the config states one, else the data path the catalog recorded,
- * which the preflight read. A managed catalog attached read-only is the
- * user-facing view of its own tables, so its secret reaches only the `main`
- * schema's files: the schema path the catalog recorded, under the data path when
- * relative. Undefined when nothing states a path, when a managed view's main
- * path is unknown, or when the root names no bucket: the caller then refuses
- * the attach rather than creating an unscoped secret.
+ * The scope prefix of a readable schema other than `main`: its recorded path,
+ * which must resolve strictly under `rootSlash` (the data path, one trailing
+ * slash) as plain segments. Undefined for anything else (the data path itself,
+ * a `..`, `.` or empty segment, an absolute path elsewhere), because the
+ * prefix would then reach files outside the schema's own directory.
+ */
+function readableSchemaScope(
+   rootSlash: string,
+   recorded: RecordedSchemaPath,
+): string | undefined {
+   let rest = recorded.path;
+   if (!recorded.relative) {
+      if (!rest.startsWith(rootSlash)) return undefined;
+      rest = rest.slice(rootSlash.length);
+   }
+   const trimmed = stripTrailingSlashes(rest);
+   if (
+      trimmed === "" ||
+      trimmed
+         .split("/")
+         .some((part) => part === "" || part === "." || part === "..")
+   ) {
+      return undefined;
+   }
+   return `${rootSlash}${trimmed}/`;
+}
+
+/** A listed schema's storage scope reaches an unlisted schema's files. */
+export class ScopeContainmentError extends Error {}
+
+/**
+ * The URL prefixes a DuckLake catalog's storage secret is scoped to, each with
+ * exactly one trailing slash so `…/org_a/` never matches `…/org_ab`. The
+ * configured data path when the config states one, else the data path the
+ * catalog recorded, which the preflight read. A managed catalog attached
+ * read-only is the user-facing view of its own tables, so its secret reaches
+ * only the files of `main` and of `readableSchemas`: the schema paths the
+ * catalog recorded, under the data path when relative. `main` keeps the
+ * leniency of catalogs migrated from DuckLake 0.2 (an absolute path, an empty
+ * path for the data path itself); every other schema must resolve strictly under
+ * the data path, and one that does not, or that the catalog does not record, is
+ * left out and logged, so a bad entry narrows the view rather than widening it.
+ * A listed schema's directory that also holds an unlisted schema's files throws,
+ * since the secret would reach them; `main`'s root-wide scope of a migrated catalog
+ * only warns. Undefined when nothing states a path, when
+ * a managed view's main path is unknown, or when the root names no bucket: the
+ * caller then refuses the attach rather than creating an unscoped secret.
  */
 export function storageSecretScope(input: {
+   catalog: string;
    configuredDataPath?: string;
    recordedDataPath?: string;
-   mainSchemaPath?: { path: string; relative: boolean };
+   schemaPaths?: ReadonlyMap<string, RecordedSchemaPath>;
+   readableSchemas?: string[];
    readOnly: boolean;
    managed: boolean;
-}): string | undefined {
+}): string[] | undefined {
    const root = input.configuredDataPath || input.recordedDataPath;
    if (!root || isBucketlessUrl(root)) return undefined;
-   if (input.managed && input.readOnly) {
-      const main = input.mainSchemaPath;
-      if (!main) return undefined;
-      if (!main.relative) {
-         return isBucketlessUrl(main.path)
-            ? undefined
-            : oneTrailingSlash(main.path);
-      }
-      // An empty relative path is the data path itself (a catalog migrated from
-      // DuckLake 0.2 records it for `main`).
+   const rootSlash = oneTrailingSlash(root);
+   if (!(input.managed && input.readOnly)) return [rootSlash];
+   const main = input.schemaPaths?.get("main");
+   if (!main) return undefined;
+   let mainScope: string;
+   if (!main.relative) {
+      if (isBucketlessUrl(main.path)) return undefined;
+      mainScope = oneTrailingSlash(main.path);
+   } else {
+      // An empty relative path is the data path itself.
       let start = 0;
       while (start < main.path.length && main.path[start] === "/") start++;
-      return oneTrailingSlash(
-         `${oneTrailingSlash(root)}${main.path.slice(start)}`,
+      mainScope = oneTrailingSlash(`${rootSlash}${main.path.slice(start)}`);
+   }
+   // Only a catalog migrated from DuckLake 0.2 has a main that is the data path itself; any other main owns its directory like a listed schema.
+   const mainIsRoot = mainScope === rootSlash;
+   const owners: [string, string][] = mainIsRoot ? [] : [["main", mainScope]];
+   for (const schema of input.readableSchemas ?? []) {
+      const recorded = input.schemaPaths?.get(schema);
+      const prefix = recorded && readableSchemaScope(rootSlash, recorded);
+      if (prefix) {
+         owners.push([schema, prefix]);
+      } else {
+         logger.error(
+            "A readable schema is left out of the managed view's storage scope: " +
+               "the catalog does not record it, or its path is not strictly under the data path",
+            { catalog: input.catalog, schema },
+         );
+      }
+   }
+   // The secret reaches everything under a listed schema's directory, an unlisted schema's files included.
+   const listed = managedSchemas(input.readableSchemas);
+   const underMain: string[] = [];
+   for (const [name, recorded] of input.schemaPaths ?? []) {
+      if (listed.has(name)) continue;
+      const path = oneTrailingSlash(
+         recorded.relative
+            ? `${rootSlash}${recorded.path.replace(/^\/+/, "")}`
+            : recorded.path,
+      );
+      const reaching = owners.find(([, prefix]) => path.startsWith(prefix));
+      if (!reaching) {
+         if (mainIsRoot && path.startsWith(mainScope)) underMain.push(name);
+      } else {
+         throw new ScopeContainmentError(
+            `The storage scope of schema '${reaching[0]}' (${reaching[1]}) of DuckLake catalog '${input.catalog}' ` +
+               `also reaches the files of schema '${name}' (${path}), which the managed view does not list. ` +
+               `Give each schema a directory of its own, or list '${name}' in readableSchemas.`,
+         );
+      }
+   }
+   // Shipped behavior, so warned about and not refused.
+   if (underMain.length > 0) {
+      logger.warn(
+         `The storage scope of schema 'main' (${mainScope}) of DuckLake catalog '${input.catalog}' also reaches the files of unlisted schema(s) ${underMain.map((name) => `'${name}'`).join(", ")}: main's path is the data path itself, as in a catalog migrated from DuckLake 0.2.`,
       );
    }
-   return oneTrailingSlash(root);
+   return [...new Set([mainScope, ...owners.map(([, prefix]) => prefix)])];
 }

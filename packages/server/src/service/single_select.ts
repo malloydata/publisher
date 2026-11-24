@@ -16,7 +16,7 @@ import {
  * `sql()` sources the compiler already places inside a subquery. It is not a read
  * boundary: a SELECT still reads whatever the session's secrets, catalog role and
  * filesystem reach, so the storage secret's `SCOPE` is what keeps it to
- * the catalog's prefix.
+ * the prefixes of the schemas the view may read.
  *
  * Classified by DuckDB's own parser, the same engine the statement runs on:
  * `json_serialize_sql` serializes SELECT statements only, and answers one entry

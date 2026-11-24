@@ -555,11 +555,13 @@ source: clipped is raw extend {
 
       it("rebuilds a carried base older than a rollup's narrower window, and builds the rollup from it", async () => {
          const base = ' freshness.window="1h"';
-         const rollupWindow = ' freshness.window="2s"';
+         // Wide enough that the rebuilt rollup is still fresh when the
+         // query below runs on a loaded runner; the wait outlasts it.
+         const rollupWindow = ' freshness.window="8s"';
          await setUp(modelOf("cat", rollupWindow, base));
          const first = await build();
          const baseAnchor = entryOf(first, "orders").dataAsOf!;
-         await until(baseAnchor, 2500);
+         await until(baseAnchor, 8500);
          await rewrite(modelOf("sub", rollupWindow, base));
          const started = Date.now();
          const second = await build();

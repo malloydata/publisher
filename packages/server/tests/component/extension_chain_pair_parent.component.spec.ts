@@ -414,7 +414,7 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
          // Out of band: an extension that recomputed its parent from raw
          // would hold no rows.
          await f.emptyRaw();
-         second = await f.build({ strictUpstreams: true });
+         second = await f.build({});
          served = await f.ask(QUERY);
       }, 300_000);
       afterAll(() => f.close());

@@ -16,8 +16,19 @@ import {
    recordedReads,
    recordScopeFacts,
    scopeFactsOf,
-   showReads,
 } from "./scope_facts";
+import type { GateReads } from "./gate_reads_types";
+
+/**
+ * A rendering of gate reads for comparing two of them: every field, sets
+ * sorted. Undefined reads render as undefined.
+ */
+function showReads(r: GateReads | undefined): string | undefined {
+   if (r === undefined) return undefined;
+   return JSON.stringify(r, (_k, v: unknown) =>
+      v instanceof Set ? [...v].sort() : v instanceof Map ? [...v].sort() : v,
+   );
+}
 
 const ORDERS = "orders@file:///pkg/m.malloy";
 

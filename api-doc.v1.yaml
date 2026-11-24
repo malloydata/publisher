@@ -4412,11 +4412,6 @@ components:
           description: Already-materialized upstreams the built sources may read but which this run does not rebuild.
           items:
             $ref: "#/components/schemas/UpstreamTable"
-        strictUpstreams:
-          type: boolean
-          default: false
-          description: Fail a built source whose persisted upstream is neither built by this run nor listed in `upstreamTables`,
-            instead of recomputing that upstream inline from its definition.
         incrementalBoundaries:
           type: array
           description: The incremental boundaries for this run, supplied by a caller that owns the ledger. Present (even empty),
@@ -6141,18 +6136,9 @@ components:
               type: string
               enum:
                 - reused
-                - recomputed
-              description: "For a source that reads another persisted source, how this table's rows were computed from it. `reused`:
-                every persisted upstream was read from its materialized table, so the rows are consistent with those
-                snapshots. `recomputed`: at least one upstream was recomputed from its definition and inlined into this
-                build, because its table could not be read (`upstreamRecomputeMessage` says which and why); the table
-                then reflects the warehouse at this build's time, not the upstream's snapshot. Absent for a source that
-                reads no persisted upstream."
-            upstreamRecomputeMessage:
-              type: string
-              readOnly: true
-              description: "Present only when `upstreamReuse` is `recomputed`: which upstream was not read from its table, and the
-                compiler's or engine's words for why, redacted against the connections involved."
+              description: "For a source that reads another persisted source: `reused`, every persisted upstream was read from its
+                materialized table, so the rows are consistent with those snapshots. A build never recomputes an upstream
+                from its definition; one that would is refused. Absent for a source that reads no persisted upstream."
             dataAsOf:
               type: string
               format: date-time

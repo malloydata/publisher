@@ -15,6 +15,12 @@
  *  - A fresh package builds the pair table and the view in one run.
  *  - A pair table whose leaf key check failed refuses the view
  *    (`schema_incompatible`), naming the upstream and the check.
+ *  - A pair table whose leaf key check could not run is rebuilt in full by
+ *    the next standalone run, which checks the key right after its write:
+ *    passed, the view builds over the rebuilt table in that run and serves,
+ *    equal to live; still unable to run, the key stays `unverified`, marked
+ *    `rebuiltToVerify`, the view stays refused, and the run after carries
+ *    the table rather than rebuilding it again.
  *  - A view that reads a measure the joined source declares does not compile
  *    over the re-root (the join carries only the stored dimensions): it is
  *    built from its definition and labelled `recomputed`, never `reused`.
@@ -23,13 +29,22 @@
  */
 
 import { PostgresConnection } from "@malloydata/db-postgres";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   beforeAll,
+   describe,
+   expect,
+   it,
+   spyOn,
+   type Mock,
+} from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
+import { DatabaseTier } from "../../src/service/materialization/run/database_build_strategy";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
 import { QueryPrivileges } from "../../src/service/model_query_request";
 import type { Package } from "../../src/service/package";
@@ -61,11 +76,11 @@ const RAW = (duplicateLeaf: boolean): Record<string, string> => ({
     (4, 'z', CAST(7.0 AS DECIMAL(10,1)))
   ) AS t(id, cust, amount)`,
    pv_items: `SELECT * FROM (VALUES
-    (100, 1, CAST(3.00 AS DECIMAL(10,2))),
-    (101, 1, CAST(4.50 AS DECIMAL(10,2))),
-    (102, 2, CAST(6.00 AS DECIMAL(10,2))),
-    (${duplicateLeaf ? 102 : 103}, 4, CAST(1.25 AS DECIMAL(10,2)))
-  ) AS t(item_id, order_id, price)`,
+    (100, 1, CAST(3.00 AS DECIMAL(10,2)), 5100),
+    (101, 1, CAST(4.50 AS DECIMAL(10,2)), 5101),
+    (102, 2, CAST(6.00 AS DECIMAL(10,2)), 5102),
+    (${duplicateLeaf ? 102 : 103}, 4, CAST(1.25 AS DECIMAL(10,2)), 5103)
+  ) AS t(item_id, order_id, price, sku)`,
    pv_opts: `SELECT * FROM (VALUES
     (1000, 100, CAST(0.50 AS DECIMAL(10,2))),
     (1001, 100, CAST(0.25 AS DECIMAL(10,2))),
@@ -233,7 +248,17 @@ interface Entry {
       physicalTableName: string;
       builtAt?: string;
    }[];
-   contract?: { keys?: Record<string, { unique: boolean; level: string }> };
+   contract?: {
+      keys?: Record<
+         string,
+         {
+            unique: boolean;
+            level: string;
+            unverified?: true;
+            rebuiltToVerify?: true;
+         }
+      >;
+   };
 }
 
 const entriesOf = (m: Materialization): Record<string, Entry> =>
@@ -347,12 +372,7 @@ class Fixture {
       writePackageFiles(
          path.join(envPath, PKG),
          {
-            "m.malloy": this.model
-               .replace(
-                  /__T__pv_(orders|items|opts)/g,
-                  `${this.tier.tablePrefix}pv_$1`,
-               )
-               .replace(/__T__/g, this.tier.namePrefix),
+            "m.malloy": this.tableNames(this.model),
          },
          { manifest: { name: PKG, description: "fixture" } },
       );
@@ -388,6 +408,24 @@ class Fixture {
 
    warehouse() {
       return this.env.getMalloyConnection("warehouse");
+   }
+
+   /** Writes `model` over the package's model and reloads the package, as `?reload=true` does. */
+   async edit(model: string): Promise<void> {
+      fs.writeFileSync(
+         path.join(this.pkg.getPackagePath(), "m.malloy"),
+         this.tableNames(model),
+      );
+      this.pkg = await this.env.getPackage(parsePackageName(PKG), true);
+   }
+
+   private tableNames(model: string): string {
+      return model
+         .replace(
+            /__T__pv_(orders|items|opts)/g,
+            `${this.tier.tablePrefix}pv_$1`,
+         )
+         .replace(/__T__/g, this.tier.namePrefix);
    }
 
    /** Empties every raw table out of band. */
@@ -481,7 +519,7 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
          // Out of band: a downstream that recomputed from raw would hold no
          // rows.
          await f.emptyRaw();
-         second = await f.build({ strictUpstreams: true });
+         second = await f.build({});
          served = await f.ask(asText(mechanism));
       }, 300_000);
       afterAll(() => f.close());
@@ -553,7 +591,7 @@ for (const tier of tiers) {
       beforeAll(async () => {
          await f.open();
          live = await f.ask(asText(MECHANISMS[0]));
-         run = await f.build({ strictUpstreams: true });
+         run = await f.build({});
       }, 300_000);
       afterAll(() => f.close());
 
@@ -667,6 +705,303 @@ for (const tier of tiers) {
          );
          expect(refusal?.reason).toBe("upstream_table_unusable");
          expect(refusal?.message).toMatch(/'orders'.*does not compile/);
+      });
+   });
+}
+
+for (const tier of tiers) {
+   describe(`a reload that moves the pair table's leaf key rebuilds it, and the view over it, in the next run (${tier.label})`, () => {
+      // The run checked `items`'s key `item_id`. An edit makes `sku`, also
+      // unique, its key: the pair table's address is unchanged, but its
+      // contract records no check of `sku`, so the view over it can neither
+      // serve nor build until the pair table is rebuilt and checks it.
+      const model = MECHANISMS[0].model;
+      const moved = model.replace("primary_key: item_id", "primary_key: sku");
+      const f = new Fixture(tier, model);
+      const query = asText(MECHANISMS[0]);
+      let live: Answer;
+      let first: Materialization;
+      let afterMove: Answer;
+      let next: Materialization;
+      let recovered: Answer;
+      let again: Materialization;
+      let stillServed: Answer;
+
+      beforeAll(async () => {
+         await f.open();
+         live = await f.ask(query);
+         first = await f.build({});
+         await f.edit(moved);
+         afterMove = await f.ask(query);
+         next = await f.build({});
+         recovered = await f.ask(query);
+         again = await f.build({});
+         stillServed = await f.ask(query);
+      }, 300_000);
+      afterAll(() => f.close());
+
+      const pairOf = (m: Materialization) =>
+         Object.values(entriesOf(m)).find(
+            (e) => e.sourceName?.startsWith("orders") ?? false,
+         );
+      const viewOf = (m: Materialization) =>
+         Object.values(entriesOf(m)).find((e) =>
+            MECHANISMS[0].downstream.test(e.sourceName ?? ""),
+         );
+
+      it("answers equal to live throughout", () => {
+         expect(afterMove.rows).toEqual(live.rows);
+         expect(recovered.rows).toEqual(live.rows);
+         expect(stillServed.rows).toEqual(live.rows);
+      });
+
+      it("rebuilds the pair table in the first run after the reload, checking the new key", () => {
+         expect([next.status, (next as { error?: unknown }).error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         const was = pairOf(first)!;
+         const now = pairOf(next)!;
+         expect(now.builtAt).not.toBe(was.builtAt);
+         expect(now.contract?.keys?.["leaf:items.sku"]).toEqual({
+            unique: true,
+            level: "leaf",
+         });
+      });
+
+      it("builds the view over the rebuilt pair table in that same run, and serves it", () => {
+         const view = viewOf(next)!;
+         expect(view.builtAt).toEqual(expect.any(String));
+         expect(view.upstreamReuse).toBe("reused");
+         expect(view.builtFrom?.[0]?.builtAt).toBe(pairOf(next)!.builtAt);
+         expect(failuresOf(next)).toEqual([]);
+         const kinds: (string | undefined)[] =
+            tier.label === "DuckDB"
+               ? [MECHANISMS[0].servedBy]
+               : [MECHANISMS[0].servedBy, "materialized"];
+         expect(kinds).toContain(recovered.kind);
+      });
+
+      it("carries both tables in the run after that", () => {
+         expect(pairOf(again)!.builtAt).toBe(pairOf(next)!.builtAt);
+         expect(viewOf(again)!.builtAt).toBe(viewOf(next)!.builtAt);
+         expect(failuresOf(again)).toEqual([]);
+      });
+   });
+}
+
+for (const tier of tiers) {
+   describe(`a pair table whose leaf key check cannot run is rebuilt once to verify it, then carried, and the view over it stays refused (${tier.label})`, () => {
+      // Every leaf key check throws, in all three runs. The first build
+      // records the leaf key unverified; the second run rebuilds the table
+      // once to run the check again, which still throws, so it records the
+      // key unverified and rebuiltToVerify; the third carries the table and
+      // rebuilds nothing. Nothing builds over it, since the check never
+      // passed.
+      const f = new Fixture(tier, MECHANISMS[0].model);
+      const query = asText(MECHANISMS[0]);
+      let live: Answer;
+      const runs: Materialization[] = [];
+      const answers: Answer[] = [];
+      let checkKey: Mock<DatabaseTier["checkKey"]>;
+      // Leaf checks run by each run: one per build of the pair table.
+      const checksPerRun: number[] = [];
+      const leafChecks = () =>
+         checkKey.mock.calls.filter((c) =>
+            (c[1] as { contractKey?: string }).contractKey?.startsWith("leaf:"),
+         ).length;
+
+      beforeAll(async () => {
+         const original = DatabaseTier.prototype.checkKey;
+         checkKey = spyOn(
+            DatabaseTier.prototype,
+            "checkKey",
+         ).mockImplementation(function (this: DatabaseTier, ...args) {
+            const check = args[1] as { contractKey?: string };
+            if (check.contractKey?.startsWith("leaf:")) {
+               return Promise.reject(new Error("leaf check unavailable"));
+            }
+            return original.apply(this, args);
+         });
+         await f.open();
+         live = await f.ask(query);
+         let before = 0;
+         for (let i = 0; i < 3; i++) {
+            runs.push(await f.build({}));
+            checksPerRun.push(leafChecks() - before);
+            before = leafChecks();
+            answers.push(await f.ask(query));
+         }
+      }, 300_000);
+      afterAll(async () => {
+         checkKey.mockRestore();
+         await f.close();
+      });
+
+      const pairOf = (m: Materialization) =>
+         Object.values(entriesOf(m)).find(
+            (e) => e.sourceName?.startsWith("orders") ?? false,
+         );
+      const viewBuilt = (m: Materialization) =>
+         Object.values(entriesOf(m)).some(
+            (e) =>
+               MECHANISMS[0].downstream.test(e.sourceName ?? "") &&
+               e.builtAt !== undefined,
+         );
+      const unverified = {
+         unique: false,
+         level: "leaf",
+         unverified: true,
+      } as const;
+
+      it("builds the pair table in the first run and records the leaf key as unverified, never as passed", () => {
+         expect(pairOf(runs[0])?.builtAt).toEqual(expect.any(String));
+         expect(checksPerRun[0]).toBe(1);
+         expect(
+            pairOf(runs[0])?.contract?.keys?.["leaf:items.item_id"],
+         ).toEqual(unverified);
+      });
+
+      it("rebuilds the pair table in the next run, checking its key right after the write", () => {
+         expect(checksPerRun[1]).toBe(1);
+         expect(pairOf(runs[1])?.builtAt).toEqual(expect.any(String));
+         expect(pairOf(runs[1])?.builtAt).not.toBe(pairOf(runs[0])?.builtAt);
+         expect(
+            pairOf(runs[1])?.contract?.keys?.["leaf:items.item_id"],
+         ).toEqual({ ...unverified, rebuiltToVerify: true });
+      });
+
+      it("carries the rebuilt table in the run after, never rebuilding it again for the check", () => {
+         expect(checksPerRun[2]).toBe(0);
+         // Building nothing, the run records no entry.
+         expect(runs[2].status).toBe("FAILED");
+      });
+
+      it("never builds the view over it, in any run", () => {
+         for (const run of runs) {
+            expect(viewBuilt(run)).toBe(false);
+            const failures = failuresOf(run).filter((x) =>
+               MECHANISMS[0].downstream.test(x.sourceName ?? ""),
+            );
+            expect(failures.map((x) => x.code)).toEqual([
+               "schema_incompatible",
+            ]);
+            expect(failures[0].reason).toMatch(
+               /recorded no result for the key 'items\.item_id'/,
+            );
+         }
+      });
+
+      it("answers equal to live throughout", () => {
+         for (const answer of answers) expect(answer.rows).toEqual(live.rows);
+      });
+   });
+}
+
+for (const tier of tiers) {
+   describe(`a pair table whose leaf key check could not run is rebuilt at the next standalone run, and the view over it then builds (${tier.label})`, () => {
+      // The first run's leaf check throws; the second's runs. The second
+      // run rebuilds the pair table, checks its key right after the write,
+      // records the check passed, and builds the view over the rebuilt
+      // table; the third carries both and checks nothing.
+      const f = new Fixture(tier, MECHANISMS[0].model);
+      const query = asText(MECHANISMS[0]);
+      let live: Answer;
+      let first: Materialization;
+      let second: Materialization;
+      let third: Materialization;
+      let afterFirst: Answer;
+      let afterSecond: Answer;
+      let checkKey: Mock<DatabaseTier["checkKey"]>;
+      let failing = true;
+      const counts: number[] = [];
+      const leafChecks = () =>
+         checkKey.mock.calls.filter((c) =>
+            (c[1] as { contractKey?: string }).contractKey?.startsWith("leaf:"),
+         ).length;
+
+      beforeAll(async () => {
+         const original = DatabaseTier.prototype.checkKey;
+         checkKey = spyOn(
+            DatabaseTier.prototype,
+            "checkKey",
+         ).mockImplementation(function (this: DatabaseTier, ...args) {
+            const check = args[1] as { contractKey?: string };
+            if (failing && check.contractKey?.startsWith("leaf:")) {
+               return Promise.reject(new Error("leaf check unavailable"));
+            }
+            return original.apply(this, args);
+         });
+         await f.open();
+         live = await f.ask(query);
+         first = await f.build({});
+         counts.push(leafChecks());
+         afterFirst = await f.ask(query);
+         failing = false;
+         second = await f.build({});
+         counts.push(leafChecks());
+         afterSecond = await f.ask(query);
+         third = await f.build({});
+         counts.push(leafChecks());
+      }, 300_000);
+      afterAll(async () => {
+         checkKey.mockRestore();
+         await f.close();
+      });
+
+      const pairOf = (m: Materialization) =>
+         Object.values(entriesOf(m)).find(
+            (e) => e.sourceName?.startsWith("orders") ?? false,
+         );
+      const viewOf = (m: Materialization) =>
+         Object.values(entriesOf(m)).find((e) =>
+            MECHANISMS[0].downstream.test(e.sourceName ?? ""),
+         );
+
+      it("records the leaf key unverified and refuses the view in the first run", () => {
+         expect(counts[0]).toBe(1);
+         expect(pairOf(first)?.contract?.keys?.["leaf:items.item_id"]).toEqual({
+            unique: false,
+            level: "leaf",
+            unverified: true,
+         });
+         expect(viewOf(first)?.builtAt).toBeUndefined();
+         expect(
+            failuresOf(first)
+               .filter((x) => MECHANISMS[0].downstream.test(x.sourceName ?? ""))
+               .map((x) => x.code),
+         ).toEqual(["schema_incompatible"]);
+      });
+
+      it("rebuilds the pair table in the next run and records the check passed", () => {
+         expect(counts[1] - counts[0]).toBe(1);
+         expect(pairOf(second)?.builtAt).toEqual(expect.any(String));
+         expect(pairOf(second)?.builtAt).not.toBe(pairOf(first)?.builtAt);
+         expect(pairOf(second)?.contract?.keys?.["leaf:items.item_id"]).toEqual(
+            { unique: true, level: "leaf" },
+         );
+      });
+
+      it("builds the view over the rebuilt pair table in that run, and serves it equal to live", () => {
+         const view = viewOf(second)!;
+         expect(view.builtAt).toEqual(expect.any(String));
+         expect(view.upstreamReuse).toBe("reused");
+         expect(view.builtFrom?.[0]?.builtAt).toBe(pairOf(second)!.builtAt);
+         expect(failuresOf(second)).toEqual([]);
+         const kinds: (string | undefined)[] =
+            tier.label === "DuckDB"
+               ? [MECHANISMS[0].servedBy]
+               : [MECHANISMS[0].servedBy, "materialized"];
+         expect(kinds).toContain(afterSecond.kind);
+         expect(afterFirst.rows).toEqual(live.rows);
+         expect(afterSecond.rows).toEqual(live.rows);
+      });
+
+      it("carries both in the run after, checking nothing", () => {
+         expect(counts[2] - counts[1]).toBe(0);
+         expect(pairOf(third)!.builtAt).toBe(pairOf(second)!.builtAt);
+         expect(viewOf(third)!.builtAt).toBe(viewOf(second)!.builtAt);
+         expect(failuresOf(third)).toEqual([]);
       });
    });
 }

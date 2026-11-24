@@ -21,7 +21,7 @@ import {
 import { resetInstrumentsForTesting } from "../../telemetry";
 import * as connectionModule from "../connection";
 import { ConnectionService } from "../connection_service";
-import { destinationOverlap } from "../destination_overlap";
+import { destinationOverlaps } from "../destination_overlap";
 import type { ConnectionAdmin } from "../environment_ports";
 import type { EnvironmentStore } from "../environment_store";
 
@@ -57,7 +57,6 @@ const UNSAFE_NAME_REFUSED = new Set(["duckdb", "ducklake"]);
 const SELECT_ONLY = new Set(["duckdb", "motherduck", "ducklake"]);
 const RELEASE: Record<string, string> = {
    duckdb: "deleteDuckDBConnection(c)",
-   ducklake: "deleteDuckLakeConnection(c)",
 };
 const UNREGISTERED = new Set(["constructor", "nope"]);
 
@@ -141,6 +140,7 @@ async function deleteRelease(type: string): Promise<unknown> {
       deleteDuckDBConnection: async (name: string) => {
          calls.push(`deleteDuckDBConnection(${name})`);
       },
+      // A DuckLake connection keeps no file, so its delete must never reach this.
       deleteDuckLakeConnection: async (name: string) => {
          calls.push(`deleteDuckLakeConnection(${name})`);
       },
@@ -247,14 +247,16 @@ describe("the per-type routing reads the registry", () => {
          destinationType: string,
          config: unknown,
       ) =>
-         destinationOverlap(
-            { name: "c", type, ducklakeConnection: LAKE } as ApiConnection,
-            {
-               name: "d",
-               type: destinationType,
-               ducklakeConnection: config,
-            } as ApiConnection,
-         );
+         destinationOverlaps(
+            [{ name: "c", type, ducklakeConnection: LAKE } as ApiConnection],
+            [
+               {
+                  name: "d",
+                  type: destinationType,
+                  ducklakeConnection: config,
+               } as ApiConnection,
+            ],
+         )[0]?.reason;
       expect(
          overlap("ducklake", "ducklake", DESTINATIONS["same catalog"]),
       ).toBe("it names the same DuckLake catalog");

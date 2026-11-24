@@ -1,7 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { InMemoryURLReader, Runtime } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
+import * as path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { marksAgentHidden } from "../../service/annotation_reader";
+import { getDirectTaglines } from "../../service/entities/field_helpers";
+import { withModelTextCache } from "../../service/entities/model_text";
 import { createCatalogTables } from "../../storage/duckdb/schema";
 import {
    compileFcjFixture,
@@ -423,5 +430,56 @@ describe("derived text", () => {
          },
       );
       expect(text.split(" ").length).toBe(DERIVED_TEXT_MAX_WORDS);
+   });
+});
+
+describe("a source's own notes", () => {
+   // A table source records no parent, so the catalog reads its own notes
+   // from its file's text: it must agree with discovery.
+   const MODEL = `#(agent-hidden)
+source:
+  alpha is duckdb.sql("select 1 as x")
+  beta is duckdb.sql("select 2 as x")
+
+source: gamma is duckdb.sql("select 3 as x")
+`;
+
+   // An absolute file URL on every platform: on Windows a drive-less
+   // file:/// URL has no path, so the model-text cache, keyed by path, misses.
+   const M_URL = pathToFileURL(path.resolve("/m.malloy")).href;
+
+   async function discoveryHidden(): Promise<string[]> {
+      const conn = new DuckDBConnection("duckdb");
+      try {
+         const runtime = new Runtime({
+            urlReader: new InMemoryURLReader(new Map([[M_URL, MODEL]])),
+            connection: conn,
+         });
+         const model = await runtime.getModel(new URL(M_URL));
+         return withModelTextCache(
+            () =>
+               model.explores
+                  .filter((e) =>
+                     getDirectTaglines(e).some((t) =>
+                        marksAgentHidden(t, "source"),
+                     ),
+                  )
+                  .map((e) => e.name)
+                  .sort(),
+            new Map([[fileURLToPath(M_URL), MODEL]]),
+         );
+      } finally {
+         await conn.close();
+      }
+   }
+
+   it("hides every definition of a statement its note marks, as discovery does", async () => {
+      const { catalog: own } = await compileFcjFixture(
+         { "m.malloy": MODEL },
+         {},
+      );
+      const served = [...own.sources.values()].map((s) => s.name).sort();
+      expect(served).toEqual(["gamma"]);
+      expect(await discoveryHidden()).toEqual(["alpha", "beta"]);
    });
 });

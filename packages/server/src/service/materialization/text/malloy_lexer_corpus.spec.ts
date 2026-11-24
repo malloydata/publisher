@@ -12,7 +12,11 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import { LEXER_CORPUS } from "../../lexer_corpus";
-import { lexAll, statementHead, statementStarts } from "./malloy_lexer";
+import {
+   lexAll,
+   statementHead,
+   statementStarts,
+} from "../../malloy_lexer_core";
 
 const GOLDEN = path.join(__dirname, "malloy_lexer_corpus.golden.json");
 

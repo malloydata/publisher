@@ -50,7 +50,7 @@ source: daily_wide is daily extend {
 }
 ```
 
-## Build (orchestrated, strict, pkg=pex)
+## Build (orchestrated, pkg=pex)
 
 The shared address, strict, nothing by reference.
 

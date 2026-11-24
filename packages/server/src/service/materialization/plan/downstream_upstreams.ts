@@ -39,6 +39,8 @@ interface ReachedUpstream {
    name: string;
    /** The destination its table lives in; absent for its own warehouse. */
    storage?: string;
+   /** Its own notes declare `#(materialize)`, not `#@ persist`. */
+   materialize?: true;
 }
 
 /**
@@ -126,6 +128,7 @@ export function reachedUpstreams(
          sourceID,
          name,
          ...(storage !== undefined ? { storage } : {}),
+         ...(persisted ? {} : { materialize: true as const }),
       });
    }
    return out;
@@ -146,6 +149,29 @@ export function storedElsewhereReason(
            `read, and a downstream is never built by recomputing its upstream ` +
            `from raw; it is ` +
            `answered live, over '${stored.name}''s table`
+      : undefined;
+}
+
+/**
+ * Why a `storage=` `#@ persist` source placed at `destination` is not built
+ * over a `#(materialize)` upstream stored there, naming it, or undefined when
+ * it reaches none: its build reads that upstream only through Malloy's build
+ * walk, which does not see a `#(materialize)` table, so no plan edge orders
+ * it after that table or rebuilds it with it, and it is refused rather than
+ * built by recomputing that upstream from raw.
+ */
+export function persistOverMaterializedReason(
+   upstreams: readonly ReachedUpstream[],
+   destination: string,
+): string | undefined {
+   const stored = upstreams.find(
+      (u) => u.materialize && u.storage === destination,
+   );
+   return stored
+      ? `its upstream '${stored.name}' is a #(materialize) table in its ` +
+           `storage= destination '${destination}', which a #@ persist ` +
+           `source is not yet built over (a persisted view or query over ` +
+           `it is)`
       : undefined;
 }
 

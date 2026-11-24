@@ -11,8 +11,8 @@ SPDX-License-Identifier: MIT
 # A source's `freshnessFallback` must be decided by what is serving it
 
 `runtime-fallback-honors-live` establishes the promise for one source: a store that
-fails under a routed query degrades to live when the binding says `live`, and keeps
-erroring when it says `fail`. This scenario is about **whose** declaration decides,
+fails under a routed query degrades to live (a table gone since the bind does so
+whatever the binding's fallback says). This scenario is about **whose** declaration decides,
 once a package has more than one binding.
 
 A host stamps freshness per manifest entry, per generation, so a package with mixed

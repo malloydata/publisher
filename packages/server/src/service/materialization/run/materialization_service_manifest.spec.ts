@@ -22,7 +22,6 @@ function manifestMethods(service: MaterializationService): {
       pkg: string,
       entries: Record<string, unknown>,
       versionId?: string,
-      rollupKeys?: unknown,
       finish?: (served: Served) => Promise<void>,
    ) => Promise<void>;
    commitManifest: (
@@ -155,7 +154,6 @@ describe("autoLoadManifest", () => {
          "pkg",
          { b1: { sourceEntityId: "b1", physicalTableName: "t" } },
          undefined,
-         undefined,
          async (served) => {
             finished.push(served);
          },
@@ -171,7 +169,6 @@ describe("autoLoadManifest", () => {
             loader({ loaded: false, step, error: "boom" }).env,
             "pkg",
             { b1: { sourceEntityId: "b1", physicalTableName: "t" } },
-            undefined,
             undefined,
             async (served) => {
                finished.push(served);

@@ -232,6 +232,7 @@ import {
    type MaterializePair,
    type MaterializePairBlocks,
    type InlineUniquenessCheck,
+   pairLeafPath,
 } from "../domain/table_plans";
 import type { GivenReadTerm } from "../domain/read_time_terms";
 import type { ownLevelNotes } from "../../annotations";
@@ -625,15 +626,13 @@ export function pairKeyChecks(
             ...on,
          });
       });
-      const hops = p.hops ?? [];
-      const last = hops[hops.length - 1];
-      const leafNames = [p.join, ...hops.map((h) => h.join)];
+      const leaf = pairLeafPath(p);
       out.push({
-         join: leafNames.join("."),
-         keyColumn: last?.key ?? p.childKey,
-         queryName: `${build}__pair_leaf_key__${leafNames.join("__")}`,
-         joinedSourceID: last?.sourceID ?? p.childSourceID,
-         pairLevel: leafNames.length,
+         join: leaf.names.join("."),
+         keyColumn: leaf.keyColumn,
+         queryName: `${build}__pair_leaf_key__${leaf.names.join("__")}`,
+         joinedSourceID: leaf.sourceID,
+         pairLevel: leaf.names.length,
          recordOnly: true,
          ...on,
       });

@@ -84,7 +84,7 @@ instructed build refuses it rather than recomputing `daily` from raw.
 
 cites: the host supplied an upstream entry
 
-## Build refused (orchestrated, strict, pkg=xw)
+## Build refused (orchestrated, pkg=xw)
 
 The same build under a strict manifest refuses the same way. Strictness does
 not change what an instructed build does with an entry the host supplied at the

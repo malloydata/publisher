@@ -11,7 +11,6 @@
 import { describe, expect, it } from "bun:test";
 import type { ModelDef } from "@malloydata/malloy";
 import { makeSnapshot } from "../domain/binding";
-import { withAdmissionMode } from "./admission_parity";
 import type { GateReads } from "./gate_reads";
 import { ReadAdmission } from "./read_admission";
 import { recordScopeFacts } from "./scope_facts";
@@ -88,26 +87,23 @@ describe("read admission's recorded row scope reads", () => {
             } as never,
          },
          { materialize: true, gatedSources: true } as never,
-         (async () => ({})) as never,
          snapshot,
       );
       const scopeReads = (
          admission as unknown as { gateReadsFor: ScopeReads }
       ).gateReadsFor.bind(admission);
-      await withAdmissionMode("lookup", async () => {
-         // The served copy's answer re-roots nothing, as its lane does, and
-         // reads no stored table: the stage's where: is judged.
-         const own = await scopeReads([], new Set(), true);
-         expect(own?.scoped).toBe(true);
-         expect(own?.columns).toEqual([["amount"]]);
-         // One that reads the stored table is judged as the lane is.
-         const lane = await scopeReads(
-            [{ tier: "storage", sourceIDs: ["stored@m"] }],
-            new Set(),
-            true,
-         );
-         expect(lane?.scoped).toBe(false);
-         expect(lane?.columns).toEqual([]);
-      });
+      // The served copy's answer re-roots nothing, as its lane does, and
+      // reads no stored table: the stage's where: is judged.
+      const own = await scopeReads([], new Set(), true);
+      expect(own?.scoped).toBe(true);
+      expect(own?.columns).toEqual([["amount"]]);
+      // One that reads the stored table is judged as the lane is.
+      const lane = await scopeReads(
+         [{ tier: "storage", sourceIDs: ["stored@m"] }],
+         new Set(),
+         true,
+      );
+      expect(lane?.scoped).toBe(false);
+      expect(lane?.columns).toEqual([]);
    });
 });

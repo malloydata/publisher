@@ -69,7 +69,7 @@ const DECIDED: Record<Flag, DialectName[]> = {
    foldsTableNameCase: ["databricks", "duckdb", "presto", "sqlserver", "trino"],
    utcSessions: ["duckdb"],
    // A string column's comparison is read only where it can be: BigQuery is
-   // byte-exact, DuckDB and Postgres are probed (`serve/gate_collation.ts`).
+   // byte-exact, DuckDB and Postgres are probed (`serve/admission_lookup.ts`).
    stringCollation: ["duckdb", "postgres", "standardsql"],
    // BigQuery and Postgres refuse GROUP BY on some types (F-45); a pair
    // table's build groups.

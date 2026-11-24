@@ -6,7 +6,7 @@
  * per bind (a load, a reload, a publish and a rebuild each bind) and kept
  * with the model's runtime, so a query looks it up instead of probing the
  * warehouse (`admission_lookup.ts`). The source-side half of what
- * `gate_collation.ts` reads per query:
+ * `admission_lookup.ts` reads per query:
  *
  * - Postgres: each string field of each named source, through its joins to
  *   {@link MAX_JOIN_DEPTH} joins deep, as the database compares it
@@ -54,12 +54,12 @@ import {
    placeTable,
    sqlProjects,
 } from "./collation/bigquery";
-import type { ProbeIO } from "./collation/probe_io";
+import type { CatalogIO } from "./collation/catalog_io";
 import {
    POSTGRES_COLLATION,
    unfinalizedPostgresSQL,
 } from "./collation/postgres";
-import { probeIO } from "./gate_collation";
+import { catalogIO } from "./collation/catalog_io";
 
 /** How many joins deep a source's string fields are read; past it, unknown. */
 export const MAX_JOIN_DEPTH = 4;
@@ -130,6 +130,8 @@ export function fieldKey(path: readonly string[]): string {
 }
 
 const recorded = new WeakMap<object, StringCapabilities>();
+/** The read {@link refreshStringCapabilities} is making for a runtime, while it runs. */
+const reading = new WeakMap<object, Promise<void>>();
 
 /** Keep `capabilities` for queries compiled by `runtime`. */
 export function recordStringCapabilities(
@@ -139,11 +141,63 @@ export function recordStringCapabilities(
    recorded.set(runtime, capabilities);
 }
 
-/** What the last bind read for `runtime`'s model, or undefined: none yet. */
-export function stringCapabilitiesOf(
+/**
+ * How long a query waits for a capability read still running before it
+ * judges with none (a catalog read can hang on an unreachable host). The read
+ * goes on, and records when it lands.
+ */
+const CAPABILITY_WAIT_MS = 3_000;
+let capabilityWaitMs = CAPABILITY_WAIT_MS;
+
+/** Set the bound {@link stringCapabilitiesOf} waits; returns a restore. */
+export function setCapabilityWaitMsForTests(ms: number): () => void {
+   const before = capabilityWaitMs;
+   capabilityWaitMs = ms;
+   return () => {
+      capabilityWaitMs = before;
+   };
+}
+
+/**
+ * What the last read recorded for `runtime`'s model (at load, or at the last
+ * commit), or undefined: none. A read still running for it, such as the one
+ * a load or a commit starts without waiting, is waited for, so a query over
+ * a table bound since never judges it before the record lands; but only up
+ * to {@link CAPABILITY_WAIT_MS}: past it the answer is none, so a stored
+ * answer that needs a capability declines and is answered live.
+ */
+export async function stringCapabilitiesOf(
    runtime: object | undefined,
-): StringCapabilities | undefined {
-   return runtime ? recorded.get(runtime) : undefined;
+): Promise<StringCapabilities | undefined> {
+   if (!runtime) return undefined;
+   const inFlight = reading.get(runtime);
+   if (inFlight && !(await settlesWithin(inFlight, capabilityWaitMs))) {
+      return undefined;
+   }
+   return recorded.get(runtime);
+}
+
+/** Whether `promise` settles within `ms`; the timer never holds the process open. */
+async function settlesWithin(
+   promise: Promise<unknown>,
+   ms: number,
+): Promise<boolean> {
+   let timer: ReturnType<typeof setTimeout> | undefined;
+   const expired = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), ms);
+      (timer as { unref?: () => void }).unref?.();
+   });
+   try {
+      return await Promise.race([
+         promise.then(
+            () => true,
+            () => true,
+         ),
+         expired,
+      ]);
+   } finally {
+      clearTimeout(timer);
+   }
 }
 
 /** A named source of a compiled model, as this module reads it. */
@@ -231,10 +285,10 @@ export async function readStringCapabilities(
       ...new Set(named.map(([, s]) => s.connection as string)),
    ];
    const connections = new Map<string, ConnectionCapability>();
-   const ios = new Map<string, ProbeIO>();
+   const ios = new Map<string, CatalogIO>();
    for (const name of connectionNames) {
       try {
-         const io = probeIO(await args.connection(name));
+         const io = catalogIO(await args.connection(name));
          ios.set(name, io);
          const dialect = named.find(([, s]) => s.connection === name)?.[1]
             .dialect as string;
@@ -268,7 +322,7 @@ export async function readStringCapabilities(
 
 /** A connection's capability by its dialect's reader. */
 async function connectionCapability(
-   io: ProbeIO,
+   io: CatalogIO,
    dialect: string,
    name: string,
    structs: readonly SourceShape[],
@@ -356,7 +410,7 @@ export function irSql(node: unknown, out: string[] = [], depth = 0): string[] {
 
 /** What `catalog` reads for every table `structs` read, through every join. */
 async function recordBigQuery(
-   io: ProbeIO,
+   io: CatalogIO,
    name: string,
    structs: readonly SourceShape[],
 ): Promise<RecordedBigQuery> {
@@ -415,7 +469,7 @@ async function postgresFields(
    args: CapabilityReadArgs,
    sourceName: string,
    struct: SourceShape,
-   io: ProbeIO,
+   io: CatalogIO,
 ): Promise<Map<string, FieldCapability>> {
    const leaves = stringLeaves(struct).filter((l) => l.selectable);
    if (leaves.length === 0) return new Map();
@@ -567,5 +621,19 @@ export async function refreshStringCapabilities(
    runtime: object,
    args: CapabilityReadArgs,
 ): Promise<void> {
-   recordStringCapabilities(runtime, await readStringCapabilities(args));
+   // Only the latest read records: an earlier one landing late (a load's,
+   // overtaken by a commit's) never replaces what the later one read.
+   const read: Promise<void> = readStringCapabilities(args).then(
+      (capabilities) => {
+         if (reading.get(runtime) === read) {
+            recordStringCapabilities(runtime, capabilities);
+         }
+      },
+   );
+   reading.set(runtime, read);
+   try {
+      await read;
+   } finally {
+      if (reading.get(runtime) === read) reading.delete(runtime);
+   }
 }

@@ -4,8 +4,14 @@
 import type { Entity, JoinSourceMetadata } from "./internal_types";
 import { isOnRoute } from "../annotation_reader";
 import { AccessModifierEnum, EntityTypeEnum } from "./internal_types";
-import { extractCodeFromEntity } from "./model_text";
+import {
+   extractCodeFromEntity,
+   modelCode,
+   modelOffset,
+   type ModelCode,
+} from "./model_text";
 import { motlyTag } from "../motly";
+import { statementHead } from "../malloy_lexer_core";
 import type {
    AtomicField,
    Explore,
@@ -215,24 +221,89 @@ export function parseDocAnnotation(text: string | undefined): string | null {
    return null;
 }
 
-interface MalloyNote {
-   text?: string;
-   at?: {
-      url?: string;
-      range?: {
-         start?: { line?: number };
-         end?: { line?: number };
-      };
-   };
+interface Position {
+   line?: number;
+   character?: number;
 }
 
 interface MalloyDocLocation {
    url?: string;
-   range?: {
-      start?: { line?: number };
-      end?: { line?: number };
-   };
+   range?: { start?: Position; end?: Position };
 }
+
+interface MalloyNote {
+   text?: string;
+   at?: MalloyDocLocation;
+}
+
+/** The statements whose notes tag the sources they define. */
+const DEFINING_KEYWORDS = new Set([
+   "source",
+   "join_one",
+   "join_many",
+   "join_cross",
+]);
+
+/**
+ * Where a note Malloy attached to the definition at offset `at` must start to
+ * be its own, as half-open offset spans of `model`: the trivia (spaces,
+ * comments, annotations) between the token before it and `at`, which for a
+ * statement's first definition runs back past its `[label] keyword:`; and for
+ * a later definition (after a `,` or not), the trivia above that statement's
+ * head too. A note copied from a base starts above the base's declaration,
+ * outside them.
+ */
+const ownNoteSpans = (model: ModelCode, at: number): [number, number][] => {
+   const { tokens, statementKeywords } = model;
+   // The first token at or after `at`.
+   let k = 0;
+   for (let hi = tokens.length; k < hi; ) {
+      const mid = (k + hi) >> 1;
+      if (tokens[mid]!.start < at) k = mid + 1;
+      else hi = mid;
+   }
+   const endBefore = (i: number) => tokens[i - 1]?.end ?? 0;
+   const own: [number, number] = [endBefore(k), at];
+   // The nearest statement keyword before it at its depth, inside its block.
+   const depth = tokens[k]?.depth ?? 0;
+   let j = k - 1;
+   while (j >= 0 && !(statementKeywords.has(j) && tokens[j]!.depth === depth)) {
+      if (tokens[j]!.depth < depth) return [own];
+      j--;
+   }
+   if (j < 0 || !DEFINING_KEYWORDS.has(tokens[j]!.text.toLowerCase())) {
+      return [own];
+   }
+   const head = statementHead(tokens, j);
+   const headIndex = head === tokens[j] ? j : j - 1;
+   const statement: [number, number] = [endBefore(headIndex), head.start];
+   // Its first definition: the statement's trivia, keyword and its own notes.
+   if (k === j + 2) return [[statement[0], at]];
+   return [own, statement];
+};
+
+/**
+ * Whether each same-file note is the explore's own, read from the text the
+ * model compiled from; undefined when that text can't be read. Read by where
+ * a note starts: Malloy's reported end skews with astral characters earlier
+ * in the file.
+ */
+const ownNoteTest = (
+   exploreLoc: MalloyDocLocation,
+   codeOf: (url: string) => ModelCode | undefined,
+): ((note: MalloyNote) => boolean) | undefined => {
+   const model = exploreLoc.url ? codeOf(exploreLoc.url) : undefined;
+   if (!model) return undefined;
+   const at = modelOffset(model, exploreLoc.range?.start);
+   if (at === undefined) return undefined;
+   const spans = ownNoteSpans(model, at);
+   return (note) => {
+      const from = modelOffset(model, note.at?.range?.start);
+      if (from === undefined) return false;
+      // Inside its own declaration, or in the trivia that tags it.
+      return from >= at || spans.some(([s, e]) => from >= s && from < e);
+   };
+};
 
 /**
  * Returns taglines that are *genuinely declared on* this explore.
@@ -257,11 +328,14 @@ interface MalloyDocLocation {
  * The only reliable local signal is *location*: a note genuinely declared
  * on this source sits within the source's declaration or immediately above
  * the `source:` keyword (block annotations). A note copied from a base
- * points back at the base's declaration, which lives elsewhere. We keep
- * only the notes whose source location is contiguous with this explore's
- * declaration. We use contiguity (rather than a raw line-gap threshold) so
- * that a base defined immediately above its extending child is still
- * correctly excluded.
+ * points back at the base's declaration, which lives elsewhere. Read from
+ * the text the model compiled from, a note is this source's own when it lies
+ * inside the declaration or in the run of comments and annotations above it
+ * and its statement's keyword (the statement's, too, for a later definition
+ * of a multi-definition statement); a copied note has its base's declaration
+ * in between, wherever that base was imported from. Without that text (a
+ * file the run can't read, or a model compiled from a string) we fall back to
+ * line contiguity: a note whose lines run straight into the declaration.
  */
 export const getDirectTaglines = (explore: Explore): string[] => {
    const annotation = (
@@ -278,7 +352,7 @@ export const getDirectTaglines = (explore: Explore): string[] => {
    ];
 
    const exploreLoc = (explore as { location?: MalloyDocLocation }).location;
-   const directNotes = filterDirectlyDeclaredNotes(notes, exploreLoc);
+   const directNotes = directlyDeclaredNotes(notes, exploreLoc);
 
    return directNotes
       .map((n) => n.text)
@@ -295,7 +369,7 @@ export const getDirectTaglines = (explore: Explore): string[] => {
  * joined source's OWN declaration file (not the file with the join clause),
  * and its line range is that file's — never contiguous with the join
  * field's `location` (which sits at the join clause instead). Both of the
- * `filterDirectlyDeclaredNotes` heuristics (same-file, line-contiguity) are
+ * `directlyDeclaredNotes` heuristics (same-file, line-contiguity) are
  * therefore built for the `extend`-inheritance case and wrongly drop every
  * note here — see `getDirectTaglines` for that rationale. Since there is no
  * extend/inherits ambiguity to resolve for a named join, every note present
@@ -332,16 +406,17 @@ const noteLineRange = (
 };
 
 /**
- * Keeps only the notes that are genuinely declared on the explore at
- * `exploreLoc` — i.e. notes located inside the source declaration or in the
- * contiguous block of annotation lines immediately above it. Notes that were
- * copied verbatim from an extended base (whose location points elsewhere)
- * are dropped. See `getDirectTaglines` for the full rationale.
+ * Keeps only the notes that are genuinely declared on the source at
+ * `exploreLoc`: read from its file's text (`codeOf`) when there is one, else
+ * by line contiguity. Notes copied verbatim from a base (whose location
+ * points elsewhere) are dropped. See `getDirectTaglines` for the rationale.
+ * The retrieval catalog reads a source's own notes with this too.
  */
-const filterDirectlyDeclaredNotes = (
-   notes: MalloyNote[],
+export const directlyDeclaredNotes = <N extends MalloyNote>(
+   notes: N[],
    exploreLoc: MalloyDocLocation | undefined,
-): MalloyNote[] => {
+   codeOf: (url: string) => ModelCode | undefined = modelCode,
+): N[] => {
    const srcStart = exploreLoc?.range?.start?.line;
    const srcEnd = exploreLoc?.range?.end?.line ?? srcStart;
    // Without a usable source location we cannot distinguish direct from
@@ -357,10 +432,18 @@ const filterDirectlyDeclaredNotes = (
       return !noteUrl || !exploreUrl || noteUrl === exploreUrl;
    });
 
+   // With the text the model compiled from, read it as Malloy does.
+   const own = exploreLoc && ownNoteTest(exploreLoc, codeOf);
+   if (own) {
+      return sameFileNotes.filter((n) => !n.at?.range || own(n));
+   }
+
+   // Fallback for a file the run can't read: coarser than the text rule (it
+   // drops a note past a blank line, or on a statement's later definition).
    // Map each line to the notes that occupy it, so we can walk upward from
    // the `source:` keyword while every intervening line is an annotation.
-   const lineToNotes = new Map<number, MalloyNote[]>();
-   const direct = new Set<MalloyNote>();
+   const lineToNotes = new Map<number, N[]>();
+   const direct = new Set<N>();
    for (const note of sameFileNotes) {
       const lr = noteLineRange(note);
       if (!lr) {

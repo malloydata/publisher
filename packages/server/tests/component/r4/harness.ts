@@ -53,7 +53,7 @@ import {
 import { SourceMap } from "../../../src/service/materialization/text/source_map";
 import {
    pairLeafKeyChecksOf,
-   runRollupKeyCheck,
+   runKeyCheck,
 } from "../../../src/service/materialization/run/inline_uniqueness";
 import { createModelRuntime } from "../../../src/service/model_runtime";
 import { tryCompilePersistedViewCompanion } from "../../../src/service/materialization/plan/persisted_view_compile";
@@ -69,7 +69,6 @@ import {
    applyObservedColumns,
    deriveDatabaseServeBindings,
    kindFromPlan,
-   type ObservedDrift,
    v1StoredColumnsOf,
 } from "../../../src/service/materialization/serve/bind";
 import { capturedNativeSchema } from "../../../src/service/materialization/run/database_native_types";
@@ -377,7 +376,6 @@ export interface R4Fixture {
     * its build. Returns what the read found.
     */
    observeDatabaseColumns(): Promise<{
-      drifted: ObservedDrift[];
       unread: { sourceEntityId: string; reason: string }[];
       /** Tables that no longer match their column contracts, left out. */
       incompatible: {
@@ -754,7 +752,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             const record =
                checks === "unique"
                   ? { keyColumn: check.keyColumn, unique: true }
-                  : await runRollupKeyCheck(check, duckdb, table);
+                  : await runKeyCheck(check, duckdb);
             if (record) {
                databaseEntries[target.buildId].keyUniqueness = {
                   keyColumn: record.keyColumn,
@@ -769,7 +767,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                const record =
                   checks === "unique"
                      ? { unique: true }
-                     : await runRollupKeyCheck(parent, duckdb, table);
+                     : await runKeyCheck(parent, duckdb);
                if (record) {
                   parentKeys[parent.sourceID] = record.unique;
                   parentKeyColumns[parent.sourceID] = parent.keyColumn;
@@ -922,7 +920,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       const parentKeys: Record<string, boolean> = {};
       const parentKeyColumns: Record<string, string> = {};
       for (const check of checks) {
-         const record = await runRollupKeyCheck(check, on, "pair");
+         const record = await runKeyCheck(check, on);
          if (record) {
             parentKeys[check.sourceID] = record.unique;
             parentKeyColumns[check.sourceID] = check.keyColumn;
@@ -1205,7 +1203,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          const record =
             checks === "unique"
                ? { unique: true }
-               : await runRollupKeyCheck(
+               : await runKeyCheck(
                     {
                        keyColumn: storedKey,
                        sql: storedKeyCheckSql(
@@ -1214,7 +1212,6 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                        ),
                     },
                     dest,
-                    table,
                  );
          if (record) {
             const entry = entries[`h${i}`] as ManifestEntry & {
@@ -1244,11 +1241,10 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             const record =
                checks === "unique"
                   ? { unique: true }
-                  : await runRollupKeyCheck(
+                  : await runKeyCheck(
                        parent,
                        connections.get(parent.connectionName ?? "duckdb") ??
                           duckdb,
-                       table,
                     );
             if (record) {
                parentKeys[parent.sourceID] = record.unique;
@@ -1286,10 +1282,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          const record =
             checks === "unique"
                ? { keyColumn: rollupKey.keyColumn, unique: true }
-               : await runRollupKeyCheck(
+               : await runKeyCheck(
                     rollupKey,
                     connections.get(source.connectionName) ?? duckdb,
-                    table,
                  );
          if (record) {
             const entry = entries[`h${i}`] as ManifestEntry & {
@@ -1561,7 +1556,6 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             });
          }
          return {
-            drifted: applied.drifted,
             unread: applied.unread,
             incompatible: applied.incompatible,
          };

@@ -4,13 +4,14 @@
 /**
  * A pair table's leaf key check (known limitation 40): a `#(materialize)`
  * source that inlines a join_many is built whatever its leaf's key holds, and
- * an auto-run then checks that key unique and never NULL over the leaf
- * source's rows and records what it found beside the table, under the leaf
- * source's sourceID. The served copy re-declares a count through the path
- * only where that record passed. Through real builds run after run, as the
- * rollup key check's spec drives them: the record describes the table the
- * checking run wrote, is carried while that table stands, and reaches the
- * database table's serve binding.
+ * every build then checks that key unique and never NULL over the leaf
+ * source's rows and records what it found in the table's contract, under
+ * the leaf's join path (`leaf:segs.seg_id`). A bind maps that key to the leaf
+ * source's sourceID through the plan, under the primary key the leaf
+ * declares now, and the served copy re-declares a count through the path
+ * only where that check passed. Through real builds run after run: the
+ * check describes the table the checking build wrote, rides on its entry
+ * while that table stands, and reaches the table's serve binding.
  */
 
 import {
@@ -19,7 +20,8 @@ import {
    targetsIn,
 } from "../../../test_helpers/materialization_test_fixtures";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { DatabaseTier } from "./database_build_strategy";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { computeSourceEntityId } from "../plan/build_plan";
@@ -31,18 +33,11 @@ import {
 } from "../package_materialization";
 import type { Binding } from "../domain/binding";
 import type { BuildInstruction, ManifestEntry } from "../domain/types";
-import {
-   INLINE_UNIQUENESS_KEY,
-   keyUniquenessAt,
-   pairLeafKeyChecksOf,
-   rollupKeyRecordKey,
-   rollupKeyRecordsIn,
-   UniquenessLedger,
-} from "./inline_uniqueness";
+import { parseContract } from "../domain/column_contract";
+import { pairLeafKeyChecksOf, UniquenessLedger } from "./inline_uniqueness";
 import { InstructedBuild } from "./instructed_build";
 import { type BuildEnvironment } from "./build_upstreams";
 import { buildSource } from "./source_build";
-import { deriveDatabaseServeBindings } from "../serve/bind";
 import { contractFor } from "../../../test_helpers/contract_fixture";
 
 const packages = tempBuildPlanPackages();
@@ -71,8 +66,6 @@ source: flights is duckdb.table('flights_src') extend {
   measure: seg_n is segs.count()
 }
 `;
-
-type Metadata = NonNullable<ReturnType<UniquenessLedger["toMetadata"]>>;
 
 async function scenario() {
    const pkg = await packages.create(MODEL);
@@ -113,39 +106,38 @@ async function scenario() {
       physicalTableName: "flights_pairs_t",
       realization: "COPY",
    } as BuildInstruction;
-   let previous: {
-      entries: Record<string, ManifestEntry>;
-      metadata?: Metadata;
-   } = { entries: {} };
+   let previous: Record<string, ManifestEntry> = {};
    let runs = 0;
-   async function run(rebuild: boolean, orchestrated = false) {
+   async function run(
+      rebuild: boolean,
+      orchestrated = false,
+      rebuiltToVerify = false,
+   ) {
       runs += 1;
-      const ledger = new UniquenessLedger(
-         undefined,
-         `run-${runs}`,
-         previous.metadata
-            ? rollupKeyRecordsIn({ [INLINE_UNIQUENESS_KEY]: previous.metadata })
-            : undefined,
-      );
+      const ledger = new UniquenessLedger(undefined, `run-${runs}`);
       const result = await build.run({
          compiled,
          environment,
          instructions: rebuild
             ? [orchestrated ? { ...instruction, sourceID } : instruction]
             : [],
-         seedEntries: rebuild ? {} : previous.entries,
+         seedEntries: rebuild ? {} : previous,
          signal: new AbortController().signal,
-         strict: false,
          priorRefusals: [],
          hostInstructed: orchestrated,
+         ...(rebuiltToVerify ? { rebuiltToVerify: new Set([address]) } : {}),
          uniqueness: ledger,
       });
       expect(result.failures).toEqual({});
-      previous = { entries: result.entries, metadata: result.uniquenessChecks };
+      previous = result.entries;
       return result;
    }
-   const key = rollupKeyRecordKey(address, leaf.sourceID);
-   return { duckdb, compiled, sourceID, source, address, leaf, key, run };
+   /** The leaf check `result`'s pair table records in its contract. */
+   const leafCheck = (result: Awaited<ReturnType<typeof run>>) =>
+      parseContract(result.entries[address]?.contract)?.keys?.[
+         leaf.contractKey
+      ];
+   return { duckdb, compiled, sourceID, source, address, leaf, leafCheck, run };
 }
 
 describe("a pair table's leaf key check, on a build", () => {
@@ -165,85 +157,50 @@ describe("a pair table's leaf key check, on a build", () => {
          expect(first.entries[s.address]?.physicalTableName).toBe(
             "flights_pairs_t",
          );
-         expect(first.uniquenessChecks?.rollupKeys?.[s.key]).toMatchObject({
-            keyColumn: "seg_id",
-            unique: false,
-            sourceID: s.leaf.sourceID,
-         });
+         expect(s.leafCheck(first)).toEqual({ unique: false, level: "leaf" });
       },
       { timeout: 60000 },
    );
 
    it(
-      "records a clean key, carries it while the table stands, and checks again on a rebuild",
+      "records a clean key, carries it with the table, and checks again on a rebuild",
       async () => {
          const s = await scenario();
-         const first = await s.run(true);
-         expect(first.uniquenessChecks?.rollupKeys?.[s.key]).toMatchObject({
-            unique: true,
-            checkedInRun: "run-1",
-         });
-         // Carried: the table was not written again.
-         const second = await s.run(false);
-         expect(second.uniquenessChecks?.rollupKeys?.[s.key]).toMatchObject({
-            unique: true,
-            checkedInRun: "run-1",
-         });
+         const passed = { unique: true, level: "leaf" };
+         expect(s.leafCheck(await s.run(true))).toEqual(passed);
+         // Carried: the table was not written again, and its contract rides
+         // on its entry.
+         expect(s.leafCheck(await s.run(false))).toEqual(passed);
          // A rebuild over a NULL key checks again.
          await s.duckdb.runSQL("INSERT INTO segs_src VALUES (NULL, 2, 9.0)");
-         const third = await s.run(true);
-         expect(third.uniquenessChecks?.rollupKeys?.[s.key]).toMatchObject({
+         expect(s.leafCheck(await s.run(true))).toEqual({
             unique: false,
-            checkedInRun: "run-3",
+            level: "leaf",
          });
       },
       { timeout: 60000 },
    );
 
    it(
-      "reaches the database table's serve binding",
+      "is written into the table's contract, under the leaf's join path",
       async () => {
          const s = await scenario();
          const result = await s.run(true);
          const entry = result.entries[s.address] as ManifestEntry;
-         const keyUniqueness = keyUniquenessAt(
-            result.uniquenessChecks?.rollupKeys,
-            s.address,
-            entry,
-         );
-         expect(keyUniqueness?.parentKeys).toEqual({ [s.leaf.sourceID]: true });
-         const bindings = deriveDatabaseServeBindings({
-            entries: {
-               [s.address]: {
-                  tableName: entry.physicalTableName ?? "",
-                  connectionName: entry.connectionName,
-                  ...(keyUniqueness ? { keyUniqueness } : {}),
-               },
-            },
-            planSources: {
-               [s.sourceID]: {
-                  name: s.source.name,
-                  sourceEntityId: s.address,
-                  connectionName: "duckdb",
-                  dialect: "duckdb",
-               },
-            },
-            materializePlans: materializePlansIn(s.compiled) ?? {},
-            eligible: () => true,
+         expect(s.leaf.contractKey).toBe("leaf:segs.seg_id");
+         expect(parseContract(entry.contract)?.keys).toEqual({
+            [s.leaf.contractKey]: { unique: true, level: "leaf" },
          });
-         expect(bindings.map((b) => b.primaryKeys)).toEqual([
-            { [s.leaf.sourceID]: true },
-         ]);
       },
       { timeout: 60000 },
    );
 
    // A host instructs the build (an instruction naming the source's
-   // sourceID): the run never checks the leaf, so the table carries no
-   // record and the served copy declines every leaf count, sum and average,
-   // whatever the leaf's key holds (known limitation 40).
+   // sourceID): its worker records the check in the contract as an auto-run
+   // does, and the host round-trips the contract whole, so the table serves
+   // by it alike.
    it(
-      "is never recorded on an orchestrated build",
+      "is recorded in the contract on an orchestrated build too",
       async () => {
          const s = await scenario();
          await s.duckdb.runSQL("INSERT INTO segs_src VALUES (NULL, 2, 9.0)");
@@ -251,22 +208,16 @@ describe("a pair table's leaf key check, on a build", () => {
          expect(result.entries[s.address]?.physicalTableName).toBe(
             "flights_pairs_t",
          );
-         expect(result.uniquenessChecks?.rollupKeys?.[s.key]).toBeUndefined();
-         expect(
-            keyUniquenessAt(
-               result.uniquenessChecks?.rollupKeys,
-               s.address,
-               result.entries[s.address] as ManifestEntry,
-            ),
-         ).toBeUndefined();
+         expect(s.leafCheck(result)).toEqual({ unique: false, level: "leaf" });
       },
       { timeout: 60000 },
    );
 
-   // A run about to rewrite a database pair table forgets its leaf record on
-   // the bindings the models serve from, before any table is written: a run
-   // that fails part-way, or a rewrite that brings a NULL or repeated leaf
-   // key, never leaves a pass bound over rows it did not check.
+   // A run about to rewrite a database pair table forgets the key checks
+   // bound off its contract on the bindings the models serve from, before
+   // any table is written: a run that fails part-way, or a rewrite that
+   // brings a NULL or repeated key, never leaves a pass bound over rows it
+   // did not check.
    it("is forgotten on the models' database bindings when a run is about to write the table", () => {
       const model = {
          setServedCopyContext: () => {},
@@ -277,7 +228,15 @@ describe("a pair table's leaf key check, on a build", () => {
          servedCopyProblems: () => [],
          gateLoadWarnings: () => [],
          storedColumnTypeMismatches: () => [],
+         // `segs`, keyed on seg_id, as a bind reads the models' primary keys.
+         getModelDef: () => ({
+            contents: { segs: { sourceID: "segs@m", primaryKey: "seg_id" } },
+         }),
       };
+      const checked = (unique: boolean) => ({
+         ...contractFor(),
+         keys: { "parent:segs@m.seg_id": { unique, level: "parent" } },
+      });
       const materialization = new PackageMaterialization({
          models: () => new Map([["m.malloy", model]]),
          packageName: () => "pkg",
@@ -312,9 +271,8 @@ describe("a pair table's leaf key check, on a build", () => {
          database: {
             a: {
                tableName: "flights_pairs",
-               contract: contractFor(),
+               contract: checked(true),
                connectionName: "duckdb",
-               keyUniqueness: { parentKeys: { "segs@m": true } },
             },
          },
       });
@@ -322,18 +280,122 @@ describe("a pair table's leaf key check, on a build", () => {
       materialization.forgetKeyUniqueness(["a"]);
       expect(bound()?.tablePath).toBe('"flights_pairs"');
       expect(bound()?.primaryKeys).toBeUndefined();
-      // A later bind that holds the record again pushes it.
+      // A later bind whose contract records a check again pushes it.
       materialization.bind({
          databaseAsGiven: true,
          database: {
             a: {
                tableName: "flights_pairs",
-               contract: contractFor(),
+               contract: checked(false),
                connectionName: "duckdb",
-               keyUniqueness: { parentKeys: { "segs@m": false } },
             },
          },
       });
       expect(bound()?.primaryKeys).toEqual({ "segs@m": false });
    });
+});
+
+describe("a pair table's leaf key check that could not run", () => {
+   /** Leaf key checks fail to run while `failing.on`; counts each try. */
+   function flakyChecks() {
+      const failing = { on: true, tries: 0 };
+      const original = DatabaseTier.prototype.checkKey;
+      const spy = spyOn(DatabaseTier.prototype, "checkKey").mockImplementation(
+         function (this: DatabaseTier, ...args) {
+            const check = args[1] as { contractKey?: string };
+            if (check.contractKey?.startsWith("leaf:")) {
+               failing.tries += 1;
+               if (failing.on) {
+                  return Promise.reject(new Error("leaf check unavailable"));
+               }
+            }
+            return original.apply(this, args);
+         },
+      );
+      return { failing, restore: () => spy.mockRestore() };
+   }
+   const unverified = {
+      unique: false,
+      level: "leaf",
+      unverified: true,
+   } as const;
+
+   it(
+      "is recorded unverified, and a carried table is never checked again over the leaf's current rows",
+      async () => {
+         const s = await scenario();
+         const flaky = flakyChecks();
+         try {
+            expect(s.leafCheck(await s.run(true))).toEqual(unverified);
+            flaky.failing.on = false;
+            const tries = flaky.failing.tries;
+            // Carried: only a rebuild runs the check, over the rows it wrote.
+            expect(s.leafCheck(await s.run(false))).toEqual(unverified);
+            expect(flaky.failing.tries).toBe(tries);
+         } finally {
+            flaky.restore();
+         }
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "records what the rebuild that verifies it finds, with no mark once it ran",
+      async () => {
+         const s = await scenario();
+         const flaky = flakyChecks();
+         try {
+            await s.run(true);
+            flaky.failing.on = false;
+            expect(s.leafCheck(await s.run(true, false, true))).toEqual({
+               unique: true,
+               level: "leaf",
+            });
+         } finally {
+            flaky.restore();
+         }
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "marks a check the verifying rebuild still cannot run rebuiltToVerify, and no other build's",
+      async () => {
+         const s = await scenario();
+         const flaky = flakyChecks();
+         try {
+            await s.run(true);
+            expect(s.leafCheck(await s.run(true, false, true))).toEqual({
+               ...unverified,
+               rebuiltToVerify: true,
+            });
+            // Carried, the mark rides on the entry.
+            expect(s.leafCheck(await s.run(false))).toEqual({
+               ...unverified,
+               rebuiltToVerify: true,
+            });
+            // A rebuild for another reason starts the table's generation over.
+            expect(s.leafCheck(await s.run(true))).toEqual(unverified);
+         } finally {
+            flaky.restore();
+         }
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "is never marked on a host's build, which the auto-run's rebuild set does not reach",
+      async () => {
+         const s = await scenario();
+         const flaky = flakyChecks();
+         try {
+            expect(s.leafCheck(await s.run(true, true, true))).toEqual(
+               unverified,
+            );
+         } finally {
+            flaky.restore();
+         }
+      },
+      { timeout: 60000 },
+   );
 });

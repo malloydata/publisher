@@ -27,6 +27,8 @@
     "port": null,
     "host": "127.0.0.1",
     "requestTimeoutMs": 600000,
+    "memoryLimit": "1.5GB",
+    "maxTempDirectorySize": "6GiB",
     "catalogDatabase": null,
     "storage": {
       "provider": null,

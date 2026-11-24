@@ -4,7 +4,7 @@
 /**
  * A Postgres connection's settings as the drivers read them: the TLS modes and
  * statement timeout it may set, the node-pg connection string the query path
- * opens, and the libpq conninfo a DuckDB `TYPE postgres` attach opens (direct,
+ * opens, the node-pg client a load's advisory lock opens, and the libpq conninfo a DuckDB `TYPE postgres` attach opens (direct,
  * or through the SSH tunnel of a proxied connection), with the credentials
  * moved into a DuckDB secret so no attach path carries one.
  *
@@ -17,10 +17,12 @@ import { createHash } from "crypto";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import os from "os";
 import path from "path";
+import { Client, type ClientConfig } from "pg";
 import tls from "tls";
 import { components } from "../api";
+import { BadRequestError } from "../errors";
 import { logger } from "../logger";
-import { externalEnv } from "../settings";
+import { externalEnv, type ExternalVariable } from "../settings";
 import { escapeSQL } from "./duckdb_session_setup";
 import type { ProxyEndpoint } from "./proxy";
 
@@ -44,7 +46,7 @@ export function validatePostgresSslmode(
    sslmode: string,
 ): void {
    if (!(PROXIED_SSLMODES as readonly string[]).includes(sslmode)) {
-      throw new Error(
+      throw new BadRequestError(
          `${subject} has unsupported sslmode '${sslmode}' ` +
             `(expected ${PROXIED_SSLMODES.join(" | ")}).`,
       );
@@ -52,7 +54,7 @@ export function validatePostgresSslmode(
    if (sslmode === "verify-ca") {
       const caBundle = externalEnv("NODE_EXTRA_CA_CERTS");
       if (!caBundle || !existsSync(caBundle)) {
-         throw new Error(
+         throw new BadRequestError(
             `${subject} uses sslmode 'verify-ca' but no readable ` +
                `CA bundle is available (NODE_EXTRA_CA_CERTS is unset or points at a missing file). ` +
                `Add the CA bundle to the image or use sslmode 'no-verify'.`,
@@ -497,8 +499,9 @@ const PG_SECRET_KEYS = new Set(["user", "password", "sslpassword"]);
 /**
  * The keyword/value pairs of a libpq connection URI, as libpq reads one
  * (`postgres[ql]://[user[:password]@][host[:port][,…]][/dbname][?k=v&…]`),
- * percent-decoded. A `ssl=true` parameter becomes `sslmode=require`, as libpq
- * translates it. Undefined when `uri` is not a URI.
+ * percent-decoded. A `ssl=true`, `ssl=1` or `ssl=no-verify` parameter becomes
+ * `sslmode=require` unless the URI has an `sslmode`, as the attach reads them.
+ * Undefined when `uri` is not a URI.
  */
 function pgUriPairs(uri: string): { key: string; value: string }[] | undefined {
    const scheme = /^postgres(?:ql)?:\/\//i.exec(uri);
@@ -564,7 +567,11 @@ function pgUriPairs(uri: string): { key: string; value: string }[] | undefined {
       }
    }
    if (s[i] === "?") {
-      for (const param of s.slice(i + 1).split("&")) {
+      const params = s.slice(i + 1).split("&");
+      const hasSslmode = params.some(
+         (param) => decodeUriComponentOrRaw(param.split("=")[0]) === "sslmode",
+      );
+      for (const param of params) {
          if (param === "") continue;
          const eq = param.indexOf("=");
          const key = decodeUriComponentOrRaw(
@@ -573,8 +580,11 @@ function pgUriPairs(uri: string): { key: string; value: string }[] | undefined {
          const value = decodeUriComponentOrRaw(
             eq === -1 ? "" : param.slice(eq + 1),
          );
-         if (key === "ssl" && value === "true") {
-            pairs.push({ key: "sslmode", value: "require" });
+         // node-pg's `ssl` spellings, which yield to an `sslmode` as in libpqSslmodeInRawString.
+         if (key === "ssl" && ["true", "1", "no-verify"].includes(value)) {
+            if (!hasSslmode) {
+               pairs.push({ key: "sslmode", value: LIBPQ_NO_VERIFY_SSLMODE });
+            }
          } else {
             pairs.push({ key, value });
          }
@@ -616,6 +626,39 @@ function pgConninfoKeyValues(
    );
 }
 
+/** `host:port/dbname` with sorted hosts and no PGPORT or PGHOST default; undefined when unsure, so two databases it cannot tell apart never compare equal. */
+export function pgDatabaseTarget(conninfo: string): string | undefined {
+   const params = new Map<string, string>();
+   try {
+      for (const { key, value } of pgConninfoKeyValues("", conninfo)) {
+         params.set(key, value);
+      }
+   } catch {
+      return undefined;
+   }
+   const dbname = params.get("dbname");
+   const hosts = params.get("host")?.split(",");
+   const ports = (params.get("port") || "5432").split(",");
+   if (
+      !dbname ||
+      !hosts ||
+      hosts.some((host) => host === "") ||
+      params.has("service") ||
+      params.has("hostaddr") ||
+      ports.some((port) => !/^\d+$/.test(port)) ||
+      (ports.length !== 1 && ports.length !== hosts.length)
+   ) {
+      return undefined;
+   }
+   return `${hosts
+      .map(
+         (host, i) =>
+            `${host.toLowerCase()}:${Number(ports[ports.length === 1 ? 0 : i])}`,
+      )
+      .sort()
+      .join(",")}/${dbname}`;
+}
+
 /**
  * A Postgres connection string split for a DuckDB attach: `path` carries
  * every keyword but the user, password and client-key password
@@ -639,6 +682,243 @@ export function splitPgAttachCredentials(
       else if (!PG_SECRET_KEYS.has(key)) kept.push(pgConninfoPair(key, value));
    }
    return { path: kept.join(" "), user, password, sslpassword };
+}
+
+/**
+ * libpq settings node-pg cannot follow, each with the variable libpq falls back
+ * to and the values that demand more than node-pg gives; `disable`, `prefer`
+ * (libpq's default for `channel_binding` and `gssencmode`) and a TLS minimum
+ * Node already meets (its default is TLSv1.2) ask for nothing it lacks.
+ */
+const UNHONORED_SETTINGS: ReadonlyArray<{
+   key: string;
+   env?: ExternalVariable;
+   demands: (value: string) => boolean;
+   instead?: string;
+}> = [
+   // node-pg reads a password file from PGPASSFILE only, so the key would be dropped.
+   {
+      key: "passfile",
+      demands: (v) => v !== "",
+      instead: "set PGPASSFILE instead",
+   },
+   {
+      key: "channel_binding",
+      env: "PGCHANNELBINDING",
+      demands: (v) => v.toLowerCase() === "require",
+   },
+   { key: "require_auth", env: "PGREQUIREAUTH", demands: (v) => v !== "" },
+   {
+      key: "gssencmode",
+      env: "PGGSSENCMODE",
+      demands: (v) => v.toLowerCase() === "require",
+   },
+   { key: "sslcrl", env: "PGSSLCRL", demands: (v) => v !== "" },
+   { key: "sslcrldir", env: "PGSSLCRLDIR", demands: (v) => v !== "" },
+   {
+      key: "ssl_min_protocol_version",
+      env: "PGSSLMINPROTOCOLVERSION",
+      demands: (v) => v.toLowerCase() === "tlsv1.3",
+   },
+];
+
+/**
+ * A node-pg client config for a libpq connection string, for work the DuckDB
+ * attach cannot do (a session advisory lock). It reads the string as libpq
+ * does, the deployment's PGSSLMODE and certificate files included (the string
+ * wins), and refuses what it cannot follow: a `service`, a `hostaddr` (in the
+ * string or as PGSERVICE / PGHOSTADDR), or a list of hosts, none of which a
+ * single node-pg connection can take, and a security setting node-pg would
+ * ignore ({@link UNHONORED_SETTINGS}), from the string or the environment. The
+ * TLS mapping is {@link pgClientSsl}. A dead connection is noticed by keepalive, and a query that stops
+ * answering by its timeout. Exported for tests.
+ */
+export function pgClientConfig(
+   subject: string,
+   conninfo: string,
+): ClientConfig & { plaintextFallback: boolean } {
+   const params = new Map<string, string>();
+   for (const { key, value } of pgConninfoKeyValues(subject, conninfo)) {
+      params.set(key, value);
+   }
+   const unsupported = ["service", "hostaddr"].find((key) => params.has(key));
+   const ambient = (["PGSERVICE", "PGHOSTADDR"] as const).find((name) =>
+      externalEnv(name),
+   );
+   const listed = ["host", "port"].find((key) =>
+      params.get(key)?.includes(","),
+   );
+   if (ambient) {
+      throw new Error(
+         `${subject}: ${ambient} is set in the environment, which loads cannot use; unset it and spell host, port and dbname.`,
+      );
+   }
+   if (unsupported || listed) {
+      throw new Error(
+         `${subject}: the connection string sets ${unsupported ? `'${unsupported}'` : `more than one '${listed}'`}, which loads cannot use; spell host, port and dbname.`,
+      );
+   }
+   for (const { key, env, demands, instead } of UNHONORED_SETTINGS) {
+      const inString = params.has(key);
+      const value = inString
+         ? params.get(key)
+         : env === undefined
+           ? undefined
+           : externalEnv(env);
+      if (value && demands(value)) {
+         throw new Error(
+            inString
+               ? `${subject}: the connection string sets '${key}', which the load lock's client cannot honor; remove it${instead ? `, and ${instead}` : ""}.`
+               : `${subject}: ${env} is set in the environment, which the load lock's client cannot honor; unset it.`,
+         );
+      }
+   }
+   const port = params.get("port") || undefined;
+   for (const [key, name] of [
+      ["sslrootcert", "PGSSLROOTCERT"],
+      ["sslcert", "PGSSLCERT"],
+      ["sslkey", "PGSSLKEY"],
+   ] as const) {
+      const file = externalEnv(name);
+      if (!params.has(key) && file) params.set(key, file);
+   }
+   const requested = params.get("sslmode") ?? externalEnv("PGSSLMODE");
+   const systemRoots = params.get("sslrootcert") === "system";
+   // libpq 16: public roots vouch for any hostname, so `sslrootcert=system` allows only verify-full.
+   const sslmode =
+      requested === "no-verify"
+         ? LIBPQ_NO_VERIFY_SSLMODE
+         : (requested ?? (systemRoots ? "verify-full" : undefined));
+   if (systemRoots && sslmode !== "verify-full") {
+      throw new Error(
+         `${subject}: weak sslmode '${sslmode}' may not be used with sslrootcert=system (use 'verify-full').`,
+      );
+   }
+   return {
+      host: params.get("host") || undefined,
+      port: port === undefined ? undefined : Number(port),
+      database: params.get("dbname"),
+      user: params.get("user"),
+      password: params.get("password"),
+      application_name: "publisher-load-lock",
+      ssl: pgClientSsl(subject, sslmode, params),
+      plaintextFallback: TLS_OPTIONAL_SSLMODES.has(sslmode),
+      connectionTimeoutMillis: 10_000,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10_000,
+      query_timeout: 30_000,
+   };
+}
+
+/**
+ * A connected node-pg client for a libpq connection string. `onError` hears a
+ * dropped idle connection, which unhandled would end the process.
+ * `queryTimeoutMillis` replaces the default bound on a query's answer.
+ */
+export async function connectPgClient(
+   subject: string,
+   conninfo: string,
+   onError: (error: Error) => void = () => undefined,
+   queryTimeoutMillis?: number,
+): Promise<Client> {
+   const { plaintextFallback, ...config } = pgClientConfig(subject, conninfo);
+   const connect = async (ssl: ClientConfig["ssl"]) => {
+      const client = new Client({
+         ...config,
+         ssl,
+         ...(queryTimeoutMillis ? { query_timeout: queryTimeoutMillis } : {}),
+      });
+      client.on("error", onError);
+      await client.connect();
+      return client;
+   };
+   try {
+      return await connect(config.ssl);
+   } catch (error) {
+      // libpq's `prefer`: plaintext only when the server refuses TLS.
+      if (plaintextFallback && /does not support SSL/i.test(String(error))) {
+         return connect(false);
+      }
+      throw error;
+   }
+}
+
+/** The sslmodes under which libpq tries TLS but accepts a server without it. */
+const TLS_OPTIONAL_SSLMODES = new Set<string | undefined>([
+   undefined,
+   "allow",
+   "prefer",
+]);
+
+/**
+ * libpq's `sslmode` as a node-pg `ssl` option, with the connection string's
+ * client certificate (`sslcert`, `sslkey`, and `sslpassword` as the key's
+ * passphrase). node-pg cannot fall back from TLS to plaintext itself, so the
+ * TLS-optional modes ask for TLS and the caller retries in plaintext only on
+ * the server's refusal (`plaintextFallback`). `require` with an `sslrootcert`
+ * verifies the chain, as libpq does. `verify-*` trust `sslrootcert`; without
+ * one, `verify-full` trusts the runtime's ambient anchors and `verify-ca` only
+ * NODE_EXTRA_CA_CERTS, as the DuckDB attach does ({@link libpqSslmodeParts}).
+ */
+export function pgClientSsl(
+   subject: string,
+   sslmode: string | undefined,
+   params: ReadonlyMap<string, string>,
+): ClientConfig["ssl"] {
+   const sslrootcert = params.get("sslrootcert");
+   const pem = (key: string, file: string) => {
+      try {
+         return readFileSync(file, "utf8");
+      } catch (error) {
+         throw new Error(
+            `${subject}: cannot read the ${key} file '${file}' (${(error as NodeJS.ErrnoException).code ?? "unreadable"}).`,
+         );
+      }
+   };
+   // `system` reads Node's roots plus NODE_EXTRA_CA_CERTS, not OpenSSL's store as libpq does.
+   const ca = () =>
+      sslrootcert && sslrootcert !== "system"
+         ? pem("sslrootcert", sslrootcert)
+         : sslmode === "verify-ca"
+           ? pem(
+                "NODE_EXTRA_CA_CERTS",
+                verifyCaBundle(subject, defaultProxiedAttachTrust()),
+             )
+           : readFileSync(ambientTrustBundlePath(), "utf8");
+   const [sslcert, sslkey, passphrase] = [
+      params.get("sslcert"),
+      params.get("sslkey"),
+      params.get("sslpassword"),
+   ];
+   const clientAuth = () => ({
+      ...(sslcert ? { cert: pem("sslcert", sslcert) } : {}),
+      ...(sslkey ? { key: pem("sslkey", sslkey) } : {}),
+      ...(passphrase ? { passphrase } : {}),
+   });
+   const verifyChain = () => ({
+      rejectUnauthorized: true,
+      ca: ca(),
+      checkServerIdentity: () => undefined,
+      ...clientAuth(),
+   });
+   switch (sslmode) {
+      case "disable":
+         return false;
+      case undefined:
+      case "allow":
+      case "prefer":
+         return { rejectUnauthorized: false, ...clientAuth() };
+      case "require":
+         return sslrootcert
+            ? verifyChain()
+            : { rejectUnauthorized: false, ...clientAuth() };
+      case "verify-ca":
+         return verifyChain();
+      case "verify-full":
+         return { rejectUnauthorized: true, ca: ca(), ...clientAuth() };
+      default:
+         throw new Error(`${subject} has unsupported sslmode '${sslmode}'.`);
+   }
 }
 
 /**
@@ -808,6 +1088,20 @@ export function buildProxiedPgAttachString(
 }
 
 /**
+ * The root `verify-ca` trusts when no `sslrootcert` names one: the deployment's
+ * NODE_EXTRA_CA_CERTS alone, never the public roots, which would vouch for any
+ * server since verify-ca checks no hostname.
+ */
+function verifyCaBundle(subject: string, trust: ProxiedAttachTrust): string {
+   if (!trust.caBundle) {
+      throw new Error(
+         `${subject} uses sslmode 'verify-ca' but no trusted CA bundle is available (NODE_EXTRA_CA_CERTS is unset).`,
+      );
+   }
+   return trust.caBundle;
+}
+
+/**
  * The libpq conninfo pairs for an explicit sslmode, shared by the proxied and
  * the direct DuckDB attach so a mode means the same thing on both. `subject` is
  * the phrase an error leads with.
@@ -824,17 +1118,11 @@ function libpqSslmodeParts(
          return ["sslmode=disable"];
       case "no-verify":
          return [`sslmode=${LIBPQ_NO_VERIFY_SSLMODE}`];
-      case "verify-ca": {
-         if (!trust.caBundle) {
-            throw new Error(
-               `${subject} uses sslmode 'verify-ca' but no trusted CA bundle is available (NODE_EXTRA_CA_CERTS is unset).`,
-            );
-         }
+      case "verify-ca":
          return [
             "sslmode=verify-ca",
-            pgConninfoPair("sslrootcert", trust.caBundle),
+            pgConninfoPair("sslrootcert", verifyCaBundle(subject, trust)),
          ];
-      }
       case "verify-full":
          return [
             "sslmode=verify-full",

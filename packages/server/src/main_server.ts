@@ -67,6 +67,7 @@ import {
 } from "./mcp_config";
 import { observePackageStates } from "./package_state_metrics";
 import { EnvironmentStore } from "./service/environment_store";
+import { removeStaleBuildDirs } from "./service/materialization";
 import { MaterializationScheduler } from "./service/materialization/run/materialization_scheduler";
 import { MaterializationService } from "./service/materialization/run/materialization_service";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
@@ -171,9 +172,6 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    // storage setting fails startup. Null leaves the catalog routes answering 503.
    const ADMIN_CATALOG_CONFIG =
       ADMIN_PORT === null ? null : catalogAdminConfig();
-   const ADMIN_CATALOGS = ADMIN_CATALOG_CONFIG
-      ? new CatalogAdmin(ADMIN_CATALOG_CONFIG)
-      : null;
    // Resolved here, not in the listen callback: it throws on a typo,
    // and a throw there would be an uncaughtException after both ports are bound.
    const MCP_CONFIG_ENABLED = mcpConfigEnabled();
@@ -193,6 +191,9 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    // row/byte caps, so operators check that before chasing OOMKills.
    checkHeapConfiguration();
    const environmentStore = new EnvironmentStore(SERVER_ROOT);
+   const ADMIN_CATALOGS = ADMIN_CATALOG_CONFIG
+      ? new CatalogAdmin(ADMIN_CATALOG_CONFIG, environmentStore)
+      : null;
    const watchModeController = new WatchModeController(environmentStore);
    const connectionController = new ConnectionController(environmentStore);
    const modelController = new ModelController(environmentStore);
@@ -440,6 +441,8 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
       ADMIN_PORT === null
          ? null
          : createAdminApp(ADMIN_CATALOGS, watchModeController);
+   // Persist builds and storage cleanup open build sessions too, so sweep whether or not the admin listener is on.
+   removeStaleBuildDirs();
 
    function listen(): RunningServers {
       const mainServer = longTimeouts(

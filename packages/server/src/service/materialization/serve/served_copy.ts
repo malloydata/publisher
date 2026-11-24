@@ -55,12 +55,11 @@ import {
    rewriteDimensions,
 } from "../text/declaration_text";
 import {
-   isName,
    lexAll,
-   offsetOf,
    statementHead,
    statementStarts,
-} from "../text/malloy_lexer";
+} from "../../malloy_lexer_core";
+import { isName, offsetOf } from "../text/malloy_lexer";
 import {
    dropJoinDefinition,
    inlinedJoinRenames,
@@ -283,8 +282,8 @@ export interface PairReroot {
     */
    levelPresent?: readonly ({ field: string; keyPath: string[] } | undefined)[];
    /**
-    * The leaf's key check, recorded beside the table by the run that wrote
-    * it, passed: the key is unique and never null on a row of the leaf
+    * The leaf's key check, recorded in the table's contract by the build
+    * that wrote it, passed: the key is unique and never null on a row of the leaf
     * source. Without it the copy declines every count, sum or average at the
     * leaf (governance/ir/pair_flat_query.ts, `FlatPair.leafKeyChecked`).
     */

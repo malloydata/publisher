@@ -3,9 +3,8 @@
 
 /**
  * Two stored database sources joined, each holding a `name` column under a
- * different collation, through the real package bind under shadow
- * admission: read admission's probes and its lookups judge every answer
- * alike, and each answer equals live.
+ * different collation, through the real package bind: each answer equals
+ * live.
  *
  * A read names its column, not the table that holds it, so `name` is held
  * by both tables an answer reads. Neither side may take one table's
@@ -14,11 +13,10 @@
  * read holds it under, and fails closed when they differ. Postgres under
  * `C` and an ICU collation; DuckDB under binary and `NOCASE`.
  *
- * Under lookup admission the same tables, and a gated source beside them,
- * are judged with no catalog read, no extra compile and no walk of the IR
- * per query: what each source compares under was read at the bind, and
- * what each stored table holds was recorded by its build. Under probe
- * admission the same queries read the warehouse.
+ * The same tables, and a gated source beside them, are judged with no
+ * catalog read, no extra compile and no walk of the IR per query: what each
+ * source compares under was read at the bind, and what each stored table
+ * holds was recorded by its build.
  */
 
 import { PostgresConnection } from "@malloydata/db-postgres";
@@ -39,15 +37,12 @@ import type {
 import { DuckDBConnection } from "../../src/storage/duckdb/DuckDBConnection";
 import { createDuckDBRepository } from "../../src/storage/duckdb/DuckDBRepository";
 import { initializeSchema } from "../../src/storage/duckdb/schema";
-import {
-   clearParityDrifts,
-   expectNoDrift,
-} from "../../src/test_helpers/admission_parity";
 import { freshLoadPool } from "../../src/test_helpers/conformance/package_runner";
 import {
    type MetricsHarness,
    startMetricsHarness,
 } from "../../src/test_helpers/metrics_harness";
+import { spyAdmissionIO } from "../../src/test_helpers/admission_io_spy";
 import { resetMaterializationTelemetryForTesting } from "../../src/materialization_metrics";
 import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
 import { installSettings } from "../../src/test_helpers/settings_env";
@@ -243,14 +238,12 @@ for (const tier of tiers) {
       let drop: (() => Promise<void>) | undefined;
       const live: Record<string, unknown> = {};
       const served: Record<string, { rows: unknown; kind?: string }> = {};
-      const drift: Record<string, string | undefined> = {};
       beforeAll(async () => {
          restore = installSettings({
             env: {
                PUBLISHER_MATERIALIZE: "true",
                PERSIST_STORAGE_MODE: "off",
                PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
-               PUBLISHER_ADMISSION_MODE: "shadow",
             },
          }).restore;
          await freshLoadPool();
@@ -262,15 +255,8 @@ for (const tier of tiers) {
          }
          const run = await build(f);
          expect(run.status).toBe("MANIFEST_FILE_READY");
-         clearParityDrifts();
          for (const [name, q] of Object.entries(QUERIES)) {
             served[name] = await ask(f, q);
-            try {
-               expectNoDrift();
-               drift[name] = undefined;
-            } catch (e) {
-               drift[name] = (e as Error).message;
-            }
          }
       }, 300_000);
       afterAll(async () => {
@@ -281,8 +267,7 @@ for (const tier of tiers) {
       });
 
       for (const name of Object.keys(QUERIES)) {
-         it(`${name}: probe and lookup agree, and the answer equals live`, () => {
-            expect(drift[name]).toBeUndefined();
+         it(`${name}: the answer equals live`, () => {
             expect(served[name].rows).toEqual(live[name]);
          });
       }
@@ -319,77 +304,66 @@ const GATED: [string, Record<string, unknown> | undefined][] = [
 ];
 
 for (const tier of tiers) {
-   for (const mode of ["lookup", "probe"] as const) {
-      describe(`${mode} admission over stored database tables (${tier.label})`, () => {
-         let restore: () => void;
-         let f: Fixture;
-         let drop: (() => Promise<void>) | undefined;
-         let metrics: MetricsHarness;
-         const live: unknown[] = [];
-         const served: { rows: unknown; kind?: string }[] = [];
-         beforeAll(async () => {
-            restore = installSettings({
-               env: {
-                  PUBLISHER_MATERIALIZE: "true",
-                  PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
-                  PERSIST_STORAGE_MODE: "off",
-                  PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
-                  PUBLISHER_ADMISSION_MODE: mode,
-               },
-            }).restore;
-            await freshLoadPool();
-            const w = await tier.warehouse();
-            drop = w.drop;
-            f = await fixture(
-               w.config,
-               gatedModel(tier.collateA, tier.collateB),
-            );
-            for (const [q, g] of GATED) live.push((await ask(f, q, g)).rows);
-            const run = await build(f);
-            expect(run.status).toBe("MANIFEST_FILE_READY");
-            metrics = await startMetricsHarness();
-            resetMaterializationTelemetryForTesting();
-            for (const [q, g] of GATED) served.push(await ask(f, q, g));
-         }, 300_000);
-         afterAll(async () => {
-            await metrics?.shutdown();
-            resetMaterializationTelemetryForTesting();
-            await f?.cleanup();
-            await drop?.();
-            restore();
-            await freshLoadPool();
-         });
-
-         it("answers every query as live does, the gated source from its table", () => {
-            expect(served.map((s) => s.rows)).toEqual(live);
-            expect(served.at(-1)?.kind).toBe("materialized");
-         });
-
-         it(
-            mode === "lookup"
-               ? "reads no catalog, compiles nothing extra and walks nothing to judge them"
-               : "reads the warehouse to judge them",
-            async () => {
-               const reads = await metrics.collectCounter(
-                  "publisher_query_catalog_reads_total",
-               );
-               const compiles = await metrics.collectCounter(
-                  "publisher_query_probe_compiles_total",
-               );
-               const walks = await metrics.collectCounter(
-                  "publisher_query_walks_total",
-               );
-               if (mode === "lookup") {
-                  expect({ reads, compiles, walks }).toEqual({
-                     reads: 0,
-                     compiles: 0,
-                     walks: 0,
-                  });
-               } else {
-                  expect(reads + compiles).toBeGreaterThan(0);
-               }
+   describe(`admission over stored database tables (${tier.label})`, () => {
+      let restore: () => void;
+      let f: Fixture;
+      let drop: (() => Promise<void>) | undefined;
+      let metrics: MetricsHarness;
+      let io: { calls: readonly string[]; seen: number; decisions: number };
+      const live: unknown[] = [];
+      const served: { rows: unknown; kind?: string }[] = [];
+      beforeAll(async () => {
+         restore = installSettings({
+            env: {
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+               PERSIST_STORAGE_MODE: "off",
+               PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
             },
-         );
+         }).restore;
+         await freshLoadPool();
+         const w = await tier.warehouse();
+         drop = w.drop;
+         f = await fixture(w.config, gatedModel(tier.collateA, tier.collateB));
+         for (const [q, g] of GATED) live.push((await ask(f, q, g)).rows);
+         const run = await build(f);
+         expect(run.status).toBe("MANIFEST_FILE_READY");
+         metrics = await startMetricsHarness();
+         resetMaterializationTelemetryForTesting();
+         const spy = spyAdmissionIO();
+         try {
+            for (const [q, g] of GATED) served.push(await ask(f, q, g));
+         } finally {
+            spy.restore();
+         }
+         io = {
+            calls: [...spy.calls],
+            seen: spy.seen(),
+            decisions: spy.decisions(),
+         };
+      }, 300_000);
+      afterAll(async () => {
+         await metrics?.shutdown();
+         resetMaterializationTelemetryForTesting();
+         await f?.cleanup();
+         await drop?.();
+         restore();
+         await freshLoadPool();
       });
-   }
+
+      it("answers every query as live does, the gated source from its table", () => {
+         expect(served.map((s) => s.rows)).toEqual(live);
+         expect(served.at(-1)?.kind).toBe("materialized");
+      });
+
+      it("runs no SQL, compiles nothing and walks nothing to judge them", async () => {
+         // The spy saw the queries' own SQL, and admission decided.
+         expect(io.seen).toBeGreaterThan(0);
+         expect(io.decisions).toBeGreaterThan(0);
+         expect(io.calls).toEqual([]);
+         expect(
+            await metrics.collectCounter("publisher_query_walks_total"),
+         ).toBe(0);
+      });
+   });
 }

@@ -24,7 +24,6 @@ import { logger } from "../../../logger";
 import {
    FreshnessManifest,
    isLegacyFailedEntry,
-   type KeyUniqueness,
    ManifestEntry,
 } from "../domain/types";
 
@@ -136,13 +135,8 @@ export function isUsableTableName(name: string): boolean {
 export function splitManifestEntries(
    entries: Record<string, ManifestEntry>,
    source: string,
-   // Where the entries came from. Only Publisher's own store is read for a
-   // key check record (withRollupKeyRecords); a host's manifest is never
-   // trusted with one.
-   from: "store" | "host" = "host",
    { quiet = false }: { quiet?: boolean } = {},
 ): FetchedManifest {
-   const readKeyUniqueness = from === "store";
    const tableNameManifest: FreshnessManifest = {};
    const storageEntries: Record<string, ManifestEntry> = {};
    for (const [sourceEntityId, entry] of Object.entries(entries)) {
@@ -182,17 +176,12 @@ export function splitManifestEntries(
          continue;
       }
       if (entry.storageDestinationName) {
-         // The internal key record only from the local store
-         // (withRollupKeyRecords); a host's entry never brings one.
+         // A key check is read off the table's contract when it is bound
+         // (package_materialization.ts), never off a record an entry carries.
          const { keyUniqueness: _unread, ...plain } = entry as ManifestEntry & {
             keyUniqueness?: unknown;
          };
-         const keyUniqueness = readKeyUniqueness
-            ? keyUniquenessOnEntry(entry)
-            : undefined;
-         storageEntries[sourceEntityId] = keyUniqueness
-            ? ({ ...plain, keyUniqueness } as ManifestEntry)
-            : plain;
+         storageEntries[sourceEntityId] = plain;
          continue;
       }
       tableNameManifest[sourceEntityId] = {
@@ -211,51 +200,7 @@ export function splitManifestEntries(
          ...(entry.builtFrom?.length ? { builtFrom: entry.builtFrom } : {}),
          ...(entry.contract !== undefined ? { contract: entry.contract } : {}),
          ...(entry.builtAt ? { builtAt: entry.builtAt } : {}),
-         // Set only by a bind from the local store (withRollupKeyRecords);
-         // a host's manifest never carries it.
-         ...(readKeyUniqueness && keyUniquenessOnEntry(entry)
-            ? { keyUniqueness: keyUniquenessOnEntry(entry) }
-            : {}),
       };
    }
    return { tableNameManifest, storageEntries };
-}
-
-/** The internal rollup key record a local-store entry may carry. */
-function keyUniquenessOnEntry(entry: ManifestEntry): KeyUniqueness | undefined {
-   const k = (entry as { keyUniqueness?: Partial<KeyUniqueness> })
-      .keyUniqueness;
-   if (!k) return undefined;
-   const own =
-      typeof k.keyColumn === "string" && typeof k.unique === "boolean"
-         ? { keyColumn: k.keyColumn, unique: k.unique }
-         : undefined;
-   const parentKeys =
-      k.parentKeys && typeof k.parentKeys === "object"
-         ? Object.fromEntries(
-              Object.entries(k.parentKeys).filter(
-                 ([, unique]) => typeof unique === "boolean",
-              ),
-           )
-         : {};
-   const parentKeyColumns =
-      k.parentKeyColumns && typeof k.parentKeyColumns === "object"
-         ? Object.fromEntries(
-              Object.entries(k.parentKeyColumns).filter(
-                 ([, column]) => typeof column === "string",
-              ),
-           )
-         : {};
-   const anyParent = Object.keys(parentKeys).length > 0;
-   // A record from before the columns were kept carries none: each of its
-   // checks then reads as unknown, and answers live until the next run.
-   return own || anyParent
-      ? {
-           ...(own ?? {}),
-           ...(anyParent ? { parentKeys } : {}),
-           ...(anyParent && Object.keys(parentKeyColumns).length > 0
-              ? { parentKeyColumns }
-              : {}),
-        }
-      : undefined;
 }

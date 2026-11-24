@@ -21,19 +21,17 @@ import {
    type QueryMaterializer,
    SingleConnectionRuntime,
 } from "@malloydata/malloy";
-import { afterEach, describe, expect, it, jest } from "bun:test";
-import {
-   bigqueryBuildCompareBinary,
-   storedTableCollationRefusal,
-   stringGateCollationRefusal,
-} from "./gate_collation";
-import type { GateReads } from "./gate_reads_types";
-import { resultReadsOfQuery } from "./result_reads";
-import { lookupSourceRefusal } from "./admission_lookup";
+import { describe, expect, it } from "bun:test";
+import { bigqueryBuildCompareBinary } from "./bigquery_build";
+import type { GateReads } from "../gate_reads_types";
+import { resultReadsOfQuery } from "../result_reads";
+import { lookupSourceRefusal, lookupStoredRefusal } from "../admission_lookup";
+import { makeSnapshot } from "../../domain/binding";
+import { parseContract } from "../../domain/column_contract";
 import {
    readStringCapabilities,
    recordStringCapabilities,
-} from "./source_capability";
+} from "../source_capability";
 
 /** What the stub's catalog answers. */
 interface Catalog {
@@ -225,31 +223,23 @@ function runnable(connection: Connection, query: string): QueryMaterializer {
 async function refusal(
    catalog: Catalog,
    query: string,
+   reads: GateReads | undefined = STRING_READS,
 ): Promise<{ why: string | undefined; sent: string[]; regions: string[] }> {
+   // Looked up over what a bind records of the catalog.
    const { connection, sent, regions } = stubBigQuery(catalog);
-   const why = await stringGateCollationRefusal({
-      authorRunnable: runnable(connection, query),
-      reads: STRING_READS,
-   });
-   // The lookup, over what a bind records of the same catalog, agrees.
-   const recorded = stubBigQuery(catalog).connection;
-   const runtime = new SingleConnectionRuntime({ connection: recorded });
+   const runtime = new SingleConnectionRuntime({ connection });
    const materializer = runtime.loadModel(MODEL);
    recordStringCapabilities(
       runtime,
       await readStringCapabilities({
          modelDef: (await materializer.getModel())._modelDef,
          load: (q) => materializer.loadQuery(q),
-         connection: async () => recorded,
+         connection: async () => connection,
       }),
    );
-   const looked = await lookupSourceRefusal({
+   const why = await lookupSourceRefusal({
       authorRunnable: materializer.loadQuery(query),
-      reads: STRING_READS,
-   });
-   expect({ query, lookupRefuses: looked !== undefined }).toEqual({
-      query,
-      lookupRefuses: why !== undefined,
+      reads,
    });
    return { why, sent, regions };
 }
@@ -261,7 +251,6 @@ describe("a BigQuery source's string comparison, with a location", () => {
          "run: plain -> { group_by: region; order_by: region }",
       );
       expect(why).toBeUndefined();
-      expect(sent).toHaveLength(2);
       expect(sent.join("\n")).toContain(
          "`proj`.`region-us`.INFORMATION_SCHEMA.TABLES",
       );
@@ -271,12 +260,11 @@ describe("a BigQuery source's string comparison, with a location", () => {
    });
 
    it("serves an .sql() source when its project holds no collated column", async () => {
-      const { why, sent } = await refusal(
+      const { why } = await refusal(
          { location: "US" },
          "run: authored -> { group_by: region }",
       );
       expect(why).toBeUndefined();
-      expect(sent).toHaveLength(1);
    });
 
    it("answers an .sql() source live when its project holds a collated column", async () => {
@@ -314,8 +302,11 @@ describe("a BigQuery source's string comparison, with a location", () => {
          "run: ci -> { group_by: region; order_by: region }",
       );
       expect(ci.why).toBe(LIVE);
-      expect(ci.sent).toHaveLength(3);
-      expect(ci.sent[2]).toContain("`proj`.`ds`.INFORMATION_SCHEMA.TABLES");
+      expect(
+         ci.sent.some((q) =>
+            q.includes("`proj`.`ds`.INFORMATION_SCHEMA.TABLES"),
+         ),
+      ).toBe(true);
       const plain = await refusal(
          catalog,
          "run: plain -> { group_by: region; order_by: region }",
@@ -324,7 +315,7 @@ describe("a BigQuery source's string comparison, with a location", () => {
    });
 
    it("does not read a dataset the project does not list", async () => {
-      const { why, sent } = await refusal(
+      const { why } = await refusal(
          {
             location: "US",
             projects: { proj: ["ds2"] },
@@ -333,7 +324,6 @@ describe("a BigQuery source's string comparison, with a location", () => {
          "run: ci -> { group_by: region }",
       );
       expect(why).toBeUndefined();
-      expect(sent).toHaveLength(2);
    });
 
    it("answers live when the project read fails", async () => {
@@ -359,118 +349,11 @@ describe("a BigQuery source's string comparison, with a location", () => {
    it("answers live when the query's SQL names a COLLATE", async () => {
       // The text check, as on DuckDB: any COLLATE in the query's SQL, here
       // only a literal's, over a project that holds no collated column.
-      const { why, sent } = await refusal(
+      const { why } = await refusal(
          { location: "US" },
          "run: plain -> { where: region = 'a COLLATE b'; group_by: region }",
       );
       expect(why).toBe(LIVE);
-      expect(sent).toHaveLength(0);
-   });
-});
-
-describe("a BigQuery catalog read's caching", () => {
-   afterEach(() => {
-      jest.useRealTimers();
-   });
-
-   it("reads once per bind, and holds a failure until the next bind, whatever the clock", async () => {
-      jest.useFakeTimers();
-      const catalog: Catalog = { location: "US", projects: { proj: "fail" } };
-      const { connection, sent } = stubBigQuery(catalog);
-      const model = new SingleConnectionRuntime({ connection }).loadModel(
-         MODEL,
-      );
-      const ask = (q: string, bind: object) =>
-         stringGateCollationRefusal({
-            authorRunnable: model.loadQuery(q),
-            reads: STRING_READS,
-            bind,
-         });
-      const first = {};
-      expect(await ask("run: plain -> { group_by: region }", first)).toBe(LIVE);
-      expect(sent).toHaveLength(1);
-      catalog.projects = {};
-      // No clock expires it: still live, and nothing is issued again.
-      jest.advanceTimersByTime(60 * 60_000);
-      expect(await ask("run: plain -> { group_by: region }", first)).toBe(LIVE);
-      expect(sent).toHaveLength(1);
-      // The next bind reads again, and serves.
-      const next = {};
-      expect(
-         await ask("run: plain -> { group_by: region }", next),
-      ).toBeUndefined();
-      expect(sent).toHaveLength(3);
-      // The project's read is kept; another table set is confirmed anew.
-      expect(
-         await ask("run: ci -> { group_by: region }", next),
-      ).toBeUndefined();
-      expect(sent).toHaveLength(4);
-   });
-
-   it("reads again under another bind, and not under the same one", async () => {
-      const { connection, sent } = stubBigQuery({ location: "US" });
-      const model = new SingleConnectionRuntime({ connection }).loadModel(
-         MODEL,
-      );
-      const ask = (bind: object) =>
-         stringGateCollationRefusal({
-            authorRunnable: model.loadQuery(
-               "run: plain -> { group_by: region }",
-            ),
-            reads: STRING_READS,
-            bind,
-         });
-      const first = {};
-      expect(await ask(first)).toBeUndefined();
-      expect(await ask(first)).toBeUndefined();
-      expect(sent).toHaveLength(2);
-      // A rebind (a build, a storage= bind): the same runtime reads again.
-      expect(await ask({})).toBeUndefined();
-      expect(sent).toHaveLength(4);
-   });
-
-   it("sees a source changed in place only at the next bind, never on a clock", async () => {
-      jest.useFakeTimers();
-      const catalog: Catalog = { location: "US" };
-      const { connection, sent } = stubBigQuery(catalog);
-      const model = new SingleConnectionRuntime({ connection }).loadModel(
-         MODEL,
-      );
-      const ask = (bind: object) =>
-         stringGateCollationRefusal({
-            authorRunnable: model.loadQuery(
-               "run: plain -> { group_by: region }",
-            ),
-            reads: STRING_READS,
-            bind,
-         });
-      const bind = {};
-      expect(await ask(bind)).toBeUndefined();
-      expect(sent).toHaveLength(2);
-      // The source is replaced in place with a collation, with no rebind.
-      catalog.projects = { proj: ["ds"] };
-      catalog.datasets = { "proj.ds": { plain_t: { region: "und:ci" } } };
-      jest.advanceTimersByTime(60 * 60_000);
-      expect(await ask(bind)).toBeUndefined();
-      expect(sent).toHaveLength(2);
-      // The next bind reads it, and answers live.
-      expect(await ask({})).toBe(LIVE);
-   });
-
-   it("reads again under a new runtime, as after a build or a reload", async () => {
-      const { connection, sent } = stubBigQuery({ location: "US" });
-      for (let i = 0; i < 2; i++) {
-         expect(
-            await stringGateCollationRefusal({
-               authorRunnable: runnable(
-                  connection,
-                  "run: plain -> { group_by: region }",
-               ),
-               reads: STRING_READS,
-            }),
-         ).toBeUndefined();
-      }
-      expect(sent).toHaveLength(4);
    });
 });
 
@@ -522,7 +405,7 @@ describe("a BigQuery source's string comparison, with no location set", () => {
          "run: authored -> { group_by: region }",
       );
       expect(why).toBeUndefined();
-      expect(regions).toEqual(["eu"]);
+      expect(regions).toContain("eu");
    });
 
    it("answers an .sql() source live when a derived region lists a collated dataset", async () => {
@@ -534,12 +417,11 @@ describe("a BigQuery source's string comparison, with no location set", () => {
    });
 
    it("answers an .sql() source live when datasets.list names no dataset", async () => {
-      const { why, sent } = await refusal(
+      const { why } = await refusal(
          { listed: "none" },
          "run: authored -> { group_by: region }",
       );
       expect(why).toBe(LIVE);
-      expect(sent).toHaveLength(0);
    });
 });
 
@@ -551,7 +433,6 @@ describe("a BigQuery source's string comparison, with no location and no client"
          "run: plain -> { group_by: region }",
       );
       expect(plain.why).toBeUndefined();
-      expect(plain.sent).toHaveLength(1);
       expect(plain.sent[0]).toContain("`proj`.`ds`.INFORMATION_SCHEMA");
       const ci = await refusal(catalog, "run: ci -> { group_by: region }");
       expect(ci.why).toBe(LIVE);
@@ -578,15 +459,14 @@ describe("a BigQuery source's string comparison, with no location and no client"
          "run: authored -> { group_by: region }",
          "run: plain_sql -> { group_by: r }",
       ]) {
-         const { why, sent } = await refusal({}, q);
+         const { why } = await refusal({}, q);
          expect(why).toBe(LIVE);
-         expect(sent).toHaveLength(0);
       }
    });
 });
 
 describe("a BigQuery result's re-grouping and ordering", () => {
-   it("is judged by the same probe, as the result rule reads it", async () => {
+   it("is judged by the same lookup, as the result rule reads it", async () => {
       // A rollup answering a coarser group_by, or the served copy ordering a
       // string, re-groups and orders the copy's bytes: the result rule asks
       // the source-side probe, which runs only for a dialect whose
@@ -605,73 +485,117 @@ describe("a BigQuery result's re-grouping and ordering", () => {
       expect(reads?.stringCollation).toBe("dataset");
       expect(reads?.grouped.comparesNoString).toBe(false);
       expect(
-         await stringGateCollationRefusal({
-            authorRunnable: runnable(connection, q),
-            reads: reads?.grouped,
-         }),
+         (
+            await refusal(
+               {
+                  location: "US",
+                  projects: { proj: ["ds"] },
+                  datasets: { "proj.ds": CI_DS },
+               },
+               q,
+               reads?.grouped,
+            )
+         ).why,
       ).toBe(LIVE);
    });
 });
 
-describe("a BigQuery database table", () => {
-   const ask = (catalog: Catalog, table: string, query: string) => {
-      const { connection, sent } = stubBigQuery(catalog);
-      const r = runnable(connection, query);
-      return {
-         sent,
-         why: storedTableCollationRefusal({
-            tables: [{ tier: "database", tablePath: table }],
-            answerRunnable: r,
-            virtualMap: undefined,
-            authorRunnable: r,
-            reads: STRING_READS,
+/**
+ * A BigQuery database table's stored side, looked up: the source's side from
+ * what a bind recorded of the catalog, the table's from the collation its
+ * build recorded in its contract. The lookup twin of the probe path's five
+ * cases, with the same outcomes: a table is kept only when every collated
+ * column it records is the one its source compares under, and declined
+ * for any other collation, on either side.
+ */
+describe("a BigQuery database table, looked up", () => {
+   const stored = async (
+      catalog: Catalog,
+      query: string,
+      collation: string | null,
+   ) => {
+      const { connection } = stubBigQuery(catalog);
+      const runtime = new SingleConnectionRuntime({ connection });
+      const materializer = runtime.loadModel(MODEL);
+      recordStringCapabilities(
+         runtime,
+         await readStringCapabilities({
+            modelDef: (await materializer.getModel())._modelDef,
+            load: (q) => materializer.loadQuery(q),
+            connection: async () => connection,
          }),
-      };
+      );
+      const contract = parseContract({
+         v: 1,
+         dialect: "standardsql",
+         columns: [
+            { name: "id", nativeType: "INT64", collation: null },
+            { name: "region", nativeType: "STRING", collation },
+         ],
+      })!;
+      return lookupStoredRefusal({
+         tables: [
+            {
+               tier: "database",
+               tablePath: "proj.ds.copy_t",
+               virtualHandle: "h",
+            },
+         ],
+         authorRunnable: materializer.loadQuery(query),
+         reads: STRING_READS,
+         bind: makeSnapshot(
+            [],
+            {},
+            undefined,
+            undefined,
+            new Map([["h", contract]]),
+         ),
+      });
    };
+   const UNMATCHED =
+      "a stored table compares strings under a unknown collation (a BigQuery table unmatched)";
 
    it("is kept when neither it nor its source holds a collated string", async () => {
       expect(
-         await ask(
+         await stored(
             { location: "US" },
-            "proj.ds.copy_t",
             "run: plain -> { group_by: region }",
-         ).why,
+            null,
+         ),
       ).toBeUndefined();
    });
 
    it("answers live when its source lost the collation its copy kept", async () => {
-      // Built while the source column was und:ci; the source was replaced
-      // without it since, and the copy still groups case-insensitively.
       expect(
-         await ask(
+         await stored(
             {
                location: "US",
                projects: { proj: ["ds"] },
                datasets: { "proj.ds": { copy_t: { region: "und:ci" } } },
             },
-            "proj.ds.copy_t",
             "run: plain -> { group_by: region }",
-         ).why,
-      ).toBe("a stored table compares strings under a unknown collation");
+            "bigquery:und:ci",
+         ),
+      ).toBe(UNMATCHED);
    });
 
    it("answers live when its source's column is collated and its own is not", async () => {
       expect(
-         await ask(
+         await stored(
             {
                location: "US",
                projects: { proj: ["ds"] },
                datasets: { "proj.ds": CI_DS },
             },
-            "proj.ds.copy_t",
             "run: ci -> { group_by: region }",
-         ).why,
-      ).toBe("a stored table compares strings under a unknown collation");
+            null,
+         ),
+      ).toBe(UNMATCHED);
    });
 
-   it("is kept when its column reads back the source's collation", async () => {
+   it("is kept when its column recorded the source's collation", async () => {
       expect(
-         await ask(
+         await stored(
             {
                location: "US",
                projects: { proj: ["ds"] },
@@ -679,15 +603,15 @@ describe("a BigQuery database table", () => {
                   "proj.ds": { ...CI_DS, copy_t: { region: "und:ci" } },
                },
             },
-            "proj.ds.copy_t",
             "run: ci -> { group_by: region }",
-         ).why,
+            "bigquery:und:ci",
+         ),
       ).toBeUndefined();
    });
 
-   it("answers live when its column reads back another collation", async () => {
+   it("answers live when its column recorded another collation", async () => {
       expect(
-         await ask(
+         await stored(
             {
                location: "US",
                projects: { proj: ["ds"] },
@@ -695,10 +619,10 @@ describe("a BigQuery database table", () => {
                   "proj.ds": { ...CI_DS, copy_t: { region: "und:cs" } },
                },
             },
-            "proj.ds.copy_t",
             "run: ci -> { group_by: region }",
-         ).why,
-      ).toBe("a stored table compares strings under a unknown collation");
+            "bigquery:und:cs",
+         ),
+      ).toBe(UNMATCHED);
    });
 });
 

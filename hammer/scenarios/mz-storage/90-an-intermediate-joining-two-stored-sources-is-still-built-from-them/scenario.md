@@ -86,7 +86,7 @@ Expect:
 | ------------ | --------------- | ---------- |
 | 99           | 2026-01-03      | 1000       |
 
-## Build (orchestrated, strict, pkg=ctp)
+## Build (orchestrated, pkg=ctp)
 
 Rebuild `rollup` alone, reusing both stored parents.
 

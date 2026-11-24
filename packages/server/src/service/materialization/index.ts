@@ -17,6 +17,7 @@
 export { PackageMaterialization } from "./package_materialization";
 export { withNameProblems } from "./plan/load_gate_text";
 export { loadVerdictOfPlan } from "./package_warnings";
+export { removeStaleBuildDirs } from "./run/materialization_build_session";
 export { MaterializationService } from "./run/materialization_service";
 export { keptTablesResolverFor, Reclaimer } from "./run/reclaimer";
 export { isUsableTableName } from "./run/manifest_loader";
@@ -28,4 +29,4 @@ export {
    chainBuildStringReads,
    planChainBuildText,
 } from "./serve/served_copy_serve";
-export { bigqueryBuildCompareBinary } from "./serve/gate_collation";
+export { bigqueryBuildCompareBinary } from "./serve/collation/bigquery_build";

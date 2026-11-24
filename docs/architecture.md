@@ -129,8 +129,8 @@ injection); **route** over the legs `makeLegs` made for that pin, each `{ kind, 
 **admit** a stored answer through `admitRead` (`domain/admission.ts`), the one decision over the
 row scope, the caller's own filters, the result's order, and past a gate the gate policy, exactness,
 zone, collation and a composite's row filter (its shell, `serve/read_admission.ts`, gathers the
-facts over the tables the answer read, asking the collation probes through a `CollationProbe` port
-only when a rule needs one); **govern** whatever answered, the authority on every answer, routed or
+facts over the tables the answer read, judging collation from what the bind and the build recorded
+only when a rule needs it); **govern** whatever answered, the authority on every answer, routed or
 live; **run** it with the
 manifest or virtual map the answer names, retrying live only when every binding it read allows it;
 and **report**: the caps, the metrics, the access record and the path report, all read off the one

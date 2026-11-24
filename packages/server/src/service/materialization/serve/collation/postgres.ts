@@ -16,15 +16,18 @@ import {
    PG_COLLATION_IDENTITY,
    postgresJudged,
 } from "../../domain/collation";
-import type { CollationReader, ProbeIO } from "./probe_io";
+import type { CollationReader, CatalogIO } from "./catalog_io";
 
 /** Postgres rows, which Malloy's Postgres connection reads from a `row` column. */
-function pgRows(io: ProbeIO, sql: string): Promise<Record<string, unknown>[]> {
+function pgRows(
+   io: CatalogIO,
+   sql: string,
+): Promise<Record<string, unknown>[]> {
    return io.rows(`SELECT row_to_json(t) AS row FROM (${sql}) t`);
 }
 
 /** The Postgres database's default collation, as {@link postgresJudged} reads it. */
-async function postgresDefaultCollation(io: ProbeIO): Promise<Collation> {
+async function postgresDefaultCollation(io: CatalogIO): Promise<Collation> {
    const [row] = await pgRows(
       io,
       `SELECT ${PG_COLLATION_COLUMNS} FROM pg_collation c, pg_database d WHERE c.collname = 'default' AND d.datname = current_database()`,
@@ -52,7 +55,10 @@ export function unfinalizedPostgresSQL(sql: string): string {
  * `POSIX`, deterministic under any other deterministic collation, the
  * database default included.
  */
-async function postgresCollation(io: ProbeIO, sql: string): Promise<Collation> {
+async function postgresCollation(
+   io: CatalogIO,
+   sql: string,
+): Promise<Collation> {
    const [row] = await pgRows(
       io,
       `SELECT ${PG_COLLATION_COLUMNS} FROM pg_collation c, pg_database d WHERE c.oid = (pg_collation_for((SELECT q.probe_value FROM (${sql}) q LIMIT 1)))::regcollation AND d.datname = current_database()`,
@@ -62,7 +68,7 @@ async function postgresCollation(io: ProbeIO, sql: string): Promise<Collation> {
 
 /** The identity of the collation `sql`'s `probe_value` compares under. */
 async function postgresCollationIdentity(
-   io: ProbeIO,
+   io: CatalogIO,
    sql: string,
 ): Promise<string | undefined> {
    const [row] = await pgRows(
@@ -74,7 +80,7 @@ async function postgresCollationIdentity(
 
 /** The identity of the database's default collation. */
 async function postgresDefaultIdentity(
-   io: ProbeIO,
+   io: CatalogIO,
 ): Promise<string | undefined> {
    const [row] = await pgRows(
       io,
@@ -88,7 +94,7 @@ async function postgresDefaultIdentity(
  * null for a column that has none (not a string).
  */
 async function postgresColumnIdentities(
-   io: ProbeIO,
+   io: CatalogIO,
    tablePath: string,
 ): Promise<Map<string, string | null>> {
    const path = tablePath.replace(/'/g, "''");
@@ -109,7 +115,7 @@ async function postgresColumnIdentities(
  * `C`/`POSIX`, deterministic when every one is deterministic, else unknown.
  */
 async function postgresTableCollation(
-   io: ProbeIO,
+   io: CatalogIO,
    tablePath: string,
 ): Promise<Collation> {
    const path = tablePath.replace(/'/g, "''");
@@ -124,7 +130,7 @@ async function postgresTableCollation(
 
 /** Whether the catalog lists the table at `tablePath` (`to_regclass`). */
 async function postgresTableListed(
-   io: ProbeIO,
+   io: CatalogIO,
    tablePath: string,
 ): Promise<boolean> {
    const [row] = await pgRows(
@@ -135,20 +141,20 @@ async function postgresTableListed(
 }
 
 /** The Postgres dialect's reads: a column's collation, and its identity. */
-export interface PostgresCollationReader extends CollationReader {
+interface PostgresCollationReader extends CollationReader {
    readonly scope: "column";
    /** The database's default collation, judged. */
-   defaultCollation(io: ProbeIO): Promise<Collation>;
+   defaultCollation(io: CatalogIO): Promise<Collation>;
    /**
     * The identity of the collation the `probe_value` of `sql` (a compiled
     * query, its final stage taken off here) compares under.
     */
-   collationIdentity(io: ProbeIO, sql: string): Promise<string | undefined>;
+   collationIdentity(io: CatalogIO, sql: string): Promise<string | undefined>;
    /** The identity of the database's default collation. */
-   defaultIdentity(io: ProbeIO): Promise<string | undefined>;
+   defaultIdentity(io: CatalogIO): Promise<string | undefined>;
    /** Every column of a table, by name: its collation's identity, or null. */
    columnIdentities(
-      io: ProbeIO,
+      io: CatalogIO,
       tablePath: string,
    ): Promise<Map<string, string | null>>;
 }
@@ -156,12 +162,12 @@ export interface PostgresCollationReader extends CollationReader {
 /** The Postgres dialect's reader. */
 export const POSTGRES_COLLATION: PostgresCollationReader = Object.freeze({
    scope: "column" as const,
-   sourceColumns: (io: ProbeIO, sql: string) =>
+   sourceColumns: (io: CatalogIO, sql: string) =>
       postgresCollation(io, unfinalizedPostgresSQL(sql)),
    storedTable: postgresTableCollation,
    tableListed: postgresTableListed,
    defaultCollation: postgresDefaultCollation,
-   collationIdentity: (io: ProbeIO, sql: string) =>
+   collationIdentity: (io: CatalogIO, sql: string) =>
       postgresCollationIdentity(io, unfinalizedPostgresSQL(sql)),
    defaultIdentity: postgresDefaultIdentity,
    columnIdentities: postgresColumnIdentities,

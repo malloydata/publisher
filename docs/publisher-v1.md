@@ -251,7 +251,7 @@ Every content read is of exactly one version, named in the path. A publish, a re
 - **Errors.** One `Error {status, reason, message, requestId, details?}`, `reason` from one closed enum and `details` typed per reason a client acts on; each operation lists the reasons it answers. Clients branch on `status` and `reason`, never on `message`. An error inside a successful response is an `EmbeddedError`, and every diagnostic a `Problem`.
 - **Dry runs.** `?dryRun=true` stores nothing and answers 200 with no `Location`: a connection's test result, or the `Version` a publish would make, without `resource`, `revision` or timestamps.
 - **MCP** is a second surface over the same model: snake_case tool names and its own tool schemas, which use v1's field names and meanings (decision A73), switched by the `mcp.api` setting together with the skills.
-- **The admin API** is a sibling spec at `/admin/v1` with the same grammar, owning DuckLake catalogs, watch mode and GC, and taking the resource writes the serving API refuses under `resources.readOnly`.
+- **The admin API** is a sibling spec at `/admin/v1` with the same grammar, owning DuckLake catalogs, watch mode and GC, and taking the resource writes the serving API refuses under `resources.readOnly`. Its long-term data-write path is one resource: a load, `POST …/loads`, taking `mode: create|replace|merge|append`, `source: {objects}|{table}`, `key`, `maxDeletedRows` and a schema-change policy, so a table PUT's copy and replace are loads and the PUT is deprecated, and `PUT /schemas/{schema}` becomes `POST /schemas`. Until then loads and table PUT are two paths that share their helpers and differ in semantics.
 
 **What v1 leaves out.** Everything in today's spec with no load-bearing caller, and everything deprecated: `events`, the serving-API watch mode, the `storageDestinations` routes, `sqlTemporaryTable`, the inline package fields, dashboards and notebooks, `/projects`, `includeLoading`, `Materialization.environmentId` and its `metadata` blob, `filterParams` and `bypassFilters`, `configEtag`, `compactJson`, the theme, `.malloynb`. A request for one of them reopens the decision; it does not reach v1 by default.
 
@@ -1746,8 +1746,8 @@ Three kinds of setting are exceptions, and the registry marks them:
 
 Variables Publisher does not own keep their names and stay outside the registry: `NODE_ENV`,
 `NODE_OPTIONS`, `NODE_EXTRA_CA_CERTS` (which the Docker image sets to its RDS CA bundle), `OTEL_*`,
-`GOOGLE_APPLICATION_CREDENTIALS`, libpq's `PGSSLMODE` and `PGSERVICE` (which Publisher's Postgres
-connection setup also reads), and the `ADBC_*` variables the Docker image's driver shim reads.
+`GOOGLE_APPLICATION_CREDENTIALS`, libpq's `PGSSLMODE`, `PGSSLROOTCERT`, `PGSSLCERT`, `PGSSLKEY`, `PGSERVICE`,
+`PGHOSTADDR`, `PGCHANNELBINDING`, `PGGSSENCMODE`, `PGREQUIREAUTH`, `PGSSLCRL`, `PGSSLCRLDIR` and `PGSSLMINPROTOCOLVERSION` (which Publisher's Postgres connection setup also reads), and the `ADBC_*` variables the Docker image's driver shim reads.
 
 #### Types, read the same way from every source
 
@@ -1931,6 +1931,8 @@ keep their file paths and gain derived variables and flags. `indexing.maxEntitie
 | `PUBLISHER_MODEL_PAGE` (the model viewer) | `modelPage` (enum: `explorer`, `viewer`) | unchanged | — | a lasting choice between two pages, both kept |
 | `PUBLISHER_PACKAGE_INLINE_FIELDS` (#1532) | `packageInlineFields` (enum: `on`, `off`) | unchanged | — | a transition setting that a later release turns off and the one after removes with the fields, so, like `packageVersioning`, it keeps its name and has no flag |
 | _new_ (#1882) | `admin.requestTimeoutMs` | `PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS` | `--admin-request-timeout-ms` | added after the design was written, so it took its derived names from the start |
+| _new_ | `admin.memoryLimit` | `PUBLISHER_ADMIN_MEMORY_LIMIT` | `--admin-memory-limit` | the memory cap of an admin load or copy session (default `1.5GB`), held to `duckdb.memoryLimit` when that is lower |
+| _new_ | `admin.maxTempDirectorySize` | `PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE` | `--admin-max-temp-directory-size` | the spill cap of an admin load or copy session (default `6GiB`) |
 | _new_ (the data-app runtime, decision A76) | `trustPageContextHeader` (boolean, default off) | `PUBLISHER_TRUST_PAGE_CONTEXT_HEADER` | `--[no-]trust-page-context-header` | lets a gateway override the page context through the `x-publisher-page-context` header; leave it off unless the gateway strips that header from clients |
 
 Step 2 has shipped, so a new setting takes only its derived name, as `PUBLISHER_VERSION_PROMOTION`

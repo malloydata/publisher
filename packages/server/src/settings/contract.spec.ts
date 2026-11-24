@@ -1013,6 +1013,42 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS"),
       },
    ],
+   "admin.memoryLimit": [
+      { name: "unset is 1.5GB", expect: value("1.5GB") },
+      {
+         name: "PUBLISHER_ADMIN_MEMORY_LIMIT",
+         env: { PUBLISHER_ADMIN_MEMORY_LIMIT: "3GB" },
+         expect: value("3GB"),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_ADMIN_MEMORY_LIMIT: "" },
+         expect: value("1.5GB"),
+      },
+      {
+         name: "not a size",
+         env: { PUBLISHER_ADMIN_MEMORY_LIMIT: "lots" },
+         expect: fails("PUBLISHER_ADMIN_MEMORY_LIMIT"),
+      },
+   ],
+   "admin.maxTempDirectorySize": [
+      { name: "unset is 6GiB", expect: value("6GiB") },
+      {
+         name: "PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE",
+         env: { PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE: "20GB" },
+         expect: value("20GB"),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE: "" },
+         expect: value("6GiB"),
+      },
+      {
+         name: "not a size",
+         env: { PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE: "lots" },
+         expect: fails("PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE"),
+      },
+   ],
    "admin.catalogDatabase": [
       { name: "unset is off", expect: value(null) },
       {
@@ -1681,19 +1717,6 @@ export const CONTRACT: Record<string, Case[]> = {
          name: "not a boolean",
          env: { PUBLISHER_MATERIALIZE_GATED_SOURCES: "sometimes" },
          expect: fails("PUBLISHER_MATERIALIZE_GATED_SOURCES"),
-      },
-   ],
-   "materialize.admissionMode": [
-      { name: "unset", expect: value("lookup") },
-      {
-         name: "PUBLISHER_ADMISSION_MODE",
-         env: { PUBLISHER_ADMISSION_MODE: "shadow" },
-         expect: value("shadow"),
-      },
-      {
-         name: "not a mode",
-         env: { PUBLISHER_ADMISSION_MODE: "sometimes" },
-         expect: fails("PUBLISHER_ADMISSION_MODE"),
       },
    ],
    "persist.collisionEnforcementEnabled": [

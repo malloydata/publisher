@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The key checks a build records beside its tables reach what a package
- * serves through the real publish, build, load and rebind path, and never
- * outlive the rows they were taken over. Each check rides on its table's
- * binding: a pair table's leaf key (known limitation 40), a rollup's own key
- * and a stored source's key for a join to a rollup in a destination (known
+ * The key checks a build records in its tables' contracts reach what a
+ * package serves through the real publish, build, load and rebind path, and
+ * never outlive the rows they were taken over. Each check rides on its
+ * table's binding, read off the contract under the current primary key: a
+ * pair table's leaf key (known limitation 40), a rollup's own key and a
+ * stored source's key for a join to a rollup in a destination (known
  * limitation 29, #1704).
  *
  * - On a published version, the run's own load binds each check's verdict,
@@ -34,7 +35,6 @@ import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName, VersionRef } from "../../src/service/identity";
-import { withRollupKeyRecords } from "../../src/service/materialization/run/inline_uniqueness";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
 import { QueryPrivileges } from "../../src/service/model_query_request";
 import { storageBindingResolverFor } from "../../src/service/versions/materialization_scope";
@@ -216,9 +216,7 @@ async function fixture(
          manifestPath: "",
       });
    }
-   env.setStorageBindingResolver(
-      storageBindingResolverFor(repo, ENV_ID, withRollupKeyRecords),
-   );
+   env.setStorageBindingResolver(storageBindingResolverFor(repo, ENV_ID));
    if (versioned) {
       await env.getVersionService()!.publish(
          PKG,
@@ -430,26 +428,34 @@ ${pairMeasures}
          await f?.dispose();
       });
 
-      it("builds every pair table, and records each leaf key check", () => {
+      it("builds every pair table, and records each leaf key check in its contract", () => {
          expect([run.status, run.error]).toEqual(["MANIFEST_FILE_READY", null]);
-         const records = Object.values(
-            (
-               run.metadata as {
-                  inlineUniquenessChecks?: {
-                     rollupKeys?: Record<
-                        string,
-                        { table: string; unique: boolean }
-                     >;
-                  };
-               }
-            ).inlineUniquenessChecks?.rollupKeys ?? {},
-         )
-            .map((r) => [JSON.parse(r.table)[0], r.unique])
-            .sort();
-         expect(records).toEqual([
-            ["connection", true],
-            ["destination", false],
-            ["destination", true],
+         const entries = (
+            run.manifest as {
+               entries: Record<
+                  string,
+                  {
+                     storageDestinationName?: string;
+                     contract?: {
+                        keys?: Record<
+                           string,
+                           { unique: boolean; level: string }
+                        >;
+                     };
+                  }
+               >;
+            }
+         ).entries;
+         const checks = Object.values(entries)
+            .map((e) => [
+               e.storageDestinationName ? "destination" : "connection",
+               e.contract?.keys?.["leaf:segs.seg_id"],
+            ])
+            .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+         expect(checks).toEqual([
+            ["connection", { unique: true, level: "leaf" }],
+            ["destination", { unique: false, level: "leaf" }],
+            ["destination", { unique: true, level: "leaf" }],
          ]);
       });
 
@@ -497,10 +503,10 @@ ${pairMeasures}
          }
       });
 
-      // Last: it leaves another run on record. A verdict is bound only from
-      // a run nothing could have written after (uncontestedAutoRun); while
-      // another run is active the rebind binds none, and the counts answer
-      // live until the store vouches for the check again.
+      // Last: it leaves another run on record. While a run is active it may
+      // be rewriting the table in place, so the rebind binds no verdict off
+      // the contract, and the counts answer live until a bind after the run
+      // ends.
       it("binds no verdict while another run could be writing the table, and binds it again after", async () => {
          const malloy = byCarrier("flights", "seg_n, seg_total");
          const other = await f.repo.createMaterialization(
@@ -754,8 +760,8 @@ describe.skipIf(!url)(
    () => {
       // A join_one to `crew`'s rollup at its key (the rollup's own check),
       // and a join_many to `segs`'s rollup beside the stored `flights`
-      // (the stored source's own check). Bound from a host's manifest, so no
-      // local run's record is read: only each table's contract.
+      // (the stored source's own check). Bound from a host's manifest: each
+      // table's contract is the verdict store, as for a local build.
       const MODEL = `source: crew is warehouse.table('public.crew') extend {
   primary_key: flight_id
   #(rollup) grain=["flight_id"] storage="lake"
@@ -1017,7 +1023,7 @@ describe.skipIf(!url)(
    () => {
       // The run checked `segs`'s key `seg_id`, unique. An edit makes
       // `flight_id`, which flight 1's two segments share, its key: the pair
-      // table and the run's record stay bound, but the record says nothing
+      // table and its contract stay bound, but the contract records no check
       // of `flight_id`, so counts through the inlined join answer live.
       const model = (
          key: string,

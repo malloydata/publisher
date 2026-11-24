@@ -14,6 +14,7 @@ import {
    ROLLUP_NOT_BUILT_CODE,
    type PackageAnnotationFinding,
 } from "../annotation_reader";
+import { rollupLabel } from "./domain/rollup_measures";
 import { components } from "../../api";
 import { PACKAGE_MANIFEST_NAME } from "../../constants";
 import { CLASSIFICATION_COVERAGE } from "../classification";
@@ -75,7 +76,6 @@ import {
 } from "./stored_column_types";
 import type {
    BoundTableTypeFinding,
-   DatabaseDriftFinding,
    MismatchHandling,
 } from "./serve/storage_bindings";
 
@@ -93,50 +93,12 @@ const MISMATCH_HANDLING_TEXT: Record<
       `\`::"double"\`) so the warehouse returns the declared type.`,
 };
 
-/**
- * What a database-table drift warning says of how the column is read: the table
- * was altered outside a build, so rebuilding it is the fix.
- */
-const DRIFT_HANDLING_TEXT: Record<
-   DatabaseDriftFinding["mismatches"][number]["handling"],
-   (declaredType: string) => string
-> = {
-   cast: (declaredType) =>
-      `It is read through a cast to \`${declaredType}\`, so it still serves ` +
-      `from the table; rebuilding the table clears this.`,
-   live: () =>
-      `No cast reads it as declared, so queries that read it are answered ` +
-      `live until the table is rebuilt.`,
-};
-
-/**
- * What a drift warning says when the table is as built but its source now
- * declares another type: the table's content address did not move, so a run
- * reuses it, and only a forced rebuild stores the declared type.
- */
-const UPSTREAM_DRIFT_HANDLING_TEXT: Record<
-   DatabaseDriftFinding["mismatches"][number]["handling"],
-   (declaredType: string) => string
-> = {
-   cast: (declaredType) =>
-      `It is read through a cast to \`${declaredType}\`, so it still serves ` +
-      `from the table; a forced rebuild (forceRefresh) clears this.`,
-   live: () =>
-      `No cast reads it as declared, so queries that read it are answered ` +
-      `live until the table is rebuilt with a forced refresh (forceRefresh): ` +
-      `its content address did not move, so a run reuses it.`,
-};
-
 type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 type Models = ReadonlyMap<string, Model>;
 
 /** The code on the warning for a rollup whose build found its join_one key repeated. */
 const ROLLUP_JOIN_ONE_KEY_REPEATED_CODE = "rollup-join-one-key-repeated";
-
-/** The code on the warning for a database table whose columns drifted outside a build. */
-export const DATABASE_COLUMN_TYPE_MISMATCH_CODE =
-   "database-column-type-mismatch";
 
 /**
  * The findings on authored annotations: an unservable one (a valid
@@ -578,10 +540,7 @@ export function persistRefusalWarnings(
            : refusalCodeOf(sourceID, source.name);
       const warning: ApiPackageWarning = {
          message: preaggregate
-            ? (rollup
-                 ? `#(rollup) rollup of source "${rollup.baseSourceName}" at ` +
-                   `(${rollup.grainDimensions.join(", ")})`
-                 : "A #(rollup) rollup") +
+            ? (rollup ? rollupLabel(rollup) : "A #(rollup) rollup") +
               ` is not built, so its measures are served live: ` +
               source.message
             : source.message,
@@ -770,14 +729,12 @@ export function servedCopyWarnings(
  * Warnings for stored columns whose type does not serve as the type Malloy
  * declares, one per source and column, read from the bindings bound now:
  * each model's `#@ persist` sources', then every other `storage=` table's
- * (`bound`), then each database table's whose columns moved outside a build
- * (`database`). Keyed by the source's sourceID, so two models' same-named
+ * (`bound`). Keyed by the source's sourceID, so two models' same-named
  * sources both report and a source several models import reports once.
  */
 export function storedColumnTypeWarnings(
    models: Models,
    bound: readonly BoundTableTypeFinding[],
-   database: readonly DatabaseDriftFinding[] = [],
 ): ApiPackageWarning[] {
    const warnings: ApiPackageWarning[] = [];
    const seen = new Set<string>();
@@ -813,31 +770,6 @@ export function storedColumnTypeWarnings(
    for (const finding of bound) {
       for (const m of finding.mismatches) {
          add(finding.modelPath ?? "", finding.subject, finding.sourceID, m);
-      }
-   }
-   for (const finding of database) {
-      for (const m of finding.mismatches) {
-         const key = `${finding.sourceID}\u0000${m.column}`;
-         if (seen.has(key)) continue;
-         seen.add(key);
-         warnings.push({
-            model: finding.modelPath ?? "",
-            subject: finding.subject,
-            code: DATABASE_COLUMN_TYPE_MISMATCH_CODE,
-            severity: "warn",
-            message:
-               (m.gone
-                  ? `no longer has column \`${m.column}\` (declared Malloy ` +
-                    `type \`${m.declaredType}\`): `
-                  : `stores column \`${m.column}\` as ` +
-                    `${m.storedType ?? "a type Malloy reads as no basic type"}, ` +
-                    `not its declared Malloy type \`${m.declaredType}\`: `) +
-               (m.declaredMoved
-                  ? `what its source reads changed type since the build. ` +
-                    UPSTREAM_DRIFT_HANDLING_TEXT[m.handling](m.declaredType)
-                  : `its table was altered outside a build. ` +
-                    DRIFT_HANDLING_TEXT[m.handling](m.declaredType)),
-         });
       }
    }
    return warnings;
@@ -1210,6 +1142,8 @@ function servedCopyProblemReasonMessage(
 
 /** The code of the warning for a bound database table the bind could not read. */
 const DATABASE_TABLE_UNREAD_CODE = "database-table-unread";
+/** The code of the warning for a bound `storage=` table the bind could not read. */
+const STORAGE_TABLE_UNREAD_CODE = "storage-table-unread";
 
 /** What a `database-table-unread` warning says of each reason. */
 const UNREAD_REASON_TEXT: Readonly<Record<UnreadReason, string>> = {
@@ -1223,24 +1157,39 @@ const UNREAD_REASON_TEXT: Readonly<Record<UnreadReason, string>> = {
 };
 
 /**
- * One warning per bound database table whose columns the bind could not read
- * (`database-table-unread`): its sources answer live until a read succeeds.
+ * One warning per bound table whose columns the bind could not read
+ * (`database-table-unread`, or `storage-table-unread` for a `storage=` table
+ * its destination session could not read): its sources answer live until a
+ * read succeeds.
  * The reason is a fixed class, never the driver's text (the log has that).
  * Named by the table, and by the source a query names (a rollup's base), in
- * the model that declares it.
+ * the model that declares it; `sourceEntityId` and `sourceName` name the
+ * unread table's own source (a rollup's, not its base).
  */
 export function databaseTableUnreadWarnings(
    unread: readonly {
       sourceEntityId: string;
       reason: UnreadReason;
       tableName?: string;
+      /**
+       * The `storage=` destination the table is in, for one that is
+       * (`storage-table-unread`); absent for a database table.
+       */
+      destinationName?: string;
    }[],
    plan: BuildPlan | null,
    retryPending: boolean,
+   /** Whether a re-read of the unread `storage=` tables is pending. */
+   storageRetryPending = false,
 ): ApiPackageWarning[] {
    const warnings: ApiPackageWarning[] = [];
    const sources = Object.values(plan?.sources ?? {});
-   for (const { sourceEntityId, reason, tableName } of unread) {
+   for (const {
+      sourceEntityId,
+      reason,
+      tableName,
+      destinationName,
+   } of unread) {
       const source = sources.find((s) => s.sourceEntityId === sourceEntityId);
       const name = source?.preaggregate?.baseSourceName ?? source?.name;
       const table = source?.preaggregate
@@ -1248,15 +1197,29 @@ export function databaseTableUnreadWarnings(
          : tableName
            ? `The table \`${tableName}\``
            : "A table";
+      const where =
+         destinationName !== undefined
+            ? `in its storage= destination \`${destinationName}\``
+            : "in its database";
+      const pending =
+         destinationName !== undefined ? storageRetryPending : retryPending;
       warnings.push({
          ...(source?.modelPath ? { model: source.modelPath } : {}),
          ...(name ? { subject: name } : {}),
-         code: DATABASE_TABLE_UNREAD_CODE,
+         code:
+            destinationName !== undefined
+               ? STORAGE_TABLE_UNREAD_CODE
+               : DATABASE_TABLE_UNREAD_CODE,
          reason,
+         // The unread table's own source, so a client routes it without
+         // reading the message: `subject` is the source a query names (a
+         // rollup's base).
+         sourceEntityId,
+         ...(source ? { sourceName: source.name } : {}),
          severity: "warn",
          message:
-            `${table}${name ? ` of \`${name}\`` : ""} could not be read in its database when it was bound (${UNREAD_REASON_TEXT[reason]}), so its queries are answered live. ` +
-            (retryPending
+            `${table}${name ? ` of \`${name}\`` : ""} could not be read ${where} when it was bound (${UNREAD_REASON_TEXT[reason]}), so its queries are answered live. ` +
+            (pending
                ? "A retry is pending."
                : "It is read again at the next bind or manifest poll."),
       });

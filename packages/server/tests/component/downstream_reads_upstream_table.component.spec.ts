@@ -482,7 +482,7 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
          // Out of band: the raw rows are gone. A downstream that recomputed
          // its upstream from raw would hold no rows.
          await warehouse.runSQL(`DELETE FROM ${tier.raw}`);
-         second = await build({ strictUpstreams: true });
+         second = await build({});
          served = await ask(mechanism.query);
       }, 300_000);
       afterAll(async () => {

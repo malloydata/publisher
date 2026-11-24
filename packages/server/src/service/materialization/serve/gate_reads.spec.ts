@@ -1,11 +1,7 @@
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { type Connection, SingleConnectionRuntime } from "@malloydata/malloy";
 import { afterAll, describe, expect, it } from "bun:test";
-import {
-   gateColumnUpstreamTypesOf,
-   gateReads,
-   gateReadsOfQuery,
-} from "./gate_reads";
+import { gateColumnsExactOf, gateReads, gateReadsOfQuery } from "./gate_reads";
 
 /** `where: <path> > 0` as Malloy's IR holds it. */
 const termOn = (...path: string[]) => ({
@@ -617,25 +613,27 @@ describe("R-10: what a stored gate column copies", () => {
          },
       ],
    };
-   const upstream = [
-      {
-         connectionName: "sf",
-         table: "analytics.scores",
-         dialect: "snowflake",
-         columns: [
-            { name: "ID", nativeType: "NUMBER(38,0)" },
-            { name: "SCORE", nativeType: "FLOAT" },
-            { name: "AMOUNT", nativeType: "NUMBER(12,2)" },
-         ],
-      },
-   ];
-   const schema = [
-      { name: "id", type: "BIGINT" },
-      { name: "score", type: "DOUBLE" },
-      { name: "amount", type: "DOUBLE" },
-      { name: "doubled", type: "DOUBLE" },
-   ];
-   it("reads a plain column's upstream type, its name matched case-blind", () => {
+   // The table's column contract, as its build recorded it: `score` copies
+   // a Snowflake FLOAT unchanged (exact), `amount` an exact NUMBER stored as
+   // a DOUBLE (not).
+   const col = (name: string, nativeType: string, gateExact: boolean) => ({
+      name,
+      nativeType,
+      collation: null,
+      compare: "exact" as const,
+      gateExact,
+   });
+   const contract = {
+      v: 1,
+      dialect: "duckdb",
+      columns: [
+         col("id", "BIGINT", true),
+         col("score", "DOUBLE", true),
+         col("amount", "DOUBLE", false),
+         col("doubled", "DOUBLE", false),
+      ],
+   };
+   it("reads a plain column's exactness from the contract", () => {
       const r = gateReads(
          { ...SCORES, filterList: [termOn("score")] },
          [],
@@ -645,24 +643,23 @@ describe("R-10: what a stored gate column copies", () => {
       expect(r.columnOrigins).toEqual([
          { connectionName: "sf", table: "analytics.scores", column: "score" },
       ]);
-      expect(gateColumnUpstreamTypesOf(r, [schema], [upstream])).toEqual([
-         [{ dialect: "snowflake", nativeType: "FLOAT" }],
-      ]);
+      expect(gateColumnsExactOf(r, [contract])).toEqual({
+         types: [["DOUBLE"]],
+         exact: [true],
+      });
    });
 
-   it("reads an exact number stored as a DOUBLE as the exact number it is", () => {
+   it("reads an exact number stored as a DOUBLE as the contract records it: not exact", () => {
       const r = gateReads(
          { ...SCORES, filterList: [termOn("amount")] },
          [],
          {},
          new Set(),
       );
-      expect(gateColumnUpstreamTypesOf(r, [schema], [upstream])).toEqual([
-         [{ dialect: "snowflake", nativeType: "NUMBER(12,2)" }],
-      ]);
+      expect(gateColumnsExactOf(r, [contract]).exact).toEqual([false]);
    });
 
-   it("reads no upstream type for a computed field's column beside it, nor without a reading", () => {
+   it("judges a computed field with every stored column it goes by, and lists nothing with no contract", () => {
       const r = gateReads(
          { ...SCORES, filterList: [termOn("doubled")] },
          [],
@@ -673,16 +670,13 @@ describe("R-10: what a stored gate column copies", () => {
       expect(r.columnOrigins).toEqual([
          { connectionName: "sf", table: "analytics.scores", column: "score" },
       ]);
-      expect(gateColumnUpstreamTypesOf(r, [schema], [undefined])).toEqual([
-         [undefined],
-      ]);
-      expect(
-         gateColumnUpstreamTypesOf(
-            r,
-            [schema],
-            [[{ ...upstream[0], table: "analytics.other" }]],
-         ),
-      ).toEqual([[undefined]]);
+      // The stored `doubled` the build computed is held too, and its
+      // contract does not record it exact: fail closed.
+      expect(gateColumnsExactOf(r, [contract]).exact).toEqual([false]);
+      expect(gateColumnsExactOf(r, [undefined])).toEqual({
+         types: [undefined],
+         exact: [undefined],
+      });
    });
 
    it("reads no origin for a stage output of a stored query-shaped source", () => {

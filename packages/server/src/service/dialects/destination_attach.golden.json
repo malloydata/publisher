@@ -31,7 +31,7 @@
          "SET GLOBAL s3_secret_access_key=''",
          "SET GLOBAL s3_session_token=''",
          "SELECT COUNT(*) AS count FROM duckdb_secrets() WHERE name = 'secret_s3_lake_storage';",
-         "CREATE OR REPLACE SECRET secret_s3_lake_storage ( TYPE s3, KEY_ID 'AK', SECRET 'SK', REGION 'us-east-1', SCOPE 's3://b/lake/' );"
+         "CREATE OR REPLACE SECRET secret_s3_lake_storage ( TYPE s3, KEY_ID 'AK', SECRET 'SK', REGION 'us-east-1', SCOPE ['s3://b/lake/'] );"
       ]
    },
    "read-only": {
@@ -66,7 +66,7 @@
          "SET GLOBAL s3_secret_access_key=''",
          "SET GLOBAL s3_session_token=''",
          "SELECT COUNT(*) AS count FROM duckdb_secrets() WHERE name = 'secret_s3_lake_storage';",
-         "CREATE OR REPLACE SECRET secret_s3_lake_storage ( TYPE s3, KEY_ID 'AK', SECRET 'SK', REGION 'us-east-1', SCOPE 's3://b/lake/' );"
+         "CREATE OR REPLACE SECRET secret_s3_lake_storage ( TYPE s3, KEY_ID 'AK', SECRET 'SK', REGION 'us-east-1', SCOPE ['s3://b/lake/'] );"
       ]
    },
    "read-only if present": {
@@ -101,7 +101,7 @@
          "SET GLOBAL s3_secret_access_key=''",
          "SET GLOBAL s3_session_token=''",
          "SELECT COUNT(*) AS count FROM duckdb_secrets() WHERE name = 'secret_s3_lake_storage';",
-         "CREATE OR REPLACE SECRET secret_s3_lake_storage ( TYPE s3, KEY_ID 'AK', SECRET 'SK', REGION 'us-east-1', SCOPE 's3://b/lake/' );"
+         "CREATE OR REPLACE SECRET secret_s3_lake_storage ( TYPE s3, KEY_ID 'AK', SECRET 'SK', REGION 'us-east-1', SCOPE ['s3://b/lake/'] );"
       ]
    },
    "create": {
@@ -136,7 +136,7 @@
          "SET GLOBAL s3_secret_access_key=''",
          "SET GLOBAL s3_session_token=''",
          "SELECT COUNT(*) AS count FROM duckdb_secrets() WHERE name = 'secret_s3_lake_storage';",
-         "CREATE OR REPLACE SECRET secret_s3_lake_storage ( TYPE s3, KEY_ID 'AK', SECRET 'SK', REGION 'us-east-1', SCOPE 's3://b/lake/' );"
+         "CREATE OR REPLACE SECRET secret_s3_lake_storage ( TYPE s3, KEY_ID 'AK', SECRET 'SK', REGION 'us-east-1', SCOPE ['s3://b/lake/'] );"
       ]
    }
 }

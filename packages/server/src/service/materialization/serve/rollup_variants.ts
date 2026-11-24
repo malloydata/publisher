@@ -208,7 +208,7 @@ import {
 import type { MaterializedTableCatalog } from "./query_path";
 import { queryShapeOf } from "./query_path";
 import { STORAGE_DIALECT } from "../domain/dialect";
-import { admissionMode, reportQueryWalk, shadowFact } from "./admission_parity";
+import { reportQueryWalk } from "./query_walks";
 
 type VirtualMap = Map<string, Map<string, string>>;
 
@@ -513,34 +513,22 @@ export class RollupVariantServe {
    }
 
    /**
-    * {@link walkCandidates} for a query on `sourceID`, by
-    * `materialize.admissionMode`: looked up in the list built with the
-    * plans under `lookup`, walked under `probe`, both under `shadow` (the
-    * walk deciding).
+    * {@link walkCandidates} for a query on `sourceID`: looked up in the
+    * list built with the plans, walked (and counted) only when no list was
+    * built.
     */
    private candidatesFor(sourceID: string): RollupCandidates {
-      const mode = admissionMode();
-      if (mode === "probe") return this.walkCandidates(sourceID);
       this.plansByBase();
       const list = this.planMemo?.candidates;
-      const recorded: RollupCandidates | "unrecorded" =
-         list === undefined ? "unrecorded" : (list.get(sourceID) ?? NONE);
-      if (mode === "lookup") {
-         if (recorded !== "unrecorded") return recorded;
-         reportQueryWalk("rollup_candidates");
-         return this.walkCandidates(sourceID);
-      }
-      const walked = this.walkCandidates(sourceID);
-      return recorded === "unrecorded"
-         ? walked
-         : shadowFact("rollup_candidates", walked, recorded, showCandidates);
+      if (list !== undefined) return list.get(sourceID) ?? NONE;
+      reportQueryWalk("rollup_candidates");
+      return this.walkCandidates(sourceID);
    }
 
    /**
-    * {@link rollupStaticsOf} for a query on `sourceID`, by
-    * `materialize.admissionMode`: looked up in what the plans recorded under
-    * `lookup`, walked on the query's own compile of the source under
-    * `probe`, both under `shadow` (the walk deciding).
+    * {@link rollupStaticsOf} for a query on `sourceID`: looked up in what
+    * the plans recorded, else walked on the query's own compile of the
+    * source (and counted).
     */
    private staticsFor(
       sourceID: string,
@@ -548,19 +536,10 @@ export class RollupVariantServe {
       modelDef: unknown,
       candidates: RollupCandidates,
    ): RollupStatics {
-      const walk = () => rollupStaticsOf(struct, modelDef, candidates);
-      const mode = admissionMode();
-      if (mode === "probe") return walk();
       const recorded = this.planMemo?.statics?.get(sourceID);
-      if (mode === "lookup") {
-         if (recorded) return recorded;
-         reportQueryWalk("rollup_candidates");
-         return walk();
-      }
-      const walked = walk();
-      return recorded === undefined
-         ? walked
-         : shadowFact("rollup_candidates", walked, recorded, showStatics);
+      if (recorded) return recorded;
+      reportQueryWalk("rollup_candidates");
+      return rollupStaticsOf(struct, modelDef, candidates);
    }
 
    /**
@@ -1680,8 +1659,8 @@ export class RollupVariantServe {
 
    /**
     * What the build of `plan`'s table found of the query source's primary key
-    * (its parent key check): `unique` when unique and never NULL, `unknown`
-    * when not checked, or a table a host's manifest binds.
+    * (its parent key check), as the table's contract records it: `unique`
+    * when unique and never NULL, `unknown` when not checked.
     */
    private parentKeyUniqueness(
       plan: RollupVariantPlan,
@@ -1721,8 +1700,8 @@ export class RollupVariantServe {
     * What the build of a stored table the served copy reads for the query's
     * source found of `key`: `unique` when a source it stores declares `key`
     * its primary key and the check found it unique and never NULL;
-    * `repeated` when one found it repeated or NULL; `unknown` when not
-    * checked, or a binding a host's manifest made.
+    * `repeated` when one found it repeated or NULL; `unknown` when its
+    * contract records no check of `key`.
     */
    private storedKeyUniqueness(
       binding: Binding,
@@ -3980,22 +3959,6 @@ interface RollupCandidates {
 
 const NONE: RollupCandidates = { branches: [] };
 
-/** A rendering of candidates, for comparing a lookup with its walk. */
-function showCandidates(c: RollupCandidates): string | undefined {
-   if (!c.target && c.branches.length === 0) return undefined;
-   const ext = c.target?.extension?.baseDef as
-      | { sourceID?: unknown }
-      | undefined;
-   return JSON.stringify({
-      plans: (c.target?.plans ?? []).map(
-         (p) =>
-            `${p.baseSourceID}:${p.rollupMeasures.map((m) => m.name).join(",")}`,
-      ),
-      extension: ext ? String(ext.sourceID) : null,
-      branches: c.branches.length,
-   });
-}
-
 /**
  * What a query on one candidate source declines by, or carries, before its
  * own shape is read: the same for every query on the source, so recorded
@@ -4045,26 +4008,4 @@ function rollupStaticsOf(
            )
          : [],
    };
-}
-
-/** A rendering of a source's statics, for comparing a lookup with its walk. */
-function showStatics(s: RollupStatics): string {
-   const decline = (d: LegDecline | undefined) =>
-      d ? `${d.code}:${d.message}` : null;
-   return JSON.stringify({
-      gates: s.gates ?? null,
-      timeZoned: s.timeZoned,
-      extension: !s.extension
-         ? null
-         : "decline" in s.extension
-           ? decline(s.extension.decline)
-           : {
-                added: s.extension.delta.added.map(
-                   (a) => (a as { name?: unknown }).name,
-                ),
-                changed: s.extension.delta.changed,
-                addsFilter: s.extension.delta.addsFilter,
-             },
-      branchGates: s.branchGates.map(decline),
-   });
 }

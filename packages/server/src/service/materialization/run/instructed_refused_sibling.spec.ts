@@ -16,7 +16,13 @@ import {
    fakeSource,
 } from "../../../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../../../test_helpers/settings_env";
-import type { BuildInstruction, ManifestEntry } from "../domain/types";
+import type {
+   BuildInstruction,
+   ManifestEntry,
+   RefusedSource,
+   SourceFailure,
+} from "../domain/types";
+import { failedRunManifestOf } from "./build_failure_class";
 import { logger } from "../../../logger";
 import { InstructedBuild } from "./instructed_build";
 import { RunTelemetry, withRunTelemetry } from "./run_telemetry";
@@ -30,9 +36,25 @@ beforeEach(() => {
 });
 afterEach(() => restore());
 
-function harness(order: string[][]) {
+function harness(
+   order: string[][],
+   opts: {
+      /** The base is gated too, so both sources are refused. */
+      baseGated?: boolean;
+      /** The base's build fails. */
+      baseFails?: boolean;
+      refusedAtPlan?: (i: BuildInstruction) => RefusedSource | undefined;
+      instructions?: BuildInstruction[];
+   } = {},
+) {
    const connection = {} as unknown as MalloyConnection;
-   const base = fakeSource({ name: "base", sourceEntityId: ADDRESS });
+   const base = fakeSource({
+      name: "base",
+      sourceEntityId: ADDRESS,
+      ...(opts.baseGated
+         ? { sourceDef: { blockNotes: ["#(authorize) false"] } }
+         : {}),
+   });
    const ext = fakeSource({
       name: "ext",
       sourceEntityId: ADDRESS,
@@ -53,6 +75,9 @@ function harness(order: string[][]) {
          instruction: BuildInstruction;
       }): Promise<ManifestEntry> => {
          built.push(source.name);
+         if (opts.baseFails && source.name === "base") {
+            throw new Error("the warehouse went away");
+         }
          return {
             sourceEntityId: ADDRESS,
             sourceName: source.name,
@@ -80,7 +105,7 @@ function harness(order: string[][]) {
       build.run({
          compiled,
          environment,
-         instructions: [
+         instructions: opts.instructions ?? [
             {
                sourceEntityId: ADDRESS,
                materializedTableId: "mt-shared",
@@ -91,6 +116,7 @@ function harness(order: string[][]) {
          ],
          seedEntries: {},
          signal: new AbortController().signal,
+         ...(opts.refusedAtPlan ? { refusedAtPlan: opts.refusedAtPlan } : {}),
       });
    return { run, built };
 }
@@ -115,10 +141,102 @@ describe("a refused sibling on a storage address (ms2data/service#7078)", () => 
          expect(result.sourcesRefused).toBe(1);
          expect(result.refusalsInFailures).toBe(0);
          expect(
-            Object.values(result.refusedBesideBuilt).map((r) => r.name),
+            Object.values(result.refusedSources).map((r) => r.name),
          ).toEqual(["ext"]);
       });
    }
+});
+
+/** The run's outcome, whether it returned or threw a run that built nothing. */
+async function outcome(run: () => Promise<unknown>): Promise<{
+   failures: Record<string, SourceFailure>;
+   refusedSources: Record<string, RefusedSource>;
+}> {
+   try {
+      const result = (await run()) as {
+         failures: Record<string, SourceFailure>;
+         refusedSources: Record<string, RefusedSource>;
+      };
+      return result;
+   } catch (err) {
+      const failed = failedRunManifestOf(err);
+      if (!failed) throw err;
+      return {
+         failures: failed.failures,
+         refusedSources: failed.refusedSources ?? {},
+      };
+   }
+}
+
+describe("every refused source on a shared address is reported with its own reason", () => {
+   for (const [label, order] of [
+      ["the base first", [["base"], ["ext"]]],
+      ["the extension first", [["ext"], ["base"]]],
+   ] as const) {
+      it(`reports both of two refusals on an address nothing built, ${label}`, async () => {
+         const { run, built } = harness(
+            order.map((o) => [...o]),
+            { baseGated: true },
+         );
+         const { failures, refusedSources } = await outcome(run);
+         expect(built).toEqual([]);
+         // One is the address's failure, in sourceID order; the other is
+         // reported per source, never dropped.
+         expect(failures[ADDRESS]).toMatchObject({
+            sourceName: "base",
+            refused: true,
+         });
+         expect(Object.values(refusedSources).map((r) => r.name)).toEqual([
+            "ext",
+         ]);
+         expect(failures[ADDRESS].reason).toContain("'base'");
+         expect(Object.values(refusedSources)[0].message).toContain("'ext'");
+      });
+
+      it(`keeps the base's build failure and reports the extension's gate refusal beside it, ${label}`, async () => {
+         const { run, built } = harness(
+            order.map((o) => [...o]),
+            { baseFails: true },
+         );
+         const { failures, refusedSources } = await outcome(run);
+         expect(built).toEqual(["base"]);
+         expect(failures[ADDRESS].reason).toContain("the warehouse went away");
+         expect(failures[ADDRESS].refused).toBeUndefined();
+         expect(Object.values(refusedSources).map((r) => r.name)).toEqual([
+            "ext",
+         ]);
+      });
+   }
+
+   it("reports an extension's plan refusal beside its base's build failure, never folded into it", async () => {
+      const extension: RefusedSource = {
+         sourceID: "ext_planned@file:///pkg/m.malloy",
+         name: "ext_planned",
+         tier: "storage",
+         reason: "upstream_table_unusable",
+         message: "it reads a table no stored table can stand in for",
+      };
+      const shared = {
+         sourceEntityId: ADDRESS,
+         materializedTableId: "mt-shared",
+         physicalTableName: "shared_v1",
+         realization: "COPY",
+         destination: "lake",
+      } as const;
+      const { run, built } = harness([["base"]], {
+         baseFails: true,
+         instructions: [
+            { ...shared, sourceID: "base" },
+            { ...shared, sourceID: extension.sourceID },
+         ],
+         refusedAtPlan: (i) =>
+            i.sourceID === extension.sourceID ? extension : undefined,
+      });
+      const { failures, refusedSources } = await outcome(run);
+      expect(built).toEqual(["base"]);
+      expect(failures[ADDRESS].reason).toContain("the warehouse went away");
+      expect(refusedSources).toEqual({ [extension.sourceID]: extension });
+   });
 });
 
 describe("materialization.build.refused", () => {

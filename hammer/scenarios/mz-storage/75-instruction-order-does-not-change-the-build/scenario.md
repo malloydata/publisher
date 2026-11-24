@@ -61,7 +61,7 @@ source: rollup is daily -> {
 }
 ```
 
-## Build (orchestrated, strict, pkg=iob)
+## Build (orchestrated, pkg=iob)
 
 The dependent is listed FIRST. `daily` must still be built before `rollup` reads
 it, which is only true if the build orders by the graph.
