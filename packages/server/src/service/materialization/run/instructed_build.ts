@@ -20,6 +20,7 @@ import { upstreamTypesOf } from "../domain/upstream_schemas";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { errorCodeOf } from "../../../error_code";
 import {
+   type ColumnContract,
    type ContractKeyCheck,
    contractKeyName,
    parseContract,
@@ -285,6 +286,15 @@ function withContractKeys(
 ): ManifestEntry {
    const contract = parseContract(entry.contract);
    if (!contract || Object.keys(keys).length === 0) return entry;
+   return entryWithKeys(entry, contract, keys);
+}
+
+/** `entry` with its parsed `contract`, `keys` merged over the ones it records. */
+function entryWithKeys(
+   entry: ManifestEntry,
+   contract: ColumnContract,
+   keys: Record<string, ContractKeyCheck>,
+): ManifestEntry {
    return {
       ...entry,
       contract: { ...contract, keys: { ...(contract.keys ?? {}), ...keys } },
@@ -2185,14 +2195,20 @@ function withLeafKeys(
    leafChecks: readonly PairLeafCheck[],
 ): ManifestEntry {
    const contract = parseContract(entry.contract);
+   // Unlike withContractKeys, a run whose leaf checks all failed to run still
+   // writes the parsed contract back.
    if (!contract || leafChecks.length === 0) return entry;
-   const keys = { ...(contract.keys ?? {}) };
-   for (const { check, record } of leafChecks) {
-      if (record) {
-         keys[check.contractKey] = { unique: record.unique, level: "leaf" };
-      }
-   }
-   return { ...entry, contract: { ...contract, keys } };
+   return entryWithKeys(
+      entry,
+      contract,
+      Object.fromEntries(
+         leafChecks.flatMap(({ check, record }) =>
+            record
+               ? [[check.contractKey, { unique: record.unique, level: "leaf" }]]
+               : [],
+         ),
+      ),
+   );
 }
 
 /**

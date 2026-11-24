@@ -407,6 +407,25 @@ function emitBuildSource(plan: MaterializePlan): string {
 }
 
 /**
+ * A pair path's leaf: the join names from the source to it, its key, and its
+ * source. The leaf key check's writer (inline uniqueness checks, here) and the
+ * reader of its record (pair_reroot.ts) both name the check from this.
+ */
+export function pairLeafPath(p: MaterializePair): {
+   names: string[];
+   keyColumn: string;
+   sourceID: string;
+} {
+   const hops = p.hops ?? [];
+   const last = hops[hops.length - 1];
+   return {
+      names: [p.join, ...hops.map((h) => h.join)],
+      keyColumn: last?.key ?? p.childKey,
+      sourceID: last?.sourceID ?? p.childSourceID,
+   };
+}
+
+/**
  * The stored key column of each level of a pair's path, the source's first:
  * the source's primary key, then each joined source's key as stored
  * (`items__item_id`, `items__options__option_id`).
@@ -625,15 +644,13 @@ export function pairKeyChecks(
             ...on,
          });
       });
-      const hops = p.hops ?? [];
-      const last = hops[hops.length - 1];
-      const leafNames = [p.join, ...hops.map((h) => h.join)];
+      const leaf = pairLeafPath(p);
       out.push({
-         join: leafNames.join("."),
-         keyColumn: last?.key ?? p.childKey,
-         queryName: `${build}__pair_leaf_key__${leafNames.join("__")}`,
-         joinedSourceID: last?.sourceID ?? p.childSourceID,
-         pairLevel: leafNames.length,
+         join: leaf.names.join("."),
+         keyColumn: leaf.keyColumn,
+         queryName: `${build}__pair_leaf_key__${leaf.names.join("__")}`,
+         joinedSourceID: leaf.sourceID,
+         pairLevel: leaf.names.length,
          recordOnly: true,
          ...on,
       });

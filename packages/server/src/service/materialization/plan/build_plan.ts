@@ -168,7 +168,7 @@ import {
    stringReadsRefusal,
    unstoredReadRefusal,
 } from "../domain/string_reads";
-import { keyCheckPassed } from "../domain/column_contract";
+import { pairLeafCheckFailure } from "../domain/column_contract";
 import { reachPersisted, SourceMap } from "../text/source_map";
 import { authorModelReachContext } from "../text/author_model";
 import { quotedIdentifier } from "../../malloy_text";
@@ -1039,17 +1039,8 @@ function pairParentUnusable(
       tier === "same" ? plan.persist.storage : undefined,
    );
    if (!contract) return undefined;
-   const unpassed = leafKeys.filter((k) => !keyCheckPassed(contract, k));
-   if (unpassed.length === 0) return undefined;
-   const failed = unpassed.filter((k) => contract.keys?.[k] !== undefined);
-   // Name a key as the author wrote it (`items.item_id`), not as the contract
-   // spells it (`leaf:items.item_id`).
-   const shown = (keys: string[]) =>
-      keys.map((k) => `'${k.replace(/^leaf:/, "")}'`).join(", ");
-   const what =
-      failed.length > 0
-         ? `found the key ${shown(failed)} held more than once or NULL`
-         : `recorded no result for the key ${shown(unpassed)}`;
+   const what = pairLeafCheckFailure(contract, leafKeys);
+   if (what === undefined) return undefined;
    return (
       `it extends '${over.sourceName}', whose pair table it is built over ` +
       `with its join put back, and the leaf key check of its inlined ` +

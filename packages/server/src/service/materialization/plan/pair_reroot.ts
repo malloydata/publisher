@@ -49,7 +49,11 @@ import type {
    MaterializePair,
    MaterializePlan,
 } from "../domain/table_plans";
-import { pairKeyColumns, pairLevelRowColumn } from "./build_file_generator";
+import {
+   pairKeyColumns,
+   pairLeafPath,
+   pairLevelRowColumn,
+} from "./build_file_generator";
 
 /** The field each level of the re-root carries its parent level's key in. */
 const PAIR_PARENT_KEY_FIELD = "__pair_parent_key";
@@ -74,10 +78,8 @@ export function pairRerootJoins(plan: MaterializePlan): string[] {
  */
 export function pairLeafContractKeys(plan: MaterializePlan): string[] {
    return pairsOf(plan).map((p) => {
-      const names = [p.join, ...(p.hops ?? []).map((h) => h.join)];
-      const hops = p.hops ?? [];
-      const key = hops.length > 0 ? hops[hops.length - 1].key : p.childKey;
-      return contractKeyName("leaf", names.join("."), key);
+      const leaf = pairLeafPath(p);
+      return contractKeyName("leaf", leaf.names.join("."), leaf.keyColumn);
    });
 }
 
