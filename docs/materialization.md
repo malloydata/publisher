@@ -774,36 +774,16 @@ table (`MISSING_FIELD`), and the query is answered live. A rollup is named by it
 view or query by its build source.
 
 **A database table altered outside a build.** A table in the source's own database (no `storage=`: a
-`#@ persist`, a `#(materialize)` or a rollup) is read with the column types its
-warehouse holds when it is bound, not only those its build wrote. Each bind (after a run, a reload,
-a restart, or a rebind from the store) reads every bound database table's columns, never per query:
-one catalog query per schema or dataset (`information_schema.columns`), one for every Postgres
-table, and DuckDB's in-process `DESCRIBE` per table, at most four at once, each bounded by 15
-seconds. A column whose type has changed since the build (an `ALTER TABLE` outside Publisher),
-including a big integer altered to a decimal (read with its new type only when the decimal holds
-all its digits), and on any warehouse but DuckDB a timestamp that
-gained or lost its time zone, a column that is gone, and a type Malloy reads as no basic type (an
-array, for example), is taken as above, by the same rule on every mechanism: it is read through a
-faithful cast or left out, so only a query that reads it is answered live. A `#@ persist` or
-`#(materialize)` table is read through its served copy. A rollup, persisted view or persisted query,
-read by Malloy's build-manifest substitution while its table is as built, is read once altered
-through a typed source over the columns its table holds now, on the source's own connection, as a
-`storage=` table is read. On every mechanism, served copy included, a column whose type moved inside
-one Malloy type is read as it is only when the move loses nothing (a wider integer, a decimal with no fewer integer
-or fraction digits, an integer into a decimal that holds all its digits, FLOAT to DOUBLE, a longer
-text); any other such move (DECIMAL(10,1) to DECIMAL(10,0), a BIGINT past 2^53 to DOUBLE) may have
-rounded what the table holds, so the column is left out. A rollup keeps serving every query that
-reads no left-out column; a gated rollup whose gate reads one declines, so the query is answered
-live, never denied and never with another caller's rows; and a persisted view or query, whose every
-query reads all its columns, declines its table. A join to a rollup whose table was altered (a join
-branch) is answered live until the table is rebuilt. It
-raises a `database-column-type-mismatch` package warning (the database tier's twin of `storage=`'s
-`storage-column-type-mismatch`), one per table and column, saying that
-the table was altered outside a build and whether the column is cast or answered live, and counts
-in the same
-`publisher_storage_column_type_mismatch_total{stage="serve"}`, once per bind. A column that is gone
-is reported too; one moved by a widening that loses nothing is not. Rebuilding the table
-clears it.
+`#@ persist`, a `#(materialize)` or a rollup) is held to the column contract its build recorded
+when it is bound. Each bind (after a run, a reload, a restart, or a rebind from the store) reads
+every bound database table's columns, never per query: one catalog query per schema or dataset
+(`information_schema.columns`), one for every Postgres table, and DuckDB's in-process `DESCRIBE`
+per table, at most four at once, each bounded by 15 seconds. A table that no longer matches its
+contract (a column gone, retyped or recollated by an `ALTER TABLE` outside Publisher, or its source
+now declaring another type than it was built for) is never read through a cast: it is left out
+whole, raises `materialization-table-incompatible`, and its sources answer live until a build
+rebuilds it. The `database-column-type-mismatch` warning, which reported such a column read through
+a cast, is retained as a code and no longer produced.
 
 **A column retyped upstream re-addresses the sources that read it.** A source's content address
 folds in the native column types of every table its build reads (its plan entry's `reads`, each

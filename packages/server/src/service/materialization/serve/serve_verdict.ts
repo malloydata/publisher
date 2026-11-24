@@ -51,14 +51,6 @@ const MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE =
    "materialization-connection-cannot-hold-table";
 
 /**
- * The `code` of the package warning for a database table whose build
- * recorded no column types: the bind leaves it out, so the source serves
- * live until it is rebuilt.
- */
-export const MATERIALIZATION_TYPES_UNRECORDED_CODE =
-   "materialization-types-unrecorded";
-
-/**
  * The warning code of a bound table whose entry carries no column contract:
  * it answers live until a build rebuilds it in full.
  */
@@ -84,7 +76,6 @@ export const VERDICT_WARNING_CODES: Readonly<
    destination_missing: MATERIALIZATION_DESTINATION_MISSING_CODE,
    connection_cannot_hold_table:
       MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE,
-   types_unrecorded: MATERIALIZATION_TYPES_UNRECORDED_CODE,
    contract_missing: MATERIALIZATION_CONTRACT_MISSING_CODE,
    incompatible: MATERIALIZATION_TABLE_INCOMPATIBLE_CODE,
 };
@@ -113,13 +104,6 @@ type ServeVerdictReason =
     * `storage=` table): the same name `RefusedSource.reason` gives the setting.
     */
    | "materialization_off"
-   /**
-    * A database table whose build recorded no column types (neither `schema`
-    * nor `nativeSchema` on its manifest entry): a change to its columns since
-    * the build cannot be ruled out, so the bind leaves it out until it is
-    * rebuilt with its types recorded.
-    */
-   | "types_unrecorded"
    /**
     * A table whose manifest entry carries no column contract (built before
     * contracts were recorded, or by a worker that predates them): never
@@ -300,11 +284,6 @@ export interface ServeVerdictFacts {
     * (or whose fallback serves stale). Absent: every bound one is.
     */
    freshEntityIds?: ReadonlySet<string>;
-   /**
-    * Database: the bound sourceEntityIds the bind left out because their
-    * build recorded no column types (`types_unrecorded`). Absent: none.
-    */
-   typesUnrecordedEntityIds?: ReadonlySet<string>;
    /**
     * Both tiers: the bound tables the bind left out because their entry
     * carries no contract (`contract_missing`) or because they no longer
@@ -881,18 +860,6 @@ function boundVerdict(
    }
    const held = contractVerdict();
    if (held) return held;
-   if (facts.typesUnrecordedEntityIds?.has(source.sourceEntityId)) {
-      return live(
-         "types_unrecorded",
-         `${subject}'s table is bound, but its build recorded no column types, ` +
-            `so a change to its columns since the build cannot be ruled out; ` +
-            `queries on it are answered live until it is rebuilt.`,
-         [
-            "Rebuild the table, so its build records its column types.",
-            "A host binding its own manifest sends each database entry's `nativeSchema` (or its `schema`).",
-         ],
-      );
-   }
    if (
       facts.freshEntityIds &&
       !facts.freshEntityIds.has(source.sourceEntityId)

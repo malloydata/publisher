@@ -98,8 +98,6 @@ interface ServeVerdictsHost {
    snapshot(): Snapshot;
    storageBindings(): readonly Binding[];
    databaseEntries(): FreshnessManifest | undefined;
-   /** The bound database tables the bind left out: no column types recorded. */
-   typesUnrecorded(): readonly string[];
    /** The bound tables the bind held to their contracts and left out, by address. */
    contractVerdicts(): ReadonlyMap<string, ContractVerdict>;
    deploymentFacts(): DeploymentFacts | undefined;
@@ -417,7 +415,6 @@ export class ServeVerdicts {
             this.refusedAtBind(sourceID, source, tier),
          boundEntityIds: new Set(Object.keys(host.databaseEntries() ?? {})),
          freshEntityIds: new Set(Object.keys(pinned.compilerManifest.entries)),
-         typesUnrecordedEntityIds: new Set(host.typesUnrecorded()),
          contractVerdicts: host.contractVerdicts(),
          boundStorageNames: new Set(storageBindings.map((b) => b.sourceName)),
          freshStorageIds: new Set(
@@ -495,7 +492,6 @@ export class ServeVerdicts {
       const key = [
          plan.buildPlan,
          host.databaseEntries(),
-         host.typesUnrecorded(),
          host.contractVerdicts(),
          host.storageBindings(),
          plan.sourceEligibility,

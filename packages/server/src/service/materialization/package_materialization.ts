@@ -96,22 +96,18 @@ import {
    deriveDatabaseServeBindings,
    holdStorageToContracts,
    type IncompatibleTable,
-   type ObservedDrift,
    type UnreadTable,
    kindFromPlan,
    v1StoredColumnsOf,
 } from "./serve/bind";
 import {
    type ContractVerdict,
-   MATERIALIZATION_TYPES_UNRECORDED_CODE,
    type ServeVerdict,
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
 import {
    type BoundTableTypeFinding,
    boundTableTypeFindings,
-   type DatabaseDriftFinding,
-   databaseDriftFindings,
 } from "./serve/storage_bindings";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import { tablePathParts } from "../quoting";
@@ -242,7 +238,7 @@ export class PackageMaterialization {
     * none (a hand-made bind), whose tables are read as their build wrote them.
     */
    private observedColumns: ReadonlyMap<string, ObservedColumns> | undefined;
-   /** What the last snapshot found of the observation: drift, and tables not read. */
+   /** What the last snapshot found of the observation: tables left out, and why. */
    /** The pending re-read of the tables the last read left unread. */
    /** Set by {@link dispose}: the package is released. */
    private disposed = false;
@@ -250,17 +246,13 @@ export class PackageMaterialization {
       | { timer: ReturnType<typeof setTimeout>; attempt: number }
       | undefined;
    private observedOutcome: {
-      drifted: ObservedDrift[];
       unread: UnreadTable[];
-      uncaptured: string[];
       /** Bound tables whose entry carries no column contract (both tiers). */
       contractMissing: string[];
       /** Bound tables that no longer match their contract (both tiers). */
       incompatible: IncompatibleTable[];
    } = {
-      drifted: [],
       unread: [],
-      uncaptured: [],
       contractMissing: [],
       incompatible: [],
    };
@@ -357,10 +349,6 @@ export class PackageMaterialization {
          snapshot: () => this.snapshot(),
          storageBindings: () => this.storageBindings,
          databaseEntries: () => this.databaseEntries,
-         typesUnrecorded: () => {
-            this.snapshot();
-            return this.observedOutcome.uncaptured;
-         },
          contractVerdicts: () => this.contractVerdicts(),
          deploymentFacts: () => this.deploymentFacts,
          destinationSchema: (name) => this.serveDestinationSchema?.(name),
@@ -731,7 +719,6 @@ export class PackageMaterialization {
          observed: this.storageObserved,
       });
       this.observedOutcome = {
-         drifted: observed.drifted,
          // A table a stored read failed on is unread until the rebind reads
          // it: a failed read is never a verdict on the table (a swap's
          // rename window, a permission, a live table it joined).
@@ -744,7 +731,6 @@ export class PackageMaterialization {
                detail: "a query's read of it failed; it is read again",
             })),
          ],
-         uncaptured: observed.uncaptured,
          contractMissing: [
             ...observed.contractMissing,
             ...stored.contractMissing,
@@ -1529,48 +1515,13 @@ export class PackageMaterialization {
    }
 
    /**
-    * Log and count what the bind's column read found: drifted tables, each
-    * column of them the package warning reports counted as a `storage=`
-    * table's is, and tables it could not read. `only`: the tables a retry
-    * read again, so a table is counted and logged once per read of it.
+    * Log and count what the bind's column read found: tables with no
+    * contract, tables that no longer match theirs, and tables it could not
+    * read. `only`: the tables a retry read again, so a table is counted and
+    * logged once per read of it.
     */
    private logObservedOutcome(only?: ReadonlySet<string>): void {
       const read = (id: string) => only === undefined || only.has(id);
-      for (const finding of this.databaseDriftFindings()) {
-         if (!read(finding.sourceEntityId)) continue;
-         for (const m of finding.mismatches) {
-            recordStoredColumnTypeMismatch("serve", m.declaredType);
-         }
-      }
-      for (const drift of this.observedOutcome.drifted) {
-         if (!read(drift.sourceEntityId)) continue;
-         const asDouble = drift.columns.filter((c) => c.storedAsDouble);
-         if (asDouble.length > 0) {
-            logger.warn(
-               "A DuckLake table holds a 128-bit integer column as a DOUBLE, so it is never read as exact: each such column is answered live where live keeps more digits",
-               {
-                  code: warnings.DATABASE_COLUMN_TYPE_MISMATCH_CODE,
-                  packageName: this.owner.packageName(),
-                  sourceEntityId: drift.sourceEntityId,
-                  columns: asDouble,
-               },
-            );
-            if (asDouble.length === drift.columns.length) continue;
-         }
-         const reported = drift.columns.filter(
-            (c) => !c.storedAsDouble && !c.castOnly,
-         );
-         if (reported.length === 0) continue;
-         logger.warn(
-            "A database table's column types changed outside a build; each changed column is read through a faithful cast or answered live",
-            {
-               code: warnings.DATABASE_COLUMN_TYPE_MISMATCH_CODE,
-               packageName: this.owner.packageName(),
-               sourceEntityId: drift.sourceEntityId,
-               columns: reported,
-            },
-         );
-      }
       for (const id of this.observedOutcome.contractMissing) {
          if (!read(id)) continue;
          logger.warn(
@@ -1593,17 +1544,6 @@ export class PackageMaterialization {
                reason: "incompatible",
                code: table.code,
                columns: table.columns,
-            },
-         );
-      }
-      for (const id of this.observedOutcome.uncaptured) {
-         if (!read(id)) continue;
-         logger.warn(
-            "A database table's build recorded no column types, so a change since the build cannot be ruled out; its sources answer live until it is rebuilt",
-            {
-               code: MATERIALIZATION_TYPES_UNRECORDED_CODE,
-               packageName: this.owner.packageName(),
-               sourceEntityId: id,
             },
          );
       }
@@ -2172,39 +2112,13 @@ export class PackageMaterialization {
       return warnings.storedColumnTypeWarnings(
          this.owner.models(),
          this.boundTypeFindings,
-         this.databaseDriftFindings(),
       );
    }
 
    /**
-    * The database tables whose columns the last bind found moved outside a
-    * build, as the `storage-column-type-mismatch` warning reports them.
-    */
-   private databaseDriftFindings(): DatabaseDriftFinding[] {
-      this.snapshot();
-      const { drifted } = this.observedOutcome;
-      if (drifted.length === 0) return [];
-      return databaseDriftFindings(drifted, this.plan.buildPlan, {
-         queryTimezone: this.driftQueryTimezone,
-      });
-   }
-
-   /** The time zone a moved column of `source`'s table is read in. */
-   private readonly driftQueryTimezone = (
-      sourceID: string,
-      source: NonNullable<NonNullable<BuildPlan>["sources"]>[string],
-   ): string | undefined =>
-      queryTimezoneOf(
-         source.preaggregate
-            ? this.baseDeclaration(source)
-            : this.declarationLookup(sourceID),
-      );
-
-   /**
-    * What a substituted database table's moved columns must read as, by its
-    * content address: its build source's declared columns and reader's time
-    * zone, the inputs {@link databaseDriftFindings} reads, so the bind and
-    * the warning decide each column alike.
+    * What a bound database table's source declares now, by its content
+    * address: its build source's declared columns and connection, which the
+    * bind holds the table's contract to (`declared_moved`).
     */
    private driftDeclaration(
       sourceEntityId: string,
@@ -2213,12 +2127,10 @@ export class PackageMaterialization {
          ([, s]) => s.sourceEntityId === sourceEntityId,
       );
       if (!found) return undefined;
-      const [sourceID, source] = found;
-      const queryTimezone = this.driftQueryTimezone(sourceID, source);
+      const [, source] = found;
       return {
          columns: source.columns ?? [],
          connectionName: source.connectionName,
-         ...(queryTimezone ? { queryTimezone } : {}),
       };
    }
 
