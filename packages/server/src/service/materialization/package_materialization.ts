@@ -2088,8 +2088,9 @@ export class PackageMaterialization {
 
    /**
     * How the source of the upstream `sourceID` compares its strings live, by
-    * field name, as the last read of a model that declares it recorded it
-    * (the declaring file's model first), or `unread`. Waits for a read still
+    * field name, as the last read of the model of the file that declares it
+    * recorded it, or `unread`. Only that model: another file may declare a
+    * source of the same name over other columns. Waits for a read still
     * running only as long as `stringCapabilitiesOf` bounds it. What a plan
     * judges a `storage=` build over that upstream's unbound table by.
     */
@@ -2098,33 +2099,29 @@ export class PackageMaterialization {
    ): Promise<UpstreamStringCapability> {
       const split = splitSourceID(sourceID);
       if (!split) return "unread";
-      let declaring: string | undefined;
+      let declaring: string;
       try {
          declaring = path.resolve(fileURLToPath(split.url));
       } catch {
-         declaring = undefined;
+         return "unread";
       }
       const root = this.owner.packagePath();
-      const models = [...this.owner.models()].sort(
-         ([a], [b]) =>
-            Number(path.resolve(root, b) === declaring) -
-            Number(path.resolve(root, a) === declaring),
+      const model = [...this.owner.models()].find(
+         ([modelPath]) => path.resolve(root, modelPath) === declaring,
+      )?.[1];
+      if (!model) return "unread";
+      const recorded = await stringCapabilitiesOf(
+         model.stringCapabilityRuntime(),
       );
-      for (const [, model] of models) {
-         const recorded = await stringCapabilitiesOf(
-            model.stringCapabilityRuntime(),
-         );
-         const source = recorded?.sources.get(split.name);
-         if (!source) continue;
-         const fields = new Map<string, Collation>();
-         // A joined field's path holds a separator; a stored column is
-         // named by its source's own field.
-         for (const [key, field] of source.fields) {
-            if (!key.includes("\u0000")) fields.set(key, field.collation);
-         }
-         return { fields };
+      const source = recorded?.sources.get(split.name);
+      if (!source) return "unread";
+      const fields = new Map<string, Collation>();
+      // A joined field's path holds a separator; a stored column is named by
+      // its source's own field.
+      for (const [key, field] of source.fields) {
+         if (!key.includes("\u0000")) fields.set(key, field.collation);
       }
-      return "unread";
+      return { fields };
    }
 
    /** A capability read landed: see {@link replanOnCapabilityChange}. */

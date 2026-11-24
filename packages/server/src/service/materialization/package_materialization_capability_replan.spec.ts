@@ -220,3 +220,58 @@ describe("re-deriving the plan when a string capability read lands", () => {
       expect(state.derived).toBe(1);
    });
 });
+
+describe("the capability a plan judges an unbound upstream by", () => {
+   /** A facade over `m.malloy` and `other.malloy`, each recording `reads`. */
+   function over(reads: Record<string, Record<string, string> | undefined>) {
+      const models = new Map(
+         Object.entries(reads).map(([modelPath, fields]) => {
+            const runtime = {};
+            if (fields) {
+               recordStringCapabilities(runtime, capabilities(fields));
+            }
+            return [
+               modelPath,
+               { stringCapabilityRuntime: () => runtime } as unknown as Model,
+            ];
+         }),
+      );
+      return new PackageMaterialization({
+         packageName: () => "pkg",
+         versionId: () => undefined,
+         metadata: () => ({}) as never,
+         models: () => models,
+         modelPolicy: () => ({ setServingResolvers: () => {} }) as never,
+         packagePath: () => "/pkg",
+         malloyConfig: () => ({}) as never,
+         connection: async () => {
+            throw new Error("no connection");
+         },
+         buildPlanPackage: {} as never,
+         publishedSurface: () => undefined,
+      });
+   }
+
+   it("reads the declaring file's model", async () => {
+      const m = over({
+         "other.malloy": { cat: "binary" },
+         "m.malloy": { cat: "deterministic" },
+      });
+      expect(await m.upstreamStringCapability(SOURCE_ID)).toEqual({
+         fields: new Map([["cat", "deterministic"]]) as never,
+      });
+   });
+
+   it("never answers from another file's source of the same name", async () => {
+      const m = over({
+         "other.malloy": { cat: "binary" },
+         "m.malloy": undefined,
+      });
+      expect(await m.upstreamStringCapability(SOURCE_ID)).toBe("unread");
+      expect(
+         await over({
+            "other.malloy": { cat: "binary" },
+         }).upstreamStringCapability(SOURCE_ID),
+      ).toBe("unread");
+   });
+});
