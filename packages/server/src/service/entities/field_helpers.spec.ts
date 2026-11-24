@@ -7,6 +7,8 @@
 
 import { describe, spyOn, test } from "bun:test";
 import assert from "node:assert";
+import * as path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Explore, Field } from "@malloydata/malloy";
 import * as lexerCore from "../malloy_lexer_core";
 import { Runtime, InMemoryURLReader } from "@malloydata/malloy";
@@ -398,6 +400,10 @@ source: nums is duckdb.table('t') extend {
    });
 });
 
+// An absolute file URL on every platform: on Windows a drive-less file:///
+// URL has no path, so the model-text cache, keyed by path, would miss it.
+const ROOT = `${pathToFileURL(path.resolve("/")).href.replace(/\/?$/, "/")}`;
+
 describe("getDirectTaglines (compile-backed)", () => {
    /** Each source's direct taglines, read as package load reads them: from `file:` models with their texts. */
    async function direct(
@@ -411,18 +417,19 @@ describe("getDirectTaglines (compile-backed)", () => {
             urlReader: new InMemoryURLReader(
                new Map(
                   Object.entries(files).map(([name, text]) => [
-                     `file:///${name}`,
+                     `${ROOT}${name}`,
                      text,
                   ]),
                ),
             ),
             connection: conn,
          });
-         const compiled = await runtime.getModel(
-            new URL("file:///main.malloy"),
-         );
+         const compiled = await runtime.getModel(new URL(`${ROOT}main.malloy`));
          const texts = new Map(
-            Object.entries(files).map(([name, text]) => [`/${name}`, text]),
+            Object.entries(files).map(([name, text]) => [
+               fileURLToPath(`${ROOT}${name}`),
+               text,
+            ]),
          );
          // Each source, and each join in it as `source.join`.
          const explores = compiled.explores.flatMap((e) => [

@@ -93,6 +93,43 @@ source: daily is raw -> {
 const ROLLUP_QUERY =
    "run: daily -> { group_by: cat; aggregate: grand, rows, least }";
 
+/**
+ * A `storage=` rollup declared on a plain `extend` of a `#@ persist storage=`
+ * query source (`->`): the rollup's base is the extension, which reads the
+ * persisted source's table and adds `extra` (a dimension, a `where:`, a
+ * join to another source stored there).
+ */
+const rollupOverPersistExtendModel = (
+   extra: string,
+) => `##! experimental.persistence
+source: raw is ${RAW}
+
+#@ persist storage="${LAKE}"
+source: daily is raw -> {
+  group_by: cat, sub
+  aggregate: total is amt.sum(), n is count(), lo is amt.min()
+}
+
+#@ persist storage="${LAKE}"
+source: cats is raw -> { group_by: cat; aggregate: cat_rows is count() } extend {
+  primary_key: cat
+}
+
+source: rolled is daily extend {
+  ${extra}
+  #(rollup) grain=["cat"] storage="${LAKE}"
+  measure: grand is total.sum()
+  #(rollup) grain=["cat"] storage="${LAKE}"
+  measure: rows is n.sum()
+}
+`;
+const ROLLUP_OVER_PERSIST_EXTENDS = [
+   { label: "adds a dimension", extra: "dimension: upper_cat is upper(cat)" },
+   { label: "adds a where:", extra: "where: sub != 'y'" },
+];
+const ROLLUP_OVER_PERSIST_EXTEND_QUERY =
+   "run: rolled -> { group_by: cat; aggregate: grand, rows }";
+
 const CHAIN_FILES = {
    "a.malloy": `source: raw is ${RAW}
 
@@ -664,6 +701,73 @@ describe.skipIf(process.platform === "win32")(
          );
          const served = await answer("m.malloy", ROLLUP_QUERY);
          expect(served.servedBy).toBe("rollup");
+         expect(served.rows).toEqual(live.rows);
+      });
+
+      it.each(ROLLUP_OVER_PERSIST_EXTENDS)(
+         "builds a storage= rollup on an extend of a #@ persist query source that $label over that source's stored table, equal to live",
+         async ({ extra }) => {
+            await setUp({ "m.malloy": rollupOverPersistExtendModel(extra) });
+            const live = await answer(
+               "m.malloy",
+               ROLLUP_OVER_PERSIST_EXTEND_QUERY,
+            );
+            expect(live.servedBy).toBe("live");
+            const m = await build();
+            expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+            const base = entryOf(m, "daily");
+            const rollup = entryOf(m, /^rolled__rollup__/);
+            expect(rollup.storageDestinationName).toBe(LAKE);
+            expect(rollup.upstreamReuse).toBe("reused");
+            expect(
+               (
+                  rollup as Entry & { builtFrom?: { sourceEntityId: string }[] }
+               ).builtFrom?.map((b) => b.sourceEntityId),
+            ).toEqual([base.sourceEntityId]);
+            expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
+            expect(await storedRows(rollup.physicalTableName)).toEqual(
+               await plannedRows(rollup),
+            );
+            const served = await answer(
+               "m.malloy",
+               ROLLUP_OVER_PERSIST_EXTEND_QUERY,
+            );
+            expect(served.servedBy).toBe("rollup");
+            expect(served.rows).toEqual(live.rows);
+         },
+      );
+
+      it("refuses at plan a storage= rollup on an extend of a #@ persist query source that joins another source stored there, and answers it live", async () => {
+         await setUp({
+            "m.malloy": rollupOverPersistExtendModel(
+               "join_one: c is cats on cat = c.cat",
+            ),
+         });
+         const live = await answer(
+            "m.malloy",
+            ROLLUP_OVER_PERSIST_EXTEND_QUERY,
+         );
+         const m = await build();
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         expect(
+            entriesOf(m).filter((e) => /^rolled__rollup__/.test(e.sourceName)),
+         ).toEqual([]);
+         const pkg = await env.getPackage(parsePackageName(PKG), false);
+         const refusals = Object.values(
+            pkg.getBuildPlan()?.refusedSources ?? {},
+         ).filter((r) => /^rolled__rollup__/.test(r.name));
+         expect(refusals.length).toBeGreaterThan(0);
+         for (const r of refusals) {
+            expect(r.reason).toBe("upstream_table_unusable");
+            expect(r.message).toContain(
+               "a downstream is never built by recomputing its upstreams from raw",
+            );
+         }
+         const served = await answer(
+            "m.malloy",
+            ROLLUP_OVER_PERSIST_EXTEND_QUERY,
+         );
+         expect(served.servedBy).not.toBe("rollup");
          expect(served.rows).toEqual(live.rows);
       });
 

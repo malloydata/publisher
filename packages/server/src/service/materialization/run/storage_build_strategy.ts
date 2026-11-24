@@ -1178,7 +1178,11 @@ export class StorageBuildStrategy
          },
          upstreams: [
             {
-               entry: base.entry,
+               // Bound under the base's own name, as the plan wrote its text
+               // (`storedBaseDecline`): an `extend` that inherits its
+               // parent's `#@ persist` and adds no query shares the parent's
+               // table, whose entry names the parent.
+               entry: { ...base.entry, sourceName: base.baseName },
                names: { [base.baseName]: [base.baseSourceID] },
             },
          ],

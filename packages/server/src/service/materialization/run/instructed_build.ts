@@ -50,6 +50,7 @@ import type {
    RollupKeyCheck,
 } from "../domain/table_plans";
 import type { InlineUniquenessCheck } from "../domain/table_plans";
+import { pairLeafContractKeys } from "../domain/table_plans";
 import {
    assertPlacementNamed,
    assertTierEligible,
@@ -946,10 +947,9 @@ export class InstructedBuild {
       if (storedBase && stacked) {
          (run.readFrom ??= new Map()).set(sourceEntityId, [storedBase.address]);
       }
+      const materialize = compiled.tables[persistSource.sourceID]?.materialize;
       const leafChecks = await runPairLeafKeyChecks(
-         pairLeafKeyChecksOf(
-            compiled.tables[persistSource.sourceID]?.materialize,
-         ),
+         pairLeafKeyChecksOf(materialize),
          connection,
          persistSource.name,
          writtenTableIdentity(instruction, graphConnectionName),
@@ -961,6 +961,7 @@ export class InstructedBuild {
             withRollupUpstreamReuse(run, persistSource, sourceEntityId, built),
          ),
          leafChecks,
+         materialize ? pairLeafContractKeys(materialize) : [],
       );
       // Before the entry is reported, so its contract carries what they found.
       const entry = withContractKeys(
@@ -1572,22 +1573,41 @@ function recordUnresolvedInstructions(
    // did not apply is that source's, and its outcome is the applied one's.
    const resolved = (i: BuildInstruction | undefined): boolean =>
       i !== undefined && run.resolvedInstructions.has(i);
-   const applied = (instruction: BuildInstruction): boolean =>
-      resolved(instruction) ||
-      (instruction.sourceID !== undefined &&
-         resolved(run.index.bySourceID.get(instruction.sourceID))) ||
-      resolved(run.index.bySourceEntityId.get(instruction.sourceEntityId));
+   // The address's applied instruction stands for an address-only one, or
+   // one naming the same source; one naming another source (an extension
+   // sharing its base's address) is that source's alone.
+   const applied = (instruction: BuildInstruction): boolean => {
+      const onAddress = run.index.bySourceEntityId.get(
+         instruction.sourceEntityId,
+      );
+      return (
+         resolved(instruction) ||
+         (instruction.sourceID !== undefined &&
+            resolved(run.index.bySourceID.get(instruction.sourceID))) ||
+         ((instruction.sourceID === undefined ||
+            onAddress?.sourceID === instruction.sourceID) &&
+            resolved(onAddress))
+      );
+   };
    const pending = new Set(run.pendingRefusals.map((p) => p.failedKey));
+   const pendingSources = new Set(run.pendingRefusals.map((p) => p.sourceID));
    for (const instruction of instructions) {
       if (applied(instruction)) continue;
       const key = instruction.sourceEntityId;
-      if (run.failures[key] || run.builtAddresses.has(key) || pending.has(key))
+      const refused = refusedAtPlan?.(instruction);
+      // A source the plan refused is reported even beside a table its
+      // address's other source built (settleRefusals, refusedBesideBuilt).
+      if (run.failures[key]) continue;
+      if (
+         refused && instruction.sourceID !== undefined
+            ? pendingSources.has(refused.sourceID)
+            : run.builtAddresses.has(key) || pending.has(key)
+      )
          continue;
       const tier = buildTierOf(instruction);
       const destination = instruction.destination
          ? { storageDestinationName: instruction.destination }
          : {};
-      const refused = refusedAtPlan?.(instruction);
       if (refused) {
          const reason =
             `'${refused.name}' is not built: the build plan refuses it ` +
@@ -1635,6 +1655,7 @@ function recordUnresolvedInstructions(
             sourceID: refused.sourceID,
             own: true,
          });
+         pendingSources.add(refused.sourceID);
          continue;
       }
       const reason =
@@ -2182,14 +2203,27 @@ async function runPairLeafKeyChecks(
    return out;
 }
 
-/** `entry` with its leaf key checks in its contract's `keys`. */
-function withLeafKeys(
+/**
+ * `entry` with its leaf key checks in its contract's `keys`. Each leaf key
+ * the plan declares (`declared`) whose check did not run (it threw, or was
+ * never compiled) is recorded `unverified`: never read as passed, so nothing
+ * builds over the table, but recorded under the key the table was built
+ * with, so a later run carries the table rather than rebuilding it for a
+ * key that never moved (see `rebuiltInFull` in run_instructions.ts).
+ */
+export function withLeafKeys(
    entry: ManifestEntry,
    leafChecks: readonly PairLeafCheck[],
+   declared: readonly string[] = [],
 ): ManifestEntry {
    const contract = parseContract(entry.contract);
-   if (!contract || leafChecks.length === 0) return entry;
+   if (!contract || (leafChecks.length === 0 && declared.length === 0)) {
+      return entry;
+   }
    const keys = { ...(contract.keys ?? {}) };
+   for (const key of declared) {
+      keys[key] = { unique: false, level: "leaf", unverified: true };
+   }
    for (const { check, record } of leafChecks) {
       if (record) {
          keys[check.contractKey] = { unique: record.unique, level: "leaf" };

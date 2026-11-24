@@ -35,7 +35,11 @@ import {
    hasReservedTableSuffix,
    tableNameParts,
 } from "../domain/table_name";
-import { isPersistedQuerySourceID } from "../domain/table_plans";
+import {
+   isPersistedQuerySourceID,
+   pairLeafContractKeys,
+   type MaterializePlan,
+} from "../domain/table_plans";
 import { getPersistStorageMode } from "../../../config";
 import {
    BuildInstructionsInvalidError,
@@ -809,17 +813,27 @@ interface SelfInstructions {
  * Whether a prior table must be rebuilt in full: one with no contract
  * (built before contracts were recorded), or one a bind found incompatible
  * with its contract, is never served from, so it is never carried, and an
- * incremental one is reseeded rather than advanced by a delta.
+ * incremental one is reseeded rather than advanced by a delta. So is a pair
+ * table whose contract records no check of a leaf key the model declares
+ * now (`materialize`'s leaf keys): a reload that moves the leaf's primary key leaves its
+ * address alone, and nothing reads or builds over it until a build checks
+ * the new key. A check the build could not run is recorded (`unverified`),
+ * so it does not count as a moved key: the table is carried, and nothing
+ * builds over it until a rebuild records the check passed.
  */
 function rebuiltInFull(
    prior: ManifestEntry | undefined,
    sourceEntityId: string,
    options: { incompatible?: ReadonlySet<string> },
+   materialize: MaterializePlan | undefined,
 ): boolean {
+   if (prior === undefined) return false;
+   const contract = parseContract(prior.contract);
+   const leafKeys = materialize ? pairLeafContractKeys(materialize) : [];
    return (
-      prior !== undefined &&
-      (parseContract(prior.contract) === undefined ||
-         options.incompatible?.has(sourceEntityId) === true)
+      contract === undefined ||
+      options.incompatible?.has(sourceEntityId) === true ||
+      leafKeys.some((k) => contract.keys?.[k] === undefined)
    );
 }
 
@@ -923,26 +937,23 @@ export function deriveSelfInstructions(
             takenByAnother,
             naming,
          );
-      if (naming && !named) {
-         const key = placedLeafKey(
-            entryTable({
-               connectionName: persistSource.connectionName,
-               storageDestinationName: destination,
-               physicalTableName: tableName,
-            }),
+      if (
+         naming &&
+         !named &&
+         !claimDerivedName(derived, sourceEntityId, {
+            connectionName: persistSource.connectionName,
+            storageDestinationName: destination,
+            physicalTableName: tableName,
+         })
+      ) {
+         refused[persistSource.sourceID] = tableNameCollision(
+            compiled,
+            persistSource,
+            tableName,
+            destination,
          );
-         const holder = derived.get(key);
-         if (holder !== undefined && holder !== sourceEntityId) {
-            refused[persistSource.sourceID] = tableNameCollision(
-               compiled,
-               persistSource,
-               tableName,
-               destination,
-            );
-            cleared.delete(persistSource.sourceID);
-            continue;
-         }
-         derived.set(key, sourceEntityId);
+         cleared.delete(persistSource.sourceID);
+         continue;
       }
 
       // The SAME predicate the build's dispatch uses, so the two never
@@ -966,7 +977,12 @@ export function deriveSelfInstructions(
             ? previous!
             : tableName;
 
-      const mustRebuild = rebuiltInFull(prior, sourceEntityId, options);
+      const mustRebuild = rebuiltInFull(
+         prior,
+         sourceEntityId,
+         options,
+         compiled.tables[persistSource.sourceID]?.materialize,
+      );
       const instruction: BuildInstruction = {
          sourceEntityId,
          materializedTableId: `local-${sourceEntityId.substring(
@@ -1071,6 +1087,23 @@ export function deriveSelfInstructions(
       renamed: notWrittenThisRun(renamed, instructions, carried, sources),
       advanced,
    };
+}
+
+/**
+ * Claim a readable name this run derived, where it lives, for one table
+ * (`derived`, by placed leaf key): false when another table this run writes
+ * already holds it.
+ */
+function claimDerivedName(
+   derived: Map<string, string>,
+   sourceEntityId: string,
+   table: Parameters<typeof entryTable>[0],
+): boolean {
+   const key = placedLeafKey(entryTable(table));
+   const holder = derived.get(key);
+   if (holder !== undefined && holder !== sourceEntityId) return false;
+   derived.set(key, sourceEntityId);
+   return true;
 }
 
 /**
