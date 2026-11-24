@@ -773,36 +773,22 @@ keep serving. A persisted view or query, whose every query reads all its columns
 table (`MISSING_FIELD`), and the query is answered live. A rollup is named by its base source, and a
 view or query by its build source.
 
-**A database table altered outside a build.** A table in the source's own database (no `storage=`: a
-`#@ persist`, a `#(materialize)` or a rollup) is read with the column types its
-warehouse holds when it is bound, not only those its build wrote. Each bind (after a run, a reload,
-a restart, or a rebind from the store) reads every bound database table's columns, never per query:
-one catalog query per schema or dataset (`information_schema.columns`), one for every Postgres
-table, and DuckDB's in-process `DESCRIBE` per table, at most four at once, each bounded by 15
-seconds. A column whose type has changed since the build (an `ALTER TABLE` outside Publisher),
-including a big integer altered to a decimal (read with its new type only when the decimal holds
-all its digits), and on any warehouse but DuckDB a timestamp that
-gained or lost its time zone, a column that is gone, and a type Malloy reads as no basic type (an
-array, for example), is taken as above, by the same rule on every mechanism: it is read through a
-faithful cast or left out, so only a query that reads it is answered live. A `#@ persist` or
-`#(materialize)` table is read through its served copy. A rollup, persisted view or persisted query,
-read by Malloy's build-manifest substitution while its table is as built, is read once altered
-through a typed source over the columns its table holds now, on the source's own connection, as a
-`storage=` table is read. On every mechanism, served copy included, a column whose type moved inside
-one Malloy type is read as it is only when the move loses nothing (a wider integer, a decimal with no fewer integer
-or fraction digits, an integer into a decimal that holds all its digits, FLOAT to DOUBLE, a longer
-text); any other such move (DECIMAL(10,1) to DECIMAL(10,0), a BIGINT past 2^53 to DOUBLE) may have
-rounded what the table holds, so the column is left out. A rollup keeps serving every query that
-reads no left-out column; a gated rollup whose gate reads one declines, so the query is answered
-live, never denied and never with another caller's rows; and a persisted view or query, whose every
-query reads all its columns, declines its table. A join to a rollup whose table was altered (a join
-branch) is answered live until the table is rebuilt. It
-raises a `database-column-type-mismatch` package warning (the database tier's twin of `storage=`'s
-`storage-column-type-mismatch`), one per table and column, saying that
-the table was altered outside a build and whether the column is cast or answered live, and counts
-in the same
-`publisher_storage_column_type_mismatch_total{stage="serve"}`, once per bind. A column that is gone
-is reported too; one moved by a widening that loses nothing is not. Rebuilding the table
+**A table altered outside a build.** A table in the source's own database (no `storage=`: a
+`#@ persist`, a `#(materialize)` or a rollup), and a `storage=` table in its destination, is read
+with the column types it holds when it is bound, not only those its build wrote. Each bind (after a
+run, a reload, a restart, or a rebind from the store) reads every bound table's columns, never per
+query: for a database table, one catalog query per schema or dataset
+(`information_schema.columns`), one for every Postgres table, and DuckDB's in-process `DESCRIBE`
+per table, at most four at once, each bounded by 15 seconds; for a `storage=` table, its
+destination's `DESCRIBE` on a read-only session of its own. A table whose column has changed since
+the build (an `ALTER TABLE` outside Publisher: a column retyped, even by a widening that loses
+nothing, recollated, or gone) no longer matches its column contract, so it is left out whole as
+`incompatible` and every query on it answers live until it is rebuilt; it is never cast or narrowed
+into serving ([the column contract](#the-column-contract-and-what-a-bind-checks)). The package warns
+`materialization-table-incompatible` and the serve verdict names the columns. The
+`database-column-type-mismatch` warning is retained, no longer produced. One exception is a fact of
+what the build wrote, not a change: a column a DuckLake table holds as a `DOUBLE` whatever it was
+built as (a 128-bit integer) leaves the table serving, but never that column. Rebuilding the table
 clears it.
 
 **A column retyped upstream re-addresses the sources that read it.** A source's content address
@@ -839,22 +825,20 @@ The same holds when the table did not move but its source did, and the address d
 it (the type was read before the retype, with no reload since, or the source has no `reads`): a
 warehouse column retyped upstream after the build, so the source now declares a type the table's
 value does not read as (an integer column now declared `string`). The bind finds the table as
-built. Every mechanism (a persisted view or query, a
-`#(materialize)` or `#@ persist` source, a rollup) takes the column as moved: a query that reads
-it answers live with `MISSING_FIELD` and the column in its path report's detail, a query that
-does not still serves, and the warning says what its source reads changed type since the build. A
-column the table holds as a naive timestamp now declared `date`, or as an integer now declared
-`boolean`, is read through its faithful cast (`DATE`, `BOOLEAN`) and not reported: those are also
-the types a build writes by design for a `date` truncation and a `boolean` flag, and the cast
-leaves such a value as it is. While the address has not moved, a normal run
-reuses the table; a reload that reads the new type moves it, and a forced refresh
-(`forceRefresh`) rebuilds it in place; either clears the warning. The log line has the same code and names each changed column. A table
+built, but its source now declares another type than the contract records, so the table is
+`incompatible` (`declared_moved`), left out whole and answered live until it is rebuilt, on every
+mechanism. A column the table holds as a naive timestamp declared `date`, or as an integer declared
+`boolean`, is not such a move: those are the types a build writes by design for a `date`
+truncation and a `boolean` flag, recorded in its contract. A table
 whose columns cannot be read at the bind (missing, unreadable, or slower than the bound) is answered
 live, with a `database-table-unread` package warning that names the table, a fixed reason (the
 driver's own text, secrets redacted, is in the log alone) and whether a retry is pending, and read
 again with backoff (after 1 second, doubling to at most a
 minute, ten times), and by any later poll of an unchanged manifest, until a read succeeds, when the
-warning clears. A change made after a bind is read at the next one.
+warning clears. A change made after a bind is read at the next one. A `storage=` table is read the same way, on a
+read-only session of its destination, and one whose read fails is answered live with a
+`storage-table-unread` warning naming the table and its destination, and read again with the same
+backoff.
 
 **Columns with no Malloy basic type.** A `storage=` build stores an array column, public or hidden
 (a BigQuery `ARRAY`, a DuckDB or Postgres list, a persisted query's `nest:`), as a DuckDB list of its element type
@@ -1086,6 +1070,15 @@ through the plan's edges. It carries each upstream whose table it can serve and 
 a missing table, one at another tier or destination, one past its freshness window, one with no
 contract, or one a bind found incompatible.
 
+A run a host instructs (`buildInstructions`) ends every instructed source in exactly one of the
+manifest's `entries` or `failures`, never neither. Each source the run builds is held to the plan's
+gate for its tier, and a refusal fails only that source. An instruction the run's own plan refused
+(its plan, judged against the tables the package has bound since the host read its plan, can
+refuse a source the host's did not) is a failure carrying the plan's reason (`refused: true`,
+`refusalReason`); any other instruction no planned source resolves to fails with
+`SourceFailure.code` `instruction_unresolved`, not `retryable`. A run whose every instruction is
+refused fails.
+
 An extension's own `#(materialize)` table is held to the same rule: one whose build over its
 parent's table does not compile, or cannot be written, is refused at plan as
 `upstream_table_unusable`, naming the parent and why, and is never built over the chain from the
@@ -1293,13 +1286,18 @@ standalone run or a control plane built the table.
   names it `READ_FAILED`. The worker logs it at error level with code
   `ducklake_catalog_unavailable` and reopens the destination, so the next query reads the table
   again.
-- A stored read that fails at run time (a column renamed or dropped after the build, say) answers
-  live under `freshness.fallback="live"`, with `servedFrom: live_fallback` and the table named
-  `READ_FAILED`: a `storage=` table and a database table the served copy reads. Under any other
-  fallback the error is returned. A rollup, on either tier, answers live this way whatever its
-  fallback, since a rollup only accelerates: a database rollup on any store failure, and a
-  `storage=` one unless the same answer also reads a stored table whose fallback is not `live`.
-  None is retried live for a bad given or a cancelled query.
+- A stored read that finds its table changed since the bind (a column, or the table, gone: renamed
+  or dropped after the build, say) answers live in that same query whatever the fallback says, on
+  every leg, with `servedFrom: live_fallback` and the table named `READ_FAILED`. The table is failed
+  closed at once (unread, so no later query reads it) and the package reads and binds its tables
+  again in the background, where the bind's contract check judges it: `incompatible`, answered live
+  until a rebuild, or served again if it reads as its contract recorded it.
+- A stored read that fails at run time for any other reason answers live under
+  `freshness.fallback="live"`, the same way: a `storage=` table and a database table the served copy
+  reads. Under any other fallback the error is returned. A rollup, on either tier, answers live this
+  way whatever its fallback, since a rollup only accelerates: a database rollup on any store
+  failure, and a `storage=` one unless the same answer also reads a stored table whose fallback is
+  not `live`. None is retried live for a bad given or a cancelled query.
 
 Each key resolves on its own, most specific first: the source's own declaration, then the model
 file's (`## freshness.window="…"`, or inside `## materialization { … }`), then `materialization.freshness`
@@ -1645,7 +1643,7 @@ Every query result carries `path`, the path report. It says which materialized t
 - `tableId` is the table's `sourceEntityId`, the content address the build plan and manifest key on. Sources that build the same SQL and name the same table share one table, so they share one id.
 - `kind` is `materialized` (a stored source), `rollup`, `view` (a persisted view's table), `query` (a persisted named query's table) or, on `servedBy`, `live`. A client treats a kind it does not know as a stored table it cannot name.
 - `considered` lists the tables on the queried source's chain (the source, what it extends or renames, and the source its query reads from) and the rollups of a source on it: `storage=` tables, then database rollups, then database tables nearest first. That is not the order they are tried: the router tries a persisted view or query first, then rollups (coarsest first), then the served copy. A table that was not tried because an earlier one answered is left out.
-- `reason` is one of `NOT_BUILT` (not bound to this package yet), `STALE` (past its freshness window), `ROW_LEVEL_GATE` (the entry point has a row-level gate, which stored data cannot keep yet), `MISSING_FIELD` (the query does not compile against the stored form, or reaches a field a rollup does not carry), `SHAPE_MISMATCH` (the query is not the shape a persisted view's or query's stored result answers: not a call of it, a refined call, or text naming beside the call a name the stored result takes over), `COUNT_SEMANTICS` (a rollup cannot reproduce an aggregate the query computes), `GRAIN_TOO_COARSE` (a rollup's grain does not hold the query's groups), `TIME_ZONE` (built in another time zone), `CROSS_CONNECTION` (the query needs a join the table's connection cannot reach), `READ_FAILED` (the stored read failed and the query answered live: the freshness fallback allowed it, or the failure answers live whatever the fallback says, as DECIMAL arithmetic past what the destination holds, a destination catalog missing on the worker, and a rollup's failed read do), `OPTED_OUT` (the queried source opts out with `#@ -persist`) or `NOT_SERVED` (the table answers no query at all, because its serve verdict is `live`; or it serves, but the served copy declined this query on it; see below). The list is closed, and codes may be added. Releases before 0.15 said `CONTRACT` for `ROW_LEVEL_GATE`, `RUN_FAILED` for `READ_FAILED` and `WARNED` for `NOT_SERVED` and `OPTED_OUT`; a client should read both.
+- `reason` is one of `NOT_BUILT` (not bound to this package yet), `STALE` (past its freshness window), `ROW_LEVEL_GATE` (the entry point has a row-level gate, which stored data cannot keep yet), `MISSING_FIELD` (the query does not compile against the stored form, or reaches a field a rollup does not carry), `SHAPE_MISMATCH` (the query is not the shape a persisted view's or query's stored result answers: not a call of it, a refined call, or text naming beside the call a name the stored result takes over), `COUNT_SEMANTICS` (a rollup cannot reproduce an aggregate the query computes), `GRAIN_TOO_COARSE` (a rollup's grain does not hold the query's groups), `TIME_ZONE` (built in another time zone), `CROSS_CONNECTION` (the query needs a join the table's connection cannot reach), `READ_FAILED` (the stored read failed and the query answered live: the freshness fallback allowed it, or the failure answers live whatever the fallback says, as a stored table changed since the bind (a column or the table gone), DECIMAL arithmetic past what the destination holds, a destination catalog missing on the worker, and a rollup's failed read do), `OPTED_OUT` (the queried source opts out with `#@ -persist`) or `NOT_SERVED` (the table answers no query at all, because its serve verdict is `live`; or it serves, but the served copy declined this query on it; see below). The list is closed, and codes may be added. Releases before 0.15 said `CONTRACT` for `ROW_LEVEL_GATE`, `RUN_FAILED` for `READ_FAILED` and `WARNED` for `NOT_SERVED` and `OPTED_OUT`; a client should read both.
 - A `NOT_SERVED` skip carries `code`, the serve verdict's reason the table will not serve: `storage_mode` (a `storage=` table, or a table a host's storage binding placed in a destination, while `PERSIST_STORAGE_MODE` is `off` or `write-only`; the query reads the source's own warehouse, where its database table may answer), `unreachable` (nothing the package publishes reaches it), `row_level_gate` (every published entry point over it carries a row-level gate, which stored data cannot keep yet; a rollup only, for a stored table, while `PUBLISHER_MATERIALIZE_GATED_SOURCES` is on, or a `storage=` table that stores its own gate column as a zoned timestamp, which the destination compares in its own session zone), `refused` (the package refuses to serve it), `shadowed` (its storage table is bound to another source of the same name), `materialization_off` (only the served copy reads it, and the served copy is off) or `served_copy` (a `#(materialize)` table the served copy does not re-root). A `#@ persist` table whose verdict is `served_copy` keeps the served copy's own decline on its path report (such as `CROSS_CONNECTION`), which says more about the one query; its verdict's `notServedIn` says the same for every query. Codes are always snake_case. Where the verdict says a table will never serve, it replaces what one query alone showed, but only where the router never tried the table: a source the bind refuses reads `NOT_SERVED` `refused`, not `NOT_BUILT`, and a table every published entry point gates reads `NOT_SERVED` `row_level_gate`, not `ROW_LEVEL_GATE`. A skip the router reached by trying the table (`MISSING_FIELD`, `SHAPE_MISMATCH`, `GRAIN_TOO_COARSE`, `COUNT_SEMANTICS`) keeps its own reason, and `STALE`, `READ_FAILED` and `OPTED_OUT` stay as they are, since only the query knows them. A `storage=` table and its database copy share a `tableId` but each reads its own verdict. The set of codes is open. A table whose verdict serves is also `NOT_SERVED` when the served copy declines one query on it. A `storage=` table only the served copy reads carries `code` `served_copy` for each such decline: the served copy re-roots nothing the query reads, a gate on the queried source cannot be grafted on it, a gate or the query's result (through a wildcard such as `select: *`) needs a column the served copy leaves out of a stored table's type, the source exposes a field the compile of record does not classify or carry, a composite resolves to another member than live, or the source's ungated `where:` reads a column the table does not hold exactly or does not compare as its source does. A database table is named this way only for that last case, with a `detail` and no `code` ([the comparison rules](#access_filter-gated-sources-and-materialization), a Postgres collation included). A query that itself names a column the table leaves out is `MISSING_FIELD`, and a gate the table cannot keep is `ROW_LEVEL_GATE`.
 - `warnings` has one entry per such table, with its `code`, `tableId`, `sourceName` and a sentence for a person. A table whose source the caller cannot list gets no warning, though its skip keeps its code. The package's own warnings and `GET …/packages/{pkg}/status` carry the full message and the fixes.
 - `detail` is in the caller's own terms: the field path or aggregate in the query that a rollup cannot reproduce. A compile error against the stored form or a run-time storage error carries no `detail`, since its message can name storage paths and generated sources; it is in the server log.

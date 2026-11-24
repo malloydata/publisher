@@ -124,7 +124,7 @@ The name such a destination's file is named from may use only ASCII letters, dig
 - a persisted view or named query that reads its `#(materialize)` upstream in another time zone than the upstream's table was built in;
 - a rollup over a pair table, over an extension of a `#(materialize)` source in another file, or over any persisted base whose build over the base's table did not compile to the planned table at plan.
 
-**Changed: a `storage=` rollup over a gated base stored in its destination is built over that base's table.** The gates apply at read and the base's table holds every caller's rows, as its source does, so a rollup grouped from it holds what one grouped from the warehouse would. Before, it was built from the warehouse.
+**Changed: a `storage=` rollup over a gated base stored in its destination is never built from the warehouse.** Where the gate policy builds it, it groups the base's table: the gates apply at read and that table holds every caller's rows, as its source does, so it holds what one grouped from the warehouse would. A gated `#(materialize)` base's `storage=` rollup, whose gate it inherits rather than declares, is refused when the run reaches it (`access_filter`, in the run's `metadata.refusedSources`) and answers live: no table of it is built, over the base's table or the warehouse. Before, such a rollup was built from the warehouse.
 
 **Who is affected:** packages with such views, queries or rollups; each `upstream_table_unusable` refusal names the upstream. **What to do:** move the downstream next to its upstream (one file, one zone), or declare it over a source its build can read in place.
 
@@ -203,6 +203,10 @@ The name such a destination's file is named from may use only ASCII letters, dig
 ## [Unreleased] — a stored read that finds its table changed answers live, and the package reads its tables again
 
 **Changed: a query whose stored table no longer holds what it reads (a column, or the table, gone since the bind) is answered live in that same query, on every leg, whatever the source's `freshnessFallback`.** Before, such a query failed unless the source declared `freshnessFallback: live`. The table is failed closed at once (unread, answered live; a failed read is never itself a verdict on the table, since a rebuild's swap, a permission or a live table the query joined fails a read too), so no later query reads it, and the package reads and binds every bound table again, in the background, where the bind's contract check judges it (`incompatible`, answered live until a rebuild, or served again if it reads as its contract recorded it). One rebind runs at a time per package and replica; each replica finds such a change at its own next bind or failed read. **Who is affected:** a source declaring `freshnessFallback: fail`, whose query over a changed table now answers live instead of failing.
+
+## [Unreleased] — an unread `storage=` table warns `storage-table-unread`
+
+**Changed: a bound `storage=` table whose columns its destination session could not read at bind (or that a query's failed read left unread until the package reads it again) now warns `storage-table-unread`, naming the table and its destination, instead of `database-table-unread`.** It is answered live and read again with backoff, as before; the warning's `reason` is the same fixed class, and it now says a retry is pending when the `storage=` re-read is. Before, such a table was reported under `database-table-unread`, as "could not be read in its database", and never said a retry was pending. **Who is affected:** a client that matched `database-table-unread` to find unread `storage=` tables; match `storage-table-unread` too.
 
 ## [Unreleased] — a bind compiles the served copy before it swaps the tables in
 

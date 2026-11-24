@@ -6130,6 +6130,12 @@ components:
                   `connection_failed`, `timed_out`, `catalog_query_failed`,
                   `not_found`, `ambiguous`, `unparseable`, `not_read`; `warn`;
                   see docs/materialization.md).
+                  `storage-table-unread`: the same, for a bound `storage=`
+                  table whose columns its destination session could not read
+                  when it was bound, or that a query's failed read left
+                  unread until the package reads it again; the message names
+                  the table or rollup and its destination; same fields and
+                  reasons.
                   `database-native-type-missing`: a database table is bound
                   with no captured warehouse type (its manifest entry's
                   `nativeSchema`) for a column whose field Malloy types as a big
@@ -6162,7 +6168,7 @@ components:
                   rather than on the message (whose wording may change): the
                   refusal record's `reason` on a `*-not-built` warning; the served copy's reason on
                   `served-copy-not-served`; the unread reason on
-                  `database-table-unread`; the kept table's reason on
+                  `database-table-unread` and `storage-table-unread`; the kept table's reason on
                   `table-kept`; the serve verdict's reason on a
                   `materialization-*` verdict warning; `storage_mode` on
                   `materialization-storage-mode`; the rule a cell breaks on
