@@ -434,12 +434,24 @@ export class PackageMaterialization {
       return this.plan.isStale();
    }
 
-   /** See {@link PlanLifecycle.refresh}; publishes the snapshot after. */
-   refreshBuildPlan(
+   /**
+    * See {@link PlanLifecycle.refresh}; publishes the snapshot after. A plan
+    * it derived is checked against the string capabilities read on this
+    * thread ({@link replanOnCapabilityChange}), as a load's is: a connection
+    * edit's re-derivation runs in the load worker, which reads none, so it
+    * judges every unbound upstream unread, and nothing else re-checks until
+    * the next bind or load.
+    */
+   async refreshBuildPlan(
       derive: () => Promise<LoadPackageOutcome["buildPlan"]>,
       options: { retryFailed?: boolean; isStale?: () => boolean } = {},
    ): Promise<boolean> {
-      return this.plan.refresh(derive, options);
+      const judged = this.plan.stringCapabilityReads;
+      const derived = await this.plan.refresh(derive, options);
+      if (derived && this.plan.stringCapabilityReads !== judged) {
+         await this.capabilitiesRead();
+      }
+      return derived;
    }
 
    /** See {@link PlanLifecycle.whenCurrent}. */

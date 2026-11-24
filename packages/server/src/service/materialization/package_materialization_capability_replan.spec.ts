@@ -9,7 +9,9 @@
  * when a later read renders otherwise, so a refusal for a read not yet
  * landed never sticks; it is left alone when the read is unchanged, and the
  * plan derived again, which records what it read, is not derived again
- * until something moves (no loop). Driven with fake models, whose reads
+ * until something moves (no loop). A connection edit's re-derivation runs
+ * in the load worker, which reads nothing, so the plan it derives is checked
+ * the same way on this thread. Driven with fake models, whose reads
  * record what a spec sets, and a fake package whose derivation is counted.
  */
 
@@ -64,6 +66,13 @@ async function facade(judged: string) {
    const runtime = {};
    const model = {
       stringCapabilityRuntime: () => runtime,
+      // What a publish of a derived plan hands each model; nothing here.
+      persistedViewBuilds: () => [],
+      setStringCapabilityReader: () => {},
+      setScopeFactsRecorder: () => {},
+      setServedCopyContext: () => {},
+      prepareServedCopy: async () => {},
+      prepareServedCopyOver: async () => {},
       refreshStringCapabilities: async () => {
          if (state.fields) {
             recordStringCapabilities(runtime, capabilities(state.fields));
@@ -143,6 +152,50 @@ describe("re-deriving the plan when a string capability read lands", () => {
       await m.recordStringCapabilitiesAtLoad();
       await settle(m);
       expect(state.derived).toBe(0);
+   });
+
+   it("checks a plan a connection edit re-derived in the worker against the reads on this thread", async () => {
+      const fields = { cat: "deterministic", cc: "binary" };
+      const read = capabilityFingerprint({
+         fields: new Map(Object.entries(fields)) as never,
+      });
+      const { m, state } = await facade(read);
+      state.fields = fields;
+      await m.recordStringCapabilitiesAtLoad();
+      await settle(m);
+      expect(state.derived).toBe(0);
+      // The worker reads no capability, so it judges the upstream unread.
+      m.markBuildPlanStale(["pg"]);
+      // As this thread's derivation here, it plans nothing.
+      const empty = makeBuildPlan({ graphs: [], sources: {} });
+      const worker = async () =>
+         okWorkerPlan(
+            makePlanOutcome({
+               plan: empty,
+               stringCapabilityReads: {
+                  [KEY]: capabilityFingerprint("unread"),
+               },
+            }),
+         );
+      expect(await m.refreshBuildPlan(worker)).toBe(true);
+      await settle(m);
+      // Derived again on this thread, from the read it has.
+      expect(state.derived).toBe(1);
+      expect(m.isBuildPlanStale()).toBe(false);
+      // A worker plan that judged by the same read is left alone.
+      m.markBuildPlanStale(["pg"]);
+      expect(
+         await m.refreshBuildPlan(async () =>
+            okWorkerPlan(
+               makePlanOutcome({
+                  plan: empty,
+                  stringCapabilityReads: { [KEY]: read },
+               }),
+            ),
+         ),
+      ).toBe(true);
+      await settle(m);
+      expect(state.derived).toBe(1);
    });
 
    it("derives it again when the warehouse moved a collation, then never again for the same read", async () => {
