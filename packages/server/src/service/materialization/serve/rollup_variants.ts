@@ -208,7 +208,7 @@ import {
 import type { MaterializedTableCatalog } from "./query_path";
 import { queryShapeOf } from "./query_path";
 import { STORAGE_DIALECT } from "../domain/dialect";
-import { reportQueryWalk } from "./admission_parity";
+import { reportQueryWalk } from "./query_walks";
 
 type VirtualMap = Map<string, Map<string, string>>;
 

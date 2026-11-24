@@ -22,7 +22,7 @@ import {
    SingleConnectionRuntime,
 } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
-import { bigqueryBuildCompareBinary } from "./gate_collation";
+import { bigqueryBuildCompareBinary } from "./collation/bigquery_build";
 import type { GateReads } from "./gate_reads_types";
 import { resultReadsOfQuery } from "./result_reads";
 import { lookupSourceRefusal } from "./admission_lookup";

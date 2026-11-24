@@ -3,7 +3,7 @@
 
 /**
  * Read admission's collation port answered by lookups: the same rules
- * `gate_collation.ts` applies, judged from what load, bind and build
+ * `admission_lookup.ts` applies, judged from what load, bind and build
  * recorded, with no catalog read and no compile of its own.
  *
  * - The source side reads `source_capability.ts`, which every bind reads
@@ -36,7 +36,8 @@ import type { ColumnContract } from "../domain/column_contract";
 import { collationReaderOf } from "./collation";
 import { placeTable, sqlProjects, TABLE_TYPES } from "./collation/bigquery";
 import { fieldPathsIn } from "./gate_paths";
-import { holdColumn, namedEntryOf, stringPaths } from "./gate_collation";
+import { holdColumn, stringPaths } from "./collation/string_paths";
+import { entryGates } from "./gate_reads";
 import type {
    CollationProbe,
    GateReads,
@@ -128,7 +129,7 @@ function connectionOf(entry: Entry): ConnectionCapability | undefined {
 
 /**
  * What a BigQuery query's strings compare under, from the catalog its
- * connection's bind recorded, by `gate_collation.ts`'s `bigquerySource`
+ * connection's bind recorded, by `admission_lookup.ts`'s `bigquerySource`
  * rules: unknown for a `COLLATE` in its text, a table the record did not
  * read, a view or author SQL over a project holding a collated column.
  */
@@ -485,3 +486,66 @@ export const lookupProbe: CollationProbe = {
    sourceRefusal: lookupSourceRefusal,
    storedRefusal: lookupStoredRefusal,
 };
+
+/**
+ * The model source a compiled query's entry point is judged as: its own name,
+ * or, for an inline `extend` (`run: t extend { dimension: z is 1 } -> …`),
+ * the name of the source it extends when the extension adds no `where:` and
+ * no gate of its own; else undefined.
+ */
+export function namedEntryOf(
+   structRef: unknown,
+   struct: unknown,
+   modelDef: ModelDef,
+): string | undefined {
+   if (typeof structRef === "string") return structRef;
+   type Shape = {
+      as?: unknown;
+      extends?: unknown;
+      sourceID?: unknown;
+      type?: unknown;
+      name?: unknown;
+      connection?: unknown;
+      filterList?: unknown;
+      fields?: unknown;
+   };
+   const s = struct as Shape | undefined;
+   if (typeof s?.as !== "string") return undefined;
+   const base = (modelDef as unknown as { contents?: Record<string, Shape> })
+      .contents?.[s.as];
+   if (base === undefined) return undefined;
+   // The same source: where Malloy records what it extends, that; and the
+   // same root (type, table or SQL, connection), with every one of the
+   // source's fields kept as it is (an extension only adds fields).
+   if (s.extends !== undefined && s.extends !== base.sourceID) return undefined;
+   if (
+      s.type !== base.type ||
+      s.name !== base.name ||
+      s.connection !== base.connection
+   ) {
+      return undefined;
+   }
+   const fields = new Set(
+      ((s.fields ?? []) as unknown[]).map((f) => JSON.stringify(f)),
+   );
+   if (
+      !((base.fields ?? []) as unknown[]).every((f) =>
+         fields.has(JSON.stringify(f)),
+      )
+   ) {
+      return undefined;
+   }
+   const same = (a: unknown, b: unknown) =>
+      JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
+   if (!same(base.filterList, s.filterList)) return undefined;
+   // The walk's fail-closed deny reads as unequal.
+   const gates = (x: unknown) => {
+      const entries = entryGates(x, modelDef);
+      return entries === "unreadable"
+         ? undefined
+         : entries.map((e) => [e.route, [...e.exprs]]);
+   };
+   const own = gates(struct);
+   if (own === undefined || !same(gates(base), own)) return undefined;
+   return s.as;
+}

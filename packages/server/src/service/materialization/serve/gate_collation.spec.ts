@@ -7,7 +7,7 @@ import { PostgresConnection } from "@malloydata/db-postgres";
 import { type Connection, SingleConnectionRuntime } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { equalityOnlyExpr, gateReadsOfQuery } from "./gate_reads";
-import { probeIO } from "./gate_collation";
+import { catalogIO } from "./collation/catalog_io";
 import { lookupSourceRefusal, lookupStoredRefusal } from "./admission_lookup";
 import {
    readStringCapabilities,
@@ -21,15 +21,15 @@ import {
    unfinalizedPostgresSQL,
 } from "./collation/postgres";
 
-/** The reads over a connection, through the I/O `gate_collation.ts` builds. */
+/** The reads over a connection, through the I/O `collation/catalog_io.ts` builds. */
 const duckdbCollation = (c: Connection, sql: string) =>
-   DUCKDB_COLLATION.sourceColumns(probeIO(c), sql);
+   DUCKDB_COLLATION.sourceColumns(catalogIO(c), sql);
 const duckdbTableCollation = (c: Connection, path: string) =>
-   DUCKDB_COLLATION.storedTable(probeIO(c), path);
+   DUCKDB_COLLATION.storedTable(catalogIO(c), path);
 const postgresCollation = (c: Connection, sql: string) =>
-   POSTGRES_COLLATION.sourceColumns(probeIO(c), sql);
+   POSTGRES_COLLATION.sourceColumns(catalogIO(c), sql);
 const postgresTableCollation = (c: Connection, path: string) =>
-   POSTGRES_COLLATION.storedTable(probeIO(c), path);
+   POSTGRES_COLLATION.storedTable(catalogIO(c), path);
 
 describe("a DuckDB source's string comparison", () => {
    it("is binary with no collation set or written, and unknown with one", async () => {

@@ -3,7 +3,7 @@
 
 /**
  * The shape of what an entry point's row-level gates and row scope read
- * (`gate_reads.ts` computes it, `gate_collation.ts` judges its string
+ * (`gate_reads.ts` computes it, `admission_lookup.ts` judges its string
  * comparisons), and the collation probe port that judges them, in a module
  * of its own so none of those modules imports another for it.
  */

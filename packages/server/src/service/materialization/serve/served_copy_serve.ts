@@ -193,7 +193,7 @@ import {
    recordJoinsRead,
    ZONED_TRUNCATION_REASON,
 } from "./served_copy_checks";
-import { reportQueryWalk } from "./admission_parity";
+import { reportQueryWalk } from "./query_walks";
 import type { ScopeLane } from "./scope_facts";
 
 export type { ServedCopyProblem } from "./served_copy_types";

@@ -15,7 +15,7 @@
 
 import { describe, expect, it } from "bun:test";
 import type { Connection } from "@malloydata/malloy";
-import { probeIO } from "./gate_collation";
+import { catalogIO } from "./collation/catalog_io";
 import { equalityOnlyExpr, gateReads } from "./gate_reads";
 import { DUCKDB_COLLATION } from "./collation/duckdb";
 import {
@@ -23,15 +23,15 @@ import {
    unfinalizedPostgresSQL,
 } from "./collation/postgres";
 
-/** The reads over a connection, through the I/O `gate_collation.ts` builds. */
+/** The reads over a connection, through the I/O `collation/catalog_io.ts` builds. */
 const duckdbCollation = (c: Connection, sql: string) =>
-   DUCKDB_COLLATION.sourceColumns(probeIO(c), sql);
+   DUCKDB_COLLATION.sourceColumns(catalogIO(c), sql);
 const duckdbTableCollation = (c: Connection, path: string) =>
-   DUCKDB_COLLATION.storedTable(probeIO(c), path);
+   DUCKDB_COLLATION.storedTable(catalogIO(c), path);
 const postgresCollation = (c: Connection, sql: string) =>
-   POSTGRES_COLLATION.sourceColumns(probeIO(c), sql);
+   POSTGRES_COLLATION.sourceColumns(catalogIO(c), sql);
 const postgresTableCollation = (c: Connection, path: string) =>
-   POSTGRES_COLLATION.storedTable(probeIO(c), path);
+   POSTGRES_COLLATION.storedTable(catalogIO(c), path);
 
 /** A connection answering every query with `rows`, recording the SQL. */
 function connection(answer: (sql: string) => Record<string, unknown>[]): {

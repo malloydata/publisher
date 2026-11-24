@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
    clearQueryWalks,
    queryWalks,
-} from "./materialization/serve/admission_parity";
+} from "./materialization/serve/query_walks";
 import { queriedChain } from "./query_serving";
 
 const MODEL = { contents: {} };

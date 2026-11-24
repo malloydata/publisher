@@ -9,7 +9,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { clearQueryWalks, queryWalks } from "./admission_parity";
+import { clearQueryWalks, queryWalks } from "./query_walks";
 import { RollupVariantServe } from "./rollup_variants";
 
 const PLAN = {

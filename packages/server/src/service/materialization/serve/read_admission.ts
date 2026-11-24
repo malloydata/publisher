@@ -54,7 +54,7 @@ import type {
 } from "./gate_reads_types";
 import type { LegAnswer, LegKind, QueryFacts } from "./leg";
 import { type ResultReads, resultReadsOfQuery } from "./result_reads";
-import { type QueryWalkSite, reportQueryWalk } from "./admission_parity";
+import { type QueryWalkSite, reportQueryWalk } from "./query_walks";
 
 import {
    carriesAGate,
@@ -66,7 +66,7 @@ import {
 // The port, and its implementation for the query pipeline to hand in.
 export type { CollationProbe } from "./gate_reads_types";
 export { lookupProbe } from "./admission_lookup";
-export { observeAdmission, reportQueryWalk } from "./admission_parity";
+export { observeAdmission, reportQueryWalk } from "./query_walks";
 
 /** What admission decided about one answer, in the router's terms. */
 type AdmissionOutcome =

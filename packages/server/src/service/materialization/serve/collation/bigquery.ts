@@ -5,16 +5,16 @@
  * The BigQuery dialect's collation reads: a project's collated datasets
  * (read region-qualified from `INFORMATION_SCHEMA`), the types of the tables
  * a query reads, and a dataset's tables with their collated columns and
- * `STRUCT` fields, each through the ProbeIO. A column's collation is read
+ * `STRUCT` fields, each through the CatalogIO. A column's collation is read
  * from the catalog, never from a query, so BigQuery is read query-wide.
  *
  * The reads are kept in a map the caller holds per loaded model's runtime
- * and bind (`gate_collation.ts`, `source_capability.ts`), for as long as
+ * and bind (`admission_lookup.ts`, `source_capability.ts`), for as long as
  * that bind serves; nothing expires on a clock. This module keeps none.
  */
 
 import { quoteIdentifier } from "../../../quoting";
-import type { ProbeIO } from "./probe_io";
+import type { CatalogIO } from "./catalog_io";
 
 /**
  * `run`'s answer, read once per `parts` in `byKey` (the reads of one runtime
@@ -41,7 +41,7 @@ function bigqueryProbeOnce<T>(
 }
 
 /** A name segment quoted as `io`'s dialect quotes it (BigQuery's backquotes). */
-function bqName(io: ProbeIO, segment: string): string {
+function bqName(io: CatalogIO, segment: string): string {
    return quoteIdentifier(segment, io.dialectName);
 }
 
@@ -65,7 +65,7 @@ const MAX_PROJECT_DATASETS = 10000;
  * each view it reads, run in that region.
  */
 async function bigqueryCollatedDatasets(
-   io: ProbeIO,
+   io: CatalogIO,
    project: string,
    location: string,
 ): Promise<ReadonlySet<string> | undefined> {
@@ -89,7 +89,7 @@ function bqString(s: string): string {
  * One query, filtered to those tables, billed at least 10 MB.
  */
 async function bigqueryTableTypes(
-   io: ProbeIO,
+   io: CatalogIO,
    project: string,
    location: string,
    tables: readonly { dataset: string; name: string }[],
@@ -124,7 +124,7 @@ interface DatasetTable {
  * each.
  */
 async function bigqueryDatasetTables(
-   io: ProbeIO,
+   io: CatalogIO,
    dataset: string,
 ): Promise<ReadonlyMap<string, DatasetTable>> {
    const parts = dataset.split(".");
@@ -221,12 +221,12 @@ export function placeTable(
  * per loaded model.
  */
 export class BigQueryCatalog {
-   readonly job: ReturnType<ProbeIO["jobContext"]>;
+   readonly job: ReturnType<CatalogIO["jobContext"]>;
 
    constructor(
       /** The reads of one runtime and bind, which the caller keeps. */
       private readonly reads: Map<string, Promise<unknown>>,
-      readonly io: ProbeIO,
+      readonly io: CatalogIO,
       private readonly connectionName: string | undefined,
    ) {
       this.job = io.jobContext();

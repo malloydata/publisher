@@ -6,7 +6,7 @@
  * per bind (a load, a reload, a publish and a rebuild each bind) and kept
  * with the model's runtime, so a query looks it up instead of probing the
  * warehouse (`admission_lookup.ts`). The source-side half of what
- * `gate_collation.ts` reads per query:
+ * `admission_lookup.ts` reads per query:
  *
  * - Postgres: each string field of each named source, through its joins to
  *   {@link MAX_JOIN_DEPTH} joins deep, as the database compares it
@@ -54,12 +54,12 @@ import {
    placeTable,
    sqlProjects,
 } from "./collation/bigquery";
-import type { ProbeIO } from "./collation/probe_io";
+import type { CatalogIO } from "./collation/catalog_io";
 import {
    POSTGRES_COLLATION,
    unfinalizedPostgresSQL,
 } from "./collation/postgres";
-import { probeIO } from "./gate_collation";
+import { catalogIO } from "./collation/catalog_io";
 
 /** How many joins deep a source's string fields are read; past it, unknown. */
 export const MAX_JOIN_DEPTH = 4;
@@ -231,10 +231,10 @@ export async function readStringCapabilities(
       ...new Set(named.map(([, s]) => s.connection as string)),
    ];
    const connections = new Map<string, ConnectionCapability>();
-   const ios = new Map<string, ProbeIO>();
+   const ios = new Map<string, CatalogIO>();
    for (const name of connectionNames) {
       try {
-         const io = probeIO(await args.connection(name));
+         const io = catalogIO(await args.connection(name));
          ios.set(name, io);
          const dialect = named.find(([, s]) => s.connection === name)?.[1]
             .dialect as string;
@@ -268,7 +268,7 @@ export async function readStringCapabilities(
 
 /** A connection's capability by its dialect's reader. */
 async function connectionCapability(
-   io: ProbeIO,
+   io: CatalogIO,
    dialect: string,
    name: string,
    structs: readonly SourceShape[],
@@ -356,7 +356,7 @@ export function irSql(node: unknown, out: string[] = [], depth = 0): string[] {
 
 /** What `catalog` reads for every table `structs` read, through every join. */
 async function recordBigQuery(
-   io: ProbeIO,
+   io: CatalogIO,
    name: string,
    structs: readonly SourceShape[],
 ): Promise<RecordedBigQuery> {
@@ -415,7 +415,7 @@ async function postgresFields(
    args: CapabilityReadArgs,
    sourceName: string,
    struct: SourceShape,
-   io: ProbeIO,
+   io: CatalogIO,
 ): Promise<Map<string, FieldCapability>> {
    const leaves = stringLeaves(struct).filter((l) => l.selectable);
    if (leaves.length === 0) return new Map();

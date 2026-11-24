@@ -675,7 +675,7 @@ export interface BuildEnvironment {
    /**
     * Whether a `storage=` build's BigQuery SQL reads only strings compared
     * byte-exact, read from the catalog as an answer's check reads it (the
-    * host port's; serve/gate_collation.ts), for its column contract. Absent,
+    * host port's; serve/admission_lookup.ts), for its column contract. Absent,
     * its strings are recorded compared `none`.
     */
    bigqueryBuildCompareBinary?(args: {

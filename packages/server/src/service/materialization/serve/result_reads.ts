@@ -4,7 +4,7 @@
 /**
  * Which strings a query's result depends on the order or the equality of,
  * for the check that a stored table answers as its source does
- * (`gate_collation.ts` judges them, the router asks): a `storage=` copy by
+ * (`admission_lookup.ts` judges them, the router asks): a `storage=` copy by
  * the source's collation, and every stored table, a database one included,
  * by whether its stored columns still compare as the source's do.
  *

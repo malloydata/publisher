@@ -1912,7 +1912,7 @@ export function gateReadsOfSource(
  * when it cannot be read: the string comparisons its `where:`, `having:`,
  * filtered measures, views' and nests' filters make from stage `fromStage`
  * on, which an answer re-applies to a stored table. Judged by the same
- * collation rules as the entry point's scope (`gate_collation.ts`).
+ * collation rules as the entry point's scope (`admission_lookup.ts`).
  */
 export async function queryFilterReadsOfQuery(
    runnable: QueryMaterializer,
