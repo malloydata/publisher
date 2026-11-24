@@ -117,6 +117,36 @@ describe("a package's serve verdicts", () => {
       ).toBe(false);
    });
 
+   it("reads which entry points reach a source past an empty or markdown-only notebook", async () => {
+      loaded = await loadTempPackage({
+         "orders.malloy": ORDERS,
+         "empty.malloynb": "",
+         "notes.malloynb": ">>>markdown\n# Notes\nProse only.\n",
+      });
+      const models = (loaded.pkg as unknown as { models: Map<string, object> })
+         .models;
+      const verdicts = (
+         loaded.pkg.materialization() as unknown as {
+            verdicts: {
+               entryPointIndex(models: Map<string, object>): unknown;
+            };
+         }
+      ).verdicts;
+      // Neither notebook has a model definition. Before, either one left the
+      // whole index unknown, which silences `unreachable` and the gate check.
+      expect(verdicts.entryPointIndex(models)).toBeDefined();
+      expect(
+         loaded.pkg
+            .materialization()
+            .serveVerdicts()
+            .map((v) => [v.sourceName, v.verdict]),
+      ).toEqual([
+         ["orders", "awaiting_build"],
+         ["orders_public", "awaiting_build"],
+         ["staging", "awaiting_build"],
+      ]);
+   });
+
    it("reaches a source only an exported query-source or join reads", async () => {
       loaded = await loadTempPackage({
          "orders.malloy": ORDERS,

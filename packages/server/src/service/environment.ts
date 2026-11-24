@@ -30,6 +30,7 @@ import {
    DestinationNotFoundError,
    EnvironmentNotFoundError,
    InvalidModelPathError,
+   ManifestBindFailedError,
    PackageNotFoundError,
    PackageVersionError,
    ServiceUnavailableError,
@@ -3040,8 +3041,8 @@ export class Environment {
                   `package ${packageName} version ${versionId}`,
                   () => loaded.releaseConnections(),
                ),
-            bindVersionManifest: (loaded, manifestPath) =>
-               this.bindVersionManifest(loaded, manifestPath),
+            bindVersionManifest: (loaded, manifestPath, options) =>
+               this.bindVersionManifest(loaded, manifestPath, options),
             downloaderFor: hooks.downloaderFor,
             admit: (packageName, reason) =>
                this.assertCanAdmitNewPackage(packageName, reason, false),
@@ -3071,7 +3072,13 @@ export class Environment {
             },
             ensurePackageRecord: hooks.ensurePackageRecord,
             removePackageRecord: hooks.removePackageRecord,
-            boundManifestOf: (loaded) => loaded.getManifestLocation() ?? null,
+            // A manifest whose bind failed is not bound, so naming it again
+            // binds it again rather than answering for a bind that failed.
+            boundManifestOf: (loaded) =>
+               loaded.materialization().bindingState().manifestBindingStatus ===
+               "bind_failed"
+                  ? null
+                  : (loaded.getManifestLocation() ?? null),
             hostMarked: (loaded) => loaded.materialization().isHostOwned(),
             isVersionBuilding: (packageName, versionId) =>
                this.versionBuilds.has(`${packageName}@${versionId}`),
@@ -3554,17 +3561,25 @@ export class Environment {
    private async bindVersionManifest(
       loaded: Package,
       manifestPath: string | null,
+      options: { refuseOnFailure?: boolean } = {},
    ): Promise<void> {
       const packageName = loaded.getPackageName();
       const wasBound =
          loaded.materialization().hasBoundTableNameManifest() ||
          loaded.materialization().hasStorageServeBindings();
       const previous = loaded.getManifestLocation() ?? null;
+      const before = loaded.materialization().bindingState();
       loaded.updateStoredMetadata({ manifestLocation: manifestPath });
       try {
          if (manifestPath) {
             await this.trackPackageLoad(packageName, () =>
-               this.bindManifest(loaded, manifestPath),
+               this.bindManifest(
+                  loaded,
+                  manifestPath,
+                  "if-changed",
+                  undefined,
+                  options.refuseOnFailure ? "refuse" : "serve-live",
+               ),
             );
          } else {
             // Cleared: a host-owned version serves live; another serves what
@@ -3578,7 +3593,50 @@ export class Environment {
       } catch (error) {
          // The models still use the previous binding, so the metadata says so.
          loaded.updateStoredMetadata({ manifestLocation: previous });
+         // A refused manifest that got as far as moving the models: put back
+         // what the version served before, after the metadata, which the
+         // local-store rule reads.
+         if (error instanceof ManifestBindFailedError && error.applied) {
+            await this.trackPackageLoad(packageName, () =>
+               this.restoreBinding(loaded, before),
+            );
+         }
          throw error;
+      }
+   }
+
+   /**
+    * Put a version back on what it served before a refused manifest's bind
+    * moved it: the manifest it had bound, or, with none, what this server's
+    * own store holds for it or live, as a clear binds. Its status then says
+    * what it was. A restore that fails is logged: the version is left as
+    * that failure leaves it, which its status reports.
+    */
+   private async restoreBinding(
+      pkg: Package,
+      before: ReturnType<
+         ReturnType<Package["materialization"]>["bindingState"]
+      >,
+   ): Promise<void> {
+      try {
+         if (before.boundManifestUri) {
+            await this.bindManifest(pkg, before.boundManifestUri, "always");
+            return;
+         }
+         await this.bindLocalStoreOrLive(pkg, true);
+         if (before.manifestBindingStatus === "bind_failed") {
+            pkg.materialization().markManifestBindFailed();
+         }
+      } catch (error) {
+         logger.error(
+            "Could not restore a version's binding after its manifest was refused",
+            {
+               environmentName: this.environmentName,
+               packageName: pkg.getPackageName(),
+               versionId: pkg.getVersionId(),
+               error: errMessage(error),
+            },
+         );
       }
    }
 
@@ -4674,12 +4732,22 @@ export class Environment {
       recompile: "always" | "if-changed" = "if-changed",
       /** `manifestLocation`'s manifest, already being read by the caller. */
       fetched?: Promise<FetchedManifest>,
+      /**
+       * What a failure does: `serve-live` reports it as `bind_failed` and
+       * serves on; `refuse` throws ManifestBindFailedError and marks nothing,
+       * for a caller that puts the previous binding back.
+       */
+      onFailure: "serve-live" | "refuse" = "serve-live",
    ): Promise<void> {
       const packageName = pkg.getPackageName();
+      // Whether the bind got past the fetch, the point after which what the
+      // package serves may have moved.
+      let applying = false;
       try {
          // Timed out to live, since binding runs before the package serves.
          const { tableNameManifest, storageEntries } = await (fetched ??
             this.fetchManifestEntriesWithTimeout(manifestLocation));
+         applying = true;
 
          // Storage entries bind without a recompile. Bind when there are any
          // or were any, so vanished entries drop their old bindings. Take both
@@ -4730,17 +4798,25 @@ export class Environment {
             recompiled,
          });
       } catch (err) {
-         pkg.materialization().markManifestBindFailed();
          const timedOut =
             err instanceof Error && err.message.includes("Timed out after");
          recordManifestBind(timedOut ? "timeout" : "failure");
-         logger.warn("Failed to bind build manifest; serving live", {
-            environmentName: this.environmentName,
-            packageName,
-            manifestLocation,
-            timedOut,
-            error: err instanceof Error ? err.message : String(err),
-         });
+         logger.warn(
+            onFailure === "refuse"
+               ? "Failed to bind build manifest; refused"
+               : "Failed to bind build manifest; serving live",
+            {
+               environmentName: this.environmentName,
+               packageName,
+               manifestLocation,
+               timedOut,
+               error: err instanceof Error ? err.message : String(err),
+            },
+         );
+         if (onFailure === "refuse") {
+            throw new ManifestBindFailedError(manifestLocation, err, applying);
+         }
+         pkg.materialization().markManifestBindFailed();
       }
    }
 

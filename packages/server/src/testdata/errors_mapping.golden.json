@@ -3039,6 +3039,41 @@
       ]
     }
   },
+  "ManifestBindFailedError": {
+    "class": "ManifestBindFailedError",
+    "http": {
+      "status": 500,
+      "json": {
+        "code": 500,
+        "message": "The build manifest s3://bucket/manifest.json could not be bound (fetch failed), so it was not applied: the version serves what it served before.",
+        "reason": "MANIFEST_BIND_FAILED"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: The build manifest <storage path> could not be bound (fetch failed), so it was not applied: the version serves what it served before.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "reason": "MANIFEST_BIND_FAILED",
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: The build manifest <storage path> could not be bound (fetch failed), so it was not applied: the version serves what it served before.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "WriteRollbackFailedError": {
     "class": "WriteRollbackFailedError",
     "http": {

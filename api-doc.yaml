@@ -2029,6 +2029,17 @@ paths:
         a PUT replaces the binding, and many generated clients drop a null field from the JSON
         they send. `manifestLocation` is the body's only field, so any other field is refused
         with 400 naming it, rather than read as a clear.
+
+        A manifest that cannot be fetched (unreachable, timed out, not a manifest) or bound
+        answers 500 with `reason` `MANIFEST_BIND_FAILED` and the cause in the message, and
+        nothing of it is applied: the version's `manifestLocation` stays what it was, the version
+        is not marked host-owned, and it serves what it served before the request, the manifest
+        it had bound or, with none, live (or this server's own runs' tables, for a version no
+        host has bound). Its status says the same: `manifestBindingStatus`, `boundManifestUri` and
+        `manifestEntryCount` describe that previous binding, never `bind_failed` for this request.
+        Releases before this one answered 200 here and reported the failure only as
+        `manifestBindingStatus` `bind_failed`. A publish that names a `manifestLocation` still
+        loads the version and reports a failed bind that way.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
@@ -2062,7 +2073,14 @@ paths:
         "424":
           $ref: "#/components/responses/PackageManifestError"
         "500":
-          $ref: "#/components/responses/InternalServerError"
+          description: >-
+            The manifest could not be fetched or bound (`reason`
+            `MANIFEST_BIND_FAILED`; nothing of it was applied), or another
+            internal error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -10152,6 +10170,14 @@ components:
             that is not latest touching the tables a `scope: package`
             package's versions share (name tables of its own in
             `buildInstructions`). The message says which.
+
+            MANIFEST_BIND_FAILED, on a 500 from
+            `set-package-version-manifest` (and from the deprecated package
+            PATCH that names a versioned package's `manifestLocation`), means
+            the manifest could not be fetched or bound, so nothing of it was
+            applied: the version's `manifestLocation` stays what it was, and
+            the version serves what it served before. The message carries the
+            cause.
 
             Deliberately an open string rather than an enum. Generators render
             an enum closed, so adding a second value here would break every

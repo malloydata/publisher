@@ -73,6 +73,7 @@ import {
    InstalledFromLocationError,
    WriteRollbackFailedError,
    WriteRolledBackError,
+   ManifestBindFailedError,
    WriteVerifyError,
 } from "./errors";
 import { logger } from "./logger";
@@ -502,6 +503,15 @@ const CASES: Array<[string, () => unknown]> = [
          new WriteRolledBackError("the reload failed; restored", {
             cause: new Error("compile failed"),
          }),
+   ],
+   [
+      "ManifestBindFailedError",
+      () =>
+         new ManifestBindFailedError(
+            "s3://bucket/manifest.json",
+            new Error("fetch failed"),
+            false,
+         ),
    ],
    [
       "WriteRollbackFailedError",
