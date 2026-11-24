@@ -43,7 +43,6 @@ import {
    compatible,
    declaredMoves as contractDeclaredMoves,
    type IncompatibleCode,
-   parseContract,
    servableContract,
 } from "../domain/column_contract";
 import {
@@ -813,7 +812,8 @@ export function applyObservedColumns(args: {
 /**
  * The `storage=` bindings held to their tables' column contracts, as
  * {@link applyObservedColumns} holds a database table: a binding whose entry
- * carries no contract is left out (`contractMissing`), and, with an
+ * carries no servable contract (none, or one that lists no column) is left
+ * out (`contractMissing`), and, with an
  * observation, one whose table did not read is left out unread, and one that
  * no longer matches its contract is left out incompatible. Never cast or
  * narrowed. With no observation (a spec's bind), a binding with a contract
@@ -839,7 +839,7 @@ export function holdStorageToContracts(args: {
       if (judged.has(id)) continue;
       judged.add(id);
       const entry = args.entries[id];
-      const contract = parseContract(entry?.contract);
+      const contract = servableContract(entry?.contract);
       if (!contract) {
          contractMissing.push(id);
          left.add(id);
