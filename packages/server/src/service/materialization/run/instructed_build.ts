@@ -16,6 +16,7 @@
  */
 
 import type { StringReads } from "../domain/string_reads";
+import { rollupLabel } from "../domain/rollup_measures";
 import { upstreamTypesOf } from "../domain/upstream_schemas";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { errorCodeOf } from "../../../error_code";
@@ -480,17 +481,19 @@ export class InstructedBuild {
       failures: Record<string, SourceFailure>;
       /**
        * Instructed sources the eligibility gate refused, metered as refused.
-       * `refusalsInFailures` of them are also in `failures` (no sibling built
-       * their address); the rest are in `refusedBesideBuilt`.
+       * `refusalsInFailures` of them are also in `failures` (the one failure
+       * of an address nothing built); the rest are in `refusedSources`.
        */
       sourcesRefused: number;
       refusalsInFailures: number;
       /**
-       * Refused sources whose table an eligible sibling built, by sourceID:
-       * the table stands and serves its eligible sources, and only these
-       * answer live.
+       * Refused sources `failures` does not report, by sourceID, each with its
+       * own reason ({@link settleRefusals}): one whose table an eligible
+       * sibling built (the table stands and serves its eligible sources, and
+       * only these answer live), and one on an address whose failure is
+       * another source's.
        */
-      refusedBesideBuilt: Record<string, RefusedSource>;
+      refusedSources: Record<string, RefusedSource>;
       /** The run metadata value for the uniqueness checks, when any ran. */
       uniquenessChecks?: ReturnType<UniquenessLedger["toMetadata"]>;
       /** See {@link InstructedRun.readFrom}. */
@@ -523,6 +526,9 @@ export class InstructedBuild {
          ...(options.freshness ? { freshness: options.freshness } : {}),
          ...(options.onBuildStarted
             ? { onBuildStarted: options.onBuildStarted }
+            : {}),
+         ...(options.rebuiltToVerify && !hostInstructed
+            ? { rebuiltToVerify: options.rebuiltToVerify }
             : {}),
          index,
          // Once per run: it depends only on the plan.
@@ -571,7 +577,7 @@ export class InstructedBuild {
 
       let settled: ReturnType<typeof settleRefusals> = {
          refusalsInFailures: 0,
-         refusedBesideBuilt: {},
+         refusedSources: {},
       };
       try {
          await this.buildEveryTable(run, builds, tables, connections);
@@ -589,6 +595,7 @@ export class InstructedBuild {
          if (run.builtSources.length === 0 && run.failedReasons.length > 0) {
             throw failedRunError(
                run,
+               settled,
                new BuildRunFailedError(
                   [
                      ...run.failedReasons,
@@ -615,7 +622,11 @@ export class InstructedBuild {
             run.refusals.length > 0 &&
             !run.heldBackBySibling
          ) {
-            throw failedRunError(run, allSourcesRefusedError(run.refusals));
+            throw failedRunError(
+               run,
+               settled,
+               allSourcesRefusedError(run.refusals),
+            );
          }
       } catch (err) {
          // A failed run's manifest records no entry, so its written tables are
@@ -942,6 +953,7 @@ export class InstructedBuild {
          ),
          leafChecks,
          materialize ? pairLeafContractKeys(materialize) : [],
+         run.rebuiltToVerify?.has(sourceEntityId) === true,
       );
       // Before the entry is reported, so its contract carries what they found.
       const entry = withContractKeys(
@@ -1221,9 +1233,7 @@ export class InstructedBuild {
             ...storedInDestinationOf(compiled.tables[persistSource.sourceID]),
             ...stringReadsOf(compiled.tables[persistSource.sourceID]),
             ...upstreamTypesOption(compiled, persistSource.sourceID),
-            ...(compiled.tables[persistSource.sourceID]?.kind === "rollup"
-               ? { rollup: true }
-               : {}),
+            ...rollupOptions(compiled.tables[persistSource.sourceID]),
             ...(run.signal ? { signal: run.signal } : {}),
          });
          // A manifest travels without its build plan, so this is the only
@@ -1478,26 +1488,33 @@ export function tableSiteContext(
 
 /**
  * Record the run's gate refusals against their addresses, now that the loop
- * knows which addresses it built (instructed_refused_sibling.spec.ts). A
- * base and its `extend` share one content address, and the gate decides per
- * source. A
- * refusal on an address an eligible sibling built fails only the refused
- * source: the table stands, its eligible sources serve it, and the refused
- * one answers live (routing skips a gated entry point). It stays out of
- * `failures` and `entries`, which the control plane reads by address, and is
- * reported per source instead. A refusal on an address nothing built is
- * recorded once per address. Neither depends on run order.
+ * knows which addresses it built (instructed_refused_sibling.spec.ts), so
+ * every refused source is reported once, with its own reason. A base and
+ * its `extend` share one content address, and the gate decides per source,
+ * while `failures` and `entries`, which the control plane reads by address,
+ * hold one outcome per address:
+ *
+ *  - On an address an eligible sibling built, the table stands, its eligible
+ *    sources serve it, and the refused one answers live (routing skips a
+ *    gated entry point): it is reported in `refusedSources` alone.
+ *  - On an address nothing built, one refusal is the address's failure (an
+ *    own refusal before one refused only for sharing the table, then by
+ *    sourceID), and every other refusal there is in `refusedSources`.
+ *  - On an address whose build failed, or that holds another failure, that
+ *    failure stands, and every refusal there is in `refusedSources`.
+ *
+ * None depends on run order.
  */
 function settleRefusals(run: InstructedRun): {
    refusalsInFailures: number;
-   refusedBesideBuilt: Record<string, RefusedSource>;
+   refusedSources: Record<string, RefusedSource>;
 } {
    let refusalsInFailures = 0;
-   const refusedBesideBuilt: Record<string, RefusedSource> = {};
+   const refusedSources: Record<string, RefusedSource> = {};
    const unbuilt = new Map<string, PendingRefusal[]>();
    for (const pending of run.pendingRefusals) {
       if (run.builtAddresses.has(pending.failedKey)) {
-         refusedBesideBuilt[pending.refused.sourceID] = pending.refused;
+         refusedSources[pending.refused.sourceID] = pending.refused;
          logger.warn(
             "A refused source shares a table an eligible source built; the table stands and only the refused source answers live",
             {
@@ -1514,21 +1531,24 @@ function settleRefusals(run: InstructedRun): {
       else unbuilt.set(pending.failedKey, [pending]);
    }
    for (const [address, pendings] of unbuilt) {
-      // Once per address; a build failure already there stands.
-      if (run.failures[address]) continue;
-      // The same failure whatever the run order: a source its own gate refused
-      // before one refused only for sharing the table, then by sourceID.
-      const chosen = [...pendings].sort(
+      const ordered = [...pendings].sort(
          (a, b) =>
             Number(b.own) - Number(a.own) ||
             (a.sourceID < b.sourceID ? -1 : a.sourceID > b.sourceID ? 1 : 0),
-      )[0];
-      refusalsInFailures++;
-      run.failures[address] = chosen.failure;
-      run.entries[address] = chosen.errorEntry;
+      );
+      // A failure already on the address (its build's) stands.
+      const others = run.failures[address] ? ordered : ordered.slice(1);
+      if (!run.failures[address]) {
+         refusalsInFailures++;
+         run.failures[address] = ordered[0].failure;
+         run.entries[address] = ordered[0].errorEntry;
+      }
+      for (const other of others) {
+         refusedSources[other.refused.sourceID] = other.refused;
+      }
    }
    run.pendingRefusals = [];
-   return { refusalsInFailures, refusedBesideBuilt };
+   return { refusalsInFailures, refusedSources };
 }
 
 /** `SourceFailure.code` of an instruction no planned source resolves to. */
@@ -1573,9 +1593,10 @@ function recordUnresolvedInstructions(
       if (applied(instruction)) continue;
       const key = instruction.sourceEntityId;
       const refused = refusedAtPlan?.(instruction);
-      // A source the plan refused is reported even beside a table its
-      // address's other source built (settleRefusals, refusedBesideBuilt).
-      if (run.failures[key]) continue;
+      // A source the plan refused is reported with its own reason, beside a
+      // table its address's other source built or another source's failure
+      // there (settleRefusals, refusedSources).
+      if (!refused && run.failures[key]) continue;
       if (
          refused && instruction.sourceID !== undefined
             ? pendingSources.has(refused.sourceID)
@@ -1679,8 +1700,15 @@ function recordUnresolvedInstructions(
  */
 function failedRunError<
    E extends BuildRunFailedError | MaterializationEligibilityError,
->(run: InstructedRun, err: E): E {
-   return withFailedRunManifest(err, { failures: { ...run.failures } });
+>(
+   run: InstructedRun,
+   settled: { refusedSources: Record<string, RefusedSource> },
+   err: E,
+): E {
+   return withFailedRunManifest(err, {
+      failures: { ...run.failures },
+      refusedSources: { ...settled.refusedSources },
+   });
 }
 
 /**
@@ -2171,13 +2199,17 @@ async function runPairLeafKeyChecks(
  * the plan declares (`declared`) whose check did not run (it threw, or was
  * never compiled) is recorded `unverified`: never read as passed, so nothing
  * builds over the table, but recorded under the key the table was built
- * with, so a later run carries the table rather than rebuilding it for a
- * key that never moved (see `rebuiltInFull` in run_instructions.ts).
+ * with, so a later run does not take it for a moved key. A later standalone
+ * run rebuilds the table once to run the check again (`rebuiltInFull` in
+ * run_instructions.ts); `rebuiltToVerify` is set on the build that is that
+ * rebuild, whose checks still unable to run are recorded so, and the table
+ * is not rebuilt for them again.
  */
 export function withLeafKeys(
    entry: ManifestEntry,
    leafChecks: readonly PairLeafCheck[],
    declared: readonly string[] = [],
+   rebuiltToVerify = false,
 ): ManifestEntry {
    const contract = parseContract(entry.contract);
    // Unlike withContractKeys, a run whose leaf checks all failed to run still
@@ -2187,7 +2219,12 @@ export function withLeafKeys(
    }
    const keys: Record<string, ContractKeyCheck> = {};
    for (const key of declared) {
-      keys[key] = { unique: false, level: "leaf", unverified: true };
+      keys[key] = {
+         unique: false,
+         level: "leaf",
+         unverified: true,
+         ...(rebuiltToVerify ? { rebuiltToVerify: true } : {}),
+      };
    }
    for (const { check, record } of leafChecks) {
       if (record) {
@@ -2566,6 +2603,10 @@ async function overStoredBaseSource(
    }
    const baseName = base.source.name;
    const baseEntry = run.entries[baseAddress];
+   // Warnings name the rollup and the source whose build wrote the table,
+   // never the generated sources the rollup's build compiles.
+   const label = rollupLabel(table.rollup);
+   const tableOwner = baseEntry?.sourceName ?? baseName;
    const unusable = rollupBaseUnusable(
       run,
       gated,
@@ -2588,12 +2629,12 @@ async function overStoredBaseSource(
            )
         ).get(baseAddress);
    if (move?.kind === "types_unrecorded" && run.planFacts.hostInstructed) {
-      noteUntypedReference(persistSource.name, baseName, "rollup");
+      noteUntypedReference(label, tableOwner, "rollup");
    } else if (move) {
       run.environment.reportIncompatible?.([baseAddress]);
       throw new SchemaIncompatibleError(
-         `'${persistSource.name}' was not built: persisted upstream ` +
-            `'${baseName}' was not read from its table, since ${move.reason}, ` +
+         `${label} was not built: persisted upstream ` +
+            `'${tableOwner}' was not read from its table, since ${move.reason}, ` +
             `and a rollup is never built by recomputing its base from raw. ` +
             `The package reads its tables and derives its plan again.`,
          [baseAddress],
@@ -2705,8 +2746,9 @@ async function storedRollupBase(
       if (move) {
          run.environment.reportIncompatible?.([address]);
          throw new SchemaIncompatibleError(
-            `'${persistSource.name}' was not built: persisted upstream ` +
-               `'${base.source.name}' was not read from its table, since ` +
+            `${rollupLabel(table.rollup)} was not built: persisted upstream ` +
+               `'${entry!.sourceName ?? base.source.name}' was not read from ` +
+               `its table, since ` +
                `${move.reason}, and a rollup is never built by recomputing ` +
                `its base from raw. The package reads its tables and derives ` +
                `its plan again.`,
@@ -2786,6 +2828,18 @@ function withRollupUpstreamReuse(
    return run.readFrom?.has(address)
       ? { ...rest, upstreamReuse: "reused" }
       : rest;
+}
+
+/**
+ * A rollup's build options: that it is one, and the name its warnings give
+ * it ({@link rollupLabel}).
+ */
+function rollupOptions(
+   table: InstructedRun["compiled"]["tables"][string] | undefined,
+): { rollup?: true; presentedName?: string } {
+   return table?.kind === "rollup"
+      ? { rollup: true, presentedName: rollupLabel(table.rollup) }
+      : {};
 }
 
 /**

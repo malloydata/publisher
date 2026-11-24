@@ -1090,7 +1090,7 @@ describe("runBuild (branch behavior)", () => {
          },
          sourcesRefused: 1,
          refusalsInFailures: 0,
-         refusedBesideBuilt: {
+         refusedSources: {
             gated: {
                name: "gated",
                sourceID: "gated",
@@ -1180,7 +1180,7 @@ describe("runBuild (branch behavior)", () => {
             failures: {},
             sourcesRefused: 1,
             refusalsInFailures: 0,
-            refusedBesideBuilt: { gated: refused },
+            refusedSources: { gated: refused },
          });
 
          await svc.runBuild(

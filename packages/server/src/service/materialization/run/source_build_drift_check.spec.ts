@@ -13,13 +13,21 @@
  * - {@link storedUpstreamMove}: a `storage=` upstream's table, held to its
  *   contract as its destination reads it now, so a moved column is refused
  *   as `schema_incompatible` before the destination's engine meets it.
+ * - {@link driftCheckedUpstreamName}: what its warning names the upstream: a
+ *   rollup's base by the source whose build wrote its table, never the
+ *   `<base>__rollup_base` alias its build compiles; and the rollup itself
+ *   by {@link rollupLabel}, never its generated `<base>__rollup__…` source.
  */
 
 import { describe, expect, it } from "bun:test";
 import { contractFor } from "../../../test_helpers/contract_fixture";
 import type { ManifestEntry, ObservedColumns } from "../domain/types";
+import { rollupLabel } from "../domain/rollup_measures";
 import { storedUpstreamMove } from "./database_column_read";
-import { driftCheckedSourceIds } from "./source_build";
+import {
+   driftCheckedSourceIds,
+   driftCheckedUpstreamName,
+} from "./source_build";
 
 describe("the sources a chained build's drift check holds", () => {
    const extension = {
@@ -87,5 +95,54 @@ describe("a storage= upstream's table, held to its contract", () => {
 
    it("leaves an entry with no contract unjudged", () => {
       expect(storedUpstreamMove({}, read("VARCHAR"))).toBeUndefined();
+   });
+});
+
+describe("the names a drift check's warning gives", () => {
+   const at = (
+      over: Partial<Parameters<typeof driftCheckedUpstreamName>[0]>,
+   ): string =>
+      driftCheckedUpstreamName({
+         sourceID: "a@m.malloy",
+         address: "addr-a",
+         entry: { sourceName: "a" },
+         lifted: "a__rollup_base",
+         parent: undefined,
+         planFacts: {},
+         rollup: true,
+         ...over,
+      });
+
+   it("names a rollup's base by the source whose build wrote its table, not its build's alias", () => {
+      expect(at({})).toBe("a");
+      // An extension of `a` the rollup is declared on shares `a`'s table.
+      expect(at({ lifted: "rolled__rollup_base" })).toBe("a");
+   });
+
+   it("falls back to the plan's name for a reference that records none", () => {
+      expect(
+         at({
+            entry: {},
+            planFacts: { namesByAddress: { "addr-a": ["a", "rolled"] } },
+         }),
+      ).toBe("a");
+   });
+
+   it("names any other build's upstream as its model names it", () => {
+      expect(at({ rollup: false, lifted: "a_alias" })).toBe("a_alias");
+      expect(
+         at({
+            rollup: false,
+            lifted: undefined,
+            entry: {},
+            parent: { sourceID: "a@m.malloy", sourceName: "a" },
+         }),
+      ).toBe("a");
+   });
+
+   it("names a rollup by its base and grain", () => {
+      expect(
+         rollupLabel({ baseSourceName: "rolled", grainDimensions: ["k", "d"] }),
+      ).toBe('#(rollup) rollup of source "rolled" at (k, d)');
    });
 });
