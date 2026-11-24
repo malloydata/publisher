@@ -431,21 +431,22 @@ const SHAPES: Shape[] = [
       query: "run: r -> { group_by: cat; aggregate: rn; order_by: cat }",
       want: { live: "ROW_LEVEL_GATE" },
    },
-   // A view over a `storage=` #(materialize) source has no build over that
-   // source's table, so it is refused at plan (upstream_table_unusable) and
-   // its queries read the source's own table, or live.
+   // A view over a `storage=` #(materialize) source is built over that
+   // source's table in its destination, which its build refuses here (it
+   // groups a string the table compares unlike live), so its queries read
+   // the source's own table, or live.
    {
-      name: "persisted view (refused at plan): ordered by its measure",
+      name: "persisted view (refused at build): ordered by its measure",
       query: "run: m -> by_cat_counted",
       want: { served: "materialized" },
    },
    {
-      name: "persisted view (refused at plan): ordered by the string",
+      name: "persisted view (refused at build): ordered by the string",
       query: "run: m -> by_cat_ordered",
       want: { live: "NOT_SERVED" },
    },
    {
-      name: "persisted view (refused at plan): a later stage ordered by the string",
+      name: "persisted view (refused at build): a later stage ordered by the string",
       query: "run: m -> by_cat_counted -> { select: cat, n; order_by: cat }",
       want: { live: "NOT_SERVED" },
    },
@@ -651,15 +652,27 @@ describe.skipIf(!POSTGRES_URL)(
          await freshLoadPool();
       });
 
-      it("builds every stored table", () => {
+      it("builds every stored table but the views grouping a string over m's table", () => {
          expect([run?.status, run?.error ?? null]).toEqual([
             "MANIFEST_FILE_READY",
             null,
          ]);
          const manifest = run?.manifest as {
-            failures?: Record<string, unknown>;
+            failures?: Record<string, { sourceName?: string; reason?: string }>;
          };
-         expect(manifest.failures ?? {}).toEqual({});
+         // Built over m's table in the destination, which compares `cat`
+         // byte-exact where its contract records Postgres's collation: the
+         // build refuses each, never recomputing m from raw.
+         const failures = Object.values(manifest.failures ?? {});
+         expect(failures.map((f) => f.sourceName).sort()).toEqual([
+            "m__by_cat_counted__view",
+            "m__by_cat_ordered__view",
+         ]);
+         for (const f of failures) {
+            expect(f.reason).toContain(
+               "compares a string by a collation the destination cannot reproduce",
+            );
+         }
       });
 
       it("orders each non-binary column otherwise than byte order, and C and the builtin as it", () => {

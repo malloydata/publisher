@@ -151,6 +151,7 @@ import {
 import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
 import { overStoredProven, sameColumnsOverStandIn } from "./over_stored_proof";
 import {
+   persistOverMaterializedReason,
    placementReason,
    reachedUpstreams,
    UPSTREAM_TABLE_UNUSABLE_REASON,
@@ -2342,9 +2343,23 @@ async function planV1PersistSources(
                  args.stringReads,
               )
             : parts.tables[sourceID]?.stringReads;
+      // What its build reads: its query, never a join only its read
+      // applies (declared in its `extend`).
+      const destination = declaredStorage(source)?.trim();
+      const map = SourceMap.of(classificationCtx.modelDef);
+      const query = (map.node(sourceID)?.def as { query?: unknown } | undefined)
+         ?.query;
+      const unusableUpstream =
+         destination && query
+            ? persistOverMaterializedReason(
+                 reachedUpstreams(query, classificationCtx.modelDef, map),
+                 destination,
+              )
+            : undefined;
       parts.tables[sourceID] = {
          kind: "persist",
          ...(stringReads ? { stringReads } : {}),
+         ...(unusableUpstream ? { unusableUpstream } : {}),
          // The DECLARING model, never this one: a model that imports the
          // source walks it again, and the last walk would otherwise decide
          // its path.

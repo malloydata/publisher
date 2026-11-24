@@ -89,6 +89,20 @@ source: orders is warehouse.table('public.sv_orders') extend {
 }
 `;
 
+/** A plain `#(materialize)` table, stored where `placement` says. */
+const plainParent = (placement: string) => `${HEAD}#(materialize)${placement}
+source: orders is warehouse.table('public.sv_orders') extend {
+  primary_key: id
+  measure: total is amount.sum()
+}
+`;
+const PLAIN_AGGREGATES = `group_by: id
+    aggregate: total, n is count()`;
+const PLAIN_AS_TEXT = `-> {
+  select: id, total, n
+  order_by: id
+}`;
+
 /** A parent whose `where:` holds a current-time upper bound, left out of its table. */
 const windowParent = (
    placement: string,
@@ -265,7 +279,7 @@ source: s is orders extend {
       downstream: /^s__by_order__view$/,
       query: `run: s -> by_order ${PAIR_AS_TEXT}`,
       refused:
-         "its #(materialize) upstream 'orders' has no table it can build from: its table is in a storage= destination",
+         "its upstream 'orders' is a pair table, one row per pair of an inlined join_many, which a view or query is not yet built over in its destination",
    },
    {
       label: "a storage= persisted query over a pair table in its destination",
@@ -280,7 +294,68 @@ query: q is orders -> { ${PAIR_AGGREGATES} }
       downstream: /^q__query$/,
       query: `run: q ${PAIR_AS_TEXT}`,
       refused:
-         "its #(materialize) upstream 'orders' has no table it can build from: its table is in a storage= destination",
+         "its upstream 'orders' is a pair table, one row per pair of an inlined join_many, which a view or query is not yet built over in its destination",
+   },
+   {
+      label: "a storage= persisted view over a #(materialize) table in its destination",
+      cell: "v-over-materialize vs",
+      files: {
+         "m.malloy": `${plainParent(' storage="lake"')}
+source: s is orders extend {
+  #@ persist storage="lake"
+  view: by_cust is { ${PLAIN_AGGREGATES} }
+}
+`,
+      },
+      upstream: "orders",
+      downstream: /^s__by_cust__view$/,
+      query: `run: s -> by_cust ${PLAIN_AS_TEXT}`,
+   },
+   {
+      label: "a storage= persisted query over a #(materialize) table in its destination",
+      cell: "v-over-materialize qs",
+      files: {
+         "m.malloy": `${plainParent(' storage="lake"')}
+#@ persist storage="lake"
+query: q is orders -> { ${PLAIN_AGGREGATES} }
+`,
+      },
+      upstream: "orders",
+      downstream: /^q__query$/,
+      query: `run: q ${PLAIN_AS_TEXT}`,
+   },
+   {
+      label: "a storage= #@ persist over a #(materialize) table in its destination",
+      cell: "p-over-materialize ps",
+      files: {
+         "m.malloy": `${plainParent(' storage="lake"')}
+#@ persist storage="lake"
+source: p is orders -> { ${PLAIN_AGGREGATES} }
+`,
+      },
+      upstream: "orders",
+      downstream: /^p$/,
+      query: `run: p ${PLAIN_AS_TEXT}`,
+      refused:
+         "its upstream 'orders' is a #(materialize) table in its storage= destination 'lake', which a #@ persist source is not yet built over",
+   },
+   {
+      label: "a storage= persisted view over a #(materialize) extension table in its destination",
+      cell: "v-over-materialize-ext vs",
+      files: {
+         "m.malloy": `${plainParent(' storage="lake"')}
+#(materialize) storage="lake"
+source: big_orders is orders extend { where: amount > 6 }
+
+source: s is big_orders extend {
+  #@ persist storage="lake"
+  view: by_cust is { ${PLAIN_AGGREGATES} }
+}
+`,
+      },
+      upstream: "big_orders",
+      downstream: /^s__by_cust__view$/,
+      query: `run: s -> by_cust ${PLAIN_AS_TEXT}`,
    },
    {
       label: "a database #@ persist over a storage= #@ persist",
@@ -543,7 +618,7 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
             expect(refusal?.reason).toBe("upstream_table_unusable");
             expect(refusal?.message).toContain(mechanism.refused);
             expect(refusal?.message).toMatch(
-               /a downstream is never built by recomputing its upstreams? from raw/,
+               /(a downstream|a view or query) is never built by recomputing its upstreams? from raw/,
             );
             expect(
                entriesOf(second).filter((e) =>

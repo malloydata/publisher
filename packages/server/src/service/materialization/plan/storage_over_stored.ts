@@ -89,16 +89,43 @@ export async function compileStorageOverStored(args: {
       if (destination === undefined || c.root === undefined) continue;
       // An extension of a stored source reads its base's table: the base,
       // a query, is the upstream re-rooted.
-      const upstreams = reachedUpstreams(c.root, args.modelDef, map).filter(
+      // A `#(materialize)` upstream planned as a table is one too, unless
+      // it is the parent an extension table reached here builds over: the
+      // extension's table is read, not its parent's.
+      const materialized = args.materializePlans ?? {};
+      const reached = reachedUpstreams(c.root, args.modelDef, map).filter(
          (u) =>
             u.storage === destination &&
-            (map.node(u.sourceID)?.def as { type?: unknown } | undefined)
-               ?.type === "query_source",
+            (materialized[u.sourceID] !== undefined ||
+               (map.node(u.sourceID)?.def as { type?: unknown } | undefined)
+                  ?.type === "query_source"),
       );
+      const parents = new Set(
+         reached.flatMap((u) => {
+            const parent = materialized[u.sourceID]?.buildsOver?.sourceID;
+            return parent ? [parent] : [];
+         }),
+      );
+      const upstreams = reached.filter((u) => !parents.has(u.sourceID));
       if (upstreams.length === 0) continue;
+      // A pair table holds a row per pair of its inlined join_many, not one
+      // per row of its source: the stand-in would be read as the source's
+      // rows, and a count over it would count pairs.
+      const pair = upstreams.find(
+         (u) =>
+            materialized[u.sourceID]?.pair ||
+            materialized[u.sourceID]?.pairBlocks,
+      );
       out.set(
          c.plan.buildSourceID,
-         await compileOne({ ...args, map, destination, upstreams, ...c }),
+         pair
+            ? {
+                 refused:
+                    `its upstream '${pair.name}' is a pair table, one row ` +
+                    `per pair of an inlined join_many, which a view or ` +
+                    `query is not yet built over in its destination`,
+              }
+            : await compileOne({ ...args, map, destination, upstreams, ...c }),
       );
    }
    return out;
@@ -133,6 +160,7 @@ async function compileOne(args: {
       // proven over the table's real types. Else as its build writes them.
       const columns =
          args.boundStorageColumns?.(u.sourceID, args.destination) ??
+         args.materializePlans?.[u.sourceID]?.storedColumns ??
          storedColumnsOf(args.map.node(u.sourceID)?.def);
       if (columns === undefined) {
          return why(
