@@ -3263,7 +3263,10 @@ export class Model {
     * swapped in (a bind's, and the one at each freshness edge), so the last
     * compile is the copy queries read.
     */
-   public servedCopySourceIDs(): ReadonlySet<string> | "uncompiled" | undefined {
+   public servedCopySourceIDs():
+      | ReadonlySet<string>
+      | "uncompiled"
+      | undefined {
       if (!this.servedCopyEnabled()) return undefined;
       return this.servedCopy.rerootedSourceIDs() ?? "uncompiled";
    }
