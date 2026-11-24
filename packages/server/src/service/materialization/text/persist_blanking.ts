@@ -24,7 +24,8 @@
 
 import { routeOfNote } from "../../annotation_reader";
 import { overlayKey } from "../../overlay_key";
-import { lexAll, offsetOf } from "./malloy_lexer";
+import { lexAll } from "../../malloy_lexer_core";
+import { offsetOf } from "./malloy_lexer";
 import { SourceMap } from "./source_map";
 
 /** A zero-based range, as a note's `at.range` carries it. */

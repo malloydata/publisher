@@ -24,9 +24,9 @@
 import { ParseUtil } from "@malloydata/malloy-tag";
 import type { LogMessage } from "@malloydata/malloy";
 import {
-   annotationsBefore,
    isNameCode,
    isSpaceCode,
+   statementAnnotationsFrom,
    StringScan,
    stripMalloyCommentsAndLiterals,
    unitsAt,
@@ -140,16 +140,11 @@ export function lastRunStatementText(text: string): string | undefined {
    if (open >= 0) found = [open, last];
    if (!found) return undefined;
    const [run, end] = found;
-   let from = tokens.start[run];
-   const before = annotationsBefore(
+   const from = statementAnnotationsFrom(
       text,
       run > 0 ? rawEnd(tokens, run - 1) : 0,
-      from,
+      tokens.start[run],
    );
-   for (const tag of before.reverse()) {
-      if (tag.model) break;
-      from = tag.from;
-   }
    return text.slice(from, rawEnd(tokens, end));
 }
 

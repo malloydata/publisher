@@ -5,21 +5,24 @@
  * @fileoverview Tests for field_helpers entity classification.
  */
 
-import { describe, test } from "bun:test";
+import { describe, spyOn, test } from "bun:test";
 import assert from "node:assert";
-import type { Field } from "@malloydata/malloy";
+import type { Explore, Field } from "@malloydata/malloy";
+import * as lexerCore from "../malloy_lexer_core";
 import { Runtime, InMemoryURLReader } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { AccessModifierEnum, EntityTypeEnum } from "./internal_types";
 import {
    getAccessModifier,
    getDescriptionFromTags,
+   getDirectTaglines,
    getEntityFromMalloyField,
    inferType,
    isFilePath,
    isMalloyDefined,
    parseDocAnnotation,
 } from "./field_helpers";
+import { withModelTextCache } from "./model_text";
 
 // Build a minimal Field whose location.range spans the whole docString.
 // Using an `internal.malloy` URL means extractCodeFromEntity reads from
@@ -392,6 +395,252 @@ source: nums is duckdb.table('t') extend {
          await describeField(model, "pub_label"),
          "Line one.\nLine two.\nLine three.",
       );
+   });
+});
+
+describe("getDirectTaglines (compile-backed)", () => {
+   /** Each source's direct taglines, read as package load reads them: from `file:` models with their texts. */
+   async function direct(
+      model: string,
+      others: Record<string, string> = {},
+   ): Promise<Record<string, string[]>> {
+      const files = { "main.malloy": model, ...others };
+      const conn = new DuckDBConnection("duckdb");
+      try {
+         const runtime = new Runtime({
+            urlReader: new InMemoryURLReader(
+               new Map(
+                  Object.entries(files).map(([name, text]) => [
+                     `file:///${name}`,
+                     text,
+                  ]),
+               ),
+            ),
+            connection: conn,
+         });
+         const compiled = await runtime.getModel(
+            new URL("file:///main.malloy"),
+         );
+         const texts = new Map(
+            Object.entries(files).map(([name, text]) => [`/${name}`, text]),
+         );
+         // Each source, and each join in it as `source.join`.
+         const explores = compiled.explores.flatMap((e) => [
+            [e.name, e] as const,
+            ...e.allFields
+               .filter((f) => f.isExplore())
+               .map((f) => [`${e.name}.${f.name}`, f as Explore] as const),
+         ]);
+         return withModelTextCache(
+            () =>
+               Object.fromEntries(
+                  explores.map(([name, e]) => [
+                     name,
+                     getDirectTaglines(e).map((t) => t.trim()),
+                  ]),
+               ),
+            texts,
+         );
+      } finally {
+         await conn.close();
+      }
+   }
+
+   test("keeps a source's own notes across a blank line or a comment", async () => {
+      const notes = await direct(`
+#(doc) Gap
+#(agent-hidden)
+
+source: gap is duckdb.sql("select 1 as a")
+
+#(doc) Commented
+// a note
+source: commented is duckdb.sql("select 1 as a")
+
+#(doc) smile 😀😀
+
+SOURCE: shouted is duckdb.sql("select 1 as a")
+`);
+      assert.deepStrictEqual(notes.gap, ["#(doc) Gap", "#(agent-hidden)"]);
+      assert.deepStrictEqual(notes.commented, ["#(doc) Commented"]);
+      assert.deepStrictEqual(notes.shouted, ["#(doc) smile 😀😀"]);
+   });
+
+   test("keeps a note whose reported end is skewed by emoji earlier in the file", async () => {
+      const notes = await direct(`
+#(doc) ${"🚀".repeat(20)}
+source: earlier is duckdb.sql("select 1 as a")
+
+#(agent-hidden)
+source: later is duckdb.sql("select 1 as a")
+
+source: p is duckdb.sql("select 1 as a") extend {
+  #(doc) J
+  join_cross: j is earlier extend {}
+}
+
+source:
+  #(agent-hidden)
+  per_def is duckdb.sql("select 1 as a")
+`);
+      assert.deepStrictEqual(notes.later, ["#(agent-hidden)"]);
+      assert.deepStrictEqual(notes["p.j"], ["#(doc) J"]);
+      assert.deepStrictEqual(notes.per_def, ["#(agent-hidden)"]);
+   });
+
+   test("gives a note on a statement to definitions written without commas", async () => {
+      const notes = await direct(`
+source: base is duckdb.sql("select 1 as a")
+
+#(agent-hidden)
+source: c1 is base c2 is base extend {}
+
+#(doc) Lines
+source:
+  l1 is base
+  l2 is base extend {}
+`);
+      assert.deepStrictEqual(notes.c1, ["#(agent-hidden)"]);
+      assert.deepStrictEqual(notes.c2, ["#(agent-hidden)"]);
+      assert.deepStrictEqual(notes.l1, ["#(doc) Lines"]);
+      assert.deepStrictEqual(notes.l2, ["#(doc) Lines"]);
+   });
+
+   test("keeps a join's own notes across a blank line, never its base's", async () => {
+      const notes = await direct(`
+#(authorize) false
+source: base is duckdb.sql("select 1 as a")
+
+source: parent is duckdb.sql("select 1 as a") extend {
+  #(doc) Own join
+
+  join_cross: own_join is base extend {}
+  join_cross: bare_join is base extend {}
+}
+`);
+      assert.deepStrictEqual(notes["parent.own_join"], ["#(doc) Own join"]);
+      assert.deepStrictEqual(notes["parent.bare_join"], []);
+   });
+
+   test("reads a statement with space before its colon, or an access label in capitals", async () => {
+      const notes = await direct(`
+#(doc) Base
+source: base is duckdb.sql("select 1 as a")
+
+#(agent-hidden)
+source : spaced is base extend {}
+
+#(doc) Broken
+source
+:
+  b1 is base
+  b2 is base extend {}
+
+source: parent is duckdb.sql("select 1 as a") extend {
+  #(authorize) false
+  PUBLIC join_cross: guarded is base extend {}
+}
+`);
+      assert.deepStrictEqual(notes.spaced, ["#(agent-hidden)"]);
+      assert.deepStrictEqual(notes.b1, ["#(doc) Broken"]);
+      assert.deepStrictEqual(notes.b2, ["#(doc) Broken"]);
+      assert.deepStrictEqual(notes["parent.guarded"], ["#(authorize) false"]);
+   });
+
+   test("never takes a base's notes, declared above it or right above it", async () => {
+      const notes = await direct(`
+#(doc) Base
+#(agent-hidden)
+source: base is duckdb.sql("select 1 as a")
+
+source: below is base extend {}
+source: right_below is base extend {}
+`);
+      assert.deepStrictEqual(notes.base, ["#(doc) Base", "#(agent-hidden)"]);
+      assert.deepStrictEqual(notes.below, []);
+      assert.deepStrictEqual(notes.right_below, []);
+   });
+
+   test("never takes the notes of a base it reaches without extend, or that is written on its definition", async () => {
+      const notes = await direct(`
+#(agent-hidden)
+source: base is duckdb.sql("select 1 as a")
+
+source: plain is base
+
+source:
+  #(agent-hidden)
+  per_def is duckdb.sql("select 1 as a"),
+  per_def_child is per_def extend {}
+
+source: per_def_next is per_def extend {}
+`);
+      assert.deepStrictEqual(notes.plain, []);
+      assert.deepStrictEqual(notes.per_def, ["#(agent-hidden)"]);
+      assert.deepStrictEqual(notes.per_def_child, []);
+      assert.deepStrictEqual(notes.per_def_next, []);
+   });
+
+   test("never takes a base's notes when only the child is imported", async () => {
+      const notes = await direct(`import { child } from "other.malloy"\n`, {
+         "other.malloy": `#(agent-hidden)
+#(doc) Base doc
+source: base is duckdb.sql("select 1 as a")
+
+source: child is base extend {}
+`,
+      });
+      assert.deepStrictEqual(notes.child, []);
+   });
+
+   test("gives a note on a statement to every source it defines", async () => {
+      const notes = await direct(`
+source: base is duckdb.sql("select 1 as a")
+
+#(doc) Shared
+source: a1 is base, a2 is base
+`);
+      assert.deepStrictEqual(notes.a1, ["#(doc) Shared"]);
+      assert.deepStrictEqual(notes.a2, ["#(doc) Shared"]);
+   });
+
+   test("gives a note on a multi-line statement to every source it defines, past a blank line", async () => {
+      const notes = await direct(`
+#(doc) Base
+source: base is duckdb.sql("select 1 as a")
+
+#(doc) Shared
+
+source:
+  m1 is base,
+  #(doc) Second
+  m2 is base extend { dimension: b is 1 },
+  m3 is base extend {}
+`);
+      assert.deepStrictEqual(notes.m1, ["#(doc) Shared"]);
+      assert.deepStrictEqual(notes.m2, ["#(doc) Shared", "#(doc) Second"]);
+      assert.deepStrictEqual(notes.m3, ["#(doc) Shared"]);
+   });
+
+   test("lexes each file once, not once per source or note", async () => {
+      const lex = spyOn(lexerCore, "lexAll");
+      try {
+         const children = Array.from(
+            { length: 200 },
+            (_, i) => `source: s${i} is base extend {}`,
+         ).join("\n");
+         const notes = await direct(`
+#(doc) Base
+#(agent-hidden)
+source: base is duckdb.sql("select 1 as a")
+
+${children}
+`);
+         assert.deepStrictEqual(notes.s199, []);
+         assert.strictEqual(lex.mock.calls.length, 1);
+      } finally {
+         lex.mockRestore();
+      }
    });
 });
 
