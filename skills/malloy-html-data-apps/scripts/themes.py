@@ -1,8 +1,12 @@
 # Copyright (c) Credible Data Inc.
 # SPDX-License-Identifier: MIT
-"""Write the data app kit's themes: kit/themes.css and kit/fonts/<face>.css.
+"""Write the data app kit's themes, kit/themes.css, and with --fonts its fonts: kit/fonts.css (Geist and Geist Mono),
+kit/fonts/<face>.css (each theme's display face) and their licences in kit/vendor/fonts.
 
-Usage: python3 -I themes.py [kit dir]   (default: the kit beside it)
+Usage: python3 -I themes.py [--fonts] [kit dir]   (default: ../assets/data-app/kit)
+
+--fonts fetches each face from npm (@fontsource-variable, the version below), checks it against the sha256 pinned
+here, and refuses a file that differs. Without it, only themes.css is written, with no network.
 
 Each theme is a complete look: a paper, inks, one accent, chart colours, a band for a dark lead, good and bad, and a
 display face for its headline figures. Light colours are chosen by hand from the subject; the dark ones are derived.
@@ -11,19 +15,34 @@ comparison 2.4:1, and the accent kept apart from bad. Run it after changing a th
 """
 import base64
 import colorsys
+import hashlib
 import os
 import sys
+import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-FACES = {  # display faces: file, family, licence, pinned sha256 (checked when fetched; see dash/fonts)
-    "source-serif-4": ("source-serif-4_5.3.0_files_source-serif-4-latin-wght-normal.woff2", "Source Serif 4", "source-serif-4_5.3.0_LICENSE", "200 900", "normal"),
-    "fraunces": ("fraunces_5.3.0_files_fraunces-latin-wght-normal.woff2", "Fraunces", "fraunces_5.3.0_LICENSE", "100 900", "normal"),
-    "archivo": ("archivo_5.3.0_files_archivo-latin-wdth-normal.woff2", "Archivo", "archivo_5.3.0_LICENSE", "100 900", "62% 125%"),
+KIT = os.path.join(HERE, "..", "assets", "data-app", "kit")
+FONTSOURCE = "https://cdn.jsdelivr.net/npm/@fontsource-variable/{face}@5.3.0/{path}"
+# Display faces: the npm file, family, weights, stretch, and the sha256 of the woff2 and of its licence.
+FACES = {
+    "source-serif-4": ("files/source-serif-4-latin-wght-normal.woff2", "Source Serif 4", "200 900", "normal",
+                       "c1df4596be5029233ed2afbb8b2f6ea20784b3fb1aa5d6b5c6519ccd85eb3dfb", "18aabf190848725e2576eefb5c29ba06aac1029d02132252a7f312eac2e50cf3"),
+    "fraunces": ("files/fraunces-latin-wght-normal.woff2", "Fraunces", "100 900", "normal",
+                 "7f9d191d999336d3b9790afa72e1358e50a13b06d4f289341e92a311967a80f9", "cd3384cafac6f2bddc3955273958a2e029f97027c8037ac539ef5744a77b579e"),
+    "archivo": ("files/archivo-latin-wdth-normal.woff2", "Archivo", "100 900", "62% 125%",
+                "e3a28eade21a900c7155a247757f4b2834c07bb7ef07ad7efa55cebaac1e8f5e", "c3c8402eec0e31dc9a76851235b1c02a0bb821488b2db8e35bcc2ab60ca8fc2b"),
+}
+# The interface faces, inlined together in kit/fonts.css.
+SANS = {
+    "geist": ("files/geist-latin-wght-normal.woff2", "Geist",
+              "19f9c92546aa300c312235e3125af1b81394d8db9a4bc4a425cd5b641d2d54e1", "71609cbb5c78b5870d712eab73a31d76622635c6ed034ab5cee3b9ecbda8685f"),
+    "geist-mono": ("files/geist-mono-latin-wght-normal.woff2", "Geist Mono",
+                   "684ad5b531f81d43c1e8c7038262d5db7cdc1f68006e04d6c7769efa8d33c8cc", "cc815ed4fc045f0e991abb10395b7932bd028c6a067deb13316d6002105074e6"),
 }
 
 # name: fits, display (face or None for Geist, 'mono' for Geist Mono), headline (display or sans), light colours
 THEMES = {
-    "paper": dict(fits="Any business subject; Credible's own look. The default.", display=None, headline="sans",
+    "paper": dict(fits="Any business subject; warm paper and ink. The default.", display=None, headline="sans",
                   paper="#f8f7f4", surface="#ffffff", ink="#21201c", accent="#2e6a8e",
                   series=["#8aa36d", "#c27f6f", "#a7955e", "#8a7fa3", "#5e9a94"]),
     "ledger": dict(fits="Finance, revenue, pricing, costs, accounting, investment: money read like a statement.", display="source-serif-4", headline="display",
@@ -187,11 +206,38 @@ def block(sel, p, t, mode, indent=''):
     return "\n".join(indent + l for l in lines)
 
 
-def main(kit):
+def fetch(face, path, sha):
+    """One file from npm, refused unless its sha256 is the pinned one."""
+    data = urllib.request.urlopen(FONTSOURCE.format(face=face, path=path), timeout=60).read()
+    got = hashlib.sha256(data).hexdigest()
+    if got != sha:
+        sys.exit(f"{face}/{path}: sha256 {got}, pinned {sha}; refusing it")
+    return data
+
+
+def write_fonts(kit):
+    b64 = lambda data: base64.b64encode(data).decode()
+    os.makedirs(os.path.join(kit, "fonts"), exist_ok=True)
+    os.makedirs(os.path.join(kit, "vendor", "fonts"), exist_ok=True)
+    sans = []
+    for face, (path, fam, sha, lic_sha) in SANS.items():
+        data = fetch(face, path, sha)
+        sans.append(f"@font-face {{ font-family: '{fam}'; font-style: normal; font-weight: 100 900; font-display: swap; src: url(data:font/woff2;base64,{b64(data)}) format('woff2'); }}")
+        open(os.path.join(kit, "vendor", "fonts", f"LICENSE-{face}.txt"), "wb").write(fetch(face, "LICENSE", lic_sha))
+    open(os.path.join(kit, "fonts.css"), "w").write("\n".join(sans) + "\n")
+    for face, (path, fam, weight, stretch, sha, lic_sha) in FACES.items():
+        data = fetch(face, path, sha)
+        css = f"/* {fam}, SIL Open Font License 1.1: vendor/fonts/LICENSE-{face}.txt */\n@font-face {{ font-family: \"{fam}\"; font-style: normal; font-weight: {weight}; font-stretch: {stretch}; font-display: swap; src: url(data:font/woff2;base64,{b64(data)}) format(\"woff2\"); }}\n"
+        open(os.path.join(kit, "fonts", f"{face}.css"), "w").write(css)
+        open(os.path.join(kit, "vendor", "fonts", f"LICENSE-{face}.txt"), "wb").write(fetch(face, "LICENSE", lic_sha))
+
+
+def themes_css():
+    """The text of kit/themes.css: every theme, light and dark, checked and nudged."""
     for k, v in THEMES.items():
         v["name"] = k
     out = ["/* Copyright (c) Credible Data Inc. SPDX-License-Identifier: MIT */",
-           "/* The kit's themes, written by themes.py in the malloy-html-data-apps skill's assets/data-app: edit there. Set dataApp({ theme }) or data-theme on <html>.",
+           "/* The kit's themes, written by the malloy-html-data-apps skill's scripts/themes.py: edit there. Set dataApp({ theme }) or data-theme on <html>.",
            "   data-mode=\"dark\" or \"light\" fixes the mode; with neither, the reader's system setting decides. */", ""]
     for name, t in THEMES.items():
         light = palette(name, t, "light")
@@ -203,20 +249,20 @@ def main(kit):
         out.append("@media (prefers-color-scheme: dark) {\n" + block(dsel, dark, t, "dark", "  ") + "\n}")
         out.append(block(":root[data-mode=\"dark\"]" if name == "paper" else f":root[data-theme=\"{name}\"][data-mode=\"dark\"]", dark, t, "dark"))
         out.append("")
-    open(os.path.join(kit, "themes.css"), "w").write("\n".join(out) + "\n")
-    os.makedirs(os.path.join(kit, "fonts"), exist_ok=True)
-    for face, (file, fam, lic, weight, stretch) in FACES.items():
-        if not os.path.exists(os.path.join(HERE, "fonts", file)):
-            continue  # the faces' sources live in the lab; without them only the colours are written
-        b64 = base64.b64encode(open(os.path.join(HERE, "fonts", file), "rb").read()).decode()
-        css = f"/* {fam}, SIL Open Font License 1.1: vendor/fonts/LICENSE-{face}.txt */\n@font-face {{ font-family: \"{fam}\"; font-style: normal; font-weight: {weight}; font-stretch: {stretch}; font-display: swap; src: url(data:font/woff2;base64,{b64}) format(\"woff2\"); }}\n"
-        open(os.path.join(kit, "fonts", f"{face}.css"), "w").write(css)
-        os.makedirs(os.path.join(kit, "vendor", "fonts"), exist_ok=True)
-        open(os.path.join(kit, "vendor", "fonts", f"LICENSE-{face}.txt"), "w").write(open(os.path.join(HERE, "fonts", lic)).read())
+    return "\n".join(out) + "\n"
+
+
+def main(argv):
+    fonts = "--fonts" in argv
+    rest = [a for a in argv if a != "--fonts"]
+    kit = rest[0] if rest else KIT
+    open(os.path.join(kit, "themes.css"), "w").write(themes_css())
+    if fonts:
+        write_fonts(kit)
     for n in notes:
         print("nudged", n)
-    print(f"themes ok: {len(THEMES)} themes, light and dark, every text 4.5:1 and every mark checked")
+    print(f"themes ok: {len(THEMES)} themes, light and dark, every text 4.5:1 and every mark checked" + (", fonts fetched and checked" if fonts else ""))
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "kit" if os.path.isdir(os.path.join(HERE, "kit")) else "kit2"))
+    main(sys.argv[1:])

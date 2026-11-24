@@ -43,7 +43,7 @@ A frame as tall as its content changes more than these two. Each is invisible st
 - **Sticky never sticks**, because the frame never scrolls. A sticky header or scope bar is fine as long as nothing
   depends on it staying in view.
 - **`scrollTo`, `scrollBy` and `scrollY` do nothing**, while `scrollIntoView` scrolls the host. To land a reader at
-  the top of a new view, call `scrollIntoView({ block: 'start' })` on its header, as the frame template does.
+  the top of a new view, call `scrollIntoView({ block: 'start' })` on its header, as the kit does.
 - **`IntersectionObserver` ignores `rootMargin` in a cross-origin frame**, so a lazy tile starts loading as it
   enters the screen rather than before (`reference/lazy-load.md`).
 - **The runtime measures the bottoms of `body`'s children**, so a margin on the last child sits outside the
@@ -54,7 +54,7 @@ A frame as tall as its content changes more than these two. Each is invisible st
 - **What the frame refuses fails silently.** Publisher's frame sandbox allows scripts, same-origin requests and
   forms, so a download (a CSV button), a new tab and an `alert` do nothing inside it, though each works standalone.
   A clipboard write and full screen work in the same-origin Console, and are refused in a frame on another origin
-  unless the host delegates them. A host may allow more. Check the frame template's "Download CSV" and "Copy link"
+  unless the host delegates them. A host may allow more. Check the kit's "Download CSV" and "Copy link"
   in the frame your app will live in.
 
 Test embedded, not just standalone: the Publisher console renders a package's app at `/<env>/<package>/data-apps/<path>`, which exercises the same resize contract a host does (`reference/verification-harness.md`).

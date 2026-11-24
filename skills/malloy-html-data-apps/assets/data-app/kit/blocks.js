@@ -6,7 +6,7 @@
 // loading, empty and error to itself, and draws again in place when the state changes. Every chart in one does
 // something when clicked: it filters the app, opens an entity's page, or zooms the period.
 
-import { h, prose, asText, query, reason, answered, modelDocs, servedTables, inCredible, askCredible } from './core.js'
+import { h, prose, asText, query, reason, answered, modelDocs, servedTables, host } from './core.js'
 import * as S from './state.js'
 import * as P from './period.js'
 import * as F from './format.js'
@@ -216,17 +216,19 @@ function howMade(spec, qs, results, said = '') {
   if (!seen.length) say([])
   else if (kinds.every((k) => k === 'live')) say(['Worked out from the raw data just now.'])
   else {
-    say([kinds.includes('rollup') ? 'Read from a summary Credible keeps of the data.' : 'Read from a copy of the data Credible keeps.'])
+    say([kinds.includes('rollup') ? 'Read from a summary built ahead of time.' : 'Read from a copy of the data stored ahead of time.'])
+    // How fresh: the served table's own data-as-of, from the answer's path report, never another table's build.
+    const asOf = seen.map((a) => a.path?.servedBy?.dataAsOf).filter(Boolean).sort()[0]
+    const built = asOf ? `, its rows as of ${P.longDate(String(asOf).slice(0, 10))}` : ''
     servedTables().then((t) => {
-      const built = t?.builtAt ? `, last built ${P.longDate(t.builtAt.slice(0, 10))}` : ''
       const used = seen.map((a) => t?.tables.get(a.path?.servedBy?.tableId)).filter(Boolean)
       const roll = used.find((x) => x.rollup)
       const doc = (n) => (F.metric(n).label || n).toLowerCase()
       if (roll) {
         const r = roll.rollup
         const others = kinds.filter((k) => k !== 'rollup').length
-        say([`Read from a summary Credible keeps of the ${S.config.recordNoun || 'records'}: one row for each ${list(r.grainDimensions.map(words))}, with ${list(r.measures.filter((m) => S.config.metrics[m]).map(doc)) || 'its figures'} already added up${built}, so it does not add up every row each time it opens.${others ? ' Some of it, a figure the summary cannot hold, comes from a stored copy of the data.' : ''}`])
-      } else if (used.length) say([`Read from a copy of the ${S.config.recordNoun || 'data'} Credible keeps${built}, so it does not reach back to the raw data each time it opens.`])
+        say([`Read from a summary of the ${S.config.recordNoun || 'records'} built ahead of time: one row for each ${list(r.grainDimensions.map(words))}, with ${list(r.measures.filter((m) => S.config.metrics[m]).map(doc)) || 'its figures'} already added up${built}, so it does not add up every row each time it opens.${others ? ' Some of it, a figure the summary cannot hold, comes from a stored copy of the data.' : ''}`])
+      } else if (used.length) say([`Read from a copy of the ${S.config.recordNoun || 'data'} stored ahead of time${built}, so it does not reach back to the raw data each time it opens.`])
     })
   }
   const deep = h('details', { class: 'back__deep' }, h('summary', { text: 'The queries and their rows' }))
@@ -260,7 +262,7 @@ function howMade(spec, qs, results, said = '') {
     srcs.length > 0 && part('Where the data comes from', sourceList(srcs)),
     part('Where the answer came from', where),
     deep,
-    inCredible() && askButton(spec, qs, said, covers),
+    host() && askButton(spec, qs, said, covers),
   ].filter(Boolean)
 }
 
@@ -269,7 +271,7 @@ function blockName(spec) {
   return asText(spec.kicker || '').trim() || (spec.metrics?.[0] ? F.metric(spec.metrics[0]).label : '') || 'this section'
 }
 
-/** Inside Credible: ask its agent about this block, with what it covers and the queries behind it attached. */
+/** With a host registered (setHost): ask it about this block, with what it covers and the queries behind it attached. */
 function askButton(spec, qs, said, covers) {
   const kicker = blockName(spec)
   const e = S.entityOf(store.state)
@@ -282,7 +284,8 @@ function askButton(spec, qs, said, covers) {
     items: [{ label: 'what it covers', value: covers.join(' ').slice(0, 900) }, ...qs.slice(0, 3).map((q, i) => ({ label: `query ${i + 1}`, value: q.slice(0, 900) }))],
     givens: Object.fromEntries(Object.entries(store.state.filters).filter(([, v]) => v.length)),
   }
-  return h('button', { type: 'button', class: 'ghost ghost--accent back__ask', text: 'Ask Credible about this', onclick: () => askCredible(prompt, context) })
+  const { name, ask } = host()
+  return h('button', { type: 'button', class: 'ghost ghost--accent back__ask', text: `Ask ${name} about this`, onclick: () => ask(prompt, context) })
 }
 
 export function downloadCsv(rows, cols, name) {
@@ -346,7 +349,7 @@ const nameOf = (field, entity) => {
  */
 export function subject({ metrics, by, kicker, layout = 'split' } = {}) {
   return block({
-    compare: true, key: `subject|${metrics.join(',')}`, cls: 'block--subject', kicker: kicker || ' ', headline: null, metrics, period: true,
+    compare: true, key: `subject|${metrics.join(',')}|${by || ''}|${layout}`, cls: 'block--subject', kicker: kicker || ' ', headline: null, metrics, period: true,
     // Its loading height: the figure and chart, then one ledger row wide, rows of three on a tablet, of two on a phone.
     rows: layout === 'board' ? { '--rw': 1.3, '--rm': 0.6, '--rn': 0.4 + Math.ceil(metrics.length / 2) * 0.9 } : { '--rw': metrics.length > 1 ? 1 : 0, '--rm': Math.ceil((metrics.length - 1) / 3), '--rn': Math.ceil((metrics.length - 1) / 2) },
     what: 'The figure the page is about, with its change on the comparison period and, beside it, the same figure over the period with the comparison in grey. Under it, the other figures; click one to make it the subject. Click a point on the line to zoom to it, or drag across several.',
@@ -356,7 +359,11 @@ export function subject({ metrics, by, kicker, layout = 'split' } = {}) {
       if (S.dated()) {
         qs.push(S.seriesQuery(metrics, s, 'current'))
         if (S.compareRange(s)) qs.push(S.seriesQuery(metrics, s, 'compare'))
-      } else if (by) qs.push(S.breakdownQuery(by, [n], s, { top: 8 }), S.partsQuery(by, n, s))
+      } else if (by) {
+        // The list and its whole over the same rows: both leave out the filter on `by` itself, as the list does.
+        const own = S.config.filters.filter((f) => f.field === by).map((f) => f.key)
+        qs.push(S.breakdownQuery(by, [n], s, { top: 8 }), S.partsQuery(by, n, s, { ignore: own }))
+      }
       return qs
     },
     draw: (rs, body, s) => {
@@ -397,9 +404,10 @@ export function subject({ metrics, by, kicker, layout = 'split' } = {}) {
         const g = S.grain(s)
         const a = S.buckets(cur, s, 'current')
         const b = cmp ? S.buckets(cmp, s, 'compare') : []
-        // The comparison lined up bucket for bucket: rolling buckets match by k; calendar ones by position from the end.
+        // The comparison lined up bucket for bucket. Both are every bucket of their range, a missing one a gap, so
+        // rolling buckets match by k and calendar ones by their place from the end, never shifted by a missing month.
         const bAt = (i) => (P.ROLLING.has(g) ? b.find((r) => r.k === a[i].k) : b[b.length - (a.length - i)]) || null
-        const aV = a.map((r) => r[n])
+        const aV = a.map((r) => r[n] ?? null)
         const bV = a.map((_, i) => (bAt(i) && !bAt(i).partial ? bAt(i)[n] : null))
         const label = (r) => (g === 'day' ? P.describe({ from: r.start, to: r.end }) : `${g === 'week' ? 'Week of ' : ''}${P.describe({ from: r.start, to: r.end })}`)
         D.line(chart, {
@@ -428,7 +436,7 @@ export function subject({ metrics, by, kicker, layout = 'split' } = {}) {
         const col = S.colOf(by)
         rankList(chart, cur, { col, n, field: by, name: nameOf(by), compare: false })
         const top = [{ b: nameOf(by)(cur[0][col]) }]
-        if (S.adds(partsOf) && v) say.replaceChildren(...prose([...top, ` accounts for ${pct0(cur[0][n] / v)} of it.`]))
+        if (S.adds(partsOf) && partsOf.t > 0) say.replaceChildren(...prose([...top, ` accounts for ${pct0(cur[0][n] / partsOf.t)} of it.`]))
         else say.replaceChildren(...prose([...top, ` is highest, at ${F.fmtMetric(n, cur[0][n], { compact: true })} against ${F.fmtMetric(n, v, { compact: true })} for all of them.`]))
       }
       // The ledger
@@ -507,7 +515,7 @@ export function rank({ field, entity, metric: n, top = 10, kicker, headline, ext
   const plural = e?.plural || filter?.plural || `${(e?.label || filter?.label || col.replace(/_/g, ' ')).toLowerCase()} values`
   const name = nameOf(fieldName, entity)
   return block({
-    compare: true, key: `rank|${fieldName}|${n}|${top}|${order || ''}|${kicker || ''}`, kicker: kicker || `${F.metric(n).label} by ${(e?.label || filter?.label || col.replace(/_/g, ' ')).toLowerCase()}`, span, reserve: 30 + 35 * top + 30,
+    compare: true, key: `rank|${fieldName}|${n}|${top}|${order || ''}|${kicker || ''}|${where || ''}|${extra.join(',')}`, kicker: kicker || `${F.metric(n).label} by ${(e?.label || filter?.label || col.replace(/_/g, ' ')).toLowerCase()}`, span, reserve: 30 + 35 * top + 30,
     metrics: [n, ...extra], ignore: filter ? [filter.key] : [],
     what: what || `The ${top} ${plural} with the most ${lower(F.metric(n).label)} in the period. The pale bar behind each is its figure in the comparison period, so a bar that reaches past its pale one grew.`,
     queries: (s) => [S.breakdownQuery(fieldName, [n], s, { top, order, extra, where }), S.partsQuery(fieldName, n, s, { ignore: filter ? [filter.key] : [], where }), S.breakdownCompareQuery(fieldName, [n], s, { where })].filter(Boolean),
@@ -551,14 +559,26 @@ export function share({ field, entity, metric: n, top = 6, kicker, headline, spa
   const e = entity ? S.config.entities[entity] : null
   const name = nameOf(fieldName, entity)
   return block({
-    compare: true, key: `share|${fieldName}|${n}`, kicker: kicker || `${F.metric(n).label} by ${(e?.label || filter?.label || col).toLowerCase()}`, span, reserve: 60 + 35 * top,
+    compare: true, key: `share|${fieldName}|${n}|${top}|${where || ''}`, kicker: kicker || `${F.metric(n).label} by ${(e?.label || filter?.label || col).toLowerCase()}`, span, reserve: 60 + 35 * top,
     metrics: [n], ignore: filter ? [filter.key] : [],
     what: `How ${lower(F.metric(n).label)} splits across ${(e?.label || filter?.label || col).toLowerCase()}, as shares of the whole, with each part's change on the comparison period. Parts past the first ${top} are grouped as Other.`,
-    queries: (s) => [S.breakdownQuery(fieldName, [n], s, { top: 50, where }), S.kpiQuery([n], s, { ignore: filter ? [filter.key] : [], where }), S.breakdownCompareQuery(fieldName, [n], s, { where })].filter(Boolean),
-    draw: ([cur, [k], cmp], body) => {
+    // The parts query sits before the optional comparison, so each result keeps its place when there is none.
+    queries: (s) => [S.breakdownQuery(fieldName, [n], s, { top: 50, where }), S.kpiQuery([n], s, { ignore: filter ? [filter.key] : [], where }), S.partsQuery(fieldName, n, s, { ignore: filter ? [filter.key] : [], where }), S.breakdownCompareQuery(fieldName, [n], s, { where })].filter(Boolean),
+    draw: ([cur, [k], [c], cmp], body) => {
       const rows = S.withCompare(cur, cmp, fieldName)
       const total = k[`${n}__cur`]
       const shown = rows.slice(0, top)
+      // Shares only of a whole the parts add up to (an average or an overlapping count does not), and only of a
+      // positive total: anything else lists the parts with their values and no shares.
+      if (!(S.adds(c) && Number.isFinite(total) && total > 0)) {
+        const act = actionFor(fieldName, entity)
+        body.append(h('table', { class: `rank${act ? ' rank--act' : ''}` }, h('tbody', {}, ...shown.map((r) => {
+          const tr = h('tr', {}, h('td', { class: 'rank__name' }, act?.kind === 'open' ? h('a', { href: act.href(r[col]), text: name(r[col]) }) : name(r[col])), h('td', { class: 'rank__v', text: F.fmtMetric(n, r[n], { compact: true }) }), h('td', { class: 'rank__d' }, Number.isFinite(r[`${n}__cmp`]) ? changeText(n, r[n], r[`${n}__cmp`]) : ''))
+          if (act) (tr.tabIndex = 0, tr.setAttribute('role', 'button'), tr.addEventListener('click', () => act.go(r[col])), tr.addEventListener('keydown', (ev) => ev.key === 'Enter' && act.go(r[col])))
+          return tr
+        }))))
+        return
+      }
       const rest = total - shown.reduce((a, r) => a + (r[n] || 0), 0)
       const act = actionFor(fieldName, entity)
       const seg = h('div', { class: 'seg', role: 'img', 'aria-label': shown.map((r) => `${name(r[col])} ${pct0(r[n] / total)}`).join(', ') })
@@ -601,17 +621,20 @@ export function share({ field, entity, metric: n, top = 6, kicker, headline, spa
         })))
       body.append(t)
     },
-    headline: headline ? (rs, s) => headline(S.withCompare(rs[0], rs[2], fieldName), s) : ([cur, [k], cmp]) => {
+    headline: headline ? (rs, s) => headline(S.withCompare(rs[0], rs[3], fieldName), s) : ([cur, [k], [c], cmp]) => {
       const rows = S.withCompare(cur, cmp, fieldName)
       const total = k[`${n}__cur`]
       const top1 = rows[0]
       const g = rows.slice(0, top).map((r) => ({ r, g: growth(r, n) })).filter((x) => x.g !== null)
-      const parts = [{ b: name(top1[col]) }, ` brings ${pct0(top1[n] / total)} of ${lower(F.metric(n).label)}`]
+      const shares = S.adds(c) && Number.isFinite(total) && total > 0
+      const parts = shares ? [{ b: name(top1[col]) }, ` brings ${pct0(top1[n] / total)} of ${lower(F.metric(n).label)}`] : [{ b: name(top1[col]) }, ` leads at ${F.fmtMetric(n, top1[n], { compact: true })}`]
       if (g.length >= 2) {
         const all = g.every((x) => x.g > 0)
+        const none = g.every((x) => x.g < 0)
         g.sort((a, b) => b.g - a.g)
         const one = (e?.label || filter?.label || col.replace(/_/g, ' ')).toLowerCase()
-        parts.push(all ? `; every ${one} grew, ` : '; ', { b: name(g[0].r[col]) }, ` ${all ? 'fastest' : 'grew fastest'} at ${F.delta(n, g[0].r[n], g[0].r[`${n}__cmp`]).text}`)
+        // Sign-aware: when every part fell, the best of them fell least, never "grew fastest".
+        parts.push(all ? `; every ${one} grew, ` : none ? `; every ${one} fell, ` : '; ', { b: name(g[0].r[col]) }, ` ${all ? 'fastest' : none ? 'least' : 'grew fastest'} at ${F.delta(n, g[0].r[n], g[0].r[`${n}__cmp`]).text}`)
       }
       parts.push('.')
       return parts
@@ -627,15 +650,15 @@ export function trend({ metric: n, by, top = 5, kicker, headline, span = 12, hei
   const col = by ? S.colOf(by) : null
   const name = by ? nameOf(by) : null
   return block({
-    compare: true, key: `trend|${n}|${by || ''}`, kicker: kicker || `${F.metric(n).label} over time${by ? ` by ${lower(S.config.filters.find((f) => f.field === by)?.label || col)}` : ''}`, span, reserve: height + 30, metrics: [n],
+    compare: true, key: `trend|${n}|${by || ''}|${top}|${where || ''}`, kicker: kicker || `${F.metric(n).label} over time${by ? ` by ${lower(S.config.filters.find((f) => f.field === by)?.label || col)}` : ''}`, span, reserve: height + 30, metrics: [n],
     what: by ? `${F.metric(n).label} for the ${top} largest values over the period, one line each. Click a line to go to it.` : `${F.metric(n).label} over the period, against the comparison. Click a point to zoom to it.`,
     queries: (s) => {
       if (!by) return [S.seriesQuery([n], s, 'current', { where }), ...(S.compareRange(s) ? [S.seriesQuery([n], s, 'compare', { where })] : [])]
       const g = S.grain(s)
-      const r = S.range(s)
-      const f = S.config.date.field
-      const bucket = g === 'day' ? `k is days(${f} to @${r.to})` : g === 'week' ? `k is floor(days(${f} to @${r.to}) / 7)` : `bucket is ${f}.${g}`
-      return [S.breakdownQuery(by, [n], s, { top, where }), S.run(`{ where: ${by} is not null; group_by: ${col} is ${by}, ${bucket}; aggregate: ${n} }`, s, { where, ignore: S.config.filters.filter((f) => f.field === by).map((f) => f.key) })]
+      const bucket = S.rollingKey(S.config.date.field, S.range(s), g) || `bucket is ${S.config.date.field}.${g}`
+      // One query: the top values, each with its own series nested in it, so a row limit can never leave holes in a
+      // line, and a value past the top is never fetched.
+      return [S.run(`{ where: ${by} is not null; group_by: ${col === by ? by : `${col} is ${by}`}; aggregate: ${n}; nest: series is { group_by: ${bucket}; aggregate: ${n} }; order_by: ${n} desc; limit: ${top} }`, s, { where, ignore: S.config.filters.filter((f) => f.field === by).map((f) => f.key) })]
     },
     draw: ([a, b], body, s) => {
       const g = S.grain(s)
@@ -646,22 +669,18 @@ export function trend({ metric: n, by, top = 5, kicker, headline, span = 12, hei
         const box = body.appendChild(h('div', { class: 'chart' }))
         D.line(box, {
           labels: cur.map((r) => P.describe({ from: r.start, to: r.end })), ticks: cur.map((r) => tickOf(r, g)), height,
-          subject: { name: 'This period', values: cur.map((r) => r[n]) }, compare: b ? { name: 'Comparison', values: cur.map((_, i) => (bAt(i) && !bAt(i).partial ? bAt(i)[n] : null)) } : null,
+          subject: { name: 'This period', values: cur.map((r) => r[n] ?? null) }, compare: b ? { name: 'Comparison', values: cur.map((_, i) => (bAt(i) && !bAt(i).partial ? bAt(i)[n] : null)) } : null,
           partial: cur.map((r) => r.partial), format: (x, full) => F.fmtMetric(n, x, { compact: !full }), axis: F.axisFormat(n), tipLabel: (i) => P.describe({ from: cur[i].start, to: cur[i].end }), delta: (x, y) => F.delta(n, x, y),
           onPick: (i) => store.setPeriod({ preset: 'custom', from: cur[i].start, to: P.addDays(cur[i].end, -1) }),
           onRange: (i, j) => store.setPeriod({ preset: 'custom', from: cur[i].start, to: P.addDays(cur[j].end, -1) }),
         })
         return
       }
-      const names = a.map((r) => r[col])
-      const rows = S.buckets(b, s)
-      const keyOf = (r) => (P.ROLLING.has(g) ? r.k : String(r.bucket))
-      const order = [...new Set(rows.map(keyOf))].sort((x, y) => (P.ROLLING.has(g) ? y - x : x < y ? -1 : 1))
-      const at = new Map(rows.map((r) => [`${r[col]}|${keyOf(r)}`, r]))
-      const sample = order.map((k) => rows.find((r) => keyOf(r) === k))
+      // Every bucket of the period for every line, a bucket a value has no rows in a gap, never a zero.
+      const frame = S.buckets([], s)
       multi(body.appendChild(h('div', { class: 'chart' })), {
-        ticks: sample.map((r) => tickOf(r, g)), labels: sample.map((r) => P.describe({ from: r.start, to: r.end })), height,
-        series: names.map((v) => ({ id: v, name: name(v), values: order.map((k) => at.get(`${v}|${k}`)?.[n] ?? null) })),
+        ticks: frame.map((r) => tickOf(r, g)), labels: frame.map((r) => P.describe({ from: r.start, to: r.end })), height,
+        series: a.map((row) => ({ id: row[col], name: name(row[col]), values: S.buckets(row.series || [], s).map((r) => r[n] ?? null) })),
         format: (x, full) => F.fmtMetric(n, x, { compact: !full }), axis: F.axisFormat(n), act: actionFor(by),
       })
     },
@@ -788,7 +807,7 @@ export function dataTable(body, rows, { columns, open, sort = null, pageSize = 2
  */
 export function heat({ rows: R, cols: Cc, metric: n, kicker, headline, min = 0, volume, span = 12, onPick, where, period = true, what } = {}) {
   return block({
-    key: `heat|${R.expr}|${Cc.expr}|${n}`, kicker, span, reserve: 60 + 28 * (R.count || 7), metrics: [n, ...(volume ? [volume] : [])],
+    key: `heat|${R.expr}|${Cc.expr}|${n}|${volume || ''}|${min}|${period}|${where || ''}`, kicker, span, reserve: 60 + 28 * (R.count || 7), metrics: [n, ...(volume ? [volume] : [])],
     what: what || `${F.metric(n).label} for each ${R.label.toLowerCase()} and ${Cc.label.toLowerCase()}${period ? ' in the period' : ''}; darker is more.${min ? ` Cells with fewer than ${min} ${F.metric(volume).label.toLowerCase()} are left blank.` : ''}`,
     period, queries: (s) => [S.run(`{ group_by: r is ${R.expr}, c is ${Cc.expr}; aggregate: ${n}${volume ? `, vol is ${volume}` : ''}; order_by: r, c }`, s, { where, which: period ? 'current' : 'none' })],
     draw: ([rows], body) => {
@@ -825,7 +844,7 @@ export function watch({ field, entity, metric: n, volume, min = 0, extra = [], l
   const name = nameOf(fieldName, entity)
   const m = F.metric(n)
   return block({
-    compare: true, key: `watch|${fieldName}|${n}`, kicker: kicker || `${m.label} by ${col.replace(/_/g, ' ')}`, span, reserve: 70 + 35 * limit, metrics: [n, volume, ...extra],
+    compare: true, key: `watch|${fieldName}|${n}|${volume || ''}|${min}|${limit}|${extra.join(',')}|${where || ''}`, kicker: kicker || `${m.label} by ${col.replace(/_/g, ' ')}`, span, reserve: 70 + 35 * limit, metrics: [n, volume, ...extra],
     what: `Each value against the thresholds for ${lower(m.label)}, the furthest past them first.${min ? ` Those with fewer than ${F.fmtMetric(volume, min)} ${lower(F.metric(volume).label)} in the period are left out, so a handful of records cannot top the list.` : ''}`,
     queries: (s) => [S.breakdownQuery(fieldName, [n], s, { top: 1000, order: `${volume} desc`, extra: [volume, ...extra], where }), S.breakdownCompareQuery(fieldName, [n], s, { where })].filter(Boolean),
     draw: ([cur, cmp], body) => {

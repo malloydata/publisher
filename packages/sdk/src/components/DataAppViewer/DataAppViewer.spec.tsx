@@ -84,7 +84,10 @@ describe("DataAppViewer color scheme", () => {
    it("gives the frame the page's colour scheme once the page says it drew it", () => {
       const { iframe, fromPage } = mount("dark");
       expect(iframe.style.colorScheme).toBe("");
-      fromPage({ type: PUBLISHER_COLOR_SCHEME_APPLIED_MESSAGE_TYPE, mode: "dark" });
+      fromPage({
+         type: PUBLISHER_COLOR_SCHEME_APPLIED_MESSAGE_TYPE,
+         mode: "dark",
+      });
       expect(iframe.style.colorScheme).toBe("dark");
    });
 
@@ -95,7 +98,10 @@ describe("DataAppViewer color scheme", () => {
          "https://elsewhere.example",
       );
       expect(iframe.style.colorScheme).toBe("");
-      fromPage({ type: PUBLISHER_COLOR_SCHEME_APPLIED_MESSAGE_TYPE, mode: "dark" });
+      fromPage({
+         type: PUBLISHER_COLOR_SCHEME_APPLIED_MESSAGE_TYPE,
+         mode: "dark",
+      });
       expect(iframe.style.colorScheme).toBe("dark");
       act(() => {
          fireEvent.load(iframe);

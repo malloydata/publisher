@@ -25,11 +25,11 @@ user's data authority, so it is worth knowing exactly what you are loading.
 > ship a custom UI. (For zero-code exploration, use the [Publisher Console](./console.md); to build
 > against the data programmatically, see the [REST/MCP APIs](./api-overview.md).)
 
-Reach for an HTML data app when you want a self-contained, custom dashboard that ships with the model
-and needs no toolchain. A page can also be *embedded* into another site as an auto-resizing iframe
+Reach for an HTML data app when you want a self-contained page of your own design that ships with the
+model and needs no toolchain. A dashboard with no code is a [report](./reports.md). A page can also be *embedded* into another site as an auto-resizing iframe
 with `Publisher.embed` (see [Embedding](#embedding)).
 
-The bundled `storefront` package ships one, a four-tab Chart.js dashboard in
+The bundled `storefront` package ships one, a four-tab Chart.js data app in
 [`examples/storefront/public/index.html`](../examples/storefront/public/index.html) with its modules
 in [`public/app/`](../examples/storefront/public/app/), backed by `Publisher.query` /
 `Publisher.queryFull` calls against the model's views and filtered by the model's own

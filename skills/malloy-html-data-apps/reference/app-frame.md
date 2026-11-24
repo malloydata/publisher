@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT
 
 > Every data app starts from this skill's `assets/data-app/`: a kit of blocks (a subject with its figures, ranked
 > lists, shares, lines over time, tables, grids, watchlists, entity pages) and a worked example app. You write one
-> config and the pages; the kit draws them to Credible's design (`reference/data-app-design.md`), keeps the state
+> config and the pages; the kit draws them to one design (`reference/data-app-design.md`), keeps the state
 > in the address, makes every chart clickable and every section explain itself.
 
 ## What is in `assets/data-app/`
@@ -17,20 +17,25 @@ SPDX-License-Identifier: MIT
 | `kit/` | The kit: `kit.js` (import everything from it), its modules, `kit.css`, `themes.css` (nine themes, light and dark), `charts.js`/`charts.css` (more chart forms), `fonts.css` (Geist, inlined) and `fonts/` (each theme's display face, loaded only by its theme), `vendor/` (d3, topojson-client, the font licences) | Whole; never edit, copy again to take a fix |
 | `index.html` | The page: links the kit's styles, loads `/sdk/publisher.js` and `app.js` | Once, then it is the app's own |
 | `app.js` | A worked data app over an online store's orders: three pages and three entity pages | Once, then rewrite it for your data |
-| `themes.py` | Writes and checks `kit/themes.css`; where a theme is added or changed | Never: run it from here |
 
-Run the copy from the package's own directory, the one holding `publisher.json`. The first line finds where the
-skill is installed: in this directory or one above it (a workspace's `.claude/skills` or `.agents/skills`), else in
-your home directory:
+`kit/themes.css` and the fonts are written by this skill's `scripts/themes.py`, which pins each font by its
+address and checksum. A theme is added or changed there, in the skill, never in an app's copy.
+
+Run the copy from the package's own directory, the one holding `publisher.json`. `SKILL_DIR` is the directory you
+read this skill's `SKILL.md` from, wherever your host installed it:
 
 ```sh
-T=$(d=$PWD; while :; do for s in "$d/.claude/skills" "$d/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done; [ "$d" = / ] && break; d=$(dirname "$d"); done; for s in "$HOME/.claude/skills" "$HOME/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done)
+T="$SKILL_DIR/assets/data-app"
 test -f publisher.json || { echo "run this from the package directory, the one with publisher.json"; exit 1; }
-test -n "$T" || { echo "assets/data-app is not on disk: build from the minimal scaffold in SKILL.md"; exit 1; }
+test -d "$T/kit" || { echo "assets/data-app is not on disk: build from the minimal scaffold in SKILL.md"; exit 1; }
 mkdir -p public && rm -rf public/kit && cp -R "$T/kit" public/kit
 for f in index.html app.js; do [ -e "public/$f" ] || cp "$T/$f" public/; done
 chmod -R u+w public
 ```
+
+An app built earlier carries its kit's version in `public/kit/kit.js` (`KIT_VERSION`) and on the running page
+(`<meta name="data-app-kit">`). Copying a newer kit over it is safe within one major version; across one, read what
+the kit's notes say changed before copying.
 
 When the skill reached you only as text, `assets/` is not on disk: say so, and build from the minimal scaffold in
 `SKILL.md` to the same design.
@@ -56,12 +61,12 @@ Query the model once for each measure and dimension you plan to use, and look at
 
 ## Make it fast: store the source, roll up what it adds
 
-Every data app over a warehouse table, or a file over about 100,000 rows, is materialized: Credible stores the
-app's source as a table and keeps rollups of the figures it adds up, and each block's info mark says which one
-answered and how it was built ("a summary Credible keeps of the order lines: one row for each category, channel and
-day, with net revenue already added up, last built 24 November"). A small file in the package needs neither.
-
-Write the app's source in the model, not in the config's `extend`, which a rollup cannot read:
+A data app over a warehouse table, or a file over about 100,000 rows, is materialized: its source stored as a table
+and the figures it adds up kept as rollups, so blocks answer from them. Read `skill:malloy-materialization` first:
+it says which spelling the server reads (`#(materialize)` and `#(rollup)`, or `#@ persist` and `#@ preaggregate`
+where the server's materialization switch is off and the newer tags would be ignored), and that a source with a row
+gate (`#(authorize)`, `#(access_filter)`) is built past its gate and must not be stored where every caller reads it.
+A small file in the package needs neither. What the kit adds to that skill:
 
 ```malloy
 import "ecommerce.malloy"
@@ -70,7 +75,7 @@ import "ecommerce.malloy"
 #(materialize)
 source: sales is order_items extend {
   dimension:
-    order_date is created_at.day                       // the data app's date: a day, so a rollup can filter on it
+    order_date is created_at.day                       // the app's date: a day, so a rollup can filter on it
     category is inventory_items.product_category       // what it filters and ranks by, as the source's own fields
     channel is users.traffic_source
   measure:
@@ -78,30 +83,21 @@ source: sales is order_items extend {
     net_sales is total_sales { where: status != 'Cancelled' and status != 'Returned' }
     #(rollup) grain=["order_date", "category", "channel", "status"]
     items is count()
-    #(rollup) grain=["order_date", "category", "channel", "status"]
-    returned is count() { where: status = 'Returned' }
-    #(rollup) grain=["order_date", "category", "channel", "status"]
-    return_rate is returned / nullif(items, 0)        // a ratio of rolled-up sums rolls up when it says so too
-    aov is net_sales / nullif(order_count, 0)          // a distinct count does not roll up: from the stored source
 }
 ```
 
-- **`#(materialize)` on the source** the app queries (`source: 'sales'` in the config). Everything is answered from
-  its table at least.
+- **The app's source lives in the model**, not in the config's `extend`, which a rollup cannot read, and the config
+  names it (`source: 'sales'`).
 - **The dimensions the app filters, ranks and splits by are the source's own**, and the config names them
   (`field: 'category'`, not `inventory_items.product_category`); the date is a day dimension
   (`date: { field: 'order_date' }`).
-- **`#(rollup) grain=[…]` on every measure that sums or counts, and on ratios of them.** The grain is the date and
-  the four to seven dimensions the app filters by most; leave out one with thousands of values (a brand, a
-  customer), which makes the rollup nearly as big as the source.
-- **No rollup on a distinct count** (`count(order_id)`) **or on a measure that reads a joined column**
-  (`inventory_items.cost.sum()`): Publisher refuses it (`join_not_in_grain`), and the measure is answered from the
-  stored source, which is still fast.
-- **Build it and check it.** On Credible, publishing builds both. Locally, `POST …/packages/{pkg}/materializations`,
-  then `GET …/packages/{pkg}/status`: every `serveVerdicts` entry says `serves`. Then open a ranked list's info mark:
-  it should name the summary. The kit asks for a period and its comparison as two queries, each with the dates in
-  its own `where`, because a rollup answers those and never a measure that carries its own filter; a block of your
-  own should do the same (`S.kpiQueries`, `S.breakdownCompareQuery` with `S.withCompare`).
+- **The rollup's grain is the date and the four to seven dimensions the app filters by most**; leave out one with
+  thousands of values (a brand, a customer), which makes the rollup nearly as big as the source.
+- **The kit asks for a period and its comparison as two queries**, each with its dates in its own `where`, because a
+  rollup answers those and never a measure that carries its own filter; a block of your own does the same
+  (`S.kpiQueries`, `S.breakdownCompareQuery` with `S.withCompare`).
+- **Check it** on a ranked list's info mark: it names the summary that answered, its grain, and how fresh its rows
+  are. "Worked out from the raw data just now" means the source was not stored or the query missed the rollup.
 
 ## The config
 
@@ -167,9 +163,18 @@ dataApp({
   ZIP code). The masthead gets a search box over its names; picking one opens its page.
 - **`articles`** (`{ title, outlet, date, url }`): the stories an app made from the news responds to. `news()` lists
   them as a section, and `aboutPage()` lists them too. Never quote their text.
-- **`credit: true`** puts "Made by" and Credible's logo in the masthead, for an app Credible itself publishes.
+- **`credit`** (`{ name, logo }`): "Made by" and who made the app in the masthead, their logo when the app ships one
+  as an image (`logo: './logo.svg'`), else their name.
 - **`glossary`**: the words a newcomer may not know (`term`, the words that mean it in `match`, `plain`). An info
   mark explains the ones its own text uses.
+
+Two things come from the page that frames the app, not the config:
+
+- **Light and dark.** A host tells the page the reader's mode (`publisher:color-scheme`, through `/sdk/publisher.js`);
+  the kit follows it and answers that it drew it. Publisher's own viewer sends it, and so may any host.
+- **Asking the host.** `setHost({ name, ask(prompt, context) })` registers a host that takes a reader's question;
+  every block's info mark then offers "Ask <name> about this", with what the block covers and its queries in
+  `context`. Register it only where the app knows it runs inside that host; the kit knows no host of its own.
 - **Periods** (`defaults.period`): `last_7`, `last_28`, `last_91`, `last_364` (days counted back from the data's
   latest day, so weeks are whole and line up with the comparison), `mtd`, `qtd`, `ytd`, `last_month`,
   `last_quarter`, `last_year`, `all`. **Compare**: `previous`, `year`, `none`. Pick the default from how often the
@@ -255,8 +260,8 @@ Serve it and look at every page, at 1280 and 390 wide, light and dark (`?mode=da
 - Open "How it's made" on a block of each kind: the definitions are filled and the query runs.
 - `?check=1` puts a banner on the page saying whether any block failed or shows `undefined`, `NaN` or `null`.
 - `body[data-ready="true"]` is set once every block on the page has drawn. Blocks below the fold load only as they
-  near the screen, so on a short window it waits for a scroll: scroll to the bottom first, then wait on it. Inside
-  Credible's frame the host page is what scrolls.
+  near the screen, so on a short window it waits for a scroll: scroll to the bottom first, then wait on it. In a host
+  frame as tall as its content, the host page is what scrolls.
 - No console errors, no horizontal scroll at 390, layout shift under 0.1 (`reference/performance.md`). Measure layout
   shift on a cold load left still, before any scroll: a scroll while blocks load counts their arrival as shift.
   Then scroll to the bottom to load the rest and check those blocks drew.

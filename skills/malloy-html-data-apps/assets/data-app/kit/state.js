@@ -35,10 +35,16 @@ export const dated = () => Boolean(config.date && known.span)
 
 // ---- Malloy text ----
 
-/** A Malloy string literal. Malloy escapes with a backslash; it does not accept SQL's doubled quote. */
+/**
+ * A Malloy string literal. Malloy escapes with a backslash, not SQL's doubled quote, and a raw line break ends a
+ * literal, so control characters are written as escapes too (as the SDK's escapeMalloyString does).
+ */
+const CONTROL = { '\n': '\\n', '\r': '\\r', '\t': '\\t', '\b': '\\b', '\f': '\\f' }
 export function lit(v) {
   if (typeof v === 'number' || typeof v === 'boolean') return String(v)
-  return "'" + String(v).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'"
+  return "'" + String(v).replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f]/g, (c) => CONTROL[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`) + "'"
 }
 /** The source every query starts from, with the app's own measures when it defines any (config.extend). */
 export const src = () => (config.extend ? `${config.source} extend { ${config.extend} }` : config.source)
@@ -104,15 +110,22 @@ export function fromHash(hash) {
   // nothing says so. Entities can have far more values than the kit loads at start (every customer).
   else if (p?.entity && id !== undefined && id !== '') {
     s.page = p.id
-    s.id = knownValue(config.entities[p.entity].key, id) ?? id
+    // An id the kit has not loaded takes the type of the ids it has: a number key stays a number in the query.
+    const key = config.entities[p.entity].key
+    const sample = (known[key] || [])[0]
+    s.id = knownValue(key, id) ?? (typeof sample === 'number' && /^-?\d+(\.\d+)?$/.test(id) ? Number(id) : id)
   }
   const q = new URLSearchParams(qs)
   const preset = q.get('p')
-  if (preset === 'custom' && /^\d{4}-\d\d-\d\d$/.test(q.get('from') || '') && /^\d{4}-\d\d-\d\d$/.test(q.get('to') || '')) s.period = { preset, from: q.get('from'), to: q.get('to') }
-  else if (preset && P.PRESETS[preset]) s.period = { preset }
-  if (P.COMPARES[q.get('c')]) s.compare = q.get('c')
+  // A real date only: 2024-02-30 matches the pattern but is no day, and every block would fail on it.
+  const isDay = (d) => /^\d{4}-\d\d-\d\d$/.test(d || '') && P.iso(P.toDate(d)) === d
+  // Own keys only: "constructor" or "__proto__" in an address must not reach a preset or a metric through the prototype.
+  const own = (o, k) => k !== null && Object.prototype.hasOwnProperty.call(o, k)
+  if (preset === 'custom' && isDay(q.get('from')) && isDay(q.get('to'))) s.period = { preset, from: q.get('from'), to: q.get('to') }
+  else if (own(P.PRESETS, preset)) s.period = { preset }
+  if (own(P.COMPARES, q.get('c'))) s.compare = q.get('c')
   if (P.GRAINS.includes(q.get('g'))) s.grain = q.get('g')
-  if (config.metrics[q.get('m')]) s.metric = q.get('m')
+  if (own(config.metrics, q.get('m'))) s.metric = q.get('m')
   const seen = new Set()
   for (const [key] of q) {
     if (RESERVED.has(key) || !filterSpec(key) || seen.has(key)) continue
@@ -205,37 +218,53 @@ export const kpis = (results) => Object.assign({}, results[0]?.[0], results[1]?.
 
 /**
  * Metrics per bucket of the period (which: 'current') or of the comparison ('compare'). Days and weeks are counted
- * back from the period's end: k = 0 is the last whole day or week. Months and longer are the calendar's.
+ * back from the last day the period includes: k = 0 is that day, or the week ending on it. Months and longer are the
+ * calendar's.
  */
 export function seriesQuery(metrics, s, which = 'current', opts = {}) {
   const g = grain(s)
   const r = which === 'current' ? range(s) : compareRange(s)
   const f = config.date.field
-  const by = g === 'day' ? `k is days(${f} to @${r.to})` : g === 'week' ? `k is floor(days(${f} to @${r.to}) / 7)` : `bucket is ${f}.${g}`
+  const by = rollingKey(f, r, g) || `bucket is ${f}.${g}`
   const order = P.ROLLING.has(g) ? 'k desc' : 'bucket'
   return run(`{ group_by: ${by}; aggregate: ${metrics.join(', ')}; order_by: ${order} }`, s, { ...opts, which })
 }
 
+/** The Malloy expression numbering a day or week bucket back from the range's last included day, or null. */
+export function rollingKey(field, r, g) {
+  const last = P.addDays(r.to, -1)
+  return g === 'day' ? `k is days(${field}.day to @${last})` : g === 'week' ? `k is floor(days(${field}.day to @${last}) / 7)` : null
+}
+
 /**
- * A series' rows with their dates: each gets `start` and `end` (exclusive) and `partial` when the period covers only
- * part of it. Rolling buckets are placed from their k; the oldest may be short when the period is not whole weeks.
+ * Every bucket of the range, oldest first, each with `start`, `end` (exclusive) and `partial` when the range covers
+ * only part of it, and the row that answered it, or `empty: true` with no metrics when no row did. A missing bucket
+ * stays a gap: never bridged, never zero. Rolling buckets match on their k, calendar ones on their start date.
  */
 export function buckets(rows, s, which = 'current') {
   const g = grain(s)
   const r = which === 'current' ? range(s) : compareRange(s)
   if (!r) return []
-  return rows.map((row) => {
-    if (P.ROLLING.has(g)) {
-      const step = g === 'day' ? 1 : 7
-      const end = P.addDays(r.to, -row.k * step)
+  const out = []
+  if (P.ROLLING.has(g)) {
+    const step = g === 'day' ? 1 : 7
+    const byK = new Map(rows.map((row) => [Number(row.k), row]))
+    const n = Math.ceil(P.days(r) / step)
+    for (let k = n - 1; k >= 0; k--) {
+      const end = P.addDays(r.to, -k * step)
       const startFull = P.addDays(end, -step)
-      const start = startFull < r.from ? r.from : startFull
-      return { ...row, start, end, partial: startFull < r.from }
+      const row = byK.get(k)
+      out.push({ ...(row || { k, empty: true }), start: startFull < r.from ? r.from : startFull, end, partial: startFull < r.from })
     }
-    const b = String(row.bucket).slice(0, 10)
+    return out
+  }
+  const byStart = new Map(rows.map((row) => [String(row.bucket).slice(0, 10), row]))
+  for (let b = P.bucketStart(r.from, g); b < r.to; b = P.bucketEnd(b, g)) {
     const e = P.bucketEnd(b, g)
-    return { ...row, start: b < r.from ? r.from : b, end: e > r.to ? r.to : e, partial: b < r.from || e > r.to }
-  })
+    const row = byStart.get(b)
+    out.push({ ...(row || { bucket: b, empty: true }), start: b < r.from ? r.from : b, end: e > r.to ? r.to : e, partial: b < r.from || e > r.to })
+  }
+  return out
 }
 
 /**

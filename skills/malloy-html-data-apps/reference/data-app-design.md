@@ -2,7 +2,7 @@
 Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
-# How a Credible data app looks and works, and why
+# How a data app built on the kit looks and works, and why
 
 > Read this before building any data app. The kit in `assets/data-app/` draws every element described here, so
 > most of it is already true of what you build. Your job is what the kit cannot do: decide who it is for and what
@@ -14,8 +14,8 @@ SPDX-License-Identifier: MIT
 
 ## The idea
 
-A Credible data app reads like the pages a well-run business prints for itself, not like a control panel. It is printed on
-warm paper in ink, the way Credible itself is. Each page has one subject, stated as a number and a sentence at the
+A data app built on the kit reads like the pages a well-run business prints for itself, not like a control panel. It
+is printed on warm paper in ink. Each page has one subject, stated as a number and a sentence at the
 top; every other element is evidence for it or a way deeper into it. Sections are separated by space and hairline
 rules, never boxed. Headings say what the data shows, not what the chart is. Colour is spent on meaning.
 
@@ -96,10 +96,10 @@ working", and a block of your own gets the same one from `block()`. It turns the
 shows (one sentence you write for a reader who does not know the data); what it covers (the period, the comparison
 and the filters, in words, written by the kit); what each number means (from the model's `#(doc)`, or the metric's
 `doc` when the app defines it) and the words a newcomer may not know (the config's `glossary`); where the data comes
-from (the config's `sources`); where the answer came from (a summary Credible keeps, with the grain it is kept at and
-when it was built; a stored copy; or the raw data just now) and how fast, from Publisher's own answer; and the query
-and its rows with a CSV. Inside Credible it also offers "Ask Credible about this", which opens Credible's chat with a
-question about the section and its queries attached. Write `what` for every block you add, and a `doc` for every
+from (the config's `sources`); where the answer came from (a summary built ahead of time, with the grain it is kept at and
+how fresh its rows are; a stored copy; or the raw data just now) and how fast, from Publisher's own answer; and the
+query and its rows with a CSV. Where the app has registered a host that takes questions (`setHost`), it also offers
+"Ask <host> about this", with the section's queries attached. Write `what` for every block you add, and a `doc` for every
 metric the app defines itself.
 
 ## What makes a data app look generated, so you can avoid it
@@ -141,7 +141,7 @@ rules between sections and the face of the large numbers:
 | `harvest` | Food, agriculture, environment, climate | Sand, pine green, a soft serif |
 | `civic` | Government, public data, elections, education, cities | Cool white, navy, a serif, a navy masthead |
 | `bloom` | Consumers, retail, media, travel, people | Blush, plum, a soft serif, the largest figures |
-| `paper` | Any business subject, Credible's own look | Warm paper, steel blue |
+| `paper` | Any business subject, the default | Warm paper, steel blue |
 | `stone` | Internal tools, anything that should recede | Grey, graphite |
 
 Pick the theme whose row names the subject; when two fit, the one nearer to who reads it (a hospital's finance team
@@ -176,10 +176,10 @@ belong to the metric, so every list and figure of it uses the same lines.
 
 ## Fast, and saying why
 
-A data app over a warehouse or a large file is answered from tables Credible builds ahead of time: a stored copy of
+A data app over a warehouse or a large file is answered from tables Publisher builds ahead of time: a stored copy of
 the app's source, and rollups of the figures it adds up (`reference/app-frame.md`, "Make it fast"). Readers never see
 a spinner for long, and the info mark says which table answered and how it was made, in words: one row for each day,
-category and channel, with revenue already added up, last built on a date. Design the model for it: the app's
+category and channel, with revenue already added up, its rows as of a date. Design the model for it: the app's
 measures and filters live on one source, as its own fields.
 
 ## Leave things out

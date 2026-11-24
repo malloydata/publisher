@@ -93,7 +93,7 @@ its change, and opens the entity's page (or filters) on a click. Use `extra` for
 - Draw into a box you append to the block's body, `body.appendChild(document.createElement('div'))`: no fixed height, the chart fills it at its own height. Give the block a `reserve` close to that height.
 - Colours are token names (`'--accent'`, `'--c2'`), so a part keeps one colour on every chart. The bivariate map's
   nine colours mix `--accent` and `--c2`, so the app's accent reaches them.
-- Changes are neutral unless `good` ('rise' or 'fall') says which way is good news.
+- Changes are neutral unless `good` ('rise' or 'fall', or 'up' or 'down') says which way is good news.
 - The maps need topojson-client and a boundary file from `reference/maps.md`; `C.hexMap` and `C.tileMap` need neither.
 - With nothing to draw, a chart says so in the card; what it cannot draw (a row with no value, zero on a log scale, a
   place with no shape, steps that miss their total) it says under the drawing, never drops in silence.

@@ -40,33 +40,14 @@ export const reason = (err) => err?.response?.message ?? err?.message ?? String(
 
 // ---- What Publisher says about each answer ----
 // A query's response carries where it was answered from (a table built ahead of time, or the raw data just now), how
-// long it took, and which source and fields it read. Publisher.query hands back rows only, so the kit reads the rest
-// off the same response: one wrapper around fetch, for query requests only, which changes nothing about the request.
+// long it took, and the path report. The runtime hands it back through Publisher.query's `meta`.
 export const answered = new Map() // query text -> { servedFrom, ms, path }
-let modelAt = null
-const pageFetch = window.fetch.bind(window)
-window.fetch = async (input, init) => {
-  const res = await pageFetch(input, init)
-  try {
-    const url = typeof input === 'string' ? input : input.url
-    if (init?.method === 'POST' && init.body && /\/models\/[^/]+\/query(\?|$)/.test(url)) {
-      const q = JSON.parse(init.body).query
-      if (q) {
-        modelAt ||= { url: url.replace(/\/query(\?.*)?$/, ''), init: { credentials: init.credentials, headers: Object.fromEntries(Object.entries(init.headers || {}).filter(([k]) => k.toLowerCase() !== 'content-type')) } }
-        res.clone().json().then((j) => answered.set(q, { servedFrom: j.servedFrom ?? null, ms: j.executionTimeMs, path: j.path }), () => {})
-      }
-    }
-  } catch {
-    // Not a query, or not JSON: nothing to record.
-  }
-  return res
-}
 
 /** The model's own words: each source's and field's #(doc), fetched once, when a reader first turns a card over. */
 let docsP = null
 export function modelDocs() {
   if (!docsP) {
-    docsP = (modelAt ? pageFetch(modelAt.url, modelAt.init).then((r) => (r.ok ? r.json() : null)) : Promise.resolve(null))
+    docsP = (typeof Publisher.model === 'function' ? Publisher.model(config.model) : Promise.resolve(null))
       .then((m) => {
         const docs = new Map()
         const infos = (m?.sourceInfos || []).map((raw) => (typeof raw === 'string' ? JSON.parse(raw) : raw))
@@ -102,21 +83,17 @@ export function modelDocs() {
 }
 
 /**
- * What Publisher built for this package, for the back of a block: each table by its id (a stored source, or a
- * rollup with its base source, grain and measures) and when the last build finished. Fetched once, when a reader
- * first turns a block over; null where the host does not answer, and the back then says less.
+ * What Publisher builds for this package, for the back of a block: each table by its id (a stored source, or a
+ * rollup with its base source, grain and measures), from the package's build plan at the page's version. Fetched
+ * once, when a reader first turns a block over; null where the server does not answer, and the back then says less.
+ * How fresh a table is comes with each answer (its path report's `servedBy.dataAsOf`), not from here.
  */
 let servedP = null
 export function servedTables() {
   if (!servedP) {
-    const base = modelAt?.url.replace(/\/models\/.*$/, '')
-    const get = (path) => pageFetch(`${base}/${path}`, modelAt.init).then((r) => (r.ok ? r.json() : null)).catch(() => null)
-    servedP = !base ? Promise.resolve(null) : Promise.all([get('build-plan'), get('materializations')]).then(([plan, runs]) => {
-      if (!plan?.sources) return null
-      const tables = new Map(Object.values(plan.sources).map((src) => [src.sourceEntityId, { name: src.name, origin: src.origin, rollup: src.preaggregate || null }]))
-      const done = (Array.isArray(runs) ? runs : []).filter((r) => r.status === 'MANIFEST_FILE_READY' && r.completedAt).sort((a, b) => String(b.completedAt).localeCompare(String(a.completedAt)))[0]
-      return { tables, builtAt: done?.completedAt || null }
-    })
+    servedP = (typeof Publisher.packageResource === 'function' ? Publisher.packageResource('build-plan') : Promise.resolve(null))
+      .then((plan) => (plan?.sources ? { tables: new Map(Object.values(plan.sources).map((src) => [src.sourceEntityId, { name: src.name, origin: src.origin, rollup: src.preaggregate || null }])) } : null))
+      .catch(() => null)
   }
   return servedP
 }
@@ -139,7 +116,13 @@ function pump() {
 export function query(q) {
   if (!cache.has(q)) {
     const p = new Promise((resolve, reject) => {
-      queue.push(() => Publisher.query(config.model, q).then(resolve, reject))
+      const meta = {}
+      queue.push(() =>
+        Publisher.query(config.model, q, { meta }).then((rows) => {
+          answered.set(q, { servedFrom: meta.servedFrom ?? null, ms: meta.executionTimeMs ?? null, path: meta.path ?? null })
+          resolve(rows)
+        }, reject),
+      )
       pump()
     })
     p.catch(() => cache.delete(q))
@@ -166,19 +149,16 @@ export const d3Ready = window.d3
   if (p.get('theme')) document.documentElement.dataset.theme = p.get('theme')
   if (['light', 'dark'].includes(p.get('mode'))) document.documentElement.dataset.mode = p.get('mode')
 }
-// The host's mode. Credible shows a data app in a frame and tells it which mode its reader chose
-// (credible:color-scheme, on load and on every change). The kit follows it unless the address fixes one (?mode=),
-// and answers credible:color-scheme-applied, so the host knows this app draws dark itself and stops holding its
-// frame light. It also asks once on start, in case the host spoke before the kit was listening.
-if (window.parent !== window) {
+// The host's mode. A host that frames the app tells it which mode its reader chose ("publisher:color-scheme", through
+// the page runtime). The kit follows it unless the address fixes one (?mode=), and answers once it has drawn it, so
+// a host holding the frame light can let it go.
+{
   const fixed = ['light', 'dark'].includes(new URLSearchParams(location.search).get('mode'))
-  addEventListener('message', (e) => {
-    const d = e.data
-    if (e.source !== window.parent || !d || d.type !== 'credible:color-scheme' || !['light', 'dark'].includes(d.mode)) return
-    if (!fixed) document.documentElement.dataset.mode = d.mode
-    e.source.postMessage({ type: 'credible:color-scheme-applied', mode: fixed ? document.documentElement.dataset.mode : d.mode }, e.origin === 'null' ? '*' : e.origin)
+  window.Publisher?.onColorScheme?.((mode) => {
+    if (!fixed) document.documentElement.dataset.mode = mode
+    // recolour() runs from the attribute change; the answer goes once the new colours are in.
+    requestAnimationFrame(() => window.Publisher.colorSchemeApplied?.(document.documentElement.dataset.mode || mode))
   })
-  window.parent.postMessage({ type: 'credible:color-scheme-request' }, '*')
 }
 
 /** Charts read their colours when they draw, so a new theme or mode draws every loaded card again, in place. */
@@ -188,31 +168,13 @@ function recolour() {
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', recolour)
 new MutationObserver(recolour).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-mode'] })
 
-// ---- Credible's agent: a reader who wants to go further asks it, from the block they were reading. ----
-/** True inside Credible's viewer: in a frame, on a Credible data host ("data" or "<env>-data"). */
-export function inCredible(loc = location) {
-  const parts = loc.host.split('.')
-  const plane = parts[1] || ''
-  return window.parent !== window && parts.length >= 3 && (plane === 'data' || plane.endsWith('-data'))
+// ---- The host: whatever frames the app may take a reader's question about a block ----
+// The app registers it with setHost({ name, ask(prompt, context) }), when it knows it runs inside such a host; every
+// block's back then offers "Ask <name> about this". The kit knows no host of its own.
+let theHost = null
+/** Register the host that takes a reader's question: `name` labels the button, `ask(prompt, context)` sends it. */
+export function setHost(host) {
+  theHost = host && typeof host.ask === 'function' && host.name ? { name: String(host.name), ask: host.ask } : null
 }
-/** Opens Credible's chat with `prompt` as the reader's question, after attaching `context` (what they were looking
- * at and the queries behind it). Only inside Credible's viewer; anywhere else it does nothing and returns false. */
-export function askCredible(prompt, context) {
-  const text = String(prompt ?? '').trim().slice(0, 4000)
-  if (!text || !inCredible()) return false
-  const parts = location.host.split('.')
-  parts[1] = parts[1].replace(/data$/, 'app')
-  const origin = `${location.protocol}//${parts.join('.')}`
-  if (context) {
-    // Credible drops a context over 8,000 characters whole, so shed the least useful parts until it fits:
-    // the later queries, then the filter values, then everything but what the reader was looking at.
-    const fits = (c) => JSON.stringify(c).length <= 7800
-    let c = context
-    if (!fits(c)) c = { ...c, givens: Object.fromEntries(Object.entries(c.givens || {}).map(([k, v]) => [k, Array.isArray(v) && v.length > 5 ? [...v.slice(0, 5), `and ${v.length - 5} more`] : v])) }
-    while (!fits(c) && (c.items || []).length > 1) c = { ...c, items: c.items.slice(0, -1) }
-    if (!fits(c)) c = { scope: c.scope, view: { ...c.view, id: String(c.view?.id ?? '').slice(0, 200), title: String(c.view?.title ?? '').slice(0, 200) } }
-    window.parent.postMessage({ type: 'credible:chat-context', context: c }, origin)
-  }
-  window.parent.postMessage({ type: 'credible:chat-message', prompt: text }, origin)
-  return true
-}
+/** The registered host, or null. */
+export const host = () => theHost

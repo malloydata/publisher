@@ -28,12 +28,16 @@ import { MOTION } from './draw.js'
  *   glossary: [{ term, match: [...], plain }],          // words a newcomer may not know
  *   articles: [{ title, outlet, date, url }],         // the stories an app made from the news responds to
  *   search: 'area',                      // an entity a reader can find by name from the masthead
- *   credit: true,                        // "Made by Credible" in the masthead, for an app Credible publishes
+ *   credit: { name, logo },              // "Made by <name>" in the masthead; logo is an image the app ships
  *   footer,
  * })
  */
+/** The kit's version, as kit.js describes it. */
+export const KIT_VERSION = '1.0.0'
+
 export async function dataApp(cfg) {
   S.configure(cfg)
+  if (!document.querySelector('meta[name="data-app-kit"]')) document.head.append(Object.assign(document.createElement('meta'), { name: 'data-app-kit', content: KIT_VERSION }))
   // The theme, unless the address previews another (?theme=), and its display face, loaded before anything draws.
   const root = document.documentElement
   const preview = new URLSearchParams(location.search).get('theme')
@@ -53,15 +57,14 @@ export async function dataApp(cfg) {
   const fresh = h('span', { class: 'mast__fresh', 'data-pending': '' })
   const find = cfg.search && searchBox(cfg.search)
   const mast = h('header', { class: 'mast' }, h('div', { class: 'wrap mast__row' },
-    h('a', { class: 'mast__name', href: '#/' }, cfg.credit && credit(), h('span', { class: 'mast__title', text: cfg.title }), cfg.sub && h('span', { class: 'mast__sub', text: cfg.sub })),
+    h('a', { class: 'mast__name', href: '#/' }, cfg.credit && credit(cfg.credit), h('span', { class: 'mast__title', text: cfg.title }), cfg.sub && h('span', { class: 'mast__sub', text: cfg.sub })),
     navPages.length > 1 && h('nav', { class: 'mast__nav', 'aria-label': 'Pages' }, ...navPages.map((p) => h('a', { href: `#/${p.id === cfg.pages[0].id ? '' : p.id}`, 'data-page': p.id, text: p.title }))),
     find, fresh))
   const ctl = h('div', { class: `wrap ctl${cfg.date ? '' : ' ctl--nodate'}`, id: 'controls' })
   const main = h('main', { id: 'main', class: 'wrap', tabindex: '-1' }, h('div', { class: 'state state--loading', style: { '--reserve': '560px' } }))
   const srcs = Object.values(cfg.sources || {})
   const foot = h('footer', { class: 'wrap colophon', hidden: true }, cfg.footer && h('span', { text: cfg.footer }),
-    srcs.length > 0 && h('span', {}, 'Data: ', ...srcs.flatMap((x, i) => [i ? '; ' : '', /^https?:\/\//i.test(x.url || '') ? h('a', { href: x.url, target: '_blank', rel: 'noopener', text: x.by || x.name }) : x.by || x.name, x.license ? ` (${x.license})` : ''])),
-    h('span', { text: 'Built on Credible' }))
+    srcs.length > 0 && h('span', {}, 'Data: ', ...srcs.flatMap((x, i) => [i ? '; ' : '', /^https?:\/\//i.test(x.url || '') ? h('a', { href: x.url, target: '_blank', rel: 'noopener', text: x.by || x.name }) : x.by || x.name, x.license ? ` (${x.license})` : '']))))
   app.replaceChildren(mast, ctl, main, foot)
   try {
     const lists = cfg.filters.map((f) => (f.values ? Promise.resolve(f.values.map((v) => ({ v, n: null })))
@@ -117,12 +120,12 @@ export async function dataApp(cfg) {
   if (new URLSearchParams(location.search).has('check')) selfCheck()
 }
 
-/** "Made by" and Credible's logo, in the masthead's ink with Credible's blue dot. */
-function credit() {
-  const svg = new DOMParser().parseFromString(LOGO, 'image/svg+xml').documentElement
-  return h('span', { class: 'mast__credit' }, h('span', { text: 'Made by' }), document.importNode(svg, true))
+/** "Made by" and who made the app: their logo when the app ships one (`logo`, an image path), else their name. */
+function credit({ name, logo } = {}) {
+  if (!name) return null
+  return h('span', { class: 'mast__credit' }, h('span', { text: 'Made by' }),
+    logo ? h('img', { src: logo, alt: name, class: 'mast__credit-logo' }) : h('span', { class: 'mast__credit-name', text: name }))
 }
-const LOGO = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 26.1" role="img" aria-label="Credible"><path fill="currentColor" d="M 88.6 20.4 C 84.8 20.4 82.4 18 82.4 14.2 C 82.4 10.4 84.8 7.9 88.4 7.9 C 91.9 7.9 94.4 10.2 94.4 13.8 L 94.4 14.7 L 85.1 14.7 L 85.1 14.9 C 85.1 16.9 86.5 18.3 88.5 18.3 C 90.1 18.3 91.3 17.5 91.6 16.2 L 94.2 16.2 C 93.8 18.6 91.7 20.4 88.6 20.4 Z M 85.1 12.8 L 91.7 12.8 C 91.5 11 90.3 10 88.4 10 C 86.8 10 85.4 11 85.1 12.8 Z M 77.4 20.3 L 77.4 2 L 80 2 L 80 20.3 Z M 69.1 20.4 C 67.2 20.4 65.9 19.6 65.1 18.5 L 64.8 20.3 L 62.5 20.3 L 62.5 1 L 65.2 1 L 65.2 9.8 C 65.9 8.8 67.2 7.9 69.1 7.9 C 72.5 7.9 74.9 10.2 74.9 14.2 C 74.9 17.9 72.5 20.4 69.1 20.4 Z M 68.7 18.2 C 70.8 18.2 72.3 16.6 72.3 14.2 C 72.3 11.7 70.8 10.1 68.7 10.1 C 66.5 10.1 65.1 11.7 65.1 14.1 C 65.1 16.6 66.5 18.2 68.7 18.2 Z M 57 20.3 L 57 8 L 59.6 8 L 59.6 20.3 Z"/><path fill="#5c7a93" d="M 56 1.9 C 56 2.9 56.8 3.7 57.9 3.7 C 58.9 3.7 59.7 2.9 59.7 1.9 C 59.7 0.8 58.9 0 57.9 0 C 56.8 0 56 0.8 56 1.9 Z"/><path fill="currentColor" d="M 47.1 20.1 C 43.8 20.1 41.3 17.7 41.3 13.8 C 41.3 10 43.8 7.5 47.1 7.5 C 49 7.5 50.4 8.2 51.1 9.3 L 51.1 1 L 53.7 1 L 53.7 19.9 L 51.4 19.9 L 51.1 18 C 50.3 19.1 49.1 20.1 47.1 20.1 Z M 47.5 17.8 C 49.7 17.8 51.1 16.2 51.1 13.8 C 51.1 11.3 49.7 9.7 47.5 9.7 C 45.4 9.7 44 11.3 44 13.8 C 44 16.2 45.4 17.8 47.5 17.8 Z M 33.7 20.1 C 29.8 20.1 27.4 17.6 27.4 13.8 C 27.4 10 29.8 7.5 33.5 7.5 C 37 7.5 39.4 9.8 39.4 13.5 L 39.4 14.3 L 30.1 14.3 L 30.1 14.5 C 30.1 16.6 31.5 17.9 33.6 17.9 C 35.2 17.9 36.3 17.1 36.7 15.8 L 39.3 15.8 C 38.9 18.2 36.8 20.1 33.7 20.1 Z M 30.2 12.4 L 36.8 12.4 C 36.6 10.6 35.3 9.6 33.5 9.6 C 31.9 9.6 30.4 10.6 30.2 12.4 Z M 19.6 19.9 L 19.6 7.6 L 21.9 7.6 L 22.1 9.5 C 22.8 8.5 23.7 7.6 25.8 7.6 L 26.4 7.6 L 26.4 10 L 25.3 10 C 22.9 10 22.2 11.8 22.2 13.7 L 22.2 19.9 Z M 11.6 20.1 C 7.8 20.1 5.5 17.6 5.5 13.8 C 5.5 10 7.9 7.5 11.7 7.5 C 14.8 7.5 16.8 9.2 17.3 12 L 14.6 12 C 14.3 10.6 13.2 9.7 11.6 9.7 C 9.5 9.7 8.2 11.4 8.2 13.8 C 8.2 16.2 9.5 17.8 11.6 17.8 C 13.2 17.8 14.3 16.9 14.6 15.5 L 17.3 15.5 C 16.8 18.3 14.7 20.1 11.6 20.1 Z"/><path fill="currentColor" d="M 53.8 2.5 C 53.8 2.9 53.5 3.1 53.2 3.1 L 3.2 3.1 C 2.9 3.1 2.6 3.4 2.6 3.7 L 2.6 22.9 C 2.6 23.2 2.9 23.5 3.2 23.5 L 96.6 23.5 C 96.9 23.5 97.1 23.2 97.1 22.9 L 97.1 3.7 C 97.1 3.4 96.9 3.1 96.6 3.1 L 62.9 3.1 C 62.6 3.1 62.3 2.9 62.3 2.5 L 62.3 1.1 C 62.3 0.8 62.6 0.5 62.9 0.5 L 99.2 0.5 C 99.5 0.5 99.8 0.8 99.8 1.1 L 99.8 25.5 C 99.8 25.8 99.5 26.1 99.2 26.1 L 0.5 26.1 C 0.2 26.1 0 25.9 0 25.6 L 0 1.1 C 0 0.8 0.3 0.5 0.6 0.5 L 53.2 0.5 C 53.5 0.5 53.8 0.8 53.8 1.1 Z"/></svg>'
 
 /** Find an entity by part of its name; Enter or a click opens its page. The names are the ones loaded with it. */
 function searchBox(key) {
@@ -212,7 +215,10 @@ function paint(s, same, toTop) {
   const here = [...main.querySelectorAll('.block')]
   const fresh = [...next.querySelectorAll('.block')]
   const byKey = new Map(here.map((c) => [c.dataset.key, c]))
-  if (same && fresh.length === here.length && fresh.every((c) => byKey.has(c.dataset.key))) {
+  // Blocks are drawn again in place only when every key is its own: two blocks sharing one would update one element
+  // twice and leave the other stale, so a collision takes the replace path.
+  const unique = (cs) => new Set(cs.map((c) => c.dataset.key)).size === cs.length
+  if (same && fresh.length === here.length && unique(fresh) && unique(here) && fresh.every((c) => byKey.has(c.dataset.key))) {
     for (const c of fresh) {
       const old = byKey.get(c.dataset.key)
       if (old.__loaded) old.__update(c.__spec)

@@ -1,8 +1,8 @@
 /* Copyright (c) Credible Data Inc. SPDX-License-Identifier: MIT */
-/* The kit's themes, written by themes.py in the malloy-html-data-apps skill's assets/data-app: edit there. Set dataApp({ theme }) or data-theme on <html>.
+/* The kit's themes, written by the malloy-html-data-apps skill's scripts/themes.py: edit there. Set dataApp({ theme }) or data-theme on <html>.
    data-mode="dark" or "light" fixes the mode; with neither, the reader's system setting decides. */
 
-/* paper: Any business subject; Credible's own look. The default. */
+/* paper: Any business subject; warm paper and ink. The default. */
 :root {
   color-scheme: light;
   --paper: #f8f7f4;

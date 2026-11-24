@@ -74,8 +74,11 @@ function readable(color) {
   for (let i = 0; i < 20 && ratio(c.formatHex(), bg) < 4.5; i++) c = c.darker(0.15)
   return c.formatHex()
 }
+/** Which way is good news: 'rise' or 'fall', or the kit's own words for them, 'up' and 'down'. */
+const rises = (good) => good === 'rise' || good === 'up'
+const falls = (good) => good === 'fall' || good === 'down'
 /** A change's class: good, bad or neutral, by which way is good news ('rise' or 'fall'); neutral when not said. */
-const tone = (v, good) => (good === null || good === undefined || !num(v) || v === 0 ? '' : (v > 0) === (good === 'rise') ? 'fx-good' : 'fx-bad')
+const tone = (v, good) => (good === null || good === undefined || !num(v) || v === 0 ? '' : (v > 0) === (rises(good)) ? 'fx-good' : 'fx-bad')
 const toneFill = (v, good) => ({ 'fx-good': '--down', 'fx-bad': '--up' })[tone(v, good)] || '--c-bar'
 const ramp = () => ['--seq-1', '--seq-2', '--seq-3', '--seq-4', '--seq-5'].map(token)
 const noData = () => token('--nodata') || token('--surface-2')
@@ -669,7 +672,9 @@ export function area(el, labels, series, opts = {}) {
     const x = d3.scalePoint(labels, insetPoints(labels, shown, m.l, w - m.r))
     yAxis(svg.append('g').attr('transform', `translate(${m.l},0)`), y, w - m.l - m.r, format)
     xAxis(svg.append('g').attr('transform', `translate(0,${height - m.b})`), x, { values: shown, ...(dated ? { format: dated.format } : tickFormat ? { format: tickFormat } : {}) })
-    const shape = d3.area().x((d) => x(d.data.label)).y0((d) => y(d[0])).y1((d) => y(d[1]))
+    // A label where any part has no value is a gap in the stack, never a dip to zero.
+    const whole = labels.map((_, i) => series.every((s) => num(s.values[i])))
+    const shape = d3.area().defined((d, i) => whole[i]).x((d) => x(d.data.label)).y0((d) => y(d[0])).y1((d) => y(d[1]))
     const paths = svg.append('g').selectAll('path').data(stack).join('path').attr('class', 'fx-mark').attr('d', shape).style('fill', (d, i) => paint(series[i].color)).style('fill-opacity', 0.85)
       .each(function (d, i) { pickable(this, series[i].name, onPick, series[i].name) })
     hover(paths, (d) => { const s = series[d.index]; const last = s.values.findLast?.(num) ?? s.values.filter(num).at(-1); return [s.name, `Latest: ${format(last)}`, onPick ? 'Click to choose this part.' : ''] })
@@ -872,7 +877,7 @@ export function rankTable(el, rows, opts = {}) {
   const hasChange = rows.some((r) => num(r.change))
   const max = Math.max(...rows.map((r) => r.value || 0)) || 1
   const maxChange = Math.max(...rows.map((r) => (num(r.change) ? Math.abs(r.change) : 0))) || 1
-  const toneOf = (c) => (good === null || !c ? '--text-muted' : (c > 0) === (good === 'rise') ? '--down' : '--up')
+  const toneOf = (c) => (good === null || !c ? '--text-muted' : (c > 0) === (rises(good)) ? '--down' : '--up')
   let all = el.__rtAll || false
   const render = () => {
     const shown = all ? rows : rows.slice(0, limit)
@@ -1182,7 +1187,7 @@ export function treemap(el, items, opts = {}) {
     const changeAbs = d3.max(data, (d) => (num(d.change) ? Math.abs(d.change) : 0)) || 0.01
     const div = d3.scaleDiverging([-changeAbs, 0, changeAbs], d3.interpolateRgbBasis([token('--down'), token('--surface-2'), token('--up')]))
     const seq = d3.scaleSequentialSqrt([0, d3.max(data, (d) => d.value)], d3.interpolateRgbBasis(ramp()))
-    const fill = (d) => (colorBy === 'change' ? (num(d.change) && good ? div(good === 'rise' ? -d.change : d.change) : noData()) : colorBy === 'color' ? paint(d.color || '--c-bar') : seq(d.value))
+    const fill = (d) => (colorBy === 'change' ? (num(d.change) && good ? div(rises(good) ? -d.change : d.change) : noData()) : colorBy === 'color' ? paint(d.color || '--c-bar') : seq(d.value))
     if (grouped) {
       const gh = svg.append('g').selectAll('g').data(root.children).join('g').attr('transform', (d) => `translate(${d.x0},${d.y0})`)
       const t = gh.append('text').attr('class', 'fx-group').attr('x', 2).attr('y', 14).text((d) => fit(`${d.data.group} · ${format(d.value)}`, d.x1 - d.x0 - 4, 12))
@@ -1201,7 +1206,7 @@ export function treemap(el, items, opts = {}) {
       g.append('text').attr('class', 'fx-small').attr('x', 5).attr('y', 29).style('fill', ink).text(fit(sub, wd, 11))
     })
     const out = [svg.node()]
-    if (colorBy === 'change') out.push(h('div', { class: 'map-legend' }, h('span', {}, h('i', { style: { background: token(good === 'fall' ? '--down' : '--up') } }), 'Fell'), h('span', {}, h('i', { style: { background: token(good === 'fall' ? '--up' : '--down') } }), 'Rose'), h('span', {}, h('i', { style: { background: noData() } }), 'No change shown')))
+    if (colorBy === 'change') out.push(h('div', { class: 'map-legend' }, h('span', {}, h('i', { style: { background: token(falls(good) ? '--down' : '--up') } }), 'Fell'), h('span', {}, h('i', { style: { background: token(falls(good) ? '--up' : '--down') } }), 'Rose'), h('span', {}, h('i', { style: { background: noData() } }), 'No change shown')))
     out.push(notes(noValue(items.length - data.length)))
     return out
   })

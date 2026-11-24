@@ -67,7 +67,7 @@ export function mount(host, buildOption) {
 
 ### Trim the library to what the app draws
 
-Not the frame template's d3 module (`reference/charts.md`): it is copied whole, so a fixed version can be copied over it, and it draws SVG, which a check counts by marks rather than pixels.
+Not the kit's d3 module (`reference/charts.md`): it is copied whole, so a fixed version can be copied over it, and it draws SVG, which a check counts by marks rather than pixels.
 
 Most chart libraries publish a modular build. A bundle of only the series types and components the app actually uses is typically a third smaller (one build: 1,122 KB to 713 KB, 369 KB to 243 KB gzipped). Inventory what the code passes the library (every series `type:`, and components such as legend, tooltip, visualMap, markLine), bundle exactly those once with a bundler outside the package, and commit the bundle together with its entry file and the command that rebuilt it.
 

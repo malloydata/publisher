@@ -91,15 +91,18 @@ export function resolve(period, span) {
  */
 export function compareRange(period, range, mode, span) {
   if (mode === 'none' || period.preset === 'all') return null
+  // `to` is exclusive: move the last day the period includes, then step past it. Moving `to` itself would land a month
+  // back on its clamped last day and lose it (1-30 March against 1-27 February).
+  const shiftTo = (to, n) => addDays(addMonths(addDays(to, -1), n), 1)
   let r
   // A year earlier: 52 weeks back for a period counted in days, so Mondays line up with Mondays; the same dates for a
   // calendar period.
-  if (mode === 'year') r = PRESETS[period.preset]?.unit ? { from: addMonths(range.from, -12), to: addMonths(range.to, -12) } : { from: addDays(range.from, -364), to: addDays(range.to, -364) }
+  if (mode === 'year') r = PRESETS[period.preset]?.unit ? { from: addMonths(range.from, -12), to: shiftTo(range.to, -12) } : { from: addDays(range.from, -364), to: addDays(range.to, -364) }
   else {
     const unit = PRESETS[period.preset]?.unit
     if (unit) {
       const back = unit === 'month' ? -1 : unit === 'quarter' ? -3 : -12
-      r = { from: addMonths(range.from, back), to: addMonths(range.to, back) }
+      r = { from: addMonths(range.from, back), to: shiftTo(range.to, back) }
     } else r = { from: addDays(range.from, -days(range)), to: range.from }
   }
   return r.from < span.first ? null : r
@@ -118,6 +121,15 @@ export function autoGrain(range) {
   return 'quarter'
 }
 export const ROLLING = new Set(['day', 'week'])
+
+/** The first day of the calendar bucket holding `date`, as Malloy truncates it (`.month`, `.quarter`, `.year`). */
+export function bucketStart(date, grain) {
+  const [y, m] = String(date).slice(0, 7).split('-').map(Number)
+  if (grain === 'month') return `${y}-${String(m).padStart(2, '0')}-01`
+  if (grain === 'quarter') return `${y}-${String(m - ((m - 1) % 3)).padStart(2, '0')}-01`
+  if (grain === 'year') return `${y}-01-01`
+  return String(date).slice(0, 10)
+}
 
 /** The day after a bucket that starts on `start`, at `grain`. */
 export function bucketEnd(start, grain) {

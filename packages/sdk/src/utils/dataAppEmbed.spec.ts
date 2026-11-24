@@ -126,9 +126,9 @@ describe("color scheme messages", () => {
       expect(isPublisherColorSchemeRequest({ type: "publisher:resize" })).toBe(
          false,
       );
-      expect(isPublisherColorSchemeRequest("publisher:color-scheme-request")).toBe(
-         false,
-      );
+      expect(
+         isPublisherColorSchemeRequest("publisher:color-scheme-request"),
+      ).toBe(false);
       expect(isPublisherColorSchemeApplied(null)).toBe(false);
    });
 });
