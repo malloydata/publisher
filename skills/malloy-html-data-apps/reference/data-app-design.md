@@ -91,7 +91,8 @@ do one of them too, and say so in its tooltip.
 
 ## Every section explains itself
 
-Each block has an info mark (ⓘ) in its corner. It turns the section over to "How it's made", which says: what it
+Each block has an info mark (ⓘ) in its corner: an icon, never a text button such as "How it's made" or "Show the
+working", and a block of your own gets the same one from `block()`. It turns the section over to "How it's made", which says: what it
 shows (one sentence you write for a reader who does not know the data); what it covers (the period, the comparison
 and the filters, in words, written by the kit); what each number means (from the model's `#(doc)`, or the metric's
 `doc` when the app defines it) and the words a newcomer may not know (the config's `glossary`); where the data comes
