@@ -1,5 +1,5 @@
 {
-   "comment": "One protocol, two hosts: read by dataAppBridge.spec.ts (SDK) and publisher.spec.ts (the vanilla Publisher.embed). \"$NONCE\" is the embed's nonce and \"$ID\" the id of the request being answered; every page message here echoes the nonce unless the case says otherwise, and the host never sends one. A givensReplay case runs its `before` steps on a bound page (hostSends: the host sends givens.set; pageReports: the page emits givens.changed), reloads the frame, and expects the givens.set the host posts once the new page answers hello (null: none). A handshake case with loadFirst fires the frame's load event after the host's send and before the message; the send, when probePosted, is then answered and must resolve.",
+   "comment": "One protocol, two hosts: read by dataAppBridge.spec.ts (SDK) and publisher.spec.ts (the vanilla Publisher.embed). \"$NONCE\" is the embed's nonce and \"$ID\" the id of the request being answered; every page message here echoes the nonce unless the case says otherwise, and the host never sends one. A givensReplay case runs its `before` steps on a bound page (hostSends: the host sends givens.set; pageReports: the page emits givens.changed), reloads the frame, and expects the givens.set the host posts once the new page answers hello with `rebindHandles` (null: none). `readies` then has the page post `ready` with those handles, each expecting the givens.set that follows (the host replays only once the page handles givens.set). A handshake case with loadFirst fires the frame's load event after the host's send and before the message; the send, when probePosted, is then answered and must resolve.",
    "appOrigin": "https://app.example.com",
    "events": [
       {
@@ -254,6 +254,7 @@
             { "hostSends": { "a": 1, "b": 2 } },
             { "hostSends": { "b": null, "c": 3 } }
          ],
+         "rebindHandles": ["givens.set"],
          "replayed": { "a": 1, "c": 3 }
       },
       {
@@ -262,17 +263,30 @@
             { "hostSends": { "a": 1 } },
             { "pageReports": { "a": 2, "z": 9 } }
          ],
+         "rebindHandles": ["givens.set"],
          "replayed": { "a": 2, "z": 9 }
       },
       {
          "name": "a send after the page's report is newer and merges onto it",
          "before": [{ "pageReports": { "a": 2 } }, { "hostSends": { "b": 1 } }],
+         "rebindHandles": ["givens.set"],
          "replayed": { "a": 2, "b": 1 }
       },
       {
          "name": "with nothing held nothing is replayed",
          "before": [],
+         "rebindHandles": ["givens.set"],
          "replayed": null
+      },
+      {
+         "name": "a page that binds without handling givens.set gets the givens once it says it does, and only once",
+         "before": [{ "hostSends": { "a": 1 } }],
+         "rebindHandles": [],
+         "replayed": null,
+         "readies": [
+            { "handles": ["givens.set"], "replayed": { "a": 1 } },
+            { "handles": ["givens.set"], "replayed": null }
+         ]
       }
    ],
    "replies": [

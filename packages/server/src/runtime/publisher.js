@@ -50,7 +50,8 @@
 // from the URL; restored before the runtime's own reload); host → page ones carry none.
 // The host says hello on every iframe load and answers the page's `ready` with one; nothing
 // retries, so load the runtime with a script tag, not after the frame's load event. After a
-// reload the host replays the givens it last sent or received, with givens.set.
+// reload the host replays the givens it last sent or received, with givens.set, once the
+// page's handles include givens.set.
 // Page → host events: ready, query.ran, givens.changed, version.unavailable. Host → page:
 // auth.token (built in), givens.set (built in; applies only once the page has called
 // onGivensChange, which also advertises it), and whatever the page registers with on(). A
@@ -838,6 +839,9 @@
       var readyWaiters = [];
       var seq = 0;
       var binds = 0;
+      var pageHandles = [];
+      // A rebound page gets the held givens once it handles givens.set; a replay sooner would be dropped unheard.
+      var replayPending = false;
       // The givens the page should hold: what the host last sent with givens.set (merged) or the page last reported.
       var heldGivens = null;
       var gone = false;
@@ -905,13 +909,28 @@
             });
       }
 
+      function noteHandles(payload) {
+         var h = payload && payload.handles;
+         pageHandles = Array.isArray(h) ? h : [];
+      }
+
+      function replayGivens() {
+         if (
+            !ready ||
+            !replayPending ||
+            pageHandles.indexOf("givens.set") === -1
+         )
+            return;
+         replayPending = false;
+         if (heldGivens) hostPost("givens.set", { givens: heldGivens });
+      }
+
       function onReady() {
          if (ready) return;
          ready = true;
          // A reloaded page starts with no givens; the first bind has none to replay.
-         if (++binds > 1 && heldGivens) {
-            hostPost("givens.set", { givens: heldGivens });
-         }
+         if (++binds > 1) replayPending = true;
+         replayGivens();
          sendToken();
          readyWaiters.splice(0).forEach(function (fn) {
             fn();
@@ -925,7 +944,10 @@
          if (!isEnvelope(m) || m.nonce !== nonce) return;
          var isRequest = m.id !== undefined && !m.reply;
          if (m.reply) {
-            if (m.type === "hello") return onReady();
+            if (m.type === "hello") {
+               noteHandles(m.payload);
+               return onReady();
+            }
             var waiting = pending.get(m.id);
             if (!waiting) return;
             pending.delete(m.id);
@@ -943,7 +965,11 @@
             return;
          }
          // The page is up and offered itself before our hello landed; answer now.
-         if (m.type === "ready" && !ready) sayHello();
+         if (m.type === "ready") {
+            noteHandles(m.payload);
+            if (!ready) sayHello();
+            replayGivens();
+         }
          if (
             m.type === "givens.changed" &&
             isPlainObject(m.payload && m.payload.givens)
@@ -1023,6 +1049,7 @@
       function onLoad() {
          generation++;
          ready = false;
+         replayPending = false;
          sayHello();
       }
       iframe.addEventListener("load", onLoad);

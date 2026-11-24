@@ -2217,13 +2217,29 @@ describe("Publisher.embed (host side)", () => {
             await flush();
             m.childPosts.length = 0;
             m.load();
-            helloReply(m);
+            helloReply(m, {
+               payload: { handles: c.rebindHandles, runtime: "1" },
+            });
             await flush();
-            expect(
+            const replays = () =>
                m.childPosts
                   .filter((p) => p.msg.type === "givens.set")
-                  .map((p) => p.msg.payload),
-            ).toEqual(c.replayed ? [{ givens: c.replayed }] : []);
+                  .map((p) => p.msg.payload);
+            expect(replays()).toEqual(
+               c.replayed ? [{ givens: c.replayed }] : [],
+            );
+            for (const r of c.readies ?? []) {
+               m.childPosts.length = 0;
+               m.fromChild(
+                  m.msg("ready", {
+                     payload: { handles: r.handles, runtime: "1" },
+                  }),
+               );
+               await flush();
+               expect(replays()).toEqual(
+                  r.replayed ? [{ givens: r.replayed }] : [],
+               );
+            }
          });
       }
 

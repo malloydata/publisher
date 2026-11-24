@@ -235,6 +235,8 @@ export function createDataAppBridge(
    let generation = 0;
    let seq = 0;
    let binds = 0;
+   // A rebound page gets the held givens once it handles givens.set; a replay sooner would be dropped unheard.
+   let replayPending = false;
    // The givens the page should hold: what the host last sent with givens.set (merged) or the page last reported.
    let heldGivens: Record<string, unknown> | undefined;
    let resolveReady: (p: ReadyPayload) => void = () => {};
@@ -318,11 +320,20 @@ export function createDataAppBridge(
       lastReady = p;
    }
 
+   function replayGivens() {
+      if (!isReady || !replayPending || !pageHandles.includes("givens.set")) {
+         return;
+      }
+      replayPending = false;
+      if (heldGivens) post("givens.set", { givens: heldGivens });
+   }
+
    function onReady() {
       if (isReady) return;
       isReady = true;
       // A reloaded page starts with no givens; the first bind has none to replay.
-      if (++binds > 1 && heldGivens) post("givens.set", { givens: heldGivens });
+      if (++binds > 1) replayPending = true;
+      replayGivens();
       if (!readySettled) {
          readySettled = true;
          resolveReady(lastReady);
@@ -366,6 +377,7 @@ export function createDataAppBridge(
          noteReady(m.payload);
          // The page is up and offered itself before our hello landed; answer now.
          if (!isReady) sayHello();
+         replayGivens();
       }
       if (m.type === "givens.changed") {
          const held = givensOf(m.payload);
@@ -428,6 +440,7 @@ export function createDataAppBridge(
    function onLoad() {
       generation++;
       isReady = false;
+      replayPending = false;
       sayHello();
    }
 

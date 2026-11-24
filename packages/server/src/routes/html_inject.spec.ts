@@ -50,6 +50,12 @@ describe("injectAfterDoctype", () => {
       );
    });
 
+   it("goes after the doctype that follows an XML prolog", () => {
+      expect(inject('<?xml version="1.0"?>\n<!DOCTYPE html><html>')).toBe(
+         `<?xml version="1.0"?>\n<!DOCTYPE html>${SNIPPET}<html>`,
+      );
+   });
+
    it("goes at the start of a document with no doctype, whatever its size", () => {
       expect(inject("<p>hi</p>")).toBe(`${SNIPPET}<p>hi</p>`);
       expect(inject("<head><meta charset=x><title>t")).toBe(
@@ -85,6 +91,7 @@ describe("injectAfterDoctype", () => {
          "<html><script>var a='<!doctype html>'</script>",
          "<p>text</p><!doctype html>",
          "<!-- <!doctype html>",
+         '<?xml version="1.0"',
       ]) {
          expect(inject(page)).toBe(`${SNIPPET}${page}`);
       }

@@ -321,11 +321,22 @@ describe("what the host accepts, from the shared fixture", () => {
          await flush();
          m.posts.length = 0;
          m.load();
-         m.helloReply();
+         m.helloReply({ handles: c.rebindHandles, runtime: "1" });
          await flush();
-         expect(m.ofType("givens.set").map((p) => p.msg.payload)).toEqual(
-            c.replayed ? [{ givens: c.replayed }] : [],
-         );
+         const replays = () => m.ofType("givens.set").map((p) => p.msg.payload);
+         expect(replays()).toEqual(c.replayed ? [{ givens: c.replayed }] : []);
+         for (const r of c.readies ?? []) {
+            m.posts.length = 0;
+            m.fromChild(
+               m.msg("ready", {
+                  payload: { handles: r.handles, runtime: "1" },
+               }),
+            );
+            await flush();
+            expect(replays()).toEqual(
+               r.replayed ? [{ givens: r.replayed }] : [],
+            );
+         }
       });
    }
 

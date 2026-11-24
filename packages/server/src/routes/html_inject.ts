@@ -28,10 +28,12 @@ function doctypeEnd(text: string, from: number): number | undefined {
    let i = from;
    for (;;) {
       while (isBlank(text.charCodeAt(i))) i++;
-      if (!text.startsWith("<!--", i)) break;
-      const close = text.indexOf("-->", i + 2);
+      // A `<?` prolog is a bogus comment to the HTML parser, so a script placed before it would start quirks mode.
+      const bogus = text.startsWith("<?", i);
+      if (!bogus && !text.startsWith("<!--", i)) break;
+      const close = text.indexOf(bogus ? ">" : "-->", i + 2);
       if (close === -1) return undefined;
-      i = close + 3;
+      i = close + (bogus ? 1 : 3);
    }
    DOCTYPE.lastIndex = i;
    const m = DOCTYPE.exec(text);
