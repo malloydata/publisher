@@ -2255,17 +2255,29 @@ export class PackageMaterialization {
    }
 
    /**
-    * A warning per bound database table the bind could not read, while it
-    * is unread (`database-table-unread`).
+    * A warning per bound table the bind could not read, while it is unread
+    * (`database-table-unread`; `storage-table-unread` for a `storage=` one).
     */
    databaseTableUnreadWarnings(): ApiPackageWarning[] {
       return warnings.databaseTableUnreadWarnings(
-         this.knownUnread().map((u) => ({
-            ...u,
-            ...tableNameOf(this.databaseEntries?.[u.sourceEntityId]?.tableName),
-         })),
+         this.knownUnread().map((u) => {
+            const stored = this.storageEntries[u.sourceEntityId];
+            return stored?.storageDestinationName
+               ? {
+                    ...u,
+                    tableName: stored.physicalTableName,
+                    destinationName: stored.storageDestinationName,
+                 }
+               : {
+                    ...u,
+                    ...tableNameOf(
+                       this.databaseEntries?.[u.sourceEntityId]?.tableName,
+                    ),
+                 };
+         }),
          this.plan.servingPlan() ?? this.plan.buildPlan,
          this.unreadRetry !== undefined,
+         this.storageRetry !== undefined,
       );
    }
 
