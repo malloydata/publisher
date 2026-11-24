@@ -55,12 +55,11 @@ import {
    rewriteDimensions,
 } from "../text/declaration_text";
 import {
-   isName,
    lexAll,
-   offsetOf,
    statementHead,
    statementStarts,
-} from "../text/malloy_lexer";
+} from "../../malloy_lexer_core";
+import { isName, offsetOf } from "../text/malloy_lexer";
 import {
    dropJoinDefinition,
    inlinedJoinRenames,

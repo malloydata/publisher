@@ -25,7 +25,8 @@
  */
 
 import { declarationSpans, declaredBaseName } from "./declaration_text";
-import { lexAll, offsetOf } from "./malloy_lexer";
+import { lexAll } from "../../malloy_lexer_core";
+import { offsetOf } from "./malloy_lexer";
 import type { SourceMap } from "./source_map";
 import {
    splitSourceID,

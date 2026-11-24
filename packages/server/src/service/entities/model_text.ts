@@ -15,12 +15,23 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../logger";
 import { readPackageURLSync } from "../../utils";
+import { lexAll, statementStarts, type Token } from "../malloy_lexer_core";
 
 const modelLines = new AsyncLocalStorage<{
    lines: Map<string, string[]>;
+   code: Map<string, ModelCode | undefined>;
    /** The package root a file not in `lines` must lie inside to be read. */
    packageRoot?: string;
 }>();
+
+/** A model file's text, its statement tokens and which of them start a statement. */
+export interface ModelCode {
+   text: string;
+   tokens: Token[];
+   /** Indexes in `tokens` of each statement's keyword. */
+   statementKeywords: ReadonlySet<number>;
+   lineStarts: number[];
+}
 
 /**
  * Runs `fn` with each model file's lines split at most once. `texts` (by
@@ -35,7 +46,7 @@ export function withModelTextCache<T>(
 ): T {
    const lines = new Map<string, string[]>();
    for (const [filePath, text] of texts) lines.set(filePath, text.split("\n"));
-   return modelLines.run({ lines, packageRoot }, fn);
+   return modelLines.run({ lines, code: new Map(), packageRoot }, fn);
 }
 
 function readModelLines(filePath: string): string[] {
@@ -50,6 +61,65 @@ function readModelLines(filePath: string): string[] {
    const lines = text.split("\n");
    store?.lines.set(filePath, lines);
    return lines;
+}
+
+/**
+ * The model file at `url` as the run compiled it, lexed once per run;
+ * undefined when that file cannot be read or lexed.
+ */
+export function modelCode(url: string): ModelCode | undefined {
+   let filePath: string;
+   let lines: string[];
+   try {
+      filePath = fileURLToPath(url);
+      lines = readModelLines(filePath);
+   } catch {
+      return undefined;
+   }
+   const store = modelLines.getStore();
+   if (store?.code.has(filePath)) return store.code.get(filePath);
+   const model = modelCodeOf(lines.join("\n"));
+   if (!model) {
+      logger.warn("Model file does not lex; reading its notes by line", {
+         filePath,
+      });
+   }
+   store?.code.set(filePath, model);
+   return model;
+}
+
+/** `text` lexed as a model file; undefined when it does not lex. */
+export function modelCodeOf(text: string): ModelCode | undefined {
+   const tokens = lexAll(text);
+   if (!tokens) return undefined;
+   const lineStarts = [0];
+   for (let at = text.indexOf("\n"); at >= 0; at = text.indexOf("\n", at + 1)) {
+      lineStarts.push(at + 1);
+   }
+   return {
+      text,
+      tokens,
+      statementKeywords: new Set(statementStarts(tokens)),
+      lineStarts,
+   };
+}
+
+/** The offset of a Malloy position, whose `character` counts code points; undefined when off the text. */
+export function modelOffset(
+   model: ModelCode,
+   pos: { line?: number; character?: number } | undefined,
+): number | undefined {
+   if (pos?.line === undefined || pos.character === undefined) {
+      return undefined;
+   }
+   let at = model.lineStarts[pos.line];
+   if (at === undefined) return undefined;
+   for (let k = 0; k < pos.character; k++) {
+      if (at >= model.text.length) return undefined;
+      const c = model.text.charCodeAt(at);
+      at += c >= 0xd800 && c <= 0xdbff ? 2 : 1;
+   }
+   return at;
 }
 
 /**
