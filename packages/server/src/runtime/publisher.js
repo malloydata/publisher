@@ -9,11 +9,21 @@
 //   - Publisher.query(model, malloy, opts?)     → Promise<rows[]>
 //   - Publisher.queryFull(model, malloy, opts?) → Promise<MalloyResult>  (envelope for <malloy-render>)
 //       opts: { environment?, package?, sourceName?, queryName?, filterParams?,
-//               bypassFilters?, givens?, versionId? }. versionId names a published
+//               bypassFilters?, givens?, versionId?, meta? }. meta, an object, is filled
+//               with what the response says about the answer: { servedFrom, path,
+//               executionTimeMs, versionId } (path is the path report: the table that
+//               served it and the ones considered). versionId names a published
 //               version; a page opened with `?versionId=` queries its own
 //               package at that version by default. givens is a name→value map bound as
 //               Malloy given: runtime parameters for this query (safe parameterization,
 //               not string interpolation) — see the malloy-html-data-apps skill (reference/runtime.md).
+//   - Publisher.model(modelPath, opts?)          → Promise<Model> (its sources, their docs)
+//   - Publisher.packageResource(name, opts?)     → Promise<JSON>, name "build-plan" or
+//       "materializations": what Publisher builds for the package and its runs.
+//       Both read the page's own version when it is pinned, as queries do.
+//   - Publisher.colorScheme, Publisher.onColorScheme(fn), Publisher.colorSchemeApplied(mode):
+//       the reader's light or dark mode from the host ("publisher:color-scheme"),
+//       and the page's answer that it drew it ("publisher:color-scheme-applied").
 //   - Publisher.embed(selector, { src, height?, token? })
 //   - Publisher.context  ({ environment, package } inferred from URL)
 //   - Publisher.setToken(token)  (override Bearer token; default uses cookies)
@@ -189,9 +199,129 @@
          err.status = res.status;
          throw err;
       }
+      if (opts.meta && typeof opts.meta === "object") {
+         opts.meta.servedFrom =
+            json.servedFrom == null ? null : json.servedFrom;
+         opts.meta.path = json.path == null ? null : json.path;
+         opts.meta.executionTimeMs =
+            json.executionTimeMs == null ? null : json.executionTimeMs;
+         opts.meta.versionId = body.versionId || null;
+      }
       // The server's QueryResult always has `result` as a JSON-encoded string.
       // Parse it before handing it back so callers see real JS values.
       return JSON.parse(json.result);
+   }
+
+   // A read of the package itself, at the page's pinned version when the read is
+   // of the page's own package, as a query is.
+   async function packageGet(sub, opts) {
+      opts = opts || {};
+      var target = resolveTarget(opts);
+      var url =
+         apiBase +
+         "/environments/" +
+         encodeURIComponent(target.env) +
+         "/packages/" +
+         encodeURIComponent(target.pkg) +
+         "/" +
+         sub;
+      var versionId =
+         opts.versionId ||
+         (target.env === ctx.environment && target.pkg === ctx.package
+            ? await pinnedVersion()
+            : undefined);
+      if (versionId) url += "?versionId=" + encodeURIComponent(versionId);
+      var res = await fetch(url, {
+         credentials: "include",
+         headers: authHeaders(),
+      });
+      if (!res.ok) {
+         var err = new Error("Publisher: " + sub + " (" + res.status + ")");
+         err.status = res.status;
+         throw err;
+      }
+      return res.json();
+   }
+   function model(modelPath, opts) {
+      return packageGet("models/" + encodeURIComponent(modelPath), opts);
+   }
+   var PACKAGE_RESOURCES = { "build-plan": true, materializations: true };
+   function packageResource(name, opts) {
+      if (!Object.prototype.hasOwnProperty.call(PACKAGE_RESOURCES, name)) {
+         return Promise.reject(
+            new Error(
+               'Publisher.packageResource: "' +
+                  name +
+                  '" is not one of build-plan, materializations',
+            ),
+         );
+      }
+      return packageGet(name, opts);
+   }
+
+   // --- Light and dark, from the host -------------------------------------
+   // The "publisher:color-scheme*" messages are the same contract as
+   // PUBLISHER_COLOR_SCHEME_MESSAGE_TYPE and its two siblings in
+   // packages/sdk/src/utils/dataAppEmbed.ts; keep the two in sync. The host
+   // tells the page the reader's mode; the page, once it has drawn it, answers
+   // with colorSchemeApplied, so a host holding the frame light can let it go.
+   var colorScheme = null;
+   var colorSchemeListeners = [];
+   var hostOrigin = null;
+   function onColorScheme(fn) {
+      colorSchemeListeners.push(fn);
+      if (colorScheme) fn(colorScheme);
+      return function () {
+         colorSchemeListeners = colorSchemeListeners.filter(function (f) {
+            return f !== fn;
+         });
+      };
+   }
+   function colorSchemeApplied(mode) {
+      if (mode !== "light" && mode !== "dark") return;
+      if (!window.parent || window.parent === window) return;
+      try {
+         window.parent.postMessage(
+            { type: "publisher:color-scheme-applied", mode: mode },
+            hostOrigin || "*",
+         );
+      } catch (_e) {
+         /* ignore */
+      }
+   }
+   function setUpColorScheme() {
+      if (!window.parent || window.parent === window) return;
+      if (typeof window.addEventListener !== "function") return;
+      window.addEventListener("message", function (e) {
+         var d = e.data;
+         if (
+            e.source !== window.parent ||
+            !d ||
+            d.type !== "publisher:color-scheme"
+         )
+            return;
+         if (d.mode !== "light" && d.mode !== "dark") return;
+         hostOrigin = e.origin && e.origin !== "null" ? e.origin : null;
+         if (d.mode === colorScheme) return;
+         colorScheme = d.mode;
+         colorSchemeListeners.slice().forEach(function (fn) {
+            try {
+               fn(colorScheme);
+            } catch (_e) {
+               /* a listener's error is its own */
+            }
+         });
+      });
+      // In case the host spoke before this page was listening. It carries
+      // nothing, so it goes to the host's own origin where the browser says it.
+      try {
+         window.parent.postMessage(
+            { type: "publisher:color-scheme-request" },
+            (location.ancestorOrigins && location.ancestorOrigins[0]) || "*",
+         );
+      } catch (_e) {
+         /* ignore */
+      }
    }
 
    function query(modelPath, malloyQuery, opts) {
@@ -432,8 +562,15 @@
    window.Publisher = {
       query: query,
       queryFull: queryFull,
+      model: model,
+      packageResource: packageResource,
       embed: embed,
       context: ctx,
+      get colorScheme() {
+         return colorScheme;
+      },
+      onColorScheme: onColorScheme,
+      colorSchemeApplied: colorSchemeApplied,
       setToken: function (token) {
          bearerToken = token || null;
       },
@@ -442,5 +579,6 @@
    // Auto-init the in-iframe behaviors and live-reload subscription.
    // Both are no-ops if not applicable.
    setUpEmbeddedSelfBehaviors();
+   setUpColorScheme();
    setUpLiveReload();
 })();
