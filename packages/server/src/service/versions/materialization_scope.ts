@@ -200,6 +200,11 @@ export function newestServingEntries(
  * last recorded its boundary, and which build of its parent's table that
  * boundary was reached over, in an older run (incremental_upstream.ts).
  * `excludeId` skips one run, the one asking.
+ *
+ * An entry is taken only while it is the newest record of its table: never
+ * one its run has marked superseded (SUPERSEDED_TABLES_KEY), nor one naming
+ * a table a later committed run recorded again (for any source), since
+ * either way the table no longer holds what the entry says.
  */
 export function newestIncrementalEntries(
    runs: Materialization[],
@@ -216,15 +221,39 @@ export function newestIncrementalEntries(
       )
       .sort((a, b) => committedAt(b) - committedAt(a));
    const out: Record<string, ManifestEntry> = {};
+   // Each table a newer run recorded, by where it lives.
+   const newer = new Set<string>();
    for (const m of committed) {
+      const superseded = new Set(
+         tableNamesIn(m.metadata, SUPERSEDED_TABLES_KEY).map(tableIdentity),
+      );
+      const recorded: string[] = [];
       for (const [address, entry] of Object.entries(m.manifest!.entries!)) {
-         if (out[address] || !entry.ledger || isLegacyFailedEntry(entry)) {
+         if (isLegacyFailedEntry(entry)) continue;
+         const table = recordedTable(entry);
+         recorded.push(table);
+         if (
+            out[address] ||
+            !entry.ledger ||
+            superseded.has(tableIdentity(entry.physicalTableName)) ||
+            newer.has(table)
+         ) {
             continue;
          }
          out[address] = entry;
       }
+      for (const table of recorded) newer.add(table);
    }
    return out;
+}
+
+/** Where an entry's table lives, for telling whether two entries name one. */
+function recordedTable(entry: ManifestEntry): string {
+   return JSON.stringify([
+      entry.connectionName ?? null,
+      entry.storageDestinationName ?? null,
+      tableIdentity(entry.physicalTableName),
+   ]);
 }
 
 /**

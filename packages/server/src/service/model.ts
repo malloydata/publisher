@@ -3154,6 +3154,16 @@ export class Model {
    }
 
    /**
+    * The runtime this model's string capabilities are kept with
+    * (`serve/source_capability.ts`), or undefined with no compile.
+    */
+   public stringCapabilityRuntime(): object | undefined {
+      return (
+         this.modelMaterializer as unknown as { runtime?: object } | undefined
+      )?.runtime;
+   }
+
+   /**
     * Read how each of this model's sources compares its strings live, and
     * keep it with the model's runtime, for read admission's lookups
     * (`serve/source_capability.ts`). Every bind commit calls it, so a
@@ -3168,17 +3178,13 @@ export class Model {
             ? (query: string) => materializer.loadQuery(query)
             : undefined;
       const modelDef = this.modelDef;
-      const runtime = (
-         this.modelMaterializer as unknown as
-            | {
-                 runtime?: {
-                    connections: {
-                       lookupConnection(name?: string): Promise<Connection>;
-                    };
-                 };
-              }
-            | undefined
-      )?.runtime;
+      const runtime = this.stringCapabilityRuntime() as
+         | {
+              connections: {
+                 lookupConnection(name?: string): Promise<Connection>;
+              };
+           }
+         | undefined;
       if (!refresh || !load || !modelDef || !runtime) return;
       try {
          await refresh(runtime, {

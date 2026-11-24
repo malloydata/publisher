@@ -232,6 +232,8 @@ export interface PackagePlan<Finding = unknown> {
    asOfBuild?: Record<string, AsOfBuildSource>;
    /** See `CompiledBuildPlan.accessReads`. */
    accessReads?: readonly string[];
+   /** See `CompiledBuildPlan.stringCapabilityReads`. */
+   stringCapabilityReads?: Readonly<Record<string, string>>;
    /**
     * The declarations this derivation refused for eligibility, counted by
     * reason, for the caller to record: deriving a plan counts nothing.

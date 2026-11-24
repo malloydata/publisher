@@ -57,6 +57,7 @@ import {
 } from "../../../src/test_helpers/conformance/package_runner";
 import { serviceOverEnvironment } from "../../../src/test_helpers/materialization_service_harness";
 import { installSettings } from "../../../src/test_helpers/settings_env";
+import { planRefusalsOnceRead } from "../../../src/test_helpers/string_capability";
 import { writePackageFiles } from "../../../src/test_helpers/temp_package";
 import {
    disposeTempStorage,
@@ -432,21 +433,23 @@ const SHAPES: Shape[] = [
       want: { live: "ROW_LEVEL_GATE" },
    },
    // A view over a `storage=` #(materialize) source is built over that
-   // source's table in its destination, which its build refuses here (it
-   // groups a string the table compares unlike live), so its queries read
-   // the source's own table, or live.
+   // source's table in its destination. Before that table is bound, the
+   // plan judges each string it groups or orders by how m's Postgres source
+   // compares it live, and refuses both views here (each groups a string
+   // that does not compare in byte order), so their queries read the
+   // source's own table, or live.
    {
-      name: "persisted view (refused at build): ordered by its measure",
+      name: "persisted view (refused at plan): ordered by its measure",
       query: "run: m -> by_cat_counted",
       want: { served: "materialized" },
    },
    {
-      name: "persisted view (refused at build): ordered by the string",
+      name: "persisted view (refused at plan): ordered by the string",
       query: "run: m -> by_cat_ordered",
       want: { live: "NOT_SERVED" },
    },
    {
-      name: "persisted view (refused at build): a later stage ordered by the string",
+      name: "persisted view (refused at plan): a later stage ordered by the string",
       query: "run: m -> by_cat_counted -> { select: cat, n; order_by: cat }",
       want: { live: "NOT_SERVED" },
    },
@@ -486,6 +489,8 @@ describe.skipIf(!POSTGRES_URL)(
       let service: MaterializationService;
       let restore = () => {};
       let run: Materialization | undefined;
+      /** What the plan the run started from refused, by source name. */
+      let planRefused: Record<string, { reason: string; message: string }> = {};
       /** How the warehouse orders each column, against byte order. */
       const orders: Record<string, { collated: string[]; bytes: string[] }> =
          {};
@@ -635,6 +640,9 @@ describe.skipIf(!POSTGRES_URL)(
             () => env!,
          );
          for (const s of shapes()) live.set(s, await ask(s.query));
+         planRefused = await planRefusalsOnceRead(
+            await env.getPackage(parsePackageName(PKG), false),
+         );
          run = await build();
          for (const s of shapes()) served.set(s, await ask(s.query));
       });
@@ -652,25 +660,24 @@ describe.skipIf(!POSTGRES_URL)(
          await freshLoadPool();
       });
 
-      it("builds every stored table but the views grouping a string over m's table", () => {
+      it("refuses at plan the views grouping a string over m's unbound table, and builds every other", () => {
          expect([run?.status, run?.error ?? null]).toEqual([
             "MANIFEST_FILE_READY",
             null,
          ]);
          const manifest = run?.manifest as {
-            failures?: Record<string, { sourceName?: string; reason?: string }>;
+            failures?: Record<string, unknown>;
          };
-         // Built over m's table in the destination, which compares `cat`
-         // byte-exact where its contract records Postgres's collation: the
-         // build refuses each, never recomputing m from raw.
-         const failures = Object.values(manifest.failures ?? {});
-         expect(failures.map((f) => f.sourceName).sort()).toEqual([
-            "m__by_cat_counted__view",
-            "m__by_cat_ordered__view",
-         ]);
-         for (const f of failures) {
-            expect(f.reason).toContain(
-               "compares a string by a collation the destination cannot reproduce",
+         // Declined at plan, never left to fail at build.
+         expect(manifest.failures ?? {}).toEqual({});
+         // m's table is not bound when the plan is derived: it judges each
+         // view by how m's Postgres source compares what it groups, `ci`
+         // under a nondeterministic collation, `cat` under `en_US`.
+         for (const view of ["by_cat_counted", "by_cat_ordered"]) {
+            const refusal = planRefused[`m__${view}__view`];
+            expect(refusal?.reason, view).toBe("upstream_table_unusable");
+            expect(refusal?.message, view).toContain(
+               "from 'm', whose table is not bound yet and whose source compares",
             );
          }
       });

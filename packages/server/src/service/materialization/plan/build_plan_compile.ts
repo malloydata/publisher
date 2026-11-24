@@ -221,6 +221,9 @@ async function collectPackageParts(
                     ...(pkg.boundStorageContract
                        ? { boundContract: pkg.boundStorageContract }
                        : {}),
+                    ...(pkg.upstreamStringCapability
+                       ? { capability: pkg.upstreamStringCapability }
+                       : {}),
                  },
               }
             : {}),

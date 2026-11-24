@@ -129,6 +129,7 @@ const FACADE_SURFACE = [
    "storageWarnings",
    "storedColumnTypeWarnings",
    "unprovenGenerationWarnings",
+   "upstreamStringCapability",
    "verdictWarnings",
    "verdicts",
    "whenBuildPlanCurrent",

@@ -18,6 +18,7 @@ import type {
    BoundTableContract,
    PlanChainBuildText,
    PlanChainStringReads,
+   UpstreamStringCapabilityOf,
 } from "./chain_build";
 import type {
    Connection as MalloyConnection,
@@ -91,6 +92,13 @@ export interface BuildPlanPackage {
     * against. Absent (the load worker, a spec's package): judged at build.
     */
    boundStorageContract?: BoundStorageContract;
+   /**
+    * How an upstream's source compares its strings live, which a plan judges
+    * those strings against while the upstream's table is not bound. Absent
+    * (the load worker, a spec's package): not read yet, so such a build is
+    * refused until a read lands and the plan is derived again.
+    */
+   upstreamStringCapability?: UpstreamStringCapabilityOf;
    /**
     * The contract bound for a table at its tier, which a plan judges an
     * extension's build over a pair-table parent by. Absent (the load worker,

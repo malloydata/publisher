@@ -555,7 +555,15 @@ function columnCompare(
       return "none";
    }
    if (args.stackedOn !== undefined) return args.stackedOn;
-   const live = args.live?.get(name);
+   return liveCompare(args.live?.get(name));
+}
+
+/**
+ * The `compare` a byte-exact `storage=` table records for a string column
+ * built from its source, by how the source compares it live: binary,
+ * `exact`; deterministic, `equality`; anything else, or unread, `none`.
+ */
+export function liveCompare(live: Collation | undefined): ContractCompare {
    return live === "binary"
       ? "exact"
       : live === "deterministic"

@@ -435,13 +435,13 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       async () => {
          await getPackage(true); // start from live (unbound)
 
-         // Refused first: a manifest URI that cannot be fetched answers 500
-         // and leaves the package unbound, as it was.
+         // Refused first: a manifest URI with nothing at it answers 400 and
+         // leaves the package unbound, as it was.
          const missing = path.join(tmpDir, `absent-${Date.now()}.json`);
          const failedRes = await patchPackage({ manifestLocation: missing });
-         expect(failedRes.status).toBe(500);
+         expect(failedRes.status).toBe(400);
          expect(((await failedRes.json()) as { reason?: string }).reason).toBe(
-            "MANIFEST_BIND_FAILED",
+            "MANIFEST_NOT_FOUND",
          );
          expect((await getPackage()).manifestBindingStatus).toBe("unbound");
 
@@ -479,16 +479,16 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          expect(bound.manifestEntryCount).toBe(1);
          expect(bound.boundManifestUri).toBe(manifestFile);
 
-         // Rebind to a URI that cannot be fetched: refused with 500, and the
+         // Rebind to a URI with nothing at it: refused with 400, and the
          // previously bound manifest stays fully in place, configured, bound
          // and served. The fetch fails before either tier applies, so nothing
          // was even partially replaced. A reclaim gate must still read
          // boundManifestUri as a live reference whatever the status says.
          const missing = path.join(tmpDir, `absent-rebind-${Date.now()}.json`);
          const failedRes = await patchPackage({ manifestLocation: missing });
-         expect(failedRes.status).toBe(500);
+         expect(failedRes.status).toBe(400);
          expect(((await failedRes.json()) as { reason?: string }).reason).toBe(
-            "MANIFEST_BIND_FAILED",
+            "MANIFEST_NOT_FOUND",
          );
          const failed = await getPackage();
          expect(failed.manifestLocation).toBe(manifestFile);
@@ -548,15 +548,15 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       { timeout: 60_000 },
    );
 
-   it("refuses an unreachable manifest with 500, and goes on serving live", async () => {
+   it("refuses a manifest that is not there with 400, and goes on serving live", async () => {
       await getPackage(true); // start from live (unbound)
       const missing = path.join(tmpDir, "does-not-exist.json");
 
       const patchRes = await patchPackage({ manifestLocation: missing });
-      expect(patchRes.status).toBe(500);
+      expect(patchRes.status).toBe(400);
       expect(await patchRes.json()).toMatchObject({
-         code: 500,
-         reason: "MANIFEST_BIND_FAILED",
+         code: 400,
+         reason: "MANIFEST_NOT_FOUND",
       });
       // Nothing of the PATCH applied: not the location, not publisher.json.
       const patched = await getPackage();
