@@ -1139,13 +1139,13 @@ export class StorageBuildStrategy
          ...params,
          physicalTableName: ctx.physicalTableName,
       };
+      const refusal = (why: string) =>
+         `'${persistSource.name}' was not built over its base ` +
+         `'${base.baseName}''s table in '${destinationName}': ${why}, ` +
+         `and a downstream is never built by recomputing its upstreams ` +
+         `from raw`;
       const refused = (why: string) =>
-         new ChainedShapeNotCarriedError(
-            `'${persistSource.name}' was not built over its base ` +
-               `'${base.baseName}''s table in '${destinationName}': ${why}, ` +
-               `and a downstream is never built by recomputing its upstreams ` +
-               `from raw`,
-         );
+         new ChainedShapeNotCarriedError(refusal(why));
       if (!environment.chainBuildText) {
          throw refused("this host compiles no served copy to build it over");
       }
@@ -1174,7 +1174,12 @@ export class StorageBuildStrategy
          ),
       );
       if ("declined" in text) {
-         throw refused("its base cannot be re-rooted on that table");
+         // A package serving a model older than its files is said to be
+         // that, as the stacking path says it, not a base that cannot be
+         // re-rooted.
+         throw text.code === "package_stale"
+            ? new ChainedPackageStaleError(refusal(text.declined))
+            : refused("its base cannot be re-rooted on that table");
       }
       try {
          const result = await withStatementUsage(
