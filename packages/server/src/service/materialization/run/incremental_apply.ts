@@ -1520,6 +1520,45 @@ export interface DeltaTarget {
 }
 
 /**
+ * What every delta target whose rows are one SQL statement shares: that SQL
+ * with a range predicate on `watermarkName` for the delta and the late-row
+ * window, and its watermark frontier, all run by `runner` in `dialect`.
+ */
+export function sqlDeltaTarget(params: {
+   dialect: string;
+   runner: SqlRunner;
+   quotedTablePath: string;
+   logicalTablePath: string;
+   /** The rows-yielding SELECT, executable on the target. */
+   sourceSQL: string;
+   /** The watermark's column in `sourceSQL`. */
+   watermarkName: string;
+   watermarkType: IncrementalLineage["watermarkType"];
+}): DeltaTarget {
+   const { dialect, runner, sourceSQL, watermarkName } = params;
+   const range = (start: WatermarkBound, end: WatermarkBound | undefined) =>
+      deltaSelect({ dialect, sourceSQL, watermarkName, start, end });
+   return {
+      dialect,
+      runner,
+      quotedTablePath: params.quotedTablePath,
+      logicalTablePath: params.logicalTablePath,
+      deltaRows: async (start, end) => range(start, end),
+      windowRows: async (start, end, columns) =>
+         `SELECT ${columns.map((c) => quoteIdentifier(c, dialect)).join(", ")} ` +
+         `FROM (${range(start, end)}) AS __c`,
+      probeSourceFrontier: () =>
+         probeMaxWatermark(
+            runner,
+            dialect,
+            sourceSQL,
+            watermarkName,
+            params.watermarkType,
+         ),
+   };
+}
+
+/**
  * The delta target for a DATABASE source: one connection and dialect answer
  * everything, and the delta's rows are the seed's SQL with a range predicate.
  */
@@ -1538,28 +1577,16 @@ export function warehouseDeltaTarget(params: {
 }): DeltaTarget {
    const { dialect, runner, lineage, sourceSQL } = params;
    return {
-      dialect,
-      runner,
+      ...sqlDeltaTarget({
+         dialect,
+         runner,
+         quotedTablePath: params.quotedTablePath,
+         logicalTablePath: lineage.physicalTableName,
+         sourceSQL,
+         watermarkName: lineage.watermarkName,
+         watermarkType: lineage.watermarkType,
+      }),
       ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
-      quotedTablePath: params.quotedTablePath,
-      logicalTablePath: lineage.physicalTableName,
-      deltaRows: async (start, end) =>
-         deltaSelect({
-            dialect,
-            sourceSQL,
-            watermarkName: lineage.watermarkName,
-            start,
-            end,
-         }),
-      windowRows: async (start, end, columns) =>
-         `SELECT ${columns.map((c) => quoteIdentifier(c, dialect)).join(", ")} ` +
-         `FROM (${deltaSelect({
-            dialect,
-            sourceSQL,
-            watermarkName: lineage.watermarkName,
-            start,
-            end,
-         })}) AS __c`,
       deltaColumnTypes: async (deltaSQL, columns) => {
          const read = deltaColumnTypesSql(dialect, deltaSQL, columns);
          if (!read) return {};
@@ -1571,14 +1598,6 @@ export function warehouseDeltaTarget(params: {
             return { error: errMessage(err), errorCode: errorCodeOf(err) };
          }
       },
-      probeSourceFrontier: () =>
-         probeMaxWatermark(
-            runner,
-            dialect,
-            sourceSQL,
-            lineage.watermarkName,
-            lineage.watermarkType,
-         ),
    };
 }
 
