@@ -48,11 +48,14 @@ export const DATA_APPS_ROUTE =
 // (a trailing slash serves that directory's index.html). The route owns its
 // prefix and never falls through to the SPA, which would mask 404s.
 //
-// A page load (HTML) of a versioned package is redirected to
-// `/environments/<env>/packages/<pkg>/versions/<id>/public/<file>`, the same
-// files pinned to one version, so the page's relative asset URLs resolve to
-// that version too. HTML is served with a page context spliced in (see
-// page_context.ts); every other file is sent as it is.
+// The short URL and `/versions/latest/public/<file>` serve the latest version
+// directly, never redirected, and revalidate on every load (`Cache-Control:
+// no-cache`), so a bookmark keeps following latest. HTML is served with a page
+// context spliced in (see page_context.ts) whose `versionId` names the version
+// served, which pins the page's queries; every other file is sent as it is. Only
+// an explicit `?versionId=` on the short URL is redirected, to
+// `/environments/<env>/packages/<pkg>/versions/<id>/public/<file>`, so the
+// page's relative asset URLs resolve to that version too.
 //
 // Only `public/` is web-served: models, data and publisher.json live outside
 // it, so nothing can be downloaded around #(authorize) and the query controls.
@@ -140,7 +143,7 @@ async function serveFromPackage(
    versionInPath?: string,
 ): Promise<void> {
    try {
-      // Before either redirect and before the disk: a path outside public/ is refused, never redirected.
+      // Before the redirect and before the disk: a path outside public/ is refused, never redirected.
       const subPath = containedSubPath(
          (req.params as Record<string, string>)["0"] ?? "",
       );
@@ -173,18 +176,8 @@ async function serveFromPackage(
             req.query.versionId,
          );
       } else if (versionInPath === LATEST_VERSION_ALIAS) {
-         const latest = (await versions?.latestOf(packageName)) ?? null;
-         if (latest === null) return sendNotFound(res);
-         res.setHeader("Cache-Control", "no-store");
-         res.redirect(
-            302,
-            withRequestQuery(
-               req,
-               versionedPublicUrl(req, latest, subPath),
-               "versionId",
-            ),
-         );
-         return;
+         staticVersionId = (await versions?.latestOf(packageName)) ?? undefined;
+         if (staticVersionId === undefined) return sendNotFound(res);
       } else {
          staticVersionId = await versions?.pinnableVersion(
             packageName,
@@ -234,19 +227,21 @@ async function serveFromPackage(
       // The framing policy comes from `frameAncestorsMiddleware`, not here.
       res.setHeader("X-Content-Type-Options", "nosniff");
       const versionId = pkg.getVersionId() ?? null;
+      const floating =
+         versionInPath === undefined || versionInPath === LATEST_VERSION_ALIAS;
       if (isHtmlFile(realFullPath)) {
          const stat = await fsp.stat(realFullPath).catch(() => undefined);
          // A dotfile is not served, as `sendFile` does for any other type.
          if (!stat?.isFile() || path.basename(realFullPath).startsWith(".")) {
             return sendNotFound(res);
          }
-         if (versionInPath === undefined && versionId !== null) {
+         if (versionInPath === undefined && staticVersionId !== undefined) {
             res.setHeader("Cache-Control", "no-store");
             res.redirect(
                302,
                withRequestQuery(
                   req,
-                  versionedPublicUrl(req, versionId, subPath),
+                  versionedPublicUrl(req, staticVersionId, subPath),
                   "versionId",
                ),
             );
@@ -264,6 +259,8 @@ async function serveFromPackage(
             return;
          }
       }
+      // `sendFile` leaves a header already set, so a floating URL never gets a cacheable default.
+      if (floating) res.setHeader("Cache-Control", "no-cache");
       res.sendFile(realFullPath, (err) => {
          if (err) sendNotFound(res);
       });

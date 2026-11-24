@@ -5,8 +5,8 @@
 
 /**
  * What a data-app page is served with, over HTTP: the injected page context,
- * the versioned static URL (`.../versions/<v>/public/...`), and the redirect
- * from a short page URL to it.
+ * the versioned static URL (`.../versions/<v>/public/...`), the floating URLs
+ * that serve latest directly, and the redirect from a short URL's `?versionId=`.
  *
  * `ver` is a published package with two versions whose pages say which they
  * are, `plain` is a package with no versions, and a third version of `ver`
@@ -483,24 +483,27 @@ describe("data-app page context and versioned static URLs", () => {
       }
    });
 
-   it("redirects latest to the version it names now, uncached, keeping the query", async () => {
+   it("serves latest directly, without a redirect, whatever the query says", async () => {
       const res = await noFollow(
          versioned(
             "latest",
             "sub/page.html?embed_token=abc&versionId=1.0.0&x=1",
          ),
       );
-      expect(res.status).toBe(302);
-      expect(res.headers.get("location")).toBe(
-         absolute("2.0.0", "sub/page.html?embed_token=abc&x=1"),
-      );
-      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(res.status).toBe(200);
+      expect(res.headers.get("location")).toBeNull();
+      expect(res.headers.get("cache-control")).toBe("no-cache");
+      const body = await res.text();
+      expect(body).toContain("sub v2");
+      expect(contextOf(body).versionId).toBe("2.0.0");
 
       const root = await noFollow(versioned("latest"));
-      expect(root.headers.get("location")).toBe(absolute("2.0.0", ""));
-      const followed = await fetch(versioned("latest", "index.html"));
-      expect(followed.status).toBe(200);
-      expect(contextOf(await followed.text()).versionId).toBe("2.0.0");
+      expect(root.status).toBe(200);
+      expect(contextOf(await root.text()).versionId).toBe("2.0.0");
+      const asset = await noFollow(versioned("latest", "app.js"));
+      expect(asset.status).toBe(200);
+      expect(await asset.text()).toBe("/* js v2 */");
+      expect(asset.headers.get("cache-control")).toBe("no-cache");
    });
 
    it("308s the slashless root to its slash form, keeping the query", async () => {
@@ -539,37 +542,47 @@ describe("data-app page context and versioned static URLs", () => {
 
    // ── the short form ───────────────────────────────────────────────
 
-   it("redirects a page load to the version it resolved, as an absolute path", async () => {
+   it("serves a page load at the short URL directly, from latest and revalidated", async () => {
       const res = await noFollow(short("index.html"));
-      expect(res.status).toBe(302);
-      expect(res.headers.get("location")).toBe(absolute("2.0.0", "index.html"));
-      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(res.status).toBe(200);
+      expect(res.headers.get("location")).toBeNull();
+      const cacheControl = res.headers.get("cache-control");
+      expect(cacheControl).toBe("no-cache");
+      expect(cacheControl).not.toContain("immutable");
+      expect(res.headers.get("etag")).toStartWith('W/"');
+      // The version it resolved pins the page's queries.
+      expect(contextOf(await res.text()).versionId).toBe("2.0.0");
    });
 
-   it("redirects from the package root and from nested and encoded paths", async () => {
-      expect((await noFollow(short(""))).headers.get("location")).toBe(
-         absolute("2.0.0", ""),
-      );
-      expect(
-         (await noFollow(short("sub/page.html"))).headers.get("location"),
-      ).toBe(absolute("2.0.0", "sub/page.html"));
-      expect(
-         (await noFollow(short("my%20page.html"))).headers.get("location"),
-      ).toBe(absolute("2.0.0", "my%20page.html"));
+   it("serves the package root and nested and encoded paths directly", async () => {
+      for (const [sub, text] of [
+         ["", "home v2"],
+         ["sub/page.html", "sub v2"],
+         ["my%20page.html", "spaced v2"],
+         ["sub%2f..%2fsub%2fpage.html", "sub v2"],
+      ]) {
+         const res = await noFollow(short(sub));
+         expect([sub, res.status]).toEqual([sub, 200]);
+         const body = await res.text();
+         expect([sub, body.includes(text)]).toEqual([sub, true]);
+         expect(contextOf(body).versionId).toBe("2.0.0");
+      }
    });
 
-   it("keeps the query string except versionId, and honors that pin", async () => {
+   it("redirects only an explicit version of the package, keeping the rest of the query", async () => {
       const pinned = await noFollow(
          short("index.html?embed_token=a&versionId=1.0.0&filter[x]=1"),
       );
+      expect(pinned.status).toBe(302);
       expect(pinned.headers.get("location")).toBe(
          absolute("1.0.0", "index.html?embed_token=a&filter[x]=1"),
       );
+      expect(pinned.headers.get("cache-control")).toBe("no-store");
       // A pin that names no version of the package opens from latest.
       const unknown = await noFollow(short("index.html?versionId=7.7.7"));
-      expect(unknown.headers.get("location")).toBe(
-         absolute("2.0.0", "index.html"),
-      );
+      expect(unknown.status).toBe(200);
+      expect(unknown.headers.get("location")).toBeNull();
+      expect(contextOf(await unknown.text()).versionId).toBe("2.0.0");
    });
 
    it("ends on the page of the version the redirect named", async () => {
@@ -583,22 +596,20 @@ describe("data-app page context and versioned static URLs", () => {
       expect(contextOf(body).versionId).toBe("1.0.0");
    });
 
-   it("serves a non-HTML asset of a versioned package as before, with no redirect", async () => {
+   it("serves a non-HTML asset of a versioned package with no redirect, revalidated", async () => {
       const res = await noFollow(short("app.js"));
       expect(res.status).toBe(200);
       expect(await res.text()).toBe("/* js v2 */");
+      expect(res.headers.get("cache-control")).toBe("no-cache");
       const pinned = await noFollow(short("app.js?versionId=1.0.0"));
       expect(await pinned.text()).toBe("/* js v1 */");
    });
 
    it("404s a missing page and a dotfile without redirecting", async () => {
       expect((await noFollow(short("nope.html"))).status).toBe(404);
-      // `latest` redirects without looking at the disk; the page it names answers.
-      expect((await fetch(versioned("latest", ".hidden.html"))).status).toBe(
-         404,
-      );
       for (const url of [
          short(".hidden.html"),
+         versioned("latest", ".hidden.html"),
          versioned("1.0.0", ".hidden.html"),
       ]) {
          const res = await noFollow(url);
@@ -614,6 +625,7 @@ describe("data-app page context and versioned static URLs", () => {
       for (const url of [
          short("..%2f..%2fpublisher.html"),
          short("sub/..%2f..%2f..%2fpublisher.html"),
+         short("..%2f..%2fpublisher.html?versionId=1.0.0"),
          versioned("1.0.0", "..%2f..%2fpublisher.html"),
          versioned("latest", "..%2f..%2fpublisher.html"),
          versioned("latest", "sub%2f..%2f..%2f..%2fpublisher.html"),
@@ -630,15 +642,10 @@ describe("data-app page context and versioned static URLs", () => {
 
    it("builds the redirect from the normalized path under public/", async () => {
       expect(
-         (await noFollow(short("sub%2f..%2fsub%2fpage.html"))).headers.get(
-            "location",
-         ),
-      ).toBe(absolute("2.0.0", "sub/page.html"));
-      expect(
          (
-            await noFollow(versioned("latest", "sub%2f.%2fpage.html"))
+            await noFollow(short("sub%2f..%2fsub%2fpage.html?versionId=1.0.0"))
          ).headers.get("location"),
-      ).toBe(absolute("2.0.0", "sub/page.html"));
+      ).toBe(absolute("1.0.0", "sub/page.html"));
    });
 
    it("serves a package with no versions directly, with a null versionId", async () => {
@@ -755,8 +762,11 @@ describe("data-app page context and versioned static URLs", () => {
          `${trustedUrl}/environments/${ENV_NAME}/packages/${VER}/index.html`,
          { headers: { [HEADER]: JSON.stringify({ package: "other" }) } },
       );
-      expect(res.status).toBe(302);
-      expect(res.headers.get("location")).toBe(absolute("2.0.0", "index.html"));
+      expect(res.status).toBe(200);
+      expect(contextOf(await res.text())).toMatchObject({
+         package: "other",
+         versionId: "2.0.0",
+      });
    });
 });
 

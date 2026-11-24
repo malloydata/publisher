@@ -215,8 +215,8 @@ The third argument, `opts`, is optional:
 | `versionId` | string | Query this published version of the package instead of its `latest` (with [package versioning](./package-versions.md) on). A page served at a version already queries that version of its own package |
 
 **Versions.** With [package versioning](./package-versions.md) on, a page is
-served at a version's own URL and pins every query it makes to its own package
-to that version (see [URLs and versions](#urls-and-versions)). A query that
+served from one version, `latest` at the short URL, and pins every query it
+makes to its own package to that version (see [URLs and versions](#urls-and-versions)). A query that
 sets `opts.package` to another package gets that package's `latest`, and
 `opts.versionId` pins a single query. A page whose HTML predates the injected
 context (a cached copy, or one served through a proxy that rewrites it away)
@@ -290,18 +290,22 @@ The page and every relative URL in it (`./app.js`, a stylesheet's `url()`, an
 image) resolve under that path, so a page opened at a version loads that
 version's assets too, not `latest`'s. The rules:
 
-- **A page load at the latest URL redirects.** A GET to
-  `/environments/<env>/packages/<pkg>/<file>` that resolves to an `.html` or
-  `.htm` file (or a directory's `index.html`) answers `302` to the versioned URL
-  of the package's current version, with `Cache-Control: no-store`. The query
-  string is kept, minus `versionId`. Assets (`.js`, `.css`, images) at the short
-  URL are served directly as before, and so is every file of a package that has
-  no version records (watch mode, or versioning off).
-- **`?versionId=` on the short URL still pins.** A page opened at
-  `…/index.html?versionId=1.2.0` redirects to version 1.2.0's URL when the
-  package has that version, and to the current version's otherwise.
-- **`latest` in the path** (`…/versions/latest/public/…`) answers `302` to the
-  resolved version, `no-store`.
+- **The short URL serves `latest` directly.** A GET to
+  `/environments/<env>/packages/<pkg>/<file>` answers `200` from the package's
+  current version, never a redirect, so a bookmark keeps following `latest`. An
+  `.html` or `.htm` file (or a directory's `index.html`) carries the
+  [page context](#page-context) whose `versionId` names that version, which
+  pins the page's queries. The page and every other file are sent with
+  `Cache-Control: no-cache`, revalidated on each load, because `latest` moves. Its
+  relative assets resolve at the short URL, so they come from `latest` as well.
+- **`?versionId=` on the short URL redirects.** A page opened at
+  `…/index.html?versionId=1.2.0` answers `302` to version 1.2.0's URL
+  (`no-store`, the rest of the query kept) when the package has that version, so
+  its relative assets load from 1.2.0 too. A `versionId` that names no version of
+  the package serves `latest`, with no redirect. Assets at the short URL are
+  served directly, from `latest` or from the version `?versionId=` names.
+- **`latest` in the path** (`…/versions/latest/public/…`) serves the version
+  `latest` names now, directly and with `no-cache`, whatever `?versionId=` says.
 - **The path wins.** On a versioned URL `?versionId=` is ignored, because a
   proxy that resolves a version appends its own to every request and the path is
   what names it.
@@ -310,8 +314,9 @@ version's assets too, not `latest`'s. The rules:
   `…/versions/<v>/public` without the trailing slash redirects (`308`) to the
   slash form.
 
-A page can be opened at a versioned URL directly. The Console's data-app listing
-links the short form, and the redirect covers it.
+A page can be opened at a versioned URL directly. The [data-app
+listing](#listing-a-packages-data-apps) of a versioned package links the short
+form with `?versionId=<version>`, so opening it redirects to that version's URL.
 
 Relative links that stay inside `public/` work the same at both URLs. One that
 climbs out of `public/` (`../..` above the package root) lands somewhere else under
@@ -702,8 +707,8 @@ the page's `<title>` tag, falling back to `path`. An entry also carries
 `fit: "viewport"` when the page opts into filling the viewer with
 `<meta name="publisher:fit" content="viewport">` (see
 [Full-screen apps in the data app viewer](#full-screen-apps-in-the-data-app-viewer)), and
-omits the field otherwise. `resource` is the short form; opening it redirects to
-the version's own URL (see [URLs and versions](#urls-and-versions)). The listing covers `.html` and `.htm` files up to
+omits the field otherwise. `resource` is the short form, with `?versionId=<version>` for a package with versions; opening it
+redirects to that version's own URL (see [URLs and versions](#urls-and-versions)). The listing covers `.html` and `.htm` files up to
 three directories deep and is empty for a package with no `public/` directory.
 
 ## The package manifest
@@ -779,8 +784,8 @@ Endpoints used by an HTML data app:
 
 | Method and path | Purpose |
 |---|---|
-| `GET /environments/<env>/packages/<pkg>/<file>` | Serve a file from `public/`; an HTML page of a versioned package redirects (`302`) to the next row |
-| `GET /environments/<env>/packages/<pkg>/versions/<version>/public/<file>` | Serve a file from one version's `public/` (`latest` redirects to the resolved version) |
+| `GET /environments/<env>/packages/<pkg>/<file>` | Serve a file from `public/`, from `latest`; `?versionId=<a version of the package>` on an HTML page redirects (`302`) to the next row |
+| `GET /environments/<env>/packages/<pkg>/versions/<version>/public/<file>` | Serve a file from one version's `public/` (`latest` serves the resolved version, with no redirect) |
 | `GET /sdk/publisher.js` | The page runtime |
 | `POST /api/v0/environments/<env>/packages/<pkg>/models/<model>/query` | Run a query (used by `Publisher.query`) |
 | `GET /api/v0/environments/<env>/packages/<pkg>/data-apps` | List the package's data apps |
