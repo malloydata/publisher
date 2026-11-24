@@ -62,10 +62,16 @@ type ContractColumn = {
    declaredType?: string;
 };
 
-/** One key check a build ran over its table (`ColumnContract.keys`). */
+/**
+ * One key check a build ran over its table (`ColumnContract.keys`), or one
+ * it was asked for and could not run (`unverified`, with `unique: false`):
+ * recorded so a later run knows the key was the one the table was built
+ * under, and still never read as passed.
+ */
 export type ContractKeyCheck = {
    unique: boolean;
    level?: string;
+   unverified?: true;
 };
 
 /**
@@ -223,6 +229,7 @@ export function parseContract(raw: unknown): ColumnContract | undefined {
          keys[column] = {
             unique: check.unique,
             ...(typeof check.level === "string" ? { level: check.level } : {}),
+            ...(check.unverified === true ? { unverified: true } : {}),
          };
       }
    }
@@ -309,21 +316,35 @@ export function keyCheckPassed(
    contract: ColumnContract | undefined,
    key: string,
 ): boolean {
-   return contract?.keys?.[key]?.unique === true;
+   const check = contract?.keys?.[key];
+   return check?.unique === true && check.unverified !== true;
+}
+
+/** Whether the key check named `key` ran and found the key repeated or NULL. */
+export function keyCheckFailed(
+   contract: Pick<ColumnContract, "keys"> | undefined,
+   key: string,
+): boolean {
+   const check = contract?.keys?.[key];
+   return check?.unique === false && check.unverified !== true;
 }
 
 /**
  * What a pair table's contract says of the leaf key checks `leafKeys` a build
  * over the table relies on, when any did not pass: the keys found held more
- * than once or NULL, else those it records no result for, named as the model
+ * than once or NULL, else those it records no result for (or a check that
+ * could not run), named as the model
  * names the path (`items.item_id`). Undefined when every one passed.
  */
 export function pairLeafCheckFailure(
    contract: ColumnContract | undefined,
    leafKeys: readonly string[],
 ): string | undefined {
-   const failed = leafKeys.filter((k) => contract?.keys?.[k]?.unique === false);
-   const unrecorded = leafKeys.filter((k) => contract?.keys?.[k] === undefined);
+   const failed = leafKeys.filter((k) => keyCheckFailed(contract, k));
+   // Not recorded, or recorded as a check that could not run.
+   const unrecorded = leafKeys.filter(
+      (k) => !keyCheckPassed(contract, k) && !keyCheckFailed(contract, k),
+   );
    if (failed.length === 0 && unrecorded.length === 0) return undefined;
    const named = (ks: string[]) =>
       ks.map((k) => `'${contractKeyWithoutLevel(k, "leaf") ?? k}'`).join(", ");

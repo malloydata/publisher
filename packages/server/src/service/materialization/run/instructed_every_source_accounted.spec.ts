@@ -250,3 +250,35 @@ describe("planRefusalOf", () => {
       ).toBeUndefined();
    });
 });
+
+describe("a host instructing a base and its refused extension on one address", () => {
+   it("reports the extension's plan refusal beside the base's table, never counting it applied through the base's instruction", async () => {
+      const { run, built } = harness();
+      // The base and its `extend` share one address; the run's plan has
+      // refused the extension since the host read the plan, so only the
+      // base's instruction resolves. The extension's must not count as
+      // applied through the base's on the same address.
+      const extension: RefusedSource = {
+         ...rollupRefusal,
+         sourceID: "ext@file:///pkg/m.malloy",
+         name: "ext",
+      };
+      const instructions = [
+         { ...instruction("addr-daily", "daily_g2"), sourceID: "daily" },
+         {
+            ...instruction("addr-daily", "daily_g2"),
+            sourceID: extension.sourceID,
+         },
+      ];
+      const result = await run(instructions, (i) =>
+         i.sourceID === extension.sourceID ? extension : undefined,
+      );
+      expect(built).toEqual(["daily"]);
+      expect(result.entries["addr-daily"]).toMatchObject({
+         sourceName: "daily",
+      });
+      expect(result.failures["addr-daily"]).toBeUndefined();
+      expect(result.refusedBesideBuilt[extension.sourceID]).toEqual(extension);
+      expect(result.sourcesRefused).toBe(1);
+   });
+});

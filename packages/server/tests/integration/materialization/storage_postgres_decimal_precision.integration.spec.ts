@@ -20,6 +20,7 @@ import {
    tempDir,
    type SpawnedServer,
 } from "../../harness/spawn_server";
+import { DuckDBConnection as StoreConnection } from "../../../src/storage/duckdb/DuckDBConnection";
 import { pollFor, TERMINAL_STATUSES } from "./polling";
 
 /**
@@ -82,6 +83,8 @@ describe.skipIf(!url)(
       let server: SpawnedServer;
       let catalogConnection = "";
       const dirs: { cleanup(): void }[] = [];
+      /** How the server is started, so a test can start it again on its root. */
+      let spawnOptions: Parameters<typeof spawnServer>[0];
       const api = () => `${server.baseUrl}/api/v0/environments/e1/packages/pa`;
 
       async function query(malloy: string): Promise<Answer> {
@@ -211,7 +214,11 @@ describe.skipIf(!url)(
             JSON.stringify({ name: "pa", version: "1.0.0", description: "x" }),
          );
          fs.writeFileSync(path.join(dir.dir, "model.malloy"), MODEL);
-         server = await spawnServer({
+         // A root of the test's own, which outlives a stop and restart.
+         const root = tempDir("decimal-root-");
+         dirs.push(root);
+         spawnOptions = {
+            serverRoot: root.dir,
             config: {
                frozenConfig: false,
                environments: [
@@ -250,7 +257,8 @@ describe.skipIf(!url)(
                PUBLISHER_MATERIALIZE: "true",
                PERSIST_STORAGE_MODE: "on",
             },
-         });
+         };
+         server = await spawnServer(spawnOptions);
          await server.waitUntilServing();
          await build();
       });
@@ -405,7 +413,8 @@ describe.skipIf(!url)(
          expect(await sums(7)).toEqual([{ su: 1.55501, c: 7 }]);
       });
 
-      it("re-seeds an incremental table a build before the precision fix stored as DOUBLE, to DECIMAL, equal to live", async () => {
+      /** The incremental table's location in the DuckLake catalog. */
+      async function incrementalTable() {
          const [table] = (
             await lakeCatalog.runSQL(
                `SELECT row_to_json(q) AS "row" FROM (
@@ -416,10 +425,18 @@ describe.skipIf(!url)(
             )
          ).rows as { schema_name: string; table_name: string }[];
          expect(table).toBeDefined();
-         const uType = async () =>
-            (await storedTypes()).get(`${table!.table_name}.u`) ?? [];
-         // The table as a build before the fix left it: `u` as the
-         // passthrough's DOUBLE, its boundary and rows otherwise unchanged.
+         return table!;
+      }
+
+      /**
+       * The incremental table as a build before the precision fix left it:
+       * `u` as the passthrough's DOUBLE, its boundary and rows otherwise
+       * unchanged.
+       */
+      async function storeUAsDouble(table: {
+         schema_name: string;
+         table_name: string;
+      }): Promise<void> {
          const duck = new DuckDBConnection("rewrite", ":memory:");
          try {
             for (const ext of ["ducklake", "postgres"]) {
@@ -429,7 +446,7 @@ describe.skipIf(!url)(
             await duck.runSQL(
                `ATTACH 'ducklake:postgres:${catalogConnection}' AS old_build`,
             );
-            const path = `old_build."${table!.schema_name}"."${table!.table_name}"`;
+            const path = `old_build."${table.schema_name}"."${table.table_name}"`;
             await duck.runSQL(
                `CREATE OR REPLACE TABLE ${path} AS ` +
                   `SELECT * REPLACE (CAST(u AS DOUBLE) AS u) FROM ${path}`,
@@ -437,6 +454,13 @@ describe.skipIf(!url)(
          } finally {
             await duck.close();
          }
+      }
+
+      it("re-seeds an incremental table a build before the precision fix stored as DOUBLE, to DECIMAL, equal to live", async () => {
+         const table = await incrementalTable();
+         const uType = async () =>
+            (await storedTypes()).get(`${table.table_name}.u`) ?? [];
+         await storeUAsDouble(table);
          expect(await uType()).toEqual(["float64"]);
 
          await wh.runSQL(
@@ -487,6 +511,87 @@ describe.skipIf(!url)(
             /materialization\.build\.finished[^\n]*"method":"delta"[^\n]*"physicalTable":"t_incremental/,
          );
          expect(await uType()).toEqual(["decimal(38,5)"]);
+      });
+      it("re-seeds by the delta's precision guard a table whose build stored a numeric as DOUBLE and recorded it so, to DECIMAL, equal to live", async () => {
+         // A build before the precision fix stored `u` as DOUBLE and recorded
+         // that in its contract, so the run's pre-run check finds the table
+         // as its build recorded it and carries it to the delta, whose own
+         // guard re-seeds it.
+         const table = await incrementalTable();
+         const uType = async () =>
+            (await storedTypes()).get(`${table.table_name}.u`) ?? [];
+         await storeUAsDouble(table);
+         expect(await uType()).toEqual(["float64"]);
+         // The store is the server's own DuckDB file, written with the
+         // server's own engine while it is stopped.
+         await server.stop();
+         const store = new StoreConnection(
+            path.join(server.serverRoot, "publisher.db"),
+         );
+         await store.initialize();
+         let recorded = 0;
+         try {
+            const rows = await store.all<{ id: string; manifest: string }>(
+               "SELECT id, CAST(manifest AS VARCHAR) AS manifest FROM materializations WHERE manifest IS NOT NULL",
+            );
+            for (const row of rows) {
+               const manifest = JSON.parse(row.manifest) as {
+                  entries?: Record<
+                     string,
+                     {
+                        physicalTableName?: string;
+                        contract?: {
+                           columns?: { name: string; nativeType: string }[];
+                        };
+                     }
+                  >;
+               };
+               let changed = false;
+               for (const entry of Object.values(manifest.entries ?? {})) {
+                  if (!entry.physicalTableName?.startsWith("t_incremental")) {
+                     continue;
+                  }
+                  for (const column of entry.contract?.columns ?? []) {
+                     if (column.name !== "u") continue;
+                     column.nativeType = "DOUBLE";
+                     changed = true;
+                  }
+               }
+               if (!changed) continue;
+               recorded++;
+               await store.run(
+                  "UPDATE materializations SET manifest = ? WHERE id = ?",
+                  [JSON.stringify(manifest), row.id],
+               );
+            }
+            await store.run("CHECKPOINT");
+         } finally {
+            await store.close();
+         }
+         expect(recorded).toBeGreaterThan(0);
+         server = await spawnServer(spawnOptions);
+         await server.waitUntilServing();
+
+         await wh.runSQL(`INSERT INTO t (id, g, u) VALUES (12, 'c', 0.25)`);
+         await build();
+         // Re-seeded at the scale of every value it read (0.00001 needs 5).
+         expect(await uType()).toEqual(["decimal(38,5)"]);
+         const out = server.output();
+         expect(out).toMatch(
+            /Re-seeding to store Postgres numerics exactly \{[^\n]*"columns":\["u"\]/,
+         );
+         expect(out).not.toContain(
+            "A table a run would carry no longer matches the column contract its build recorded",
+         );
+         const read = (s: string) =>
+            query(
+               `run: ${s} -> { where: id <= 11; aggregate: su is u.sum(), c is count() }`,
+            );
+         const live = await read("live_incremental");
+         const served = await read("incremental");
+         expect(served.servedBy).toBe("materialized");
+         expect(served.rows).toEqual(live.rows);
+         expect(live.rows).toEqual([{ su: 2.15501, c: 11 }]);
       });
    },
 );

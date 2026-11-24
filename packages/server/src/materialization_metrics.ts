@@ -535,7 +535,8 @@ const chainedStorageBuildCounter = lazyCounter(
 const uncheckedUpstreamReadCounter = lazyCounter(
    "publisher_materialization_upstream_recompute_total",
    "Builds that read a stored upstream's database table unchecked: a host's " +
-      "reference carried no nativeSchema, so the table's columns could not be " +
+      "reference carried no nativeSchema (a storage= one, no contract), so the " +
+      "table's columns could not be " +
       "checked against its build. No build recomputes an upstream, so this is " +
       "the only reason and outcome produced. Labels: reason " +
       "('reference_types_unrecorded'), build ('chained' for a build over the " +

@@ -42,18 +42,13 @@
  * Pure: plan in, Malloy text out.
  */
 
-import { contractKeyName } from "../domain/column_contract";
 import { identifier } from "../../malloy_text";
 import type {
    MaterializeColumn,
    MaterializePair,
    MaterializePlan,
 } from "../domain/table_plans";
-import {
-   pairKeyColumns,
-   pairLeafPath,
-   pairLevelRowColumn,
-} from "./build_file_generator";
+import { pairKeyColumns, pairLevelRowColumn } from "./build_file_generator";
 
 /** The field each level of the re-root carries its parent level's key in. */
 const PAIR_PARENT_KEY_FIELD = "__pair_parent_key";
@@ -71,17 +66,8 @@ export function pairRerootJoins(plan: MaterializePlan): string[] {
    return pairsOf(plan).map((p) => p.join);
 }
 
-/**
- * The contract keys (`ColumnContract.keys`) of the leaf checks a build over
- * the pair table needs passed (unique and never null): one per path, as
- * `run/inline_uniqueness.ts` records them (`leaf:items.options.option_id`).
- */
-export function pairLeafContractKeys(plan: MaterializePlan): string[] {
-   return pairsOf(plan).map((p) => {
-      const leaf = pairLeafPath(p);
-      return contractKeyName("leaf", leaf.names.join("."), leaf.keyColumn);
-   });
-}
+// The run reads it too (a carried pair table's checks), so it lives in domain/.
+export { pairLeafContractKeys } from "../domain/table_plans";
 
 /**
  * The source expression a pair table re-roots its source on (see the module

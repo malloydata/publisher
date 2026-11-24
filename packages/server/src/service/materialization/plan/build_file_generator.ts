@@ -232,6 +232,7 @@ import {
    type MaterializePair,
    type MaterializePairBlocks,
    type InlineUniquenessCheck,
+   pairLeafPath,
 } from "../domain/table_plans";
 import type { GivenReadTerm } from "../domain/read_time_terms";
 import type { ownLevelNotes } from "../../annotations";
@@ -404,25 +405,6 @@ function emitBuildSource(plan: MaterializePlan): string {
    const body = buildSourceBody(plan);
    const head = `source: ${identifier(plan.buildSourceName)} is ${identifier(importAlias(plan))} -> {`;
    return `${persistLine(plan)}\n${head}\n${body}\n}${readTime}`;
-}
-
-/**
- * A pair path's leaf: the join names from the source to it, its key, and its
- * source. The leaf key check's writer (inline uniqueness checks, here) and the
- * reader of its record (pair_reroot.ts) both name the check from this.
- */
-export function pairLeafPath(p: MaterializePair): {
-   names: string[];
-   keyColumn: string;
-   sourceID: string;
-} {
-   const hops = p.hops ?? [];
-   const last = hops[hops.length - 1];
-   return {
-      names: [p.join, ...hops.map((h) => h.join)],
-      keyColumn: last?.key ?? p.childKey,
-      sourceID: last?.sourceID ?? p.childSourceID,
-   };
 }
 
 /**

@@ -4,6 +4,8 @@
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { InMemoryURLReader, Runtime } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
+import * as path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { marksAgentHidden } from "../../service/annotation_reader";
 import { getDirectTaglines } from "../../service/entities/field_helpers";
 import { withModelTextCache } from "../../service/entities/model_text";
@@ -442,16 +444,18 @@ source:
 source: gamma is duckdb.sql("select 3 as x")
 `;
 
+   // An absolute file URL on every platform: on Windows a drive-less
+   // file:/// URL has no path, so the model-text cache, keyed by path, misses.
+   const M_URL = pathToFileURL(path.resolve("/m.malloy")).href;
+
    async function discoveryHidden(): Promise<string[]> {
       const conn = new DuckDBConnection("duckdb");
       try {
          const runtime = new Runtime({
-            urlReader: new InMemoryURLReader(
-               new Map([["file:///m.malloy", MODEL]]),
-            ),
+            urlReader: new InMemoryURLReader(new Map([[M_URL, MODEL]])),
             connection: conn,
          });
-         const model = await runtime.getModel(new URL("file:///m.malloy"));
+         const model = await runtime.getModel(new URL(M_URL));
          return withModelTextCache(
             () =>
                model.explores
@@ -462,7 +466,7 @@ source: gamma is duckdb.sql("select 3 as x")
                   )
                   .map((e) => e.name)
                   .sort(),
-            new Map([["/m.malloy", MODEL]]),
+            new Map([[fileURLToPath(M_URL), MODEL]]),
          );
       } finally {
          await conn.close();

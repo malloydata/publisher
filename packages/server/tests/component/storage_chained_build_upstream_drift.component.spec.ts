@@ -16,20 +16,29 @@
  *   upstream's table to its contract, rebuilds it rather than carry it, and
  *   builds the downstream over the rebuilt table, served equal to live; the
  *   run after it carries both.
+ * - A host-instructed chained build over a reference that carries no
+ *   contract cannot hold the table to anything: it reads it, with a warning
+ *   and a count (`reference_types_unrecorded`, `read_unchecked`), as the
+ *   database tier does a reference with no `nativeSchema`, and builds over
+ *   it, a rollup grouped over such a base's table included.
+ * - With every raw row then deleted, a forced rebuild of the downstream
+ *   alone builds it over the carried upstream table, still equal to what
+ *   live answered before.
  *
  * `#@ persist` over `#@ persist`, a `#(materialize)` extension of a
- * `#(materialize)` parent, and a `#(rollup)` of a `#(materialize)` base,
- * each in one DuckLake destination. (A `storage=` rollup over a `#@ persist`
- * base's `->` is not carried onto its table at all, drift or not:
- * `chained_shape_not_carried`.) Opt-in: set PUBLISHER_TEST_POSTGRES_URL, for
- * the warehouse and the DuckLake catalog.
+ * `#(materialize)` parent, a `#(rollup)` of a `#(materialize)` base, and a
+ * `#(rollup)` on an `extend` of a `#@ persist` query source (`->`), each in
+ * one DuckLake destination. Opt-in: set PUBLISHER_TEST_POSTGRES_URL, for the
+ * warehouse and the DuckLake catalog.
  */
 
 import { DuckDBConnection as MalloyDuckDBConnection } from "@malloydata/db-duckdb";
 import { PostgresConnection } from "@malloydata/db-postgres";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
+import { logger } from "../../src/logger";
+import { resetMaterializationTelemetryForTesting } from "../../src/materialization_metrics";
 import { unrecordedAudit } from "../../src/service/access_record";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
@@ -41,6 +50,10 @@ import type {
 } from "../../src/storage/DatabaseInterface";
 import type { DuckDBConnection } from "../../src/storage/duckdb/DuckDBConnection";
 import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "../../src/test_helpers/metrics_harness";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
 import { openTempStorage } from "../../src/test_helpers/temp_storage";
@@ -80,6 +93,7 @@ source: a is raw -> { select: k, amt }
 source: b is a -> { group_by: k; aggregate: total is amt.sum() }
 `,
       downstream: /^b$/,
+      stored: "total",
       query: `run: b ${AS_TEXT}`,
    },
    {
@@ -93,6 +107,7 @@ source: a is raw extend { dimension: k2 is k }
 source: ext is a extend { dimension: big is amt > 5 }
 `,
       downstream: /^ext$/,
+      stored: "amt",
       query: `run: ext -> { group_by: k; aggregate: total is amt.sum() } ${AS_TEXT}`,
    },
    {
@@ -107,7 +122,24 @@ source: a is raw extend {
 }
 `,
       downstream: /__rollup__/,
+      stored: "total__partial",
       query: `run: a -> { group_by: k; aggregate: total } ${AS_TEXT}`,
+   },
+   {
+      label: "#(rollup) on an extend of a #@ persist query source",
+      cell: "l-drift-build rs",
+      model: `${HEAD}
+#@ persist storage="lake"
+source: a is raw -> { select: k, amt }
+
+source: rolled is a extend {
+  #(rollup) grain=["k"] storage="lake"
+  measure: total is amt.sum()
+}
+`,
+      downstream: /^rolled__rollup__/,
+      stored: "total__partial",
+      query: `run: rolled -> { group_by: k; aggregate: total } ${AS_TEXT}`,
    },
 ];
 
@@ -162,6 +194,13 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
       let betweenServed: { rows: unknown; kind?: string };
       let served: { rows: unknown; kind?: string };
       let live: { rows: unknown };
+      let rawless: Materialization;
+      let rawlessServed: { rows: unknown; kind?: string };
+      let metrics: MetricsHarness;
+      let uncontracted: Materialization;
+      let uncontractedWarnings: unknown[][];
+      let uncontractedCount: number;
+      let uncontractedRows: unknown;
 
       const ask = async (query: string) => {
          const pkg = await env.getPackage(parsePackageName(PKG), false);
@@ -206,6 +245,7 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
                PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
             },
          }).restore;
+         metrics = await startMetricsHarness();
          let envPath: string;
          ({ root, envPath, db, repo } = await openTempStorage("csd-", {
             id: "env-1",
@@ -264,30 +304,39 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
          );
          // `a` alone first, so every downstream builds after the alter.
          first = await build({ sourceNames: ["a"] });
+         /** The destination, out of band, attached as `lk`. */
+         const outOfBand = async <T>(
+            fn: (lake: MalloyDuckDBConnection) => Promise<T>,
+         ): Promise<T> => {
+            const lake = new MalloyDuckDBConnection(
+               "out_of_band",
+               path.join(root, "out_of_band.duckdb"),
+            );
+            try {
+               await lake.runSQL("INSTALL ducklake");
+               await lake.runSQL("LOAD ducklake");
+               await lake.runSQL("INSTALL postgres");
+               await lake.runSQL("LOAD postgres");
+               await lake.runSQL(
+                  `ATTACH 'ducklake:postgres:host=${pg.host} port=${pg.port} dbname=${dbs[1]} user=${pg.userName} password=${pg.password}' AS lk (DATA_PATH '${bucket}')`,
+               );
+               const result = await fn(lake);
+               await lake.runSQL("DETACH lk");
+               return result;
+            } finally {
+               await lake.close();
+            }
+         };
          // Out of band: the destination's own ALTER of `a`'s table, its
          // `amt` dropped and added back as text (DuckLake narrows no type).
-         const lake = new MalloyDuckDBConnection(
-            "alter",
-            path.join(root, "alter.duckdb"),
-         );
-         try {
-            await lake.runSQL("INSTALL ducklake");
-            await lake.runSQL("LOAD ducklake");
-            await lake.runSQL("INSTALL postgres");
-            await lake.runSQL("LOAD postgres");
-            await lake.runSQL(
-               `ATTACH 'ducklake:postgres:host=${pg.host} port=${pg.port} dbname=${dbs[1]} user=${pg.userName} password=${pg.password}' AS lk (DATA_PATH '${bucket}')`,
-            );
+         await outOfBand(async (lake) => {
             for (const e of entriesOf(first)) {
                const t = `lk.main."${e.physicalTableName}"`;
                await lake.runSQL(`ALTER TABLE ${t} DROP COLUMN amt`);
                await lake.runSQL(`ALTER TABLE ${t} ADD COLUMN amt VARCHAR`);
                await lake.runSQL(`UPDATE ${t} SET amt = '1'`);
             }
-            await lake.runSQL("DETACH lk");
-         } finally {
-            await lake.close();
-         }
+         });
          let pkg = await env.getPackage(parsePackageName(PKG), true, {
             refreshSchemas: true,
          });
@@ -296,30 +345,37 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
          const downstream = Object.values(
             pkg.getBuildPlan()?.sources ?? {},
          ).find((s) => mechanism.downstream.test(s.name))!;
+         /** The downstream alone, as a host instructs it, over `a`'s entry. */
+         const instruct = (
+            table: string,
+            a: Record<string, unknown>,
+            contract: unknown,
+         ) =>
+            build({
+               buildInstructions: [
+                  {
+                     sourceEntityId: downstream.sourceEntityId,
+                     sourceID: downstream.sourceID,
+                     materializedTableId: `mt-${table}`,
+                     physicalTableName: table,
+                     realization: "COPY",
+                     destination: "lake",
+                  },
+               ],
+               referenceManifest: [
+                  {
+                     sourceEntityId: a.sourceEntityId,
+                     physicalTableName: a.physicalTableName,
+                     connectionName: "warehouse",
+                     storageDestinationName: a.storageDestinationName,
+                     schema: a.schema,
+                     contract,
+                     builtAt: a.builtAt,
+                  },
+               ],
+            });
          const a = entriesOf(first)[0] as unknown as Record<string, unknown>;
-         instructed = await build({
-            buildInstructions: [
-               {
-                  sourceEntityId: downstream.sourceEntityId,
-                  sourceID: downstream.sourceID,
-                  materializedTableId: "mt-instructed",
-                  physicalTableName: "csd_instructed",
-                  realization: "COPY",
-                  destination: "lake",
-               },
-            ],
-            referenceManifest: [
-               {
-                  sourceEntityId: a.sourceEntityId,
-                  physicalTableName: a.physicalTableName,
-                  connectionName: "warehouse",
-                  storageDestinationName: a.storageDestinationName,
-                  schema: a.schema,
-                  contract: a.contract,
-                  builtAt: a.builtAt,
-               },
-            ],
-         });
+         instructed = await instruct("csd_instructed", a, a.contract);
          // Loaded again: what that refusal reported to this package's drift
          // handler is gone, so the run below decides from the table alone.
          pkg = await env.getPackage(parsePackageName(PKG), true, {
@@ -331,8 +387,63 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
          second = await build({});
          served = await ask(mechanism.query);
          live = await ask(LIVE);
+         // A reference to the rebuilt `a` that carries no contract, with no
+         // run on record to fill one in (as for a host whose worker never
+         // built it).
+         const rebuilt = entriesOf(afterAlter).find(
+            (e) => e.sourceName === "a",
+         ) as unknown as Record<string, unknown>;
+         for (const run of [first, instructed, afterAlter, second]) {
+            await repo.deleteMaterialization(run.id);
+         }
+         resetMaterializationTelemetryForTesting();
+         const warn = spyOn(logger, "warn");
+         try {
+            uncontracted = await instruct(
+               "csd_uncontracted",
+               rebuilt,
+               undefined,
+            );
+            uncontractedWarnings = warn.mock.calls.filter((c) =>
+               String(c[0]).includes(
+                  "reads a storage= upstream table unchecked",
+               ),
+            );
+         } finally {
+            warn.mockRestore();
+         }
+         // What it built over the unchecked table, totalled by `k` as live
+         // answers.
+         uncontractedRows = await outOfBand(async (lake) => {
+            const { rows } = await lake.runSQL(
+               `SELECT k, CAST(SUM(${mechanism.stored}) AS VARCHAR) AS total_text ` +
+                  `FROM lk.main."csd_uncontracted" GROUP BY k ORDER BY k`,
+            );
+            return JSON.parse(JSON.stringify(rows)) as unknown;
+         });
+         uncontractedCount = await metrics.collectCounter(
+            "publisher_materialization_upstream_recompute_total",
+            {
+               reason: "reference_types_unrecorded",
+               build: "chained",
+               outcome: "read_unchecked",
+            },
+         );
+         // A standalone run puts every table back on record, then, out of
+         // band, every raw row goes: a downstream recomputed from raw would
+         // hold none.
+         const restored = await build({});
+         await warehouse.runSQL("DELETE FROM public.cs_raw");
+         rawless = await build({
+            sourceNames: entriesOf(restored)
+               .filter((e) => mechanism.downstream.test(e.sourceName ?? ""))
+               .map((e) => e.sourceName!),
+            forceRefresh: true,
+         });
+         rawlessServed = await ask(mechanism.query);
       }, 300_000);
       afterAll(async () => {
+         await metrics?.shutdown();
          await env?.closeAllConnections().catch(() => undefined);
          await db?.close();
          for (const name of dbs) {
@@ -399,12 +510,44 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
          ]);
       });
 
+      it("reads a reference with no contract unchecked, warning and counting it once, and builds over it equal to live", () => {
+         expect([uncontracted.status, uncontracted.error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         const built = entriesOf(uncontracted).filter((e) =>
+            mechanism.downstream.test(e.sourceName ?? ""),
+         );
+         expect(built).toHaveLength(1);
+         expect(built[0].upstreamReuse).toBe("reused");
+         expect(uncontractedWarnings).toHaveLength(1);
+         expect(uncontractedCount).toBe(1);
+         expect(uncontractedRows).toEqual(EXPECTED);
+      });
+
       it("serves its table after each run, equal to live", () => {
          expect(betweenServed.kind).not.toBe("live");
          expect(served.kind).not.toBe("live");
          expect(betweenServed.rows).toEqual(live.rows);
          expect(served.rows).toEqual(live.rows);
          expect(live.rows).toEqual(EXPECTED);
+      });
+
+      it("rebuilds the downstream over the carried upstream table with every raw row deleted, and serves it equal to live before", () => {
+         expect([rawless.status, rawless.error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         const was = entriesOf(second).find((e) =>
+            mechanism.downstream.test(e.sourceName ?? ""),
+         )!;
+         const now = entriesOf(rawless).find((e) =>
+            mechanism.downstream.test(e.sourceName ?? ""),
+         )!;
+         expect(now.builtAt).not.toBe(was.builtAt);
+         expect(now.upstreamReuse).toBe("reused");
+         expect(rawlessServed.kind).not.toBe("live");
+         expect(rawlessServed.rows).toEqual(EXPECTED);
       });
    });
 }
