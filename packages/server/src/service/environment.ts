@@ -3606,8 +3606,8 @@ export class Environment {
    }
 
    /**
-    * Put a version back on what it served before a refused manifest's bind
-    * moved it: the manifest it had bound, or, with none, what this server's
+    * Put a version, or an unversioned package, back on what it served
+    * before a refused manifest's bind moved it: the manifest it had bound, or, with none, what this server's
     * own store holds for it or live, as a clear binds. Its status then says
     * what it was. A restore that fails is logged: the version is left as
     * that failure leaves it, which its status reports.
@@ -3629,7 +3629,7 @@ export class Environment {
          }
       } catch (error) {
          logger.error(
-            "Could not restore a version's binding after its manifest was refused",
+            "Could not restore a package's binding after its manifest was refused",
             {
                environmentName: this.environmentName,
                packageName: pkg.getPackageName(),
@@ -4959,6 +4959,60 @@ export class Environment {
       }
    }
 
+   /** The package's publisher.json as it is on disk, or null when there is none. */
+   private async readPackageManifestFile(
+      packageName: string,
+   ): Promise<string | null> {
+      const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
+      try {
+         return await fs.promises.readFile(
+            safeJoinUnderRoot(packagePath, "publisher.json"),
+            "utf-8",
+         );
+      } catch (error) {
+         if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+         throw error;
+      }
+   }
+
+   /**
+    * Put back the publisher.json {@link readPackageManifestFile} read (null:
+    * there was none), the way {@link writePackageManifest} writes it: a
+    * temporary file renamed over it. A restore that fails is logged.
+    */
+   private async restorePackageManifestFile(
+      packageName: string,
+      text: string | null,
+   ): Promise<void> {
+      const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
+      const manifestPath = safeJoinUnderRoot(packagePath, "publisher.json");
+      const temporary = path.join(
+         packagePath,
+         `.publisher.json.${crypto.randomUUID()}.tmp`,
+      );
+      try {
+         if (text === null) {
+            await fs.promises.rm(manifestPath, { force: true });
+            return;
+         }
+         await fs.promises.writeFile(temporary, text, {
+            encoding: "utf-8",
+            flag: "wx",
+         });
+         await fs.promises.rename(temporary, manifestPath);
+      } catch (error) {
+         await fs.promises.rm(temporary, { force: true }).catch(() => {});
+         logger.error(
+            "Could not restore publisher.json after a refused PATCH",
+            {
+               environmentName: this.environmentName,
+               packageName,
+               error: errMessage(error),
+            },
+         );
+      }
+   }
+
    public async updatePackage(
       packageName: string,
       body: ApiPackage,
@@ -5120,6 +5174,16 @@ export class Environment {
          _package.setPackageMetadata(existing);
          throw new BadRequestError(invalidMsg);
       }
+      // A PATCH (not an install) that names a manifest refuses one that does
+      // not bind, with nothing of the PATCH applied: what to put back.
+      const refusesFailedBind =
+         !options.recordLocation && !!body.manifestLocation;
+      const nameBefore = _package.getPackageName();
+      const manifestFileBefore = refusesFailedBind
+         ? await this.readPackageManifestFile(packageName)
+         : undefined;
+      const bindingBefore = _package.materialization().bindingState();
+
       // After the checks, so a refused PATCH leaves the name as it was.
       if (body.name) {
          _package.setName(body.name);
@@ -5146,14 +5210,35 @@ export class Environment {
       const clears =
          body.manifestLocation !== undefined && !body.manifestLocation;
       if (body.manifestLocation) {
-         // May recompile, so reported as loading.
-         await this.trackPackageLoad(packageName, () =>
-            this.bindManifest(
-               _package,
-               body.manifestLocation as string,
-               "always",
-            ),
-         );
+         try {
+            // May recompile, so reported as loading.
+            await this.trackPackageLoad(packageName, () =>
+               this.bindManifest(
+                  _package,
+                  body.manifestLocation as string,
+                  "always",
+                  undefined,
+                  refusesFailedBind ? "refuse" : "serve-live",
+               ),
+            );
+         } catch (error) {
+            if (!(error instanceof ManifestBindFailedError)) throw error;
+            // Refused: the PATCH is undone, file and metadata first, since
+            // the local-store rule reads the manifest location, then what
+            // the package served if the bind got as far as moving it.
+            _package.setPackageMetadata(existing);
+            _package.setName(nameBefore);
+            await this.restorePackageManifestFile(
+               packageName,
+               manifestFileBefore ?? null,
+            );
+            if (error.applied) {
+               await this.trackPackageLoad(packageName, () =>
+                  this.restoreBinding(_package, bindingBefore),
+               );
+            }
+            throw error;
+         }
       } else if (clears) {
          const wasBound =
             _package.materialization().hasBoundTableNameManifest() ||

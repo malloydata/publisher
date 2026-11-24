@@ -1500,14 +1500,15 @@ export class WriteRolledBackError extends Error {
 }
 
 /**
- * A build manifest set on a version (`PUT …/versions/{version}/manifest`)
- * that could not be fetched or bound: 500 with `reason:
- * MANIFEST_BIND_FAILED`. Nothing of it is applied: the version's
- * `manifestLocation` stays what it was, and the version serves what it
- * served before, the manifest it had bound or, with none, live (or this
- * server's own store, for a version no host has bound). `applied` says the
- * failure came after the bind began to change what the version serves, so
- * that state has to be put back; the cause is logged with the failure.
+ * A build manifest set on a version (`PUT …/versions/{version}/manifest`) or
+ * a package (`PATCH …/packages/{package}`) that could not be fetched or
+ * bound: 500 with `reason: MANIFEST_BIND_FAILED`. Nothing of it is applied:
+ * the `manifestLocation` stays what it was (a PATCH is undone whole), and
+ * the package serves what it served before, the manifest it had bound or,
+ * with none, live (or this server's own store, where it would restore from
+ * it). `applied` says the failure came after the bind began to change what
+ * the package serves, so that state has to be put back; the cause is
+ * logged with the failure.
  */
 export class ManifestBindFailedError extends Error {
    get kind(): "manifest_bind_failed" {
@@ -1522,7 +1523,7 @@ export class ManifestBindFailedError extends Error {
       const detail = cause instanceof Error ? cause.message : String(cause);
       super(
          `The build manifest ${manifestLocation} could not be bound ` +
-            `(${detail}), so it was not applied: the version serves what ` +
+            `(${detail}), so it was not applied: the package serves what ` +
             `it served before.`,
          { cause },
       );

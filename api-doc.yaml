@@ -1687,6 +1687,14 @@ paths:
         `PACKAGE_IS_VERSIONED`), as is a package with no `latest` yet: publish a new version to
         change content.
 
+        A `manifestLocation` URI that cannot be fetched or bound answers 500 with `reason`
+        `MANIFEST_BIND_FAILED`, on a versioned package as on the version route, and on an
+        unversioned one with nothing of the PATCH applied: its metadata and publisher.json stay as
+        they were, and it serves what it served before, the manifest it had bound or, with none,
+        live (or this server's own store, where the server restores unversioned packages from it).
+        A manifest that binds with some of its tables declined (one the warehouse does not hold,
+        say) is not a failure: it answers 200, and those sources answer live.
+
         It keeps working, so that callers which predate versions do not break, and says it is
         deprecated: every response carries `Deprecation: true` and a `Link` to the package
         versions reference, every request is counted in `publisher_deprecated_usage_total`
@@ -1763,7 +1771,14 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
         "500":
-          $ref: "#/components/responses/InternalServerError"
+          description: >-
+            The `manifestLocation` could not be fetched or bound (`reason`
+            `MANIFEST_BIND_FAILED`; nothing of it was applied), or another
+            internal error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
     delete:
@@ -10175,12 +10190,13 @@ components:
             `buildInstructions`). The message says which.
 
             MANIFEST_BIND_FAILED, on a 500 from
-            `set-package-version-manifest` (and from the deprecated package
-            PATCH that names a versioned package's `manifestLocation`), means
-            the manifest could not be fetched or bound, so nothing of it was
-            applied: the version's `manifestLocation` stays what it was, and
-            the version serves what it served before. The message carries the
-            cause.
+            `set-package-version-manifest` or the deprecated `update-package`
+            PATCH that names a `manifestLocation` (on a versioned or an
+            unversioned package), means the manifest could not be fetched or
+            bound, so nothing of it was applied: the `manifestLocation` stays
+            what it was (an unversioned package's whole PATCH is undone,
+            publisher.json included), and the package or version serves what
+            it served before. The message carries the cause.
 
             Deliberately an open string rather than an enum. Generators render
             an enum closed, so adding a second value here would break every

@@ -278,3 +278,129 @@ describe("a manifest whose bind fails", () => {
       expect(await total(pkg)).toEqual({ n: 1, servedBy: "live" });
    });
 });
+
+describe("an unversioned package's manifest PATCH", () => {
+   /** An unversioned package `plain` with both notebooks, in its own environment. */
+   async function plainPackage(): Promise<{
+      plainEnv: Environment;
+      pkg: Package;
+      id: string;
+      publisherJson: () => string;
+   }> {
+      const plainPath = path.join(root, "plain-env");
+      writePackageFiles(
+         path.join(plainPath, "plain"),
+         {
+            "m.malloy": MODEL,
+            "empty.malloynb": "",
+            "notes.malloynb": ">>>markdown\n# Notes\nProse only, no Malloy.\n",
+         },
+         { manifest: { name: "plain", description: "unversioned" } },
+      );
+      const plainEnv = await Environment.create("plainEnv", plainPath, []);
+      await plainEnv.addPackage("plain");
+      const pkg = await plainEnv.getPackage(parsePackageName("plain"), false);
+      const id = Object.values(pkg.getBuildPlan()?.sources ?? {})[0]
+         ?.sourceEntityId;
+      expect(id).toBeString();
+      const file = path.join(plainPath, "plain", "publisher.json");
+      return {
+         plainEnv,
+         pkg,
+         id: id!,
+         publisherJson: () => fs.readFileSync(file, "utf-8"),
+      };
+   }
+
+   it("binds past the notebooks, and still answers 200 when a table it names is missing", async () => {
+      const { plainEnv, pkg, id } = await plainPackage();
+      try {
+         await makeTable(pkg, "summary_host", 42);
+         const host = writeManifest("host.json", id, "summary_host");
+         await plainEnv.updatePackage("plain", {
+            name: "plain",
+            manifestLocation: host,
+         });
+         expect(pkg.materialization().bindingState()).toMatchObject({
+            manifestBindingStatus: "bound",
+            boundManifestUri: host,
+         });
+         const served = await total(pkg);
+         expect(served.n).toBe(42);
+         expect(served.servedBy).not.toBe("live");
+
+         // A table the warehouse does not hold is declined on its own, at
+         // bind: the manifest binds, and that source answers live.
+         const gone = writeManifest("gone.json", id, "summary_gone");
+         const patched = await plainEnv.updatePackage("plain", {
+            name: "plain",
+            manifestLocation: gone,
+         });
+         expect(patched.manifestLocation).toBe(gone);
+         expect(pkg.materialization().bindingState()).toMatchObject({
+            manifestBindingStatus: "bound",
+            boundManifestUri: gone,
+         });
+         expect(await total(pkg)).toEqual({ n: 1, servedBy: "live" });
+      } finally {
+         await plainEnv.closeAllConnections().catch(() => undefined);
+      }
+   });
+
+   it("answers 500 MANIFEST_BIND_FAILED for a bind that fails, and undoes the PATCH", async () => {
+      const { plainEnv, pkg, id, publisherJson } = await plainPackage();
+      try {
+         await makeTable(pkg, "summary_host", 42);
+         await makeTable(pkg, "summary_next", 9);
+         const host = writeManifest("host.json", id, "summary_host");
+         await plainEnv.updatePackage("plain", {
+            name: "plain",
+            manifestLocation: host,
+         });
+         expect((await total(pkg)).n).toBe(42);
+         const fileBefore = publisherJson();
+
+         // Fetched, the models recompiled over it, then its bind fails.
+         const next = writeManifest("next.json", id, "summary_next");
+         const mz = pkg.materialization();
+         const bindCompiled = spyOn(mz, "bindCompiled").mockImplementationOnce(
+            async () => {
+               throw new Error("bind exploded");
+            },
+         );
+         const refused = await plainEnv
+            .updatePackage("plain", {
+               name: "plain",
+               description: "changed with it",
+               manifestLocation: next,
+            })
+            .catch((error: unknown) => error);
+         bindCompiled.mockRestore();
+
+         expect(refused).toBeInstanceOf(ManifestBindFailedError);
+         expect((refused as ManifestBindFailedError).applied).toBe(true);
+         expect(
+            internalErrorToHttpError(refused as Error, { log: false }).json,
+         ).toMatchObject({ code: 500, reason: "MANIFEST_BIND_FAILED" });
+
+         // Nothing of the PATCH applied: the file, the metadata, the status
+         // and the tables served are all as they were.
+         expect(publisherJson()).toBe(fileBefore);
+         expect(pkg.getPackageMetadata()).toMatchObject({
+            manifestLocation: host,
+         });
+         expect(pkg.getPackageMetadata().description).not.toBe(
+            "changed with it",
+         );
+         expect(mz.bindingState()).toMatchObject({
+            manifestBindingStatus: "bound",
+            boundManifestUri: host,
+         });
+         const served = await total(pkg);
+         expect(served.n).toBe(42);
+         expect(served.servedBy).not.toBe("live");
+      } finally {
+         await plainEnv.closeAllConnections().catch(() => undefined);
+      }
+   });
+});
