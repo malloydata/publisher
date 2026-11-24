@@ -333,6 +333,44 @@ describe("Environment: connections and storage destinations are disjoint", () =>
       expect(logged).toContain("managed");
    });
 
+   it("warns that a connection reaches a destination's catalog when they connect as different roles", () => {
+      const warn = sinon.stub(logger, "warn").returns(logger as never);
+      const onCatalog = (name: string, postgresConnection: object) =>
+         ({
+            name,
+            type: "ducklake",
+            ducklakeConnection: {
+               catalog: { postgresConnection, metadataSchema: "lake" },
+               storage: { bucketUrl: `gs://managed-tier/${name}` },
+            },
+         }) as ApiConnection;
+      makeEnvironment(
+         [
+            onCatalog("models", {
+               connectionString:
+                  "postgres://models_ro:other@CATALOG.internal:5432/ducklake",
+            }),
+         ],
+         [
+            onCatalog("managed", {
+               host: "catalog.internal",
+               port: 5432,
+               databaseName: "ducklake",
+               userName: "publisher",
+               password: "catalog-secret",
+            }),
+         ],
+      );
+      const messages = warn.getCalls().map((call) => String(call.args[0]));
+      expect(
+         messages.some((m) =>
+            m.includes(
+               'Connection "models" reaches storage destination "managed": it names the same DuckLake catalog',
+            ),
+         ),
+      ).toBe(true);
+   });
+
    it("omits destinations from the connection list", () => {
       const environment = makeEnvironment(
          [tenantPostgresConnection("warehouse")],

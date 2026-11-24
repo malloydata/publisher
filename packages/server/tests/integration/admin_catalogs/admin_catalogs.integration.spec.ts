@@ -582,12 +582,18 @@ describe.skipIf(!SUPERUSER)(
       });
 
       it("refuses a table PUT and a load in the schema a storage destination builds into, and allows a DELETE there, a copy from it and every other schema", async () => {
+         // The same database as another role, as a destination's own credentials would be.
+         const asOwner = catalogDatabase.replace(
+            `user=${DB}_admin password=${PASSWORD}`,
+            `user=${DB}_owner password=not-the-admins`,
+         );
+         expect(asOwner).not.toBe(catalogDatabase);
          const lake = (name: string) => ({
             name,
             type: "ducklake",
             ducklakeConnection: {
                catalog: {
-                  postgresConnection: { connectionString: catalogDatabase },
+                  postgresConnection: { connectionString: asOwner },
                   metadataSchema: "ds_owned",
                },
                destinationSchema: "materialized",

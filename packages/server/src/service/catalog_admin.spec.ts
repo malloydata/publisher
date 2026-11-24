@@ -124,12 +124,15 @@ describe("a storage destination's schema", () => {
       name: string,
       metadataSchema: string,
       destinationSchema?: string,
+      postgresConnection: object = {
+         connectionString: CATALOG_DATABASE,
+      },
    ) => ({
       name,
       type: "ducklake",
       ducklakeConnection: {
          catalog: {
-            postgresConnection: { connectionString: CATALOG_DATABASE },
+            postgresConnection,
             metadataSchema,
          },
          ...(destinationSchema ? { destinationSchema } : {}),
@@ -201,6 +204,50 @@ describe("a storage destination's schema", () => {
       ).toBeUndefined();
       expect(await put(a, "staging")).toBeUndefined();
       expect(await put(a, "main")).toBeUndefined();
+   });
+
+   it("is refused when the destination names the catalog's database as another role, or by its fields", async () => {
+      for (const postgresConnection of [
+         {
+            connectionString:
+               "dbname=none user=tier password=other port=1 host=127.0.0.1 sslmode=disable",
+         },
+         { connectionString: "postgres://tier:other@127.0.0.1:1/none" },
+         {
+            host: "127.0.0.1",
+            port: 1,
+            databaseName: "none",
+            userName: "tier",
+            password: "other",
+         },
+      ]) {
+         const a = adminOver([
+            {
+               name: "prod",
+               destinations: [
+                  lake("dest", "c", "materialized", postgresConnection),
+               ],
+            },
+         ]);
+         expect(await put(a, "materialized")).toEqual([
+            409,
+            "SCHEMA_IS_DESTINATION",
+         ]);
+      }
+   });
+
+   it("is not refused when the destination names another database of the same server", async () => {
+      const a = adminOver([
+         {
+            name: "prod",
+            destinations: [
+               lake("dest", "c", "materialized", {
+                  connectionString: "host=127.0.0.1 port=1 dbname=elsewhere",
+               }),
+            ],
+         },
+      ]);
+      expect(await put(a, "materialized")).toBeUndefined();
    });
 
    it("is refused only on the catalog the destination uses", async () => {

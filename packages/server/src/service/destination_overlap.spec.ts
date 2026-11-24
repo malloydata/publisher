@@ -49,6 +49,38 @@ describe("destinationOverlap", () => {
       ).toContain("same DuckLake catalog");
    });
 
+   it("names a connection on the same database whatever role, credentials or form it connects with", () => {
+      const named = (connectionString: string, metadataSchema = "lake") =>
+         ({
+            name: "c",
+            type: "ducklake",
+            ducklakeConnection: {
+               catalog: {
+                  postgresConnection: { connectionString },
+                  metadataSchema,
+               },
+            },
+         }) as ApiConnection;
+      const dest = named(
+         "host=pg dbname=cat user=tier password=one sslmode=require",
+      );
+      for (const connection of [
+         named("host=PG dbname=cat user=models password=two"),
+         named("postgres://admin:three@pg:5432/cat?sslmode=disable"),
+         lake("c", { host: "pg", databaseName: "cat", metadataSchema: "lake" }),
+      ]) {
+         expect(destinationOverlap(connection, dest)).toContain(
+            "same DuckLake catalog",
+         );
+      }
+      expect(
+         destinationOverlap(named("host=pg dbname=cat", "other"), dest),
+      ).toBeUndefined();
+      expect(
+         destinationOverlap(named("host=pg dbname=other"), dest),
+      ).toBeUndefined();
+   });
+
    it("names a connection whose data path overlaps the destination's", () => {
       for (const url of [
          "s3://bucket/lake/",

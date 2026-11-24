@@ -22,6 +22,7 @@ import { redactPgSecrets } from "../../pg_helpers";
 import { errMessage } from "../../utils";
 import { runInternalSQL } from "../duckdb_lockdown";
 import { runSQLRows } from "../duckdb_session_setup";
+import { pgDatabaseTarget } from "../postgres_conninfo";
 import { quoteIdentifier } from "../quoting";
 import {
    metadataCatalogRef,
@@ -40,12 +41,20 @@ export const DUCKLAKE_DATA_INLINING_ON = "ducklake-data-inlining-on";
  */
 const inliningOn = new Map<string, number>();
 
-/** The catalog database a DuckLake config names, normalized. */
+/**
+ * The catalog database a DuckLake config names, as `host:port/dbname` whether
+ * it is spelled as a connection string or as fields, and whichever role it
+ * connects as; a string that does not say which database it names is its own
+ * key.
+ */
 export function catalogKey(
    pg: PostgresConnection | undefined,
 ): string | undefined {
    if (!pg) return undefined;
-   if (pg.connectionString?.trim()) return pg.connectionString.trim();
+   const connectionString = pg.connectionString?.trim();
+   if (connectionString) {
+      return pgDatabaseTarget(connectionString) ?? connectionString;
+   }
    if (!pg.databaseName) return undefined;
    return `${(pg.host ?? "localhost").toLowerCase()}:${pg.port ?? 5432}/${pg.databaseName}`;
 }

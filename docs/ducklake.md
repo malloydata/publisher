@@ -407,8 +407,9 @@ and a copy may still read its source from it. A destination that builds into `ma
 `destinationSchema`. Only the storage destinations of the environments this server serves count, so an
 admin-only listener (`servingApiEnabled: false`) refuses nothing, and a connection that carries
 `destinationSchema` is not a destination. A destination is on the catalog when its `catalog` names the
-same catalog database as `PUBLISHER_ADMIN_CATALOG_DATABASE`, spelled the same way (the identical
-`connectionString`, say), with the catalog's name as its `metadataSchema`. A load also refuses `main`
+same host, port and database as `PUBLISHER_ADMIN_CATALOG_DATABASE`, whatever role, credentials or form
+(a connection string or fields) it connects with, and has the catalog's name as its `metadataSchema`. A
+write that arrives before the environments finish loading is not checked. A load also refuses `main`
 itself, with `400 SCHEMA_RESERVED`.
 
 **Serve the catalog to models.** Give the catalog a `connections` entry, with `managed: true`. Publisher

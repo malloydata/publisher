@@ -618,6 +618,46 @@ function pgConninfoKeyValues(
 }
 
 /**
+ * The database a libpq connection string or URI reaches, as
+ * `host:port[,host:port…]/dbname`: the hosts lowercased and sorted, each with
+ * its port (5432 when none), whatever the user, password, TLS or other setting.
+ * Undefined when the string cannot be read, names no host or dbname, or
+ * reaches its host another way (`service`, `hostaddr`), so a caller keeps the
+ * raw string and never equates two databases it cannot tell apart.
+ */
+export function pgDatabaseTarget(conninfo: string): string | undefined {
+   const params = new Map<string, string>();
+   try {
+      for (const { key, value } of pgConninfoKeyValues("", conninfo)) {
+         params.set(key, value);
+      }
+   } catch {
+      return undefined;
+   }
+   const dbname = params.get("dbname");
+   const hosts = params.get("host")?.split(",");
+   const ports = (params.get("port") || "5432").split(",");
+   if (
+      !dbname ||
+      !hosts ||
+      hosts.some((host) => host === "") ||
+      params.has("service") ||
+      params.has("hostaddr") ||
+      ports.some((port) => !/^\d+$/.test(port)) ||
+      (ports.length !== 1 && ports.length !== hosts.length)
+   ) {
+      return undefined;
+   }
+   return `${hosts
+      .map(
+         (host, i) =>
+            `${host.toLowerCase()}:${Number(ports[ports.length === 1 ? 0 : i])}`,
+      )
+      .sort()
+      .join(",")}/${dbname}`;
+}
+
+/**
  * A Postgres connection string split for a DuckDB attach: `path` carries
  * every keyword but the user, password and client-key password
  * (`sslpassword`), which go to a DuckDB secret
