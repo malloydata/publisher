@@ -7,7 +7,7 @@
  * exported probes over a fake connection), the DuckDB probes, and the
  * allow-lists that let an answer skip the probe (`NON_STRING_OPERATORS`,
  * `EQUALITY_NODES`, read through `gateReads` and `equalityOnlyExpr`). The
- * live Postgres cases stay in gate_collation.spec.ts as integration tests.
+ * live Postgres cases stay in collation_lookup.spec.ts as integration tests.
  *
  * Every row is today's answer. The rows marked CURRENT are questionable
  * ones, pinned so a change shows as a diff.
@@ -15,13 +15,10 @@
 
 import { describe, expect, it } from "bun:test";
 import type { Connection } from "@malloydata/malloy";
-import { catalogIO } from "./collation/catalog_io";
-import { equalityOnlyExpr, gateReads } from "./gate_reads";
-import { DUCKDB_COLLATION } from "./collation/duckdb";
-import {
-   POSTGRES_COLLATION,
-   unfinalizedPostgresSQL,
-} from "./collation/postgres";
+import { catalogIO } from "./catalog_io";
+import { equalityOnlyExpr, gateReads } from "../gate_reads";
+import { DUCKDB_COLLATION } from "./duckdb";
+import { POSTGRES_COLLATION, unfinalizedPostgresSQL } from "./postgres";
 
 /** The reads over a connection, through the I/O `collation/catalog_io.ts` builds. */
 const duckdbCollation = (c: Connection, sql: string) =>

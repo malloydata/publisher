@@ -1092,6 +1092,19 @@ parent's table does not compile, or cannot be written, is refused at plan as
 `upstream_table_unusable`, naming the parent and why, and is never built over the chain from the
 warehouse ([extension tables](#the-served-copy-materialization-v2-publisher_materialize)).
 
+**The regression suite.** These specs pin the rule; a change that breaks one has let a build read
+something other than its upstream's table, or serve a table its contract does not describe:
+
+| What it proves | Spec |
+| --- | --- |
+| A downstream reads its upstream's table, never raw (the drop-raw proof), on the database tier and in a destination | `tests/component/downstream_reads_upstream_table`, `tests/component/storage_downstream_reads_table` |
+| A persisted view or query reads its source's table | `tests/component/persisted_result_upstream_reuse` |
+| An upstream altered since its build is refused `schema_incompatible`, never read or recomputed | `tests/component/chained_build_upstream_drift`, `tests/component/storage_chained_build_upstream_drift`, `tests/component/upstream_column_dropped` |
+| A host's reference is held to the `nativeSchema` it carries | `tests/component/reference_upstream_types` |
+| A stacked `storage=` build compares strings as live does, or is refused | `tests/component/r4/stacked_storage_collation` |
+| Every chained `storage=` source in the corpus stacks on its parents' tables | `src/service/materialization/run/chained_storage_corpus` (with its golden file) |
+| A fleet mid-rollout reads older workers' manifests | `src/service/materialization/run/v1_mixed_fleet_manifest` |
+
 ### The column contract and what a bind checks
 
 Every build, on both tiers, records what its table holds column by column in the entry's

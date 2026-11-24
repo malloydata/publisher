@@ -1,25 +1,22 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { runInternalSQL } from "../../duckdb_lockdown";
+import { runInternalSQL } from "../../../duckdb_lockdown";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { PostgresConnection } from "@malloydata/db-postgres";
 import { type Connection, SingleConnectionRuntime } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { equalityOnlyExpr, gateReadsOfQuery } from "./gate_reads";
-import { catalogIO } from "./collation/catalog_io";
-import { lookupSourceRefusal, lookupStoredRefusal } from "./admission_lookup";
+import { equalityOnlyExpr, gateReadsOfQuery } from "../gate_reads";
+import { catalogIO } from "./catalog_io";
+import { lookupSourceRefusal, lookupStoredRefusal } from "../admission_lookup";
 import {
    readStringCapabilities,
    recordStringCapabilities,
-} from "./source_capability";
-import { captureDatabaseContract } from "../run/column_contract_capture";
-import { makeSnapshot } from "../domain/binding";
-import { DUCKDB_COLLATION } from "./collation/duckdb";
-import {
-   POSTGRES_COLLATION,
-   unfinalizedPostgresSQL,
-} from "./collation/postgres";
+} from "../source_capability";
+import { captureDatabaseContract } from "../../run/column_contract_capture";
+import { makeSnapshot } from "../../domain/binding";
+import { DUCKDB_COLLATION } from "./duckdb";
+import { POSTGRES_COLLATION, unfinalizedPostgresSQL } from "./postgres";
 
 /** The reads over a connection, through the I/O `collation/catalog_io.ts` builds. */
 const duckdbCollation = (c: Connection, sql: string) =>

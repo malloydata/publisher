@@ -19,12 +19,12 @@ import { BigQueryConnection } from "@malloydata/db-bigquery";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { type Connection, SingleConnectionRuntime } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { lookupSourceRefusal } from "./admission_lookup";
+import { lookupSourceRefusal } from "../admission_lookup";
 import {
    readStringCapabilities,
    recordStringCapabilities,
-} from "./source_capability";
-import type { GateReads } from "./gate_reads_types";
+} from "../source_capability";
+import type { GateReads } from "../gate_reads_types";
 
 const duckdb = new DuckDBConnection("bq-catalog-spec", ":memory:");
 
