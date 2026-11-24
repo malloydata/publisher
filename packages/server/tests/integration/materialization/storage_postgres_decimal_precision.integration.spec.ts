@@ -442,15 +442,24 @@ describe.skipIf(!url)(
          await wh.runSQL(
             `INSERT INTO t (id, g, u) VALUES (9, 'c', 0.1), (10, 'c', NULL)`,
          );
+         const beforeRebuild = server.output();
          await build();
-         // The refresh re-seeded rather than inserting into the DOUBLE.
+         // The refresh rebuilt rather than inserting into the DOUBLE, at the
+         // scale of every value it read (0.00001 needs 5).
          expect(await uType()).toEqual(["decimal(38,5)"]);
-         // The build log names the cause. The pre-run contract check usually
-         // finds the stored DOUBLE first (the table no longer matches what a
-         // build now records) and rebuilds it as incompatible; otherwise the
-         // delta's own precision guard re-seeds it.
-         expect(server.output()).toMatch(
-            /Re-seeding to store Postgres numerics exactly|incompatible[\s\S]*rebuilds it in full/,
+         // The run holds each table it would carry to its contract before it
+         // builds anything, so it finds the stored DOUBLE first (its contract
+         // records the DECIMAL a build stores) and rebuilds the table in full;
+         // the delta's own precision guard never sees it.
+         const rebuild = server.output().slice(beforeRebuild.length);
+         expect(rebuild).toMatch(
+            /A table a run would carry no longer matches the column contract its build recorded, so the run rebuilds it in full \{"code":"column_retyped","columns":\["u"\]/,
+         );
+         expect(rebuild).toMatch(
+            /Rebuilding an incremental source in full \{[^\n]*"physicalTableName":"t_incremental","reasonCode":"forced"/,
+         );
+         expect(rebuild).not.toContain(
+            "Re-seeding to store Postgres numerics exactly",
          );
          const read = (s: string) =>
             query(
