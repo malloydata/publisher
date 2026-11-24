@@ -123,6 +123,31 @@ export interface CompiledBuildPlan<Finding = unknown> {
     * time is refused when it is one. `"*"` when a walk could not finish.
     */
    accessReads?: readonly string[];
+   /**
+    * What the plan judged each upstream's compared strings by while its
+    * table was not bound, by {@link stringCapabilityKey}: the
+    * `capabilityFingerprint` (`string_reads.ts`) of the source capability it
+    * read. When a later read differs, the plan is derived again. Absent:
+    * none judged.
+    */
+   stringCapabilityReads?: Readonly<Record<string, string>>;
+}
+
+/** The key {@link CompiledBuildPlan.stringCapabilityReads} holds an upstream in a destination by. */
+export function stringCapabilityKey(
+   sourceID: string,
+   destination: string,
+): string {
+   return JSON.stringify([sourceID, destination]);
+}
+
+/** The upstream and destination a {@link stringCapabilityKey} names. */
+export function stringCapabilityKeyParts(key: string): {
+   sourceID: string;
+   destination: string;
+} {
+   const [sourceID, destination] = JSON.parse(key) as [string, string];
+   return { sourceID, destination };
 }
 
 /**

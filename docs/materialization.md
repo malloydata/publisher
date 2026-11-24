@@ -1060,7 +1060,13 @@ the upstream and why. Each answers live until the model changes:
 - a `storage=` build over its upstreams' tables that groups, filters or orders a string the
   upstream's contract records as compared otherwise than live: the destination compares strings
   byte-exact, so it would hold other groups or rows than live computes. Each string is judged
-  against the contract of the upstream whose table holds its column.
+  against the contract of the upstream whose table holds its column. While a `#(materialize)`
+  Postgres upstream's table is not bound, each is judged instead by how the upstream's source
+  compares it live, as the package's bind read records it per field: a binary column may be
+  grouped and ordered, a deterministic one only grouped. The plan a load derives before that read
+  lands refuses such a build, and is derived again once the read lands and once the table is
+  bound, so the refusal does not outlive it. Over any other upstream, such a build is judged at
+  build against the contract its upstream records then.
 
 **Failed by the run.** What only a run can find fails that source's build, and the source answers
 live: a persisted upstream the run neither built nor was handed by reference
@@ -1112,6 +1118,7 @@ something other than its upstream's table, or serve a table its contract does no
 | An upstream altered since its build is refused `schema_incompatible`, never read or recomputed                     | `tests/component/chained_build_upstream_drift`, `tests/component/storage_chained_build_upstream_drift`, `tests/component/upstream_column_dropped` |
 | A host's reference is held to the `nativeSchema` it carries                                                        | `tests/component/reference_upstream_types`                                                                                                        |
 | A stacked `storage=` build compares strings as live does, or is refused                                            | `tests/component/r4/stacked_storage_collation`                                                                                                    |
+| Before its upstream is bound, a view over a `#(materialize)` table is judged at plan by its source                 | `tests/component/r4/materialize_collation_plan`                                                                                                   |
 | Every chained `storage=` source in the corpus stacks on its parents' tables                                        | `src/service/materialization/run/chained_storage_corpus` (with its golden file)                                                                   |
 | A fleet mid-rollout reads older workers' manifests                                                                 | `src/service/materialization/run/v1_mixed_fleet_manifest`                                                                                         |
 

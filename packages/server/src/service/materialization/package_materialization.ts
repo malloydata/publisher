@@ -36,7 +36,18 @@ import {
 } from "./domain/column_contract";
 import { splitManifestEntries } from "./run/manifest_loader";
 import { packageRelativeSourceID } from "./text/read_text";
-import { refreshStringCapabilities } from "./serve/source_capability";
+import {
+   refreshStringCapabilities,
+   stringCapabilitiesOf,
+} from "./serve/source_capability";
+import {
+   capabilityFingerprint,
+   type UpstreamStringCapability,
+} from "./domain/string_reads";
+import { stringCapabilityKeyParts } from "./domain/compiled_build_plan";
+import type { Collation } from "./domain/collation";
+import * as path from "path";
+import { fileURLToPath } from "url";
 import { stopsReadAt } from "./domain/freshness";
 import { recordScopeFacts } from "./serve/scope_facts";
 import type { Connection, MalloyConfig } from "@malloydata/malloy";
@@ -130,6 +141,7 @@ import {
    isRollupOrigin,
    originOfTable,
    pairLeavesOf,
+   splitSourceID,
 } from "./domain/table_plans";
 import { queryTimezoneOf } from "../governance/ir/compiled_model";
 import type {
@@ -309,6 +321,8 @@ export class PackageMaterialization {
    private rebinding: { again: boolean } | undefined;
    /** The commits in order ({@link commit}): each starts after the last ends. */
    private commitChain: Promise<void> = Promise.resolve();
+   /** The checks {@link replanOnCapabilityChange} runs, one at a time. */
+   private capabilityChecks: Promise<void> = Promise.resolve();
    /** The snapshot from before a bind that is compiling ({@link servedSnapshot}). */
    private committing: Snapshot | undefined;
    /**
@@ -1015,11 +1029,13 @@ export class PackageMaterialization {
             next.bindings.length > 0 ||
             Object.keys(next.entries).length > 0
          ) {
+            const reads: Promise<void>[] = [];
             for (const model of this.owner.models().values()) {
                model.setStringCapabilityReader(refreshStringCapabilities);
                model.setScopeFactsRecorder(recordScopeFacts);
-               void model.refreshStringCapabilities();
+               reads.push(model.refreshStringCapabilities());
             }
+            void Promise.all(reads).then(() => this.capabilitiesRead());
          }
          if (next.bindings !== this.publishedBindings || models) {
             this.publishedBindings = next.bindings;
@@ -2055,6 +2071,94 @@ export class PackageMaterialization {
             model.refreshStringCapabilities(),
          ),
       );
+      await this.capabilitiesRead();
+   }
+
+   /**
+    * How the source of the upstream `sourceID` compares its strings live, by
+    * field name, as the last read of a model that declares it recorded it
+    * (the declaring file's model first), or `unread`. Waits for a read still
+    * running only as long as `stringCapabilitiesOf` bounds it. What a plan
+    * judges a `storage=` build over that upstream's unbound table by.
+    */
+   async upstreamStringCapability(
+      sourceID: string,
+   ): Promise<UpstreamStringCapability> {
+      const split = splitSourceID(sourceID);
+      if (!split) return "unread";
+      let declaring: string | undefined;
+      try {
+         declaring = path.resolve(fileURLToPath(split.url));
+      } catch {
+         declaring = undefined;
+      }
+      const root = this.owner.packagePath();
+      const models = [...this.owner.models()].sort(
+         ([a], [b]) =>
+            Number(path.resolve(root, b) === declaring) -
+            Number(path.resolve(root, a) === declaring),
+      );
+      for (const [, model] of models) {
+         const recorded = await stringCapabilitiesOf(
+            model.stringCapabilityRuntime(),
+         );
+         const source = recorded?.sources.get(split.name);
+         if (!source) continue;
+         const fields = new Map<string, Collation>();
+         // A joined field's path holds a separator; a stored column is
+         // named by its source's own field.
+         for (const [key, field] of source.fields) {
+            if (!key.includes("\u0000")) fields.set(key, field.collation);
+         }
+         return { fields };
+      }
+      return "unread";
+   }
+
+   /** A capability read landed: see {@link replanOnCapabilityChange}. */
+   private capabilitiesRead(): Promise<void> {
+      const check = this.capabilityChecks.then(() =>
+         this.replanOnCapabilityChange(),
+      );
+      this.capabilityChecks = check.catch(() => undefined);
+      return check.catch((err) => {
+         logger.warn(
+            "Could not re-derive the build plan after reading how its sources compare strings",
+            {
+               packageName: this.owner.packageName(),
+               code: errorCodeOf(err),
+            },
+         );
+      });
+   }
+
+   /**
+    * Derive the plan again when it judged an unbound upstream's compared
+    * strings by a capability that now reads otherwise, or whose table is
+    * bound now (its contract judges them instead), so a refusal for a read
+    * that had not landed never sticks. Never loops: the plan derived again
+    * records what it judged by, so the next read finds it unchanged unless
+    * the warehouse or a bind moved it.
+    */
+   private async replanOnCapabilityChange(): Promise<void> {
+      const judged = this.plan.stringCapabilityReads;
+      for (const [key, before] of Object.entries(judged)) {
+         if (this.disposed) return;
+         const { sourceID, destination } = stringCapabilityKeyParts(key);
+         const now = this.boundStorageContract(sourceID, destination)
+            ? capabilityFingerprint("bound")
+            : capabilityFingerprint(
+                 await this.upstreamStringCapability(sourceID),
+              );
+         if (now === before) continue;
+         // A derivation since this check began read its own.
+         if (this.disposed || this.plan.stringCapabilityReads !== judged) {
+            return;
+         }
+         this.plan.markStale();
+         await this.plan.refresh(async () => undefined);
+         return;
+      }
    }
 
    private setServedCopyContextOn(model: Model): void {

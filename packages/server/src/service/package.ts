@@ -12,6 +12,7 @@ import type {
    BoundTableContract,
    PlanChainBuildText,
    PlanChainStringReads,
+   UpstreamStringCapabilityOf,
 } from "./materialization/domain/chain_build";
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
@@ -3033,6 +3034,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       sourceID,
       destination,
    ) => this.mz.boundStorageContract(sourceID, destination);
+
+   /** See {@link BuildPlanPackage.upstreamStringCapability}. */
+   public readonly upstreamStringCapability: UpstreamStringCapabilityOf = (
+      sourceID,
+   ) => this.mz.upstreamStringCapability(sourceID);
 
    /** See {@link BuildPlanPackage.boundTableContract}. */
    public readonly boundTableContract: BoundTableContract = (
