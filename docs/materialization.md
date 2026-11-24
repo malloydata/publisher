@@ -1086,7 +1086,10 @@ downstreams build over the rebuilt table in the same run. Only the tables the ru
 incremental tables a delta advances in place, are read (never one it rebuilds anyway, refuses, or
 leaves out of a run of named sources), within 60 seconds in all. A carried table not read in time is
 carried, held by the bind and each downstream build's upstream check; an incremental one is reseeded
-rather than advanced (`contract_unverified`).
+rather than advanced (`contract_unverified`). A delta advances only a table this read held, the same
+name in the same destination: an incremental table whose ledger names any other (one a run seeded
+and then failed before it committed, or one at a destination the source left and came back to) is
+reseeded (`ledger_unheld`). A forced run reads nothing and advances as before.
 
 A run a host instructs (`buildInstructions`) ends every instructed source in exactly one of the
 manifest's `entries` or `failures`, never neither. Each source the run builds is held to the plan's
