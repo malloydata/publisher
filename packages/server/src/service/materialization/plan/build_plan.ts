@@ -176,7 +176,11 @@ import type {
    PersistedViewPlan,
    StoredInDestination,
 } from "../domain/table_plans";
-import { type StorageOverStored, storedColumnsOf } from "./storage_over_stored";
+import {
+   standInUpstream,
+   type StorageOverStored,
+   storedColumnsOf,
+} from "./storage_over_stored";
 import { deletingWindowsOf } from "./rolling_window";
 import { storedMaterializeUpstream } from "./stored_base_copy";
 import {
@@ -1381,23 +1385,18 @@ function storedBaseDecline(
    if (columns === undefined) {
       return `${base} holds no columns a stored table can stand in for`;
    }
-   const handle = "publisher_stand_in_base";
    const text = args.chainBuildText(
       {
          downstream: { sourceID: source.sourceID, name: source.name },
          destination: { name: destination, schema: "main" },
          upstreams: [
-            {
-               entry: {
-                  sourceEntityId: handle,
-                  sourceName: plan.baseSourceName,
-                  physicalTableName: handle,
-                  connectionName: destination,
-                  storageDestinationName: destination,
-                  schema: columns.map((c) => ({ ...c })),
-               },
-               names: { [plan.baseSourceName]: [storedBase.baseSourceID] },
-            },
+            standInUpstream({
+               handle: "publisher_stand_in_base",
+               name: plan.baseSourceName,
+               sourceID: storedBase.baseSourceID,
+               destination,
+               columns,
+            }),
          ],
          rollup: {
             baseSourceID: storedBase.baseSourceID,

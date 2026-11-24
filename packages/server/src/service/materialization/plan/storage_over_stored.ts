@@ -164,17 +164,15 @@ async function compileOne(args: {
          name: args.plan.buildSourceName,
       },
       destination: { name: args.destination, schema: "main" },
-      upstreams: args.upstreams.map((u, i) => ({
-         entry: {
-            sourceEntityId: standIns[i].handle,
-            sourceName: u.name,
-            physicalTableName: standIns[i].handle,
-            connectionName: args.destination,
-            storageDestinationName: args.destination,
-            schema: standIns[i].columns.map((c) => ({ ...c })),
-         },
-         names: { [u.name]: [u.sourceID] },
-      })),
+      upstreams: args.upstreams.map((u, i) =>
+         standInUpstream({
+            handle: standIns[i].handle,
+            name: u.name,
+            sourceID: u.sourceID,
+            destination: args.destination,
+            columns: standIns[i].columns,
+         }),
+      ),
       view: {
          authorName: args.authorName,
          ...(args.keepAlso ? { keepAlso: args.keepAlso } : {}),
@@ -224,6 +222,31 @@ async function compileOne(args: {
          `it does not compile there (${error instanceof Error ? error.message : String(error)})`,
       );
    }
+}
+
+/**
+ * A stored upstream a plan proves a build over before any table exists: an
+ * entry naming a stand-in table `handle` in `destination` that holds
+ * `columns`, read as the source `name` (`sourceID`).
+ */
+export function standInUpstream(u: {
+   handle: string;
+   name: string;
+   sourceID: string;
+   destination: string;
+   columns: readonly { name: string; type: string }[];
+}): ChainBuildRequest["upstreams"][number] {
+   return {
+      entry: {
+         sourceEntityId: u.handle,
+         sourceName: u.name,
+         physicalTableName: u.handle,
+         connectionName: u.destination,
+         storageDestinationName: u.destination,
+         schema: u.columns.map((c) => ({ ...c })),
+      },
+      names: { [u.name]: [u.sourceID] },
+   };
 }
 
 /**

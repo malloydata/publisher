@@ -134,6 +134,7 @@ import {
 } from "../domain/storage_table_path";
 import { STORAGE_DIALECT } from "../domain/dialect";
 import { type ColumnContract, parseContract } from "../domain/column_contract";
+import type { ChainBuildRequest } from "../domain/chain_build";
 import type { Collation } from "../domain/collation";
 import { storageContract } from "./column_contract_capture";
 import { ContractCaptureFailedError } from "../../../errors";
@@ -1158,23 +1159,20 @@ export class StorageBuildStrategy
                   `reproduce: ${collation}`,
          );
       }
-      const text = environment.chainBuildText({
-         downstream: {
-            sourceID: persistSource.sourceID,
-            name: persistSource.name,
-         },
-         destination: {
-            name: destinationName,
-            schema: destinationSchemaOf(destinationConnection),
-         },
-         upstreams: [
-            {
-               entry: base.entry,
-               names: { [base.baseName]: [base.baseSourceID] },
-            },
-         ],
-         rollup: { baseSourceID: base.baseSourceID, companion: base.companion },
-      });
+      const text = environment.chainBuildText(
+         chainRequest(
+            persistSource,
+            destinationName,
+            destinationConnection,
+            [
+               {
+                  entry: base.entry,
+                  names: { [base.baseName]: [base.baseSourceID] },
+               },
+            ],
+            { baseSourceID: base.baseSourceID, companion: base.companion },
+         ),
+      );
       if ("declined" in text) {
          throw refused("its base cannot be re-rooted on that table");
       }
@@ -1350,20 +1348,17 @@ export class StorageBuildStrategy
          names[b.sourceName] = b.sourceIDs;
          byAddress.set(b.virtualHandle, names);
       }
-      const text = environment.chainBuildText({
-         downstream: {
-            sourceID: persistSource.sourceID,
-            name: persistSource.name,
-         },
-         destination: {
-            name: destinationName,
-            schema: destinationSchemaOf(destinationConnection),
-         },
-         upstreams: [...byAddress].map(([address, names]) => ({
-            entry: currentEntries[address],
-            names,
-         })),
-      });
+      const text = environment.chainBuildText(
+         chainRequest(
+            persistSource,
+            destinationName,
+            destinationConnection,
+            [...byAddress].map(([address, names]) => ({
+               entry: currentEntries[address],
+               names,
+            })),
+         ),
+      );
       if ("declined" in text) {
          throw text.code === "package_stale"
             ? new ChainedPackageStaleError(
@@ -1854,4 +1849,30 @@ function standInMoved(
            ];
    });
    return moved.length > 0 ? moved.join(", ") : undefined;
+}
+
+/**
+ * What a chained `storage=` build asks the package's served copy for
+ * (`chainBuildText`): `persistSource`'s build text over `upstreams`' tables
+ * in `destinationName`, under the schema its connection reads by default.
+ */
+function chainRequest(
+   persistSource: { sourceID: string; name: string },
+   destinationName: string,
+   destinationConnection: ApiConnection,
+   upstreams: ChainBuildRequest["upstreams"],
+   rollup?: ChainBuildRequest["rollup"],
+): ChainBuildRequest {
+   return {
+      downstream: {
+         sourceID: persistSource.sourceID,
+         name: persistSource.name,
+      },
+      destination: {
+         name: destinationName,
+         schema: destinationSchemaOf(destinationConnection),
+      },
+      upstreams,
+      ...(rollup ? { rollup } : {}),
+   };
 }
