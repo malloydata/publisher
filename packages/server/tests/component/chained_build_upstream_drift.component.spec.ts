@@ -75,6 +75,26 @@ source: b is a -> { group_by: cat; aggregate: total is amt.sum() }
       servedBy: "materialized",
    },
    {
+      label: "#(materialize) extension of a #(materialize) parent",
+      model: `${RAW.replace(
+         '#@ persist name="cd_a"\nsource: a is raw -> { select: cat, amt }',
+         "#(materialize)\nsource: a is raw extend { dimension: cat2 is cat }",
+      )}
+#(materialize)
+source: ext is a extend { dimension: big is amt > 5 }
+`,
+      query: `run: ext -> { group_by: cat; aggregate: total is amt.sum() } ${AS_TEXT}`,
+      servedBy: "materialized",
+      /**
+       * Skipped until fix/extension-over-altered-parent lands: the run after
+       * the alter carries the parent's altered table and builds the
+       * extension over it (`upstreamReuse: reused`, amt `DECIMAL(10,0)`),
+       * served as 19 and 4 where live answers 19.0 and 4.8, on DuckDB and
+       * Postgres.
+       */
+      knownWrong: true,
+   },
+   {
       label: "#(rollup)",
       model: `${RAW}
 source: rolled is a extend {
@@ -146,7 +166,8 @@ const tiers = [
 ];
 
 for (const [tier, mechanism] of tiers.flatMap((t) =>
-   MECHANISMS.map((m) => [t, m] as const),
+   // A known-wrong mechanism is left out, and named by a skipped test below.
+   MECHANISMS.filter((m) => !("knownWrong" in m)).map((m) => [t, m] as const),
 )) {
    describe(`a chained build over an upstream table altered since its build fails once, then builds over the rebuilt table (${mechanism.label}, ${tier.label})`, () => {
       let restore: () => void;
@@ -333,3 +354,11 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
       });
    });
 }
+
+describe("a chained build over an upstream table altered since its build (known wrong)", () => {
+   for (const mechanism of MECHANISMS.filter((m) => "knownWrong" in m)) {
+      // Built over the altered parent and served wrong today; drop the
+      // filter above to run it once fix/extension-over-altered-parent lands.
+      it.skip(`fails once, then builds over the rebuilt table (${mechanism.label})`, () => {});
+   }
+});
