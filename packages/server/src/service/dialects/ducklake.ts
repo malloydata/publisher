@@ -144,10 +144,12 @@ function validateDuckLakeShape(
    // destination is only attached at its first BUILD, so a field missed here
    // would surface hours after the config change that caused it.
    if (!connection.ducklakeConnection) {
-      throw new Error("DuckLake connection configuration is missing.");
+      throw new BadRequestError(
+         "DuckLake connection configuration is missing.",
+      );
    }
    if (!connection.ducklakeConnection.catalog?.postgresConnection) {
-      throw new Error(
+      throw new BadRequestError(
          `PostgreSQL connection configuration is required for DuckLake catalog: ${connection.name}`,
       );
    }
@@ -184,7 +186,7 @@ function validateDuckLakeShape(
    if (connection.ducklakeConnection.catalog.metadataSchema !== undefined) {
       const schema = connection.ducklakeConnection.catalog.metadataSchema;
       if (typeof schema !== "string" || !PLAIN_IDENTIFIER.test(schema)) {
-         throw new Error(
+         throw new BadRequestError(
             `DuckLake catalog metadataSchema must be a plain identifier ` +
                `([A-Za-z_][A-Za-z0-9_]*), got '${schema}' for connection: ` +
                `${connection.name}`,
@@ -199,7 +201,7 @@ function validateDuckLakeShape(
          typeof destinationSchema !== "string" ||
          !PLAIN_IDENTIFIER.test(destinationSchema)
       ) {
-         throw new Error(
+         throw new BadRequestError(
             `DuckLake destinationSchema must be a plain identifier ` +
                `([A-Za-z_][A-Za-z0-9_]*), got '${destinationSchema}' for connection: ` +
                `${connection.name}`,
@@ -216,7 +218,7 @@ function validateDuckLakeShape(
       !(Array.isArray(readable) && readable.length === 0)
    ) {
       if (origin === "storage-destination") {
-         throw new Error(
+         throw new BadRequestError(
             `DuckLake readableSchemas applies to a managed connection view, not a ` +
                `storage destination: ${connection.name}`,
          );
@@ -225,7 +227,7 @@ function validateDuckLakeShape(
          connection.managed !== true ||
          connection.ducklakeConnection.readOnly === false
       ) {
-         throw new Error(
+         throw new BadRequestError(
             `DuckLake readableSchemas requires a managed, read-only connection: ` +
                `${connection.name}`,
          );
@@ -237,7 +239,7 @@ function validateDuckLakeShape(
                typeof name !== "string" || !READABLE_SCHEMA_NAME.test(name),
          )
       ) {
-         throw new Error(
+         throw new BadRequestError(
             `DuckLake readableSchemas must be a list of lowercase schema names ` +
                `([a-z_][a-z0-9_]*) for connection: ${connection.name}`,
          );
@@ -248,7 +250,7 @@ function validateDuckLakeShape(
             name.startsWith(METADATA_CATALOG_PREFIX),
       );
       if (reserved !== undefined) {
-         throw new Error(
+         throw new BadRequestError(
             `DuckLake readableSchemas names '${reserved}', a reserved schema name, ` +
                `for connection: ${connection.name}`,
          );
@@ -900,8 +902,8 @@ async function secureCatalogStorage(
 /**
  * The scope of an attached catalog's storage secret ({@link storageSecretScope}),
  * reading from the catalog's metadata whatever the config does not state: the
- * recorded data path when the config has none, and the paths of `main` and the
- * readable schemas for a managed read-only view. Runs on the attached catalog,
+ * recorded data path when the config has none, and every live schema's path for
+ * a managed read-only view. Runs on the attached catalog,
  * so nothing here is a guess the preflight could fail softly on.
  */
 async function attachedDuckLakeScope(
@@ -926,9 +928,7 @@ async function attachedDuckLakeScope(
         ).data_path;
    const schemaPaths =
       input.managed && input.readOnly
-         ? await recordedSchemaPaths(connection, dbName, input.metadataSchema, [
-              ...managedSchemas(input.readableSchemas),
-           ])
+         ? await recordedSchemaPaths(connection, dbName, input.metadataSchema)
          : undefined;
    return storageSecretScope({
       catalog: dbName,

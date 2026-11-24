@@ -13,9 +13,10 @@ import {
    it,
 } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { createServer, type Server, type Socket } from "net";
 import { tmpdir } from "os";
 import { join } from "path";
-import { pgClientConfig } from "./postgres_conninfo";
+import { connectPgClient, pgClientConfig } from "./postgres_conninfo";
 
 const config = (conninfo: string) => pgClientConfig("test", conninfo);
 
@@ -32,6 +33,7 @@ const ENV_VARIABLES = [
    "PGSSLCRL",
    "PGSSLCRLDIR",
    "PGSSLMINPROTOCOLVERSION",
+   "PGPASSFILE",
    "NODE_EXTRA_CA_CERTS",
 ] as const;
 const priorEnv = new Map<string, string | undefined>();
@@ -104,6 +106,7 @@ describe("pgClientConfig", () => {
       ["sslcrl", "/etc/crl.pem"],
       ["sslcrldir", "/etc/crl"],
       ["ssl_min_protocol_version", "TLSv1.3"],
+      ["passfile", "/etc/pgpass"],
    ])(
       "refuses %s=%s, which node-pg would drop, naming the key and not the string",
       (key, value) => {
@@ -144,6 +147,12 @@ describe("pgClientConfig", () => {
       "require_auth=",
    ])("accepts %s, which asks for nothing node-pg lacks", (setting) => {
       expect(config(`host=h ${setting}`)).toMatchObject({ host: "h" });
+   });
+
+   it("accepts PGPASSFILE in the environment, which node-pg reads itself", () => {
+      process.env.PGPASSFILE = "/etc/pgpass";
+      expect(config("host=h")).toMatchObject({ host: "h" });
+      delete process.env.PGPASSFILE;
    });
 
    it("accepts the same relaxed values from the environment", () => {
@@ -211,6 +220,25 @@ describe("pgClientConfig", () => {
       "maps sslmode %s to %p, plaintext fallback %p",
       (sslmode, ssl, plaintextFallback) => {
          const conninfo = `host=h${sslmode ? ` sslmode=${sslmode}` : ""}`;
+         expect(config(conninfo)).toMatchObject({ ssl, plaintextFallback });
+      },
+   );
+
+   it.each([
+      ["postgres://h/cat?ssl=no-verify", { rejectUnauthorized: false }, false],
+      ["postgres://h/cat?ssl=1", { rejectUnauthorized: false }, false],
+      ["postgres://h/cat?ssl=true", { rejectUnauthorized: false }, false],
+      // `ssl` yields to an `sslmode`, as the attach has it.
+      ["postgres://h/cat?sslmode=disable&ssl=1", false, false],
+      ["postgres://h/cat?ssl=no-verify&sslmode=disable", false, false],
+      [
+         "postgres://h/cat?sslmode=verify-full&ssl=true",
+         { rejectUnauthorized: true },
+         false,
+      ],
+   ] as const)(
+      "reads the URI %s as the attach does",
+      (conninfo, ssl, plaintextFallback) => {
          expect(config(conninfo)).toMatchObject({ ssl, plaintextFallback });
       },
    );
@@ -433,5 +461,62 @@ describe("pgClientConfig", () => {
       expect(() => config("host=h password=secret sslmode=bogus")).toThrow(
          "test has unsupported sslmode 'bogus'.",
       );
+   });
+});
+
+// A server that answers an SSLRequest with `N`, then a plaintext startup with a ready session.
+describe("connectPgClient's plaintext fallback", () => {
+   let server: Server;
+   let port: number;
+   let sslRequests: number;
+   let plaintextStartups: number;
+
+   beforeEach(async () => {
+      sslRequests = 0;
+      plaintextStartups = 0;
+      server = createServer((socket: Socket) => {
+         socket.once("data", (first) => {
+            // SSLRequest: length 8, code 80877103.
+            if (first.length === 8 && first.readInt32BE(4) === 80877103) {
+               sslRequests++;
+               socket.write("N");
+               return;
+            }
+            plaintextStartups++;
+            // AuthenticationOk, then ReadyForQuery.
+            socket.write(
+               Buffer.from([
+                  0x52, 0, 0, 0, 8, 0, 0, 0, 0, 0x5a, 0, 0, 0, 5, 0x49,
+               ]),
+            );
+         });
+         socket.on("error", () => undefined);
+      });
+      await new Promise<void>((resolve) =>
+         server.listen(0, "127.0.0.1", resolve),
+      );
+      port = (server.address() as { port: number }).port;
+   });
+   afterEach(() => {
+      server.close();
+   });
+
+   it("retries in plaintext when sslmode=prefer meets a server without TLS", async () => {
+      const client = await connectPgClient(
+         "test",
+         `host=127.0.0.1 port=${port} user=u dbname=d sslmode=prefer`,
+      );
+      await client.end();
+      expect([sslRequests, plaintextStartups]).toEqual([1, 1]);
+   });
+
+   it("does not downgrade under sslmode=require, which fails on the refusal", async () => {
+      await expect(
+         connectPgClient(
+            "test",
+            `host=127.0.0.1 port=${port} user=u dbname=d sslmode=require`,
+         ),
+      ).rejects.toThrow(/does not support SSL/i);
+      expect([sslRequests, plaintextStartups]).toEqual([1, 0]);
    });
 });

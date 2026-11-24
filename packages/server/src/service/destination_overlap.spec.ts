@@ -3,7 +3,12 @@
 
 import { describe, expect, it } from "bun:test";
 import type { components } from "../api";
-import { destinationOverlap, destinationOverlaps } from "./destination_overlap";
+import { BadRequestError } from "../errors";
+import {
+   destinationOverlap,
+   destinationOverlaps,
+   refuseListedDestinationSchema,
+} from "./destination_overlap";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -235,5 +240,48 @@ describe("destinationOverlap", () => {
             [destination],
          ).map((o) => [o.connection, o.destination]),
       ).toEqual([["same", "dest"]]);
+   });
+});
+
+describe("refuseListedDestinationSchema", () => {
+   const catalog = { host: "pg", databaseName: "cat", metadataSchema: "lake" };
+   const builds = (schema?: string) => {
+      const dest = lake("dest", catalog, "s3://bucket/lake");
+      dest.ducklakeConnection!.destinationSchema = schema;
+      return dest;
+   };
+   const listing = (...readableSchemas: string[]) => {
+      const view = lake("view", catalog);
+      view.ducklakeConnection!.readableSchemas = readableSchemas;
+      return view;
+   };
+
+   it("refuses, naming the connection, the destination and the schema, a readableSchemas entry a destination builds into", () => {
+      let error: unknown;
+      try {
+         refuseListedDestinationSchema(
+            [listing("stripe", "Materialized")],
+            [builds("materialized")],
+         );
+      } catch (e) {
+         error = e;
+      }
+      expect(error).toBeInstanceOf(BadRequestError);
+      expect((error as Error).message).toContain('"view"');
+      expect((error as Error).message).toContain('"dest"');
+      expect((error as Error).message).toContain("materialized");
+   });
+
+   it("lets through a list that omits the schema, a connection on another catalog, and main", () => {
+      refuseListedDestinationSchema(
+         [listing("stripe")],
+         [builds("materialized")],
+      );
+      refuseListedDestinationSchema(
+         [lake("apart", { host: "pg", databaseName: "x" })],
+         [builds("materialized")],
+      );
+      refuseListedDestinationSchema([listing("main")], [builds()]);
+      refuseListedDestinationSchema([listing("materialized")], []);
    });
 });

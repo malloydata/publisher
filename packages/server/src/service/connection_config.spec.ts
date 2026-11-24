@@ -1064,6 +1064,44 @@ describe("ducklake shape validation", () => {
       }
    });
 
+   it("answers every DuckLake shape error as a BadRequestError, a 400 and not an unhandled 500", () => {
+      const lake = valid.ducklakeConnection!;
+      const shapes: ApiConnection[] = [
+         { name: "lake", type: "ducklake" },
+         {
+            ...valid,
+            ducklakeConnection: { storage: lake.storage },
+         } as ApiConnection,
+         withSchema("not a plain identifier"),
+         {
+            ...valid,
+            ducklakeConnection: { ...lake, destinationSchema: "has space" },
+         },
+         {
+            ...valid,
+            ducklakeConnection: { ...lake, readableSchemas: ["stripe"] },
+         },
+         {
+            ...valid,
+            managed: true,
+            ducklakeConnection: { ...lake, readableSchemas: ["Stripe"] },
+         },
+         {
+            ...valid,
+            managed: true,
+            ducklakeConnection: {
+               ...lake,
+               readableSchemas: ["information_schema"],
+            },
+         },
+      ];
+      for (const shape of shapes) {
+         expect(() =>
+            assembleEnvironmentConnections([shape], "/tmp/env"),
+         ).toThrow(BadRequestError);
+      }
+   });
+
    describe("readableSchemas", () => {
       const withReadable = (
          readableSchemas: unknown,

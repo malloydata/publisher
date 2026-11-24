@@ -4953,6 +4953,44 @@ describe("storageSecretScope", () => {
             }),
          ).toEqual(["s3://bucket/org_a/db_b/main/"]);
       });
+
+      it("refuses, naming both schemas, a listed schema whose scope reaches an unlisted schema's files", () => {
+         expect(() =>
+            view(["extra_a"], {
+               extra_a: { path: "extra_a/", relative: true },
+               nested: { path: "extra_a/nested/", relative: true },
+            }),
+         ).toThrow(/'extra_a'.*'nested'/);
+         expect(() =>
+            view(["extra_a"], {
+               extra_a: { path: "extra_a/", relative: true },
+               nested: {
+                  path: "s3://bucket/org_a/db_b/extra_a/nested",
+                  relative: false,
+               },
+            }),
+         ).toThrow(/'extra_a'.*'nested'/);
+         // A catalog migrated from DuckLake 0.2 keeps main's files at the data path itself.
+         expect(() =>
+            view([], {
+               main: { path: "", relative: true },
+               other: { path: "other/", relative: true },
+            }),
+         ).toThrow(/'main'.*'other'/);
+      });
+
+      it("lets an unlisted schema stand beside the listed ones, even by a shared name prefix", () => {
+         expect(
+            view(["extra_a"], {
+               extra_a: { path: "extra_a/", relative: true },
+               extra_ab: { path: "extra_ab/", relative: true },
+               elsewhere: { path: "s3://other/x/", relative: false },
+            }),
+         ).toEqual([
+            "s3://bucket/org_a/db_b/main/",
+            "s3://bucket/org_a/db_b/extra_a/",
+         ]);
+      });
    });
 });
 

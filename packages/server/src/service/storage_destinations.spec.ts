@@ -363,7 +363,6 @@ describe("Environment: connections and storage destinations are disjoint", () =>
       };
       const REACHES =
          'Connection "models" reaches storage destination "managed"';
-      const LISTS = 'lists storage destination "managed"\'s schema';
       const warnings = (
          connection: ApiConnection,
          destination: ApiConnection,
@@ -383,7 +382,6 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          expect(
             has(messages, `${REACHES}: it names the same DuckLake catalog`),
          ).toBe(true);
-         expect(has(messages, LISTS)).toBe(false);
       });
 
       it("does not warn for a managed read-only view when the destination builds into a schema it does not list", () => {
@@ -397,27 +395,93 @@ describe("Environment: connections and storage destinations are disjoint", () =>
             onCatalog("managed", asTier, { destinationSchema: "materialized" }),
          );
          expect(has(messages, REACHES)).toBe(false);
-         expect(has(messages, LISTS)).toBe(false);
       });
 
-      it("still warns for a managed view that lists the destination's schema, and for a destination that builds into main", () => {
-         const listed = warnings(
-            onCatalog(
-               "models",
-               asModels,
-               { readableSchemas: ["materialized"] },
-               { managed: true },
-            ),
-            onCatalog("managed", asTier, { destinationSchema: "materialized" }),
-         );
-         expect(has(listed, REACHES)).toBe(true);
-         expect(has(listed, LISTS)).toBe(true);
-         sinon.restore();
-         const inMain = warnings(
+      it("still warns for a destination that builds into main", () => {
+         const messages = warnings(
             onCatalog("models", asModels, {}, { managed: true }),
             onCatalog("managed", asTier),
          );
-         expect(has(inMain, REACHES)).toBe(true);
+         expect(has(messages, REACHES)).toBe(true);
+      });
+
+      describe("a readableSchemas entry the destination builds into", () => {
+         const listing = onCatalog(
+            "models",
+            asModels,
+            { readableSchemas: ["materialized"] },
+            { managed: true },
+         );
+         const builds = onCatalog("managed", asTier, {
+            destinationSchema: "materialized",
+         });
+         const other = onCatalog("managed", asTier, {
+            destinationSchema: "elsewhere",
+         });
+         const unrelated = tenantPostgresConnection("warehouse");
+
+         it("is refused at boot", () => {
+            expect(() => makeEnvironment([listing], [builds])).toThrow(
+               BadRequestError,
+            );
+         });
+
+         it("is refused when an update brings the connection, and nothing changes", async () => {
+            const environment = makeEnvironment([unrelated], [builds]);
+            await expect(
+               environment.update({
+                  name: "test-env",
+                  connections: [listing],
+               }),
+            ).rejects.toThrow(BadRequestError);
+            expect(environment.listApiConnections().map((c) => c.name)).toEqual(
+               ["warehouse"],
+            );
+         });
+
+         it("is refused when an update brings the destination, and the stored list stays", async () => {
+            const environment = makeEnvironment([listing], [other]);
+            await expect(
+               environment.update({
+                  name: "test-env",
+                  storageDestinations: [builds],
+               }),
+            ).rejects.toThrow(BadRequestError);
+            expect(
+               environment.listStorageDestinations()[0].ducklakeConnection
+                  ?.destinationSchema,
+            ).toBe("elsewhere");
+         });
+
+         it("is refused when one update brings both, against the next pair and not the stored one", async () => {
+            const environment = makeEnvironment([unrelated], [other]);
+            await expect(
+               environment.update({
+                  name: "test-env",
+                  connections: [listing],
+                  storageDestinations: [builds],
+               }),
+            ).rejects.toThrow(BadRequestError);
+            expect(environment.listApiConnections().map((c) => c.name)).toEqual(
+               ["warehouse"],
+            );
+            expect(
+               environment.listStorageDestinations()[0].ducklakeConnection
+                  ?.destinationSchema,
+            ).toBe("elsewhere");
+         });
+
+         it("passes when the same update moves the destination off the listed schema", async () => {
+            const environment = makeEnvironment([unrelated], [builds]);
+            await environment.update({
+               name: "test-env",
+               connections: [listing],
+               storageDestinations: [other],
+            });
+            expect(environment.listApiConnections().map((c) => c.name)).toEqual(
+               ["models"],
+            );
+         });
       });
    });
 
@@ -766,7 +830,7 @@ describe("Environment: connections and storage destinations are disjoint", () =>
                   ) as never;
                }
                const wanted =
-                  /\.ducklake_schema WHERE schema_name IN \((.*)\) AND/.exec(
+                  /\.ducklake_schema WHERE (?:schema_name IN \((.*)\) AND )?end_snapshot IS NULL/.exec(
                      text,
                   );
                if (wanted) {
@@ -774,8 +838,11 @@ describe("Environment: connections and storage destinations are disjoint", () =>
                      main: recorded.main,
                      ...recorded.schemas,
                   };
-                  return [...wanted[1].matchAll(/'([^']*)'/g)]
-                     .map(([, name]) => name)
+                  // With no name filter the query returns every live schema.
+                  const names = wanted[1]
+                     ? [...wanted[1].matchAll(/'([^']*)'/g)].map(([, n]) => n)
+                     : Object.keys(known);
+                  return names
                      .filter((name) => known[name])
                      .map((name) => ({
                         schema_name: name,
@@ -1000,7 +1067,7 @@ describe("Environment: connections and storage destinations are disjoint", () =>
             ),
          );
          const mainPath = statements.findIndex((sql) =>
-            /"__ducklake_metadata_db_x"\."db_x"\.ducklake_schema WHERE schema_name IN \('main'\)/.test(
+            /"__ducklake_metadata_db_x"\."db_x"\.ducklake_schema WHERE end_snapshot IS NULL/.test(
                sql,
             ),
          );

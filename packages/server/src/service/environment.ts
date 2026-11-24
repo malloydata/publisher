@@ -89,7 +89,10 @@ import {
 import type { RunManifestLoad } from "./materialization/domain/types";
 import type { KeptTable } from "./materialization/domain/types";
 import { ApiConnection } from "./model";
-import { destinationOverlaps } from "./destination_overlap";
+import {
+   destinationOverlaps,
+   refuseListedDestinationSchema,
+} from "./destination_overlap";
 import type { PackageMaterialization } from "./materialization";
 import { Package } from "./package";
 import { canonicalJson } from "./package_revision";
@@ -656,16 +659,13 @@ export class Environment {
       // First, so an unreadable destination list is refused before anything
       // changes. Absent leaves the list alone; an unreadable shape is
       // rejected rather than read as "keep none"; an explicit [] clears.
-      if (payload.storageDestinations !== undefined) {
-         this.setStorageDestinations(payload.storageDestinations, {
-            rejectInvalid: true,
-         });
-      }
-
-      if (payload.readme !== undefined) {
-         this.metadata.readme = payload.readme;
-         await this.writeEnvironmentReadme(payload.readme);
-      }
+      const nextDestinations =
+         payload.storageDestinations === undefined
+            ? undefined
+            : this.resolveStorageDestinations(
+                 payload.storageDestinations,
+                 true,
+              );
 
       if (payload.connections) {
          const payloadConnections = payload.connections;
@@ -692,6 +692,18 @@ export class Environment {
                isUpdateConnectionRequest,
             );
 
+            // The pair is checked before either list is assigned.
+            if (nextDestinations) {
+               this.applyStorageDestinations(
+                  nextDestinations,
+                  nextMalloyConfig.apiConnections,
+               );
+            } else {
+               refuseListedDestinationSchema(
+                  nextMalloyConfig.apiConnections,
+                  this.destinations,
+               );
+            }
             this.updateConnections(nextMalloyConfig);
             // A wholesale replacement: the list is now the desired state.
             this.connectionsAuthoritative = true;
@@ -704,6 +716,13 @@ export class Environment {
                },
             );
          });
+      } else if (nextDestinations) {
+         this.applyStorageDestinations(nextDestinations, this.apiConnections);
+      }
+
+      if (payload.readme !== undefined) {
+         this.metadata.readme = payload.readme;
+         await this.writeEnvironmentReadme(payload.readme);
       }
 
       return this;
@@ -879,7 +898,16 @@ export class Environment {
       storageDestinations: ApiConnection[],
       { rejectInvalid = false }: { rejectInvalid?: boolean } = {},
    ): void {
-      const previous = this.destinations;
+      this.applyStorageDestinations(
+         this.resolveStorageDestinations(storageDestinations, rejectInvalid),
+         this.apiConnections,
+      );
+   }
+
+   private resolveStorageDestinations(
+      storageDestinations: ApiConnection[],
+      rejectInvalid: boolean,
+   ): ApiConnection[] {
       // Resolved first so a "keep this one" reference validates as the stored
       // destination it names.
       const requested = Array.isArray(storageDestinations)
@@ -887,10 +915,19 @@ export class Environment {
               this.resolveDestinationReference(destination),
            )
          : storageDestinations;
-      // Throws before anything is assigned.
-      this.destinations = rejectInvalid
+      return rejectInvalid
          ? processStorageDestinationsOrThrow(requested)
          : processStorageDestinations(requested);
+   }
+
+   /** Refuses a destination list whose schema a connection lists, before either list is assigned. */
+   private applyStorageDestinations(
+      next: ApiConnection[],
+      connections: readonly ApiConnection[],
+   ): void {
+      refuseListedDestinationSchema(connections, next);
+      const previous = this.destinations;
+      this.destinations = next;
       this.destinationsAuthoritative = true;
       this.warnOnDestinationOverlap();
 
@@ -928,16 +965,6 @@ export class Environment {
          if (overlap.readable) {
             logger.warn(
                `Connection "${overlap.connection}" reaches storage destination "${overlap.destination}": ${overlap.reason}. A destination holds stored tables, gated sources' rows among them with no gate, and models can read them through the connection by name. Never configure a destination's catalog or data path as a connection models can name.`,
-               {
-                  environmentName: this.environmentName,
-                  connection: overlap.connection,
-                  destinationName: overlap.destination,
-               },
-            );
-         }
-         if (overlap.listsDestinationSchema) {
-            logger.warn(
-               `Connection "${overlap.connection}" lists storage destination "${overlap.destination}"'s schema "${overlap.listsDestinationSchema}" in readableSchemas: that destination's stored copies, gated sources' rows among them, become readable by name without their gate. Remove it from readableSchemas.`,
                {
                   environmentName: this.environmentName,
                   connection: overlap.connection,

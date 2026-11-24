@@ -11,7 +11,8 @@
  * metadata schema, or its data path) can, so any package could read another
  * package's gated rows straight from the table. Publisher cannot stop that
  * configuration; it warns at environment load, and the docs say never to do
- * it (docs/security-posture.md).
+ * it (docs/security-posture.md). Only a `readableSchemas` entry naming the
+ * destination's schema is refused ({@link refuseListedDestinationSchema}).
  *
  * Cheap and conservative: only a DuckLake connection is compared, by its
  * catalog database and metadata schema and by its data path (the
@@ -23,6 +24,7 @@
  */
 
 import type { components } from "../api";
+import { BadRequestError } from "../errors";
 import { managedSchemas, normalizeReadableSchemas } from "./connection_type";
 import { connectionDialectOf } from "./dialects";
 import { destinationSchemaOf } from "./materialization/domain/storage_table_path";
@@ -88,4 +90,19 @@ export function destinationOverlaps(
       }
    }
    return out;
+}
+
+/** Refuses a connection whose `readableSchemas` lists a schema a destination on its catalog builds into: its stored copies, gated sources' rows among them, would be readable by name without their gate. */
+export function refuseListedDestinationSchema(
+   connections: readonly ApiConnection[],
+   destinations: readonly ApiConnection[],
+): void {
+   const listed = destinationOverlaps(connections, destinations).find(
+      (overlap) => overlap.listsDestinationSchema,
+   );
+   if (listed) {
+      throw new BadRequestError(
+         `Connection "${listed.connection}" lists schema "${listed.listsDestinationSchema}" in readableSchemas, which storage destination "${listed.destination}" builds into: that destination's stored copies, gated sources' rows among them, would be readable by name without their gate. Remove it from readableSchemas, or set the destination's destinationSchema to another schema.`,
+      );
+   }
 }

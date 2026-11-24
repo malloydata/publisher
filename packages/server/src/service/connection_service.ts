@@ -6,6 +6,7 @@ import { ConnectionNotFoundError, FrozenConfigError } from "../errors";
 import { logger } from "../logger";
 import { buildEnvironmentMalloyConfig } from "./connection";
 import { mergeConnectionUpdate } from "./connection_public_view";
+import { refuseListedDestinationSchema } from "./destination_overlap";
 import { connectionDialectOf } from "./dialects";
 import type { ConnectionAdmin } from "./environment_ports";
 import { parseEnvironmentName } from "./identity";
@@ -139,6 +140,10 @@ export class ConnectionService {
             [...existingConnections, connection],
             environment.metadata.location || "",
          );
+         refuseListedDestinationSchema(
+            nextMalloyConfig.apiConnections,
+            environment.listStorageDestinations(),
+         );
 
          await this.environmentStore.addConnection(
             connection,
@@ -202,6 +207,10 @@ export class ConnectionService {
             updatedConnections,
             environment.metadata.location || "",
             true,
+         );
+         refuseListedDestinationSchema(
+            nextMalloyConfig.apiConnections,
+            environment.listStorageDestinations(),
          );
 
          await this.environmentStore.updateConnection(

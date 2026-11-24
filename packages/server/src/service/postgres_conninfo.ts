@@ -498,8 +498,9 @@ const PG_SECRET_KEYS = new Set(["user", "password", "sslpassword"]);
 /**
  * The keyword/value pairs of a libpq connection URI, as libpq reads one
  * (`postgres[ql]://[user[:password]@][host[:port][,…]][/dbname][?k=v&…]`),
- * percent-decoded. A `ssl=true` parameter becomes `sslmode=require`, as libpq
- * translates it. Undefined when `uri` is not a URI.
+ * percent-decoded. A `ssl=true`, `ssl=1` or `ssl=no-verify` parameter becomes
+ * `sslmode=require` unless the URI has an `sslmode`, as the attach reads them.
+ * Undefined when `uri` is not a URI.
  */
 function pgUriPairs(uri: string): { key: string; value: string }[] | undefined {
    const scheme = /^postgres(?:ql)?:\/\//i.exec(uri);
@@ -565,7 +566,11 @@ function pgUriPairs(uri: string): { key: string; value: string }[] | undefined {
       }
    }
    if (s[i] === "?") {
-      for (const param of s.slice(i + 1).split("&")) {
+      const params = s.slice(i + 1).split("&");
+      const hasSslmode = params.some(
+         (param) => decodeUriComponentOrRaw(param.split("=")[0]) === "sslmode",
+      );
+      for (const param of params) {
          if (param === "") continue;
          const eq = param.indexOf("=");
          const key = decodeUriComponentOrRaw(
@@ -574,8 +579,11 @@ function pgUriPairs(uri: string): { key: string; value: string }[] | undefined {
          const value = decodeUriComponentOrRaw(
             eq === -1 ? "" : param.slice(eq + 1),
          );
-         if (key === "ssl" && value === "true") {
-            pairs.push({ key: "sslmode", value: "require" });
+         // node-pg's `ssl` spellings, which yield to an `sslmode` as in libpqSslmodeInRawString.
+         if (key === "ssl" && ["true", "1", "no-verify"].includes(value)) {
+            if (!hasSslmode) {
+               pairs.push({ key: "sslmode", value: LIBPQ_NO_VERIFY_SSLMODE });
+            }
          } else {
             pairs.push({ key, value });
          }
@@ -683,9 +691,11 @@ export function splitPgAttachCredentials(
  */
 const UNHONORED_SETTINGS: ReadonlyArray<{
    key: string;
-   env: ExternalVariable;
+   env?: ExternalVariable;
    demands: (value: string) => boolean;
 }> = [
+   // node-pg reads a password file from PGPASSFILE only, so the key would be dropped.
+   { key: "passfile", demands: (v) => v !== "" },
    {
       key: "channel_binding",
       env: "PGCHANNELBINDING",
@@ -744,7 +754,11 @@ export function pgClientConfig(
    }
    for (const { key, env, demands } of UNHONORED_SETTINGS) {
       const inString = params.has(key);
-      const value = inString ? params.get(key) : externalEnv(env);
+      const value = inString
+         ? params.get(key)
+         : env === undefined
+           ? undefined
+           : externalEnv(env);
       if (value && demands(value)) {
          throw new Error(
             inString

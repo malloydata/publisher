@@ -10,6 +10,7 @@
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import { logger } from "../../logger";
 import { runInternalSQL } from "../duckdb_lockdown";
+import { managedSchemas } from "../connection_type";
 import { escapeSQL, runSQLRows } from "../duckdb_session_setup";
 import { quoteIdentifier } from "../quoting";
 
@@ -69,23 +70,24 @@ export interface RecordedSchemaPath {
 
 /**
  * The paths a catalog attached as `alias` records in `ducklake_schema` for the
- * named schemas, in one query, keyed by schema name; a schema the catalog does
- * not record is absent. A path of `''` is what a catalog migrated from DuckLake
- * 0.2 records for `main`: its files sit directly under the data path. A NULL
- * `path_is_relative` reads as relative, the recorded default.
+ * named schemas (every live schema when none are named), in one query, keyed by
+ * schema name; a schema the catalog does not record is absent. A path of `''` is
+ * what a catalog migrated from DuckLake 0.2 records for `main`: its files sit
+ * directly under the data path. A NULL `path_is_relative` reads as relative, the
+ * recorded default.
  */
 export async function recordedSchemaPaths(
    connection: DuckDBConnection,
    alias: string,
    metadataSchema: string | undefined,
-   schemaNames: string[],
+   schemaNames?: string[],
 ): Promise<Map<string, RecordedSchemaPath>> {
-   const names = schemaNames.map((name) => `'${escapeSQL(name)}'`).join(", ");
+   const names = schemaNames?.map((name) => `'${escapeSQL(name)}'`).join(", ");
    const rows = runSQLRows(
       await runInternalSQL(
          connection,
          `SELECT schema_name, path, path_is_relative FROM ${metadataCatalogRef(alias, metadataSchema)}.ducklake_schema ` +
-            `WHERE schema_name IN (${names}) AND end_snapshot IS NULL`,
+            `WHERE ${names === undefined ? "" : `schema_name IN (${names}) AND `}end_snapshot IS NULL`,
       ),
    );
    const recorded = new Map<string, RecordedSchemaPath>();
@@ -211,9 +213,10 @@ function readableSchemaScope(
  * path for the data path itself); every other schema must resolve strictly under
  * the data path, and one that does not, or that the catalog does not record, is
  * left out and logged, so a bad entry narrows the view rather than widening it.
- * Undefined when nothing states a path, when a managed view's main path is
- * unknown, or when the root names no bucket: the caller then refuses the attach
- * rather than creating an unscoped secret.
+ * A listed schema's directory that also holds an unlisted schema's files throws,
+ * since the secret would reach them. Undefined when nothing states a path, when
+ * a managed view's main path is unknown, or when the root names no bucket: the
+ * caller then refuses the attach rather than creating an unscoped secret.
  */
 export function storageSecretScope(input: {
    catalog: string;
@@ -240,12 +243,12 @@ export function storageSecretScope(input: {
       while (start < main.path.length && main.path[start] === "/") start++;
       mainScope = oneTrailingSlash(`${rootSlash}${main.path.slice(start)}`);
    }
-   const scope = [mainScope];
+   const owners: [string, string][] = [["main", mainScope]];
    for (const schema of input.readableSchemas ?? []) {
       const recorded = input.schemaPaths?.get(schema);
       const prefix = recorded && readableSchemaScope(rootSlash, recorded);
       if (prefix) {
-         scope.push(prefix);
+         owners.push([schema, prefix]);
       } else {
          logger.error(
             "A readable schema is left out of the managed view's storage scope: " +
@@ -254,5 +257,23 @@ export function storageSecretScope(input: {
          );
       }
    }
-   return [...new Set(scope)];
+   // The secret reaches everything under a listed schema's directory, an unlisted schema's files included.
+   const listed = managedSchemas(input.readableSchemas);
+   for (const [name, recorded] of input.schemaPaths ?? []) {
+      if (listed.has(name)) continue;
+      const path = oneTrailingSlash(
+         recorded.relative
+            ? `${rootSlash}${recorded.path.replace(/^\/+/, "")}`
+            : recorded.path,
+      );
+      const reaching = owners.find(([, prefix]) => path.startsWith(prefix));
+      if (reaching) {
+         throw new Error(
+            `The storage scope of schema '${reaching[0]}' (${reaching[1]}) of DuckLake catalog '${input.catalog}' ` +
+               `also reaches the files of schema '${name}' (${path}), which the managed view does not list. ` +
+               `Give each schema a directory of its own, or list '${name}' in readableSchemas.`,
+         );
+      }
+   }
+   return [...new Set(owners.map(([, prefix]) => prefix))];
 }

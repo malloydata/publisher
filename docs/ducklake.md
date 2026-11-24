@@ -71,7 +71,9 @@ Two consequences for models:
 - A `managed: true` connection attached read-only is scoped narrower, to the recorded paths of its `main`
   schema and of the schemas its `ducklakeConnection.readableSchemas` lists (bare lowercase names; `main`
   is always readable): its storage secret, or on a local data path its file allowlist. A listed schema
-  the catalog does not record, or whose path is not under the data path, is left out and logged. A read
+  the catalog does not record, or whose path is not under the data path, is left out and logged. A
+  listed schema's directory that also holds an unlisted schema's files (its path begins with the
+  listed one's) refuses the attach, naming both, since the scope would reach those files. A read
   outside the scope goes out unsigned, so the bucket must not allow anonymous reads. Changing the list
   opens the connection afresh at once; the previous instance finishes its in-flight queries. Create a
   schema in the catalog before listing it: a schema listed before it exists gets no file access until
@@ -82,10 +84,14 @@ Two consequences for models:
   and inlined rows from the catalog without opening a file: a model, or raw SQL, on a managed connection
   may name only `t`, `main.t`, `<connection>.t` or `<connection>.main.t`, or `s.t` or `<connection>.s.t`
   for a listed schema `s`, with a plain name (no path, glob or dot, so nothing a replacement scan reads
-  as a file), and is refused for any other schema or catalog, the metadata catalog, DuckDB's catalog
+  as a file; a qualified name that still reached a replacement scan would be stopped by the file
+  allowlist, which opens only the scoped paths), and is refused for any other schema or catalog, the metadata catalog, DuckDB's catalog
   views and functions, `DESCRIBE`, `SHOW`, `SUMMARIZE`, and table functions other than `range`,
   `generate_series` and `unnest` ([security posture](security-posture.md)). Its schema and table
-  listings show `main` and the listed schemas only. So a model reads only those schemas' tables. Tables
+  listings show `main` and the listed schemas only. So a model reads only those schemas' tables, with one
+  gap: the check reads the names the query writes, not a view's body, so a DuckLake view in a listed
+  schema can read an unlisted one, its catalog-held rows and statistics included (the storage scope
+  still stops its files). List only schemas whose views read listed schemas. Tables
   a build wrote to a `destinationSchema` are served through the storage destination's own session, as
   before.
 
@@ -424,6 +430,15 @@ write that arrives before the environments finish loading is not checked, and th
 destinations an environment holds, so it misses those of one whose stored destinations could not be read
 (its list is not yet authoritative, `hasAuthoritativeStorageDestinations()`). A load also refuses `main`
 itself, with `400 SCHEMA_RESERVED`.
+
+A connection's `readableSchemas` may not list a schema a storage destination of its environment builds
+into: that would make the destination's stored copies, gated sources' rows among them, readable by name
+without their gate. Saving such a connection (`POST` or `PUT` of a connection, or an environment create or
+update that brings one, a config reload included) is refused with `400`, and the same pair in the
+config at startup fails the environment's load. `main` is not refused, since a managed connection always
+reads it: a destination that shares a catalog with such a connection must set `destinationSchema`. The
+check sees the destinations of the same environment only, so a destination in another environment, and a
+schema created later with `PUT /catalogs/{catalog}/schemas/{schema}`, are not seen.
 
 **Serve the catalog to models.** Give the catalog a `connections` entry, with `managed: true`. Publisher
 then sets the session's search path to the catalog's `main` after the attach, so `sales.table('orders')`,
