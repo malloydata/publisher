@@ -276,7 +276,7 @@ function askButton(spec, qs, said, covers) {
   const about = e ? ` for ${e.name ? e.name(store.state.id) : store.state.id}` : ''
   const prompt = `${S.config.title}, "${kicker}"${about}: ${said ? `${asText(said)} ` : ''}What is behind this, and what should I look at next?`
   const context = {
-    scope: { model: S.config.model },
+    scope: { package: decodeURIComponent(location.pathname.match(/\/packages\/([^/]+)/)?.[1] || ''), model: S.config.model },
     view: { type: 'block', id: spec.key || kicker, title: kicker },
     entities: [{ kind: 'source', name: S.config.source }],
     items: [{ label: 'what it covers', value: covers.join(' ').slice(0, 900) }, ...qs.slice(0, 3).map((q, i) => ({ label: `query ${i + 1}`, value: q.slice(0, 900) }))],
@@ -893,15 +893,19 @@ export function entityHead({ metric: n } = {}) {
 /** The articles the app responds to (config.articles: { title, outlet, date, url }), each linked; no quoted text. */
 export function newsList(items = S.config.articles || []) {
   return h('ul', { class: 'news' }, ...items.map((a) => h('li', {},
-    h('a', { href: a.url, target: '_blank', rel: 'noopener', text: a.title }),
-    h('span', { class: 'news__by', text: [a.outlet, a.date && P.longDate(a.date)].filter(Boolean).join(', ') }))))
+    h('a', { href: webUrl(a.url), target: '_blank', rel: 'noopener', text: a.title }),
+    h('span', { class: 'news__by', text: [a.outlet, a.date && (/^\d{4}-\d{2}-\d{2}$/.test(a.date) ? P.longDate(a.date) : a.date)].filter(Boolean).join(', ') }))))
+}
+/** A link only to a web page: anything but http(s) becomes no link at all. */
+function webUrl(u) {
+  return /^https?:\/\//i.test(String(u || '')) ? u : null
 }
 /** "In the news": a section of the articles, for the first page of an app made from a story. */
 export const news = ({ kicker = 'In the news' } = {}) => h('section', { class: 'news-block' }, h('p', { class: 'kicker', text: kicker }), newsList())
 
 export function sourceList(srcs = Object.values(S.config.sources || {})) {
   return h('ul', { class: 'sources' }, ...srcs.map((x) => h('li', {},
-    x.url ? h('a', { href: x.url, target: '_blank', rel: 'noopener', text: x.name }) : h('strong', { text: x.name }),
+    webUrl(x.url) ? h('a', { href: x.url, target: '_blank', rel: 'noopener', text: x.name }) : h('strong', { text: x.name }),
     x.by ? ` · ${x.by}. ` : '. ', x.what || '', x.license ? h('span', { class: 'sources__license', text: ` ${x.license}.` }) : null)))
 }
 

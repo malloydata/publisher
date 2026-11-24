@@ -11,6 +11,8 @@ import * as P from './period.js'
 export let config = null
 /** What the model returned at load: { span: { first, last } | null, [filter key]: [values], [`${key}__n`]: counts }. */
 export const known = { span: null }
+/** The most values one filter takes from an address. */
+export const MAX_PICKS = 100
 
 export function configure(c) {
   config = c
@@ -109,7 +111,8 @@ export function fromHash(hash) {
     if (RESERVED.has(key) || !filterSpec(key) || seen.has(key)) continue
     seen.add(key)
     const all = q.getAll(key)
-    const vals = [...new Set(all)].filter((v) => isKnown(key, v)).map((v) => knownValue(key, v))
+    // At most MAX_PICKS values a filter, so a link cannot ask for a query as long as the list.
+    const vals = [...new Set(all)].filter((v) => isKnown(key, v)).map((v) => knownValue(key, v)).slice(0, MAX_PICKS)
     if (vals.length) s.filters[key] = vals
     else if (all.every((v) => v === '')) delete s.filters[key]
   }
@@ -144,8 +147,8 @@ export function clauses(s, { which = 'current', ignore = [], entity = true } = {
   for (const f of config.filters) {
     if (ignore.includes(f.key) || (e && f.field === e.field)) continue
     const vals = (s.filters[f.key] || []).filter((v) => isKnown(f.key, v))
-    // In brackets: Malloy reads `a = 'x' | 'y' and b = 'z'` as `a = 'x' | ('y' and b = 'z')`, which it refuses.
-    if (vals.length) out.push(`(${f.field} = ${vals.map(lit).join(' | ')})`)
+    // `in (…)`, never `= 'x' | 'y' | …`: Malloy's time to compile an alternation grows with the cube of its length.
+    if (vals.length) out.push(`${f.field} in (${vals.map(lit).join(', ')})`)
   }
   return out
 }

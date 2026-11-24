@@ -208,9 +208,9 @@ export function askCredible(prompt, context) {
     // the later queries, then the filter values, then everything but what the reader was looking at.
     const fits = (c) => JSON.stringify(c).length <= 7800
     let c = context
-    while (!fits(c) && (c.items || []).length > 1) c = { ...c, items: c.items.slice(0, -1) }
     if (!fits(c)) c = { ...c, givens: Object.fromEntries(Object.entries(c.givens || {}).map(([k, v]) => [k, Array.isArray(v) && v.length > 5 ? [...v.slice(0, 5), `and ${v.length - 5} more`] : v])) }
-    if (!fits(c)) c = { scope: c.scope, view: c.view }
+    while (!fits(c) && (c.items || []).length > 1) c = { ...c, items: c.items.slice(0, -1) }
+    if (!fits(c)) c = { scope: c.scope, view: { ...c.view, id: String(c.view?.id ?? '').slice(0, 200), title: String(c.view?.title ?? '').slice(0, 200) } }
     window.parent.postMessage({ type: 'credible:chat-context', context: c }, origin)
   }
   window.parent.postMessage({ type: 'credible:chat-message', prompt: text }, origin)

@@ -60,7 +60,7 @@ export async function dashboard(cfg) {
   const main = h('main', { id: 'main', class: 'wrap', tabindex: '-1' }, h('div', { class: 'state state--loading', style: { '--reserve': '560px' } }))
   const srcs = Object.values(cfg.sources || {})
   const foot = h('footer', { class: 'wrap colophon', hidden: true }, cfg.footer && h('span', { text: cfg.footer }),
-    srcs.length > 0 && h('span', {}, 'Data: ', ...srcs.flatMap((x, i) => [i ? '; ' : '', x.url ? h('a', { href: x.url, target: '_blank', rel: 'noopener', text: x.by || x.name }) : x.by || x.name, x.license ? ` (${x.license})` : ''])),
+    srcs.length > 0 && h('span', {}, 'Data: ', ...srcs.flatMap((x, i) => [i ? '; ' : '', /^https?:\/\//i.test(x.url || '') ? h('a', { href: x.url, target: '_blank', rel: 'noopener', text: x.by || x.name }) : x.by || x.name, x.license ? ` (${x.license})` : ''])),
     h('span', { text: 'Built on Credible' }))
   app.replaceChildren(mast, ctl, main, foot)
   try {
@@ -86,10 +86,20 @@ export async function dashboard(cfg) {
     // and let ?check=1 say so.
     for (const [k, vs] of Object.entries(cfg.defaults?.filters || {})) {
       const f = cfg.filters.find((x) => x.key === k)
+      if (!f) {
+        missingDefaults.push(`defaults.filters names “${k}”, which is not one of the config's filters`)
+        continue
+      }
+      // A list cut at its limit may not hold a default value: ask the model for the ones it lacks, and add them.
+      const lacking = vs.filter((v) => !(known[k] || []).map(String).includes(String(v)))
+      if (lacking.length && known[k]?.length >= (f.limit || (f.hidden ? 2000 : 500))) {
+        const found = await query(`run: ${S.src()} -> { where: ${f.field} in (${lacking.map(S.lit).join(', ')}); group_by: v is ${f.field} }`)
+        known[k].push(...found.map((r) => r.v))
+      }
       const have = new Set((known[k] || []).map(String))
-      const kept = f && known[k]?.length < (f.limit || (f.hidden ? 2000 : 500)) ? vs.filter((v) => have.has(String(v))) : vs
+      const kept = vs.filter((v) => have.has(String(v)))
       if (kept.length < vs.length) {
-        missingDefaults.push(...vs.filter((v) => !kept.includes(v)).map((v) => `${f?.label || k} “${v}”`))
+        missingDefaults.push(...vs.filter((v) => !kept.includes(v)).map((v) => `A default filter names ${f.label} “${v}”, which the data does not have`))
         console.error(`defaults.filters.${k}: the data has no ${vs.filter((v) => !kept.includes(v)).join(', ')}`)
         cfg.defaults.filters[k] = kept
       }
@@ -147,11 +157,11 @@ function searchBox(key) {
     const local = q ? vals.filter((v) => name(v).toLowerCase().includes(q)).sort((a, b) => name(a).toLowerCase().indexOf(q) - name(b).toLowerCase().indexOf(q)).slice(0, 8) : []
     show(local)
     const cut = vals.length >= (f()?.limit || (f()?.hidden ? 2000 : 500))
-    if (!q || !cut || local.length >= 8) return
+    if (!q.replace(/[%_\\]/g, '') || !cut || local.length >= 8) return
     const mine = ++asked
     const by = e.nameField || e.field
     clearTimeout(input.__t)
-    input.__t = setTimeout(() => query(`run: ${S.src()} -> { where: lower(${by}) ~ ${S.lit(`%${q.replace(/[%_\\]/g, '')}%`)}; group_by: v is ${e.field}${e.nameField ? `, nm is ${e.nameField}` : ''}; aggregate: n is count(); order_by: n desc; limit: 8 }`).then((rows) => {
+    input.__t = setTimeout(() => query(`run: ${S.src()} -> { where: lower(${by}::string) ~ ${S.lit(`%${q.replace(/[%_\\]/g, '')}%`)}; group_by: v is ${e.field}${e.nameField ? `, nm is ${e.nameField}` : ''}; aggregate: n is count(); order_by: n desc; limit: 8 }`).then((rows) => {
       if (mine !== asked) return
       for (const r of rows) if (r.nm !== undefined) more.set(String(r.v), r.nm)
       const seen = new Set(local.map(String))
@@ -232,7 +242,7 @@ async function selfCheck() {
   })
   const fails = []
   if (document.body.dataset.ready !== 'true') fails.push('The page did not finish loading within a minute')
-  for (const m of missingDefaults) fails.push(`A default filter names ${m}, which the data does not have`)
+  fails.push(...missingDefaults)
   for (const c of document.querySelectorAll('#main .block')) if (c.querySelector('.state--error')) fails.push(`“${c.querySelector('.kicker')?.textContent}” failed: ${c.querySelector('.state--error').textContent}`)
   const text = $('#main').innerText
   for (const bad of [/\bundefined\b/, /\bNaN\b/, /\[object /, /\bnull\b/, /Infinity/]) if (bad.test(text)) fails.push(`The page says ${bad}`)

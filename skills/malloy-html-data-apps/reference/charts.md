@@ -35,10 +35,10 @@ names to postal codes. Its `rankTable` is superseded by the kit's `rank()` block
 | How did this year's season run against earlier ones? | Periods overlaid on one axis (Jan to Dec, one line per era) | `C.lines`, labels are months, a series per era |
 | What is it made of, over time? | Stacked areas, each named inside its band | `C.area` |
 | Which share of each group is which part? | Stacked bars to 100% | `C.stackedShare` |
-| Who has the most? | A ranked table with bars, a trend and the change | `C.rankTable` ("The ranked table" below) |
+| Who has the most? | A ranked list with bars and the change | The kit's `rank()` block |
 | Which items, by one measure? | Bars with their values at the end, no value axis | `C.bars` with `direct` |
 | How big was each period, and which stand out? | Columns, a reference line where a number means something | `C.bars` with `refs` |
-| Which places lead, and by how much? | Not a map: sorted bars, a dumbbell, a slope, or the ranked table | `C.bars`, `C.dumbbell`, `C.slope`, `C.rankTable` |
+| Which places lead, and by how much? | Not a map: sorted bars, a dumbbell, a slope, or a ranked list | `C.bars`, `C.dumbbell`, `C.slope`, the kit's `rank()` |
 | Where, when the pattern in space is the finding (neighbours, a gradient, a cluster)? | A choropleth of the places | `C.choropleth` (`reference/maps.md`) |
 | Where, for points with coordinates and no boundaries? | Hexagons binned from the points, the unfiltered points grey underneath | `C.hexMap` |
 | Where, when every state should read equally? | A tile-grid map of US states, each tile with its trend | `C.tileMap` |
@@ -72,8 +72,8 @@ its change, and opens the entity's page (or filters) on a click. Use `extra` for
 
 ## Everything clicks
 
-- **A click filters; only a link navigates.** On a view with filters every mark and row filters in place, never
-  opening another page; a page opens from a name drawn as a link (`rankTable`'s `href`). Pass `onPick`, and `selected` where the chart takes it, to
+- **A click does what the kit's blocks do.** A mark that stands for an entity opens its page (`store.open`); any
+  other filters the dashboard to it (`store.toggleFilter`); a period zooms to it. Pass `onPick`, and `selected` where the chart takes it, to
   every chart that stands for something in the scope: a bar, a period, a place, a part, a district. The selected
   mark keeps its colour; the rest fade. Time charts take `onBrush(from, to)` to set the scope's period, and show it,
   and a picked period, with `band`.

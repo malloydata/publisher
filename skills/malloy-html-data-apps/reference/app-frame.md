@@ -153,7 +153,7 @@ dashboard({
   names with the ids and uses them in every list, chip and title. `name: (id) => text` formats an id that needs no
   lookup.
 - **`pages`**: each `render(state)` returns its blocks. A page with `entity` is that entity's page, reached at
-  `#/<id>/<value>` and not listed in the navigation; every query on it is scoped to the entity. `lists: 'category'`
+  `#/<page id>/<value>` and not listed in the navigation; every query on it is scoped to the entity. `lists: 'category'`
   marks the page that lists an entity, which its pages' breadcrumbs return to. `period: false` and `filters: false`
   hide those controls on a page they do not apply to, such as the About page.
 - **`defaults.filters`**: values a reader starts filtered to, when one slice is the whole story by default (regular
