@@ -142,17 +142,62 @@ export function recordStringCapabilities(
 }
 
 /**
+ * How long a query waits for a capability read still running before it
+ * judges with none (a catalog read can hang on an unreachable host). The read
+ * goes on, and records when it lands.
+ */
+export const CAPABILITY_WAIT_MS = 3_000;
+let capabilityWaitMs = CAPABILITY_WAIT_MS;
+
+/** Set the bound {@link stringCapabilitiesOf} waits; returns a restore. */
+export function setCapabilityWaitMsForTests(ms: number): () => void {
+   const before = capabilityWaitMs;
+   capabilityWaitMs = ms;
+   return () => {
+      capabilityWaitMs = before;
+   };
+}
+
+/**
  * What the last read recorded for `runtime`'s model (at load, or at the last
  * commit), or undefined: none. A read still running for it, such as the one
- * a load starts without waiting, is waited for, so a query over a table
- * bound since never judges it before the record lands.
+ * a load or a commit starts without waiting, is waited for, so a query over
+ * a table bound since never judges it before the record lands; but only up
+ * to {@link CAPABILITY_WAIT_MS}: past it the answer is none, so a stored
+ * answer that needs a capability declines and is answered live.
  */
 export async function stringCapabilitiesOf(
    runtime: object | undefined,
 ): Promise<StringCapabilities | undefined> {
    if (!runtime) return undefined;
-   await reading.get(runtime);
+   const inFlight = reading.get(runtime);
+   if (inFlight && !(await settlesWithin(inFlight, capabilityWaitMs))) {
+      return undefined;
+   }
    return recorded.get(runtime);
+}
+
+/** Whether `promise` settles within `ms`; the timer never holds the process open. */
+async function settlesWithin(
+   promise: Promise<unknown>,
+   ms: number,
+): Promise<boolean> {
+   let timer: ReturnType<typeof setTimeout> | undefined;
+   const expired = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), ms);
+      (timer as { unref?: () => void }).unref?.();
+   });
+   try {
+      return await Promise.race([
+         promise.then(
+            () => true,
+            () => true,
+         ),
+         expired,
+      ]);
+   } finally {
+      clearTimeout(timer);
+   }
 }
 
 /** A named source of a compiled model, as this module reads it. */

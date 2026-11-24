@@ -980,19 +980,20 @@ export class PackageMaterialization {
          const next = this.snapshot();
          // How each model's sources compare strings, read again on every
          // commit that serves a table, and for models a reload just
-         // installed: read admission looks it up per query.
+         // installed: read admission looks it up per query. Started, never
+         // awaited: a warehouse catalog read must not hold a commit (or a
+         // reload), and a query waits for a read still running only as long
+         // as `stringCapabilitiesOf` bounds it.
          if (
             models ||
             next.bindings.length > 0 ||
             Object.keys(next.entries).length > 0
          ) {
-            await Promise.all(
-               [...this.owner.models().values()].map((model) => {
-                  model.setStringCapabilityReader(refreshStringCapabilities);
-                  model.setScopeFactsRecorder(recordScopeFacts);
-                  return model.refreshStringCapabilities();
-               }),
-            );
+            for (const model of this.owner.models().values()) {
+               model.setStringCapabilityReader(refreshStringCapabilities);
+               model.setScopeFactsRecorder(recordScopeFacts);
+               void model.refreshStringCapabilities();
+            }
          }
          if (next.bindings !== this.publishedBindings || models) {
             this.publishedBindings = next.bindings;
@@ -1972,8 +1973,8 @@ export class PackageMaterialization {
    /**
     * Start reading how every loaded model's sources compare strings, to
     * record with each model's runtime: read admission only looks it up, and
-    * waits for a read still running, so a query over a table bound later
-    * never judges it unread. Load does not wait for it (a warehouse catalog
+    * waits a bounded time for a read still running, so a query over a table
+    * bound later never judges it unread. Load does not wait for it (a warehouse catalog
     * read must not hold a load). Every commit that serves a table reads it
     * again. Never throws.
     */

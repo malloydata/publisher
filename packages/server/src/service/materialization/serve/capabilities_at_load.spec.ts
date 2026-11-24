@@ -8,13 +8,14 @@
  * publishes its compile in the background) never finds it unread and
  * declines the table as of an unknown collation.
  */
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { Environment } from "../../environment";
 import { parsePackageName } from "../../identity";
+import { Model } from "../../model";
 import { stringCapabilitiesOf } from "./source_capability";
 
 const MODEL = `##! experimental.persistence
@@ -54,5 +55,24 @@ describe("string capabilities at load", () => {
       expect(runtime).toBeDefined();
       const capabilities = await stringCapabilitiesOf(runtime);
       expect([...(capabilities?.connections.keys() ?? [])]).toEqual(["duckdb"]);
+   });
+
+   it("does not hold a reload with nothing bound on a capability read that hangs", async () => {
+      await env.addPackage("pkg");
+      const pkg = await env.getPackage(parsePackageName("pkg"), false);
+      const hang = spyOn(
+         Model.prototype,
+         "refreshStringCapabilities",
+      ).mockImplementation(() => new Promise<void>(() => {}));
+      try {
+         const outcome = await Promise.race([
+            pkg.reloadAllModels({}).then(() => "reloaded"),
+            new Promise((resolve) => setTimeout(resolve, 3_000, "blocked")),
+         ]);
+         expect(outcome).toBe("reloaded");
+         expect(hang).toHaveBeenCalled();
+      } finally {
+         hang.mockRestore();
+      }
    });
 });
