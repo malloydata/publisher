@@ -659,10 +659,12 @@ export function share({ field, entity, metric: n, top = 6, kicker, headline, spa
         const none = g.every((x) => x.g < 0)
         g.sort((a, b) => b.g - a.g)
         const one = (e?.label || filter?.label || col.replace(/_/g, ' ')).toLowerCase()
+        // "Every" only when every part was compared: not when parts past the shown ones exist, or one has no comparison.
+        const who = rows.length <= top && g.length === rows.length ? `every ${one}` : `each of the ${g.length} largest`
         // Sign-aware: when every part fell, the best of them fell least, and when the best held level, none grew; never
         // "grew fastest" for a part that did not grow.
-        if (!all && !none && g[0].g <= 0) parts.push(`; none grew, `, { b: name(g[0].r[col]) }, ' held level')
-        else parts.push(all ? `; every ${one} grew, ` : none ? `; every ${one} fell, ` : '; ', { b: name(g[0].r[col]) }, ` ${all ? 'fastest' : none ? 'least' : 'grew fastest'} at ${F.delta(n, g[0].r[n], g[0].r[`${n}__cmp`]).text}`)
+        if (!all && !none && g[0].g <= 0) parts.push(`; none ${who === `every ${one}` ? '' : `of the ${g.length} largest `}grew, `, { b: name(g[0].r[col]) }, ' held level')
+        else parts.push(all ? `; ${who} grew, ` : none ? `; ${who} fell, ` : '; ', { b: name(g[0].r[col]) }, ` ${all ? 'fastest' : none ? 'least' : 'grew fastest'} at ${F.delta(n, g[0].r[n], g[0].r[`${n}__cmp`]).text}`)
       }
       parts.push('.')
       return parts

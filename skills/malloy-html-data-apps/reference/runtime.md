@@ -16,7 +16,7 @@ The runtime loads from the root-relative `<script src="/sdk/publisher.js">` and 
 | `Publisher.query(modelPath, malloy, opts?)`     | `Promise<Array>` of rows | driving your own charts and tables |
 | `Publisher.queryFull(modelPath, malloy, opts?)` | `Promise<MalloyResult>`  | handing to `<malloy-render>`       |
 | `Publisher.model(modelPath, opts?)`             | `Promise<Model>`         | the model's sources and their docs |
-| `Publisher.packageResource(name, opts?)`        | `Promise<JSON>`          | `"build-plan"` or `"materializations"`: what Publisher builds for the package, and its runs |
+| `Publisher.packageResource(name, opts?)`        | `Promise<JSON>`          | `"build-plan"` or `"materializations"`: what Publisher builds for the package, and its runs, newest first (`opts.limit` reads only the newest) |
 
 - `modelPath` is the model FILE path within the package, with `/` separators (`"subscriptions.malloy"`, `"models/events.malloy"`). It is not the source name.
 - `malloy` is any query string, written in standard Malloy. This skill covers only the JavaScript glue, not Malloy syntax.

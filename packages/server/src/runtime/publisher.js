@@ -19,7 +19,8 @@
 //               not string interpolation) — see the malloy-html-data-apps skill (reference/runtime.md).
 //   - Publisher.model(modelPath, opts?)          → Promise<Model> (its sources, their docs)
 //   - Publisher.packageResource(name, opts?)     → Promise<JSON>, name "build-plan" or
-//       "materializations": what Publisher builds for the package and its runs.
+//       "materializations": what Publisher builds for the package and its runs,
+//       newest first (opts.limit reads the newest runs only).
 //       Both read the page's own version when it is pinned, as queries do.
 //   - Publisher.colorScheme, Publisher.onColorScheme(fn), Publisher.colorSchemeApplied(mode):
 //       the reader's light or dark mode from the host ("publisher:color-scheme"),
@@ -230,7 +231,12 @@
          (target.env === ctx.environment && target.pkg === ctx.package
             ? await pinnedVersion()
             : undefined);
-      if (versionId) url += "?versionId=" + encodeURIComponent(versionId);
+      var params = [];
+      if (versionId) params.push("versionId=" + encodeURIComponent(versionId));
+      // A list (the package's runs) reads its newest `limit` entries.
+      if (opts.limit > 0 && Number.isInteger(opts.limit))
+         params.push("limit=" + opts.limit);
+      if (params.length) url += "?" + params.join("&");
       var res = await fetch(url, {
          credentials: "include",
          headers: authHeaders(),

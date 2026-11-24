@@ -258,6 +258,19 @@ describe("reading an address", () => {
 });
 
 describe("periods that end with their month", () => {
+   it("compares a month to date a year back with the same days, a leap day's month keeping its last day", () => {
+      expect(
+         P.compareRange(
+            { preset: "mtd" },
+            range("2024-02-01", "2024-02-29"),
+            "year",
+            {
+               first: "2020-01-01",
+            },
+         ),
+      ).toEqual(range("2023-02-01", "2023-03-01"));
+   });
+
    it("compares a quarter or month to date through its last day with whole months", () => {
       const span = { first: "2020-01-01" };
       const qtd = P.resolve(

@@ -36,7 +36,10 @@ chmod -R u+w public
 
 An app built earlier carries its kit's version as `KIT_VERSION`, exported from `public/kit/kit.js`, and on the
 running page (`<meta name="data-app-kit">`). Copying a newer kit over it is meant to be safe within one major
-version; across one, compare the app's config with the new kit's worked `app.js` before copying.
+version; across one, compare the app's config with the new kit's worked `app.js` before copying. An app with no
+`KIT_VERSION` was built on a kit before 1.0.0: before copying, drop any import of `askCredible` or `inCredible`
+(register a host with `setHost` instead, or leave Ask out) and write `credit: true` as `credit: { name }`, or the
+page will not load or will show no credit.
 
 When the skill reached you only as text, `assets/` is not on disk: say so, and build from the minimal scaffold in
 `SKILL.md` to the same design.
@@ -193,8 +196,9 @@ Two things come from the page that frames the app, not the config:
 
 ## The blocks
 
-Shares of a total, in the kit's headlines and on entity pages, are said only for metrics that add up (sums and
-counts); the kit checks, so an average or a rate never reads as "180% of the total".
+Shares of a total, in the kit's headlines, `share` and entity pages, are said only for metrics that add up (sums and
+counts) with no part below zero; the kit checks, so an average or a rate never reads as "180% of the total", and
+`share` lists such a metric's parts without shares.
 
 Every block takes `kicker` (what is measured; the kit writes one when you leave it out), `headline` (a function of
 its rows returning a sentence or `prose()` parts; the kit writes a standard one; `null` for none), and `span` (12,

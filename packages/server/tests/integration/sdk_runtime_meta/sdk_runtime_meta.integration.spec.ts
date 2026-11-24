@@ -185,6 +185,27 @@ describe("Publisher runtime: answer metadata and package reads (sandbox-eval HTT
       for (const u of reads) expect(u).toContain("versionId=1.0.0");
    });
 
+   it("pins only the page's own package: a read of another package goes to its latest", async () => {
+      const pinned = page("?versionId=1.0.0");
+      await pinned.publisher
+         .model(MODEL, { package: "another-package" })
+         .catch(() => {});
+      const read = pinned.urls.find((u) =>
+         u.includes("/packages/another-package/"),
+      );
+      expect(read).toBeDefined();
+      expect(read).not.toContain("versionId=");
+   });
+
+   it("reads only the newest runs when asked for a limit", async () => {
+      const p = page();
+      const runs = await p.publisher.packageResource("materializations", {
+         limit: 5,
+      });
+      expect(Array.isArray(runs)).toBe(true);
+      expect(p.urls.at(-1)).toMatch(/\/materializations\?limit=5$/);
+   });
+
    it("refuses a package resource it does not know", async () => {
       await expect(publisher.packageResource("../models")).rejects.toThrow(
          /not one of/,

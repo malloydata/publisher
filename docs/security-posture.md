@@ -412,7 +412,7 @@ The light or dark messages make a different choice on each side. The Console's v
 `publisher:color-scheme-request` and `-applied` only from its own frame and the frame's origin, and
 sends the mode only to that origin. A page's runtime takes `publisher:color-scheme` from whatever
 window framed it, at any origin, since the mode changes only how the page looks; it answers at the
-origin the mode came from, and sends its request to the framing page's origin where the browser
+origin the mode came from (at any origin before a mode has come, or when it came from an opaque one), and sends its request to the framing page's origin where the browser
 reports it (`location.ancestorOrigins`) and to any origin where it does not. The request carries
 nothing.
 

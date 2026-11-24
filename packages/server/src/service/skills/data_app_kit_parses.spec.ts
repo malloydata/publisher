@@ -28,6 +28,21 @@ describe("the data app kit", () => {
          readFileSync(path.join(KIT, file), "utf8"),
       ).exports;
 
+   it("the worked app imports only names the kit exports", () => {
+      const app = readFileSync(path.join(KIT, "..", "app.js"), "utf8");
+      const have = exportsOf("kit.js");
+      for (const m of app.matchAll(
+         /import\s*\{([^}]*)\}\s*from\s*'\.\/kit\/kit\.js'/g,
+      )) {
+         for (const name of m[1]
+            .split(",")
+            .map((s) => s.trim().split(/\s+as\s+/)[0])
+            .filter(Boolean)) {
+            expect(have, `app.js imports ${name}`).toContain(name);
+         }
+      }
+   });
+
    for (const file of modules) {
       it(`${file} imports and re-exports only names its sibling modules export`, () => {
          const source = readFileSync(path.join(KIT, file), "utf8");

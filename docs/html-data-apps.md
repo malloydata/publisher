@@ -144,7 +144,7 @@ and adds nothing to the page's markup.
 | `Publisher.context` | property | `{ environment, package }` inferred from the URL |
 | `Publisher.setToken` | `(token \| null)` | `undefined`; the token then applies to all later queries on the page |
 | `Publisher.model` | `(modelPath, opts?)` | `Promise<Model>`: the model's sources, fields and their annotations |
-| `Publisher.packageResource` | `("build-plan" \| "materializations", opts?)` | `Promise<JSON>`: what Publisher builds for the package, and its runs |
+| `Publisher.packageResource` | `("build-plan" \| "materializations", opts?)` | `Promise<JSON>`: what Publisher builds for the package, and its runs, newest first (`opts.limit` reads only the newest) |
 | `Publisher.colorScheme` | property | `"light"`, `"dark"`, or `null` until the framing page sends one |
 | `Publisher.onColorScheme` | `(fn)` | a function that stops `fn`; `fn` is called with each mode, at once if one is known |
 | `Publisher.colorSchemeApplied` | `(mode)` | `undefined`; tells the framing page the page has drawn `mode` |
