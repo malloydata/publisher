@@ -1185,9 +1185,9 @@ export class PackageMaterialization {
       const packagePath = this.owner.packagePath();
       const bySourceID = new Map<string, KeyedSource>();
       for (const model of this.owner.models().values()) {
-         const contents =
-            (model.getModelDef() as { contents?: Record<string, unknown> })
-               .contents ?? {};
+         // An empty or markdown-only notebook has no model definition.
+         const contents: Record<string, unknown> =
+            model.getModelDef()?.contents ?? {};
          for (const def of Object.values(contents)) {
             const { sourceID, primaryKey } = def as {
                sourceID?: unknown;

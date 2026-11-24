@@ -209,7 +209,13 @@ function packageHasGate(models: ReadonlyMap<string, Model>): boolean {
       } catch {
          return true;
       }
-      if (!modelDef) return true;
+      if (!modelDef) {
+         // An empty or markdown-only notebook declares nothing to gate.
+         if (model.isNotebook() && model.getCompilationError() === undefined) {
+            continue;
+         }
+         return true;
+      }
       for (const source of Object.values(modelDef.contents)) {
          if (!isSourceDef(source)) continue;
          try {
