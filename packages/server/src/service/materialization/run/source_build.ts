@@ -41,6 +41,7 @@ import {
 import { authorModelLiftContext } from "../text/author_model";
 import { reachPersisted } from "../text/source_map";
 import { BuildInstruction, ManifestEntry } from "../domain/types";
+import { parseContract } from "../domain/column_contract";
 import { isPersistedResultSourceID } from "../domain/table_plans";
 import type { ExtensionParent } from "./incremental_apply";
 import type { DatabaseBuildRequest } from "./tier";
@@ -230,6 +231,13 @@ async function movedUpstreams(args: {
          () => new Map(),
       );
       for (const [address, entry] of Object.entries(entries)) {
+         if (parseContract(entry.contract) === undefined) {
+            noteUncontractedStoredReference(
+               args.sourceName,
+               stored.get(address)!.name,
+            );
+            continue;
+         }
          const move = storedUpstreamMove(entry, read.get(address));
          if (move) reasons.set(address, move);
       }
@@ -276,6 +284,31 @@ export function noteUntypedReference(
    recordUpstreamRecompute(
       "reference_types_unrecorded",
       build,
+      "read_unchecked",
+   );
+}
+
+/**
+ * Logs and counts a `storage=` upstream table read unchecked: its entry (a
+ * host's reference, or one written before contracts were recorded) carries
+ * no column contract, so a column altered in its destination since its
+ * build cannot be seen ({@link storedUpstreamMove}). The `storage=` tier's
+ * {@link noteUntypedReference}: a standalone run rebuilds such a table
+ * rather than carry it, so only a build over a referenced one meets this.
+ * (A `storage=` rollup over such a base is then refused: its base cannot be
+ * re-rooted on a table with no contract.)
+ */
+function noteUncontractedStoredReference(
+   sourceName: string,
+   upstream: string,
+): void {
+   logger.warn(
+      "A build reads a storage= upstream table unchecked: its entry carries no column contract, so a column altered since its build cannot be seen; send the contract on each reference",
+      { sourceName, upstream },
+   );
+   recordUpstreamRecompute(
+      "reference_types_unrecorded",
+      "chained",
       "read_unchecked",
    );
 }

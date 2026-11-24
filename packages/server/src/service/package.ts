@@ -1796,8 +1796,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    public holdCarriedToContracts(
       prior: Readonly<Record<string, ManifestEntry>>,
       site?: Parameters<PackageMaterialization["holdCarriedToContracts"]>[1],
-   ): Promise<ReadonlySet<string>> {
-      return this.mz.holdCarriedToContracts(prior, site);
+      options?: Parameters<PackageMaterialization["holdCarriedToContracts"]>[2],
+   ): ReturnType<PackageMaterialization["holdCarriedToContracts"]> {
+      return this.mz.holdCarriedToContracts(prior, site, options);
    }
 
    /** The host port's `chainBuildText` (see PackageMaterialization.chainBuildText). */

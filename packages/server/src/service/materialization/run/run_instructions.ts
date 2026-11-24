@@ -800,6 +800,12 @@ interface SelfInstructions {
    confirmExists: Record<string, BuildInstruction>;
    /** Tables this run builds under a new name in place of an earlier run's. */
    renamed: RenamedTable[];
+   /**
+    * Incremental tables a delta would advance in place rather than reseed,
+    * by content address, with their prior entries: the run keeps their rows,
+    * as it keeps a carried table's (see deriveHoldingCarried).
+    */
+   advanced: Record<string, ManifestEntry>;
 }
 
 /**
@@ -895,6 +901,7 @@ export function deriveSelfInstructions(
    const recheck: Record<string, BuildInstruction> = {};
    const confirmExists: Record<string, BuildInstruction> = {};
    const renamed: RenamedTable[] = [];
+   const advanced: Record<string, ManifestEntry> = {};
    const { sources, refused, refusals, cleared } = gateSources(
       compiled,
       include,
@@ -1037,6 +1044,18 @@ export function deriveSelfInstructions(
             logicalName,
          );
       if (superseded) renamed.push(superseded);
+      // A delta appends to the table it holds, so the run keeps its rows.
+      if (
+         deltaEligible &&
+         !mustRebuild &&
+         !incremental?.forceRefresh &&
+         !(options.forceRefresh && !pulledIn.has(persistSource.sourceID)) &&
+         prior !== undefined &&
+         sameDestination &&
+         prior.physicalTableName === logicalName
+      ) {
+         advanced[sourceEntityId] = prior;
+      }
       instructions.push(instruction);
    }
 
@@ -1068,6 +1087,7 @@ export function deriveSelfInstructions(
       recheck,
       confirmExists,
       renamed: notWrittenThisRun(renamed, instructions, carried, sources),
+      advanced,
    };
 }
 

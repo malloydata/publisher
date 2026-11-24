@@ -16,7 +16,11 @@
  *   upstream's table to its contract, rebuilds it rather than carry it, and
  *   builds the downstream over the rebuilt table, served equal to live; the
  *   run after it carries both.
- *
+ * - A host-instructed chained build over a reference that carries no
+ *   contract cannot hold the table to anything: it reads it, with a warning
+ *   and a count (`reference_types_unrecorded`, `read_unchecked`), as the
+ *   database tier does a reference with no `nativeSchema`. A rollup over
+ *   such a base is refused (it cannot be re-rooted), never built over it.
  * - With every raw row then deleted, a forced rebuild of the downstream
  *   alone builds it over the carried upstream table, still equal to what
  *   live answered before.
@@ -30,9 +34,11 @@
 
 import { DuckDBConnection as MalloyDuckDBConnection } from "@malloydata/db-duckdb";
 import { PostgresConnection } from "@malloydata/db-postgres";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
+import { logger } from "../../src/logger";
+import { resetMaterializationTelemetryForTesting } from "../../src/materialization_metrics";
 import { unrecordedAudit } from "../../src/service/access_record";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
@@ -44,6 +50,10 @@ import type {
 } from "../../src/storage/DatabaseInterface";
 import type { DuckDBConnection } from "../../src/storage/duckdb/DuckDBConnection";
 import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "../../src/test_helpers/metrics_harness";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
 import { openTempStorage } from "../../src/test_helpers/temp_storage";
@@ -83,6 +93,7 @@ source: a is raw -> { select: k, amt }
 source: b is a -> { group_by: k; aggregate: total is amt.sum() }
 `,
       downstream: /^b$/,
+      uncontracted: "read",
       query: `run: b ${AS_TEXT}`,
    },
    {
@@ -96,6 +107,7 @@ source: a is raw extend { dimension: k2 is k }
 source: ext is a extend { dimension: big is amt > 5 }
 `,
       downstream: /^ext$/,
+      uncontracted: "read",
       query: `run: ext -> { group_by: k; aggregate: total is amt.sum() } ${AS_TEXT}`,
    },
    {
@@ -110,6 +122,7 @@ source: a is raw extend {
 }
 `,
       downstream: /__rollup__/,
+      uncontracted: "refused",
       query: `run: a -> { group_by: k; aggregate: total } ${AS_TEXT}`,
    },
    {
@@ -125,6 +138,7 @@ source: rolled is a extend {
 }
 `,
       downstream: /^rolled__rollup__/,
+      uncontracted: "refused",
       query: `run: rolled -> { group_by: k; aggregate: total } ${AS_TEXT}`,
    },
 ];
@@ -182,6 +196,10 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
       let live: { rows: unknown };
       let rawless: Materialization;
       let rawlessServed: { rows: unknown; kind?: string };
+      let metrics: MetricsHarness;
+      let uncontracted: Materialization;
+      let uncontractedWarnings: unknown[][];
+      let uncontractedCount: number;
 
       const ask = async (query: string) => {
          const pkg = await env.getPackage(parsePackageName(PKG), false);
@@ -226,6 +244,7 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
                PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
             },
          }).restore;
+         metrics = await startMetricsHarness();
          let envPath: string;
          ({ root, envPath, db, repo } = await openTempStorage("csd-", {
             id: "env-1",
@@ -316,30 +335,37 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
          const downstream = Object.values(
             pkg.getBuildPlan()?.sources ?? {},
          ).find((s) => mechanism.downstream.test(s.name))!;
+         /** The downstream alone, as a host instructs it, over `a`'s entry. */
+         const instruct = (
+            table: string,
+            a: Record<string, unknown>,
+            contract: unknown,
+         ) =>
+            build({
+               buildInstructions: [
+                  {
+                     sourceEntityId: downstream.sourceEntityId,
+                     sourceID: downstream.sourceID,
+                     materializedTableId: `mt-${table}`,
+                     physicalTableName: table,
+                     realization: "COPY",
+                     destination: "lake",
+                  },
+               ],
+               referenceManifest: [
+                  {
+                     sourceEntityId: a.sourceEntityId,
+                     physicalTableName: a.physicalTableName,
+                     connectionName: "warehouse",
+                     storageDestinationName: a.storageDestinationName,
+                     schema: a.schema,
+                     contract,
+                     builtAt: a.builtAt,
+                  },
+               ],
+            });
          const a = entriesOf(first)[0] as unknown as Record<string, unknown>;
-         instructed = await build({
-            buildInstructions: [
-               {
-                  sourceEntityId: downstream.sourceEntityId,
-                  sourceID: downstream.sourceID,
-                  materializedTableId: "mt-instructed",
-                  physicalTableName: "csd_instructed",
-                  realization: "COPY",
-                  destination: "lake",
-               },
-            ],
-            referenceManifest: [
-               {
-                  sourceEntityId: a.sourceEntityId,
-                  physicalTableName: a.physicalTableName,
-                  connectionName: "warehouse",
-                  storageDestinationName: a.storageDestinationName,
-                  schema: a.schema,
-                  contract: a.contract,
-                  builtAt: a.builtAt,
-               },
-            ],
-         });
+         instructed = await instruct("csd_instructed", a, a.contract);
          // Loaded again: what that refusal reported to this package's drift
          // handler is gone, so the run below decides from the table alone.
          pkg = await env.getPackage(parsePackageName(PKG), true, {
@@ -351,11 +377,46 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
          second = await build({});
          served = await ask(mechanism.query);
          live = await ask(LIVE);
-         // Out of band: every raw row gone. A downstream recomputed from raw
-         // would hold none.
+         // A reference to the rebuilt `a` that carries no contract, with no
+         // run on record to fill one in (as for a host whose worker never
+         // built it).
+         const rebuilt = entriesOf(afterAlter).find(
+            (e) => e.sourceName === "a",
+         ) as unknown as Record<string, unknown>;
+         for (const run of [first, instructed, afterAlter, second]) {
+            await repo.deleteMaterialization(run.id);
+         }
+         resetMaterializationTelemetryForTesting();
+         const warn = spyOn(logger, "warn");
+         try {
+            uncontracted = await instruct(
+               "csd_uncontracted",
+               rebuilt,
+               undefined,
+            );
+            uncontractedWarnings = warn.mock.calls.filter((c) =>
+               String(c[0]).includes(
+                  "reads a storage= upstream table unchecked",
+               ),
+            );
+         } finally {
+            warn.mockRestore();
+         }
+         uncontractedCount = await metrics.collectCounter(
+            "publisher_materialization_upstream_recompute_total",
+            {
+               reason: "reference_types_unrecorded",
+               build: "chained",
+               outcome: "read_unchecked",
+            },
+         );
+         // A standalone run puts every table back on record, then, out of
+         // band, every raw row goes: a downstream recomputed from raw would
+         // hold none.
+         const restored = await build({});
          await warehouse.runSQL("DELETE FROM public.cs_raw");
          rawless = await build({
-            sourceNames: entriesOf(second)
+            sourceNames: entriesOf(restored)
                .filter((e) => mechanism.downstream.test(e.sourceName ?? ""))
                .map((e) => e.sourceName!),
             forceRefresh: true,
@@ -363,6 +424,7 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
          rawlessServed = await ask(mechanism.query);
       }, 300_000);
       afterAll(async () => {
+         await metrics?.shutdown();
          await env?.closeAllConnections().catch(() => undefined);
          await db?.close();
          for (const name of dbs) {
@@ -428,6 +490,34 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
             null,
          ]);
       });
+
+      it(
+         mechanism.uncontracted === "read"
+            ? "reads a reference with no contract unchecked, warning and counting it"
+            : "refuses a rollup over a base reference with no contract, never building over it",
+         () => {
+            const built = entriesOf(uncontracted).filter((e) =>
+               mechanism.downstream.test(e.sourceName ?? ""),
+            );
+            if (mechanism.uncontracted === "read") {
+               expect([uncontracted.status, uncontracted.error]).toEqual([
+                  "MANIFEST_FILE_READY",
+                  null,
+               ]);
+               expect(built).toHaveLength(1);
+               expect(uncontractedWarnings).toHaveLength(1);
+               expect(uncontractedCount).toBe(1);
+            } else {
+               // Not built over unchecked: the base cannot be re-rooted on
+               // a table whose entry records no contract.
+               expect(uncontracted.status).toBe("FAILED");
+               expect(built).toEqual([]);
+               expect(failuresOf(uncontracted)[0]?.reason).toContain(
+                  "its base cannot be re-rooted on that table",
+               );
+            }
+         },
+      );
 
       it("serves its table after each run, equal to live", () => {
          expect(betweenServed.kind).not.toBe("live");
