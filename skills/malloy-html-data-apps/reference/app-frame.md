@@ -167,6 +167,10 @@ dataApp({
   as an image (`logo: './logo.svg'`), else their name.
 - **`glossary`**: the words a newcomer may not know (`term`, the words that mean it in `match`, `plain`). An info
   mark explains the ones its own text uses.
+- **Periods** (`defaults.period`): `last_7`, `last_28`, `last_91`, `last_364` (days counted back from the data's
+  latest day, so weeks are whole and line up with the comparison), `mtd`, `qtd`, `ytd`, `last_month`,
+  `last_quarter`, `last_year`, `all`. **Compare**: `previous`, `year`, `none`. Pick the default from how often the
+  reader opens it: weekly readers `last_91`, daily ones `last_28`.
 
 Two things come from the page that frames the app, not the config:
 
@@ -175,10 +179,6 @@ Two things come from the page that frames the app, not the config:
 - **Asking the host.** `setHost({ name, ask(prompt, context) })` registers a host that takes a reader's question;
   every block's info mark then offers "Ask <name> about this", with what the block covers and its queries in
   `context`. Register it only where the app knows it runs inside that host; the kit knows no host of its own.
-- **Periods** (`defaults.period`): `last_7`, `last_28`, `last_91`, `last_364` (days counted back from the data's
-  latest day, so weeks are whole and line up with the comparison), `mtd`, `qtd`, `ytd`, `last_month`,
-  `last_quarter`, `last_year`, `all`. **Compare**: `previous`, `year`, `none`. Pick the default from how often the
-  reader opens it: weekly readers `last_91`, daily ones `last_28`.
 
 ## The blocks
 
