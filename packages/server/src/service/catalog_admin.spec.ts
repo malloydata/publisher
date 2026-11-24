@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import { parse } from "yaml";
@@ -16,7 +16,9 @@ import { fakeOf } from "../test_helpers/store_fakes";
 import { CatalogAdmin, CatalogAdminError, withLoadSlot } from "./catalog_admin";
 import type { Environment } from "./environment";
 import type { LoadedEnvironmentsReader } from "./environment_ports";
+import * as tableLoad from "./materialization/run/storage_table_load";
 import {
+   CommittedLoadError,
    LoadRefusalError,
    loadLayout,
    objectUnreadable,
@@ -584,10 +586,33 @@ describe("a load's failure as an admin refusal", () => {
             422,
             "LOAD_TOO_LARGE",
          ]);
-         expect(mapped.message).toContain(message);
+         expect(mapped.message).toContain(message.replace(/\.$/, ""));
          expect(mapped.message).toContain("key");
          expect(mapped.message).toContain("admin.memoryLimit");
+         expect(mapped.message).toContain("duckdb.memoryLimit");
       }
+   });
+
+   it("quotes only the first line of DuckDB's message, which goes on to advise PRAGMA and SET a caller cannot run", () => {
+      const mapped = failure(
+         new Error(
+            "Out of Memory Error: failed to offload data block of size 256.0 KiB (5.9 GiB/6.0 GiB used).\nThis limit was set by the 'max_temp_directory_size' setting.\nYou can adjust this setting, by using (for example) PRAGMA max_temp_directory_size='10GiB'\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)",
+         ),
+      ) as CatalogAdminError;
+      expect(mapped.reason).toBe("LOAD_TOO_LARGE");
+      expect(mapped.message).toContain("6.0 GiB used)");
+      expect(mapped.message).not.toMatch(/PRAGMA|SET threads|\n/);
+   });
+
+   it("leaves an out-of-memory after the load committed to answer 500, since the rows are written", () => {
+      const flush = new CommittedLoadError(
+         new Error(
+            "Out of Memory Error: failed to pin block of size 256.0 KiB",
+         ),
+      );
+      const mapped = failure(flush);
+      expect(mapped).not.toBeInstanceOf(CatalogAdminError);
+      expect((mapped as Error).message).toContain("failed to pin block");
    });
 
    it("leaves a full spill disk, which a retry may cure, to answer 500", () => {
@@ -603,6 +628,51 @@ describe("a load's failure as an admin refusal", () => {
          admin as unknown as { redacted(error: unknown): unknown }
       ).redacted(oom);
       expect(redacted).toBe(oom);
+   });
+});
+
+describe("a table PUT that outgrows its write session", () => {
+   const put = async (failure: Error) => {
+      const target = new CatalogAdmin({
+         catalogDatabase: "host=127.0.0.1 port=1 dbname=none",
+      });
+      const internals = target as unknown as Record<string, unknown>;
+      const spies = [
+         spyOn(internals, "withCatalogDatabase" as never).mockResolvedValue({
+            owner: "o",
+            sourceOwner: undefined,
+         } as never),
+         spyOn(internals, "listTables" as never).mockResolvedValue([] as never),
+         spyOn(tableLoad, "loadStorageTable").mockRejectedValue(failure),
+      ];
+      try {
+         return await target.putTable("c", "s", "t", { source }, false).then(
+            () => undefined,
+            (e) => e,
+         );
+      } finally {
+         for (const spy of spies) spy.mockRestore();
+      }
+   };
+
+   it("answers 422 LOAD_TOO_LARGE that says to write less, not to give a key", async () => {
+      const error = await put(
+         new Error(
+            "Out of Memory Error: failed to offload data block of size 256.0 KiB (5.9 GiB/6.0 GiB used).\nThis limit was set by the 'max_temp_directory_size' setting.",
+         ),
+      );
+      expect(error).toBeInstanceOf(CatalogAdminError);
+      expect([error.status, error.reason]).toEqual([422, "LOAD_TOO_LARGE"]);
+      expect(error.message).toContain("Write less");
+      expect(error.message).not.toContain("key");
+      expect(error.message).toContain("admin.memoryLimit");
+   });
+
+   it("answers a full spill disk as a 500 to retry", async () => {
+      const full = new Error(
+         'IO Error: Could not write file "/tmp/duckdb_temp_storage-0.tmp": No space left on device',
+      );
+      expect(await put(full)).toBe(full);
    });
 });
 

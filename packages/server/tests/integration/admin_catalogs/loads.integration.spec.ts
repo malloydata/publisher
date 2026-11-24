@@ -35,6 +35,7 @@ import {
 import { createIsolatedBuildSession } from "../../../src/service/materialization/run/materialization_build_session";
 import { canonicalSha } from "../../../src/service/package_revision";
 import {
+   type LoadRefusalError,
    mergeStatements,
    mergeStorageTable,
 } from "../../../src/service/materialization/run/storage_table_load";
@@ -2632,6 +2633,168 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             { id: 1, v: "v1" },
             { id: 2, v: "v2" },
          ]);
+      });
+
+      describe("a keyless replace", () => {
+         const compares = (seen: string[]) =>
+            seen.filter((s) => s.includes("__publisher_side"));
+         const attempt = async (
+            table: string,
+            select: string,
+            budget?: number,
+            maxDeletedRows = 100_000,
+         ) =>
+            direct(
+               table,
+               {
+                  mode: "replace",
+                  maxDeletedRows,
+                  objects: [await parquet(select)],
+               },
+               budget,
+            );
+         const keyless = (...args: Parameters<typeof attempt>) =>
+            recorded(() => attempt(...args));
+
+         it("compares in as many passes as its bytes need, and counts what one pass counts", async () => {
+            const seed =
+               "SELECT i AS id, 'v' || i AS v FROM range(1, 201) t(i) UNION ALL SELECT 1, 'v1'";
+            const next =
+               "SELECT i AS id, CASE WHEN i % 10 = 0 THEN 'edited' ELSE 'v' || i END AS v FROM range(1, 221) t(i)";
+            const counts = {
+               rowsInserted: 40,
+               rowsReplaced: 0,
+               rowsUnchanged: 180,
+               rowsDeleted: 21,
+               rowCount: 220,
+            };
+            await keyless("kp_one", seed);
+            await keyless("kp_many", seed);
+            const one = await keyless("kp_one", next);
+            expect(one.value).toMatchObject(counts);
+            expect(compares(one.seen)).toHaveLength(1);
+            expect(compares(one.seen)[0]).not.toContain("hash(");
+            const many = await keyless("kp_many", next, 64);
+            expect(many.value).toEqual(one.value);
+            expect(compares(many.seen).length).toBeGreaterThan(1);
+            for (const pass of compares(many.seen)) {
+               expect(pass).toContain("hash(");
+            }
+            expect(await rowsOf("kp_many")).toEqual(await rowsOf("kp_one"));
+         });
+
+         it("counts exactly across passes when the stage and the table type a column differently, whatever its NaN and -0.0", async () => {
+            const row = (stage: boolean, from: number, to: number) => {
+               const zero = stage ? "'-0.0'::DOUBLE" : "0.0::DOUBLE";
+               const nan = stage ? "'nan'::DOUBLE" : "-('nan'::DOUBLE)";
+               const d = stage ? "DECIMAL(6,1)" : "DECIMAL(9,2)";
+               const f = stage ? "FLOAT" : "DOUBLE";
+               // The load widens a scalar column, not a list: both sides type it alike.
+               const l = "INT[]";
+               return (
+                  `SELECT (i % 1000)::${d} AS d, CASE WHEN i % 7 = 0 THEN NULL ELSE (i % 13)::${f} END AS f, ` +
+                  `[i % 5, NULL]::${l} AS l, {'a': CASE WHEN i % 11 = 0 THEN ${zero} ELSE (i % 3)::DOUBLE END, 'b': 'x' || (i % 17)} AS s, ` +
+                  `CASE WHEN i % 19 = 0 THEN ${nan} ELSE (i % 23)::DOUBLE END AS n FROM range(${from}, ${to}) t(i)`
+               );
+            };
+            for (const table of ["mixed_one", "mixed_many"]) {
+               await sql(
+                  writer,
+                  `CREATE TABLE ${CATALOG}.s.${table} AS ${row(false, 300, 2300)}`,
+               );
+            }
+            const stage = row(true, 0, 2000);
+            const one = await keyless("mixed_one", stage);
+            const many = await keyless("mixed_many", stage, 50_000);
+            expect(compares(one.seen)).toHaveLength(1);
+            expect(compares(many.seen).length).toBeGreaterThan(1);
+            expect(many.value).toEqual(one.value);
+            expect(one.value.rowsUnchanged).toBeGreaterThan(1000);
+            expect(one.value.rowsInserted + one.value.rowsUnchanged).toBe(2000);
+         });
+
+         it("deletes everything for an empty stage and inserts everything into an empty table, with no compare", async () => {
+            await keyless(
+               "kp_empty",
+               "SELECT i AS id, 'v' AS v FROM range(1, 6) t(i)",
+            );
+            const before = await snapshotId();
+            const refused = await recorded(() =>
+               attempt(
+                  "kp_empty",
+                  "SELECT 1 AS id, 'x' AS v WHERE false",
+                  undefined,
+                  4,
+               ).catch((e: unknown) => e),
+            );
+            const error = refused.value as LoadRefusalError;
+            expect(error.reason).toBe("LOAD_DELETE_LIMIT_EXCEEDED");
+            expect(error.detail).toEqual({
+               wouldDelete: 5,
+               rowsBefore: 5,
+               maxDeletedRows: 4,
+            });
+            expect(compares(refused.seen)).toHaveLength(0);
+            expect(await snapshotId()).toBe(before);
+            const emptied = await keyless(
+               "kp_empty",
+               "SELECT 1 AS id, 'x' AS v WHERE false",
+               undefined,
+               5,
+            );
+            expect(emptied.value).toMatchObject({
+               rowsInserted: 0,
+               rowsReplaced: 0,
+               rowsUnchanged: 0,
+               rowsDeleted: 5,
+               rowCount: 0,
+            });
+            expect(compares(emptied.seen)).toHaveLength(0);
+            const filled = await keyless(
+               "kp_empty",
+               "SELECT i AS id, 'v' AS v FROM range(1, 4) t(i)",
+               undefined,
+               0,
+            );
+            expect(filled.value).toMatchObject({
+               rowsInserted: 3,
+               rowsReplaced: 0,
+               rowsUnchanged: 0,
+               rowsDeleted: 0,
+               rowCount: 3,
+            });
+            expect(compares(filled.seen)).toHaveLength(0);
+         });
+      });
+
+      it("answers an out-of-memory in the flush after the commit as a 500, not as a load that wrote nothing", async () => {
+         const original = DuckDBConnection.prototype.runSQL;
+         const spy = spyOn(
+            DuckDBConnection.prototype,
+            "runSQL",
+         ).mockImplementation(function (
+            this: DuckDBConnection,
+            ...args: Parameters<typeof original>
+         ) {
+            return args[0].startsWith("CALL ducklake_flush_inlined_data")
+               ? Promise.reject(
+                    new Error(
+                       "Out of Memory Error: failed to pin block of size 256.0 KiB",
+                    ),
+                 )
+               : original.apply(this, args);
+         });
+         const error = await merge("oom_flush", [
+            await parquet("SELECT 1 AS id, 'a' AS v"),
+         ]).then(
+            () => undefined,
+            (e) => e,
+         );
+         spy.mockRestore();
+         expect(error).toBeInstanceOf(Error);
+         expect(error).not.toBeInstanceOf(CatalogAdminError);
+         expect(error.message).toContain("failed to pin block");
+         expect(await rowsOf("oom_flush")).toEqual([{ id: 1, v: "a" }]);
       });
 
       it("answers a load that runs out of memory or spill with a 422 LOAD_TOO_LARGE, and writes nothing", async () => {

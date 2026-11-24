@@ -602,7 +602,7 @@ export interface LoadRecord {
 }
 
 /** What a load reports: its counts, and whether it committed a snapshot. */
-export interface LoadOutcome {
+interface LoadOutcome {
    result: LoadResult;
    /** Present when the load committed: the snapshot its transaction read, a floor below its own snapshot for finding its record. */
    committedAfter?: number;
@@ -1254,13 +1254,7 @@ async function settleStage(
    return { rows: stats.rows, cursorMax: stats.cursorMax };
 }
 
-/**
- * `INSERT INTO target (every column) SELECT …` over the stage as `__s`, a bare
- * NULL for each column the objects lack: spelled in the INSERT's own select
- * list, where DuckDB takes the column's type (in a temp table it would be
- * INTEGER), and so a column's DEFAULT never fills one, which the compare reads
- * as NULL.
- */
+/** Names every table column, a bare NULL for those the objects lack: here DuckDB types it as the column (in a temp table, INTEGER) and no DEFAULT fills it. */
 function insertInto(
    target: string,
    keys: readonly string[],
@@ -1450,22 +1444,12 @@ export async function parquetRowBytes(
    return perRow;
 }
 
-/**
- * The compared columns split into the groups of {@link mergeStatements}, each
- * sized to hold both sides of the smaller side's rows within half the
- * session's memory (or `columnGroupBudget`). No column is taken as narrower than its type's width,
- * since a Parquet encoding is smaller than the row a hash join holds, and one
- * the objects lack has only its type to go by.
- */
-async function columnGroups(
+/** The bytes both sides of a compare pass may hold: `columnGroupBudget`, else half the session's memory. */
+async function compareBudget(
    session: DuckDBConnection,
    params: KeyedLoadParams,
-   layout: LoadLayout,
-   stageRows: number,
-   rowsBefore: number,
-): Promise<LoadColumn[][]> {
-   if (layout.columns.length < 2) return [layout.columns];
-   const budget =
+): Promise<number> {
+   return (
       params.columnGroupBudget ??
       duckDBByteSize(
          String(
@@ -1475,31 +1459,81 @@ async function columnGroups(
                ),
             )[0].size,
          ),
-      ) / 2;
+      ) / 2
+   );
+}
+
+/**
+ * The bytes a row holds of each key and compared column in a join's hash
+ * table: the larger of what the objects' footers say and its type's width, since
+ * a Parquet encoding is smaller than the row a join holds and a column the
+ * objects lack has only its type to go by.
+ */
+async function rowWidths(
+   session: DuckDBConnection,
+   params: KeyedLoadParams,
+   layout: LoadLayout,
+   stageRows: number,
+): Promise<{ keyBytes: number; columnBytes: number[] }> {
    const measured = await parquetRowBytes(
       session,
       params.objects,
       [...layout.keys, ...layout.columns.map((c) => c.name)].map(fold),
       stageRows,
    );
-   return packColumnGroups(
-      layout.columns.map((column) => ({
-         column,
-         bytes: Math.max(
-            measured.get(fold(column.name)) ?? 0,
-            typeBytes(column.type),
-         ),
-      })),
-      layout.keys.reduce(
-         (sum, k, i) =>
-            sum +
-            Math.max(measured.get(fold(k)) ?? 0, typeBytes(layout.keyTypes[i])),
+   const width = (name: string, type: string) =>
+      Math.max(measured.get(fold(name)) ?? 0, typeBytes(type));
+   return {
+      keyBytes: layout.keys.reduce(
+         (sum, k, i) => sum + width(k, layout.keyTypes[i]),
          0,
       ),
+      columnBytes: layout.columns.map((c) => width(c.name, c.type)),
+   };
+}
+
+/**
+ * The compared columns split into the groups of {@link mergeStatements}, each
+ * sized to hold both sides of the smaller side's rows within the compare budget
+ * ({@link compareBudget}).
+ */
+async function columnGroups(
+   session: DuckDBConnection,
+   params: KeyedLoadParams,
+   layout: LoadLayout,
+   stageRows: number,
+   rowsBefore: number,
+): Promise<LoadColumn[][]> {
+   if (layout.columns.length < 2) return [layout.columns];
+   const budget = await compareBudget(session, params);
+   const { keyBytes, columnBytes } = await rowWidths(
+      session,
+      params,
+      layout,
+      stageRows,
+   );
+   return packColumnGroups(
+      layout.columns.map((column, i) => ({ column, bytes: columnBytes[i] })),
+      keyBytes,
       Math.min(stageRows, rowsBefore),
       budget,
    );
 }
+
+/** The passes a keyless compare runs: its rows' bytes over the budget, and one (with no filter) when they fit. */
+export const comparePasses = (rowBytes: number, rows: number, budget: number) =>
+   Math.max(1, Math.ceil((rowBytes * rows) / budget));
+
+/** A failure after the load's rows were committed, which the admin API must not report as a load that wrote nothing. */
+export class CommittedLoadError extends Error {
+   constructor(cause: unknown) {
+      super(cause instanceof Error ? cause.message : String(cause), { cause });
+   }
+}
+
+const afterCommit = (error: unknown): never => {
+   throw new CommittedLoadError(error);
+};
 
 /** What a load will do, counted in rows before anything is written. */
 interface LoadPlan {
@@ -1550,36 +1584,48 @@ async function planKeyedLoad(
    };
 }
 
-/**
- * A keyless replace: the table's rows and the stage's compared as bags in one
- * aggregate over both sides, every column wide. A row of the table with no
- * identical row in the stage is deleted and a row of the stage with no
- * identical row in the table is inserted (an edited row is one of each, and a
- * row repeated n times matches n times); nothing is replaced.
- */
+/** A keyless replace as multisets (an edit is one deleted and one inserted), compared in hash shares to bound memory; an empty side needs no compare. */
 async function planKeylessLoad(
    session: DuckDBConnection,
+   params: KeyedLoadParams,
    layout: LoadLayout,
    target: string,
    stageRows: number,
+   rowsBefore: number,
 ): Promise<LoadPlan> {
+   if (stageRows === 0) {
+      return { inserted: 0, replaced: 0, deleted: rowsBefore, unchanged: 0 };
+   }
+   if (rowsBefore === 0) {
+      return { inserted: stageRows, replaced: 0, deleted: 0, unchanged: 0 };
+   }
+   const { columnBytes } = await rowWidths(session, params, layout, stageRows);
+   const passes = comparePasses(
+      columnBytes.reduce((sum, bytes) => sum + bytes, 0),
+      stageRows + rowsBefore,
+      await compareBudget(session, params),
+   );
+   const names = layout.columns.map((c) => q(c.name)).join(", ");
    const side = (from: string, has: (c: LoadColumn) => boolean, sign: number) =>
       `SELECT ${layout.columns.map((c) => (has(c) ? q(c.name) : `NULL AS ${q(c.name)}`)).join(", ")}, ${sign} AS __publisher_side FROM ${from}`;
-   const [r] = rows(
-      await session.runSQL(
-         "SELECT coalesce(sum(greatest(net, 0)), 0) AS inserted, coalesce(sum(greatest(-net, 0)), 0) AS deleted FROM " +
-            `(SELECT ${layout.columns.map((c) => q(c.name)).join(", ")}, sum(__publisher_side) AS net FROM (` +
-            `${side(STAGE, (c) => c.inStage, 1)} UNION ALL ${side(target, (c) => c.inTable, -1)}` +
-            ") GROUP BY ALL HAVING sum(__publisher_side) <> 0)",
-      ),
-   );
-   const inserted = Number(r.inserted);
-   return {
-      inserted,
-      replaced: 0,
-      deleted: Number(r.deleted),
-      unchanged: stageRows - inserted,
-   };
+   let inserted = 0;
+   let deleted = 0;
+   for (let pass = 0; pass < passes; pass++) {
+      // The share is taken over the union's columns, not each side's: hash() depends on the physical type, which the two sides may type differently.
+      const share =
+         passes > 1 ? `WHERE hash(${names}) % ${passes} = ${pass} ` : "";
+      const [r] = rows(
+         await session.runSQL(
+            "SELECT coalesce(sum(greatest(net, 0)), 0) AS inserted, coalesce(sum(greatest(-net, 0)), 0) AS deleted FROM " +
+               `(SELECT ${names}, sum(__publisher_side) AS net FROM (` +
+               `${side(STAGE, (c) => c.inStage, 1)} UNION ALL ${side(target, (c) => c.inTable, -1)}` +
+               `) ${share}GROUP BY ALL HAVING sum(__publisher_side) <> 0)`,
+         ),
+      );
+      inserted += Number(r.inserted);
+      deleted += Number(r.deleted);
+   }
+   return { inserted, replaced: 0, deleted, unchanged: stageRows - inserted };
 }
 
 interface KeyedLoadParams {
@@ -1648,7 +1694,7 @@ export async function mergeStorageTable(
             destinationName,
             schemaName,
             tableName,
-         );
+         ).catch(afterCommit);
          return outcome;
       },
    );
@@ -1671,17 +1717,18 @@ export async function flushStorageTable(params: {
          params.destinationName,
          params.schemaName,
          params.tableName,
-      ),
+      ).catch(afterCommit),
    );
 }
 
-/** DuckDB's refusal of a NULL in a NOT NULL column as the load's own, for what the staged-row check misses (a column changed by another writer mid-load). */
+/** Defense in depth: DuckDB's NOT NULL refusal as the load's own, should a NULL get past the staged-row check. */
 export function notNullViolation(error: unknown): LoadRefusalError | null {
+   // DuckDB spells it `<table>.<column>`, unquoted; a table name has no dot and a column name may.
    const failed =
       error instanceof Error &&
-      /NOT NULL constraint failed: (\S+)/.exec(error.message);
+      /NOT NULL constraint failed: [^.\n]*\.([^\n]+)/.exec(error.message);
    if (!failed) return null;
-   const column = failed[1].split(".").pop()!;
+   const column = failed[1];
    return contractRefusal(
       "not_null",
       column,
@@ -1727,7 +1774,14 @@ async function planAndApply(
              stats.rows,
              rowsBefore,
           )
-        : await planKeylessLoad(session, layout, target, stats.rows);
+        : await planKeylessLoad(
+             session,
+             params,
+             layout,
+             target,
+             stats.rows,
+             rowsBefore,
+          );
    if (
       params.mode === "replace" &&
       plan.deleted > (params.maxDeletedRows ?? 0)

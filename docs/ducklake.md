@@ -309,8 +309,9 @@ stream in batches:
   LOAD_DELETE_LIMIT_EXCEEDED`), so an empty or truncated extract cannot empty a table. A keyless replace
   compares whole rows as a multiset: a stored row with no identical row in the objects counts as deleted,
   an object row with no identical stored row as inserted (an edited row is one of each, and
-  `rowsReplaced` is 0), and `maxDeletedRows` guards the deleted count.
-- A row the objects do not change is not rewritten, so a load retried after it committed writes nothing
+  `rowsReplaced` is 0), and `maxDeletedRows` guards the deleted count. A keyless replace that changes any
+  row rewrites the whole table, so there `rowsUnchanged` counts the rows matched, not rows left in place.
+- A keyed load does not rewrite a row the objects do not change, so a load retried after it committed writes nothing
   and takes no snapshot. It reports the same `rowCount` and `cursorMax` as the first call, with every row
   counted in `rowsUnchanged` and none inserted, replaced or deleted, and it answers `200`, with no `id`. A
   retry is safe because it finds nothing to change, provided no other load of the table committed in
@@ -358,9 +359,9 @@ stream in batches:
   database), and one load or copy runs at a time per server. Either busy is `503 LOAD_BUSY`, never
   queued: retry. A load whose lock connection is lost before it commits rolls back and answers the same;
   the lock is checked just before the commit, which narrows the window in which a lost lock goes
-  unnoticed but does not close it. The lock is a session advisory lock, so the catalog database connection must be a session-mode one: a
-  transaction-mode pooler such as PgBouncer does not hold it, and two loads of a table could then run
-  together.
+  unnoticed but does not close it. The lock is a session advisory lock, so the catalog database
+  connection must be a session-mode one: a transaction-mode pooler such as PgBouncer does not hold it,
+  and two loads of a table could then run together.
 - The load reads the table inside the transaction that writes it, so a load that races a table PUT or
   DELETE of the same table (or a schema drop) on another replica is refused when it commits, `409
   LOAD_CONFLICT`: nothing is written, retry. A schema dropped before that transaction begins is a `404
@@ -375,12 +376,13 @@ stream in batches:
   memory. A keyed replace or merge of 10 million rows by 21 columns stays within the 6 GiB spill limit
   (measured); spill grows with the stage's size plus the widest single column, so a column whose rows
   times width exceed that budget on its own may still spill past it. A keyless replace has no key to
-  narrow by: every one compares whole rows of both sides in one full-width aggregate over the stored and
-  the staged rows, and a table larger than the session's memory can exceed the spill limit, so give a
-  large stream a `key`. A load or table PUT that outgrows the memory or spill limit answers `422
-  LOAD_TOO_LARGE` and writes nothing, and a retry fails the same way: give the load a `key`, split its
-  objects across loads, or raise `PUBLISHER_ADMIN_MEMORY_LIMIT` (and
-  `PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE`). A full spill disk is a `500`, to retry.
+  narrow by: every one compares whole rows of both sides, a full-width aggregate over the stored and the
+  staged rows, split into passes (by a hash of the whole row) sized so each fits in half the session's
+  memory; an empty extract, or an empty table, needs no compare. A load or table PUT that outgrows the
+  memory or spill limit anyway answers `422 LOAD_TOO_LARGE` and writes nothing, and a retry fails the
+  same way: give the load a `key`, split its objects across loads, or raise
+  `PUBLISHER_ADMIN_MEMORY_LIMIT` (and `PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE`). A failure after the load
+  committed, and a full spill disk, are a `500`, to retry.
 
 **History.** Dropping or replacing a table only retires its files: they stay readable at earlier
 snapshots. `DELETE …/snapshots?olderThan=` expires older snapshots (never the latest) and deletes files

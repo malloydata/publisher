@@ -67,6 +67,7 @@ import {
    type LoadOptions,
    type LoadRecord,
    type LoadResult,
+   CommittedLoadError,
    LoadRefusalError,
    copyStorageTable,
    flushStorageTable,
@@ -720,7 +721,7 @@ export class CatalogAdmin {
                );
             }
             const mapped = this.redacted(error);
-            throw this.tooLarge(mapped) ?? mapped;
+            throw this.tooLarge(mapped, "Write less") ?? mapped;
          }
          logger.info(
             source.kind === "table"
@@ -1143,7 +1144,7 @@ export class CatalogAdmin {
 
    // ---- internals ----
 
-   /** A load's failure as an admin refusal: DuckLake's commit conflict, or a table another request created first, as a 409; the load's own 422s come from {@link redacted}. */
+   /** A load's failure as an admin refusal: DuckLake's commit conflict, or a table another request created first, as a 409; a memory or spill failure before the commit as a 422; the load's own 422s come through {@link redacted}. */
    private loadFailure(error: unknown): unknown {
       const mapped = this.redacted(error);
       if (
@@ -1167,17 +1168,17 @@ export class CatalogAdmin {
             "The schema was dropped before the load began.",
          );
       }
-      return this.tooLarge(mapped) ?? mapped;
+      // After the commit the rows are written, so a 422 that says otherwise would mislead.
+      return error instanceof CommittedLoadError
+         ? mapped
+         : (this.tooLarge(
+              mapped,
+              "Give the load a key, split its objects across loads",
+           ) ?? mapped);
    }
 
-   /**
-    * A load or table PUT that ran out of the session's memory or its spill cap,
-    * as a 422 that names the way out. Applied by a load and a PUT only, not in
-    * {@link redacted}: a read's or a snapshot delete's out-of-memory is not
-    * something a key or smaller objects cure. A full disk is not matched, and
-    * stays a 500 to retry.
-    */
-   private tooLarge(mapped: unknown): CatalogAdminError | null {
+   /** A write that outgrew the session's memory or spill cap as a 422 with `advice`; a full disk stays a 500, and `redacted()` leaves it so for the reads that share it. */
+   private tooLarge(mapped: unknown, advice: string): CatalogAdminError | null {
       if (
          !(mapped instanceof Error) ||
          mapped instanceof CatalogAdminError ||
@@ -1187,10 +1188,12 @@ export class CatalogAdmin {
       ) {
          return null;
       }
+      // DuckDB goes on to advise PRAGMA and SET statements a caller cannot run.
+      const said = mapped.message.split("\n")[0].replace(/\.$/, "");
       return new CatalogAdminError(
          422,
          "LOAD_TOO_LARGE",
-         `The load exceeded the load session's memory or spill limit (${mapped.message}). Give it a key, split its objects across loads, or raise admin.memoryLimit (and admin.maxTempDirectorySize).`,
+         `The write exceeded the session's memory or spill limit (${said}). ${advice}, or raise admin.memoryLimit (and duckdb.memoryLimit when it is lower) or admin.maxTempDirectorySize.`,
       );
    }
 

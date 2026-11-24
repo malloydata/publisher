@@ -13,6 +13,7 @@ import {
 import type { components } from "../../../api";
 import { BadRequestError, ConflictError } from "../../../errors";
 import {
+   comparePasses,
    LoadRefusalError,
    loadLayout,
    loadStorageTable,
@@ -841,6 +842,18 @@ describe("notNullViolation: DuckDB's NOT NULL refusal as the load's own", () => 
       });
    });
 
+   it("reads a column named with a space, a quote or a dot, after the table's name", () => {
+      for (const column of ["my col", 'q"x', "a.b"]) {
+         expect(
+            notNullViolation(
+               new Error(
+                  `Constraint Error: NOT NULL constraint failed: t.${column}`,
+               ),
+            )?.detail,
+         ).toMatchObject({ column, violation: "not_null" });
+      }
+   });
+
    it("is null for any other failure", () => {
       expect(notNullViolation(new Error("Catalog Error: nope"))).toBeNull();
       expect(notNullViolation("NOT NULL constraint failed: t.a")).toBeNull();
@@ -1137,6 +1150,20 @@ describe("mergeStatements: the plan joins on plain equality", () => {
          columns: [],
       });
       expect(keysOnly.changes).toHaveLength(1);
+   });
+});
+
+describe("comparePasses: a keyless compare's passes from its bytes", () => {
+   it("is one pass, with no filter, when both sides' rows fit the budget", () => {
+      expect(comparePasses(40, 10, 400)).toBe(1);
+      expect(comparePasses(40, 10, 10_000)).toBe(1);
+      expect(comparePasses(0, 0, 1)).toBe(1);
+   });
+
+   it("is the rows' bytes over the budget, rounded up", () => {
+      expect(comparePasses(40, 10, 399)).toBe(2);
+      expect(comparePasses(40, 10, 100)).toBe(4);
+      expect(comparePasses(40, 10, 1)).toBe(400);
    });
 });
 
