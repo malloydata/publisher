@@ -382,7 +382,7 @@ describe("skillFiles", () => {
       it("charges entries below assets/ and every other entry to separate budgets", () => {
          fill("assets", ASSET_MAX_ENTRIES);
          fill("other", ASSET_MAX_ENTRIES - 1);
-         const budget = newWalkBudget();
+         const budget = newWalkBudget("package");
          const { files, warnings } = skillFiles(dir, { budget });
          expect(files).toHaveLength(2 * ASSET_MAX_ENTRIES - 1);
          expect(warnings).toEqual([]);
@@ -391,7 +391,7 @@ describe("skillFiles", () => {
       });
 
       it("takes from a budget shared by several walks, and says where each is cut", () => {
-         const budget = newWalkBudget();
+         const budget = newWalkBudget("package");
          for (const skill of ["a", "b"]) {
             fs.mkdirSync(path.join(dir, skill));
             for (let i = 0; i < 600; i++) {
@@ -407,7 +407,24 @@ describe("skillFiles", () => {
          expect(second.warnings[0]).toContain("more than 1000 entries");
       });
 
-      it("never charges SKILL.md or a Markdown file directly in reference/, even with nothing left", () => {
+      it("says the shared budget was already spent when a walk took nothing from it", () => {
+         const budget = newWalkBudget("package");
+         const sizes = { a: 600, b: 400, c: 5 };
+         const [, , third] = Object.entries(sizes).map(([skill, count]) => {
+            fs.mkdirSync(path.join(dir, skill));
+            for (let i = 0; i < count; i++) {
+               fs.writeFileSync(path.join(dir, skill, `f${i}.txt`), "x");
+            }
+            return skillFiles(path.join(dir, skill), { budget });
+         });
+         expect(third!.files).toEqual([]);
+         expect(third!.warnings).toHaveLength(1);
+         expect(third!.warnings[0]).toContain(
+            `the package's walk budget of ${ASSET_MAX_ENTRIES} entries was already spent on earlier skills`,
+         );
+      });
+
+      it("takes SKILL.md and a Markdown file directly in reference/ from neither shared budget, even with nothing left", () => {
          write("SKILL.md");
          write("reference/a.md");
          write("reference/data.csv");
@@ -415,10 +432,67 @@ describe("skillFiles", () => {
          write("assets/c.txt");
          write("other.txt");
          const { files, warnings } = skillFiles(dir, {
-            budget: { assets: { left: 0 }, other: { left: 0 } },
+            budget: {
+               assets: { left: 0 },
+               other: { left: 0 },
+               owner: "package",
+            },
          });
          expect(files).toEqual(["SKILL.md", "reference/a.md"]);
          expect(warnings).toHaveLength(2);
+      });
+
+      describe("reference/", () => {
+         const fillReference = (folder: string, count: number) => {
+            for (let i = 0; i < count; i++) write(`${folder}/r${i}.md`);
+         };
+         const inReference = (files: string[]) =>
+            files.filter((f) => f.startsWith("reference/"));
+         const link = () =>
+            fs.symlinkSync(
+               path.join(dir, "shared"),
+               path.join(dir, "reference"),
+               "dir",
+            );
+
+         it("holds at most 1,000 entries of its own, whatever the shared budget has left", () => {
+            fillReference("reference", ASSET_MAX_ENTRIES + 200);
+            const { files, warnings } = skillFiles(dir, {
+               budget: {
+                  assets: { left: 0 },
+                  other: { left: 0 },
+                  owner: "package",
+               },
+            });
+            expect(inReference(files)).toHaveLength(ASSET_MAX_ENTRIES);
+            expect(warnings).toHaveLength(1);
+            expect(warnings[0]).toContain(
+               `reference/ holds more than ${ASSET_MAX_ENTRIES} entries`,
+            );
+         });
+
+         it("counts the entries of a link it skips, and stops at 1,000", () => {
+            for (let i = 0; i < ASSET_MAX_ENTRIES; i++)
+               write(`shared/d${i}.txt`);
+            write("shared/z.md");
+            link();
+            const { files, warnings } = skillFiles(dir, {
+               followReference: (target) => target,
+            });
+            expect(inReference(files)).toEqual([]);
+            expect(warnings).toContain(
+               `skill walk stopped at 'reference/z.md': reference/ holds more than ${ASSET_MAX_ENTRIES} entries, so the rest are not read`,
+            );
+         });
+
+         it("reads a link to a directory of five thousand Markdown files for no more than 1,000", () => {
+            fillReference("shared", 5000);
+            link();
+            const { files } = skillFiles(dir, {
+               followReference: (target) => target,
+            });
+            expect(inReference(files)).toHaveLength(ASSET_MAX_ENTRIES);
+         });
       });
 
       it("counts the depth below assets/ from assets/, and from the skill elsewhere", () => {

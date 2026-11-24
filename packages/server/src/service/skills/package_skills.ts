@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { createHash } from "crypto";
-import * as fs from "fs";
+import fs from "fs";
 import * as path from "path";
 import {
    parseReference,
@@ -153,17 +153,22 @@ function readFileInside(
    }
 }
 
+/** How much of a listed file the first pass looks at to tell a binary one apart. */
+const ASSET_SNIFF_BYTES = 8 * 1024;
+
 /**
  * A listed file's bytes, or why they cannot be served. The file may not be a
  * link, and its real path must sit inside the skill's own directory, so a link
- * swapped in after the listing leads nowhere.
+ * swapped in after the listing leads nowhere. Given `headBytes`, a file longer
+ * than that is read for its first `headBytes` only (`whole` is false).
  */
 function readListedBytes(
    packageRoot: string,
    skillDir: string,
    file: string,
    maxBytes: number,
-): { bytes: Buffer } | { problem: string; link?: true } {
+   headBytes?: number,
+): { bytes: Buffer; whole: boolean } | { problem: string; link?: true } {
    try {
       if (fs.lstatSync(file).isSymbolicLink()) {
          return { problem: "is a link", link: true };
@@ -184,7 +189,17 @@ function readListedBytes(
             problem: `is ${stat.size} bytes, over the ${maxBytes} byte cap`,
          };
       }
-      return { bytes: fs.readFileSync(real) };
+      if (headBytes !== undefined && stat.size > headBytes) {
+         const fd = fs.openSync(real, "r");
+         try {
+            const head = Buffer.alloc(headBytes);
+            const read = fs.readSync(fd, head, 0, headBytes, 0);
+            return { bytes: head.subarray(0, read), whole: false };
+         } finally {
+            fs.closeSync(fd);
+         }
+      }
+      return { bytes: fs.readFileSync(real), whole: true };
    } catch (error) {
       return {
          problem: `cannot be read (${callerVisibleText((error as Error).message, packageRoot)})`,
@@ -254,7 +269,40 @@ interface PackageAssetBudget {
 
 type AssetRead =
    | { sha256: string; bytes: number; binary: boolean }
+   /** A NUL in its first bytes made it binary: not read in full or hashed until a budget takes it. */
+   | { unread: true }
    | { problem: string; link?: true };
+
+/**
+ * A listed file as the budgets see it. With `peek` (the first pass) a file whose
+ * first bytes hold a NUL is left unread; any other is read whole and hashed,
+ * and is binary when its bytes are not strict UTF-8 without a NUL.
+ */
+function readAsset(
+   packageRoot: string,
+   skillDir: string,
+   file: string,
+   peek: boolean,
+): AssetRead {
+   const maxBytes = PACKAGE_ASSET_FILE_MAX_BYTES - 1;
+   let fresh = readListedBytes(
+      packageRoot,
+      skillDir,
+      file,
+      maxBytes,
+      peek ? ASSET_SNIFF_BYTES : undefined,
+   );
+   if ("bytes" in fresh && !fresh.whole) {
+      if (fresh.bytes.includes(0)) return { unread: true };
+      fresh = readListedBytes(packageRoot, skillDir, file, maxBytes);
+   }
+   if ("problem" in fresh) return fresh;
+   return {
+      sha256: sha256(fresh.bytes),
+      bytes: fresh.bytes.length,
+      binary: decodeText(fresh.bytes) === undefined,
+   };
+}
 
 /**
  * A skills root as every agent naming it sees it: the publisher.json its served
@@ -289,7 +337,7 @@ interface AssetWalk {
    maxBytes: number;
    files: number;
    bytes: number;
-   /** Bytes no earlier agent already charged to the package. */
+   /** Bytes this walk charged that the package's budget has not recorded yet. */
    newBytes: number;
    /** Each listed path and its directories, lower-cased, to the spelling that took it: two that differ only by case collide. */
    lower: Map<string, string>;
@@ -787,7 +835,8 @@ function listFile(
       walk.skipped.push(`asset '${shown}' is not served: ${why}`);
    const reject = (refusal: string, why: string) => {
       skip(why);
-      if (strict) ctx.refusals.push(refusal);
+      // Every refusal is found in the first pass; a later one means the file changed since, and is only skipped.
+      if (strict && defer) ctx.refusals.push(refusal);
    };
 
    // Nothing more fits once the file cap is reached; only a file below assets/ is still looked at, for the findings that refuse an agent.
@@ -883,21 +932,13 @@ function listFile(
       );
    } else {
       let read = walk.reads.get(shown);
-      if (!read) {
-         const fresh = readListedBytes(
+      if (!read || (!defer && "unread" in read)) {
+         read = readAsset(
             ctx.packageRoot,
             s.dir,
             absolute,
-            PACKAGE_ASSET_FILE_MAX_BYTES - 1,
+            defer !== undefined,
          );
-         read =
-            "problem" in fresh
-               ? fresh
-               : {
-                    sha256: sha256(fresh.bytes),
-                    bytes: fresh.bytes.length,
-                    binary: decodeText(fresh.bytes) === undefined,
-                 };
          walk.reads.set(shown, read);
       }
       if ("problem" in read) {
@@ -912,10 +953,12 @@ function listFile(
          }
          return undefined;
       }
-      if (defer && read.binary) {
+      if (defer && ("unread" in read || read.binary)) {
          defer.push(relative);
          return undefined;
       }
+      // Only the first pass leaves a file unread, and it defers it above.
+      if ("unread" in read) return undefined;
       walk.files++;
       walk.bytes += read.bytes;
       if (!charged) walk.newBytes += read.bytes;
@@ -939,7 +982,7 @@ export function readSkillsDir(
    packagePath: string,
    dirRel: string = PACKAGE_SKILLS_DIR,
 ): PackageSkills {
-   const scan = scanSkills(packagePath, dirRel, newWalkBudget());
+   const scan = scanSkills(packagePath, dirRel, newWalkBudget("package"));
    const walk = newWalk(
       SKILLS_SCOPE,
       PACKAGE_SKILLS_ASSETS_MAX_FILES,
@@ -1348,15 +1391,8 @@ export function readAgentAsset(
    }
 }
 
-/** The agent's skill roots read into served files, sorted by relative path. */
-function readAgentSkills(
-   packagePath: string,
-   packageRoot: string,
-   raw: unknown,
-   paths: string[],
-   warnings: string[],
-   assetBudget: PackageAssetBudget,
-): {
+/** What an agent's skill roots read into, sorted by relative path. */
+interface AgentSkills {
    roots: string[];
    files: PackageAgent["skills"];
    meta: PackageAgent["skillMeta"];
@@ -1365,8 +1401,21 @@ function readAgentSkills(
    skillignores: Record<string, string>;
    assets: PackageAgentAsset[];
    assetRoots: Record<string, string>;
-   charges: AssetCharges;
-} {
+}
+
+/**
+ * An agent's skill roots in two phases. This validates and scans them and runs
+ * every skill's first pass, which holds every finding that refuses the agent,
+ * so `finish` cannot refuse it. `walk` holds what the first pass charged.
+ */
+function startAgentSkills(
+   packagePath: string,
+   packageRoot: string,
+   raw: unknown,
+   paths: string[],
+   warnings: string[],
+   assetBudget: PackageAssetBudget,
+): { walk: AssetWalk; finish: () => AgentSkills } {
    if (raw !== undefined && !Array.isArray(raw)) {
       throw new AgentProblem("'skills' must be a list of directories");
    }
@@ -1379,7 +1428,7 @@ function readAgentSkills(
       PACKAGE_AGENT_ASSETS_MAX_BYTES,
       assetBudget,
    );
-   const entryBudget = newWalkBudget();
+   const entryBudget = newWalkBudget("agent");
    const scanned: ScannedSkill[] = [];
    for (const root of roots) {
       // Settled before it is looked at: one that leads out of the package
@@ -1464,13 +1513,29 @@ function readAgentSkills(
       warnings: [],
       refusals: [],
    };
+   const drafts = scanned.map((s) => readFirst(s, ctx));
+   if (ctx.refusals.length > 0) throw new AgentProblem(ctx.refusals[0]!);
+   return {
+      walk,
+      finish: () => finishAgentSkills(drafts, ctx, roots, paths, warnings),
+   };
+}
+
+/** The second pass of every skill of an agent, assembled into what the agent serves. */
+function finishAgentSkills(
+   drafts: SkillDraft[],
+   ctx: FinishContext,
+   roots: string[],
+   paths: string[],
+   warnings: string[],
+): AgentSkills {
    const served = new Map<string, string>();
    const meta: PackageAgent["skillMeta"] = new Map();
    const catalog: SkillCatalogEntry[] = [];
    const skillignores = new Map<string, string>();
    const assets = new Map<string, PackageAgentAsset>();
    const assetRoots = new Map<string, string>();
-   for (const read of readSkills(scanned, ctx)) {
+   for (const read of drafts.map((d) => readRest(d, ctx))) {
       for (const f of read.inline) {
          const relative = `${read.dirName}/${f.relative}`;
          paths.push(`${read.rel}/${f.relative}`);
@@ -1504,17 +1569,15 @@ function readAgentSkills(
       }
       if (read.listed.length > 0) assetRoots.set(read.dirName, read.rel);
    }
-   if (ctx.refusals.length > 0) throw new AgentProblem(ctx.refusals[0]!);
    for (const w of ctx.warnings) {
       warnings.push(`skill finding: ${w.replace(/\.$/, "")}`);
    }
-   warnings.push(...skippedWarnings(walk));
+   warnings.push(...skippedWarnings(ctx.walk));
    return {
       assets: [...assets.values()].sort((a, b) =>
          compareText(a.relative_filepath, b.relative_filepath),
       ),
       assetRoots: Object.fromEntries(assetRoots),
-      charges: walk.charges,
       roots,
       catalog,
       skillignores: Object.fromEntries(skillignores),
@@ -1528,13 +1591,19 @@ function readAgentSkills(
    };
 }
 
-function readAgent(
+/** An agent between its two phases: `walk` holds what the first charged, and `finish` reads the rest. */
+interface StartedAgent {
+   walk: AssetWalk;
+   finish: () => { agent: PackageAgent; paths: string[] };
+}
+
+function startAgent(
    packagePath: string,
    packageRoot: string,
    name: string,
    raw: unknown,
    assetBudget: PackageAssetBudget,
-): { agent: PackageAgent; paths: string[]; charges: AssetCharges } {
+): StartedAgent {
    if (!AGENT_NAME.test(name) || name.length > 64) {
       throw new AgentProblem(
          "its name must be 1-64 characters of lowercase letters, digits and single hyphens",
@@ -1574,7 +1643,7 @@ function readAgent(
       paths,
    );
    const budget = readAgentBudget(raw.budget);
-   const skills = readAgentSkills(
+   const started = startAgentSkills(
       packagePath,
       packageRoot,
       raw.skills,
@@ -1582,49 +1651,69 @@ function readAgent(
       warnings,
       assetBudget,
    );
-
-   const definitionSha = canonicalSha({
-      name,
-      description: raw.description,
-      model,
-      instructionsPath: instructions.rel,
-      skillRoots: skills.roots,
-      schedules,
-      ...(budget && { budget }),
-      // Folded in only when present, so an agent without listed files or a .skillignore keeps its sha.
-      ...(skills.assets.length > 0 && {
-         assets: skills.assets.map(({ relative_filepath, sha256 }) => ({
-            relative_filepath,
-            sha256,
-         })),
-      }),
-      ...(Object.keys(skills.skillignores).length > 0 && {
-         skillignores: skills.skillignores,
-      }),
-      instructions: instructions.text,
-      skills: skills.files,
-   });
    return {
-      agent: {
-         name,
-         description: raw.description,
-         model: model as string,
-         instructions: instructions.text,
-         skills: skills.files,
-         skillMeta: skills.meta,
-         catalog: skills.catalog,
-         schedules,
-         ...(budget && { budget }),
-         ...(skills.assets.length > 0 && {
-            asset_roots: skills.assetRoots,
-            assets: skills.assets,
-         }),
-         warnings,
-         definitionSha,
+      walk: started.walk,
+      finish: () => {
+         const skills = started.finish();
+         const definitionSha = canonicalSha({
+            name,
+            description: raw.description,
+            model,
+            instructionsPath: instructions.rel,
+            skillRoots: skills.roots,
+            schedules,
+            ...(budget && { budget }),
+            // Folded in only when present, so an agent without listed files or a .skillignore keeps its sha.
+            ...(skills.assets.length > 0 && {
+               assets: skills.assets.map(({ relative_filepath, sha256 }) => ({
+                  relative_filepath,
+                  sha256,
+               })),
+            }),
+            ...(Object.keys(skills.skillignores).length > 0 && {
+               skillignores: skills.skillignores,
+            }),
+            instructions: instructions.text,
+            skills: skills.files,
+         });
+         return {
+            agent: {
+               name,
+               description: raw.description as string,
+               model: model as string,
+               instructions: instructions.text,
+               skills: skills.files,
+               skillMeta: skills.meta,
+               catalog: skills.catalog,
+               schedules,
+               ...(budget && { budget }),
+               ...(skills.assets.length > 0 && {
+                  asset_roots: skills.assetRoots,
+                  assets: skills.assets,
+               }),
+               warnings,
+               definitionSha,
+            },
+            paths,
+         };
       },
-      paths,
-      charges: skills.charges,
    };
+}
+
+/** Records what a walk has charged in the package's budget, once per path, and clears the walk's own tally of bytes that were new. */
+function chargePackage(
+   budget: PackageAssetBudget,
+   walk: AssetWalk,
+   contentShas: Map<string, string>,
+) {
+   for (const [assetPath, { bytes, sha256 }] of walk.charges) {
+      contentShas.set(assetPath, sha256);
+      if (!budget.paths.has(assetPath)) {
+         budget.paths.add(assetPath);
+         budget.bytes += bytes;
+      }
+   }
+   walk.newBytes = 0;
 }
 
 /**
@@ -1643,7 +1732,7 @@ export function readPackageAgents(
       contentShas: new Map(),
       warnings: [],
    };
-   // Charged in manifest order, and only for an agent that is served.
+   // Charged in manifest order, only by an agent that is served, first phase before second.
    const assetBudget: PackageAssetBudget = {
       bytes: 0,
       paths: new Set(),
@@ -1664,37 +1753,51 @@ export function readPackageAgents(
    } catch {
       return result;
    }
-   for (const [name, entry] of Object.entries(raw)) {
+   const entries = Object.entries(raw);
+   // By manifest position, so the warnings read in manifest order across the two phases.
+   const notes: string[][] = entries.map(() => []);
+   const dropped = (i: number, name: string, error: unknown) => {
+      const why =
+         error instanceof AgentProblem
+            ? error.message
+            : `it cannot be read (${callerVisibleText((error as Error).message, packagePath)})`;
+      notes[i]!.push(
+         `Package agent '${name}' is not served: ${why}. Fix: correct the 'agents.${name}' entry in publisher.json and the files it names.`,
+      );
+   };
+   // Every agent's first phase runs before any second, so what an agent has always served is charged to the package's budget before any agent's newly covered files.
+   const started = new Map<number, StartedAgent>();
+   entries.forEach(([name, entry], i) => {
       try {
-         const { agent, paths, charges } = readAgent(
+         const agent = startAgent(
             packagePath,
             packageRoot,
             name,
             entry,
             assetBudget,
          );
-         result.agents.set(name, agent);
-         result.paths.push(...paths);
-         for (const [assetPath, { bytes, sha256 }] of charges) {
-            result.contentShas.set(assetPath, sha256);
-            if (!assetBudget.paths.has(assetPath)) {
-               assetBudget.paths.add(assetPath);
-               assetBudget.bytes += bytes;
-            }
-         }
-         for (const w of agent.warnings) {
-            result.warnings.push(`Package agent '${name}' ${w}.`);
+         chargePackage(assetBudget, agent.walk, result.contentShas);
+         started.set(i, agent);
+      } catch (error) {
+         dropped(i, name, error);
+      }
+   });
+   entries.forEach(([name], i) => {
+      const agent = started.get(i);
+      if (!agent) return;
+      try {
+         const read = agent.finish();
+         chargePackage(assetBudget, agent.walk, result.contentShas);
+         result.agents.set(name, read.agent);
+         result.paths.push(...read.paths);
+         for (const w of read.agent.warnings) {
+            notes[i]!.push(`Package agent '${name}' ${w}.`);
          }
       } catch (error) {
-         const why =
-            error instanceof AgentProblem
-               ? error.message
-               : `it cannot be read (${callerVisibleText((error as Error).message, packagePath)})`;
-         result.warnings.push(
-            `Package agent '${name}' is not served: ${why}. Fix: correct the 'agents.${name}' entry in publisher.json and the files it names.`,
-         );
+         dropped(i, name, error);
       }
-   }
+   });
+   result.warnings.push(...notes.flat());
    return result;
 }
 

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Imports only node built-ins, `ignore` and the dependency-free compareText, so the skills build scripts can load it by path.
-import * as fs from "fs";
+import fs from "fs";
 import ignore, { type Ignore } from "ignore";
 import * as path from "path";
 import { compareText } from "../../compare_text";
@@ -11,7 +11,7 @@ import { compareText } from "../../compare_text";
 export const ASSET_PATH_MAX_CHARS = 200;
 /** Directories nested deeper than this are not walked. */
 export const ASSET_MAX_DEPTH = 8;
-/** Every entry the walk sees counts, kept or not; the rest are not walked. */
+/** Entries one walk may see, kept or not; the files `WalkBudget` names as always walked are outside it, and a skill's `reference/` has its own count of this size. */
 export const ASSET_MAX_ENTRIES = 1000;
 
 const SKILL_MD = "SKILL.md";
@@ -41,16 +41,20 @@ export interface EntryBudget {
  * What the walks of one reader's skills may still take together. An entry below
  * `assets/` is charged to `assets` and any other to `other`, so a file outside
  * `assets/` can never cost one inside it. `SKILL.md` and a Markdown file
- * directly in `reference/` are charged to neither: they are always walked.
+ * directly in `reference/` are charged to neither: they are always walked, and
+ * bounded apart by `reference/`'s own count in each skill.
  */
 export interface WalkBudget {
    assets: EntryBudget;
    other: EntryBudget;
+   /** Who the budget belongs to, for the warning that it ran out. */
+   owner: string;
 }
 
-export const newWalkBudget = (): WalkBudget => ({
+export const newWalkBudget = (owner: string): WalkBudget => ({
    assets: { left: ASSET_MAX_ENTRIES },
    other: { left: ASSET_MAX_ENTRIES },
+   owner,
 });
 
 export interface SkillFilesOptions {
@@ -176,7 +180,8 @@ type Zone = "root" | "reference" | "linked reference" | "assets" | "other";
  * `SKILL.md` comes first, then `reference/`, then `assets/`, then the rest, so
  * a bound cuts the newest locations first. An ignored directory is not
  * descended, but every entry seen still counts against the budget; hitting a
- * bound adds a warning and keeps what was found so far.
+ * bound adds a warning and keeps what was found so far. The entries directly in
+ * `reference/` are bounded by a count of their own, linked or not.
  */
 export function skillFiles(
    dir: string,
@@ -187,19 +192,39 @@ export function skillFiles(
    const skillignore = readSkillignore(dir, matcher, warnings);
 
    const alone = { left: ASSET_MAX_ENTRIES };
-   const budget = options.budget ?? { assets: alone, other: alone };
+   const budget = options.budget ?? {
+      assets: alone,
+      other: alone,
+      owner: "skill",
+   };
    const exhausted = new Set<EntryBudget>();
+   const taken = new Set<EntryBudget>();
    const take = (counter: EntryBudget, relative: string): boolean => {
       if (counter.left > 0) {
          counter.left--;
+         taken.add(counter);
          return true;
       }
       if (!exhausted.has(counter)) {
          exhausted.add(counter);
          warnings.push(
-            `skill walk stopped at '${relative}': more than ${ASSET_MAX_ENTRIES} entries were walked, so the rest are not included`,
+            taken.has(counter)
+               ? `skill walk stopped at '${relative}': more than ${ASSET_MAX_ENTRIES} entries were walked, so the rest are not included`
+               : `skill walk stopped at '${relative}': the ${budget.owner}'s walk budget of ${ASSET_MAX_ENTRIES} entries was already spent on earlier skills, so the rest are not included`,
          );
       }
+      return false;
+   };
+   // Every direct entry of the always-walked reference/ counts, skipped ones too, so a linked one cannot make the walk read a whole directory.
+   const reference = { left: ASSET_MAX_ENTRIES };
+   const takeReference = (relative: string): boolean => {
+      if (reference.left > 0) {
+         reference.left--;
+         return true;
+      }
+      warnings.push(
+         `skill walk stopped at '${relative}': ${REFERENCE_DIR}/ holds more than ${ASSET_MAX_ENTRIES} entries, so the rest are not read`,
+      );
       return false;
    };
    const rank = (name: string) => {
@@ -233,6 +258,12 @@ export function skillFiles(
       }
       for (const entry of entries) {
          const relative = rel ? `${rel}/${entry.name}` : entry.name;
+         if (
+            (zone === "reference" || zone === "linked reference") &&
+            !takeReference(relative)
+         ) {
+            break;
+         }
          const linked =
             zone === "root" &&
             entry.name === REFERENCE_DIR &&

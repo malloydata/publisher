@@ -7,7 +7,7 @@
  * written by __fixtures__/skill-directory/fixture.ts, and the definition it
  * resolves to is pinned in expected-definition.json beside it.
  */
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { createHash } from "crypto";
 import fs from "fs";
 import os from "os";
@@ -807,11 +807,15 @@ describe("a skill read whole still serves what it served before", () => {
          expect(listed(agent)).toContain(`${name}/assets/keep.txt`);
       }
       const stopped = result.warnings.filter((w) =>
-         w.includes("more than 1000 entries"),
+         w.includes("skill walk stopped"),
       );
       expect(stopped).toHaveLength(2);
       expect(stopped[0]).toContain(`${ROOT}/b'`);
+      expect(stopped[0]).toContain("more than 1000 entries were walked");
       expect(stopped[1]).toContain(`${ROOT}/c'`);
+      expect(stopped[1]).toContain(
+         "the agent's walk budget of 1000 entries was already spent on earlier skills",
+      );
    });
 
    describe("a reference/ that is a link", () => {
@@ -875,22 +879,137 @@ describe("a skill read whole still serves what it served before", () => {
       });
    });
 
-   it("reloads eight agents that share a root of sixteen skills of about a thousand entries each in a fraction of a second", () => {
+   it("walks a root that eight agents share once, not once per agent", () => {
       for (let k = 0; k < 16; k++) {
          skill(`k${k}`);
          for (let i = 0; i < 990; i++) write(`${ROOT}/k${k}/data/f${i}.txt`);
       }
-      const agents = Object.fromEntries(
-         Array.from({ length: 8 }, (_, i) => [
-            `a${i}`,
-            { ...manifest().analyst },
-         ]),
+      const one = manifest().analyst;
+      const eight = Object.fromEntries(
+         Array.from({ length: 8 }, (_, i) => [`a${i}`, { ...one }]),
       );
-      read(agents);
-      const started = performance.now();
+      const listings = spyOn(fs, "readdirSync");
+      try {
+         read({ a0: one });
+         const calls1 = listings.mock.calls.length;
+         listings.mockClear();
+         const result = read(eight);
+         const calls8 = listings.mock.calls.length;
+         expect(result.agents.size).toBe(8);
+         // The spy must see the walk, or the comparison below is vacuous.
+         expect(calls1).toBeGreaterThanOrEqual(32);
+         expect(calls8).toBeLessThan(2 * calls1);
+      } finally {
+         listings.mockRestore();
+      }
+   });
+
+   it("keeps a later agent's own files when an earlier agent's newly covered files fill the package's 8 MiB", () => {
+      const nearCap = Buffer.alloc(1024 * 1024 - 1, "a");
+      const agents: Record<string, unknown> = {};
+      for (const name of ["a", "b", "c"]) {
+         const root = `skills-${name}`;
+         skill(`s${name}`, root);
+         if (name === "c")
+            write(`${root}/sc/assets/keep.txt`, "k".repeat(10_000));
+         else {
+            for (let i = 0; i < 5; i++)
+               write(`${root}/s${name}/data/f${i}.txt`, nearCap);
+         }
+         agents[name] = { ...manifest([root]).analyst };
+      }
       const result = read(agents);
-      const elapsed = performance.now() - started;
-      expect(result.agents.size).toBe(8);
-      expect(elapsed).toBeLessThan(800);
+      const data = (name: string) =>
+         listed(result.agents.get(name)!).filter((f) => f.includes("/data/"));
+      expect(listed(result.agents.get("c")!)).toContain("sc/assets/keep.txt");
+      expect(data("a")).toHaveLength(4);
+      expect(data("b")).toHaveLength(3);
+      expect(result.warnings.join("\n")).toContain("per-package cap");
+   });
+
+   describe("a binary file under assets/", () => {
+      // What the agent reads of a file in this call, by its file descriptor or whole.
+      const bytesRead = (run: () => void) => {
+         const whole = spyOn(fs, "readFileSync");
+         const part = spyOn(fs, "readSync");
+         try {
+            run();
+            const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+            return (
+               sum(whole.mock.results.map((r) => (r.value as Buffer).length)) +
+               sum(part.mock.results.map((r) => r.value as number))
+            );
+         } finally {
+            whole.mockRestore();
+            part.mockRestore();
+         }
+      };
+
+      it("is not read in full until a budget takes it", () => {
+         skill("s");
+         const blob = Buffer.alloc(300_000, 7);
+         blob[1] = 0;
+         for (let i = 0; i < 100; i++) {
+            write(`${ROOT}/s/assets/b${pad(i)}.bin`, blob);
+         }
+         const total = bytesRead(() => {
+            expect(listed(agentOf()).length).toBeGreaterThan(0);
+         });
+         // The agent's 4 MiB holds thirteen of them; every other is looked at for 8 KiB and skipped.
+         expect(total).toBeGreaterThan(300_000);
+         expect(total).toBeLessThan(6_000_000);
+      });
+
+      it("is still told from text by a NUL after its first 8 KiB, so it never takes a text file's place", () => {
+         skill("s");
+         const late = Buffer.concat([Buffer.alloc(9000, "a"), Buffer.alloc(1)]);
+         for (let i = 0; i < 200; i++) {
+            write(`${ROOT}/s/assets/a${pad(i)}.bin`, late);
+         }
+         write(`${ROOT}/s/assets/z.txt`, "keep");
+         const agent = agentOf();
+         expect(listed(agent)).toContain("s/assets/z.txt");
+         expect(listed(agent)).toHaveLength(200);
+         expect(listed(agent)).not.toContain("s/assets/a199.bin");
+      });
+   });
+
+   describe("a reference/ of many entries", () => {
+      const fill = (dir: string, count: number) => {
+         for (let i = 0; i < count; i++) write(`${dir}/r${i}.md`, "# R\n");
+      };
+
+      it("is read for at most 1,000 entries when it is a link to a large directory in the package", () => {
+         skill("s");
+         fill("shared-ref", 5000);
+         fs.symlinkSync(
+            path.join(pkg, "shared-ref"),
+            path.join(pkg, ROOT, "s/reference"),
+         );
+         const result = read();
+         const references = inline(agentOf(result)).filter((f) =>
+            f.startsWith("s/reference/"),
+         );
+         expect(references).toHaveLength(1000);
+         expect(
+            result.warnings.filter(
+               (w) =>
+                  w.includes(`Package skill '${ROOT}/s'`) &&
+                  w.includes("reference/ holds more than 1000 entries"),
+            ),
+         ).toHaveLength(1);
+      });
+
+      it("is read for at most 1,000 entries when it is a real directory", () => {
+         skill("s");
+         fill(`${ROOT}/s/reference`, 1200);
+         const result = read();
+         expect(
+            inline(agentOf(result)).filter((f) => f.startsWith("s/reference/")),
+         ).toHaveLength(1000);
+         expect(result.warnings.join("\n")).toContain(
+            "reference/ holds more than 1000 entries",
+         );
+      });
    });
 });
