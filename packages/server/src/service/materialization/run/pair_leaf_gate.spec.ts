@@ -160,7 +160,17 @@ describe("a built pair table's leaf keys in its contract", () => {
          keysOf(
             withLeafKeys(
                withKeys(),
-               [{ check, record: { keyColumn: "item_id", unique: true } }],
+               [
+                  {
+                     check,
+                     record: {
+                        keyColumn: "item_id",
+                        unique: true,
+                        table: "t",
+                        digest: "d",
+                     },
+                  },
+               ],
                ["leaf:items.item_id"],
             ),
          ),
