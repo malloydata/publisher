@@ -1792,6 +1792,14 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.mz.incompatibleTables(prior);
    }
 
+   /** The host port's `holdCarriedToContracts` (see PackageMaterialization.holdCarriedToContracts). */
+   public holdCarriedToContracts(
+      prior: Readonly<Record<string, ManifestEntry>>,
+      site?: Parameters<PackageMaterialization["holdCarriedToContracts"]>[1],
+   ): Promise<ReadonlySet<string>> {
+      return this.mz.holdCarriedToContracts(prior, site);
+   }
+
    /** The host port's `chainBuildText` (see PackageMaterialization.chainBuildText). */
    /** See {@link BuildEnvironment.reportIncompatible}. */
    public reportIncompatible(handles: readonly string[]): void {

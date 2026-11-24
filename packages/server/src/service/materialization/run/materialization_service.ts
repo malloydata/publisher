@@ -1467,6 +1467,12 @@ export class MaterializationService {
                ...incrementalEntriesOf(newest),
             ]);
          }
+         // Each table it may carry, held to its contract as it is now: one
+         // altered since the bind is rebuilt in full, never carried and
+         // built over. A forced refresh carries nothing.
+         if (!opts.forceRefresh) {
+            await pkg.holdCarriedToContracts?.(priorEntries, environment);
+         }
          let recheck: Record<string, BuildInstruction>;
          let confirmExists: Record<string, BuildInstruction>;
          const freshness = declaredFreshnessIndex(pkg.getBuildPlan());

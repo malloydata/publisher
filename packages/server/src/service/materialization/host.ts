@@ -69,6 +69,20 @@ interface MaterializationPackage extends BuildPlanPackage {
       prior?: Readonly<Record<string, ManifestEntry>>,
    ): ReadonlySet<string>;
    /**
+    * Hold the tables a standalone run may carry to their contracts as they
+    * are now, handing each that moved since the bind to the drift handler,
+    * so {@link incompatibleTables} names it (see
+    * PackageMaterialization.holdCarriedToContracts).
+    */
+   holdCarriedToContracts?(
+      prior: Readonly<Record<string, ManifestEntry>>,
+      /** Where a `storage=` table is read (the environment's destinations). */
+      site?: {
+         getStorageDestination(destinationName: string): ApiConnection;
+         getEnvironmentPath(): string;
+      },
+   ): Promise<ReadonlySet<string>>;
+   /**
     * The text a chained `storage=` build compiles on its destination alone:
     * the request's downstream, with each stored upstream the request carries
     * re-rooted as the served copy re-roots it, from those entries alone and
