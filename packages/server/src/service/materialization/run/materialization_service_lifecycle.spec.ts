@@ -746,8 +746,6 @@ describe("runBuild (branch behavior)", () => {
             connectionName: "sf",
          },
       });
-      // Every build is strict.
-      expect(svc.executeInstructedBuild.firstCall.args[0].strict).toBe(true);
       // Reused upstreams are counted as carried, not built.
       expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
          mode: "orchestrated",

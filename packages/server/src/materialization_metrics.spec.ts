@@ -37,7 +37,6 @@ import {
    recordQueryRouteDuration,
    recordScheduledFire,
    recordSharedAddressInstructions,
-   recordStaleUpstreamEntry,
    recordUpstreamRecompute,
    recordStoredColumnTypeMismatch,
    recordTableCollision,
@@ -474,8 +473,6 @@ const EMISSIONS: Record<string, () => void> = {
       recordStoredColumnTypeMismatch("serve", "number"),
    publisher_storage_chained_build_total: () =>
       recordChainedStorageBuild("parent_reuse"),
-   publisher_materialization_stale_upstream_entry_total: () =>
-      recordStaleUpstreamEntry("storage"),
    publisher_materialization_upstream_recompute_total: () =>
       recordUpstreamRecompute("moved", "chained", "recomputed"),
 };

@@ -162,7 +162,6 @@ import {
 import {
    noteUntypedReference,
    persistedReach,
-   readsUntypedReferences,
    type SourceBuildOptions,
 } from "./source_build";
 import type { KeyCheckRecord } from "./tier";
@@ -436,8 +435,8 @@ export class InstructedBuild {
     * resolves it on a case-folding engine. Quoted for its own connection's
     * dialect; with no connection named, for the one dialect every connection
     * of this build shares. Undefined, never the name as given, when no dialect
-    * is found: the seed is not bound, and a downstream reads its upstream
-    * live (or, strict, fails its own compile). Throws
+    * is found: the seed is not bound, and a downstream fails its own
+    * compile (a strict miss). Throws
     * {@link UnquotableIdentifierError} for a name its dialect cannot quote.
     */
    private quoteSeedTablePath(
@@ -513,7 +512,6 @@ export class InstructedBuild {
          instructions,
          seedEntries,
          signal,
-         strict = false,
          owner,
          buildMetadata,
          incremental,
@@ -553,7 +551,7 @@ export class InstructedBuild {
             hostInstructed,
             materializePlans: materializePlansOf(tables),
          },
-         ...this.seedInstructedRun(seedEntries, connections, strict),
+         ...this.seedInstructedRun(seedEntries, connections),
          builtThisRun: [],
          retainedThisRun: [],
          failures: {},
@@ -840,13 +838,12 @@ export class InstructedBuild {
    private seedInstructedRun(
       seedEntries: Record<string, ManifestEntry>,
       connections: RunPlan["connections"],
-      strict: boolean,
    ): Pick<InstructedRun, "manifest" | "entries"> {
       // Accumulates physical names as sources build so downstreams resolve to
-      // them. In strict mode an upstream neither built nor seeded fails the
-      // compile (runtime-manifest-strict-miss) instead of recomputing live.
+      // them. Always strict: an upstream neither built nor seeded fails the
+      // compile (runtime-manifest-strict-miss), never recomputed live.
       const manifest = new Manifest();
-      manifest.strict = strict;
+      manifest.strict = true;
       const entries: Record<string, ManifestEntry> = {};
       for (const [sourceEntityId, entry] of Object.entries(seedEntries)) {
          if (entry.physicalTableName) {
@@ -864,8 +861,8 @@ export class InstructedBuild {
             } catch (err) {
                if (!(err instanceof UnquotableIdentifierError)) throw err;
                // A name its dialect cannot quote is not bound: a downstream
-               // reads its upstream live (or, strict, fails its own compile),
-               // and the rest of the run goes on.
+               // fails its own compile (a strict miss), and the rest of the
+               // run goes on.
                logger.warn(
                   "Seeded upstream's table name cannot be quoted for its dialect; " +
                      "not binding it for downstream reads",
@@ -2706,10 +2703,7 @@ async function overStoredBaseSource(
               connection,
            )
         ).get(baseAddress);
-   if (
-      move?.kind === "types_unrecorded" &&
-      readsUntypedReferences(run.manifest, run.planFacts)
-   ) {
+   if (move?.kind === "types_unrecorded" && run.planFacts.hostInstructed) {
       noteUntypedReference(persistSource.name, baseName, "rollup");
    } else if (move) {
       run.environment.reportIncompatible?.([baseAddress]);

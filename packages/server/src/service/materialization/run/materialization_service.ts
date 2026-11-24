@@ -1660,9 +1660,6 @@ export class MaterializationService {
          instructions,
          seedEntries: carried,
          signal,
-         // Always strict: a downstream is built over its upstreams' tables
-         // or not at all.
-         strict: true,
          // Orchestrated-only; see reclaimStorageTablesFromFailedRun.
          owner: orchestrated ? { environmentId, packageName } : undefined,
          buildMetadata: {

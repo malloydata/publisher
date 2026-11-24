@@ -393,7 +393,7 @@ export const RATCHET_ADMISSION_IMPORTS = {
  * domain/vocabulary.ts, per file: each derives from the vocabulary instead.
  */
 export const RATCHET_VOCABULARY_UNIONS = {
-   "materialization_metrics.ts": { count: 2, step: "2q" },
+   "materialization_metrics.ts": { count: 1, step: "2q" },
    "service/materialization/domain/gate_policy.ts": { count: 2, step: "2q" },
    "service/materialization/domain/table_plans.ts": { count: 3, step: "2q" },
    "service/materialization/plan/materialization_eligibility.ts": {
@@ -402,7 +402,7 @@ export const RATCHET_VOCABULARY_UNIONS = {
    },
    "service/materialization/plan/materialize_plan.ts": { count: 2, step: "2q" },
    "service/materialization/plan/refusal_key.ts": { count: 1, step: "2q" },
-   "service/materialization/run/build_upstreams.ts": { count: 2, step: "2q" },
+   "service/materialization/run/build_upstreams.ts": { count: 1, step: "2q" },
    "service/materialization/run/materialization_instructed_run.ts": {
       count: 1,
       step: "2q",

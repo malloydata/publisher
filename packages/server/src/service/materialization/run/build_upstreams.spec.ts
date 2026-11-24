@@ -13,7 +13,6 @@ import {
    manifestExcludingStorage,
    manifestForCompiler,
    normalizedTier,
-   noteWrongTierRecompute,
    PACKAGE_STALE_MARKER,
    strictMissSourceId,
    upstreamEntryIsCurrent,
@@ -30,8 +29,6 @@ import {
    persistTables,
 } from "../../../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../../../test_helpers/settings_env";
-import { logger } from "../../../logger";
-import * as sinon from "sinon";
 import { errorCodeOf } from "../../../error_code";
 
 /**
@@ -808,36 +805,6 @@ describe("the stacking filter (currentUpstreamEntries)", () => {
          "moved",
          "stored",
       ]);
-   });
-});
-
-describe("noteWrongTierRecompute", () => {
-   it("warns once per run per upstream", () => {
-      const warn = sinon.stub(logger, "warn");
-      try {
-         const run = {};
-         const note = (upstream: string) =>
-            noteWrongTierRecompute({
-               planFacts: run,
-               build: "database",
-               sourceName: "down",
-               upstream,
-               detail: "d",
-            });
-         note("up");
-         note("up");
-         note("other");
-         noteWrongTierRecompute({
-            planFacts: {},
-            build: "database",
-            sourceName: "down",
-            upstream: "up",
-            detail: "d",
-         });
-         expect(warn.callCount).toBe(3);
-      } finally {
-         warn.restore();
-      }
    });
 });
 

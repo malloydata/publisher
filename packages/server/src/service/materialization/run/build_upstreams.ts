@@ -10,9 +10,6 @@
  * tier ({@link HostSuppliedWrongTierError}); the environment surface a build
  * reads ({@link BuildEnvironment}); the destination a declared `storage=`
  * builds into; and a run's results named package-relative.
- *
- * Mostly pure. The exception logs and counts a wrong-tier recompute
- * ({@link noteWrongTierRecompute}).
  */
 
 import { declaredDestination, storageWritable } from "../domain/placement";
@@ -33,7 +30,6 @@ import type { Connection, PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
 import { ChainedShapeNotCarriedError } from "../../../errors";
 import { logger } from "../../../logger";
-import { recordStaleUpstreamEntry } from "../../../materialization_metrics";
 import { ManifestEntry, RefusedSource, SourceFailure } from "../domain/types";
 import { getPersistStorageMode } from "../../../config";
 import { groupAliasesByName, planSourceIds } from "../domain/source_aliases";
@@ -95,11 +91,11 @@ export interface ChainedPlanFacts {
    /**
     * Whether the host instructed this run (orchestrated), supplying its
     * manifest and references. A host-supplied upstream entry at the wrong tier
-    * is then refused ({@link HostSuppliedWrongTierError}) rather than
-    * recomputed: a host that hands a build another tier's table (two workers
-    * with separate stores sharing one config) is a case the host must prevent.
-    * A self-instructed run, building from its own manifest, recomputes and
-    * warns ({@link noteWrongTierRecompute}). Absent means self-instructed.
+    * is then refused by name ({@link HostSuppliedWrongTierError}): a host
+    * that hands a build another tier's table (two workers with separate
+    * stores sharing one config) is a case the host must prevent. A
+    * self-instructed run's build that reads one fails its strict render.
+    * Absent means self-instructed.
     */
    hostInstructed?: boolean;
    /**
@@ -635,39 +631,6 @@ export function wrongTierDetail(
    return (
       `'${name}' is declared in ${where}, but its manifest entry is ${at}: ` +
       `${WRONG_TIER_MARKER}, so this build does not use it`
-   );
-}
-
-/**
- * Log, once per run per upstream, a build that recomputes an upstream from raw
- * because the upstream's entry is at the wrong tier, and count it: a recompute
- * reads the warehouse, which a reader of the entry fields alone would miss.
- * Keyed by the run's plan facts, which a run computes once.
- */
-const wrongTierNoted = new WeakMap<object, Set<string>>();
-export function noteWrongTierRecompute(params: {
-   planFacts: object;
-   build: "database" | "storage";
-   sourceName: string;
-   upstream: string;
-   detail: string;
-}): void {
-   let seen = wrongTierNoted.get(params.planFacts);
-   if (!seen) {
-      seen = new Set();
-      wrongTierNoted.set(params.planFacts, seen);
-   }
-   if (seen.has(params.upstream)) return;
-   seen.add(params.upstream);
-   recordStaleUpstreamEntry(params.build);
-   logger.warn(
-      "Recomputing an upstream from raw: its manifest entry is at the wrong tier",
-      {
-         sourceName: params.sourceName,
-         upstream: params.upstream,
-         build: params.build,
-         reason: params.detail,
-      },
    );
 }
 

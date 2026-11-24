@@ -58,7 +58,6 @@ import {
    manifestExcludingStorage,
    manifestForCompiler,
    NO_PLAN_FACTS,
-   noteWrongTierRecompute,
    presentedSourceName,
    strictMissSourceId,
    upstreamEntryIsCurrent,
@@ -100,7 +99,8 @@ export function persistedReach(
    );
    // Which stored tables this source reads, and whether the substituted
    // manifest holds each, decided once for both tiers. It drives stacking on
-   // parents, strict refusal, and the entry's `upstreamReuse`.
+   // parents, the refusal of a missing upstream, and the entry's
+   // `upstreamReuse`.
    const isPersisted = (_name: string, sourceID: string) =>
       planFacts.persistSourceIds.has(sourceID);
    const reached = reachPersisted(lift, persistSource.name, isPersisted);
@@ -123,8 +123,7 @@ export function persistedReach(
  * the warehouse since, or never checkable. A build must not read such a
  * table in place of its source, whose address and recorded types say it is
  * built from what that source computes, so the render leaves its entry out
- * and the build recomputes it from its definition, or, under strict
- * upstreams, is refused.
+ * and the build, when it reads it, is refused ({@link refuseMovedRead}).
  *
  * Only the database-tier entries the source can read are checked
  * (`reachedIds`), each table once, on the build's own connection, which is
@@ -171,10 +170,7 @@ async function movedUpstreams(args: {
    const moved = new Map<string, { name: string } & UpstreamMove>();
    for (const [address, move] of reasons) {
       const { name } = tables.get(address)!;
-      if (
-         move.kind === "types_unrecorded" &&
-         readsUntypedReferences(manifest, planFacts)
-      ) {
+      if (move.kind === "types_unrecorded" && planFacts.hostInstructed) {
          noteUntypedReference(args.sourceName, name, "chained");
          continue;
       }
@@ -184,20 +180,11 @@ async function movedUpstreams(args: {
 }
 
 /**
- * Whether a build reads an upstream table whose entry carries no column types
- * unchecked: a strict build a host instructed, whose upstream entries are the
- * host's references. A reference without `nativeSchema` cannot be checked,
- * and strict forbids the recompute, so the table is read as before, with a
- * warning and a count. Any other build recomputes it (movedUpstreams).
+ * Logs and counts an upstream table read unchecked: a host's reference with
+ * no `nativeSchema`, whose columns cannot be checked against its build, is
+ * read as before, since no build recomputes an upstream. A build's own entry
+ * without types is refused instead (movedUpstreams).
  */
-export function readsUntypedReferences(
-   manifest: Pick<Manifest, "strict">,
-   planFacts: Pick<ChainedPlanFacts, "hostInstructed">,
-): boolean {
-   return manifest.strict === true && planFacts.hostInstructed === true;
-}
-
-/** Logs and counts an untyped reference read unchecked ({@link readsUntypedReferences}). */
 export function noteUntypedReference(
    sourceName: string,
    upstream: string,
@@ -371,7 +358,7 @@ function renderBuildSQL(
       reachedIds,
       moved,
    );
-   if (manifest.strict) refuseMovedRead(persistSource.name, movedRead);
+   refuseMovedRead(persistSource.name, movedRead);
    let buildSQL: string;
    try {
       buildSQL = buildSQLOf(persistSource, buildManifest);
@@ -382,7 +369,7 @@ function renderBuildSQL(
       if (!isStorageBuild && planFacts.hostInstructed && stale.length > 0) {
          refuseHostSupplied(stale);
       }
-      if (!isStorageBuild && manifest.strict && stale.length > 0) {
+      if (!isStorageBuild && stale.length > 0) {
          throw new ChainedUpstreamMissingError(
             stale.map((s) => s.name),
             `Failed to materialize source '${persistSource.name}': ` +
@@ -466,8 +453,7 @@ function withoutEntries(
  * The moved upstreams the build actually reads, by address: those whose
  * entry, put back, changes the permissive render (its table would replace
  * the SQL inlined for it). A moved upstream the source does not read (a join
- * the query never uses) changes nothing, and is neither recomputed nor, under
- * strict upstreams, refused.
+ * the query never uses) changes nothing, and is not refused.
  */
 function movedUpstreamsRead(
    persistSource: PersistSource,
@@ -575,7 +561,7 @@ function classifyStoredUpstreams(
                strict: false,
             }) !== buildSQL;
       }
-      if (isStorageBuild || !manifest.strict) {
+      if (isStorageBuild) {
          compilerMissing = compilerMissingUpstream(
             persistSource,
             fullForCompiler,
@@ -630,12 +616,11 @@ function classifyStoredUpstreams(
       );
       recordUpstreamRecompute("persisted_result", "chained", "recomputed");
    }
-   // A database build that recomputes an upstream because its entry is at
-   // the wrong tier reads the warehouse for it: logged and counted once per
-   // run per upstream, since the entry fields alone hide the cost.
-   // A host-instructed build refuses instead (HostSuppliedWrongTierError):
-   // the host handed it another tier's table, which it must not.
-   if (!isStorageBuild && wrongTier.length > 0) {
+   // A host-instructed database build that read an upstream whose entry is
+   // at the wrong tier refuses (HostSuppliedWrongTierError): the host handed
+   // it another tier's table, which it must not. Any other such read failed
+   // its strict render above.
+   if (!isStorageBuild && planFacts.hostInstructed && wrongTier.length > 0) {
       const wrongTierAddresses = new Map(wrongTier);
       const refused: { name: string; detail: string }[] = [];
       for (const { name, sourceID } of reached.persisted) {
@@ -643,17 +628,9 @@ function classifyStoredUpstreams(
          const entry =
             address === undefined ? undefined : wrongTierAddresses.get(address);
          if (!entry || !reuse.inManifestOnly.includes(name)) continue;
-         const detail = wrongTierDetail(name, address!, entry, planFacts);
-         if (planFacts.hostInstructed) {
-            refused.push({ name, detail });
-            continue;
-         }
-         noteWrongTierRecompute({
-            planFacts,
-            build: "database",
-            sourceName: persistSource.name,
-            upstream: name,
-            detail,
+         refused.push({
+            name,
+            detail: wrongTierDetail(name, address!, entry, planFacts),
          });
       }
       if (refused.length > 0) {
@@ -808,15 +785,6 @@ export async function buildSource(
       builtThisRun,
       incremental,
    });
-   // Strict refused these above: here each is recomputed. A rollup's own
-   // fallback is counted where it is decided (instructed_build.ts).
-   for (const { name, reason, kind } of rendered.movedRead.values()) {
-      logger.warn(
-         "A stored upstream's table could not be read in place of it; the build recomputes it from its definition",
-         { sourceName: persistSource.name, upstream: name, reason, kind },
-      );
-      if (!rollup) recordUpstreamRecompute(kind, "chained", "recomputed");
-   }
 
    const { reuse, sqlInlinesStored, lift } = classifyStoredUpstreams(
       persistSource,
@@ -844,10 +812,10 @@ export async function buildSource(
    // session (never the source or serve connection), capturing the
    // authoritative schema for the serve transform.
    if (isStorageBuild) {
-      // An upstream nothing supplied can only be recomputed, which strict
-      // forbids. The build SQL was rendered permissively, so the refusal is
-      // made here from the strict render (`compilerMissing`).
-      if (manifest.strict && reuse.missing.length > 0) {
+      // An upstream nothing supplied could only be recomputed, which no
+      // build does. The build SQL was rendered permissively, so the refusal
+      // is made here from the strict render (`compilerMissing`).
+      if (reuse.missing.length > 0) {
          recordChainedStorageBuild("strict_refused");
          // Typed, so the failure can be attributed to an upstream that
          // failed earlier in this run (see build_failure_class.ts).

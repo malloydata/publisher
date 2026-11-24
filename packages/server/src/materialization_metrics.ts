@@ -544,15 +544,6 @@ const upstreamRecomputeCounter = lazyCounter(
       "('recomputed' from its definition, or 'read_unchecked': a strict " +
       "host-instructed build read the referenced table as before).",
 );
-const staleUpstreamEntryCounter = lazyCounter(
-   "publisher_materialization_stale_upstream_entry_total",
-   "Builds that could not use an upstream's manifest entry because it is at a " +
-      "different tier than the upstream is declared on now (a source moved to " +
-      "or from storage= keeps its content address). The build " +
-      "recomputes that upstream from raw instead, which reads the warehouse. " +
-      "Label: tier ('database'|'storage'), the tier of the build that " +
-      "recomputed.",
-);
 
 /**
  * Record a standalone-scheduler fire attempt. `fired` = a SCHEDULER run started;
@@ -944,15 +935,6 @@ export function recordChainedStorageBuild(
    outcome: ChainedStorageBuildOutcome,
 ): void {
    chainedStorageBuildCounter().add(1, { outcome });
-}
-
-/**
- * Record a build that recomputed an upstream from raw because the upstream's
- * manifest entry is at a different tier than it is declared on now (see
- * {@link staleUpstreamEntryCounter}). Once per run per upstream.
- */
-export function recordStaleUpstreamEntry(tier: "database" | "storage"): void {
-   staleUpstreamEntryCounter().add(1, { tier });
 }
 
 /**
