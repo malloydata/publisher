@@ -1,7 +1,7 @@
 {
    "name": "@malloy-publisher/sdk",
    "description": "Malloy Publisher SDK",
-   "version": "0.17.3",
+   "version": "0.18.0",
    "type": "module",
    "main": "dist/index.cjs.js",
    "module": "dist/index.es.js",
