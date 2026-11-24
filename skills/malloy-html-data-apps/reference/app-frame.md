@@ -88,9 +88,12 @@ dashboard({
   `percent` (a fraction), `decimal`, or `{ unit: 'min' }`; copy it from the model's tag (`# currency=usd` is `usd`,
   `# percent` is `percent`). `good`: `'up'`, `'down'` or `null`, which colours every change. `thresholds` give a
   monitor its statuses. `doc` is what "How it's made" says the number means, when the model has no `#(doc)` for it.
-- **`filters`**: the fields a reader can filter by, offered in the Filter menu with their values and counts.
-- **`entities`**: things with a page. An entity is also a filter, so its values are known. `nameField` names a
-  dimension holding what to call an entity whose id is a number.
+- **`filters`**: the fields a reader can filter by, offered in the Filter menu with their values and counts: the
+  500 most common, or `limit` of them (`{ key, field, label, limit: 2000 }`) when a reader needs the rare ones.
+- **`entities`**: things with a page. An entity is also a filter, so its values are known. For an entity keyed by an
+  id (a hospital's provider number), `nameField` names the dimension holding what to call it: the kit loads the
+  names with the ids and uses them in every list, chip and title. `name: (id) => text` formats an id that needs no
+  lookup.
 - **`pages`**: each `render(state)` returns its blocks. A page with `entity` is that entity's page, reached at
   `#/<id>/<value>` and not listed in the navigation; every query on it is scoped to the entity. `lists: 'category'`
   marks the page that lists an entity, which its pages' breadcrumbs return to.
@@ -176,4 +179,6 @@ Serve it and look at every page, at 1280 and 390 wide, light and dark (`?mode=da
 - `body[data-ready="true"]` is set once every block on the page has drawn. Blocks below the fold load only as they
   near the screen, so on a short window it waits for a scroll: scroll to the bottom first, then wait on it. Inside
   Credible's frame the host page is what scrolls.
-- No console errors, no horizontal scroll at 390, layout shift under 0.1 (`reference/performance.md`).
+- No console errors, no horizontal scroll at 390, layout shift under 0.1 (`reference/performance.md`). Measure layout
+  shift on a cold load left still, before any scroll: a scroll while blocks load counts their arrival as shift.
+  Then scroll to the bottom to load the rest and check those blocks drew.

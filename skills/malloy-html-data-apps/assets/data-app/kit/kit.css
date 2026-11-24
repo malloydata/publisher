@@ -38,7 +38,9 @@ code, pre { font-family: var(--mono); }
 /* ---- Masthead ---- */
 .mast { background: var(--mast-bg, transparent); border-top: 4px solid var(--mast-top, transparent); border-bottom: var(--mast-line-w, 1px) solid var(--mast-line, var(--rule)); --ink: var(--mast-ink); --muted: var(--mast-muted); --faint: var(--mast-muted); --rule: var(--mast-rule); }
 .mast__row { display: flex; align-items: center; gap: 40px; height: 56px; }
-.mast__name { display: flex; align-items: baseline; gap: 10px; white-space: nowrap; text-decoration: none; }
+.mast__name { display: flex; align-items: baseline; gap: 10px; white-space: nowrap; text-decoration: none; min-width: 0; flex: 0 1 auto; }
+.mast__nav { flex: none; }
+.mast__sub { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .mast__title { font-weight: 600; font-size: 15px; color: var(--ink); letter-spacing: -0.01em; }
 .mast__sub { color: var(--muted); font-size: 13px; }
 .mast__nav { display: flex; gap: 28px; align-self: stretch; overflow-x: auto; scrollbar-width: none; }
@@ -207,6 +209,7 @@ code, pre { font-family: var(--mono); }
 .score .figure { font-size: 44px; margin: 4px 0 0; }
 .score__label { font-size: 13px; font-weight: 500; color: var(--muted); }
 .score__change { font-size: 13px; color: var(--faint); }
+.subject.subject--board { display: block; }
 .subject--board .subject__chart { min-height: 240px; }
 .subject--board .subject__say { max-width: 70ch; margin: 0 0 20px; }
 
@@ -255,7 +258,7 @@ code, pre { font-family: var(--mono); }
 
 /* ---- Ranked lists ---- */
 .rank { width: 100%; border-collapse: collapse; font-size: 14px; table-layout: fixed; }
-.rank th { font-size: 12px; font-weight: 500; color: var(--faint); text-align: right; padding: 0 0 8px; white-space: nowrap; }
+.rank th { font-size: 12px; font-weight: 500; color: var(--faint); text-align: right; padding: 0 0 8px 8px; line-height: 1.25; vertical-align: bottom; }
 .rank td { padding: 0; height: 35px; border-top: 1px solid var(--rule); vertical-align: middle; }
 .rank__name { width: 34%; text-align: left !important; color: var(--ink); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 16px !important; }
 .rank__name a { text-decoration: none; }
@@ -352,6 +355,7 @@ body[data-check="fail"] .self-check { background: color-mix(in srgb, var(--bad) 
   .score .figure { font-size: 34px; }
   .subject--band { padding: 24px 20px; margin: 0 -8px 8px; }
   .ctl:empty { min-height: 142px; }
+  .ctl--nodate:empty { min-height: 64px; }
   .block--subject .state--loading { min-height: calc(532px + 142px * var(--rn, 1)); }
   .ledger { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .led, .led:nth-child(3n + 1) { border-left: 1px solid var(--rule); padding-left: 16px; border-top: 0; }

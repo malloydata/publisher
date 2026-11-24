@@ -236,7 +236,7 @@ export function statusMark(st) {
   return st ? h('span', { class: `status status--${st}` }, h('i', { 'aria-hidden': 'true' }), F.STATUS_WORDS[st]) : null
 }
 const lower = (t) => t.replace(/^[A-Z](?![A-Z])/, (c) => c.toLowerCase())
-const pct0 = (v) => `${Math.round(v * 100)}%`
+const pct0 = (v) => (v < 0.1 ? `${(v * 100).toFixed(1)}%` : `${Math.round(v * 100)}%`)
 const growth = (r, n) => (Number.isFinite(r[`${n}__cmp`]) && r[`${n}__cmp`] !== 0 ? r[n] / r[`${n}__cmp`] - 1 : null)
 /** Where a click on a value of `field` goes: its entity's page when it has one, else a filter on it. */
 function actionFor(field, entity) {
@@ -425,7 +425,7 @@ export function rank({ field, entity, metric: n, top = 10, kicker, headline, ext
   const plural = e?.plural || filter?.plural || `${(e?.label || filter?.label || col.replace(/_/g, ' ')).toLowerCase()} values`
   const name = nameOf(fieldName, entity)
   return block({
-    compare: true, key: `rank|${fieldName}|${n}`, kicker: kicker || `${F.metric(n).label} by ${(e?.label || filter?.label || col.replace(/_/g, ' ')).toLowerCase()}`, span, reserve: 30 + 35 * top + 30,
+    compare: true, key: `rank|${fieldName}|${n}|${top}|${order || ''}|${kicker || ''}`, kicker: kicker || `${F.metric(n).label} by ${(e?.label || filter?.label || col.replace(/_/g, ' ')).toLowerCase()}`, span, reserve: 30 + 35 * top + 30,
     metrics: [n, ...extra], ignore: filter && !e ? [filter.key] : [],
     what: `The ${top} ${plural} with the most ${lower(F.metric(n).label)} in the period. The pale bar behind each is its figure in the comparison period, so a bar that reaches past its pale one grew.`,
     queries: (s) => [S.breakdownQuery(fieldName, [n], s, { top, order, extra }), S.partsQuery(fieldName, n, s, { ignore: filter && !e ? [filter.key] : [] })],
@@ -436,8 +436,8 @@ export function rank({ field, entity, metric: n, top = 10, kicker, headline, ext
       const top1 = rows[0]
       const m = F.metric(n)
       const parts = [{ b: name(top1[col]) }, ` leads`]
-      if (S.adds(c) && c.t) parts.push(` with ${pct0(top1[n] / c.t)} of the total`)
-      else parts.push(` at ${F.fmtMetric(n, top1[n], { compact: true })}`)
+      if (S.adds(c) && c.t && top1[n] / c.t >= 0.01) parts.push(` with ${pct0(top1[n] / c.t)} of the total`)
+      else if (!S.adds(c)) parts.push(` at ${F.fmtMetric(n, top1[n], { compact: true })}`)
       // Only values at least a tenth of the leader's: a tiny one doubling is noise, not news.
       const g = rows.map((r) => ({ r, g: growth(r, n) })).filter((x) => x.g !== null && Math.abs(x.r[`${n}__cmp`]) > 0 && Math.abs(x.r[n]) >= Math.abs(top1[n]) * 0.1)
       if (g.length >= 3 && m.good) {

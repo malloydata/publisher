@@ -50,18 +50,26 @@ export async function dashboard(cfg) {
     h('a', { class: 'mast__name', href: '#/' }, h('span', { class: 'mast__title', text: cfg.title }), cfg.sub && h('span', { class: 'mast__sub', text: cfg.sub })),
     navPages.length > 1 && h('nav', { class: 'mast__nav', 'aria-label': 'Pages' }, ...navPages.map((p) => h('a', { href: `#/${p.id === cfg.pages[0].id ? '' : p.id}`, 'data-page': p.id, text: p.title }))),
     fresh))
-  const ctl = h('div', { class: 'wrap ctl', id: 'controls' })
+  const ctl = h('div', { class: `wrap ctl${cfg.date ? '' : ' ctl--nodate'}`, id: 'controls' })
   const main = h('main', { id: 'main', class: 'wrap', tabindex: '-1' }, h('div', { class: 'state state--loading', style: { '--reserve': '560px' } }))
   const foot = h('footer', { class: 'wrap colophon', hidden: true }, cfg.footer && h('span', { text: cfg.footer }), h('span', { text: 'Built on Credible' }))
   app.replaceChildren(mast, ctl, main, foot)
   try {
     const lists = cfg.filters.map((f) => (f.values ? Promise.resolve(f.values.map((v) => ({ v, n: null })))
-      : query(`run: ${S.src()} -> { where: ${f.field} is not null; group_by: v is ${f.field}; aggregate: n is count(); order_by: ${f.sort === 'name' ? 'v' : 'n desc'}; limit: ${f.hidden ? 2000 : 500} }`)))
+      : query(`run: ${S.src()} -> { where: ${f.field} is not null; group_by: v is ${f.field}${f.nameField ? `, nm is ${f.nameField}` : ''}; aggregate: n is count(); order_by: ${f.sort === 'name' ? 'v' : 'n desc'}; limit: ${f.limit || (f.hidden ? 2000 : 500)} }`)))
     const span = cfg.date ? query(`run: ${S.src()} -> { aggregate: first_day is min(${cfg.date.field}), last_day is max(${cfg.date.field}) }`) : Promise.resolve(null)
     const [sp, ...rest] = await Promise.all([span, ...lists, d3Ready, faceReady])
     const known = { span: sp && sp[0]?.last_day ? { first: String(sp[0].first_day).slice(0, 10), last: String(sp[0].last_day).slice(0, 10) } : null }
     cfg.filters.forEach((f, i) => {
       known[f.key] = rest[i].map((r) => r.v)
+      // An entity named by a field (a hospital by its id): what to call each one, wherever it is listed.
+      if (f.nameField) {
+        const names = new Map(rest[i].map((r) => [String(r.v), r.nm]))
+        const e = Object.values(cfg.entities || {}).find((x) => x.field === f.field)
+        const own = e?.name
+        f.format = (id) => names.get(String(id)) ?? (own ? own(id) : String(id))
+        if (e) e.name = f.format
+      }
       known[`${f.key}__n`] = Object.fromEntries(rest[i].filter((r) => r.n !== null).map((r) => [String(r.v), r.n]))
     })
     S.setKnown(known)
