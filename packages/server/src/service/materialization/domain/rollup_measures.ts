@@ -144,3 +144,18 @@ export interface RollupPlan {
     */
    freshness?: DeclaredFreshness;
 }
+
+/**
+ * How a message names a rollup: by the source whose measures the author
+ * annotated and the grain, never by the generated `<base>__rollup__…`
+ * source its build compiles.
+ */
+export function rollupLabel(plan: {
+   baseSourceName: string;
+   grainDimensions: readonly string[];
+}): string {
+   return (
+      `#(rollup) rollup of source "${plan.baseSourceName}" at ` +
+      `(${plan.grainDimensions.join(", ")})`
+   );
+}

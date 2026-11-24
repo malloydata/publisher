@@ -20,7 +20,9 @@
  *   contract cannot hold the table to anything: it reads it, with a warning
  *   and a count (`reference_types_unrecorded`, `read_unchecked`), as the
  *   database tier does a reference with no `nativeSchema`, and builds over
- *   it, a rollup grouped over such a base's table included.
+ *   it, a rollup grouped over such a base's table included. The warning and
+ *   the refusal name the author's sources (a rollup as
+ *   `#(rollup) rollup of source "a" at (k)`), never a generated one.
  * - With every raw row then deleted, a forced rebuild of the downstream
  *   alone builds it over the carried upstream table, still equal to what
  *   live answered before.
@@ -93,6 +95,7 @@ source: a is raw -> { select: k, amt }
 source: b is a -> { group_by: k; aggregate: total is amt.sum() }
 `,
       downstream: /^b$/,
+      presented: "b",
       stored: "total",
       query: `run: b ${AS_TEXT}`,
    },
@@ -107,6 +110,7 @@ source: a is raw extend { dimension: k2 is k }
 source: ext is a extend { dimension: big is amt > 5 }
 `,
       downstream: /^ext$/,
+      presented: "ext",
       stored: "amt",
       query: `run: ext -> { group_by: k; aggregate: total is amt.sum() } ${AS_TEXT}`,
    },
@@ -122,6 +126,7 @@ source: a is raw extend {
 }
 `,
       downstream: /__rollup__/,
+      presented: '#(rollup) rollup of source "a" at (k)',
       stored: "total__partial",
       query: `run: a -> { group_by: k; aggregate: total } ${AS_TEXT}`,
    },
@@ -138,6 +143,7 @@ source: rolled is a extend {
 }
 `,
       downstream: /^rolled__rollup__/,
+      presented: '#(rollup) rollup of source "rolled" at (k)',
       stored: "total__partial",
       query: `run: rolled -> { group_by: k; aggregate: total } ${AS_TEXT}`,
    },
@@ -477,6 +483,8 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
          expect(failures[0].reason).toContain(
             "was not read from its table, since its column 'amt' was built as DECIMAL(10,1) and is now VARCHAR",
          );
+         expect(failures[0].reason).toContain("persisted upstream 'a' ");
+         expect(failures[0].reason).not.toContain("__rollup");
       });
 
       it("rebuilds the upstream in the next standalone run rather than carry it, and builds the downstream over its new table", () => {
@@ -521,6 +529,12 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
          expect(built).toHaveLength(1);
          expect(built[0].upstreamReuse).toBe("reused");
          expect(uncontractedWarnings).toHaveLength(1);
+         // Named by the author's sources, never the generated ones a
+         // rollup's build compiles (`a__rollup_base`, `a__rollup__…`).
+         expect(uncontractedWarnings[0][1]).toEqual({
+            sourceName: mechanism.presented,
+            upstream: "a",
+         });
          expect(uncontractedCount).toBe(1);
          expect(uncontractedRows).toEqual(EXPECTED);
       });

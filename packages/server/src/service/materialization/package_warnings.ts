@@ -14,6 +14,7 @@ import {
    ROLLUP_NOT_BUILT_CODE,
    type PackageAnnotationFinding,
 } from "../annotation_reader";
+import { rollupLabel } from "./domain/rollup_measures";
 import { components } from "../../api";
 import { PACKAGE_MANIFEST_NAME } from "../../constants";
 import { CLASSIFICATION_COVERAGE } from "../classification";
@@ -539,10 +540,7 @@ export function persistRefusalWarnings(
            : refusalCodeOf(sourceID, source.name);
       const warning: ApiPackageWarning = {
          message: preaggregate
-            ? (rollup
-                 ? `#(rollup) rollup of source "${rollup.baseSourceName}" at ` +
-                   `(${rollup.grainDimensions.join(", ")})`
-                 : "A #(rollup) rollup") +
+            ? (rollup ? rollupLabel(rollup) : "A #(rollup) rollup") +
               ` is not built, so its measures are served live: ` +
               source.message
             : source.message,

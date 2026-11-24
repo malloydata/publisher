@@ -16,6 +16,7 @@
  */
 
 import type { StringReads } from "../domain/string_reads";
+import { rollupLabel } from "../domain/rollup_measures";
 import { upstreamTypesOf } from "../domain/upstream_schemas";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { errorCodeOf } from "../../../error_code";
@@ -1250,9 +1251,7 @@ export class InstructedBuild {
             ...storedInDestinationOf(compiled.tables[persistSource.sourceID]),
             ...stringReadsOf(compiled.tables[persistSource.sourceID]),
             ...upstreamTypesOption(compiled, persistSource.sourceID),
-            ...(compiled.tables[persistSource.sourceID]?.kind === "rollup"
-               ? { rollup: true }
-               : {}),
+            ...rollupOptions(compiled.tables[persistSource.sourceID]),
             ...(run.signal ? { signal: run.signal } : {}),
          });
          // A manifest travels without its build plan, so this is the only
@@ -2729,6 +2728,10 @@ async function overStoredBaseSource(
    }
    const baseName = base.source.name;
    const baseEntry = run.entries[baseAddress];
+   // Warnings name the rollup and the source whose build wrote the table,
+   // never the generated sources the rollup's build compiles.
+   const label = rollupLabel(table.rollup);
+   const tableOwner = baseEntry?.sourceName ?? baseName;
    const unusable = rollupBaseUnusable(
       run,
       gated,
@@ -2751,12 +2754,12 @@ async function overStoredBaseSource(
            )
         ).get(baseAddress);
    if (move?.kind === "types_unrecorded" && run.planFacts.hostInstructed) {
-      noteUntypedReference(persistSource.name, baseName, "rollup");
+      noteUntypedReference(label, tableOwner, "rollup");
    } else if (move) {
       run.environment.reportIncompatible?.([baseAddress]);
       throw new SchemaIncompatibleError(
-         `'${persistSource.name}' was not built: persisted upstream ` +
-            `'${baseName}' was not read from its table, since ${move.reason}, ` +
+         `${label} was not built: persisted upstream ` +
+            `'${tableOwner}' was not read from its table, since ${move.reason}, ` +
             `and a rollup is never built by recomputing its base from raw. ` +
             `The package reads its tables and derives its plan again.`,
          [baseAddress],
@@ -2868,8 +2871,9 @@ async function storedRollupBase(
       if (move) {
          run.environment.reportIncompatible?.([address]);
          throw new SchemaIncompatibleError(
-            `'${persistSource.name}' was not built: persisted upstream ` +
-               `'${base.source.name}' was not read from its table, since ` +
+            `${rollupLabel(table.rollup)} was not built: persisted upstream ` +
+               `'${entry!.sourceName ?? base.source.name}' was not read from ` +
+               `its table, since ` +
                `${move.reason}, and a rollup is never built by recomputing ` +
                `its base from raw. The package reads its tables and derives ` +
                `its plan again.`,
@@ -2949,6 +2953,18 @@ function withRollupUpstreamReuse(
    return run.readFrom?.has(address)
       ? { ...rest, upstreamReuse: "reused" }
       : rest;
+}
+
+/**
+ * A rollup's build options: that it is one, and the name its warnings give
+ * it ({@link rollupLabel}).
+ */
+function rollupOptions(
+   table: InstructedRun["compiled"]["tables"][string] | undefined,
+): { rollup?: true; presentedName?: string } {
+   return table?.kind === "rollup"
+      ? { rollup: true, presentedName: rollupLabel(table.rollup) }
+      : {};
 }
 
 /**
