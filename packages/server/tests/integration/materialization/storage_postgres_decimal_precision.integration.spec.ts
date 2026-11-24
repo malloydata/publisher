@@ -445,9 +445,12 @@ describe.skipIf(!url)(
          await build();
          // The refresh re-seeded rather than inserting into the DOUBLE.
          expect(await uType()).toEqual(["decimal(38,5)"]);
-         // The build log names the cause beside the seed's reason code.
-         expect(server.output()).toContain(
-            "Re-seeding to store Postgres numerics exactly",
+         // The build log names the cause. The pre-run contract check usually
+         // finds the stored DOUBLE first (the table no longer matches what a
+         // build now records) and rebuilds it as incompatible; otherwise the
+         // delta's own precision guard re-seeds it.
+         expect(server.output()).toMatch(
+            /Re-seeding to store Postgres numerics exactly|incompatible[\s\S]*rebuilds it in full/,
          );
          const read = (s: string) =>
             query(
