@@ -19,8 +19,8 @@
  * - A host-instructed chained build over a reference that carries no
  *   contract cannot hold the table to anything: it reads it, with a warning
  *   and a count (`reference_types_unrecorded`, `read_unchecked`), as the
- *   database tier does a reference with no `nativeSchema`. A rollup over
- *   such a base is refused (it cannot be re-rooted), never built over it.
+ *   database tier does a reference with no `nativeSchema`, and builds over
+ *   it, a rollup grouped over such a base's table included.
  * - With every raw row then deleted, a forced rebuild of the downstream
  *   alone builds it over the carried upstream table, still equal to what
  *   live answered before.
@@ -93,7 +93,7 @@ source: a is raw -> { select: k, amt }
 source: b is a -> { group_by: k; aggregate: total is amt.sum() }
 `,
       downstream: /^b$/,
-      uncontracted: "read",
+      stored: "total",
       query: `run: b ${AS_TEXT}`,
    },
    {
@@ -107,7 +107,7 @@ source: a is raw extend { dimension: k2 is k }
 source: ext is a extend { dimension: big is amt > 5 }
 `,
       downstream: /^ext$/,
-      uncontracted: "read",
+      stored: "amt",
       query: `run: ext -> { group_by: k; aggregate: total is amt.sum() } ${AS_TEXT}`,
    },
    {
@@ -122,7 +122,7 @@ source: a is raw extend {
 }
 `,
       downstream: /__rollup__/,
-      uncontracted: "refused",
+      stored: "total__partial",
       query: `run: a -> { group_by: k; aggregate: total } ${AS_TEXT}`,
    },
    {
@@ -138,7 +138,7 @@ source: rolled is a extend {
 }
 `,
       downstream: /^rolled__rollup__/,
-      uncontracted: "refused",
+      stored: "total__partial",
       query: `run: rolled -> { group_by: k; aggregate: total } ${AS_TEXT}`,
    },
 ];
@@ -200,6 +200,7 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
       let uncontracted: Materialization;
       let uncontractedWarnings: unknown[][];
       let uncontractedCount: number;
+      let uncontractedRows: unknown;
 
       const ask = async (query: string) => {
          const pkg = await env.getPackage(parsePackageName(PKG), false);
@@ -303,30 +304,39 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
          );
          // `a` alone first, so every downstream builds after the alter.
          first = await build({ sourceNames: ["a"] });
+         /** The destination, out of band, attached as `lk`. */
+         const outOfBand = async <T>(
+            fn: (lake: MalloyDuckDBConnection) => Promise<T>,
+         ): Promise<T> => {
+            const lake = new MalloyDuckDBConnection(
+               "out_of_band",
+               path.join(root, "out_of_band.duckdb"),
+            );
+            try {
+               await lake.runSQL("INSTALL ducklake");
+               await lake.runSQL("LOAD ducklake");
+               await lake.runSQL("INSTALL postgres");
+               await lake.runSQL("LOAD postgres");
+               await lake.runSQL(
+                  `ATTACH 'ducklake:postgres:host=${pg.host} port=${pg.port} dbname=${dbs[1]} user=${pg.userName} password=${pg.password}' AS lk (DATA_PATH '${bucket}')`,
+               );
+               const result = await fn(lake);
+               await lake.runSQL("DETACH lk");
+               return result;
+            } finally {
+               await lake.close();
+            }
+         };
          // Out of band: the destination's own ALTER of `a`'s table, its
          // `amt` dropped and added back as text (DuckLake narrows no type).
-         const lake = new MalloyDuckDBConnection(
-            "alter",
-            path.join(root, "alter.duckdb"),
-         );
-         try {
-            await lake.runSQL("INSTALL ducklake");
-            await lake.runSQL("LOAD ducklake");
-            await lake.runSQL("INSTALL postgres");
-            await lake.runSQL("LOAD postgres");
-            await lake.runSQL(
-               `ATTACH 'ducklake:postgres:host=${pg.host} port=${pg.port} dbname=${dbs[1]} user=${pg.userName} password=${pg.password}' AS lk (DATA_PATH '${bucket}')`,
-            );
+         await outOfBand(async (lake) => {
             for (const e of entriesOf(first)) {
                const t = `lk.main."${e.physicalTableName}"`;
                await lake.runSQL(`ALTER TABLE ${t} DROP COLUMN amt`);
                await lake.runSQL(`ALTER TABLE ${t} ADD COLUMN amt VARCHAR`);
                await lake.runSQL(`UPDATE ${t} SET amt = '1'`);
             }
-            await lake.runSQL("DETACH lk");
-         } finally {
-            await lake.close();
-         }
+         });
          let pkg = await env.getPackage(parsePackageName(PKG), true, {
             refreshSchemas: true,
          });
@@ -402,6 +412,15 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
          } finally {
             warn.mockRestore();
          }
+         // What it built over the unchecked table, totalled by `k` as live
+         // answers.
+         uncontractedRows = await outOfBand(async (lake) => {
+            const { rows } = await lake.runSQL(
+               `SELECT k, CAST(SUM(${mechanism.stored}) AS VARCHAR) AS total_text ` +
+                  `FROM lk.main."csd_uncontracted" GROUP BY k ORDER BY k`,
+            );
+            return JSON.parse(JSON.stringify(rows)) as unknown;
+         });
          uncontractedCount = await metrics.collectCounter(
             "publisher_materialization_upstream_recompute_total",
             {
@@ -491,33 +510,20 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
          ]);
       });
 
-      it(
-         mechanism.uncontracted === "read"
-            ? "reads a reference with no contract unchecked, warning and counting it"
-            : "refuses a rollup over a base reference with no contract, never building over it",
-         () => {
-            const built = entriesOf(uncontracted).filter((e) =>
-               mechanism.downstream.test(e.sourceName ?? ""),
-            );
-            if (mechanism.uncontracted === "read") {
-               expect([uncontracted.status, uncontracted.error]).toEqual([
-                  "MANIFEST_FILE_READY",
-                  null,
-               ]);
-               expect(built).toHaveLength(1);
-               expect(uncontractedWarnings).toHaveLength(1);
-               expect(uncontractedCount).toBe(1);
-            } else {
-               // Not built over unchecked: the base cannot be re-rooted on
-               // a table whose entry records no contract.
-               expect(uncontracted.status).toBe("FAILED");
-               expect(built).toEqual([]);
-               expect(failuresOf(uncontracted)[0]?.reason).toContain(
-                  "its base cannot be re-rooted on that table",
-               );
-            }
-         },
-      );
+      it("reads a reference with no contract unchecked, warning and counting it once, and builds over it equal to live", () => {
+         expect([uncontracted.status, uncontracted.error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         const built = entriesOf(uncontracted).filter((e) =>
+            mechanism.downstream.test(e.sourceName ?? ""),
+         );
+         expect(built).toHaveLength(1);
+         expect(built[0].upstreamReuse).toBe("reused");
+         expect(uncontractedWarnings).toHaveLength(1);
+         expect(uncontractedCount).toBe(1);
+         expect(uncontractedRows).toEqual(EXPECTED);
+      });
 
       it("serves its table after each run, equal to live", () => {
          expect(betweenServed.kind).not.toBe("live");
