@@ -15,11 +15,7 @@
 
 import type { ManifestEntry } from "../domain/types";
 import { SchemaIncompatibleError } from "../../../errors";
-import {
-   keyCheckFailed,
-   keyCheckPassed,
-   parseContract,
-} from "../domain/column_contract";
+import { pairLeafCheckFailure, parseContract } from "../domain/column_contract";
 
 /**
  * Why `downstream` must not build over its pair-table upstream `upstream`,
@@ -36,20 +32,8 @@ export function pairLeafRefusal(
    entry: ManifestEntry | undefined,
 ): string | undefined {
    if (leafKeys.length === 0) return undefined;
-   const contract = parseContract(entry?.contract);
-   const failed = leafKeys.filter((k) => keyCheckFailed(contract, k));
-   // Not recorded, or recorded as a check that could not run.
-   const unrecorded = leafKeys.filter(
-      (k) => !keyCheckPassed(contract, k) && !keyCheckFailed(contract, k),
-   );
-   if (failed.length === 0 && unrecorded.length === 0) return undefined;
-   // Named as the model names the path (`items.item_id`), not as recorded.
-   const named = (ks: string[]) =>
-      ks.map((k) => `'${k.replace(/^leaf:/, "")}'`).join(", ");
-   const what =
-      failed.length > 0
-         ? `found the key ${named(failed)} held more than once or NULL`
-         : `recorded no result for the key ${named(unrecorded)}`;
+   const what = pairLeafCheckFailure(parseContract(entry?.contract), leafKeys);
+   if (what === undefined) return undefined;
    return (
       `'${downstream}' was not built over its upstream '${upstream}''s pair ` +
       `table: the leaf key check of its inlined join_many, which a build over ` +

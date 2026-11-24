@@ -16,13 +16,6 @@ import { VersionRef } from "../service/identity";
 import { isUsableTableName } from "../service/materialization";
 import { queryMetadataViolations } from "../service/query_metadata";
 
-/**
- * The values `buildInstructions.warehouseReach` accepts (ms2data/service#6756).
- * Accepted and ignored: every build is strict, and none recomputes a stored
- * upstream from the warehouse.
- */
-const WAREHOUSE_REACH_VALUES: readonly string[] = ["recompute", "refuse"];
-
 type RunContext = components["schemas"]["RunContext"];
 
 const RUN_TRIGGERS = ["publish", "on_demand", "scheduler"] as const;
@@ -114,7 +107,7 @@ export class MaterializationController {
          }
          const deprecated = parsed.deprecatedOptions;
          if (deprecated.length > 0) {
-            // Once per request that sends either; neither changes the run.
+            // Once per request that sends it; it does not change the run.
             logger.warn(
                "buildInstructions options are deprecated and ignored: every build is strict",
                { ...context, options: deprecated },
@@ -217,7 +210,7 @@ export class MaterializationController {
       sources: BuildInstruction[];
       referenceManifest?: ManifestReference[];
       /** The deprecated options the payload sent, which are ignored. */
-      deprecatedOptions: ("strictUpstreams" | "warehouseReach")[];
+      deprecatedOptions: "strictUpstreams"[];
       ledger?: LedgerEntry[];
       malformedLedger?: MalformedLedgerEntry[];
    } {
@@ -236,7 +229,7 @@ export class MaterializationController {
       const result: {
          sources: BuildInstruction[];
          referenceManifest?: ManifestReference[];
-         deprecatedOptions: ("strictUpstreams" | "warehouseReach")[];
+         deprecatedOptions: "strictUpstreams"[];
          ledger?: LedgerEntry[];
          malformedLedger?: MalformedLedgerEntry[];
       } = {
@@ -266,18 +259,15 @@ export class MaterializationController {
          }
          result.deprecatedOptions.push("strictUpstreams");
       }
-      // Null is read as absent: Credible's clients drop null fields, so null
-      // and absent must mean the same.
+      // Removed, and refused by name so a caller learns it is gone. Null is
+      // read as absent: Credible's clients drop null fields, so null and
+      // absent must mean the same.
       if (obj.warehouseReach !== undefined && obj.warehouseReach !== null) {
-         if (
-            typeof obj.warehouseReach !== "string" ||
-            !WAREHOUSE_REACH_VALUES.includes(obj.warehouseReach)
-         ) {
-            throw new BuildInstructionsInvalidError(
-               `buildInstructions.warehouseReach must be one of ${WAREHOUSE_REACH_VALUES.join(" | ")}`,
-            );
-         }
-         result.deprecatedOptions.push("warehouseReach");
+         throw new BuildInstructionsInvalidError(
+            "buildInstructions.warehouseReach was removed: every build is " +
+               "strict, and none recomputes a stored upstream from the " +
+               "warehouse, so there is nothing for it to choose",
+         );
       }
       // Null is read as absent ("use the local store"), not as an empty ledger:
       // the two mean opposite things, and a caller that means "I own the ledger
@@ -356,7 +346,7 @@ export class MaterializationController {
             : {}),
          // Where a stored upstream's table lives. Without it a reference to
          // a stored table reads as a warehouse table, and a chained
-         // `storage=` build over it refuses or recomputes it. The service
+         // `storage=` build over it refuses it. The service
          // checks it names a configured destination.
          ...(referenceDestination(ref.storageDestinationName) !== undefined
             ? {

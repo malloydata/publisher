@@ -41,7 +41,7 @@ import {
    renderSqlBound,
 } from "../../src/service/materialization/run/incremental_apply";
 import { POSTGRES_COLLATION } from "../../src/service/materialization/serve/collation/postgres";
-import { probeIO } from "../../src/service/materialization/serve/gate_collation";
+import { catalogIO } from "../../src/service/materialization/serve/collation/catalog_io";
 import {
    relationProbeSql,
    tableCommentSql,
@@ -456,7 +456,7 @@ describe.skipIf(!url)("Postgres conformance", () => {
    it("the collation reader judges columns under C, an ICU nondeterministic collation and the default", async () => {
       // The fixture from the stringCollation probe above: d default, c "C",
       // n nondeterministic ICU.
-      const io = probeIO(pg as never);
+      const io = catalogIO(pg as never);
       const column = (name: string) =>
          POSTGRES_COLLATION.sourceColumns(
             io,

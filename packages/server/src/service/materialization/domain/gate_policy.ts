@@ -254,18 +254,6 @@ export interface TableRead {
     */
    readonly gateColumnTypes?: readonly string[];
    /**
-    * For each of {@link gateColumnTypes}, by position, the column's type in
-    * the warehouse table it is a plain copy of, as that table's catalog
-    * names it (`ManifestEntry.upstreamSchemas`), with the dialect naming it;
-    * undefined for a column computed by the build, or one whose table was
-    * not read. A gate column stored as a DuckDB DOUBLE is exact when it is a
-    * copy of a binary64 its dialect compares as DuckDB does.
-    */
-   readonly gateColumnUpstreamTypes?: readonly (
-      | { readonly dialect: string; readonly nativeType: string }
-      | undefined
-   )[];
-   /**
     * The entry point's gates read no column at all: each is an
     * `#(authorize)` lock over givens and literals, decided per request on the
     * live entry point, so no stored row changes its outcome. Set by the
@@ -275,9 +263,9 @@ export interface TableRead {
    readonly gatesReadNoColumn?: boolean;
    /**
     * Whether every column the entry point's gates read is stored exactly,
-    * read from the table's column contract (`gateExact`, recorded at build)
-    * rather than judged from {@link gateColumnTypes}: when present, the
-    * policy's exactness rule reads it alone.
+    * read from the table's column contract (`gateExact`, recorded at build;
+    * a stored binary float is exact only there): when present, the policy's
+    * exactness rule reads it alone.
     */
    readonly gateColumnsExactRecorded?: boolean;
 }
@@ -316,18 +304,19 @@ export function gateColumnTypeExact(
 }
 
 /**
- * Whether every column the entry point's gates read is stored exactly for
- * its type, so the gate admits on the stored table exactly the rows it
- * admits live. Fail closed: a `storage=` table whose gate columns could not
- * be listed is not.
+ * Whether every column the entry point's gates read is stored exactly, so
+ * the gate admits on the stored table exactly the rows it admits live: as
+ * the table's column contract records it, else by type alone (no binary
+ * float is exact unrecorded). Fail closed: a `storage=` table whose gate
+ * columns could not be listed is not.
  */
 export function gateColumnsExact(t: TableRead): boolean {
    if (t.gateColumnsExactRecorded !== undefined) {
       return t.gateColumnsExactRecorded;
    }
    if (t.gateColumnTypes === undefined) return t.tier === "database";
-   return t.gateColumnTypes.every((type, i) =>
-      gateColumnTypeExact(type, t.gateColumnUpstreamTypes?.[i]),
+   return t.gateColumnTypes.every((type) =>
+      gateColumnTypeExact(type, undefined),
    );
 }
 

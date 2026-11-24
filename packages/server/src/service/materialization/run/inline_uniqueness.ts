@@ -551,20 +551,15 @@ export function pairLeafKeyChecksOf(
                  sourceID: check.joinedSourceID,
                  keyColumn: check.keyColumn,
                  sql: check.sql,
-                 contractKey: pairLeafContractKey(check.join, check.keyColumn),
+                 contractKey: contractKeyName(
+                    "leaf",
+                    check.join,
+                    check.keyColumn,
+                 ),
               },
            ]
          : [],
    );
-}
-
-/**
- * The key a pair table's leaf check is recorded under in its contract
- * (`ColumnContract.keys`): the path of joins down to the leaf and the
- * leaf's key column (`leaf:items.options.option_id`, `contractKeyName`).
- */
-function pairLeafContractKey(join: string, keyColumn: string): string {
-   return contractKeyName("leaf", join, keyColumn);
 }
 
 /**

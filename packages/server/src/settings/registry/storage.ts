@@ -152,16 +152,6 @@ export const storage = [
       aliases: { env: ["PUBLISHER_MATERIALIZE_GATED_SOURCES"] },
    }),
    setting({
-      key: "materialize.admissionMode",
-      type: oneOf(["probe", "lookup", "shadow"]),
-      default: "lookup",
-      temporary: true,
-      description:
-         "TEMPORARY, removed with the per-query probes: how read admission judges a stored answer's strings (probe, lookup or shadow).",
-      notes: "**Temporary**: a transitional test and canary setting, removed together with the per-query probes it switches between; do not depend on it. It picks how read admission judges its collation facts. `probe`: each query reads the source's and the stored table's collations from the warehouse, as Publisher always has. `lookup` (the default): each query looks them up in what the load, the bind and the build recorded (the source's string columns at each bind, and each table's column contract), with no catalog read and no extra compile; the same setting picks whether the per-source facts the served copy's compile, the bind and the plans record (the served copy's declines, the gates' and row scope's reads and flags, the rollup candidates, the path report's source chain) are looked up or walked per query. `shadow`: both run, the probe (or walk) decides, and every disagreement is logged at warn as `admission parity drift` and counted in `publisher_admission_parity_drift_total`. Read on every query.",
-      aliases: { env: ["PUBLISHER_ADMISSION_MODE"] },
-   }),
-   setting({
       key: "persist.collisionEnforcementEnabled",
       type: boolean(),
       default: true,

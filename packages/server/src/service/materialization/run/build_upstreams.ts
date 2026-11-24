@@ -10,9 +10,6 @@
  * tier ({@link HostSuppliedWrongTierError}); the environment surface a build
  * reads ({@link BuildEnvironment}); the destination a declared `storage=`
  * builds into; and a run's results named package-relative.
- *
- * Mostly pure. The exception logs and counts a wrong-tier recompute
- * ({@link noteWrongTierRecompute}).
  */
 
 import { declaredDestination, storageWritable } from "../domain/placement";
@@ -33,7 +30,6 @@ import type { Connection, PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
 import { ChainedShapeNotCarriedError } from "../../../errors";
 import { logger } from "../../../logger";
-import { recordStaleUpstreamEntry } from "../../../materialization_metrics";
 import { ManifestEntry, RefusedSource, SourceFailure } from "../domain/types";
 import { getPersistStorageMode } from "../../../config";
 import { groupAliasesByName, planSourceIds } from "../domain/source_aliases";
@@ -95,11 +91,11 @@ export interface ChainedPlanFacts {
    /**
     * Whether the host instructed this run (orchestrated), supplying its
     * manifest and references. A host-supplied upstream entry at the wrong tier
-    * is then refused ({@link HostSuppliedWrongTierError}) rather than
-    * recomputed: a host that hands a build another tier's table (two workers
-    * with separate stores sharing one config) is a case the host must prevent.
-    * A self-instructed run, building from its own manifest, recomputes and
-    * warns ({@link noteWrongTierRecompute}). Absent means self-instructed.
+    * is then refused by name ({@link HostSuppliedWrongTierError}): a host
+    * that hands a build another tier's table (two workers with separate
+    * stores sharing one config) is a case the host must prevent. A
+    * self-instructed run's build that reads one fails its strict render.
+    * Absent means self-instructed.
     */
    hostInstructed?: boolean;
    /**
@@ -192,7 +188,7 @@ export function manifestForCompiler(
  *
  * - `inManifestOnly`: upstreams held only by a `storage=` destination, which
  *   `manifestExcludingStorage` drops. Parents to stack on for a `storage=`
- *   build; recomputed for a database one.
+ *   build; a database one that read one would recompute it (`inlined`).
  * - `missing`: upstreams the SQL reads that no manifest holds, from the
  *   compiler (`compilerMissing`, {@link compilerMissingUpstream}) rather than
  *   the walk, which both over-reaches (joins the query never reads) and
@@ -203,11 +199,20 @@ export function manifestForCompiler(
  * base's address), not an upstream. An upstream with no address is skipped;
  * a build that truly reads it fails on its own render.
  *
+ * - `inlined`: why the build SQL would recompute an upstream from its
+ *   definition rather than read its table. No build may: the caller refuses
+ *   the build when any is listed ({@link refuseInlinedUpstreams}). A
+ *   `storage=` build lists only an upstream read through its definition: its
+ *   stored parents are read by stacking on them, not by this SQL.
+ *
  * `sqlInlinesStored` is a floor under the walk: it compares the build SQL with
  * one rendered with every stored entry available, catching a join declared on
  * a stored stop itself (`daily` with `join_one: c is daily_counts`, the latter
- * in storage) that only the compiler reaches. When set, the answer is
- * `recomputed`; it also gates a `storage=` build's stack-on-parent attempt.
+ * in storage) that only the compiler reaches. It gates a `storage=` build's
+ * stack-on-parent attempt, and inlines an upstream for a database one.
+ *
+ * `upstreamReuse` is `reused` whenever the build reads a stored upstream;
+ * nothing writes `recomputed` (retained in the schema for older entries).
  */
 export function upstreamReuseFromManifest(params: {
    reached: readonly { name: string; sourceID: string }[];
@@ -233,22 +238,22 @@ export function upstreamReuseFromManifest(params: {
    /**
     * The source is a persisted view's or named query's build source, whose
     * companion blanks every source-level `#@` line: the compiler substitutes
-    * no upstream's table, so each upstream is read through its definition
-    * (`definitionsRead`), whatever the manifest holds, and recomputed even
-    * under strict upstreams.
+    * no upstream's table, so each upstream would be read through its
+    * definition, whatever the manifest holds (`inlined`). The plan builds
+    * such a source over its upstreams' tables or refuses it, so this is an
+    * invariant's input, never a path.
     */
    readsDefinitions?: boolean;
 }): {
-   fields: Pick<ManifestEntry, "upstreamReuse" | "upstreamRecomputeReason">;
+   fields: Pick<ManifestEntry, "upstreamReuse">;
    inManifestOnly: string[];
    missing: string[];
-   /** With `readsDefinitions`: each upstream read through its definition. */
-   definitionsRead: string[];
+   inlined: string[];
 } {
    const inManifestOnly: string[] = [];
    const missing: string[] = [];
-   const definitionsRead: string[] = [];
-   const reasons: string[] = [];
+   const inlined: string[] = [];
+   const database = params.tier === "database";
    let upstreams = 0;
    for (const { name, sourceID } of params.reached) {
       const address = params.addressBySourceId[sourceID];
@@ -257,21 +262,18 @@ export function upstreamReuseFromManifest(params: {
       if (address === undefined) continue;
       upstreams++;
       if (params.readsDefinitions) {
-         if (!definitionsRead.includes(name)) {
-            definitionsRead.push(name);
-            reasons.push(
-               `persisted upstream '${name}' is not read from its table: a ` +
-                  `persisted view or query builds from its source's ` +
-                  `definition, as its live query does`,
-            );
-         }
+         const why =
+            `persisted upstream '${name}' is not read from its table: a ` +
+            `persisted view or query builds from its source's definition`;
+         if (!inlined.includes(why)) inlined.push(why);
          continue;
       }
       if (address in params.substituted) continue;
       if (params.moved?.has(address)) {
-         // Its table moved since its build: recomputed if read, else unused.
+         // Its table moved since its build: the build refused it if read
+         // (refuseMovedRead), else it is unused.
          const why = params.moved.get(address);
-         if (why !== undefined) reasons.push(why);
+         if (why !== undefined && database) inlined.push(why);
          continue;
       }
       if (address in params.full) {
@@ -279,10 +281,10 @@ export function upstreamReuseFromManifest(params: {
          // compare says a stored table was inlined; otherwise an unused join.
          if (!params.sqlInlinesStored) continue;
          inManifestOnly.push(name);
-         if (params.tier === "database") {
+         if (database) {
             const destination =
                params.builtEntries[address]?.storageDestinationName;
-            reasons.push(
+            inlined.push(
                destination
                   ? `persisted upstream '${name}' is materialized in storage ` +
                        `destination '${destination}', which a warehouse build cannot read`
@@ -299,42 +301,53 @@ export function upstreamReuseFromManifest(params: {
       // In no manifest and not missed by the compiler: a join the query never
       // reads.
    }
-   for (const { name } of params.compilerMissing) {
-      missing.push(name);
-      reasons.push(
-         `persisted upstream '${name}' is not in this build's manifest ` +
-            `(neither built in this run nor supplied by reference)`,
-      );
-   }
+   // Refused by the caller as missing, before anything is written.
+   for (const { name } of params.compilerMissing) missing.push(name);
    // A stored table was inlined and no walk stop accounts for it: a join on a
    // stored stop's own definition, which only the compiler reached.
    if (
+      database &&
       params.sqlInlinesStored &&
-      reasons.length === 0 &&
+      inlined.length === 0 &&
       inManifestOnly.length === 0
    ) {
-      reasons.push(
+      inlined.push(
          `the build SQL inlines a stored table reached through a refinement ` +
             `declared on a stored upstream (a join the walk does not follow)`,
       );
    }
-   const fields: Pick<
-      ManifestEntry,
-      "upstreamReuse" | "upstreamRecomputeReason"
-   > =
+   const fields: Pick<ManifestEntry, "upstreamReuse"> =
       upstreams === 0 &&
       !params.sqlInlinesStored &&
       params.compilerMissing.length === 0
          ? {}
-         : reasons.length === 0
-           ? { upstreamReuse: "reused" }
-           : {
-                upstreamReuse: "recomputed",
-                upstreamRecomputeReason:
-                   `${reasons.join("; ")}; recomputed from its definition in ` +
-                   `the warehouse`,
-             };
-   return { fields, inManifestOnly, missing, definitionsRead };
+         : { upstreamReuse: "reused" };
+   return { fields, inManifestOnly, missing, inlined };
+}
+
+/**
+ * The invariant every build holds: none recomputes a persisted upstream from
+ * its definition. The plan refuses each shape that would (a persisted result
+ * not over its upstreams' tables, a database build over a stored table), and
+ * a strict render or the moved-upstream check refuses the rest, so `inlined`
+ * ({@link upstreamReuseFromManifest}) is expected empty. Should one get
+ * through, the build is refused loudly (logged with `reasonCode:
+ * upstream_inlined`, failed as `chained_shape_not_carried`), never written.
+ */
+export function refuseInlinedUpstreams(
+   sourceName: string,
+   inlined: readonly string[],
+): void {
+   if (inlined.length === 0) return;
+   logger.error(
+      "A build would recompute a persisted upstream from its definition; refused",
+      { sourceName, reasonCode: "upstream_inlined", reasons: inlined },
+   );
+   throw new ChainedShapeNotCarriedError(
+      `Failed to materialize source '${sourceName}': ${inlined.join("; ")}, ` +
+         `and a build never recomputes a persisted upstream from its ` +
+         `definition`,
+   );
 }
 
 /**
@@ -590,7 +603,7 @@ export class HostSuppliedWrongTierError extends Error {
  * package serves a model older than its files (its last reload did not
  * compile): the build text is read from those files, which the plan's content
  * addresses do not describe. A shape not carried, with its own code, so the
- * caller recomputes from the model the package serves (or, strict, refuses).
+ * caller refuses it as such.
  */
 export class ChainedPackageStaleError extends ChainedShapeNotCarriedError {
    /** The code a log or metric carries for it (errorCodeOf). */
@@ -639,39 +652,6 @@ export function wrongTierDetail(
 }
 
 /**
- * Log, once per run per upstream, a build that recomputes an upstream from raw
- * because the upstream's entry is at the wrong tier, and count it: a recompute
- * reads the warehouse, which a reader of the entry fields alone would miss.
- * Keyed by the run's plan facts, which a run computes once.
- */
-const wrongTierNoted = new WeakMap<object, Set<string>>();
-export function noteWrongTierRecompute(params: {
-   planFacts: object;
-   build: "database" | "storage";
-   sourceName: string;
-   upstream: string;
-   detail: string;
-}): void {
-   let seen = wrongTierNoted.get(params.planFacts);
-   if (!seen) {
-      seen = new Set();
-      wrongTierNoted.set(params.planFacts, seen);
-   }
-   if (seen.has(params.upstream)) return;
-   seen.add(params.upstream);
-   recordStaleUpstreamEntry(params.build);
-   logger.warn(
-      "Recomputing an upstream from raw: its manifest entry is at the wrong tier",
-      {
-         sourceName: params.sourceName,
-         upstream: params.upstream,
-         build: params.build,
-         reason: params.detail,
-      },
-   );
-}
-
-/**
  * The narrow environment surface the build path needs, plus the environment
  * root (for a plain-DuckDB destination's file path).
  *
@@ -689,13 +669,13 @@ export interface BuildEnvironment {
    /**
     * The package's text for a chained `storage=` build (the host port's
     * `chainBuildText`). Absent, a chained build cannot stack on its parents
-    * and recomputes, or under strict upstreams refuses.
+    * and is refused.
     */
    chainBuildText?(request: ChainBuildRequest): ChainBuildText;
    /**
     * Whether a `storage=` build's BigQuery SQL reads only strings compared
     * byte-exact, read from the catalog as an answer's check reads it (the
-    * host port's; serve/gate_collation.ts), for its column contract. Absent,
+    * host port's; serve/admission_lookup.ts), for its column contract. Absent,
     * its strings are recorded compared `none`.
     */
    bigqueryBuildCompareBinary?(args: {
@@ -860,9 +840,6 @@ export function packageRelativeRun(
       entries: each(run.entries, (e) => ({
          ...e,
          ...(typeof e.error === "string" ? { error: rel(e.error) } : {}),
-         ...(e.upstreamRecomputeReason
-            ? { upstreamRecomputeReason: rel(e.upstreamRecomputeReason) }
-            : {}),
       })),
       failures: each(run.failures, (f) => ({ ...f, reason: rel(f.reason) })),
       refused: each(run.refused, (r) =>

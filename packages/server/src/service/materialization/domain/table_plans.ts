@@ -956,6 +956,25 @@ export interface OverStoredBase {
 }
 
 /**
+ * A pair path's leaf: the join names from the source to it, its key, and its
+ * source. The leaf key check's writer (the build's inline uniqueness checks) and
+ * its readers ({@link pairLeafContractKeys}) both name the check from this.
+ */
+export function pairLeafPath(p: MaterializePair): {
+   names: string[];
+   keyColumn: string;
+   sourceID: string;
+} {
+   const hops = p.hops ?? [];
+   const last = hops[hops.length - 1];
+   return {
+      names: [p.join, ...hops.map((h) => h.join)],
+      keyColumn: last?.key ?? p.childKey,
+      sourceID: last?.sourceID ?? p.childSourceID,
+   };
+}
+
+/**
  * The contract keys (`ColumnContract.keys`) of the leaf checks a build over
  * the pair table needs passed (unique and never null): one per path, as
  * `run/inline_uniqueness.ts` records them (`leaf:items.options.option_id`).
@@ -963,10 +982,8 @@ export interface OverStoredBase {
 export function pairLeafContractKeys(plan: MaterializePlan): string[] {
    const pairs = plan.pairBlocks?.blocks ?? (plan.pair ? [plan.pair] : []);
    return pairs.map((p) => {
-      const names = [p.join, ...(p.hops ?? []).map((h) => h.join)];
-      const hops = p.hops ?? [];
-      const key = hops.length > 0 ? hops[hops.length - 1].key : p.childKey;
-      return contractKeyName("leaf", names.join("."), key);
+      const leaf = pairLeafPath(p);
+      return contractKeyName("leaf", leaf.names.join("."), leaf.keyColumn);
    });
 }
 

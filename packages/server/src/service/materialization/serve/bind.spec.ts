@@ -1092,6 +1092,24 @@ describe("holdStorageToContracts", () => {
       expect(missing.contractMissing).toEqual(["s1"]);
    });
 
+   it("leaves out a stored table whose contract lists no column as contract_missing, with or without an observation", () => {
+      const empty = { ...entry, contract: { v: 1, columns: [] } };
+      for (const observed of [
+         undefined,
+         new Map([["s1", read("binary") as never]]),
+      ]) {
+         const out = holdStorageToContracts({
+            bindings: [storageBinding],
+            entries: { s1: empty as never },
+            observed,
+         });
+         expect(out.bindings).toEqual([]);
+         expect(out.contractMissing).toEqual(["s1"]);
+         expect(out.incompatible).toEqual([]);
+         expect(out.unread).toEqual([]);
+      }
+   });
+
    it("leaves out a stored table whose read failed as unread, never incompatible", () => {
       const out = holdStorageToContracts({
          bindings: [storageBinding],

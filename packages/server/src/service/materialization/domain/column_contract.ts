@@ -11,7 +11,8 @@
  * - An entry with no contract, an empty one, or one with no `v` HAS NO
  *   contract ({@link parseContract} answers undefined): its table is never
  *   served from, and the next build rebuilds it in full
- *   (`contract_missing`).
+ *   (`contract_missing`). Nor is one that lists no column (its capture
+ *   read nothing): {@link servableContract}.
  * - A column the contract does not list is unknown: compared `none`, its
  *   gate not exact ({@link contractColumn}).
  * - Keys a reader does not know are ignored at every level; an unknown
@@ -98,6 +99,19 @@ export function contractKeyName(
    return `${level}:${subject ? `${subject}.` : ""}${keyColumn}`;
 }
 
+/**
+ * A key check's name without its level, when it is recorded at `level`
+ * (`leaf:items.item_id` → `items.item_id`), else undefined: how a reader
+ * shows a check as the model names it, or reads a rollup's own key column.
+ */
+function contractKeyWithoutLevel(
+   name: string,
+   level: ContractKeyLevel,
+): string | undefined {
+   const prefix = `${level}:`;
+   return name.startsWith(prefix) ? name.slice(prefix.length) : undefined;
+}
+
 /** A source a bind may find a key check recorded for, as the current model declares it. */
 export interface KeyedSource {
    sourceID: string;
@@ -127,7 +141,9 @@ export function keyUniquenessOfContract(
    const keys = parseContract(contract)?.keys;
    if (!keys) return undefined;
    const own = Object.entries(keys).find(
-      ([name, check]) => check.level === "rollup" && name.startsWith("rollup:"),
+      ([name, check]) =>
+         check.level === "rollup" &&
+         contractKeyWithoutLevel(name, "rollup") !== undefined,
    );
    const parentKeys: Record<string, boolean> = {};
    const parentKeyColumns: Record<string, string> = {};
@@ -145,7 +161,10 @@ export function keyUniquenessOfContract(
    if (!own && !anyParent) return undefined;
    return {
       ...(own
-         ? { keyColumn: own[0].slice("rollup:".length), unique: own[1].unique }
+         ? {
+              keyColumn: contractKeyWithoutLevel(own[0], "rollup")!,
+              unique: own[1].unique,
+           }
          : {}),
       ...(anyParent ? { parentKeys, parentKeyColumns } : {}),
    };
@@ -229,6 +248,17 @@ export function parseContract(raw: unknown): ColumnContract | undefined {
 }
 
 /**
+ * The contract a bound table may be served under: {@link parseContract}'s,
+ * when it lists at least one column. A contract that lists none (its
+ * capture read nothing) proves nothing about any column, so its table is
+ * `contract_missing` as one with no contract is.
+ */
+export function servableContract(raw: unknown): ColumnContract | undefined {
+   const contract = parseContract(raw);
+   return contract && contract.columns.length > 0 ? contract : undefined;
+}
+
+/**
  * The column of `contract` named `name`: exactly, else the one column that
  * matches it case-blind. An unlisted (or ambiguous) column is unknown:
  * `compare` `none`, gate not exact, no type.
@@ -291,12 +321,36 @@ export function keyCheckPassed(
 }
 
 /** Whether the key check named `key` ran and found the key repeated or NULL. */
-export function keyCheckFailed(
+function keyCheckFailed(
    contract: Pick<ColumnContract, "keys"> | undefined,
    key: string,
 ): boolean {
    const check = contract?.keys?.[key];
    return check?.unique === false && check.unverified !== true;
+}
+
+/**
+ * What a pair table's contract says of the leaf key checks `leafKeys` a build
+ * over the table relies on, when any did not pass: the keys found held more
+ * than once or NULL, else those it records no result for (or a check that
+ * could not run), named as the model
+ * names the path (`items.item_id`). Undefined when every one passed.
+ */
+export function pairLeafCheckFailure(
+   contract: ColumnContract | undefined,
+   leafKeys: readonly string[],
+): string | undefined {
+   const failed = leafKeys.filter((k) => keyCheckFailed(contract, k));
+   // Not recorded, or recorded as a check that could not run.
+   const unrecorded = leafKeys.filter(
+      (k) => !keyCheckPassed(contract, k) && !keyCheckFailed(contract, k),
+   );
+   if (failed.length === 0 && unrecorded.length === 0) return undefined;
+   const named = (ks: string[]) =>
+      ks.map((k) => `'${contractKeyWithoutLevel(k, "leaf") ?? k}'`).join(", ");
+   return failed.length > 0
+      ? `found the key ${named(failed)} held more than once or NULL`
+      : `recorded no result for the key ${named(unrecorded)}`;
 }
 
 /** The stored side of a table a build just wrote, as the bind reads it. */

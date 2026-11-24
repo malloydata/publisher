@@ -273,10 +273,9 @@ export type EligibilityRefusalReason =
  * destination compares otherwise), so the build failed rather than
  * recomputing its upstreams from raw.
  *
- * Retained label values, no longer produced (every build is strict, and none
- * recomputes from raw): `inline_fallback` (stacking failed and the upstream
- * was recomputed, non-strict) and `strict_shape_fallback` (the one recompute
- * `strictUpstreams` used to permit).
+ * Retained label values, no longer produced (no build reads its upstreams'
+ * definitions in place of their tables): `inline_fallback` and
+ * `strict_shape_fallback`.
  */
 type ChainedStorageBuildOutcome =
    | "parent_reuse"
@@ -463,45 +462,9 @@ const incompatibleDetectedCounter = lazyCounter(
       "never counted: it leaves the table unread until that read.",
 );
 /**
- * Where a query's read admission reads the warehouse, or compiles a query of
- * its own, to judge a stored answer's string comparisons: the source side
- * (`source_probe`) or the stored side (`stored_probe`). Under lookup
- * admission neither is ever reached on a query.
- */
-export const QUERY_ADMISSION_READ_SITES = [
-   "source_probe",
-   "stored_probe",
-] as const;
-export type QueryAdmissionReadSite =
-   (typeof QUERY_ADMISSION_READ_SITES)[number];
-const queryCatalogReadCounter = lazyCounter(
-   "publisher_query_catalog_reads_total",
-   "Catalog reads read admission made while answering a query, to judge a " +
-      "stored answer's string comparisons. Labels: site " +
-      "('source_probe'|'stored_probe'). Zero under lookup admission " +
-      "(materialize.admissionMode), which reads what load, bind and build " +
-      "recorded instead.",
-);
-const queryProbeCompileCounter = lazyCounter(
-   "publisher_query_probe_compiles_total",
-   "Compiles read admission made while answering a query, beyond the " +
-      "query's own: a probe query or the query's SQL, to read a source's " +
-      "collation. Labels: site ('source_probe'|'stored_probe'). Zero under " +
-      "lookup admission.",
-);
-const admissionParityDriftCounter = lazyCounter(
-   "publisher_admission_parity_drift_total",
-   "Shadow admission's disagreements (materialize.admissionMode=shadow): a " +
-      "query whose probe and lookup judged a stored answer's string " +
-      "comparisons differently, or whose walk and recorded fact differ. The " +
-      "probe or walk decided. Labels: side ('source'|'stored'|" +
-      "'served_copy_declines'|'scope'|'rollup_candidates'|'path_chain'|'gate_exact'), direction ('probe_refuses'|" +
-      "'lookup_refuses'|'differs').",
-);
-/**
  * Where a query walks the IR for a fact a compile or bind records, because
  * the record does not cover it (an inline `extend`, an unrecorded lane or
- * stored set) or admission is not in `lookup` mode.
+ * stored set).
  */
 export type QueryWalkSite =
    | "served_copy_declines"
@@ -569,27 +532,18 @@ const chainedStorageBuildCounter = lazyCounter(
       "retained but no longer produced: no build recomputes its upstreams " +
       "from raw).",
 );
-const upstreamRecomputeCounter = lazyCounter(
+const uncheckedUpstreamReadCounter = lazyCounter(
    "publisher_materialization_upstream_recompute_total",
-   "Builds that could not check a stored upstream's database table against " +
-      "the column types its build recorded. Labels: reason ('moved', a " +
-      "column retyped or dropped since its build; 'unreadable', its columns " +
-      "could not be read; 'types_unrecorded', its build recorded no column " +
-      "types; 'reference_types_unrecorded', a host's reference carried no " +
-      "nativeSchema (a storage= one, no contract); 'persisted_result', a persisted view or query, which " +
-      "builds from its source's definition by design), build ('chained' for a build over the upstream, " +
-      "'rollup' for a database rollup over its stored base), and outcome " +
-      "('recomputed' from its definition, or 'read_unchecked': a strict " +
-      "host-instructed build read the referenced table as before).",
-);
-const staleUpstreamEntryCounter = lazyCounter(
-   "publisher_materialization_stale_upstream_entry_total",
-   "Builds that could not use an upstream's manifest entry because it is at a " +
-      "different tier than the upstream is declared on now (a source moved to " +
-      "or from storage= keeps its content address). The build " +
-      "recomputes that upstream from raw instead, which reads the warehouse. " +
-      "Label: tier ('database'|'storage'), the tier of the build that " +
-      "recomputed.",
+   "Builds that read a stored upstream's database table unchecked: a host's " +
+      "reference carried no nativeSchema (a storage= one, no contract), so the " +
+      "table's columns could not be " +
+      "checked against its build. No build recomputes an upstream, so this is " +
+      "the only reason and outcome produced. Labels: reason " +
+      "('reference_types_unrecorded'), build ('chained' for a build over the " +
+      "upstream, 'rollup' for a database rollup over its stored base), and " +
+      "outcome ('read_unchecked'). The reasons 'moved', 'unreadable', " +
+      "'types_unrecorded' and 'persisted_result' and the outcome 'recomputed' " +
+      "are retired: such a build is refused.",
 );
 
 /**
@@ -875,24 +829,6 @@ export function recordIncompatibleDetected(
    incompatibleDetectedCounter().add(1, { trigger, code });
 }
 
-/** Record one catalog read read admission made while answering a query. */
-export function recordQueryCatalogRead(site: QueryAdmissionReadSite): void {
-   queryCatalogReadCounter().add(1, { site });
-}
-
-/** Record one compile read admission made while answering a query. */
-export function recordQueryProbeCompile(site: QueryAdmissionReadSite): void {
-   queryProbeCompileCounter().add(1, { site });
-}
-
-/** Record one disagreement shadow admission found. */
-export function recordAdmissionParityDrift(
-   side: "source" | "stored" | QueryWalkSite | "gate_exact",
-   direction: "probe_refuses" | "lookup_refuses" | "differs",
-): void {
-   admissionParityDriftCounter().add(1, { side, direction });
-}
-
 /** Record one query-path walk for a recorded fact. */
 export function recordQueryWalk(site: QueryWalkSite): void {
    queryWalkCounter().add(1, { site });
@@ -1003,30 +939,15 @@ export function recordChainedStorageBuild(
 }
 
 /**
- * Record a build that recomputed an upstream from raw because the upstream's
- * manifest entry is at a different tier than it is declared on now (see
- * {@link staleUpstreamEntryCounter}). Once per run per upstream.
+ * Record a build that read a host-referenced upstream table unchecked (see
+ * {@link uncheckedUpstreamReadCounter}). Once per build per upstream.
  */
-export function recordStaleUpstreamEntry(tier: "database" | "storage"): void {
-   staleUpstreamEntryCounter().add(1, { tier });
-}
-
-/**
- * Record a build that recomputed a stored upstream whose database table it
- * could not read in place of it (see {@link upstreamRecomputeCounter}). Once
- * per build per upstream.
- */
-export function recordUpstreamRecompute(
-   reason:
-      | "moved"
-      | "unreadable"
-      | "types_unrecorded"
-      | "reference_types_unrecorded"
-      | "persisted_result",
-   build: "chained" | "rollup",
-   outcome: "recomputed" | "read_unchecked",
-): void {
-   upstreamRecomputeCounter().add(1, { reason, build, outcome });
+export function recordUpstreamReadUnchecked(build: "chained" | "rollup"): void {
+   uncheckedUpstreamReadCounter().add(1, {
+      reason: "reference_types_unrecorded",
+      build,
+      outcome: "read_unchecked",
+   });
 }
 
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */

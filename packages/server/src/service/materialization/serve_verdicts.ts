@@ -52,10 +52,10 @@ import type { ServedCopyProblem } from "./serve/served_copy_types";
 import { byActionability } from "./domain/source_decline";
 import { previewNativeSchema } from "./stored_column_types";
 import { reachableSourceIDs, SourceMap } from "./text/source_map";
+import type { ColumnContract } from "./domain/column_contract";
 import {
    entryPointGateExprs,
-   gateColumnTypesOf,
-   gateColumnUpstreamTypesOf,
+   gateColumnsExactOf,
    gateReads,
 } from "./serve/gate_reads";
 import { ownLevelNotes, type AnnotationsDef } from "../annotations";
@@ -98,8 +98,6 @@ interface ServeVerdictsHost {
    snapshot(): Snapshot;
    storageBindings(): readonly Binding[];
    databaseEntries(): FreshnessManifest | undefined;
-   /** The bound database tables the bind left out: no column types recorded. */
-   typesUnrecorded(): readonly string[];
    /** The bound tables the bind held to their contracts and left out, by address. */
    contractVerdicts(): ReadonlyMap<string, ContractVerdict>;
    deploymentFacts(): DeploymentFacts | undefined;
@@ -370,6 +368,7 @@ export class ServeVerdicts {
                  ...storageGateRead(
                     sourceID,
                     storageBindings,
+                    host.snapshot().contracts,
                     buildPlan,
                     models,
                  ),
@@ -416,7 +415,6 @@ export class ServeVerdicts {
             this.refusedAtBind(sourceID, source, tier),
          boundEntityIds: new Set(Object.keys(host.databaseEntries() ?? {})),
          freshEntityIds: new Set(Object.keys(pinned.compilerManifest.entries)),
-         typesUnrecordedEntityIds: new Set(host.typesUnrecorded()),
          contractVerdicts: host.contractVerdicts(),
          boundStorageNames: new Set(storageBindings.map((b) => b.sourceName)),
          freshStorageIds: new Set(
@@ -438,15 +436,13 @@ export class ServeVerdicts {
             return servedCopy.on ? "serves" : "off";
          },
          servedCopyOnDatabaseOnly: (sourceID) =>
-            servedCopy.on && !servedCopy.pending
+            servedCopy.on && !servedCopy.uncompiled
                ? servedCopy.databaseOnly.has(sourceID)
                : undefined,
-         // Judged per source: a model still compiling (or holding a copy over
-         // the previous bind's bindings) blanks the judgement only of the
-         // sources it holds, and marks those pending.
-         servedCopyPending: (sourceID) => servedCopy.pendingHolds(sourceID),
+         // Judged per source: a model whose copy has yet to compile for the
+         // first time blanks the judgement only of the sources it holds.
          servedCopyOutcome: (sourceID) =>
-            servedCopy.on && !servedCopy.pendingHolds(sourceID)
+            servedCopy.on && !servedCopy.uncompiledHolds(sourceID)
                ? servedCopyOutcomeOf(
                     sourceID,
                     buildPlan?.sources?.[sourceID]?.modelPath,
@@ -494,7 +490,6 @@ export class ServeVerdicts {
       const key = [
          plan.buildPlan,
          host.databaseEntries(),
-         host.typesUnrecorded(),
          host.contractVerdicts(),
          host.storageBindings(),
          plan.sourceEligibility,
@@ -835,38 +830,39 @@ export class ServeVerdicts {
 }
 
 /**
- * What the models' served copies answer from storage, by author `sourceID`:
- * `on` when any model's served copy is enabled, `pending` when one has yet to
- * compile, and a `signature` that changes whenever either does.
- * `pendingHolds` says whether a pending model holds a source, so its
- * judgement waits for that model's compile.
+ * What the models' served copies answer from storage, by author `sourceID`,
+ * as each one's last committed compile left them: `on` when any model's
+ * served copy is enabled, `uncompiled` when one has yet to compile for the
+ * first time, and a `signature` that changes whenever either does.
+ * `uncompiledHolds` says whether such a model holds a source, so its
+ * judgement waits for that model's first compile.
  */
 function servedCopyState(models: ReadonlyMap<string, Model>): {
    on: boolean;
-   pending: boolean;
+   uncompiled: boolean;
    ids: ReadonlySet<string>;
    /** Re-rooted on a database table by some model, on a storage table by none. */
    databaseOnly: ReadonlySet<string>;
    /** Each model whose served copy has compiled, and what it left. */
    compiled: readonly CompiledServedCopy[];
-   pendingHolds: (sourceID: string) => boolean;
+   uncompiledHolds: (sourceID: string) => boolean;
    signature: string;
 } {
    let on = false;
-   let pending = false;
+   let uncompiled = false;
    const ids = new Set<string>();
    const onDatabase = new Set<string>();
    const onStorage = new Set<string>();
    const compiled: CompiledServedCopy[] = [];
    const parts: string[] = [];
-   const pendingModels: Model[] = [];
+   const uncompiledModels: Model[] = [];
    for (const [modelPath, model] of models) {
       const reread = model.servedCopySourceIDs?.();
       if (reread === undefined) continue;
       on = true;
-      if (reread === "pending") {
-         pending = true;
-         pendingModels.push(model);
+      if (reread === "uncompiled") {
+         uncompiled = true;
+         uncompiledModels.push(model);
          continue;
       }
       const databaseOnly = model.servedCopyDatabaseOnlyIDs?.() ?? new Set();
@@ -893,21 +889,21 @@ function servedCopyState(models: ReadonlyMap<string, Model>): {
       [...onDatabase].filter((id) => !onStorage.has(id)),
    );
    const signature = on
-      ? `${pending ? "pending" : "compiled"}:${[...ids].sort().join(",")}:${[...databaseOnly].sort().join(",")}:${parts.join("|")}`
+      ? `${uncompiled ? "uncompiled" : "compiled"}:${[...ids].sort().join(",")}:${[...databaseOnly].sort().join(",")}:${parts.join("|")}`
       : "off";
    // Holds as `servedCopyOutcomeOf` reads it: the model declares or
    // imports the source.
-   const pendingHolds = (sourceID: string) =>
-      pendingModels.some(
+   const uncompiledHolds = (sourceID: string) =>
+      uncompiledModels.some(
          (model) => sourceMapOf(model).node(sourceID) !== undefined,
       );
    return {
       on,
-      pending,
+      uncompiled,
       ids,
       databaseOnly,
       compiled,
-      pendingHolds,
+      uncompiledHolds,
       signature,
    };
 }
@@ -1038,7 +1034,8 @@ function servePathOf(
 
 /**
  * The stored types of the columns a bound `storage=` table's own gate
- * reads, for the policy's exactness rule; the router reads each query's. A
+ * reads, and whether its column contract records each exact (`gateExact`),
+ * for the policy's exactness rule, as the router reads each query's. A
  * table not bound yet has none to read, and is judged once it is bound.
  *
  * A rollup's gates are its base's, read off the base's def in the rollup's
@@ -1048,11 +1045,12 @@ function servePathOf(
 function storageGateRead(
    sourceID: string,
    storageBindings: readonly Binding[],
+   contracts: ReadonlyMap<string, ColumnContract> | undefined,
    buildPlan: BuildPlan | undefined,
    models: Map<string, Model>,
 ): Pick<
    TableRead,
-   "gateColumnTypes" | "gateColumnUpstreamTypes" | "gatesReadNoColumn"
+   "gateColumnTypes" | "gateColumnsExactRecorded" | "gatesReadNoColumn"
 > {
    const bound = storageBindings.filter((b) => b.sourceIDs?.includes(sourceID));
    if (bound.length === 0) return { gateColumnTypes: [] };
@@ -1064,26 +1062,20 @@ function storageGateRead(
          ? undefined
          : // Its own `where:` terms were applied by the build.
            gateReads(found.def, exprs, found.modelDef, new Set([sourceID]));
-   const types = gateColumnTypesOf(
+   const { types, exact } = gateColumnsExactOf(
       reads,
-      bound.map((b) => b.schema),
+      bound.map((b) => contracts?.get(b.virtualHandle)),
    );
    const readsNoColumn =
       reads !== undefined &&
       !reads.unresolved &&
       reads.columns.length === 0 &&
       reads.names.size === 0;
-   // What each stored gate column copies, aligned with the types.
-   const upstream = gateColumnUpstreamTypesOf(
-      reads,
-      bound.map((b) => b.schema),
-      bound.map((b) => b.upstreamSchemas),
-   );
    const listed = !types.some((t) => t === undefined);
    return {
       gateColumnTypes: listed ? types.flatMap((t) => t ?? []) : undefined,
       ...(listed
-         ? { gateColumnUpstreamTypes: upstream.flatMap((u) => u ?? []) }
+         ? { gateColumnsExactRecorded: exact.every((e) => e === true) }
          : {}),
       ...(readsNoColumn ? { gatesReadNoColumn: true } : {}),
    };

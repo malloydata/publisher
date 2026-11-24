@@ -85,7 +85,7 @@ Expect:
 | --------------- | ---------- |
 | 375             | 4          |
 
-## Build refused (orchestrated, strict, pkg=sjs)
+## Build refused (orchestrated, pkg=sjs)
 
 Strict: `rollup` alone, reusing both stored upstreams. `daily_counts` is a
 pinned stored table the build SQL would inline, and the build cannot stack on

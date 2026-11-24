@@ -451,7 +451,7 @@
     "src/service/materialization/serve/bindings.spec.ts": 5,
     "src/service/materialization/serve/composite_member.spec.ts": 43,
     "src/service/materialization/serve/declaring_file_variant.spec.ts": 2,
-    "src/service/materialization/serve/gate_collation.spec.ts": 335,
+    "src/service/materialization/serve/collation/collation_lookup.spec.ts": 335,
     "src/service/materialization/serve/gate_reads.spec.ts": 3,
     "src/service/materialization/serve/join_rollup.spec.ts": 6,
     "src/service/materialization/serve/native_schema_notices.spec.ts": 9,

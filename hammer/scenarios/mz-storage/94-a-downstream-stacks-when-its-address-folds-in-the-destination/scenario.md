@@ -84,7 +84,7 @@ Expect:
 | ------------ | ---------- | ---------- |
 | 99           | 1          | 1000       |
 
-## Build (orchestrated, strict, pkg=ppu)
+## Build (orchestrated, pkg=ppu)
 
 Strict: `rollup` alone, reusing `orders_all`, whose address and compiler key
 differ. Succeeds, over the table.

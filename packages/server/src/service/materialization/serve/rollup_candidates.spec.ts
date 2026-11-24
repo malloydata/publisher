@@ -4,18 +4,12 @@
 /**
  * The rollup leg reads which rollups a query's source could answer from
  * (its own, through its bases, through a join) from the list built with the
- * plans, not by walking the source map per query: under `lookup` a query
- * walks nothing; under `shadow` a list that disagrees with the walk is drift.
+ * plans, not by walking the source map per query: a query walks nothing
+ * unless no list was built, and that walk is counted.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import {
-   clearParityDrifts,
-   clearQueryWalks,
-   queryWalks,
-   withAdmissionMode,
-} from "../../../test_helpers/admission_parity";
-import { parityDrifts } from "./admission_parity";
+import { clearQueryWalks, queryWalks } from "./query_walks";
 import { RollupVariantServe } from "./rollup_variants";
 
 const PLAN = {
@@ -47,24 +41,16 @@ function candidatesFor(serve: Record<string, unknown>, id: string): unknown {
 }
 
 describe("the rollup leg's candidate list", () => {
-   // Other specs in the run may have walked or drifted already.
-   beforeEach(() => {
-      clearParityDrifts();
-      clearQueryWalks();
-   });
-   afterEach(() => {
-      clearParityDrifts();
-      clearQueryWalks();
-   });
+   // Other specs in the run may have walked already.
+   beforeEach(() => clearQueryWalks());
+   afterEach(() => clearQueryWalks());
 
    it("is looked up per query, walking nothing", async () => {
       const own = { target: { plans: [PLAN] }, branches: [] };
       const serve = serveWith(new Map([["orders@m", own]]), undefined);
-      await withAdmissionMode("lookup", async () => {
-         expect(candidatesFor(serve, "orders@m")).toBe(own);
-         // A source the list leaves out has no rollup.
-         expect(candidatesFor(serve, "items@m")).toEqual({ branches: [] });
-      });
+      expect(candidatesFor(serve, "orders@m")).toBe(own);
+      // A source the list leaves out has no rollup.
+      expect(candidatesFor(serve, "items@m")).toEqual({ branches: [] });
       expect((serve.walks as () => number)()).toBe(0);
       expect(queryWalks().get("rollup_candidates")).toBeUndefined();
    });
@@ -72,21 +58,8 @@ describe("the rollup leg's candidate list", () => {
    it("walks, and counts the walk, when no list was built", async () => {
       const walked = { branches: [] };
       const serve = serveWith(undefined, walked);
-      await withAdmissionMode("lookup", async () => {
-         expect(candidatesFor(serve, "orders@m")).toBe(walked);
-      });
+      expect(candidatesFor(serve, "orders@m")).toBe(walked);
       expect(queryWalks().get("rollup_candidates")).toBe(1);
-   });
-
-   it("answers the walk in shadow, and records drift when the list differs", async () => {
-      const walked = { target: { plans: [PLAN] }, branches: [] };
-      const serve = serveWith(new Map(), walked);
-      await withAdmissionMode("shadow", async () => {
-         expect(candidatesFor(serve, "orders@m")).toBe(walked);
-      });
-      expect(parityDrifts().map((d) => [d.side, d.lookup])).toEqual([
-         ["rollup_candidates", undefined],
-      ]);
    });
 
    describe("what a candidate source declines by before its shape is read", () => {
@@ -109,36 +82,16 @@ describe("the rollup leg's candidate list", () => {
          const recorded = { timeZoned: true, branchGates: [] };
          const serve = serveWith(new Map(), undefined);
          serve.planMemo = { statics: new Map([["orders@m", recorded]]) };
-         await withAdmissionMode("lookup", async () => {
-            expect(staticsFor(serve, {})).toBe(recorded);
-         });
+         expect(staticsFor(serve, {})).toBe(recorded);
          expect(queryWalks().get("rollup_candidates")).toBeUndefined();
       });
 
       it("walks the query's own compile, and counts it, when none was recorded", async () => {
          const serve = serveWith(new Map(), undefined);
          serve.planMemo = { statics: new Map() };
-         await withAdmissionMode("lookup", async () => {
-            const walked = staticsFor(serve, {}) as { timeZoned: boolean };
-            expect(walked.timeZoned).toBe(false);
-         });
+         const walked = staticsFor(serve, {}) as { timeZoned: boolean };
+         expect(walked.timeZoned).toBe(false);
          expect(queryWalks().get("rollup_candidates")).toBe(1);
-      });
-
-      it("answers the walk in shadow, and records drift when the record differs", async () => {
-         const serve = serveWith(new Map(), undefined);
-         serve.planMemo = {
-            statics: new Map([
-               ["orders@m", { timeZoned: true, branchGates: [] }],
-            ]),
-         };
-         await withAdmissionMode("shadow", async () => {
-            const walked = staticsFor(serve, {}) as { timeZoned: boolean };
-            expect(walked.timeZoned).toBe(false);
-         });
-         expect(parityDrifts().map((d) => d.side)).toEqual([
-            "rollup_candidates",
-         ]);
       });
    });
 });

@@ -643,6 +643,43 @@ export function shapeMismatch(
    return parts.join("; ");
 }
 
+/** A rolling-window delete: the rows of `column` below `before`. */
+type WindowDelete = { column: string; before: WatermarkBound };
+
+/**
+ * The rolling-window deletes, run after the write in the same transaction:
+ * each removes the rows of its column below its bound (rolling_window.ts).
+ */
+function windowDeleteStatements(
+   dialect: string,
+   quotedTablePath: string,
+   deletes: readonly WindowDelete[] | undefined,
+): string[] {
+   return (deletes ?? []).map(
+      (d) =>
+         `DELETE FROM ${quotedTablePath} WHERE ` +
+         `${quoteIdentifier(d.column, dialect)} < ` +
+         renderSqlBound(d.before, dialect),
+   );
+}
+
+/**
+ * What a merge matches a row by: the merge keys, then any scope columns not
+ * already among them, each passed through `column` (a field's stored name;
+ * the name itself when absent).
+ */
+export function lineageMatchColumns(
+   lineage: {
+      readonly mergeKeys: readonly string[];
+      readonly scopeColumns?: readonly string[];
+   },
+   column: (name: string) => string = (name) => name,
+): string[] {
+   return [
+      ...new Set([...lineage.mergeKeys, ...(lineage.scopeColumns ?? [])]),
+   ].map(column);
+}
+
 /** The text a merge's key guard fails with; {@link isMergeKeyGuardFailure} reads it. */
 export const MERGE_KEY_GUARD_MESSAGE = "incremental-merge-key-not-unique";
 
@@ -765,7 +802,7 @@ export function deltaStatements(params: {
     * each removes the rows of `column` below `before`, which no read from
     * this refresh on needs (rolling_window.ts).
     */
-   windowDeletes?: readonly { column: string; before: WatermarkBound }[];
+   windowDeletes?: readonly WindowDelete[];
    /**
     * A pair table's parent key and parent-row flag: the delta replaces whole
     * parents by the key instead of merging rows ({@link pairDeltaStatements}).
@@ -788,10 +825,10 @@ export function deltaStatements(params: {
    } = params;
    const q = (name: string) => quoteIdentifier(name, dialect);
    const columnList = columns.map(q).join(", ");
-   const windowDeletes = (params.windowDeletes ?? []).map(
-      (d) =>
-         `DELETE FROM ${quotedTablePath} WHERE ${q(d.column)} < ` +
-         renderSqlBound(d.before, dialect),
+   const windowDeletes = windowDeleteStatements(
+      dialect,
+      quotedTablePath,
+      params.windowDeletes,
    );
 
    if (mergeKeys.length > 0) {
@@ -804,10 +841,10 @@ export function deltaStatements(params: {
       //
       // Scoping is all-or-nothing: a term contributing no column is refused
       // upstream rather than arriving here partially scoped.
-      const matchNames = [
-         ...mergeKeys,
-         ...(params.scopeColumns ?? []).filter((c) => !mergeKeys.includes(c)),
-      ];
+      const matchNames = lineageMatchColumns({
+         mergeKeys,
+         scopeColumns: params.scopeColumns,
+      });
       const keys = new Set(mergeKeys);
       const on = nullSafeKeyMatch(matchNames.map(q), "__t", "__s");
       const updates = columns
@@ -908,7 +945,7 @@ export function pairDeltaStatements(params: {
    deltaSQL: string;
    columns: string[];
    pair: PairDelta & { stagingTable: string };
-   windowDeletes?: readonly { column: string; before: WatermarkBound }[];
+   windowDeletes?: readonly WindowDelete[];
 }): string[] {
    const { dialect, quotedTablePath, pair } = params;
    if (!capabilitiesOf(dialect).pairDelta) {
@@ -928,11 +965,7 @@ export function pairDeltaStatements(params: {
          `SELECT 1 FROM ${staged} AS __s WHERE ${nullSafeKeyMatch([key], "__t", "__s")})`,
       `INSERT INTO ${quotedTablePath} (${columnList}) ` +
          `SELECT ${columnList} FROM ${staged}`,
-      ...(params.windowDeletes ?? []).map(
-         (d) =>
-            `DELETE FROM ${quotedTablePath} WHERE ${q(d.column)} < ` +
-            renderSqlBound(d.before, dialect),
-      ),
+      ...windowDeleteStatements(dialect, quotedTablePath, params.windowDeletes),
       // The uniqueness check over the whole table, two columns read: a parent
       // with no flag or two would be counted wrongly by every parent measure.
       // A path's level flags are checked the same way, each over the keys
@@ -1491,6 +1524,45 @@ export interface DeltaTarget {
 }
 
 /**
+ * What every delta target whose rows are one SQL statement shares: that SQL
+ * with a range predicate on `watermarkName` for the delta and the late-row
+ * window, and its watermark frontier, all run by `runner` in `dialect`.
+ */
+export function sqlDeltaTarget(params: {
+   dialect: string;
+   runner: SqlRunner;
+   quotedTablePath: string;
+   logicalTablePath: string;
+   /** The rows-yielding SELECT, executable on the target. */
+   sourceSQL: string;
+   /** The watermark's column in `sourceSQL`. */
+   watermarkName: string;
+   watermarkType: IncrementalLineage["watermarkType"];
+}): DeltaTarget {
+   const { dialect, runner, sourceSQL, watermarkName } = params;
+   const range = (start: WatermarkBound, end: WatermarkBound | undefined) =>
+      deltaSelect({ dialect, sourceSQL, watermarkName, start, end });
+   return {
+      dialect,
+      runner,
+      quotedTablePath: params.quotedTablePath,
+      logicalTablePath: params.logicalTablePath,
+      deltaRows: async (start, end) => range(start, end),
+      windowRows: async (start, end, columns) =>
+         `SELECT ${columns.map((c) => quoteIdentifier(c, dialect)).join(", ")} ` +
+         `FROM (${range(start, end)}) AS __c`,
+      probeSourceFrontier: () =>
+         probeMaxWatermark(
+            runner,
+            dialect,
+            sourceSQL,
+            watermarkName,
+            params.watermarkType,
+         ),
+   };
+}
+
+/**
  * The delta target for a DATABASE source: one connection and dialect answer
  * everything, and the delta's rows are the seed's SQL with a range predicate.
  */
@@ -1509,28 +1581,16 @@ export function warehouseDeltaTarget(params: {
 }): DeltaTarget {
    const { dialect, runner, lineage, sourceSQL } = params;
    return {
-      dialect,
-      runner,
+      ...sqlDeltaTarget({
+         dialect,
+         runner,
+         quotedTablePath: params.quotedTablePath,
+         logicalTablePath: lineage.physicalTableName,
+         sourceSQL,
+         watermarkName: lineage.watermarkName,
+         watermarkType: lineage.watermarkType,
+      }),
       ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
-      quotedTablePath: params.quotedTablePath,
-      logicalTablePath: lineage.physicalTableName,
-      deltaRows: async (start, end) =>
-         deltaSelect({
-            dialect,
-            sourceSQL,
-            watermarkName: lineage.watermarkName,
-            start,
-            end,
-         }),
-      windowRows: async (start, end, columns) =>
-         `SELECT ${columns.map((c) => quoteIdentifier(c, dialect)).join(", ")} ` +
-         `FROM (${deltaSelect({
-            dialect,
-            sourceSQL,
-            watermarkName: lineage.watermarkName,
-            start,
-            end,
-         })}) AS __c`,
       deltaColumnTypes: async (deltaSQL, columns) => {
          const read = deltaColumnTypesSql(dialect, deltaSQL, columns);
          if (!read) return {};
@@ -1542,14 +1602,6 @@ export function warehouseDeltaTarget(params: {
             return { error: errMessage(err), errorCode: errorCodeOf(err) };
          }
       },
-      probeSourceFrontier: () =>
-         probeMaxWatermark(
-            runner,
-            dialect,
-            sourceSQL,
-            lineage.watermarkName,
-            lineage.watermarkType,
-         ),
    };
 }
 
@@ -2094,15 +2146,7 @@ export async function countLateRows(params: {
    const column = (field: string) => target.storedColumn?.(field) ?? field;
    const watermark = column(lineage.watermarkName);
    const matchColumns =
-      lineage.mergeKeys.length > 0
-         ? [
-              ...new Set(
-                 [...lineage.mergeKeys, ...(lineage.scopeColumns ?? [])].map(
-                    column,
-                 ),
-              ),
-           ]
-         : [];
+      lineage.mergeKeys.length > 0 ? lineageMatchColumns(lineage, column) : [];
    const timeoutMs = params.timeoutMs ?? LATE_ROWS_CHECK_TIMEOUT_MS;
    const abort = new AbortController();
    const check = (async () => {

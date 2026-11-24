@@ -33,9 +33,9 @@ import type {
    BuildManifest,
    FreshnessAwareManifestEntry,
    FreshnessManifest,
+   KeyUniqueness,
    ManifestEntry,
 } from "./types";
-import type { UpstreamTableSchema } from "./upstream_schemas";
 import type { ColumnContract } from "./column_contract";
 
 /** What a stored table holds, from the plan: never read off a name. */
@@ -132,14 +132,6 @@ export interface Binding {
     * its type. Absent for a storage table, whose schema is native.
     */
    nativeSchema?: { name: string; type: string }[];
-   /**
-    * The warehouse tables the table's build read, with their columns'
-    * native types (`ManifestEntry.upstreamSchemas`): what a stored column
-    * that copies one of them is a copy of, which the gate policy judges a
-    * stored float gate column by. Set on a `storage=` table; absent, none
-    * is known.
-    */
-   upstreamSchemas?: UpstreamTableSchema[];
    /** The data-as-of instant the freshness window is aged from. */
    freshAsOf?: string;
    freshnessWindowSeconds?: number;
@@ -530,31 +522,67 @@ export function bindingServesModelSource(
 }
 
 /**
+ * A stored entry's `keyUniqueness`, each part kept only when it is well formed
+ * and not empty: the rollup's own check (`keyColumn` with `unique`), the
+ * primary key checks by sourceID (`parentKeys`), and the column each read
+ * (`parentKeyColumns`). Undefined when no part is.
+ */
+export function parseKeyUniqueness(raw: unknown): KeyUniqueness | undefined {
+   if (!raw || typeof raw !== "object") return undefined;
+   const k = raw as Record<string, unknown>;
+   const own =
+      typeof k.keyColumn === "string" && typeof k.unique === "boolean"
+         ? { keyColumn: k.keyColumn, unique: k.unique }
+         : undefined;
+   const parentKeys = recordOf(k.parentKeys, "boolean") as
+      | Record<string, boolean>
+      | undefined;
+   const parentKeyColumns = recordOf(k.parentKeyColumns, "string") as
+      | Record<string, string>
+      | undefined;
+   if (!own && !parentKeys && !parentKeyColumns) return undefined;
+   return {
+      ...(own ?? {}),
+      ...(parentKeys ? { parentKeys } : {}),
+      ...(parentKeyColumns ? { parentKeyColumns } : {}),
+   };
+}
+
+/** `value`'s entries of type `of`, or undefined when it has none. */
+function recordOf(
+   value: unknown,
+   of: "boolean" | "string",
+): Record<string, unknown> | undefined {
+   if (!value || typeof value !== "object") return undefined;
+   const out = Object.fromEntries(
+      Object.entries(value).filter(([, v]) => typeof v === of),
+   );
+   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
  * The primary key checks a local run recorded on a stored entry (its own
  * source's, by sourceID): internal, set only by the committing run or a
  * restore from the store, never by a host's manifest.
  */
-export function primaryKeysOf(entry: {
-   keyUniqueness?: { parentKeys?: unknown };
-}): Record<string, boolean> | undefined {
-   const keys = entry.keyUniqueness?.parentKeys;
-   if (!keys || typeof keys !== "object") return undefined;
-   const out = Object.fromEntries(
-      Object.entries(keys).filter(([, v]) => typeof v === "boolean"),
-   ) as Record<string, boolean>;
-   return Object.keys(out).length > 0 ? out : undefined;
+export function primaryKeysOf(
+   entry: object,
+): Record<string, boolean> | undefined {
+   return keyUniquenessOf(entry)?.parentKeys;
 }
 
 /** The key column each of {@link primaryKeysOf}'s checks read, by sourceID. */
-export function primaryKeyColumnsOf(entry: {
-   keyUniqueness?: { parentKeyColumns?: unknown };
-}): Record<string, string> | undefined {
-   const columns = entry.keyUniqueness?.parentKeyColumns;
-   if (!columns || typeof columns !== "object") return undefined;
-   const out = Object.fromEntries(
-      Object.entries(columns).filter(([, v]) => typeof v === "string"),
-   ) as Record<string, string>;
-   return Object.keys(out).length > 0 ? out : undefined;
+export function primaryKeyColumnsOf(
+   entry: object,
+): Record<string, string> | undefined {
+   return keyUniquenessOf(entry)?.parentKeyColumns;
+}
+
+/** The `keyUniqueness` a stored entry carries, parsed ({@link parseKeyUniqueness}). */
+function keyUniquenessOf(entry: object): KeyUniqueness | undefined {
+   return parseKeyUniqueness(
+      (entry as { keyUniqueness?: unknown }).keyUniqueness,
+   );
 }
 
 /**
@@ -571,11 +599,9 @@ export function checkedKeyIs(
 }
 
 /** A rollup's own key check a local run recorded on a stored entry, as {@link primaryKeysOf}. */
-function rollupKeyOf(entry: {
-   keyUniqueness?: { keyColumn?: unknown; unique?: unknown };
-}): Binding["rollupKey"] {
-   const k = entry.keyUniqueness;
-   return typeof k?.keyColumn === "string" && typeof k.unique === "boolean"
+function rollupKeyOf(entry: object): Binding["rollupKey"] {
+   const k = keyUniquenessOf(entry);
+   return k?.keyColumn !== undefined && k.unique !== undefined
       ? { keyColumn: k.keyColumn, unique: k.unique }
       : undefined;
 }
@@ -596,10 +622,10 @@ export function withEntryKeyChecks(
       rollupKey: _wasKey,
       ...rest
    } = binding;
-   const primaryKeys = primaryKeysOf(entry as never);
-   const primaryKeyColumns = primaryKeyColumnsOf(entry as never);
+   const primaryKeys = primaryKeysOf(entry);
+   const primaryKeyColumns = primaryKeyColumnsOf(entry);
    const rollupKey = isRollupOrigin(entry.origin)
-      ? rollupKeyOf(entry as never)
+      ? rollupKeyOf(entry)
       : undefined;
    return {
       ...rest,
@@ -653,10 +679,10 @@ export function deriveServeBindings(
             (name) => !builders.has(name),
          ),
       ].filter((name, i, all) => all.indexOf(name) === i);
-      const primaryKeys = primaryKeysOf(entry as never);
-      const primaryKeyColumns = primaryKeyColumnsOf(entry as never);
+      const primaryKeys = primaryKeysOf(entry);
+      const primaryKeyColumns = primaryKeyColumnsOf(entry);
       const rollupKey = isRollupOrigin(entry.origin)
-         ? rollupKeyOf(entry as never)
+         ? rollupKeyOf(entry)
          : undefined;
       for (const sourceName of names) {
          // Set whenever there is a plan to read, even empty: an empty list
@@ -683,9 +709,6 @@ export function deriveServeBindings(
             ...(primaryKeys ? { primaryKeys } : {}),
             ...(primaryKeyColumns ? { primaryKeyColumns } : {}),
             ...(rollupKey ? { rollupKey } : {}),
-            ...(entry.upstreamSchemas?.length
-               ? { upstreamSchemas: entry.upstreamSchemas }
-               : {}),
          });
       }
    }

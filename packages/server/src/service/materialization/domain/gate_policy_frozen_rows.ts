@@ -3,9 +3,9 @@
 
 /**
  * The gate policy's frozen leg rows, and the reads they are judged over: the
- * one list `gate_policy_frozen.spec.ts` holds the policy to, and the
- * independent oracle `admission_parity.spec.ts` holds admission and the
- * serve verdict to. Data for specs; read by nothing at run time. A row
+ * one list `gate_policy_frozen.spec.ts` holds the policy to, and
+ * `admission_characterization.spec.ts` holds admission and the serve
+ * verdict to. Data for specs; read by nothing at run time. A row
  * changes only with the security review's sign-off.
  */
 
@@ -14,7 +14,6 @@ import {
    type GateSwitches,
    type TableRead,
 } from "./gate_policy";
-import { STORAGE_DIALECT } from "./dialect";
 
 /** Every setting of every switch, from the switch keys. */
 export function* switches(): Generator<GateSwitches> {
@@ -38,8 +37,16 @@ const SHORT: Partial<Record<keyof GateSwitches, string>> = {
 };
 
 // A `storage=` read carries the stored types of its gate columns, as the
-// router lists them; exact unless the row's name says otherwise.
-const exact = { gateColumnTypes: ["BIGINT", "VARCHAR"] };
+// router lists them, and whether its column contract records every one of
+// them exact (`gateExact`); exact unless the row's name says otherwise.
+const exact = {
+   gateColumnTypes: ["BIGINT", "VARCHAR"],
+   gateColumnsExactRecorded: true,
+};
+const inexact = (type: string) => ({
+   gateColumnTypes: [type],
+   gateColumnsExactRecorded: false,
+});
 /** The tables each named read of a frozen row read. */
 export const GATE_READS: Readonly<Record<string, readonly TableRead[]>> = {
    none: [],
@@ -67,30 +74,28 @@ export const GATE_READS: Readonly<Record<string, readonly TableRead[]>> = {
       {
          tier: "storage" as const,
          ownGateKept: true,
-         gateColumnTypes: ["DOUBLE"],
+         ...inexact("DOUBLE"),
       },
    ],
    own_hugeint: [
       {
          tier: "storage" as const,
          ownGateKept: true,
-         gateColumnTypes: ["HUGEINT"],
+         ...inexact("HUGEINT"),
       },
    ],
    own_unlisted: [{ tier: "storage" as const, ownGateKept: true }],
-   // A gate column stored as a DuckDB DOUBLE that copies a warehouse double
-   // compared as DuckDB compares it: exact, kept as `own` is. A copy of an
-   // exact number, of a 4-byte float, or of a column the build computed (no
-   // upstream type) is not. (Each dialect's doubles: dialect.spec.ts and
-   // gate_policy.spec.ts.)
+   // A gate column stored as a DuckDB DOUBLE that its build recorded
+   // `gateExact` (a copy of a warehouse double compared as DuckDB compares
+   // it): exact, kept as `own` is. One the build recorded not exact (a copy
+   // of an exact number, of a 4-byte float, or a column it computed) is not.
+   // (What a build records: column_contract.spec.ts and gate_policy.spec.ts.)
    own_binary64: [
       {
          tier: "storage" as const,
          ownGateKept: true,
          gateColumnTypes: ["DOUBLE"],
-         gateColumnUpstreamTypes: [
-            { dialect: STORAGE_DIALECT, nativeType: "DOUBLE" },
-         ],
+         gateColumnsExactRecorded: true,
       },
    ],
    own_double_of_decimal: [
@@ -98,9 +103,7 @@ export const GATE_READS: Readonly<Record<string, readonly TableRead[]>> = {
          tier: "storage" as const,
          ownGateKept: true,
          gateColumnTypes: ["DOUBLE"],
-         gateColumnUpstreamTypes: [
-            { dialect: STORAGE_DIALECT, nativeType: "DECIMAL(38,2)" },
-         ],
+         gateColumnsExactRecorded: false,
       },
    ],
    own_double_of_float4: [
@@ -108,9 +111,7 @@ export const GATE_READS: Readonly<Record<string, readonly TableRead[]>> = {
          tier: "storage" as const,
          ownGateKept: true,
          gateColumnTypes: ["DOUBLE"],
-         gateColumnUpstreamTypes: [
-            { dialect: STORAGE_DIALECT, nativeType: "FLOAT" },
-         ],
+         gateColumnsExactRecorded: false,
       },
    ],
    own_double_computed: [
@@ -118,12 +119,10 @@ export const GATE_READS: Readonly<Record<string, readonly TableRead[]>> = {
          tier: "storage" as const,
          ownGateKept: true,
          gateColumnTypes: ["DOUBLE"],
-         gateColumnUpstreamTypes: [undefined],
+         gateColumnsExactRecorded: false,
       },
    ],
-   database_inexact: [
-      { tier: "database" as const, gateColumnTypes: ["DOUBLE"] },
-   ],
+   database_inexact: [{ tier: "database" as const, ...inexact("DOUBLE") }],
    // A `storage=` table proven to hold only ungated rows (the ungated-rows rule),
    // alone, beside a database one, beside one admitted past its own
    // gate, and beside one proven neither way.
@@ -150,6 +149,7 @@ export const GATE_READS: Readonly<Record<string, readonly TableRead[]>> = {
          tier: "storage" as const,
          gatesReadNoColumn: true,
          gateColumnTypes: [],
+         gateColumnsExactRecorded: true,
       },
    ],
    locks_database: [
@@ -158,6 +158,7 @@ export const GATE_READS: Readonly<Record<string, readonly TableRead[]>> = {
          tier: "storage" as const,
          gatesReadNoColumn: true,
          gateColumnTypes: [],
+         gateColumnsExactRecorded: true,
       },
    ],
    locks_storage: [
@@ -165,6 +166,7 @@ export const GATE_READS: Readonly<Record<string, readonly TableRead[]>> = {
          tier: "storage" as const,
          gatesReadNoColumn: true,
          gateColumnTypes: [],
+         gateColumnsExactRecorded: true,
       },
       { tier: "storage" as const, ...exact },
    ],
@@ -172,7 +174,7 @@ export const GATE_READS: Readonly<Record<string, readonly TableRead[]>> = {
       {
          tier: "storage" as const,
          gatesReadNoColumn: true,
-         gateColumnTypes: ["DOUBLE"],
+         ...inexact("DOUBLE"),
       },
    ],
    locks_unlisted: [{ tier: "storage" as const, gatesReadNoColumn: true }],

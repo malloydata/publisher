@@ -6,8 +6,8 @@
  * (`domain/admission.ts`) decides a stored answer by, and turns its verdict
  * into the router's terms. The decision itself is pure; this module reads
  * the author's compile for the gates', the row scope's, the query filters'
- * and the result's reads, the bind's stored types, and the collation probes through
- * the {@link CollationProbe} port, each only when the decision needs it.
+ * and the result's reads, the bind's stored types, and collation through
+ * {@link CollationLookup}, each only when the decision needs it.
  *
  * One {@link ReadAdmission} per query: what it reads of the author's compile
  * is read once per set of stored sources an answer read, and each answer's
@@ -37,52 +37,31 @@ import {
    type QueryFilterFacts,
    type ReadFacts,
    type ResultOrderFacts,
-   gateColumnReading,
 } from "../domain/admission";
 import type { Binding, Snapshot } from "../domain/binding";
 import type { ColumnContract } from "../domain/column_contract";
 import type { GateSwitches, TableRead } from "../domain/gate_policy";
 import { LegDecline } from "../domain/leg_decline";
 import {
-   gateColumnTypesOf,
-   gateColumnUpstreamTypesOf,
+   gateColumnsExactOf,
    gateReadsOfQuery,
    queryFilterReadsOfQuery,
 } from "./gate_reads";
-import type {
-   CollationProbe,
-   GateReads,
-   ProbedTable,
-} from "./gate_reads_types";
+import type { GateReads, ProbedTable } from "./gate_reads_types";
+import { type CollationLookup, collationLookup } from "./admission_lookup";
 import type { LegAnswer, LegKind, QueryFacts } from "./leg";
 import { type ResultReads, resultReadsOfQuery } from "./result_reads";
-import {
-   admissionMode,
-   type FactSide,
-   reportQueryWalk,
-   shadowFact,
-} from "./admission_parity";
+import { type QueryWalkSite, reportQueryWalk } from "./query_walks";
 
 import {
    carriesAGate,
    type RecordedScope,
    recordedReads,
    scopeFactsOf,
-   showReads,
 } from "./scope_facts";
 
-// The port, and its implementation for the query pipeline to hand in.
-export type { CollationProbe } from "./gate_reads_types";
-export { collationProbe } from "./gate_collation";
-export { lookupProbe } from "./admission_lookup";
-export {
-   admissionMode,
-   observeAdmission,
-   readAdmissionModeFrom,
-   reportQueryWalk,
-   shadowFact,
-   shadowProbe,
-} from "./admission_parity";
+export type { CollationLookup } from "./admission_lookup";
+export { observeAdmission, reportQueryWalk } from "./query_walks";
 
 /** What admission decided about one answer, in the router's terms. */
 type AdmissionOutcome =
@@ -125,9 +104,9 @@ export class ReadAdmission {
    constructor(
       private readonly query: QueryFacts,
       private readonly switches: GateSwitches,
-      private readonly probe: CollationProbe,
       /** The bind the query was pinned to (its serving snapshot). */
       private readonly bind?: object,
+      private readonly collation: CollationLookup = collationLookup,
    ) {
       this.givens = query.givens as Record<string, unknown> | undefined;
    }
@@ -233,7 +212,6 @@ export class ReadAdmission {
                return recordedReads(facts, name, stored, onTables);
             },
             () => gateReadsOfQuery(this.query.authorRunnable, stored, onTables),
-            showReads,
          );
          this.reads.set(key, r);
       }
@@ -241,27 +219,18 @@ export class ReadAdmission {
    }
 
    /**
-    * A fact a bind records, by `materialize.admissionMode`: under `probe`
-    * walked; under `lookup` looked up, walked only when nothing recorded
-    * it (and the walk counted); under `shadow` both, the walk deciding and
-    * a disagreement recorded.
+    * A fact a bind records: looked up, and walked only when nothing
+    * recorded it (the walk counted at `site`).
     */
    private async fact<T>(
-      side: FactSide,
+      site: QueryWalkSite,
       recorded: () => Promise<T | "unrecorded">,
       walk: () => Promise<T> | T,
-      show: (fact: T) => string | undefined,
    ): Promise<T> {
-      const mode = admissionMode();
-      if (mode === "probe") return walk();
       const r = await recorded();
-      if (mode === "lookup") {
-         if (r !== "unrecorded") return r;
-         reportQueryWalk(side === "gate_exact" ? "scope" : side);
-         return walk();
-      }
-      const walked = await walk();
-      return r === "unrecorded" ? walked : shadowFact(side, walked, r, show);
+      if (r !== "unrecorded") return r;
+      reportQueryWalk(site);
+      return walk();
    }
 
    /** What the bind commit recorded for this query's model and snapshot. */
@@ -292,38 +261,19 @@ export class ReadAdmission {
 
    /**
     * The tables an answer read, each with what the gate policy judges its
-    * gate columns by: under `lookup`, their stored types and exactness from
-    * each table's column contract, recorded at build and held at bind
-    * ({@link withRecordedGateColumns}); under `probe`, the bind's types and
-    * the warehouse types they copy ({@link withGateColumnTypes}).
+    * gate columns by: their stored types and exactness from each table's
+    * column contract, recorded at build and held at bind
+    * ({@link withRecordedGateColumns}).
     */
-   private async gateColumnsOf(
+   private gateColumnsOf(
       tables: readonly TableRead[],
       readsOf: () => Promise<GateReads | undefined>,
    ): Promise<readonly TableRead[]> {
-      const contracts = (this.bind as Snapshot | undefined)?.contracts;
-      // A stored table the snapshot holds no contract for, or one whose
-      // build listed no column (its capture read nothing), was not
-      // recorded: judged as before.
-      const recordable = tables.every(
-         (t) =>
-            (t.tier !== "storage" && t.tier !== "database") ||
-            (contracts?.get(
-               (t as { virtualHandle?: string }).virtualHandle ?? "",
-            )?.columns.length ?? 0) > 0,
-      );
-      const mode = admissionMode();
-      if (mode === "lookup" && recordable) {
-         return withRecordedGateColumns(tables, readsOf, contracts);
-      }
-      const walked = await withGateColumnTypes(tables, readsOf);
-      if (mode !== "shadow" || !recordable) return walked;
-      const recorded = await withRecordedGateColumns(
+      return withRecordedGateColumns(
          tables,
          readsOf,
-         contracts,
+         (this.bind as Snapshot | undefined)?.contracts,
       );
-      return shadowFact("gate_exact", walked, recorded, showGateColumns);
    }
 
    /** See {@link queryReadsAccess}; read once per query. */
@@ -343,7 +293,6 @@ export class ReadAdmission {
                   return f === undefined ? "unrecorded" : f.carriesGate;
                },
                walk,
-               (b) => `carriesGate=${b}`,
             ),
       ));
    }
@@ -358,7 +307,6 @@ export class ReadAdmission {
             return f === undefined ? "unrecorded" : f.compositeRowFilter;
          },
          () => entryRowFilterOnComposite(this.query.authorRunnable),
-         (b) => `compositeRowFilter=${b}`,
       ));
    }
 
@@ -578,12 +526,12 @@ export class ReadAdmission {
       };
       const refusal =
          request.side === "source"
-            ? await this.probe.sourceRefusal({
+            ? await this.collation.sourceRefusal({
                  authorRunnable: this.query.authorRunnable,
                  reads,
                  ...givens,
               })
-            : await this.probe.storedRefusal({
+            : await this.collation.storedRefusal({
                  tables: tables as readonly ProbedTable[],
                  answerRunnable: answer.runnable,
                  virtualMap: answer.virtualMap,
@@ -684,83 +632,14 @@ function storedSourceIDs(tables: readonly TableRead[]): Set<string> {
 }
 
 /**
- * Each `storage=` table an answer read, with the stored types of the columns
- * the entry point's gates read (`gateColumnTypes`), for the gate policy's
- * exactness rule: a gate column stored as a float, which an exact number
- * rounds to, admits a neighbour's rows. A database table is built in the
- * source's own types and is left as it is. Returns `tables` itself when no
- * table's columns are listed.
- */
-async function withGateColumnTypes(
-   tables: readonly TableRead[],
-   readsOf: () => Promise<GateReads | undefined>,
-): Promise<readonly TableRead[]> {
-   const retyped = (t: TableRead) =>
-      (t as Partial<Pick<Binding, "retypedColumns">>).retypedColumns ?? [];
-   const storage = tables.filter((t) => t.tier === "storage");
-   if (storage.length === 0 && !tables.some((t) => retyped(t).length > 0)) {
-      return tables;
-   }
-   const reads = await readsOf();
-   // Judged together: a gate column held by none of the storage tables the
-   // answer read leaves every one of them unproven.
-   const types = gateColumnTypesOf(
-      reads,
-      storage.map((t) => (t as Partial<Pick<Binding, "schema">>).schema),
-   );
-   const typeOf = new Map(storage.map((t, i) => [t, types[i]]));
-   // What each stored gate column copies, for a float the policy may read as
-   // exact (`gateColumnUpstreamTypes`).
-   const upstreamTypes = gateColumnUpstreamTypesOf(
-      reads,
-      storage.map((t) => (t as Partial<Pick<Binding, "schema">>).schema),
-      storage.map(
-         (t) =>
-            (t as Partial<Pick<Binding, "upstreamSchemas">>).upstreamSchemas,
-      ),
-   );
-   const upstreamTypeOf = new Map(storage.map((t, i) => [t, upstreamTypes[i]]));
-   const held = new Set((reads?.columns ?? []).flat());
-   // Locks only: the gates name no field at all, so no stored row can change
-   // their outcome (the gate policy's `gatesReadNoColumn`).
-   const readsNoColumn =
-      reads !== undefined &&
-      !reads.unresolved &&
-      reads.columns.length === 0 &&
-      reads.names.size === 0;
-   return tables.map((t) => {
-      if (t.tier === "storage") {
-         const upstream = upstreamTypeOf.get(t);
-         return {
-            ...t,
-            gateColumnTypes: typeOf.get(t),
-            ...(upstream ? { gateColumnUpstreamTypes: upstream } : {}),
-            ...(readsNoColumn ? { gatesReadNoColumn: true } : {}),
-         };
-      }
-      // A database table is built in the source's own types, so only a
-      // column the bind found moved since then (altered in the warehouse, or
-      // a 128-bit integer its DuckLake catalog holds as a DOUBLE) is judged,
-      // by the type it holds now. Unreadable gates judge every such column.
-      const moved = retyped(t);
-      if (moved.length === 0) return t;
-      return {
-         ...t,
-         gateColumnTypes: (reads === undefined || reads.unresolved
-            ? moved
-            : moved.filter((c) => held.has(c.name))
-         ).map((c) => c.type),
-      };
-   });
-}
-
-/**
- * {@link withGateColumnTypes} from what each table's build recorded: a gate
- * column's stored type and its exactness (`gateExact`) are read from the
- * table's column contract, which the bind holds the table to, so neither the
- * bind's schema nor the warehouse types a column copies are read per answer.
- * Fail closed as the types are: a `storage=` table with no contract, or whose
- * gates cannot be read or name a column no table read holds, keeps no gate.
+ * Each table an answer read, with what the gate policy judges its gate
+ * columns by, from what each table's build recorded: a gate column's stored
+ * type and its exactness (`gateExact`) are read from the table's column
+ * contract, which the bind holds the table to. A gate column stored as a
+ * float, which an exact number rounds to, admits a neighbour's rows unless
+ * its build recorded it exact. Fail closed: a `storage=` table with no
+ * contract, or whose gates cannot be read or name a column no table read
+ * holds, keeps no gate.
  */
 async function withRecordedGateColumns(
    tables: readonly TableRead[],
@@ -781,13 +660,7 @@ async function withRecordedGateColumns(
       return tables;
    }
    const reads = await readsOf();
-   const schemas = storage.map((t) =>
-      contractOf(t)?.columns.map((c) => ({
-         name: c.name,
-         type: c.nativeType,
-      })),
-   );
-   const types = gateColumnTypesOf(reads, schemas as never);
+   const { types, exact } = gateColumnsExactOf(reads, storage.map(contractOf));
    const held = new Set((reads?.columns ?? []).flat());
    const readsNoColumn =
       reads !== undefined &&
@@ -797,17 +670,11 @@ async function withRecordedGateColumns(
    return tables.map((t) => {
       if (t.tier === "storage") {
          const i = storage.indexOf(t);
-         const listed = types[i];
-         const columns = contractOf(t)?.columns ?? [];
          return {
             ...t,
-            gateColumnTypes: listed,
-            ...(listed !== undefined
-               ? {
-                    gateColumnsExactRecorded: columns
-                       .filter((c) => held.has(c.name))
-                       .every((c) => c.gateExact),
-                 }
+            gateColumnTypes: types[i],
+            ...(exact[i] !== undefined
+               ? { gateColumnsExactRecorded: exact[i] }
                : {}),
             ...(readsNoColumn ? { gatesReadNoColumn: true } : {}),
          };
@@ -826,11 +693,6 @@ async function withRecordedGateColumns(
          gateColumnsExactRecorded: judged.length === 0,
       };
    });
-}
-
-/** Admission's reading of each table, for comparing two judgements. */
-function showGateColumns(tables: readonly TableRead[]): string {
-   return tables.map(gateColumnReading).join(",");
 }
 
 /**

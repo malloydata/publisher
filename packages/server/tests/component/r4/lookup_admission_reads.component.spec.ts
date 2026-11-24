@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Under lookup admission a query makes no catalog read and compiles nothing
- * beyond its own to judge a stored answer's string comparisons: what the
- * source compares under was read at the bind, and what the stored table
- * holds was recorded by its build. Under probe admission the same queries
- * read the warehouse on every answer. Nor does a lookup query walk the IR for
- * what the served copy's compile and the bind record per source. Both answer every caller as live does:
+ * A query makes no catalog read and compiles nothing beyond its own to judge
+ * a stored answer's string comparisons: what the source compares under was
+ * read at the bind, and what the stored table holds was recorded by its
+ * build. Nor does it walk the IR for what the served copy's compile and the
+ * bind record per source. It answers every caller as live does:
  * a gate over a byte-exact string column is served from the stored table,
  * one over a NOCASE column answers live.
  */
@@ -25,6 +24,10 @@ import {
    type MetricsHarness,
    startMetricsHarness,
 } from "../../../src/test_helpers/metrics_harness";
+import {
+   type AdmissionIOSpy,
+   spyAdmissionIO,
+} from "../../../src/test_helpers/admission_io_spy";
 import { resetMaterializationTelemetryForTesting } from "../../../src/materialization_metrics";
 import { rowDifference } from "./harness";
 
@@ -50,92 +53,76 @@ const query = (s: string) =>
    `run: ${s} -> { group_by: region; aggregate: n is count(); order_by: region }`;
 const CALLERS = [{ REGION: "east" }, { REGION: "EAST" }];
 
-for (const mode of ["lookup", "probe"] as const) {
-   describe(`${mode} admission`, () => {
-      let restore: () => void;
-      let loader: Awaited<ReturnType<typeof loadFixture>>;
-      let fixture: LoadedFixture;
-      let metrics: MetricsHarness;
-      const live = new Map<string, unknown>();
+describe("admission over a stored table", () => {
+   let restore: () => void;
+   let loader: Awaited<ReturnType<typeof loadFixture>>;
+   let fixture: LoadedFixture;
+   let metrics: MetricsHarness;
+   let spy: AdmissionIOSpy;
+   const live = new Map<string, unknown>();
 
-      beforeAll(async () => {
-         restore = installSettings({
-            env: {
-               PERSIST_STORAGE_MODE: "on",
-               PUBLISHER_MATERIALIZE: "true",
-               PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
-               PUBLISHER_ADMISSION_MODE: mode,
-            },
-         }).restore;
-         await freshLoadPool();
-         loader = await loadFixture({ "m.malloy": MODEL });
-         for (const s of ["bin_eq", "ci_eq"]) {
-            for (const [i, g] of CALLERS.entries()) {
-               live.set(`${s}${i}`, await loader.run("m.malloy", query(s), g));
-            }
-         }
-         fixture = await loader.bind();
-         metrics = await startMetricsHarness();
-         resetMaterializationTelemetryForTesting();
-      }, 900_000);
-
-      afterAll(async () => {
-         await metrics?.shutdown();
-         resetMaterializationTelemetryForTesting();
-         await fixture?.dispose();
-         await loader?.dispose().catch(() => {});
-         restore?.();
-         await freshLoadPool();
-      });
-
-      it("answers every caller as live does: the byte-exact gate from the table, the NOCASE one live", async () => {
-         for (const [s, via] of [
-            ["bin_eq", "served_copy"],
-            ["ci_eq", undefined],
-         ] as const) {
-            for (const [i, g] of CALLERS.entries()) {
-               const got = await fixture.run("m.malloy", query(s), g);
-               const was = live.get(`${s}${i}`) as Outcome;
-               expect("answer" in was && "answer" in got).toBe(true);
-               if ("answer" in was && "answer" in got) {
-                  expect(
-                     rowDifference(was.answer.rows, got.answer.rows),
-                  ).toBeUndefined();
-               }
-               expect("answer" in got && got.answer.via).toBe(
-                  via ?? (undefined as never),
-               );
-            }
-         }
-      });
-
-      it(
-         mode === "lookup"
-            ? "reads no catalog and compiles nothing extra to judge them"
-            : "reads the warehouse to judge them",
-         async () => {
-            const reads = await metrics.collectCounter(
-               "publisher_query_catalog_reads_total",
-            );
-            const compiles = await metrics.collectCounter(
-               "publisher_query_probe_compiles_total",
-            );
-            // Nor walks the IR for what the served copy's compile and the
-            // bind record per source: its declines, the gates' and the row
-            // scope's reads.
-            const walks = await metrics.collectCounter(
-               "publisher_query_walks_total",
-            );
-            if (mode === "lookup") {
-               expect({ reads, compiles, walks }).toEqual({
-                  reads: 0,
-                  compiles: 0,
-                  walks: 0,
-               });
-            } else {
-               expect(reads).toBeGreaterThan(0);
-            }
+   beforeAll(async () => {
+      restore = installSettings({
+         env: {
+            PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
          },
+      }).restore;
+      await freshLoadPool();
+      loader = await loadFixture({ "m.malloy": MODEL });
+      for (const s of ["bin_eq", "ci_eq"]) {
+         for (const [i, g] of CALLERS.entries()) {
+            live.set(`${s}${i}`, await loader.run("m.malloy", query(s), g));
+         }
+      }
+      fixture = await loader.bind();
+      metrics = await startMetricsHarness();
+      resetMaterializationTelemetryForTesting();
+      spy = spyAdmissionIO();
+   }, 900_000);
+
+   afterAll(async () => {
+      spy?.restore();
+      await metrics?.shutdown();
+      resetMaterializationTelemetryForTesting();
+      await fixture?.dispose();
+      await loader?.dispose().catch(() => {});
+      restore?.();
+      await freshLoadPool();
+   });
+
+   it("answers every caller as live does: the byte-exact gate from the table, the NOCASE one live", async () => {
+      for (const [s, via] of [
+         ["bin_eq", "served_copy"],
+         ["ci_eq", undefined],
+      ] as const) {
+         for (const [i, g] of CALLERS.entries()) {
+            const got = await fixture.run("m.malloy", query(s), g);
+            const was = live.get(`${s}${i}`) as Outcome;
+            expect("answer" in was && "answer" in got).toBe(true);
+            if ("answer" in was && "answer" in got) {
+               expect(
+                  rowDifference(was.answer.rows, got.answer.rows),
+               ).toBeUndefined();
+            }
+            expect("answer" in got && got.answer.via).toBe(
+               via ?? (undefined as never),
+            );
+         }
+      }
+   });
+
+   it("runs no SQL and compiles nothing while it judges them", async () => {
+      // The spy saw the queries' own SQL, and admission decided each.
+      expect(spy.seen()).toBeGreaterThan(0);
+      expect(spy.decisions()).toBeGreaterThan(0);
+      expect(spy.calls).toEqual([]);
+      // Nor walks the IR for what the served copy's compile and the bind
+      // record per source: its declines, the gates' and the row scope's
+      // reads.
+      expect(await metrics.collectCounter("publisher_query_walks_total")).toBe(
+         0,
       );
    });
-}
+});

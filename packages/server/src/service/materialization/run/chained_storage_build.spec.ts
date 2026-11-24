@@ -536,7 +536,7 @@ source: by_raw is daily -> {
          ]);
          // The measure reading the left-out join is gone too, so a downstream
          // that reads it does not compile over the stored parent, and is a
-         // shape the build could not carry (the caller recomputes it), never a
+         // shape the build could not carry (the caller refuses it), never a
          // table built without it.
          const raw = await stack(chain, "by_raw", parentEntry(chain, "daily"));
          expect(raw.error).toBeInstanceOf(ChainedShapeNotCarriedError);
@@ -667,8 +667,8 @@ source: mixed is daily extend {
             ],
          });
          // A shape no build over the parents gives live's rows for: refused
-         // as a shape it could not carry (recomputeAfterStackFailure), never
-         // recomputed from raw.
+         // as a shape it could not carry (refuseAfterStackFailure), never
+         // built from raw.
          expect(refused.error).toBeInstanceOf(MaterializationEligibilityError);
          expect((refused.error as Error).message).toBe(
             "'monthly' compares a string over its stored upstreams ('daily') " +

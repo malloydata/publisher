@@ -11,11 +11,11 @@ import {
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
    type Binding,
-   EMPTY_SNAPSHOT,
    makeSnapshot,
    pin,
 } from "./materialization/domain/binding";
 import type { BuildManifest } from "./materialization/domain/types";
+import { gateColumnTypeExact } from "./materialization/domain/gate_policy";
 import type { GraftScope } from "./gate_classification";
 import type { RouteDecision } from "./query_router";
 import { installSettings } from "../test_helpers/settings_env";
@@ -81,6 +81,57 @@ const binding = (sourceName: string, extra: Partial<Binding> = {}): Binding =>
       schema: [{ name: "acct", type: "DECIMAL(38,0)" }],
       ...extra,
    }) as unknown as Binding;
+
+/**
+ * A snapshot holding each of `bindings`' column contracts as its build
+ * records it: a `storage=` column's gate exact by its stored type, a
+ * database column unless the bind found it held as a double
+ * (`retypedColumns`).
+ */
+const pinnedOver = (bindings: readonly Binding[]) =>
+   pin(
+      makeSnapshot(
+         [],
+         {},
+         undefined,
+         undefined,
+         new Map(
+            bindings.map((b) => {
+               const retyped = b.retypedColumns ?? [];
+               const columns = [
+                  ...(b.schema ?? []),
+                  ...retyped.filter(
+                     (r) => !(b.schema ?? []).some((c) => c.name === r.name),
+                  ),
+               ].flatMap((c) =>
+                  c.name && c.type
+                     ? [
+                          {
+                             name: c.name,
+                             nativeType: c.type,
+                             collation: null,
+                             compare: "exact" as const,
+                             gateExact:
+                                b.tier === "storage"
+                                   ? gateColumnTypeExact(c.type, undefined)
+                                   : !retyped.some(
+                                        (r) =>
+                                           r.name === c.name &&
+                                           !gateColumnTypeExact(
+                                              r.type,
+                                              undefined,
+                                           ),
+                                     ),
+                          },
+                       ]
+                     : [],
+               );
+               return [b.virtualHandle, { v: 1, dialect: "duckdb", columns }];
+            }),
+         ),
+      ),
+      new Date(0),
+   );
 
 const manifest = (keys: string[]): BuildManifest =>
    ({
@@ -327,7 +378,7 @@ describe("recordingManifest", () => {
 });
 
 describe("the #(rollup) rollup candidate past an entry-point gate (row 1)", () => {
-   const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
+   const pinned = pinnedOver([binding("rollup")]);
    const rollupCandidate = (rollupVariants: unknown = {}) =>
       variantsOf(
          makeLegs(pinned, {
@@ -358,14 +409,7 @@ describe("the #(rollup) rollup candidate past an entry-point gate (row 1)", () =
                   runnable,
                   tablesRead: undefined,
                   gateTablesRead: [
-                     tier === "storage"
-                        ? {
-                             tier,
-                             destinationName: "lake",
-                             tablePath: "t_rollup",
-                             schema: [{ name: "acct", type: "DECIMAL(38,0)" }],
-                          }
-                        : { tier },
+                     tier === "storage" ? binding("rollup") : { tier },
                   ],
                   shapeBindings: [],
                } as never);
@@ -427,20 +471,6 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
          }),
       );
    });
-   const byteWise = { v: 1, dialect: "duckdb", columns: [] };
-   const pinned = pin(
-      makeSnapshot(
-         [],
-         {},
-         undefined,
-         undefined,
-         new Map([
-            ["eid-s", byteWise],
-            ["eid-c", byteWise],
-         ]),
-      ),
-      new Date(0),
-   );
    const database = binding("c", {
       kind: "materialize",
       tier: "database",
@@ -459,6 +489,7 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
    const servedCandidate = (
       gateTablesRead: Binding[] | undefined,
       authorRunnable: QueryMaterializer = author("gated"),
+      pinned = pinnedOver([database, storage, ...(gateTablesRead ?? [])]),
    ) =>
       variantsOf(
          makeLegs(pinned, {

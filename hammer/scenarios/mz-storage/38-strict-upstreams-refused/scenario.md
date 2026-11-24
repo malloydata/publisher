@@ -60,7 +60,7 @@ source: rollup is daily -> {
 }
 ```
 
-## Build refused (orchestrated, strict, pkg=su)
+## Build refused (orchestrated, pkg=su)
 
 Build `rollup` alone under `strictUpstreams`, with `daily` neither built nor
 referenced. The upstream has no table to read, so the build refuses

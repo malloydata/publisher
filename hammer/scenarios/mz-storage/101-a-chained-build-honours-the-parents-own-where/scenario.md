@@ -116,7 +116,7 @@ Expect:
 | ------------ | --------------- | ---------- |
 | 99           | 2026-01-03      | 1000       |
 
-## Build (orchestrated, strict, pkg=pow)
+## Build (orchestrated, pkg=pow)
 
 Both rollups alone, over the stored `daily`.
 

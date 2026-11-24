@@ -33,12 +33,7 @@ import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { installSettings } from "../../test_helpers/settings_env";
 import { routeQuery } from "../query_router";
 import { variantsOf } from "../query_serving";
-import {
-   type Binding,
-   EMPTY_SNAPSHOT,
-   makeSnapshot,
-   pin,
-} from "./domain/binding";
+import { type Binding, makeSnapshot, pin } from "./domain/binding";
 import type { ColumnContract } from "./domain/column_contract";
 import {
    readStringCapabilities,
@@ -54,10 +49,10 @@ import { keptTableAddresses, ungatedTableAddresses } from "./serve/bind";
 import * as gateReads from "./serve/gate_reads";
 import { type LegContext, makeLegs } from "./serve/leg";
 import {
-   type CollationProbe,
-   collationProbe,
-   ReadAdmission,
-} from "./serve/read_admission";
+   type CollationLookup,
+   collationLookup,
+} from "./serve/admission_lookup";
+import { ReadAdmission } from "./serve/read_admission";
 
 const DUMP = process.env.ADMISSION_DUMP;
 const dumped: Record<string, unknown> = {};
@@ -322,8 +317,8 @@ async function routed(args: {
    query?: string;
    /** Add a declined candidate's internal detail to the outcome. */
    withDetail?: boolean;
-   /** The collation probe port; the real one when absent. */
-   probe?: CollationProbe;
+   /** How collation is judged; the real lookups when absent. */
+   collation?: CollationLookup;
 }): Promise<string> {
    // Each stored table's contract, as its build would record its strings:
    // byte-wise, or under the stored side's collation.
@@ -371,7 +366,10 @@ async function routed(args: {
          authorRunnable,
       },
       pinned,
-      { modelPath: "m.malloy", ...(args.probe ? { probe: args.probe } : {}) },
+      {
+         modelPath: "m.malloy",
+         ...(args.collation ? { collation: args.collation } : {}),
+      },
    );
    const unreadable = args.unreadable
       ? spyOn(gateReads, "gateReadsOfQuery").mockResolvedValue(undefined)
@@ -1772,7 +1770,7 @@ describe("admitRead reproduces the router's admission", () => {
  * differ between rows, and the verdicts must agree.
  */
 describe("the admission shell gathers the facts admitRead is held to", () => {
-   const probeAll: CollationProbe = {
+   const probeAll: CollationLookup = {
       sourceRefusal: async () => undefined,
       storedRefusal: async () => undefined,
    };
@@ -1782,7 +1780,17 @@ describe("the admission shell gathers the facts admitRead is held to", () => {
             for (const shape of Object.keys(SHAPES) as Shape[]) {
                for (const leg of LEGS) {
                   for (const [read, bindings] of Object.entries(READS)) {
-                     const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
+                     // Each table's contract, as its build records it.
+                     const pinned = pin(
+                        makeSnapshot(
+                           [],
+                           {},
+                           undefined,
+                           undefined,
+                           contractsOf({ tables: bindings }),
+                        ),
+                        new Date(0),
+                     );
                      const authorRunnable = authorOf(SHAPES[shape]);
                      const query = {
                         queryString: `run: ${SHAPES[shape]} -> v`,
@@ -1797,6 +1805,7 @@ describe("the admission shell gathers the facts admitRead is held to", () => {
                      const gathered = await new ReadAdmission(
                         query,
                         { materialize: true, gatedSources },
+                        pinned.snapshot,
                         probeAll,
                      ).decide(leg, answer, GATED(shape));
                      const hand = handFacts({ shape, tables: bindings });
@@ -1903,21 +1912,21 @@ describe("the collation probes run at most once per answer", () => {
                            }
                            seen.add(k);
                         };
-                        const probe: CollationProbe = {
+                        const probe: CollationLookup = {
                            sourceRefusal: (a) => {
                               count("source", a);
-                              return collationProbe.sourceRefusal(a);
+                              return collationLookup.sourceRefusal(a);
                            },
                            storedRefusal: (a) => {
                               count("stored", a);
-                              return collationProbe.storedRefusal(a);
+                              return collationLookup.storedRefusal(a);
                            },
                         };
                         await routed({
                            leg,
                            shape,
                            tables,
-                           probe,
+                           collation: probe,
                            ...(query ? { query } : {}),
                            ...collations,
                         });

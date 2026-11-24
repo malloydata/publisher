@@ -18,7 +18,6 @@ import {
    DROP_OCCASIONS,
    KEY_CHECK_KINDS,
    KEY_CHECK_OUTCOMES,
-   recordAdmissionParityDrift,
    recordQueryWalk,
    recordAnnotationFindings,
    recordAttributionSkipped,
@@ -34,14 +33,11 @@ import {
    recordIncompatibleDetected,
    recordKeyCheck,
    recordManifestBindDegraded,
-   recordQueryCatalogRead,
-   recordQueryProbeCompile,
    recordQueryRoute,
    recordQueryRouteDuration,
    recordScheduledFire,
    recordSharedAddressInstructions,
-   recordStaleUpstreamEntry,
-   recordUpstreamRecompute,
+   recordUpstreamReadUnchecked,
    recordStoredColumnTypeMismatch,
    recordTableCollision,
    recordStorageTableRetained,
@@ -415,12 +411,6 @@ describe("materialization_metrics", () => {
  * instrument names, so an instrument added without a case here fails.
  */
 const EMISSIONS: Record<string, () => void> = {
-   publisher_query_catalog_reads_total: () =>
-      recordQueryCatalogRead("source_probe"),
-   publisher_query_probe_compiles_total: () =>
-      recordQueryProbeCompile("stored_probe"),
-   publisher_admission_parity_drift_total: () =>
-      recordAdmissionParityDrift("source", "lookup_refuses"),
    publisher_query_walks_total: () => recordQueryWalk("scope"),
    publisher_materialization_runs_total: () =>
       recordMaterializationRun("auto", "success", 1),
@@ -483,10 +473,8 @@ const EMISSIONS: Record<string, () => void> = {
       recordStoredColumnTypeMismatch("serve", "number"),
    publisher_storage_chained_build_total: () =>
       recordChainedStorageBuild("parent_reuse"),
-   publisher_materialization_stale_upstream_entry_total: () =>
-      recordStaleUpstreamEntry("storage"),
    publisher_materialization_upstream_recompute_total: () =>
-      recordUpstreamRecompute("moved", "chained", "recomputed"),
+      recordUpstreamReadUnchecked("chained"),
 };
 
 /** Every instrument name `materialization_metrics.ts` passes to a lazy constructor. */
