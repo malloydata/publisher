@@ -2036,7 +2036,10 @@ paths:
         is not marked host-owned, and it serves what it served before the request, the manifest
         it had bound or, with none, live (or this server's own runs' tables, for a version no
         host has bound). Its status says the same: `manifestBindingStatus`, `boundManifestUri` and
-        `manifestEntryCount` describe that previous binding, never `bind_failed` for this request.
+        `manifestEntryCount` describe that previous binding. One exception: when the failure came
+        after the version's models moved, the previous manifest is fetched and bound again, and if
+        that fails too the version reports `bind_failed`, as any failed rebind does (see
+        `manifestBindingStatus`), and the server logs that failed bind.
         Releases before this one answered 200 here and reported the failure only as
         `manifestBindingStatus` `bind_failed`. A publish that names a `manifestLocation` still
         loads the version and reports a failed bind that way.
