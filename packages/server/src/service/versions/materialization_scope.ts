@@ -3,7 +3,7 @@
 
 import { leafKey } from "../materialization/domain/physical_table";
 import { contractWithoutKeys } from "../materialization/domain/column_contract";
-import { isActiveRun } from "../materialization";
+import { isActiveRun } from "../materialization/domain/types";
 import { createHash } from "crypto";
 import type {
    Materialization,

@@ -331,3 +331,15 @@ export interface KeptTable extends TableRecord {
    storageDestinationName?: string;
    reason: KeptTableReason;
 }
+
+/** A run that can write nothing more. */
+const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
+   "MANIFEST_FILE_READY",
+   "FAILED",
+   "CANCELLED",
+]);
+
+/** Whether a run with `status` has not settled: it may still write. */
+export function isActiveRun(status: string): boolean {
+   return !TERMINAL_RUN_STATUSES.has(status);
+}
