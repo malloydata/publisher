@@ -1572,22 +1572,41 @@ function recordUnresolvedInstructions(
    // did not apply is that source's, and its outcome is the applied one's.
    const resolved = (i: BuildInstruction | undefined): boolean =>
       i !== undefined && run.resolvedInstructions.has(i);
-   const applied = (instruction: BuildInstruction): boolean =>
-      resolved(instruction) ||
-      (instruction.sourceID !== undefined &&
-         resolved(run.index.bySourceID.get(instruction.sourceID))) ||
-      resolved(run.index.bySourceEntityId.get(instruction.sourceEntityId));
+   // The address's applied instruction stands for an address-only one, or
+   // one naming the same source; one naming another source (an extension
+   // sharing its base's address) is that source's alone.
+   const applied = (instruction: BuildInstruction): boolean => {
+      const onAddress = run.index.bySourceEntityId.get(
+         instruction.sourceEntityId,
+      );
+      return (
+         resolved(instruction) ||
+         (instruction.sourceID !== undefined &&
+            resolved(run.index.bySourceID.get(instruction.sourceID))) ||
+         ((instruction.sourceID === undefined ||
+            onAddress?.sourceID === instruction.sourceID) &&
+            resolved(onAddress))
+      );
+   };
    const pending = new Set(run.pendingRefusals.map((p) => p.failedKey));
+   const pendingSources = new Set(run.pendingRefusals.map((p) => p.sourceID));
    for (const instruction of instructions) {
       if (applied(instruction)) continue;
       const key = instruction.sourceEntityId;
-      if (run.failures[key] || run.builtAddresses.has(key) || pending.has(key))
+      const refused = refusedAtPlan?.(instruction);
+      // A source the plan refused is reported even beside a table its
+      // address's other source built (settleRefusals, refusedBesideBuilt).
+      if (run.failures[key]) continue;
+      if (
+         refused && instruction.sourceID !== undefined
+            ? pendingSources.has(refused.sourceID)
+            : run.builtAddresses.has(key) || pending.has(key)
+      )
          continue;
       const tier = buildTierOf(instruction);
       const destination = instruction.destination
          ? { storageDestinationName: instruction.destination }
          : {};
-      const refused = refusedAtPlan?.(instruction);
       if (refused) {
          const reason =
             `'${refused.name}' is not built: the build plan refuses it ` +
@@ -1635,6 +1654,7 @@ function recordUnresolvedInstructions(
             sourceID: refused.sourceID,
             own: true,
          });
+         pendingSources.add(refused.sourceID);
          continue;
       }
       const reason =
