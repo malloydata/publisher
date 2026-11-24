@@ -218,6 +218,43 @@ query: q is orders -> { group_by: id; aggregate: n is count() }
       );
    });
 
+   it("is refused at plan over an extension of a pair parent, built over the pair table", async () => {
+      const files = {
+         "m.malloy": `##! experimental { persistence }
+source: items is duckdb.sql("select 1 as item_id, 1 as order_id, 2.5 as price") extend {
+  primary_key: item_id
+}
+#(materialize) storage="lake" inline=["items"]
+source: orders is duckdb.sql("select 1 as id, 'x' as cust") extend {
+  primary_key: id
+  join_many: items is items on items.order_id = id
+}
+#(materialize) storage="lake"
+source: tagged is orders extend {
+  dimension: loud is upper(cust)
+}
+
+#@ persist storage="lake"
+query: q is tagged -> { group_by: loud; aggregate: n is count() }
+`,
+      };
+      const { c } = await packages.plan(files);
+      // The extension's own plan declares no pair: it is refused through the
+      // table it is built over.
+      const ext = Object.values(c.tables).find(
+         (t) => t.source.name === "tagged",
+      ) as
+         | { materialize?: { pair?: unknown; buildsOver?: unknown } }
+         | undefined;
+      expect(ext?.materialize?.pair).toBeUndefined();
+      expect(ext?.materialize?.buildsOver).toBeDefined();
+      const refused = await refusalOf(files, "q__query");
+      expect(refused?.reason).toBe(UPSTREAM_TABLE_UNUSABLE_REASON);
+      expect(refused?.message).toContain(
+         "its upstream 'tagged' is a pair table, one row per pair of an inlined join_many",
+      );
+   });
+
    it("is refused at plan over a #(materialize) table in another destination", async () => {
       const refused = await refusalOf(
          {

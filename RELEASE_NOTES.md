@@ -39,7 +39,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 Still refused at plan as `upstream_table_unusable`, each with its reason, and answered live:
 
-- **over a `#(materialize)` pair table** (an inlined join_many): the table holds a row per pair, so a count over it would count pairs. A pair table in the warehouse is still read with its join put back, as before.
+- **over a `#(materialize)` pair table** (an inlined join_many), or over an extension built on one: the table holds a row per pair, so a count over it would count pairs. A pair table in the warehouse is still read with its join put back, as before.
 - **a `storage=` `#@ persist` source over a `#(materialize)` table in its destination.** Malloy's build walk does not see a `#(materialize)` table, so no plan edge orders the source after it or rebuilds it with it. **Before, such a source was built by recomputing that upstream from raw**, which a downstream never is; it is now refused, naming the table. A join only its read applies (declared in its `extend`) does not refuse it.
 
 A `storage=` view over a gated source stays refused, as before.

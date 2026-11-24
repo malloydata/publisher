@@ -110,11 +110,10 @@ export async function compileStorageOverStored(args: {
       if (upstreams.length === 0) continue;
       // A pair table holds a row per pair of its inlined join_many, not one
       // per row of its source: the stand-in would be read as the source's
-      // rows, and a count over it would count pairs.
-      const pair = upstreams.find(
-         (u) =>
-            materialized[u.sourceID]?.pair ||
-            materialized[u.sourceID]?.pairBlocks,
+      // rows, and a count over it would count pairs. An extension of a pair
+      // parent is built over the parent's table, so it is refused the same.
+      const pair = upstreams.find((u) =>
+         overPairTable(u.sourceID, materialized),
       );
       out.set(
          c.plan.buildSourceID,
@@ -129,6 +128,28 @@ export async function compileStorageOverStored(args: {
       );
    }
    return out;
+}
+
+/**
+ * Whether `sourceID`'s `#(materialize)` table is a pair table, or is built
+ * over one through its `buildsOver` chain (an extension of a pair parent,
+ * whose own plan declares no pair).
+ */
+function overPairTable(
+   sourceID: string,
+   materialized: Readonly<Record<string, MaterializePlan>>,
+): boolean {
+   const seen = new Set<string>();
+   for (
+      let id: string | undefined = sourceID;
+      id !== undefined && !seen.has(id);
+      id = materialized[id]?.buildsOver?.sourceID
+   ) {
+      seen.add(id);
+      const plan = materialized[id];
+      if (plan?.pair || plan?.pairBlocks) return true;
+   }
+   return false;
 }
 
 async function compileOne(args: {

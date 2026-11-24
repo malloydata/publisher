@@ -1049,9 +1049,9 @@ the upstream and why. Each answers live until the model changes:
   or has no table it can build from there, and one that reads that upstream in another time zone
   than its table was built in;
 - a `storage=` persisted view or named query over a `#(materialize)` pair table in its own
-  destination, which holds a row per pair (one over any other `#(materialize)` table there, an
-  extension's own table included, is built over that table, as one over a `#@ persist` upstream
-  is);
+  destination, which holds a row per pair, or over an extension built on such a table (one over
+  any other `#(materialize)` table there, an extension's own table included, is built over that
+  table, as one over a `#@ persist` upstream is);
 - a `storage=` `#@ persist` source whose query reads a `#(materialize)` table in its own
   destination: Malloy's build walk does not see that table, so nothing orders the source after it;
 - a rollup over a pair table, over an extension of a `#(materialize)` source in another file, over
