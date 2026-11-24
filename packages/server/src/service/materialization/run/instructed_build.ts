@@ -42,7 +42,8 @@ import {
    type StoredJoin,
    type UniquenessLedger,
 } from "./inline_uniqueness";
-import { movedSinceBuild } from "./database_column_read";
+import { movedSinceBuild, storedUpstreamMove } from "./database_column_read";
+import { readStoredEntries } from "./stored_table_read";
 import type {
    StoredInDestination,
    ParentKeyCheck,
@@ -907,7 +908,7 @@ export class InstructedBuild {
       let offered: StoredRollupBase | undefined;
       let overBase: PersistSource | undefined;
       try {
-         offered = storedRollupBase(run, persistSource, gated);
+         offered = await storedRollupBase(run, persistSource, gated);
          overBase =
             overStored === undefined
                ? await overStoredBaseSource(
@@ -2733,16 +2734,18 @@ async function overStoredBaseSource(
  *    rollup over a gated base is never planned there: it builds from the
  *    warehouse (rollup_compile.ts's `baseGated` guard);
  *  - with a declared window, the base's table is new enough
- *    ({@link baseFreshEnough}), whoever instructed the run.
+ *    ({@link baseFreshEnough}), whoever instructed the run;
+ *  - a table this run did not build still matches the column contract its
+ *    build recorded, read in its destination now ({@link storedUpstreamMove}).
  *
  * The build keeps the table only when it has the columns, and their types,
  * the planned build writes; the address is the planned one either way.
  */
-function storedRollupBase(
+async function storedRollupBase(
    run: InstructedRun,
    persistSource: PersistSource,
    gated: Pick<GatedSource, "instruction" | "sourceEntityId">,
-): StoredRollupBase | undefined {
+): Promise<StoredRollupBase | undefined> {
    const { compiled } = run;
    const table = compiled.tables[persistSource.sourceID];
    if (table?.kind !== "rollup" || !table.storedBase) return undefined;
@@ -2806,6 +2809,27 @@ function storedRollupBase(
             `the package reads its tables and derives its plan again.`,
          [address],
       );
+   }
+   // A table altered in its destination since its build (a column dropped
+   // and added back as another type) is not the base's rows, whatever its
+   // entry records: refused before the engine meets it, and handed to the
+   // drift handler; a standalone run then rebuilds it.
+   if (!run.builtAddresses.has(address)) {
+      const read = await readStoredEntries(run.environment, {
+         [address]: entry!,
+      }).catch(() => new Map());
+      const move = storedUpstreamMove(entry!, read.get(address));
+      if (move) {
+         run.environment.reportIncompatible?.([address]);
+         throw new SchemaIncompatibleError(
+            `'${persistSource.name}' was not built: persisted upstream ` +
+               `'${base.source.name}' was not read from its table, since ` +
+               `${move.reason}, and a rollup is never built by recomputing ` +
+               `its base from raw. The package reads its tables and derives ` +
+               `its plan again.`,
+            [address],
+         );
+      }
    }
    return {
       baseSourceID: table.storedBase.baseSourceID,

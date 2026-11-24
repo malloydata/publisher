@@ -1144,6 +1144,8 @@ function servedCopyProblemReasonMessage(
 
 /** The code of the warning for a bound database table the bind could not read. */
 const DATABASE_TABLE_UNREAD_CODE = "database-table-unread";
+/** The code of the warning for a bound `storage=` table the bind could not read. */
+const STORAGE_TABLE_UNREAD_CODE = "storage-table-unread";
 
 /** What a `database-table-unread` warning says of each reason. */
 const UNREAD_REASON_TEXT: Readonly<Record<UnreadReason, string>> = {
@@ -1157,8 +1159,10 @@ const UNREAD_REASON_TEXT: Readonly<Record<UnreadReason, string>> = {
 };
 
 /**
- * One warning per bound database table whose columns the bind could not read
- * (`database-table-unread`): its sources answer live until a read succeeds.
+ * One warning per bound table whose columns the bind could not read
+ * (`database-table-unread`, or `storage-table-unread` for a `storage=` table
+ * its destination session could not read): its sources answer live until a
+ * read succeeds.
  * The reason is a fixed class, never the driver's text (the log has that).
  * Named by the table, and by the source a query names (a rollup's base), in
  * the model that declares it.
@@ -1168,13 +1172,25 @@ export function databaseTableUnreadWarnings(
       sourceEntityId: string;
       reason: UnreadReason;
       tableName?: string;
+      /**
+       * The `storage=` destination the table is in, for one that is
+       * (`storage-table-unread`); absent for a database table.
+       */
+      destinationName?: string;
    }[],
    plan: BuildPlan | null,
    retryPending: boolean,
+   /** Whether a re-read of the unread `storage=` tables is pending. */
+   storageRetryPending = false,
 ): ApiPackageWarning[] {
    const warnings: ApiPackageWarning[] = [];
    const sources = Object.values(plan?.sources ?? {});
-   for (const { sourceEntityId, reason, tableName } of unread) {
+   for (const {
+      sourceEntityId,
+      reason,
+      tableName,
+      destinationName,
+   } of unread) {
       const source = sources.find((s) => s.sourceEntityId === sourceEntityId);
       const name = source?.preaggregate?.baseSourceName ?? source?.name;
       const table = source?.preaggregate
@@ -1182,15 +1198,24 @@ export function databaseTableUnreadWarnings(
          : tableName
            ? `The table \`${tableName}\``
            : "A table";
+      const where =
+         destinationName !== undefined
+            ? `in its storage= destination \`${destinationName}\``
+            : "in its database";
+      const pending =
+         destinationName !== undefined ? storageRetryPending : retryPending;
       warnings.push({
          ...(source?.modelPath ? { model: source.modelPath } : {}),
          ...(name ? { subject: name } : {}),
-         code: DATABASE_TABLE_UNREAD_CODE,
+         code:
+            destinationName !== undefined
+               ? STORAGE_TABLE_UNREAD_CODE
+               : DATABASE_TABLE_UNREAD_CODE,
          reason,
          severity: "warn",
          message:
-            `${table}${name ? ` of \`${name}\`` : ""} could not be read in its database when it was bound (${UNREAD_REASON_TEXT[reason]}), so its queries are answered live. ` +
-            (retryPending
+            `${table}${name ? ` of \`${name}\`` : ""} could not be read ${where} when it was bound (${UNREAD_REASON_TEXT[reason]}), so its queries are answered live. ` +
+            (pending
                ? "A retry is pending."
                : "It is read again at the next bind or manifest poll."),
       });

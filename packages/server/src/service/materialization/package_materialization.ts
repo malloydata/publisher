@@ -28,10 +28,12 @@
 
 import {
    type ColumnContract,
+   compatible,
    type KeyedSource,
    keyUniquenessOfContract,
    parseContract,
 } from "./domain/column_contract";
+import { splitManifestEntries } from "./run/manifest_loader";
 import { packageRelativeSourceID } from "./text/read_text";
 import { refreshStringCapabilities } from "./serve/source_capability";
 import { stopsReadAt } from "./domain/freshness";
@@ -81,12 +83,9 @@ import {
    readTableColumns,
    withCollations,
 } from "./run/database_column_read";
+import { storageTablePath } from "./domain/storage_table_path";
 import {
-   destinationSchemaOf,
-   storageTablePath,
-} from "./domain/storage_table_path";
-import {
-   readStoredTables,
+   readStoredEntries,
    type StoredTableSite,
 } from "./run/stored_table_read";
 import {
@@ -1410,6 +1409,66 @@ export class PackageMaterialization {
    }
 
    /**
+    * Hold each table a standalone run may carry (`prior`) to its contract
+    * as it is now, as a bind would: one schema read per table, database
+    * tables on their warehouse, `storage=` tables through their destination
+    * (`site`). The bind last held them when it bound, so a table altered
+    * since (an out-of-band `ALTER`, a column dropped and re-added) would
+    * otherwise be carried, and a downstream built over it. Each that no
+    * longer matches goes to the drift handler ({@link reportIncompatible}),
+    * so {@link incompatibleTables} names it and the run rebuilds it in full.
+    * A table whose read fails, or that carries no contract, is left to the
+    * bind and to `rebuiltInFull`. Returns the addresses found.
+    */
+   async holdCarriedToContracts(
+      prior: Readonly<Record<string, ManifestEntry>>,
+      site?: StoredTableSite,
+   ): Promise<ReadonlySet<string>> {
+      if (Object.keys(prior).length === 0) return new Set();
+      const { tableNameManifest, storageEntries } = splitManifestEntries(
+         { ...prior },
+         `prior entries (package ${this.owner.packageName()})`,
+         "store",
+         { quiet: true },
+      );
+      const observed = new Map<string, ObservedColumns>();
+      const reads: Promise<ReadonlyMap<string, ObservedColumns>>[] = [];
+      if (Object.keys(tableNameManifest).length > 0) {
+         reads.push(this.readDatabaseColumns(tableNameManifest));
+      }
+      if (Object.keys(storageEntries).length > 0) {
+         reads.push(this.readStorageColumns(storageEntries, site));
+      }
+      for (const read of await Promise.all(
+         reads.map((r) => r.catch(() => new Map<string, ObservedColumns>())),
+      )) {
+         for (const [id, o] of read) observed.set(id, o);
+      }
+      const found: string[] = [];
+      for (const [id, entry] of Object.entries(prior)) {
+         const contract = parseContract(entry.contract);
+         const read = observed.get(id);
+         if (!contract || !read || "unread" in read) continue;
+         const verdict = compatible(contract, read);
+         if (verdict.ok) continue;
+         found.push(id);
+         recordIncompatibleDetected("run", verdict.code);
+         logger.warn(
+            "A table a run would carry no longer matches the column contract its build recorded, so the run rebuilds it in full",
+            {
+               packageName: this.owner.packageName(),
+               sourceEntityId: id,
+               reason: "incompatible",
+               code: verdict.code,
+               columns: verdict.columns,
+            },
+         );
+      }
+      if (found.length > 0) this.reportIncompatible(found);
+      return new Set(found);
+   }
+
+   /**
     * The tables a standalone run rebuilds in full rather than carry, by
     * address: each a bind found incompatible with its contract or a stored
     * read failed closed, and each a build found altered since its build
@@ -1517,34 +1576,7 @@ export class PackageMaterialization {
        */
       site?: StoredTableSite,
    ): Promise<ReadonlyMap<string, ObservedColumns>> {
-      if (site) {
-         return readStoredTables(
-            site,
-            Object.entries(entries).flatMap(([key, entry]) => {
-               const destinationName = entry.storageDestinationName;
-               if (!destinationName) return [];
-               let schema: string | undefined;
-               try {
-                  schema = destinationSchemaOf(
-                     site.getStorageDestination(destinationName),
-                  );
-               } catch {
-                  schema = undefined;
-               }
-               return [
-                  {
-                     key,
-                     destinationName,
-                     tablePath: storageTablePath(
-                        destinationName,
-                        entry.physicalTableName,
-                        schema,
-                     ),
-                  },
-               ];
-            }),
-         );
-      }
+      if (site) return readStoredEntries(site, entries);
       const config = this.serveDestinationConfig?.();
       const tables = Object.entries(entries).flatMap(([id, entry]) =>
          entry.storageDestinationName
@@ -2221,17 +2253,29 @@ export class PackageMaterialization {
    }
 
    /**
-    * A warning per bound database table the bind could not read, while it
-    * is unread (`database-table-unread`).
+    * A warning per bound table the bind could not read, while it is unread
+    * (`database-table-unread`; `storage-table-unread` for a `storage=` one).
     */
    databaseTableUnreadWarnings(): ApiPackageWarning[] {
       return warnings.databaseTableUnreadWarnings(
-         this.knownUnread().map((u) => ({
-            ...u,
-            ...tableNameOf(this.databaseEntries?.[u.sourceEntityId]?.tableName),
-         })),
+         this.knownUnread().map((u) => {
+            const stored = this.storageEntries[u.sourceEntityId];
+            return stored?.storageDestinationName
+               ? {
+                    ...u,
+                    tableName: stored.physicalTableName,
+                    destinationName: stored.storageDestinationName,
+                 }
+               : {
+                    ...u,
+                    ...tableNameOf(
+                       this.databaseEntries?.[u.sourceEntityId]?.tableName,
+                    ),
+                 };
+         }),
          this.plan.servingPlan() ?? this.plan.buildPlan,
          this.unreadRetry !== undefined,
+         this.storageRetry !== undefined,
       );
    }
 

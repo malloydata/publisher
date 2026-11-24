@@ -74,7 +74,12 @@ import type {
    StoredRollupBase,
 } from "./storage_build_strategy";
 import { compiledTextReader } from "../../../utils";
-import { movedSinceBuild, type UpstreamMove } from "./database_column_read";
+import {
+   movedSinceBuild,
+   storedUpstreamMove,
+   type UpstreamMove,
+} from "./database_column_read";
+import { readStoredEntries, type StoredTableSite } from "./stored_table_read";
 import { liveCollationsOf } from "./column_contract_capture";
 
 /**
@@ -119,17 +124,50 @@ export function persistedReach(
 }
 
 /**
- * The stored upstreams, by address, whose database table holds other columns
+ * The persisted sources a chained build's drift check reads the tables of:
+ * those the build reaches through the author's model (`reached`), and, for
+ * a `#(materialize)` extension, the parent whose table its build reads
+ * ({@link extensionParentChecked}). The extension's author text names the
+ * parent, not the generated build source its build compiles, so the walk
+ * never reaches the parent: without it, an extension would be built over a
+ * parent table retyped since the parent's build, unchecked.
+ */
+export function driftCheckedSourceIds(
+   reached: ReadonlySet<string>,
+   sourceID: string,
+   planFacts: Pick<ChainedPlanFacts, "materializePlans">,
+): ReadonlySet<string> {
+   const parent = extensionParentChecked(sourceID, planFacts);
+   if (!parent || reached.has(parent.sourceID)) return reached;
+   return new Set([...reached, parent.sourceID]);
+}
+
+/**
+ * The parent of a `#(materialize)` extension, whose table its build reads,
+ * which the build's drift check holds to the parent's recorded columns
+ * ({@link movedUpstreams}). Undefined for any other source.
+ */
+function extensionParentChecked(
+   sourceID: string,
+   planFacts: Pick<ChainedPlanFacts, "materializePlans">,
+) {
+   return planFacts.materializePlans?.[sourceID]?.buildsOver;
+}
+
+/**
+ * The stored upstreams, by address, whose table holds other columns
  * than its build recorded ({@link movedSinceBuild}): retyped or dropped in
  * the warehouse since, or never checkable. A build must not read such a
  * table in place of its source, whose address and recorded types say it is
  * built from what that source computes, so the render leaves its entry out
  * and the build, when it reads it, is refused ({@link refuseMovedRead}).
  *
- * Only the database-tier entries the source can read are checked
- * (`reachedIds`), each table once, on the build's own connection, which is
- * the one its SQL reads them through; never one this run built
- * (`builtThisRun`), whose columns were captured moments ago.
+ * Only the entries the source can read are checked
+ * ({@link driftCheckedSourceIds}), each table once, and never one this run
+ * built (`builtThisRun`), whose columns were captured moments ago: a
+ * database table on the build's own connection, which is the one its SQL
+ * reads them through; a `storage=` table in its destination, held to its
+ * contract ({@link storedUpstreamMove}).
  */
 async function movedUpstreams(args: {
    reach: ReturnType<typeof persistedReach>;
@@ -140,37 +178,65 @@ async function movedUpstreams(args: {
    builtThisRun?: ReadonlySet<string>;
    rootAddress?: string;
    sourceName: string;
+   /** The source built: an extension's parent is checked too. */
+   sourceID: string;
+   /** Where a `storage=` upstream's table is read (the environment). */
+   site: StoredTableSite;
 }): Promise<MovedUpstreams> {
    const { reach, manifest, builtEntries, planFacts } = args;
    const tables = new Map<string, { name: string; entry: ManifestEntry }>();
-   for (const sourceID of reach.reachedIds) {
+   const stored = new Map<string, { name: string; entry: ManifestEntry }>();
+   const parent = extensionParentChecked(args.sourceID, planFacts);
+   for (const sourceID of driftCheckedSourceIds(
+      reach.reachedIds,
+      args.sourceID,
+      planFacts,
+   )) {
       const address = planFacts.addressBySourceId[sourceID];
       if (address === undefined || address === args.rootAddress) continue;
       if (tables.has(address) || args.builtThisRun?.has(address)) continue;
+      if (stored.has(address)) continue;
       const entry = builtEntries[address];
-      if (
-         !entry ||
-         entry.storageDestinationName ||
-         !(address in manifest.buildManifest.entries)
-      ) {
-         continue;
-      }
-      tables.set(address, {
+      if (!entry || !(address in manifest.buildManifest.entries)) continue;
+      const upstream = {
          name:
             reach.lift.sourceNameById.get(sourceID) ??
+            (sourceID === parent?.sourceID ? parent.sourceName : undefined) ??
             entry.sourceName ??
             address,
          entry,
-      });
+      };
+      if (entry.storageDestinationName) stored.set(address, upstream);
+      else tables.set(address, upstream);
    }
-   if (tables.size === 0) return new Map();
-   const reasons = await movedSinceBuild(
-      new Map([...tables].map(([address, { entry }]) => [address, entry])),
-      args.connection,
-   );
+   if (tables.size === 0 && stored.size === 0) return new Map();
+   const reasons =
+      tables.size === 0
+         ? new Map<string, UpstreamMove>()
+         : await movedSinceBuild(
+              new Map(
+                 [...tables].map(([address, { entry }]) => [address, entry]),
+              ),
+              args.connection,
+           );
+   // A `storage=` upstream's table, read in its destination as its build's
+   // session reads it, held to its contract: a build stacked on it would
+   // otherwise meet the moved column in the engine's own error.
+   if (stored.size > 0) {
+      const entries = Object.fromEntries(
+         [...stored].map(([address, { entry }]) => [address, entry]),
+      );
+      const read = await readStoredEntries(args.site, entries).catch(
+         () => new Map(),
+      );
+      for (const [address, entry] of Object.entries(entries)) {
+         const move = storedUpstreamMove(entry, read.get(address));
+         if (move) reasons.set(address, move);
+      }
+   }
    const moved = new Map<string, { name: string } & UpstreamMove>();
    for (const [address, move] of reasons) {
-      const { name } = tables.get(address)!;
+      const { name } = tables.get(address) ?? stored.get(address)!;
       if (move.kind === "types_unrecorded" && planFacts.hostInstructed) {
          noteUntypedReference(args.sourceName, name, "chained");
          continue;
@@ -753,6 +819,8 @@ export async function buildSource(
       ...(builtThisRun ? { builtThisRun } : {}),
       rootAddress: contentSourceEntityId ?? instruction.sourceEntityId,
       sourceName: persistSource.name,
+      sourceID: persistSource.sourceID,
+      site: environment,
    });
    const rendered = reportingDrift(environment, () =>
       renderBuildSQL(
