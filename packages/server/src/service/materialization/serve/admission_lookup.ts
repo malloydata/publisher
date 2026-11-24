@@ -82,7 +82,7 @@ async function entryOf(runnable: QueryMaterializer): Promise<Entry | string> {
       dialect: typeof struct.dialect === "string" ? struct.dialect : "",
       connectionName:
          typeof struct.connection === "string" ? struct.connection : undefined,
-      capabilities: stringCapabilitiesOf(runtime),
+      capabilities: await stringCapabilitiesOf(runtime),
    };
 }
 

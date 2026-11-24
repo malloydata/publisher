@@ -113,6 +113,7 @@ const FACADE_SURFACE = [
    "pushServedCopyContextToModels",
    "readDatabaseColumns",
    "readStorageColumns",
+   "recordStringCapabilitiesAtLoad",
    "refreshBuildPlan",
    "repeatedJoinOneKeyWarnings",
    "reportIncompatible",

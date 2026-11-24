@@ -130,6 +130,8 @@ export function fieldKey(path: readonly string[]): string {
 }
 
 const recorded = new WeakMap<object, StringCapabilities>();
+/** The read {@link refreshStringCapabilities} is making for a runtime, while it runs. */
+const reading = new WeakMap<object, Promise<void>>();
 
 /** Keep `capabilities` for queries compiled by `runtime`. */
 export function recordStringCapabilities(
@@ -139,11 +141,18 @@ export function recordStringCapabilities(
    recorded.set(runtime, capabilities);
 }
 
-/** What the last bind read for `runtime`'s model, or undefined: none yet. */
-export function stringCapabilitiesOf(
+/**
+ * What the last read recorded for `runtime`'s model (at load, or at the last
+ * commit), or undefined: none. A read still running for it, such as the one
+ * a load starts without waiting, is waited for, so a query over a table
+ * bound since never judges it before the record lands.
+ */
+export async function stringCapabilitiesOf(
    runtime: object | undefined,
-): StringCapabilities | undefined {
-   return runtime ? recorded.get(runtime) : undefined;
+): Promise<StringCapabilities | undefined> {
+   if (!runtime) return undefined;
+   await reading.get(runtime);
+   return recorded.get(runtime);
 }
 
 /** A named source of a compiled model, as this module reads it. */
@@ -567,5 +576,19 @@ export async function refreshStringCapabilities(
    runtime: object,
    args: CapabilityReadArgs,
 ): Promise<void> {
-   recordStringCapabilities(runtime, await readStringCapabilities(args));
+   // Only the latest read records: an earlier one landing late (a load's,
+   // overtaken by a commit's) never replaces what the later one read.
+   const read: Promise<void> = readStringCapabilities(args).then(
+      (capabilities) => {
+         if (reading.get(runtime) === read) {
+            recordStringCapabilities(runtime, capabilities);
+         }
+      },
+   );
+   reading.set(runtime, read);
+   try {
+      await read;
+   } finally {
+      if (reading.get(runtime) === read) reading.delete(runtime);
+   }
 }
