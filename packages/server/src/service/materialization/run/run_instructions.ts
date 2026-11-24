@@ -822,8 +822,9 @@ interface SelfInstructions {
  * now (`materialize`'s leaf keys): a reload that moves the leaf's primary key leaves its
  * address alone, and nothing reads or builds over it until a build checks
  * the new key. A check the build could not run is recorded (`unverified`),
- * so it does not count as a moved key: the table is carried, and nothing
- * builds over it until a rebuild records the check passed.
+ * so it does not count as a moved key: the table is carried, the next
+ * standalone run tries the check again (recheckUnverifiedLeafKeys in
+ * instructed_build.ts), and nothing builds over it until a check passes.
  */
 function rebuiltInFull(
    prior: ManifestEntry | undefined,

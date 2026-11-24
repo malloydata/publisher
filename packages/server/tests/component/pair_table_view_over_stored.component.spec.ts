@@ -15,6 +15,10 @@
  *  - A fresh package builds the pair table and the view in one run.
  *  - A pair table whose leaf key check failed refuses the view
  *    (`schema_incompatible`), naming the upstream and the check.
+ *  - A pair table whose leaf key check could not run is carried, and the
+ *    next standalone run retries the check once: still unable to run, the
+ *    key stays `unverified` and the view refused; passed, the view builds
+ *    over the carried table in that run and serves, equal to live.
  *  - A view that reads a measure the joined source declares does not compile
  *    over the re-root (the join carries only the stored dimensions): it is
  *    built from its definition and labelled `recomputed`, never `reused`.
@@ -783,7 +787,8 @@ for (const tier of tiers) {
    describe(`a pair table whose leaf key check cannot run is carried, not rebuilt, and the view over it stays refused (${tier.label})`, () => {
       // Every leaf key check throws, in both runs. The pair table records the
       // leaf key as unverified: the next run carries it (the key never
-      // moved), and nothing builds over it, since the check never passed.
+      // moved), retries the check once, and, since it still cannot run,
+      // nothing builds over it.
       const f = new Fixture(tier, MECHANISMS[0].model);
       const query = asText(MECHANISMS[0]);
       let live: Answer;
@@ -850,9 +855,12 @@ for (const tier of tiers) {
          });
       });
 
-      it("carries the pair table in the next run rather than rebuilding it", () => {
-         // A rebuild would have run its leaf check again.
-         expect(leafChecksInSecond).toBe(0);
+      it("carries the pair table in the next run, retrying its check once rather than rebuilding it", () => {
+         // A rebuild would have run its check at build; the carry retries it
+         // once. Still unable to run, the key stays unverified and the view
+         // refused, so the run, building nothing, records no entry.
+         expect(leafChecksInSecond).toBe(1);
+         expect(second.status).toBe("FAILED");
       });
 
       it("never builds the view over it, in either run", () => {
@@ -874,6 +882,113 @@ for (const tier of tiers) {
       it("answers equal to live throughout", () => {
          expect(afterFirst.rows).toEqual(live.rows);
          expect(afterSecond.rows).toEqual(live.rows);
+      });
+   });
+}
+
+for (const tier of tiers) {
+   describe(`a pair table whose leaf key check could not run is checked again at the next standalone run, and the view over it then builds (${tier.label})`, () => {
+      // The first run's leaf check throws; the second's runs. The second
+      // run carries the pair table, records the check passed, and builds
+      // the view over the carried table; the third carries both and checks
+      // nothing.
+      const f = new Fixture(tier, MECHANISMS[0].model);
+      const query = asText(MECHANISMS[0]);
+      let live: Answer;
+      let first: Materialization;
+      let second: Materialization;
+      let third: Materialization;
+      let afterFirst: Answer;
+      let afterSecond: Answer;
+      let checkKey: Mock<DatabaseTier["checkKey"]>;
+      let failing = true;
+      const counts: number[] = [];
+      const leafChecks = () =>
+         checkKey.mock.calls.filter((c) =>
+            (c[1] as { contractKey?: string }).contractKey?.startsWith("leaf:"),
+         ).length;
+
+      beforeAll(async () => {
+         const original = DatabaseTier.prototype.checkKey;
+         checkKey = spyOn(
+            DatabaseTier.prototype,
+            "checkKey",
+         ).mockImplementation(function (this: DatabaseTier, ...args) {
+            const check = args[1] as { contractKey?: string };
+            if (failing && check.contractKey?.startsWith("leaf:")) {
+               return Promise.reject(new Error("leaf check unavailable"));
+            }
+            return original.apply(this, args);
+         });
+         await f.open();
+         live = await f.ask(query);
+         first = await f.build({});
+         counts.push(leafChecks());
+         afterFirst = await f.ask(query);
+         failing = false;
+         second = await f.build({});
+         counts.push(leafChecks());
+         afterSecond = await f.ask(query);
+         third = await f.build({});
+         counts.push(leafChecks());
+      }, 300_000);
+      afterAll(async () => {
+         checkKey.mockRestore();
+         await f.close();
+      });
+
+      const pairOf = (m: Materialization) =>
+         Object.values(entriesOf(m)).find(
+            (e) => e.sourceName?.startsWith("orders") ?? false,
+         );
+      const viewOf = (m: Materialization) =>
+         Object.values(entriesOf(m)).find((e) =>
+            MECHANISMS[0].downstream.test(e.sourceName ?? ""),
+         );
+
+      it("records the leaf key unverified and refuses the view in the first run", () => {
+         expect(counts[0]).toBe(1);
+         expect(pairOf(first)?.contract?.keys?.["leaf:items.item_id"]).toEqual({
+            unique: false,
+            level: "leaf",
+            unverified: true,
+         });
+         expect(viewOf(first)?.builtAt).toBeUndefined();
+         expect(
+            failuresOf(first)
+               .filter((x) => MECHANISMS[0].downstream.test(x.sourceName ?? ""))
+               .map((x) => x.code),
+         ).toEqual(["schema_incompatible"]);
+      });
+
+      it("checks the carried pair table once in the next run and records the check passed", () => {
+         expect(counts[1] - counts[0]).toBe(1);
+         expect(pairOf(second)?.builtAt).toBe(pairOf(first)?.builtAt);
+         expect(pairOf(second)?.contract?.keys?.["leaf:items.item_id"]).toEqual(
+            { unique: true, level: "leaf" },
+         );
+      });
+
+      it("builds the view over the carried pair table in that run, and serves it equal to live", () => {
+         const view = viewOf(second)!;
+         expect(view.builtAt).toEqual(expect.any(String));
+         expect(view.upstreamReuse).toBe("reused");
+         expect(view.builtFrom?.[0]?.builtAt).toBe(pairOf(second)!.builtAt);
+         expect(failuresOf(second)).toEqual([]);
+         const kinds: (string | undefined)[] =
+            tier.label === "DuckDB"
+               ? [MECHANISMS[0].servedBy]
+               : [MECHANISMS[0].servedBy, "materialized"];
+         expect(kinds).toContain(afterSecond.kind);
+         expect(afterFirst.rows).toEqual(live.rows);
+         expect(afterSecond.rows).toEqual(live.rows);
+      });
+
+      it("carries both in the run after, checking nothing", () => {
+         expect(counts[2] - counts[1]).toBe(0);
+         expect(pairOf(third)!.builtAt).toBe(pairOf(second)!.builtAt);
+         expect(viewOf(third)!.builtAt).toBe(viewOf(second)!.builtAt);
+         expect(failuresOf(third)).toEqual([]);
       });
    });
 }

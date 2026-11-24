@@ -20,7 +20,8 @@ import {
    targetsIn,
 } from "../../../test_helpers/materialization_test_fixtures";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { DatabaseTier } from "./database_build_strategy";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { computeSourceEntityId } from "../plan/build_plan";
@@ -107,7 +108,11 @@ async function scenario() {
    } as BuildInstruction;
    let previous: Record<string, ManifestEntry> = {};
    let runs = 0;
-   async function run(rebuild: boolean, orchestrated = false) {
+   async function run(
+      rebuild: boolean,
+      orchestrated = false,
+      seed?: Record<string, ManifestEntry>,
+   ) {
       runs += 1;
       const ledger = new UniquenessLedger(undefined, `run-${runs}`);
       const result = await build.run({
@@ -116,7 +121,7 @@ async function scenario() {
          instructions: rebuild
             ? [orchestrated ? { ...instruction, sourceID } : instruction]
             : [],
-         seedEntries: rebuild ? {} : previous,
+         seedEntries: rebuild ? {} : (seed ?? previous),
          signal: new AbortController().signal,
          priorRefusals: [],
          hostInstructed: orchestrated,
@@ -287,4 +292,117 @@ describe("a pair table's leaf key check, on a build", () => {
       });
       expect(bound()?.primaryKeys).toEqual({ "segs@m": false });
    });
+});
+
+describe("a pair table's leaf key check that could not run", () => {
+   /** Leaf key checks fail to run while `failing.on`; counts each try. */
+   function flakyChecks() {
+      const failing = { on: true, tries: 0 };
+      const original = DatabaseTier.prototype.checkKey;
+      const spy = spyOn(DatabaseTier.prototype, "checkKey").mockImplementation(
+         function (this: DatabaseTier, ...args) {
+            const check = args[1] as { contractKey?: string };
+            if (check.contractKey?.startsWith("leaf:")) {
+               failing.tries += 1;
+               if (failing.on) {
+                  return Promise.reject(new Error("leaf check unavailable"));
+               }
+            }
+            return original.apply(this, args);
+         },
+      );
+      return { failing, restore: () => spy.mockRestore() };
+   }
+   const unverified = {
+      unique: false,
+      level: "leaf",
+      unverified: true,
+   } as const;
+
+   it(
+      "is tried again once by the next standalone run, which records the check passed on the carried table",
+      async () => {
+         const s = await scenario();
+         const flaky = flakyChecks();
+         try {
+            const first = await s.run(true);
+            expect(s.leafCheck(first)).toEqual(unverified);
+            flaky.failing.on = false;
+            const tries = flaky.failing.tries;
+            const second = await s.run(false);
+            expect(flaky.failing.tries - tries).toBe(1);
+            // Carried, not rebuilt: the same table, now checked.
+            expect(second.entries[s.address]?.builtAt).toBe(
+               first.entries[s.address]?.builtAt,
+            );
+            expect(s.leafCheck(second)).toEqual({
+               unique: true,
+               level: "leaf",
+            });
+            // Passed: nothing is tried again.
+            await s.run(false);
+            expect(flaky.failing.tries - tries).toBe(1);
+         } finally {
+            flaky.restore();
+         }
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "stays unverified when it still cannot run, tried once per run and never in a loop",
+      async () => {
+         const s = await scenario();
+         const flaky = flakyChecks();
+         try {
+            await s.run(true);
+            for (const expected of [2, 3]) {
+               expect(s.leafCheck(await s.run(false))).toEqual(unverified);
+               expect(flaky.failing.tries).toBe(expected);
+            }
+         } finally {
+            flaky.restore();
+         }
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "records a key the retry finds repeated as failed",
+      async () => {
+         const s = await scenario();
+         const flaky = flakyChecks();
+         try {
+            await s.run(true);
+            flaky.failing.on = false;
+            await s.duckdb.runSQL("INSERT INTO segs_src VALUES (10, 2, 1.0)");
+            expect(s.leafCheck(await s.run(false))).toEqual({
+               unique: false,
+               level: "leaf",
+            });
+         } finally {
+            flaky.restore();
+         }
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "is not tried by a host's run, which carries what it was handed",
+      async () => {
+         const s = await scenario();
+         const flaky = flakyChecks();
+         try {
+            const first = await s.run(true);
+            flaky.failing.on = false;
+            const tries = flaky.failing.tries;
+            const carried = await s.run(false, true, first.entries);
+            expect(flaky.failing.tries).toBe(tries);
+            expect(s.leafCheck(carried)).toEqual(unverified);
+         } finally {
+            flaky.restore();
+         }
+      },
+      { timeout: 60000 },
+   );
 });
