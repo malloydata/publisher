@@ -51,8 +51,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2n",
    "service/environment.ts -> service/materialization/run/manifest_loader":
       "2n",
-   "service/environment_store.ts -> service/materialization/run/inline_uniqueness":
-      "2n",
    "service/model.ts -> service/materialization/plan/build_plan": "2n",
    "service/model.ts -> service/materialization/plan/persisted_view": "2n",
    "service/model.ts -> service/materialization/plan/preaggregation_validation":

@@ -500,4 +500,86 @@ describe("the key checks a contract records", () => {
       expect(keyUniquenessOfContract(contract({}), [ORDERS])).toBeUndefined();
       expect(keyUniquenessOfContract(undefined, [ORDERS])).toBeUndefined();
    });
+
+   const ITEMS = {
+      sourceID: "items@file:///pkg/m/items.malloy",
+      relativeID: "items@m/items.malloy",
+      primaryKey: "item_id",
+   };
+   const OPTIONS = {
+      sourceID: "options@file:///pkg/m/options.malloy",
+      relativeID: "options@m/options.malloy",
+      primaryKey: "option_id",
+   };
+   const LEAVES = [
+      { joinPath: "items", sourceID: ITEMS.sourceID },
+      { joinPath: "items.options", sourceID: OPTIONS.sourceID },
+   ];
+
+   it("reads a pair leaf's check by the join path the plan names, as the leaf source's", () => {
+      expect(
+         keyUniquenessOfContract(
+            contract({
+               "leaf:items.item_id": { unique: true, level: "leaf" },
+               "leaf:items.options.option_id": { unique: false, level: "leaf" },
+            }),
+            [ITEMS, OPTIONS],
+            LEAVES,
+         ),
+      ).toEqual({
+         parentKeys: { [ITEMS.sourceID]: true, [OPTIONS.sourceID]: false },
+         parentKeyColumns: {
+            [ITEMS.sourceID]: "item_id",
+            [OPTIONS.sourceID]: "option_id",
+         },
+      });
+   });
+
+   it("reads no leaf check recorded for another key, or for a leaf the plan does not name", () => {
+      expect(
+         keyUniquenessOfContract(
+            contract({
+               // The key `items` declared when the table was built.
+               "leaf:items.old_id": { unique: true, level: "leaf" },
+               "leaf:other.option_id": { unique: true, level: "leaf" },
+            }),
+            [ITEMS, OPTIONS],
+            LEAVES,
+         ),
+      ).toBeUndefined();
+      // A leaf source the models no longer declare.
+      expect(
+         keyUniquenessOfContract(
+            contract({ "leaf:items.item_id": { unique: true, level: "leaf" } }),
+            [OPTIONS],
+            LEAVES,
+         ),
+      ).toBeUndefined();
+   });
+
+   it("reads a check that could not run (unverified) as not passed", () => {
+      expect(
+         keyUniquenessOfContract(
+            contract({
+               "leaf:items.item_id": {
+                  unique: true,
+                  level: "leaf",
+                  unverified: true,
+               },
+               "rollup:category": {
+                  unique: true,
+                  level: "rollup",
+                  unverified: true,
+               },
+            }),
+            [ITEMS],
+            LEAVES,
+         ),
+      ).toEqual({
+         keyColumn: "category",
+         unique: false,
+         parentKeys: { [ITEMS.sourceID]: false },
+         parentKeyColumns: { [ITEMS.sourceID]: "item_id" },
+      });
+   });
 });

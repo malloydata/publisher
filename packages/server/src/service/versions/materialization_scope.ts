@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { leafKey } from "../materialization/domain/physical_table";
+import { contractWithoutKeys } from "../materialization/domain/column_contract";
+import { isActiveRun } from "../materialization/domain/types";
 import { createHash } from "crypto";
 import type {
    Materialization,
@@ -239,19 +241,14 @@ export function tableIdentity(physicalTableName: string): string {
 
 /**
  * How a loaded package finds, in the store, the tables it serves from (see
- * newestServingEntries).
+ * newestServingEntries). While a run of the package is still active it may
+ * be rewriting a table in place, so no key check a contract records is
+ * bound then: those tables' joins that need a verdict answer live until a
+ * bind after the run ends (the run's own load binds what it found).
  */
 export function storageBindingResolverFor(
    repository: Pick<ResourceRepository, "listMaterializations">,
    environmentId: string,
-   /**
-    * What the bind adds to the entries from the runs they came from: the
-    * rollup key records (known limitation 29, `withRollupKeyRecords`).
-    */
-   annotate?: (
-      entries: Record<string, ManifestEntry>,
-      runs: Materialization[],
-   ) => Record<string, ManifestEntry>,
 ): (
    packageName: string,
    reader: ServingReader,
@@ -263,8 +260,29 @@ export function storageBindingResolverFor(
          reader.owned !== undefined ? { version: reader.owned } : undefined,
       );
       const entries = storedServingEntries(runs, reader);
-      return annotate ? annotate(entries, runs) : entries;
+      return runs.some((run) => isActiveRun(run.status))
+         ? withoutKeyChecks(entries)
+         : entries;
    };
+}
+
+/** `entries`, each with no key check in its contract ({@link contractWithoutKeys}). */
+function withoutKeyChecks(
+   entries: Record<string, ManifestEntry>,
+): Record<string, ManifestEntry> {
+   return Object.fromEntries(
+      Object.entries(entries).map(([id, entry]) => [
+         id,
+         entry.contract === undefined
+            ? entry
+            : {
+                 ...entry,
+                 contract: contractWithoutKeys(
+                    entry.contract,
+                 ) as ManifestEntry["contract"],
+              },
+      ]),
+   );
 }
 
 /**

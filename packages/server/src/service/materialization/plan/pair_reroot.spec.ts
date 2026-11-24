@@ -15,6 +15,7 @@ import {
    materializePlanNamed,
    planPackages,
 } from "../../../test_helpers/materialization_fixture";
+import { pairLeavesOf } from "../domain/table_plans";
 import {
    pairLeafContractKeys,
    pairRerootBase,
@@ -97,6 +98,13 @@ source: orders is raw extend {
       expect(pairLeafContractKeys(plan)).toEqual([
          "leaf:items.options.option_id",
       ]);
+      // A bind reads that check as the leaf source's (`opts`), by the path.
+      expect(pairLeavesOf(plan)).toEqual([
+         {
+            joinPath: "items.options",
+            sourceID: expect.stringMatching(/^opts@/),
+         },
+      ]);
    });
 
    it("two blocks: each path its own join, every read on its block's rows", async () => {
@@ -128,6 +136,10 @@ source: orders is raw extend {
       expect(pairLeafContractKeys(plan)).toEqual([
          "leaf:items.item_id",
          "leaf:notes.note_id",
+      ]);
+      expect(pairLeavesOf(plan)).toEqual([
+         { joinPath: "items", sourceID: expect.stringMatching(/^items1@/) },
+         { joinPath: "notes", sourceID: expect.stringMatching(/^notes@/) },
       ]);
    });
 

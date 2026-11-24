@@ -76,7 +76,6 @@ import {
 import { boundParentReads, incrementalEntriesOf } from "./incremental_upstream";
 import {
    INLINE_UNIQUENESS_KEY,
-   rollupKeyRecordsIn,
    uncontestedAutoRun,
    UniquenessLedger,
    uniquenessPassesIn,
@@ -740,7 +739,7 @@ export class MaterializationService {
       // which a rebind from the store holds across its read and its bind
       // (Environment.rebindPackageFromStore, and a load's): the read either
       // sees this run active, and so binds no key check of a table it may
-      // rewrite (uncontestedAutoRun), or the bind lands first, and this run
+      // rewrite (storageBindingResolverFor), or the bind lands first, and this run
       // forgets what it bound before writing.
       if (version === null) {
          return environment.withPackageLock(packageName, start);
@@ -1718,7 +1717,6 @@ export class MaterializationService {
                  return new UniquenessLedger(
                     prior ? uniquenessPassesIn(prior) : undefined,
                     id,
-                    prior ? rollupKeyRecordsIn(prior) : undefined,
                  );
               })(),
          // Fresh on each ask: a run committed since the run began may name
@@ -1866,7 +1864,6 @@ export class MaterializationService {
                     packageName,
                     committedEntries,
                     versionId,
-                    uniquenessChecks?.rollupKeys,
                     // A stop that landed during the load did not cut it
                     // short; the run says so.
                     (served) =>
