@@ -476,3 +476,50 @@ describe("a manifest that cannot be fetched", () => {
       }
    });
 });
+
+describe("a refused PUT to a version that was not loaded", () => {
+   it("leaves the copy it loaded serving a request that joined the load", async () => {
+      await publishLive();
+      versions().cache.evict(PKG, "1.0.0");
+      const retired = (
+         env as unknown as { retiredConnectionGenerations: Set<unknown> }
+      ).retiredConnectionGenerations;
+      const retiredBefore = retired.size;
+      let fail!: (error: Error) => void;
+      const fetched = new Promise<never>((_, reject) => {
+         fail = reject;
+      });
+      fetched.catch(() => undefined);
+      const fetches = spyOn(
+         manifestLoader,
+         "fetchManifestEntries",
+      ).mockImplementation(() => fetched);
+      try {
+         const put = versions()
+            .setManifest(PKG, "1.0.0", "gs://unreachable/manifest.json")
+            .catch((error: unknown) => error);
+         // The PUT's load is reading the manifest: a query arrives and
+         // joins that load.
+         while (fetches.mock.calls.length === 0) await Bun.sleep(5);
+         const joined = env.getPackage(parsePackageName(PKG), false, {
+            versionId: VersionRef.parse("1.0.0"),
+         });
+         fail(new Error("the bucket did not answer"));
+         expect(await put).toBeInstanceOf(ManifestBindFailedError);
+         const pkg = await joined;
+
+         // Still the copy served, never released, and on the row put back:
+         // nothing bound, live.
+         expect(retired.size).toBe(retiredBefore);
+         expect(versions().cache.peek(PKG, "1.0.0")).toBe(pkg);
+         expect(pkg.getManifestLocation() ?? null).toBeNull();
+         expect(pkg.materialization().bindingState()).toMatchObject({
+            manifestBindingStatus: "unbound",
+            boundManifestUri: null,
+         });
+         expect(await total(pkg)).toEqual({ n: 1, servedBy: "live" });
+      } finally {
+         fetches.mockRestore();
+      }
+   });
+});

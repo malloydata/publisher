@@ -1284,12 +1284,12 @@ export class VersionService<P = unknown> {
          manifestLocation,
       );
       const resident = this.cache.peek(packageName, versionId);
+      let loaded = resident;
       try {
          // Not loaded: load it (through memory admission, like any load).
          // A load already running read the row before this write and binds
          // the previous manifest, so it is brought up to the row after.
-         const loaded =
-            resident ?? (await this.loadOrRefuse(packageName, versionId));
+         loaded ??= await this.loadOrRefuse(packageName, versionId);
          if (
             resident !== undefined ||
             !host.boundManifestOf ||
@@ -1302,11 +1302,6 @@ export class VersionService<P = unknown> {
          }
          return loaded;
       } catch (error) {
-         // A copy this request loaded bound the row's new manifest as it
-         // loaded: drop it, so the next read loads the row put back.
-         if (resident === undefined) {
-            this.cache.evict(packageName, versionId);
-         }
          // Nothing was bound: the row goes back, so it never names a
          // binding the version does not serve.
          await this.registry
@@ -1322,6 +1317,21 @@ export class VersionService<P = unknown> {
                   { packageName, versionId, error: restoreError },
                ),
             );
+         // A copy this request loaded bound the row's new manifest as it
+         // loaded. It is cached, and other requests may hold it already (one
+         // that joined the load, or read it since), so it is not evicted
+         // from under their queries: it is bound, in place, to what the row
+         // names again, as a load of that row binds it.
+         if (resident === undefined && loaded !== undefined) {
+            await host
+               .bindVersionManifest(loaded, current.manifestPath)
+               .catch((rebindError) =>
+                  logger.error(
+                     "Could not rebind a version after its manifest was refused",
+                     { packageName, versionId, error: rebindError },
+                  ),
+               );
+         }
          throw error;
       }
    }
