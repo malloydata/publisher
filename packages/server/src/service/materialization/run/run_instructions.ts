@@ -806,6 +806,13 @@ interface SelfInstructions {
    /** Tables this run builds under a new name in place of an earlier run's. */
    renamed: RenamedTable[];
    /**
+    * Pair tables this run rebuilds because their contract records a leaf key
+    * check that could not run (`unverified`), by content address: a check
+    * the rebuild still cannot run is recorded `rebuiltToVerify`, and that
+    * table is not rebuilt for it again ({@link awaitsVerifyingRebuild}).
+    */
+   rebuiltToVerify: Set<string>;
+   /**
     * Incremental tables a delta would advance in place rather than reseed,
     * by content address, with their prior entries: the run keeps their rows,
     * as it keeps a carried table's (see deriveHoldingCarried).
@@ -821,10 +828,10 @@ interface SelfInstructions {
  * table whose contract records no check of a leaf key the model declares
  * now (`materialize`'s leaf keys): a reload that moves the leaf's primary key leaves its
  * address alone, and nothing reads or builds over it until a build checks
- * the new key. A check the build could not run is recorded (`unverified`),
- * so it does not count as a moved key: the table is carried, the next
- * standalone run tries the check again (recheckUnverifiedLeafKeys in
- * instructed_build.ts), and nothing builds over it until a check passes.
+ * the new key. So is one whose check the build could not run (recorded
+ * `unverified`), once ({@link awaitsVerifyingRebuild}): the check runs again
+ * right after the rebuild writes the table, over the rows it was built
+ * from, never over a table built from rows since changed.
  */
 function rebuiltInFull(
    prior: ManifestEntry | undefined,
@@ -838,7 +845,29 @@ function rebuiltInFull(
    return (
       contract === undefined ||
       options.incompatible?.has(sourceEntityId) === true ||
-      leafKeys.some((k) => contract.keys?.[k] === undefined)
+      leafKeys.some((k) => contract.keys?.[k] === undefined) ||
+      awaitsVerifyingRebuild(prior, materialize)
+   );
+}
+
+/**
+ * Whether a pair table's contract records a check of a leaf key the model
+ * declares that its build could not run (`unverified`), and the table was
+ * not itself rebuilt to run it (`rebuiltToVerify`). Such a table is rebuilt
+ * in full, once per table: a check is taken over the rows the table was
+ * built from, so one run later over the leaf's current rows could pass a
+ * table built while the leaf held a key twice. A rebuild whose check still
+ * cannot run records it `rebuiltToVerify`, and that table stays carried,
+ * the views over it refused, until it is rebuilt for another reason.
+ */
+function awaitsVerifyingRebuild(
+   prior: ManifestEntry | undefined,
+   materialize: MaterializePlan | undefined,
+): boolean {
+   if (prior === undefined || materialize === undefined) return false;
+   const keys = servableContract(prior.contract)?.keys;
+   return pairLeafContractKeys(materialize).some(
+      (k) => keys?.[k]?.unverified === true && keys[k].rebuiltToVerify !== true,
    );
 }
 
@@ -962,6 +991,7 @@ export function deriveSelfInstructions(
    const confirmExists: Record<string, BuildInstruction> = {};
    const renamed: RenamedTable[] = [];
    const advanced: Record<string, ManifestEntry> = {};
+   const rebuiltToVerify = new Set<string>();
    const { sources, refused, refusals, cleared } = gateSources(
       compiled,
       include,
@@ -1042,11 +1072,12 @@ export function deriveSelfInstructions(
          destination,
          options,
       });
+      const materialize = compiled.tables[persistSource.sourceID]?.materialize;
       const mustRebuild = rebuiltInFull(
          prior ?? inPlace,
          sourceEntityId,
          options,
-         compiled.tables[persistSource.sourceID]?.materialize,
+         materialize,
       );
       const instruction = selfInstruction(
          sourceEntityId,
@@ -1111,6 +1142,9 @@ export function deriveSelfInstructions(
       ) {
          advanced[sourceEntityId] = inPlace;
       }
+      if (awaitsVerifyingRebuild(prior ?? inPlace, materialize)) {
+         rebuiltToVerify.add(sourceEntityId);
+      }
       instructions.push(instruction);
    }
 
@@ -1143,6 +1177,7 @@ export function deriveSelfInstructions(
       confirmExists,
       renamed: notWrittenThisRun(renamed, instructions, carried, sources),
       advanced,
+      rebuiltToVerify,
    };
 }
 

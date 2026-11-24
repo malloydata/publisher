@@ -527,6 +527,9 @@ export class InstructedBuild {
          ...(options.onBuildStarted
             ? { onBuildStarted: options.onBuildStarted }
             : {}),
+         ...(options.rebuiltToVerify && !hostInstructed
+            ? { rebuiltToVerify: options.rebuiltToVerify }
+            : {}),
          index,
          // Once per run: it depends only on the plan.
          planFacts: {
@@ -577,12 +580,6 @@ export class InstructedBuild {
          refusedSources: {},
       };
       try {
-         // A standalone run first retries the leaf key checks a carried pair
-         // table's last build could not run, so the views over it this run
-         // builds read what they find.
-         if (!hostInstructed) {
-            await recheckUnverifiedLeafKeys(run, builds, connections);
-         }
          await this.buildEveryTable(run, builds, tables, connections);
          // Stopped during the last source: the loop has nothing left to
          // check before, so the run settles CANCELLED here rather than
@@ -956,6 +953,7 @@ export class InstructedBuild {
          ),
          leafChecks,
          materialize ? pairLeafContractKeys(materialize) : [],
+         run.rebuiltToVerify?.has(sourceEntityId) === true,
       );
       // Before the entry is reported, so its contract carries what they found.
       const entry = withContractKeys(
@@ -2197,89 +2195,21 @@ async function runPairLeafKeyChecks(
 }
 
 /**
- * Retry, once each, the leaf key checks a carried pair table's contract
- * records `unverified` (its build could not run them), on the source's
- * connection, and record what each finds in the carried entry's contract:
- * passed, the views over the table build in this run and the bind serves
- * them; found repeated, they stay refused. One that still cannot run stays
- * `unverified`, for the next standalone run to try again: at most one try
- * per key per run, never a loop. Only a table this run carries (its address
- * seeded and not instructed): a rebuilt one runs its checks at build.
- * Never fails the run.
- */
-async function recheckUnverifiedLeafKeys(
-   run: Pick<InstructedRun, "compiled" | "entries" | "index">,
-   builds: RunPlan["builds"],
-   connections: RunPlan["connections"],
-): Promise<void> {
-   const { compiled } = run;
-   const seen = new Set<string>();
-   for (const { sourceID, connectionName } of sourcesInDependencyOrder(
-      builds,
-   )) {
-      const table = compiled.tables[sourceID];
-      const plan = table?.materialize;
-      if (!table || !plan?.pair) continue;
-      let address: string;
-      try {
-         address = computeSourceEntityId(
-            table.source,
-            compiled.connectionDigests,
-            table.target,
-            compiled.tableFolds,
-            compiled.upstreamSchemas,
-         );
-      } catch {
-         continue;
-      }
-      if (seen.has(address) || run.index.bySourceEntityId.has(address)) {
-         continue;
-      }
-      seen.add(address);
-      const entry = run.entries[address];
-      const contract = parseContract(entry?.contract);
-      const connection = connections.get(connectionName);
-      if (!entry || !contract || !connection) continue;
-      const checks = pairLeafKeyChecksOf(plan).filter(
-         (c) => contract.keys?.[c.contractKey]?.unverified === true,
-      );
-      if (checks.length === 0) continue;
-      const found = await runPairLeafKeyChecks(
-         checks,
-         connection,
-         table.source.name,
-      );
-      const keys: Record<string, ContractKeyCheck> = {};
-      for (const { check, record } of found) {
-         if (record) {
-            keys[check.contractKey] = { unique: record.unique, level: "leaf" };
-         }
-      }
-      logger.info("Retried a carried pair table's unverified leaf key checks", {
-         sourceName: table.source.name,
-         sourceEntityId: address,
-         checked: checks.length,
-         recorded: Object.keys(keys).length,
-      });
-      if (Object.keys(keys).length > 0) {
-         run.entries[address] = entryWithKeys(entry, contract, keys);
-      }
-   }
-}
-
-/**
  * `entry` with its leaf key checks in its contract's `keys`. Each leaf key
  * the plan declares (`declared`) whose check did not run (it threw, or was
  * never compiled) is recorded `unverified`: never read as passed, so nothing
  * builds over the table, but recorded under the key the table was built
- * with, so a later run carries the table rather than rebuilding it for a
- * key that never moved (see `rebuiltInFull` in run_instructions.ts), and a
- * standalone one tries the check again ({@link recheckUnverifiedLeafKeys}).
+ * with, so a later run does not take it for a moved key. A later standalone
+ * run rebuilds the table once to run the check again (`rebuiltInFull` in
+ * run_instructions.ts); `rebuiltToVerify` is set on the build that is that
+ * rebuild, whose checks still unable to run are recorded so, and the table
+ * is not rebuilt for them again.
  */
 export function withLeafKeys(
    entry: ManifestEntry,
    leafChecks: readonly PairLeafCheck[],
    declared: readonly string[] = [],
+   rebuiltToVerify = false,
 ): ManifestEntry {
    const contract = parseContract(entry.contract);
    // Unlike withContractKeys, a run whose leaf checks all failed to run still
@@ -2289,7 +2219,12 @@ export function withLeafKeys(
    }
    const keys: Record<string, ContractKeyCheck> = {};
    for (const key of declared) {
-      keys[key] = { unique: false, level: "leaf", unverified: true };
+      keys[key] = {
+         unique: false,
+         level: "leaf",
+         unverified: true,
+         ...(rebuiltToVerify ? { rebuiltToVerify: true } : {}),
+      };
    }
    for (const { check, record } of leafChecks) {
       if (record) {

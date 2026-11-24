@@ -297,6 +297,8 @@ interface RunInstructions {
    refused: Record<string, RefusedSource>;
    cleared: ReadonlyMap<string, EligibilityTier> | undefined;
    renamed: RenamedTable[];
+   /** Pair tables rebuilt to run a leaf key check that could not run. */
+   rebuiltToVerify?: ReadonlySet<string>;
 }
 
 /** What the instructed build returned. */
@@ -1411,6 +1413,7 @@ export class MaterializationService {
       // Tables built under readable names in place of an earlier run's,
       // reclaimed once this run commits (Reclaimer.reclaimRenamedTables).
       let renamed: RenamedTable[] = [];
+      let rebuiltToVerify: ReadonlySet<string> | undefined;
       let carried: Record<string, ManifestEntry>;
       let derivedRefused: Record<string, RefusedSource> = {};
       let clearedTiers: ReadonlyMap<string, EligibilityTier> | undefined;
@@ -1486,6 +1489,7 @@ export class MaterializationService {
             recheck = {},
             confirmExists = {},
             renamed = [],
+            rebuiltToVerify,
          } = await deriveHoldingCarried(
             (incompatible) =>
                this.collaborators.deriveSelfInstructions(
@@ -1568,6 +1572,7 @@ export class MaterializationService {
          refused: derivedRefused,
          cleared: clearedTiers,
          renamed,
+         ...(rebuiltToVerify ? { rebuiltToVerify } : {}),
       };
    }
 
@@ -1659,6 +1664,7 @@ export class MaterializationService {
          carried,
          refused: derivedRefused,
          cleared: clearedTiers,
+         rebuiltToVerify,
       } = derived;
       // An instruction is checked against the plan the package serves
       // (validateInstructions); the run's own plan may have refused its
@@ -1695,6 +1701,7 @@ export class MaterializationService {
          incremental,
          priorRefusals: Object.values(derivedRefused),
          clearedTiers,
+         ...(rebuiltToVerify ? { rebuiltToVerify } : {}),
          hostInstructed: orchestrated,
          freshness: (() => {
             const index = declaredFreshnessIndex(pkg.getBuildPlan());

@@ -111,7 +111,7 @@ async function scenario() {
    async function run(
       rebuild: boolean,
       orchestrated = false,
-      seed?: Record<string, ManifestEntry>,
+      rebuiltToVerify = false,
    ) {
       runs += 1;
       const ledger = new UniquenessLedger(undefined, `run-${runs}`);
@@ -121,10 +121,11 @@ async function scenario() {
          instructions: rebuild
             ? [orchestrated ? { ...instruction, sourceID } : instruction]
             : [],
-         seedEntries: rebuild ? {} : (seed ?? previous),
+         seedEntries: rebuild ? {} : previous,
          signal: new AbortController().signal,
          priorRefusals: [],
          hostInstructed: orchestrated,
+         ...(rebuiltToVerify ? { rebuiltToVerify: new Set([address]) } : {}),
          uniqueness: ledger,
       });
       expect(result.failures).toEqual({});
@@ -320,28 +321,36 @@ describe("a pair table's leaf key check that could not run", () => {
    } as const;
 
    it(
-      "is tried again once by the next standalone run, which records the check passed on the carried table",
+      "is recorded unverified, and a carried table is never checked again over the leaf's current rows",
       async () => {
          const s = await scenario();
          const flaky = flakyChecks();
          try {
-            const first = await s.run(true);
-            expect(s.leafCheck(first)).toEqual(unverified);
+            expect(s.leafCheck(await s.run(true))).toEqual(unverified);
             flaky.failing.on = false;
             const tries = flaky.failing.tries;
-            const second = await s.run(false);
-            expect(flaky.failing.tries - tries).toBe(1);
-            // Carried, not rebuilt: the same table, now checked.
-            expect(second.entries[s.address]?.builtAt).toBe(
-               first.entries[s.address]?.builtAt,
-            );
-            expect(s.leafCheck(second)).toEqual({
+            // Carried: only a rebuild runs the check, over the rows it wrote.
+            expect(s.leafCheck(await s.run(false))).toEqual(unverified);
+            expect(flaky.failing.tries).toBe(tries);
+         } finally {
+            flaky.restore();
+         }
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "records what the rebuild that verifies it finds, with no mark once it ran",
+      async () => {
+         const s = await scenario();
+         const flaky = flakyChecks();
+         try {
+            await s.run(true);
+            flaky.failing.on = false;
+            expect(s.leafCheck(await s.run(true, false, true))).toEqual({
                unique: true,
                level: "leaf",
             });
-            // Passed: nothing is tried again.
-            await s.run(false);
-            expect(flaky.failing.tries - tries).toBe(1);
          } finally {
             flaky.restore();
          }
@@ -350,36 +359,23 @@ describe("a pair table's leaf key check that could not run", () => {
    );
 
    it(
-      "stays unverified when it still cannot run, tried once per run and never in a loop",
+      "marks a check the verifying rebuild still cannot run rebuiltToVerify, and no other build's",
       async () => {
          const s = await scenario();
          const flaky = flakyChecks();
          try {
             await s.run(true);
-            for (const expected of [2, 3]) {
-               expect(s.leafCheck(await s.run(false))).toEqual(unverified);
-               expect(flaky.failing.tries).toBe(expected);
-            }
-         } finally {
-            flaky.restore();
-         }
-      },
-      { timeout: 60000 },
-   );
-
-   it(
-      "records a key the retry finds repeated as failed",
-      async () => {
-         const s = await scenario();
-         const flaky = flakyChecks();
-         try {
-            await s.run(true);
-            flaky.failing.on = false;
-            await s.duckdb.runSQL("INSERT INTO segs_src VALUES (10, 2, 1.0)");
-            expect(s.leafCheck(await s.run(false))).toEqual({
-               unique: false,
-               level: "leaf",
+            expect(s.leafCheck(await s.run(true, false, true))).toEqual({
+               ...unverified,
+               rebuiltToVerify: true,
             });
+            // Carried, the mark rides on the entry.
+            expect(s.leafCheck(await s.run(false))).toEqual({
+               ...unverified,
+               rebuiltToVerify: true,
+            });
+            // A rebuild for another reason starts the table's generation over.
+            expect(s.leafCheck(await s.run(true))).toEqual(unverified);
          } finally {
             flaky.restore();
          }
@@ -388,17 +384,14 @@ describe("a pair table's leaf key check that could not run", () => {
    );
 
    it(
-      "is not tried by a host's run, which carries what it was handed",
+      "is never marked on a host's build, which the auto-run's rebuild set does not reach",
       async () => {
          const s = await scenario();
          const flaky = flakyChecks();
          try {
-            const first = await s.run(true);
-            flaky.failing.on = false;
-            const tries = flaky.failing.tries;
-            const carried = await s.run(false, true, first.entries);
-            expect(flaky.failing.tries).toBe(tries);
-            expect(s.leafCheck(carried)).toEqual(unverified);
+            expect(s.leafCheck(await s.run(true, true, true))).toEqual(
+               unverified,
+            );
          } finally {
             flaky.restore();
          }

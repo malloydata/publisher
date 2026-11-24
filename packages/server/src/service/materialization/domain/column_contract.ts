@@ -66,12 +66,17 @@ type ContractColumn = {
  * One key check a build ran over its table (`ColumnContract.keys`), or one
  * it was asked for and could not run (`unverified`, with `unique: false`):
  * recorded so a later run knows the key was the one the table was built
- * under, and still never read as passed.
+ * under, and still never read as passed. `rebuiltToVerify` marks an
+ * `unverified` check of a table that was itself rebuilt to run it (the
+ * table before it recorded the check `unverified` too): a standalone run
+ * rebuilds a pair table once for a leaf check that could not run, and not
+ * again for this table.
  */
 export type ContractKeyCheck = {
    unique: boolean;
    level?: string;
    unverified?: true;
+   rebuiltToVerify?: true;
 };
 
 /**
@@ -281,6 +286,9 @@ export function parseContract(raw: unknown): ColumnContract | undefined {
             unique: check.unique,
             ...(typeof check.level === "string" ? { level: check.level } : {}),
             ...(check.unverified === true ? { unverified: true } : {}),
+            ...(check.unverified === true && check.rebuiltToVerify === true
+               ? { rebuiltToVerify: true }
+               : {}),
          };
       }
    }
