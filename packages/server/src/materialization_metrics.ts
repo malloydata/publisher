@@ -108,6 +108,9 @@ export const INCREMENTAL_STEP_REASONS = [
    "shape_mismatch",
    "ledger_unreadable",
    "ledger_entry_malformed",
+   // A recorded boundary on a table the run's pre-run read did not hold to
+   // its contract (a seed whose run never committed, a destination left).
+   "ledger_unheld",
    "plan_error",
    "chained_storage",
    "pair_parent_row",

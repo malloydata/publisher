@@ -39,6 +39,14 @@ Each applies nothing, exactly as `MANIFEST_BIND_FAILED` does: the `manifestLocat
 
 **Who is affected:** a host that sets manifests and branches on the status or `reason` of a refusal. **What to do:** treat `400 MANIFEST_NOT_FOUND` and `422 MANIFEST_INVALID` as a location or file to fix before sending again (retrying unchanged fails the same way), and keep `500 MANIFEST_BIND_FAILED` as the retryable one.
 
+## [Unreleased] — a delta advances only an incremental table the run held to its contract
+
+**Fixed: a standalone run advanced an incremental table from its ledger even when its pre-run read had not held that table to its contract.** The read holds each table a delta will advance, but the build advanced from the ledger whatever the read had covered, so two tables went unread: one a run seeded and then failed before it committed (the ledger was written, no committed entry named the table), and one a source left for another `storage=` destination and came back to (the ledger at the first destination survives the move). A column retyped out of band in either (`numeric(10,1)` to `numeric(10,0)`, still a number) took the delta's rows rounded. Now a delta advances a table only when the read held that very table, the same name in the same destination; any other with a recorded boundary is reseeded, with `reasonCode` `ledger_unheld` (also a `reason` on `publisher_materialization_incremental_step_total`). A forced run (`forceRefresh`, every scheduled fire) holds nothing and is unchanged, as is a host that sends the ledger.
+
+**Fixed: an incremental source's entry from an older run is not used once a later run replaced its table.** The run takes each incremental source's newest entry from any committed run; it now skips one its run marked superseded and one naming a table a later committed run recorded again, so such a table is reseeded rather than advanced on a stale record.
+
+**How to tell:** a run logs `Rebuilding an incremental source in full` with `reasonCode` `ledger_unheld`. **What to do:** nothing; the reseed is one full rebuild of that table. No API change.
+
 ## [Unreleased] — key-uniqueness verdicts are read only from the table's column contract
 
 **[change] Key-uniqueness verdicts have one store: each table's column contract (`contract.keys`).** A verdict a build recorded (a `#(rollup)` rollup's own key, a querying source's primary key, a stored source's primary key, a pair table's leaf key) is bound only when the contract records it for the primary key the model declares now and it passed (`unique: true`, not `unverified`); anything else, including a check that could not run, answers live. The bind decides; a query only looks the verdict up. What moves:
