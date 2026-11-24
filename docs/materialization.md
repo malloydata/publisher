@@ -1076,7 +1076,11 @@ Every standalone run, named sources or not, first reads each table it would carr
 the contract its build recorded, as a bind does (one catalog read per table: database tables on
 their warehouse, `storage=` tables in their destination). A table altered since its build, by an
 `ALTER` the package's last bind never saw, is rebuilt in full rather than carried, and its
-downstreams build over the rebuilt table in the same run.
+downstreams build over the rebuilt table in the same run. Only the tables the run carries, and the
+incremental tables a delta advances in place, are read (never one it rebuilds anyway, refuses, or
+leaves out of a run of named sources), within 60 seconds in all. A carried table not read in time is
+carried, held by the bind and each downstream build's upstream check; an incremental one is reseeded
+rather than advanced (`contract_unverified`).
 
 A run a host instructs (`buildInstructions`) ends every instructed source in exactly one of the
 manifest's `entries` or `failures`, never neither. Each source the run builds is held to the plan's
