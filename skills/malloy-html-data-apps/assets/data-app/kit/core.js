@@ -101,6 +101,26 @@ export function modelDocs() {
   return docsP
 }
 
+/**
+ * What Publisher built for this package, for the back of a block: each table by its id (a stored source, or a
+ * rollup with its base source, grain and measures) and when the last build finished. Fetched once, when a reader
+ * first turns a block over; null where the host does not answer, and the back then says less.
+ */
+let servedP = null
+export function servedTables() {
+  if (!servedP) {
+    const base = modelAt?.url.replace(/\/models\/.*$/, '')
+    const get = (path) => pageFetch(`${base}/${path}`, modelAt.init).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+    servedP = !base ? Promise.resolve(null) : Promise.all([get('build-plan'), get('materializations')]).then(([plan, runs]) => {
+      if (!plan?.sources) return null
+      const tables = new Map(Object.values(plan.sources).map((src) => [src.sourceEntityId, { name: src.name, origin: src.origin, rollup: src.preaggregate || null }]))
+      const done = (Array.isArray(runs) ? runs : []).filter((r) => r.status === 'MANIFEST_FILE_READY' && r.completedAt).sort((a, b) => String(b.completedAt).localeCompare(String(a.completedAt)))[0]
+      return { tables, builtAt: done?.completedAt || null }
+    })
+  }
+  return servedP
+}
+
 // ---- Queries ----
 
 const cache = new Map()

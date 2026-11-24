@@ -49,18 +49,70 @@ Read the model first and query it. The kit asks for:
   dimension sets `date: null`: the period controls go, the subject stands alone, and `subject({ by })` ranks it.
 - **The entities**, each a dimension whose values a reader wants to open one at a time.
 
+A package with an `index.malloy` at its root answers queries only from the sources that file exports. Put the app's
+source in its own file, export it from `index.malloy`, and point the config's `model` at `index.malloy`.
+
 Query the model once for each measure and dimension you plan to use, and look at the rows.
+
+## Make it fast: store the source, roll up what it adds
+
+Every dashboard over a warehouse table, or a file over about 100,000 rows, is materialized: Credible stores the
+app's source as a table and keeps rollups of the figures it adds up, and each block's info mark says which one
+answered and how it was built ("a summary Credible keeps of the order lines: one row for each category, channel and
+day, with net revenue already added up, last built 24 November"). A small file in the package needs neither.
+
+Write the app's source in the model, not in the config's `extend`, which a rollup cannot read:
+
+```malloy
+import "ecommerce.malloy"
+
+#(doc) Order lines for the sales dashboard, with the dimensions it filters by stored beside each line.
+#(materialize)
+source: sales is order_items extend {
+  dimension:
+    order_date is created_at.day                       // the dashboard's date: a day, so a rollup can filter on it
+    category is inventory_items.product_category       // what it filters and ranks by, as the source's own fields
+    channel is users.traffic_source
+  measure:
+    #(rollup) grain=["order_date", "category", "channel", "status"]
+    net_sales is total_sales { where: status != 'Cancelled' and status != 'Returned' }
+    #(rollup) grain=["order_date", "category", "channel", "status"]
+    items is count()
+    #(rollup) grain=["order_date", "category", "channel", "status"]
+    returned is count() { where: status = 'Returned' }
+    #(rollup) grain=["order_date", "category", "channel", "status"]
+    return_rate is returned / nullif(items, 0)        // a ratio of rolled-up sums rolls up when it says so too
+    aov is net_sales / nullif(order_count, 0)          // a distinct count does not roll up: from the stored source
+}
+```
+
+- **`#(materialize)` on the source** the app queries (`source: 'sales'` in the config). Everything is answered from
+  its table at least.
+- **The dimensions the app filters, ranks and splits by are the source's own**, and the config names them
+  (`field: 'category'`, not `inventory_items.product_category`); the date is a day dimension
+  (`date: { field: 'order_date' }`).
+- **`#(rollup) grain=[…]` on every measure that sums or counts, and on ratios of them.** The grain is the date and
+  the four to seven dimensions the app filters by most; leave out one with thousands of values (a brand, a
+  customer), which makes the rollup nearly as big as the source.
+- **No rollup on a distinct count** (`count(order_id)`) **or on a measure that reads a joined column**
+  (`inventory_items.cost.sum()`): Publisher refuses it (`join_not_in_grain`), and the measure is answered from the
+  stored source, which is still fast.
+- **Build it and check it.** On Credible, publishing builds both. Locally, `POST …/packages/{pkg}/materializations`,
+  then `GET …/packages/{pkg}/status`: every `serveVerdicts` entry says `serves`. Then open a ranked list's info mark:
+  it should name the summary. The kit asks for a period and its comparison as two queries, each with the dates in
+  its own `where`, because a rollup answers those and never a measure that carries its own filter; a block of your
+  own should do the same (`S.kpiQueries`, `S.breakdownCompareQuery` with `S.withCompare`).
 
 ## The config
 
 ```js
-import { dashboard, subject, rank, share, trend, table, heat, watch, entityHead, pageHead, blocks, block, S, F, C } from './kit/kit.js'
+import { dashboard, subject, rank, share, trend, table, heat, watch, entityHead, pageHead, aboutPage, blocks, block, S, F, C } from './kit/kit.js'
 
 dashboard({
   title: 'Sales performance', sub: 'Online store',          // the masthead; keep `sub` to a few words
-  model: 'ecommerce.malloy', source: 'order_items',
-  extend: `measure: net_sales is total_sales { where: status != 'Cancelled' }, aov is net_sales / nullif(order_count, 0)`,
-  date: { field: 'created_at', label: 'Order date' },        // or null
+  model: 'sales.malloy', source: 'sales',                    // a materialized source (above)
+  extend: '',                                                // measures the model lacks; a rollup cannot read these
+  date: { field: 'order_date', label: 'Order date' },        // a day dimension, or null
   recordNoun: 'order lines',                                 // what a row is, for counts in menus
   theme: 'bloom',                                            // from the subject: reference/dashboard-design.md
   metrics: {
@@ -69,15 +121,20 @@ dashboard({
     on_time_rate: { label: 'On-time rate', format: 'percent', good: 'up', thresholds: { watch: 0.8, breach: 0.7 } },
     flight_count: { label: 'Flights', format: 'number', good: null },
   },
-  filters: [{ key: 'channel', field: 'users.traffic_source', label: 'Channel', plural: 'channels' }],
+  filters: [{ key: 'channel', field: 'channel', label: 'Channel', plural: 'channels' }],
   entities: {
-    category: { field: 'inventory_items.product_category', label: 'Category', plural: 'categories' },
+    category: { field: 'category', label: 'Category', plural: 'categories' },
     customer: { field: 'user_id', label: 'Customer', plural: 'customers', nameField: 'users.full_name' },
   },
   defaults: { period: 'last_91', compare: 'previous' },
+  sources: {                                                 // where the data comes from; on every block's back
+    store: { name: 'Store orders', by: "The shop's order system", what: 'Every order line since the store opened.' },
+  },
+  glossary: [{ term: 'Net revenue', match: ['net'], plain: 'What customers paid, less cancellations and returns.' }],
   pages: [
     { id: 'overview', title: 'Overview', render: overview },
     { id: 'products', title: 'Products', lists: 'category', render: products },
+    { id: 'about', title: 'About the data', period: false, filters: false, render: () => aboutPage({ lede: '…' }) },
     { id: 'category', title: 'Category', entity: 'category', render: category },
   ],
   footer: 'Where the data comes from, in one line.',
@@ -96,7 +153,16 @@ dashboard({
   lookup.
 - **`pages`**: each `render(state)` returns its blocks. A page with `entity` is that entity's page, reached at
   `#/<id>/<value>` and not listed in the navigation; every query on it is scoped to the entity. `lists: 'category'`
-  marks the page that lists an entity, which its pages' breadcrumbs return to.
+  marks the page that lists an entity, which its pages' breadcrumbs return to. `period: false` and `filters: false`
+  hide those controls on a page they do not apply to, such as the About page.
+- **`defaults.filters`**: values a reader starts filtered to, when one slice is the whole story by default (regular
+  gasoline in the US as a whole, `{ grade: ['Regular'], area: ['U.S.'] }`). A reader can clear them, and a shared
+  link keeps what they chose.
+- **`sources`**: where the data comes from (`name`, `by`, `what`, `license`, `url`). Every block's info mark lists
+  them, or the ones it names in its own `sources: ['eia']`; the footer credits them; `aboutPage()` lists them with
+  their licences. An app on public data has `sources` and an About page.
+- **`glossary`**: the words a newcomer may not know (`term`, the words that mean it in `match`, `plain`). An info
+  mark explains the ones its own text uses.
 - **Periods** (`defaults.period`): `last_7`, `last_28`, `last_91`, `last_364` (days counted back from the data's
   latest day, so weeks are whole and line up with the comparison), `mtd`, `qtd`, `ytd`, `last_month`,
   `last_quarter`, `last_year`, `all`. **Compare**: `previous`, `year`, `none`. Pick the default from how often the
@@ -119,11 +185,15 @@ nothing matches, and has an info mark that turns it over to "How it's made".
 | `share({ field \| entity, metric, top })` | One whole split into parts: a segmented bar, then each part's share, value and change | As rank |
 | `trend({ metric, by, top })` | The metric over time; with `by`, one line per top value, the leader in the accent | A point zooms; with `by`, a line opens or filters |
 | `table({ kicker, query, columns, open, sort })` | Dense rows, sortable, searchable, 25 a page, CSV of all. `columns`: `{ key, label, metric \| format, bar, status }`. `open: { entity, key }` makes rows open that entity's page | Opens the row's entity |
-| `heat({ rows, cols, metric, volume, min })` | A metric across two dimensions (weekday by hour). `rows`/`cols`: `{ expr, label, name, count }` | Filters to the row's value when it is a filter |
+| `heat({ rows, cols, metric, volume, min, period })` | A metric across two dimensions (weekday by hour). `rows`/`cols`: `{ expr, label, name, count }`. `period: false` spans the whole data (year by week of year) | Filters to the row's value when it is a filter |
 | `watch({ field \| entity, metric, volume, min, extra, limit })` | A monitor's list: each value's status against the metric's thresholds, the worst first, values under `min` of `volume` counted and left out | As rank |
 | `entityHead({ metric })` | An entity page's top: breadcrumb, name, and its rank among its peers by the metric, its share and its change | (Breadcrumb back) |
 | `pageHead(title, lede)` | A page's title and a sentence under it | |
+| `aboutPage({ title, lede, notes })` | Where the data comes from, each source with its licence, then `notes` (`{ title, text }`: what was reshaped, what is left out), then how fresh it is | |
 | `blocks(...)` | Lays blocks out: span-12 ones take the row, span-6 ones pair | |
+
+`rank`, `share`, `trend`, `watch` and `heat` take `where`, a Malloy condition that narrows that block alone
+(`where: "area_type = 'State'"` ranks the states and leaves out the regions beside them).
 
 `S.run(view, state, opts)` writes a query over the source with the state's period and filters: `view` is a view the
 model names or a block in braces. `S.breakdownQuery`, `S.kpiQuery` and `S.seriesQuery` are what the blocks use.

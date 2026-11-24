@@ -35,6 +35,17 @@ code, pre { font-family: var(--mono); }
 .chg { font-weight: 500; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .chg--good { color: var(--good); } .chg--bad { color: var(--bad); } .chg--flat { color: var(--muted); font-weight: 400; } .chg--watch { color: var(--watch); }
 
+/* ---- Sources, About ---- */
+.sources { margin: 0; padding-left: 18px; }
+.sources li + li { margin-top: 6px; }
+.sources a { color: var(--ink); font-weight: 500; text-underline-offset: 3px; }
+.sources__license { color: var(--muted); }
+.about { max-width: 72ch; padding-bottom: 24px; }
+.about__part { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--section-rule, var(--rule)); }
+.about__part h2 { font-family: var(--headline); font-size: 18px; font-weight: 500; color: var(--ink); margin-bottom: 10px; }
+.about__part p, .about__part li { line-height: 1.6; }
+.about__fresh { margin-top: 24px; color: var(--muted); }
+
 /* ---- Masthead ---- */
 .mast { background: var(--mast-bg, transparent); border-top: 4px solid var(--mast-top, transparent); border-bottom: var(--mast-line-w, 1px) solid var(--mast-line, var(--rule)); --ink: var(--mast-ink); --muted: var(--mast-muted); --faint: var(--mast-muted); --rule: var(--mast-rule); }
 .mast__row { display: flex; align-items: center; gap: 40px; height: 56px; }
@@ -157,6 +168,7 @@ code, pre { font-family: var(--mono); }
 .back__deep summary { cursor: pointer; font-size: 13px; font-weight: 500; color: var(--accent); }
 .back__query { margin-top: 10px; }
 .back pre { background: var(--paper); border-radius: 6px; padding: 10px 12px; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.5; margin: 0 0 6px; color: var(--body); }
+.back__path { margin: 0 0 6px; font: 11px/1.5 var(--mono); color: var(--muted); }
 .back__meta { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--faint); }
 .back__rows { overflow: auto; max-height: 200px; margin-top: 6px; }
 .back__rows table { border-collapse: collapse; font: 11px var(--mono); }

@@ -42,7 +42,9 @@ export const src = () => (config.extend ? `${config.source} extend { ${config.ex
 
 // ---- State ----
 
-export const DEFAULT = () => ({ page: config.pages[0].id, id: null, period: { preset: config.defaults.period }, compare: config.defaults.compare, grain: null, metric: null, filters: {} })
+/** The state with nothing chosen: the default period, comparison and filters (defaults.filters: { key: [values] }). */
+export const DEFAULT = () => ({ page: config.pages[0].id, id: null, period: { preset: config.defaults.period }, compare: config.defaults.compare, grain: null, metric: null, filters: Object.fromEntries(Object.entries(config.defaults.filters || {}).map(([k, v]) => [k, [...v]])) })
+const same = (a = [], b = []) => a.length === b.length && a.every((v, i) => String(v) === String(b[i]))
 
 const RESERVED = new Set(['p', 'from', 'to', 'c', 'g', 'm'])
 const filterSpec = (key) => config.filters.find((f) => f.key === key)
@@ -67,7 +69,13 @@ export function toHash(s) {
   if (s.compare !== d.compare) q.set('c', s.compare)
   if (s.grain) q.set('g', s.grain)
   if (s.metric) q.set('m', s.metric)
-  for (const f of config.filters) for (const v of s.filters[f.key] || []) q.append(f.key, String(v))
+  // A filter is in the address when it differs from its default; one cleared from a default is written empty.
+  for (const f of config.filters) {
+    const now = s.filters[f.key] || []
+    if (same(now, d.filters[f.key])) continue
+    if (!now.length) q.append(f.key, '')
+    for (const v of now) q.append(f.key, String(v))
+  }
   const page = pageOf(s)
   const path = page?.entity && s.id !== null ? `${s.page}/${encodeURIComponent(s.id)}` : s.page === config.pages[0].id ? '' : s.page
   const qs = q.toString()
@@ -95,10 +103,14 @@ export function fromHash(hash) {
   if (P.COMPARES[q.get('c')]) s.compare = q.get('c')
   if (P.GRAINS.includes(q.get('g'))) s.grain = q.get('g')
   if (config.metrics[q.get('m')]) s.metric = q.get('m')
+  const seen = new Set()
   for (const [key] of q) {
-    if (RESERVED.has(key) || !filterSpec(key) || s.filters[key]) continue
-    const vals = [...new Set(q.getAll(key))].filter((v) => isKnown(key, v)).map((v) => knownValue(key, v))
+    if (RESERVED.has(key) || !filterSpec(key) || seen.has(key)) continue
+    seen.add(key)
+    const all = q.getAll(key)
+    const vals = [...new Set(all)].filter((v) => isKnown(key, v)).map((v) => knownValue(key, v))
     if (vals.length) s.filters[key] = vals
+    else if (all.every((v) => v === '')) delete s.filters[key]
   }
   return s
 }
@@ -144,7 +156,8 @@ export function clauses(s, { which = 'current', ignore = [], entity = true } = {
  *   run('{ group_by: status; aggregate: order_count }', s, { ignore: ['status'] })
  */
 export function run(view, s, opts = {}) {
-  const where = clauses(s, opts)
+  // opts.where: a block's own fixed filter ("area_type = 'State'"), beside the state's.
+  const where = [...clauses(s, opts), ...[opts.where].flat().filter(Boolean).map((w) => `(${w})`)]
   const extra = opts.extra || ''
   if (/\blimit\s*:/.test(extra) && !/\border_by\s*:/.test(extra)) throw new Error(`A limit needs its order_by beside it: ${extra}`)
   const parts = [where.length ? `where: ${where.join(' and ')}` : '', extra].filter(Boolean).join('; ')
@@ -161,13 +174,20 @@ export function within(m, s, which = 'current') {
 }
 
 /**
- * Every figure in one query, for the period and its comparison: <metric>__cur and <metric>__cmp per metric. One query
- * instead of one per number, with the comparison filtered inside it.
+ * The figures for the period (which: 'current') or its comparison ('compare'), as <metric>__cur or <metric>__cmp.
+ * Two queries, each with the period in its own `where`, rather than one with each measure filtered: a rollup can
+ * answer a query whose filters are in its `where`, never one whose measures carry their own. kpis() runs both and
+ * merges them.
  */
 export function kpiQuery(metrics, s, opts = {}) {
-  const aggs = metrics.flatMap((m) => [`${m}__cur is ${within(m, s)}`, ...(within(m, s, 'compare') ? [`${m}__cmp is ${within(m, s, 'compare')}`] : [])])
-  return run(`{ aggregate: ${aggs.join(', ')} }`, s, { ...opts, which: 'both' })
+  const which = opts.which === 'compare' ? 'compare' : 'current'
+  const suffix = which === 'compare' ? '__cmp' : '__cur'
+  return run(`{ aggregate: ${metrics.map((m) => `${m}${suffix} is ${m}`).join(', ')} }`, s, { ...opts, which })
 }
+/** The figures' queries: the period's, and the comparison's when there is one. */
+export const kpiQueries = (metrics, s, opts = {}) => [kpiQuery(metrics, s, opts), ...(dated() && compareRange(s) ? [kpiQuery(metrics, s, { ...opts, which: 'compare' })] : [])]
+/** One row from kpiQueries' results: { m__cur, m__cmp }. */
+export const kpis = (results) => Object.assign({}, results[0]?.[0], results[1]?.[0])
 
 /**
  * Metrics per bucket of the period (which: 'current') or of the comparison ('compare'). Days and weeks are counted
@@ -205,26 +225,37 @@ export function buckets(rows, s, which = 'current') {
 }
 
 /**
- * Metrics split by one field: the top `top` values in the period, each with its comparison as <metric>__cmp. The
- * filter on that field is left out, so picking a row does not empty the rest of the list.
+ * Metrics split by one field: the top `top` values in the period. Its comparison is a second query,
+ * breakdownCompareQuery, merged with withCompare(), so both can be answered by a rollup. The filter on that field is
+ * left out, so picking a row does not empty the rest of the list.
  */
-export function breakdownQuery(field, metrics, s, { top = 10, ignore, order, extra = [] } = {}) {
+export function breakdownQuery(field, metrics, s, { top = 10, ignore, order, extra = [], which = 'current', where } = {}) {
   const fkey = config.filters.find((f) => f.field === field)?.key
   const ign = ignore ?? (fkey ? [fkey] : [])
   const col = colOf(field)
-  const aggs = metrics.flatMap((m) => [`${m} is ${within(m, s)}`, ...(within(m, s, 'compare') ? [`${m}__cmp is ${within(m, s, 'compare')}`] : [])])
-  for (const x of extra) aggs.push(`${x} is ${within(x, s)}`)
-  const by = order || `${metrics[0]} desc`
-  return run(`{ where: ${field} is not null; group_by: ${col === field ? field : `${col} is ${field}`}; aggregate: ${aggs.join(', ')}; order_by: ${by}, ${col}; limit: ${top} }`, s, { which: 'both', ignore: ign })
+  const cmp = which === 'compare'
+  const names = cmp ? metrics.map((m) => `${m}__cmp is ${m}`) : [...metrics, ...extra]
+  const by = cmp ? `${metrics[0]}__cmp desc` : order || `${metrics[0]} desc`
+  return run(`{ where: ${field} is not null; group_by: ${col === field ? field : `${col} is ${field}`}; aggregate: ${names.join(', ')}; order_by: ${by}, ${col}; limit: ${cmp ? 5000 : top} }`, s, { which, ignore: ign, where })
 }
+/** The comparison period's figures for every value of the field, to merge into breakdownQuery's rows. */
+export const breakdownCompareQuery = (field, metrics, s, opts = {}) => (dated() && compareRange(s) ? breakdownQuery(field, metrics, s, { ...opts, which: 'compare' }) : null)
+/** The breakdown's rows with each one's comparison figures beside it (<metric>__cmp), from the comparison's rows. */
+export function withCompare(rows, cmpRows, field) {
+  if (!cmpRows) return rows
+  const col = colOf(field)
+  const at = new Map(cmpRows.map((r) => [String(r[col]), r]))
+  return rows.map((r) => ({ ...at.get(String(r[col])), ...r }))
+}
+
 /**
  * How many values a field has under the state, and whether a metric adds up across them: n (the count), s (the sum of
  * each value's figure) and t (the figure for all of them). When s equals t the metric is a sum or a count and a value's
  * share of the total means something; for an average or a rate it does not, and the kit says no share.
  */
 export function partsQuery(field, metric, s, opts = {}) {
-  const m = within(metric, s)
-  return `${run(`{ where: ${field} is not null; group_by: f is ${field}; aggregate: m is ${m}, t is all(${m}) }`, s, opts)} -> { aggregate: n is count(), s is m.sum(), t is t.max() }`
+  // opts may carry the block's own `where` and `ignore`.
+  return `${run(`{ where: ${field} is not null; group_by: f is ${field}; aggregate: m is ${metric}, t is all(${metric}) }`, s, { ...opts, which: 'current' })} -> { aggregate: n is count(), s is m.sum(), t is t.max() }`
 }
 export const adds = (p) => p && Number.isFinite(p.s) && Number.isFinite(p.t) && Math.abs(p.s - p.t) <= Math.abs(p.t) * 1e-6 + 1e-9
 

@@ -22,8 +22,10 @@ import { MOTION } from './draw.js'
  *   filters: [{ key, field, label, plural, format }],
  *   entities: { key: { field, label, plural, name } },   // things with a page of their own
  *   recordNoun,                          // what one row is, plural: "orders", "flights"
- *   defaults: { period, compare }, theme,      // theme: paper, ledger, clinic, transit, terminal, harvest, civic, bloom, stone
- *   pages: [{ id, title, render: (state) => [...blocks], entity, lists, period }],
+ *   defaults: { period, compare, filters: { key: [values] } }, theme,      // theme: paper, ledger, clinic, transit, terminal, harvest, civic, bloom, stone
+ *   pages: [{ id, title, render: (state) => [...blocks], entity, lists, period, filters }],   // period/filters: false hides those controls
+ *   sources: { key: { name, by, what, license, url } },   // where the data comes from, shown on every block's back
+ *   glossary: [{ term, match: [...], plain }],          // words a newcomer may not know
  *   footer,
  * })
  */
@@ -52,7 +54,10 @@ export async function dashboard(cfg) {
     fresh))
   const ctl = h('div', { class: `wrap ctl${cfg.date ? '' : ' ctl--nodate'}`, id: 'controls' })
   const main = h('main', { id: 'main', class: 'wrap', tabindex: '-1' }, h('div', { class: 'state state--loading', style: { '--reserve': '560px' } }))
-  const foot = h('footer', { class: 'wrap colophon', hidden: true }, cfg.footer && h('span', { text: cfg.footer }), h('span', { text: 'Built on Credible' }))
+  const srcs = Object.values(cfg.sources || {})
+  const foot = h('footer', { class: 'wrap colophon', hidden: true }, cfg.footer && h('span', { text: cfg.footer }),
+    srcs.length > 0 && h('span', {}, 'Data: ', ...srcs.flatMap((x, i) => [i ? '; ' : '', x.url ? h('a', { href: x.url, target: '_blank', rel: 'noopener', text: x.by || x.name }) : x.by || x.name, x.license ? ` (${x.license})` : ''])),
+    h('span', { text: 'Built on Credible' }))
   app.replaceChildren(mast, ctl, main, foot)
   try {
     const lists = cfg.filters.map((f) => (f.values ? Promise.resolve(f.values.map((v) => ({ v, n: null })))

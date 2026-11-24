@@ -6,7 +6,7 @@
 // loading, empty and error to itself, and draws again in place when the state changes. Every chart in one does
 // something when clicked: it filters the dashboard, opens an entity's page, or zooms the period.
 
-import { h, prose, asText, query, reason, answered, modelDocs } from './core.js'
+import { h, prose, asText, query, reason, answered, modelDocs, servedTables } from './core.js'
 import * as S from './state.js'
 import * as P from './period.js'
 import * as F from './format.js'
@@ -82,7 +82,7 @@ export function block(spec) {
   back.addEventListener('keydown', (e) => e.key === 'Escape' && open(false))
   const fillBack = () => back.replaceChildren(
     h('div', { class: 'back__head' }, h('h3', { text: `How “${current.kicker}” is made` }), h('button', { type: 'button', class: 'back__close', 'aria-label': 'Close', title: 'Close', onclick: () => open(false) }, icon('close'))),
-    ...howMade(current, current.queries(store.state), results))
+    ...howMade(current, current.queries(store.state), results, title.textContent))
   el.__spec = spec
   const run = (updating) => {
     const mine = epoch
@@ -178,7 +178,7 @@ function icon(kind) {
 const part = (title, ...kids) => h('section', { class: 'back__part' }, h('h4', { text: title }), ...kids)
 const withCode = (t) => String(t).split(/`([^`]+)`/).map((p, i) => (i % 2 ? h('code', { text: p }) : p))
 
-function howMade(spec, qs, results) {
+function howMade(spec, qs, results, said = '') {
   const s = store.state
   const ignore = spec.ignore || []
   const ignored = S.config.filters.filter((f) => ignore.includes(f.key) && (s.filters[f.key] || []).length).map((f) => f.label)
@@ -199,11 +199,36 @@ function howMade(spec, qs, results) {
       return [h('dt', { text: m.label }), h('dd', {}, ...(doc ? withCode(doc) : ['The model does not describe it yet.']), ' ', h('code', { class: 'back__name', text: n }))]
     }))
   })
+  // Where the answer came from: the table Publisher says answered each query (its path report), described from the
+  // package's build plan: a rollup with its grain and measures, a stored copy, or the raw data just now.
   const seen = qs.map((q) => answered.get(q)).filter(Boolean)
-  const stored = (a) => ['materialized', 'rollup', 'view', 'query'].includes(a.path?.servedBy?.kind) || Boolean(a.servedFrom)
-  const ms = seen.length ? Math.max(...seen.map((a) => a.ms || 0)) : null
-  const speed = !seen.length ? '' : seen.every(stored) ? `Answered in ${ms} ms from a table Credible built ahead of time, so it does not re-read every row each time it opens.` : seen.some(stored) ? `Answered in ${ms} ms, partly from tables Credible built ahead of time.` : `Worked out from the rows just now, in ${ms} ms.`
+  const where = h('p', { class: 'back__where' })
   const fresh = S.dated() ? `The data runs to ${P.longDate(S.known.span.last)}.` : ''
+  const kinds = seen.map((a) => a.path?.servedBy?.kind || (a.servedFrom ? 'materialized' : 'live'))
+  const ms = seen.length ? Math.max(...seen.map((a) => a.ms || 0)) : null
+  const say = (parts) => where.replaceChildren(...prose([...parts, ms !== null ? ` Answered in ${ms} ms.` : '', fresh ? ` ${fresh}` : '']))
+  const words = (name) => {
+    const f = S.config.filters.find((x) => x.field === name || S.colOf(x.field) === name)
+    if (S.config.date && (S.config.date.field === name)) return 'day'
+    return (f?.label || name.replace(/_/g, ' ')).toLowerCase()
+  }
+  const list = (xs) => (xs.length > 1 ? `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}` : xs[0] || '')
+  if (!seen.length) say([])
+  else if (kinds.every((k) => k === 'live')) say(['Worked out from the raw data just now.'])
+  else {
+    say([kinds.includes('rollup') ? 'Read from a summary Credible keeps of the data.' : 'Read from a copy of the data Credible keeps.'])
+    servedTables().then((t) => {
+      const built = t?.builtAt ? `, last built ${P.longDate(t.builtAt.slice(0, 10))}` : ''
+      const used = seen.map((a) => t?.tables.get(a.path?.servedBy?.tableId)).filter(Boolean)
+      const roll = used.find((x) => x.rollup)
+      const doc = (n) => (F.metric(n).label || n).toLowerCase()
+      if (roll) {
+        const r = roll.rollup
+        const others = kinds.filter((k) => k !== 'rollup').length
+        say([`Read from a summary Credible keeps of the ${S.config.recordNoun || 'records'}: one row for each ${list(r.grainDimensions.map(words))}, with ${list(r.measures.filter((m) => S.config.metrics[m]).map(doc)) || 'its figures'} already added up${built}, so it does not add up every row each time it opens.${others ? ' Some of it, a figure the summary cannot hold, comes from a stored copy of the data.' : ''}`])
+      } else if (used.length) say([`Read from a copy of the ${S.config.recordNoun || 'data'} Credible keeps${built}, so it does not reach back to the raw data each time it opens.`])
+    })
+  }
   const deep = h('details', { class: 'back__deep' }, h('summary', { text: 'The queries and their rows' }))
   deep.addEventListener('toggle', () => {
     if (!deep.open || deep.__filled) return
@@ -211,18 +236,29 @@ function howMade(spec, qs, results) {
     deep.append(...qs.map((q, i) => {
       const rows = results[i] || []
       const cols = rows.length ? Object.keys(rows[0]) : []
+      const a = answered.get(q)
+      const sb = a?.path?.servedBy
+      const skipped = (a?.path?.considered || []).filter((c) => c.outcome !== 'used').map((c) => `${c.kind} skipped: ${c.reason}${c.detail ? ` (${c.detail})` : ''}`)
       return h('div', { class: 'back__query' },
+        a && h('p', { class: 'back__path', text: `Answered from ${sb?.kind || (a.servedFrom ? 'a stored table' : 'live')}${sb?.tableId ? ` ${sb.tableId.slice(0, 12)}` : ''} in ${a.ms} ms${skipped.length ? `; ${skipped.join('; ')}` : ''}.` }),
         h('pre', { text: q }),
         h('div', { class: 'back__meta' }, h('span', { text: `${rows.length} row${rows.length === 1 ? '' : 's'}` }), cols.length > 0 && h('button', { type: 'button', class: 'ghost ghost--small', text: 'Download CSV', onclick: () => downloadCsv(rows, cols, `query-${i + 1}`) })),
         cols.length > 0 && h('div', { class: 'back__rows' }, h('table', {}, h('thead', {}, h('tr', {}, ...cols.map((c) => h('th', { text: c })))),
           h('tbody', {}, ...rows.slice(0, 30).map((r) => h('tr', {}, ...cols.map((c) => h('td', { text: r[c] === null || r[c] === undefined ? '∅' : typeof r[c] === 'number' ? String(Number(r[c].toPrecision(6))) : String(r[c]) }))))))))
     }))
   })
+  // Where the data comes from (config.sources, or the block's own `sources`) and the words a newcomer may not know
+  // (config.glossary: the terms that appear in what this block says).
+  const srcs = (spec.sources || Object.keys(S.config.sources || {})).map((k) => S.config.sources?.[k]).filter(Boolean)
+  const text = [spec.kicker, said, asText(spec.what || ''), ...names.map((n) => F.metric(n).label)].join(' ').toLowerCase()
+  const terms = (S.config.glossary || []).filter((g) => [g.term, ...(g.match || [])].some((m) => text.includes(String(m).toLowerCase())))
   return [
     spec.what && part('What it shows', h('p', {}, ...prose(spec.what))),
     part('What it covers', h('ul', {}, ...covers.map((t) => h('li', { text: t })))),
     names.length > 0 && part('What the numbers mean', defs),
-    (speed || fresh) && part('How fresh, how fast', h('p', { class: seen.some(stored) ? 'back__fast' : '' }, `${speed} ${fresh}`.trim())),
+    terms.length > 0 && part('Words used here', h('dl', { class: 'back__defs' }, ...terms.flatMap((g) => [h('dt', { text: g.term }), h('dd', { text: g.plain })]))),
+    srcs.length > 0 && part('Where the data comes from', sourceList(srcs)),
+    part('Where the answer came from', where),
     deep,
   ].filter(Boolean)
 }
@@ -294,14 +330,18 @@ export function subject({ metrics, by, kicker, layout = 'split' } = {}) {
     what: 'The figure the page is about, with its change on the comparison period and, beside it, the same figure over the period with the comparison in grey. Under it, the other figures; click one to make it the subject. Click a point on the line to zoom to it, or drag across several.',
     queries: (s) => {
       const n = metrics.includes(s.metric) ? s.metric : metrics[0]
-      const qs = [S.kpiQuery(metrics, s)]
+      const qs = S.kpiQueries(metrics, s)
       if (S.dated()) {
         qs.push(S.seriesQuery(metrics, s, 'current'))
         if (S.compareRange(s)) qs.push(S.seriesQuery(metrics, s, 'compare'))
       } else if (by) qs.push(S.breakdownQuery(by, [n], s, { top: 8 }), S.partsQuery(by, n, s))
       return qs
     },
-    draw: ([[k], cur, cmp], body, s) => {
+    draw: (rs, body, s) => {
+      // The figures' one or two queries first (the period's, then the comparison's), then the series or the list.
+      const nk = S.dated() && S.compareRange(s) ? 2 : 1
+      const k = S.kpis(rs.slice(0, nk))
+      const [cur, cmp] = rs.slice(nk)
       const n = metrics.includes(s.metric) ? s.metric : metrics[0]
       const m = F.metric(n)
       const partsOf = !S.dated() && by ? cmp?.[0] : null // with no date the third query is the parts check
@@ -437,7 +477,7 @@ function rankList(body, rows, { col, n, field, entity, name, compare = true, ext
  * field has one, and filters the dashboard to it otherwise. The default headline names the leader and the fastest
  * riser; write your own when the domain says what matters.
  */
-export function rank({ field, entity, metric: n, top = 10, kicker, headline, extra = [], span = 6, order } = {}) {
+export function rank({ field, entity, metric: n, top = 10, kicker, headline, extra = [], span = 6, order, where, what } = {}) {
   const fieldName = field || S.config.entities[entity].field
   const col = S.colOf(fieldName)
   const filter = S.config.filters.find((f) => f.field === fieldName)
@@ -447,11 +487,12 @@ export function rank({ field, entity, metric: n, top = 10, kicker, headline, ext
   return block({
     compare: true, key: `rank|${fieldName}|${n}|${top}|${order || ''}|${kicker || ''}`, kicker: kicker || `${F.metric(n).label} by ${(e?.label || filter?.label || col.replace(/_/g, ' ')).toLowerCase()}`, span, reserve: 30 + 35 * top + 30,
     metrics: [n, ...extra], ignore: filter && !e ? [filter.key] : [],
-    what: `The ${top} ${plural} with the most ${lower(F.metric(n).label)} in the period. The pale bar behind each is its figure in the comparison period, so a bar that reaches past its pale one grew.`,
-    queries: (s) => [S.breakdownQuery(fieldName, [n], s, { top, order, extra }), S.partsQuery(fieldName, n, s, { ignore: filter && !e ? [filter.key] : [] })],
+    what: what || `The ${top} ${plural} with the most ${lower(F.metric(n).label)} in the period. The pale bar behind each is its figure in the comparison period, so a bar that reaches past its pale one grew.`,
+    queries: (s) => [S.breakdownQuery(fieldName, [n], s, { top, order, extra, where }), S.partsQuery(fieldName, n, s, { ignore: filter && !e ? [filter.key] : [], where }), S.breakdownCompareQuery(fieldName, [n], s, { where })].filter(Boolean),
     of: ([rows, [c]]) => (c?.n > rows.length ? ` · top ${rows.length} of ${c.n.toLocaleString()}` : ''),
-    draw: ([rows], body) => rankList(body, rows, { col, n, field: fieldName, entity, name, extra }),
-    headline: headline ? (rs, s) => headline(rs[0], s) : ([rows, [c]]) => {
+    draw: ([rows, , cmp], body) => rankList(body, S.withCompare(rows, cmp, fieldName), { col, n, field: fieldName, entity, name, extra }),
+    headline: headline ? (rs, s) => headline(S.withCompare(rs[0], rs[2], fieldName), s) : ([cur, [c], cmp]) => {
+      const rows = S.withCompare(cur, cmp, fieldName)
       if (!rows.length) return null
       const top1 = rows[0]
       const m = F.metric(n)
@@ -461,11 +502,15 @@ export function rank({ field, entity, metric: n, top = 10, kicker, headline, ext
       // Only values at least a tenth of the leader's: a tiny one doubling is noise, not news.
       const g = rows.map((r) => ({ r, g: growth(r, n) })).filter((x) => x.g !== null && Math.abs(x.r[`${n}__cmp`]) > 0 && Math.abs(x.r[n]) >= Math.abs(top1[n]) * 0.1)
       if (g.length >= 3 && m.good) {
+        // The best mover by what the metric's good direction says, worded by the sign of its change: a price that
+        // rose least is not one that fell.
         g.sort((a, b) => b.g - a.g)
-        const up = m.good === 'down' ? g.at(-1) : g[0]
-        const down = m.good === 'down' ? g[0] : g.at(-1)
-        if (up.r !== top1 && Math.abs(up.g) > 0.03) parts.push('; ', { b: name(up.r[col]) }, ` ${m.good === 'down' ? 'fell' : 'grew'} fastest, ${F.delta(n, up.r[n], up.r[`${n}__cmp`]).text}`)
-        if (down.g < -0.03 && m.good === 'up' && down.r !== up.r) parts.push('; ', ...(down.r === top1 ? ['it'] : [{ b: name(down.r[col]) }]), ` fell ${F.delta(n, down.r[n], down.r[`${n}__cmp`]).text.replace(/^−/, '')}`)
+        const best = m.good === 'down' ? g.at(-1) : g[0]
+        const worst = m.good === 'down' ? g[0] : g.at(-1)
+        const verb = (x) => (x.g > 0 ? (m.good === 'down' ? 'rose least' : 'grew fastest') : m.good === 'down' ? 'fell fastest' : 'fell least')
+        if (best.r !== top1 && Math.abs(best.g) > 0.03) parts.push('; ', { b: name(best.r[col]) }, ` ${verb(best)}, ${F.delta(n, best.r[n], best.r[`${n}__cmp`]).text}`)
+        const bad = m.good === 'down' ? worst.g > 0.03 : worst.g < -0.03
+        if (bad && worst.r !== best.r && g.some((x) => (m.good === 'down' ? x.g <= 0 : x.g >= 0))) parts.push('; ', ...(worst.r === top1 ? ['it'] : [{ b: name(worst.r[col]) }]), ` ${worst.g > 0 ? 'rose' : 'fell'} most, ${F.delta(n, worst.r[n], worst.r[`${n}__cmp`]).text}`)
       }
       parts.push('.')
       return parts
@@ -477,7 +522,7 @@ export function rank({ field, entity, metric: n, top = 10, kicker, headline, ext
  * share({ field | entity, metric, top }) — one whole split into its parts: a segmented bar, then a row per part with
  * its share, value and change. A part opens its page or filters, as in rank().
  */
-export function share({ field, entity, metric: n, top = 6, kicker, headline, span = 6 } = {}) {
+export function share({ field, entity, metric: n, top = 6, kicker, headline, span = 6, where, what } = {}) {
   const fieldName = field || S.config.entities[entity].field
   const col = S.colOf(fieldName)
   const filter = S.config.filters.find((f) => f.field === fieldName)
@@ -487,8 +532,9 @@ export function share({ field, entity, metric: n, top = 6, kicker, headline, spa
     compare: true, key: `share|${fieldName}|${n}`, kicker: kicker || `${F.metric(n).label} by ${(e?.label || filter?.label || col).toLowerCase()}`, span, reserve: 60 + 35 * top,
     metrics: [n], ignore: filter && !e ? [filter.key] : [],
     what: `How ${lower(F.metric(n).label)} splits across ${(e?.label || filter?.label || col).toLowerCase()}, as shares of the whole, with each part's change on the comparison period. Parts past the first ${top} are grouped as Other.`,
-    queries: (s) => [S.breakdownQuery(fieldName, [n], s, { top: 50 }), S.kpiQuery([n], s, { ignore: filter && !e ? [filter.key] : [] })],
-    draw: ([rows, [k]], body) => {
+    queries: (s) => [S.breakdownQuery(fieldName, [n], s, { top: 50, where }), S.kpiQuery([n], s, { ignore: filter && !e ? [filter.key] : [], where }), S.breakdownCompareQuery(fieldName, [n], s, { where })].filter(Boolean),
+    draw: ([cur, [k], cmp], body) => {
+      const rows = S.withCompare(cur, cmp, fieldName)
       const total = k[`${n}__cur`]
       const shown = rows.slice(0, top)
       const rest = total - shown.reduce((a, r) => a + (r[n] || 0), 0)
@@ -533,7 +579,8 @@ export function share({ field, entity, metric: n, top = 6, kicker, headline, spa
         })))
       body.append(t)
     },
-    headline: headline ? (rs, s) => headline(rs[0], s) : ([rows, [k]]) => {
+    headline: headline ? (rs, s) => headline(S.withCompare(rs[0], rs[2], fieldName), s) : ([cur, [k], cmp]) => {
+      const rows = S.withCompare(cur, cmp, fieldName)
       const total = k[`${n}__cur`]
       const top1 = rows[0]
       const g = rows.slice(0, top).map((r) => ({ r, g: growth(r, n) })).filter((x) => x.g !== null)
@@ -554,19 +601,19 @@ export function share({ field, entity, metric: n, top = 6, kicker, headline, spa
  * trend({ metric, by, top, kicker }) — a metric over the period. With `by`, one line per top value of a field, each
  * labelled at its end, the leader in the accent and the rest in grey until hovered; click a line to open or filter.
  */
-export function trend({ metric: n, by, top = 5, kicker, headline, span = 12, height = 260 } = {}) {
+export function trend({ metric: n, by, top = 5, kicker, headline, span = 12, height = 260, where, what } = {}) {
   const col = by ? S.colOf(by) : null
   const name = by ? nameOf(by) : null
   return block({
     compare: true, key: `trend|${n}|${by || ''}`, kicker: kicker || `${F.metric(n).label} over time${by ? ` by ${lower(S.config.filters.find((f) => f.field === by)?.label || col)}` : ''}`, span, reserve: height + 30, metrics: [n],
     what: by ? `${F.metric(n).label} for the ${top} largest values over the period, one line each. Click a line to go to it.` : `${F.metric(n).label} over the period, against the comparison. Click a point to zoom to it.`,
     queries: (s) => {
-      if (!by) return [S.seriesQuery([n], s, 'current'), ...(S.compareRange(s) ? [S.seriesQuery([n], s, 'compare')] : [])]
+      if (!by) return [S.seriesQuery([n], s, 'current', { where }), ...(S.compareRange(s) ? [S.seriesQuery([n], s, 'compare', { where })] : [])]
       const g = S.grain(s)
       const r = S.range(s)
       const f = S.config.date.field
       const bucket = g === 'day' ? `k is days(${f} to @${r.to})` : g === 'week' ? `k is floor(days(${f} to @${r.to}) / 7)` : `bucket is ${f}.${g}`
-      return [S.breakdownQuery(by, [n], s, { top }), S.run(`{ where: ${by} is not null; group_by: ${col} is ${by}, ${bucket}; aggregate: ${n} }`, s)]
+      return [S.breakdownQuery(by, [n], s, { top, where }), S.run(`{ where: ${by} is not null; group_by: ${col} is ${by}, ${bucket}; aggregate: ${n} }`, s, { where, ignore: S.config.filters.filter((f) => f.field === by).map((f) => f.key) })]
     },
     draw: ([a, b], body, s) => {
       const g = S.grain(s)
@@ -652,9 +699,9 @@ function multi(el, o) {
  * column holding its id, sort, pageSize }) — dense, ruled, sortable, searchable, 25 rows a page, every row to CSV.
  * With `open`, a row opens that entity's page.
  */
-export function table({ kicker, headline = null, query: q, columns, open, sort = null, pageSize = 25, span = 12, metrics, what } = {}) {
+export function table({ kicker, headline = null, query: q, columns, open, sort = null, pageSize = 25, span = 12, metrics, what, period = true } = {}) {
   return block({
-    key: `table|${kicker}`, kicker, headline, span, reserve: 44 + 34 * Math.min(pageSize, 12), metrics: metrics || columns.filter((c) => c.metric).map((c) => c.metric),
+    key: `table|${kicker}`, kicker, headline, span, period, reserve: 44 + 34 * Math.min(pageSize, 12), metrics: metrics || columns.filter((c) => c.metric).map((c) => c.metric),
     what: what || 'The rows behind the page, under its period and filters. Sort by any column, search the text, download every row.',
     queries: (s) => [q(s)],
     draw: ([rows], body, s) => dataTable(body, rows, { columns, open, sort, pageSize, limit: Number(/\blimit:\s*(\d+)/.exec(q(s))?.[1]) || null }),
@@ -717,11 +764,11 @@ export function dataTable(body, rows, { columns, open, sort = null, pageSize = 2
  * heat({ rows: { expr, label, name }, cols: { expr, label, name }, metric, kicker, onPick }) — a metric across two
  * dimensions, such as weekday by hour. A cell filters to its row value when that field is a filter, or calls onPick.
  */
-export function heat({ rows: R, cols: Cc, metric: n, kicker, headline, min = 0, volume, span = 12, onPick } = {}) {
+export function heat({ rows: R, cols: Cc, metric: n, kicker, headline, min = 0, volume, span = 12, onPick, where, period = true, what } = {}) {
   return block({
     key: `heat|${R.expr}|${Cc.expr}|${n}`, kicker, span, reserve: 60 + 28 * (R.count || 7), metrics: [n, ...(volume ? [volume] : [])],
-    what: `${F.metric(n).label} for each ${R.label.toLowerCase()} and ${Cc.label.toLowerCase()} in the period; darker is more.${min ? ` Cells with fewer than ${min} ${F.metric(volume).label.toLowerCase()} are left blank.` : ''}`,
-    queries: (s) => [S.run(`{ group_by: r is ${R.expr}, c is ${Cc.expr}; aggregate: ${n}${volume ? `, vol is ${volume}` : ''}; order_by: r, c }`, s)],
+    what: what || `${F.metric(n).label} for each ${R.label.toLowerCase()} and ${Cc.label.toLowerCase()}${period ? ' in the period' : ''}; darker is more.${min ? ` Cells with fewer than ${min} ${F.metric(volume).label.toLowerCase()} are left blank.` : ''}`,
+    period, queries: (s) => [S.run(`{ group_by: r is ${R.expr}, c is ${Cc.expr}; aggregate: ${n}${volume ? `, vol is ${volume}` : ''}; order_by: r, c }`, s, { where, which: period ? 'current' : 'none' })],
     draw: ([rows], body) => {
       const rs = [...new Set(rows.map((r) => r.r))]
       const cs = [...new Set(rows.map((r) => r.c))].sort((a, b) => (a < b ? -1 : 1))
@@ -750,7 +797,7 @@ export function heat({ rows: R, cols: Cc, metric: n, kicker, headline, min = 0, 
  * with its status against the metric's thresholds, the worst first, its change and volume. Values under `min` of the
  * volume are left out and counted.
  */
-export function watch({ field, entity, metric: n, volume, min = 0, extra = [], limit = 10, kicker, span = 6 } = {}) {
+export function watch({ field, entity, metric: n, volume, min = 0, extra = [], limit = 10, kicker, span = 6, where } = {}) {
   const fieldName = field || S.config.entities[entity].field
   const col = S.colOf(fieldName)
   const name = nameOf(fieldName, entity)
@@ -758,8 +805,9 @@ export function watch({ field, entity, metric: n, volume, min = 0, extra = [], l
   return block({
     compare: true, key: `watch|${fieldName}|${n}`, kicker: kicker || `${m.label} by ${col.replace(/_/g, ' ')}`, span, reserve: 70 + 35 * limit, metrics: [n, volume, ...extra],
     what: `Each value against the thresholds for ${lower(m.label)}, the furthest past them first.${min ? ` Those with fewer than ${F.fmtMetric(volume, min)} ${lower(F.metric(volume).label)} in the period are left out, so a handful of records cannot top the list.` : ''}`,
-    queries: (s) => [S.breakdownQuery(fieldName, [n], s, { top: 1000, order: `${volume} desc`, extra: [volume, ...extra] })],
-    draw: ([all], body) => {
+    queries: (s) => [S.breakdownQuery(fieldName, [n], s, { top: 1000, order: `${volume} desc`, extra: [volume, ...extra], where }), S.breakdownCompareQuery(fieldName, [n], s, { where })].filter(Boolean),
+    draw: ([cur, cmp], body) => {
+      const all = S.withCompare(cur, cmp, fieldName)
       const rows = all.filter((r) => (r[volume] ?? 0) >= min && Number.isFinite(r[n]))
       const t = m.thresholds || {}
       const past = (v) => (m.good === 'down' ? v - (t.watch ?? t.breach ?? v) : (t.watch ?? t.breach ?? v) - v)
@@ -817,6 +865,25 @@ export function entityHead({ metric: n } = {}) {
     h('p', { class: 'crumbs' }, h('a', { href: store.linkTo(back.id), text: back.title }), h('span', { 'aria-hidden': 'true', text: ' / ' }), e.label),
     title,
     facts)
+}
+
+/** Each source: its name linked, who publishes it, what it is, its licence. */
+export function sourceList(srcs = Object.values(S.config.sources || {})) {
+  return h('ul', { class: 'sources' }, ...srcs.map((x) => h('li', {},
+    x.url ? h('a', { href: x.url, target: '_blank', rel: 'noopener', text: x.name }) : h('strong', { text: x.name }),
+    x.by ? ` · ${x.by}. ` : '. ', x.what || '', x.license ? h('span', { class: 'sources__license', text: ` ${x.license}.` }) : null)))
+}
+
+/**
+ * aboutPage({ lede, notes }) — the page that says where the data comes from: each source with its licence, then
+ * notes ({ title, text }: what was reshaped, what is left out, caveats), then how fresh it is. Every app built on
+ * public data has one.
+ */
+export function aboutPage({ title = 'About the data', lede, notes = [] } = {}) {
+  return h('div', { class: 'about' }, pageHead(title, lede),
+    h('section', { class: 'about__part' }, h('h2', { text: 'Where the data comes from' }), sourceList()),
+    ...notes.map((n) => h('section', { class: 'about__part' }, h('h2', { text: n.title }), h('p', {}, ...prose(n.text)))),
+    S.dated() && h('p', { class: 'about__fresh', text: `The data runs to ${P.longDate(S.known.span.last)}.` }))
 }
 
 // ---- Layout ----

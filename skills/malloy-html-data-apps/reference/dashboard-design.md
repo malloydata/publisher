@@ -87,11 +87,13 @@ do one of them too, and say so in its tooltip.
 
 ## Every section explains itself
 
-Each block has an info mark (ⓘ) in its corner. It turns the section over to "How it's made", which says: what it shows (one sentence you write for a
-reader who does not know the data), what it covers (the period, the comparison and the filters, in words, written by
-the kit), what each number means (from the model's `#(doc)`, or the metric's `doc` when the app defines it), how
-fresh and how fast (from Publisher's answer), and the query and its rows with a CSV. Write `what` for every block
-you add, and a `doc` for every metric the app defines itself.
+Each block has an info mark (ⓘ) in its corner. It turns the section over to "How it's made", which says: what it
+shows (one sentence you write for a reader who does not know the data); what it covers (the period, the comparison
+and the filters, in words, written by the kit); what each number means (from the model's `#(doc)`, or the metric's
+`doc` when the app defines it) and the words a newcomer may not know (the config's `glossary`); where the data comes
+from (the config's `sources`); where the answer came from (a summary Credible keeps, with the grain it is kept at and
+when it was built; a stored copy; or the raw data just now) and how fast, from Publisher's own answer; and the query
+and its rows with a CSV. Write `what` for every block you add, and a `doc` for every metric the app defines itself.
 
 ## What makes a dashboard look generated, so you can avoid it
 
@@ -164,6 +166,14 @@ are past the line", a cost explorer's "Three hospitals charge more than twice th
 belong to the metric, so every list and figure of it uses the same lines.
 
 **Motion.** Only for a change the reader caused. The old chart stays dimmed until the new one is ready.
+
+## Fast, and saying why
+
+A dashboard over a warehouse or a large file is answered from tables Credible builds ahead of time: a stored copy of
+the app's source, and rollups of the figures it adds up (`reference/app-frame.md`, "Make it fast"). Readers never see
+a spinner for long, and the info mark says which table answered and how it was made, in words: one row for each day,
+category and channel, with revenue already added up, last built on a date. Design the model for it: the app's
+measures and filters live on one source, as its own fields.
 
 ## Leave things out
 

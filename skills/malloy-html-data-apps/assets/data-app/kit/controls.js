@@ -153,7 +153,7 @@ export function renderControls(el, s) {
       h('span', { class: 'ctl__dates', text: P.describe(S.range(s)) })))
   }
   const e = S.entityOf(s)
-  const tokens = S.config.filters.flatMap((f) => (e && f.field === e.field ? [] : (s.filters[f.key] || []).map((v) => h('span', { class: 'tok' }, h('span', { class: 'tok__k', text: f.label }), h('b', { text: f.format ? f.format(v) : String(v) }),
+  const tokens = page.filters === false ? [] : S.config.filters.flatMap((f) => (e && f.field === e.field ? [] : (s.filters[f.key] || []).map((v) => h('span', { class: 'tok' }, h('span', { class: 'tok__k', text: f.label }), h('b', { text: f.format ? f.format(v) : String(v) }),
     h('button', { type: 'button', class: 'tok__x', 'aria-label': `Remove ${f.label} ${v}`, text: '×', onclick: () => store.setFilter(f.key, s.filters[f.key].filter((x) => String(x) !== String(v))) })))))
   const filterBtn = h('button', { type: 'button', class: 'ghost', 'aria-haspopup': 'menu', 'aria-expanded': 'false' }, icon('filter'), 'Filter')
   filterBtn.onclick = () => menuAt(filterBtn, (m) => filterMenu(m, store.state))
@@ -163,7 +163,7 @@ export function renderControls(el, s) {
     copy.lastChild.textContent = t
     setTimeout(() => (copy.lastChild.textContent = 'Copy link'), 1800)
   }
-  out.push(h('div', { class: 'ctl__end' }, ...tokens, tokens.length > 1 && h('button', { type: 'button', class: 'ghost ghost--small', text: 'Clear all', onclick: store.clearFilters }), S.config.filters.some((f) => !f.hidden) && filterBtn, copy))
+  out.push(h('div', { class: 'ctl__end' }, ...tokens, tokens.length > 1 && h('button', { type: 'button', class: 'ghost ghost--small', text: 'Clear all', onclick: store.clearFilters }), page.filters !== false && S.config.filters.some((f) => !f.hidden) && filterBtn, copy))
   el.replaceChildren(...out)
 }
 
