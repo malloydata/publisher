@@ -23,6 +23,7 @@ const productCols = [
 dashboard({
   title: 'Sales performance',
   sub: 'Online store',
+  theme: 'bloom',
   model: 'ecommerce.malloy',
   source: 'order_items',
   extend: `measure:
@@ -92,7 +93,7 @@ function customers() {
   return [
     pageHead('Customers', 'Who buys, how they found the store, and how much they are worth over time.'),
     blocks(
-      subject({ metrics: ['user_count', 'aov', 'order_count'] }),
+      subject({ metrics: ['user_count', 'aov', 'order_count'], layout: 'board' }),
       share({ field: 'users.traffic_source', metric: 'user_count', kicker: 'Customers by channel' }),
       rank({ field: 'user_order_facts.spend_category', metric: 'net_sales', top: 4, kicker: 'Net revenue by lifetime spend', headline: (rows) => [{ b: rows[0].spend_category }, ` customers bring the most net revenue; the four tiers are set by what each customer has spent, all time.`] }),
       table({

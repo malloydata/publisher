@@ -14,9 +14,10 @@ SPDX-License-Identifier: MIT
 
 | File | What it is | Copy into `public/` |
 |---|---|---|
-| `kit/` | The kit: `kit.js` (import everything from it), its modules, `kit.css`, `charts.js`/`charts.css` (more chart forms), `fonts.css` (Geist, inlined), `vendor/` (d3, topojson-client, the font licences) | Whole; never edit, copy again to take a fix |
+| `kit/` | The kit: `kit.js` (import everything from it), its modules, `kit.css`, `themes.css` (nine themes, light and dark), `charts.js`/`charts.css` (more chart forms), `fonts.css` (Geist, inlined) and `fonts/` (each theme's display face, loaded only by its theme), `vendor/` (d3, topojson-client, the font licences) | Whole; never edit, copy again to take a fix |
 | `index.html` | The page: links the kit's styles, loads `/sdk/publisher.js` and `app.js` | Once, then it is the app's own |
 | `app.js` | A worked dashboard over an online store's orders: three pages and three entity pages | Once, then rewrite it for your data |
+| `themes.py` | Writes and checks `kit/themes.css`; where a theme is added or changed | Never: run it from here |
 
 Run the copy from the package's own directory, the one holding `publisher.json`. The first line finds where the
 skill is installed: in this directory or one above it (a workspace's `.claude/skills` or `.agents/skills`), else in
@@ -61,7 +62,7 @@ dashboard({
   extend: `measure: net_sales is total_sales { where: status != 'Cancelled' }, aov is net_sales / nullif(order_count, 0)`,
   date: { field: 'created_at', label: 'Order date' },        // or null
   recordNoun: 'order lines',                                 // what a row is, for counts in menus
-  accent: 'steel',                                           // steel | indigo | teal | plum | ochre | graphite
+  theme: 'bloom',                                            // from the subject: reference/dashboard-design.md
   metrics: {
     net_sales: { label: 'Net revenue', format: 'usd', good: 'up', doc: 'What customers paid, less cancellations.' },
     return_rate: { label: 'Return rate', format: 'percent', good: 'down' },
@@ -110,7 +111,7 @@ nothing matches, and has "How it's made".
 
 | Block | What it draws | A click |
 |---|---|---|
-| `subject({ metrics, by })` | The first metric (or the one the reader picked) large, its change, a sentence, and its line over the period with the comparison; the rest in a ledger under it. With no date, `by` ranks it beside the figure | A ledger figure becomes the subject; a point zooms the period to it; a drag zooms to a range |
+| `subject({ metrics, by, layout })` | The first metric (or the one the reader picked) large, its change, a sentence, and its line over the period with the comparison; the rest in a ledger under it. `layout`: `split` (default), `band` (on a dark plane, for a monitor) or `board` (every figure large in a row, for a scorecard). With no date, `by` ranks it beside the figure | A ledger figure becomes the subject; a point zooms the period to it; a drag zooms to a range |
 | `rank({ field \| entity, metric, top, extra, order })` | A ranked list: name, a thin bar over a pale one for the comparison, value, change. `extra` adds metric columns. `order` sorts by another expression (`'on_time_rate asc'`) | Opens the entity's page, or filters to the value |
 | `share({ field \| entity, metric, top })` | One whole split into parts: a segmented bar, then each part's share, value and change | As rank |
 | `trend({ metric, by, top })` | The metric over time; with `by`, one line per top value, the leader in the accent | A point zooms; with `by`, a line opens or filters |
@@ -124,11 +125,15 @@ nothing matches, and has "How it's made".
 `S.run(view, state, opts)` writes a query over the source with the state's period and filters: `view` is a view the
 model names or a block in braces. `S.breakdownQuery`, `S.kpiQuery` and `S.seriesQuery` are what the blocks use.
 
-### Page plans that work
+### Page plans, as examples of a shape
+
+These are shapes that have worked, not templates. Choose sections from what the data shows and the reader needs,
+give every dashboard at least one block of your own with the form native to its field, and do not copy a plan
+section for section (`reference/dashboard-design.md`, "Make it about this subject").
 
 - **Overview (performance)**: `subject` with 4 to 6 metrics; `rank` of the main entity and `share` of how it splits,
   side by side; `rank` of a second entity and of a place, side by side; `trend` of the subject by the main entity.
-- **Monitor**: `subject` with the status metrics (they carry thresholds); `watch` for each entity that can breach,
+- **Monitor**: `subject` with `layout: 'band'` and the status metrics (they carry thresholds); `watch` for each entity that can breach,
   side by side; `heat` of when it happens; `trend` of the status metric by the entity.
 - **An area's page** (`lists: '<entity>'`): `pageHead`; a full-width `rank` of every entity with `extra` columns;
   two `rank`s by the other metrics that matter, side by side; a `table` of the rows below.

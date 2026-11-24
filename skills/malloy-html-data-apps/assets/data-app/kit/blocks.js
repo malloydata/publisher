@@ -261,11 +261,16 @@ const nameOf = (field, entity) => {
  * ledger, and clicking one makes it the subject. With no date, `by` names a field whose top values stand beside the
  * figure instead of a line.
  */
-export function subject({ metrics, by, kicker } = {}) {
+/**
+ * layout: 'split' (the default: the figure beside its line, the rest in a ledger), 'band' (the same on a dark plane,
+ * for a monitor whose lead is a status), or 'board' (every figure large in a row, the chosen one's line across the
+ * page under them, for a scorecard of a few figures that matter equally).
+ */
+export function subject({ metrics, by, kicker, layout = 'split' } = {}) {
   return block({
     compare: true, key: `subject|${metrics.join(',')}`, cls: 'block--subject', kicker: kicker || ' ', headline: null, metrics, period: true,
     // Its loading height: the figure and chart, then one ledger row wide, rows of three on a tablet, of two on a phone.
-    rows: { '--rw': metrics.length > 1 ? 1 : 0, '--rm': Math.ceil((metrics.length - 1) / 3), '--rn': Math.ceil((metrics.length - 1) / 2) },
+    rows: layout === 'board' ? { '--rw': 1.3, '--rm': 0.6, '--rn': 0.4 + Math.ceil(metrics.length / 2) * 0.9 } : { '--rw': metrics.length > 1 ? 1 : 0, '--rm': Math.ceil((metrics.length - 1) / 3), '--rn': Math.ceil((metrics.length - 1) / 2) },
     what: 'The figure the page is about, with its change on the comparison period and, beside it, the same figure over the period with the comparison in grey. Under it, the other figures; click one to make it the subject. Click a point on the line to zoom to it, or drag across several.',
     queries: (s) => {
       const n = metrics.includes(s.metric) ? s.metric : metrics[0]
@@ -289,9 +294,23 @@ export function subject({ metrics, by, kicker } = {}) {
         figure(n, v),
         cmpR && Number.isFinite(p) && h('p', { class: 'subject__change' }, changeText(n, v, p), ` from ${F.fmtMetric(n, p, { compact: true })} in ${cw}`))
       const say = h('p', { class: 'subject__say' })
-      lead.append(say)
       const chart = h('div', { class: 'subject__chart' })
-      body.append(h('div', { class: 'subject' }, lead, chart))
+      if (layout === 'board') {
+        // Every figure large; the chosen one carries the line under them.
+        const board = h('div', { class: 'scores', style: { '--n': Math.min(metrics.length, 4) } }, ...metrics.map((x) => {
+          const cv = k[`${x}__cur`]
+          const pv = k[`${x}__cmp`]
+          const st = F.status(x, cv)
+          return h('button', { type: 'button', class: 'score', 'aria-pressed': String(x === n), title: x === n ? null : `Show ${lower(F.metric(x).label)} over time`, onclick: () => x !== n && store.setMetric(x) },
+            h('span', { class: 'score__label' }, st && h('i', { class: `dot dot--${st}`, title: F.STATUS_WORDS[st] }), F.metric(x).label),
+            figure(x, cv),
+            h('span', { class: 'score__change' }, cmpR && Number.isFinite(pv) ? [changeText(x, cv, pv), ` from ${F.fmtMetric(x, pv, { compact: true })}`] : st ? F.STATUS_WORDS[st] : ' '))
+        }))
+        body.append(h('div', { class: 'subject subject--board' }, board, say, chart))
+      } else {
+        lead.append(say)
+        body.append(h('div', { class: `subject${layout === 'band' ? ' subject--band' : ''}` }, lead, chart))
+      }
       if (S.dated() && cur?.length) {
         const g = S.grain(s)
         const a = S.buckets(cur, s, 'current')
@@ -331,7 +350,7 @@ export function subject({ metrics, by, kicker } = {}) {
         else say.replaceChildren(...prose([...top, ` is highest, at ${F.fmtMetric(n, cur[0][n], { compact: true })} against ${F.fmtMetric(n, v, { compact: true })} for all of them.`]))
       }
       // The ledger
-      const others = metrics.filter((x) => x !== n)
+      const others = layout === 'board' ? [] : metrics.filter((x) => x !== n)
       if (others.length) {
         body.append(h('div', { class: 'ledger', style: { '--n': others.length } }, ...others.map((x) => {
           const mm = F.metric(x)

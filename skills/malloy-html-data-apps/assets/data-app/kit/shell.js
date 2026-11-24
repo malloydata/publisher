@@ -22,14 +22,27 @@ import { MOTION } from './draw.js'
  *   filters: [{ key, field, label, plural, format }],
  *   entities: { key: { field, label, plural, name } },   // things with a page of their own
  *   recordNoun,                          // what one row is, plural: "orders", "flights"
- *   defaults: { period, compare }, accent,
+ *   defaults: { period, compare }, theme,      // theme: paper, ledger, clinic, transit, terminal, harvest, civic, bloom, stone
  *   pages: [{ id, title, render: (state) => [...blocks], entity, lists, period }],
  *   footer,
  * })
  */
 export async function dashboard(cfg) {
   S.configure(cfg)
-  if (cfg.accent) document.documentElement.dataset.accent = cfg.accent
+  // The theme, unless the address previews another (?theme=), and its display face, loaded before anything draws.
+  const root = document.documentElement
+  const preview = new URLSearchParams(location.search).get('theme')
+  if (preview || cfg.theme) root.dataset.theme = preview || cfg.theme
+  const face = getComputedStyle(root).getPropertyValue('--display-face').trim().replace(/"/g, '')
+  const faceReady = !face ? Promise.resolve() : new Promise((done) => {
+    const link = document.createElement('link')
+    link.rel = 'stylesheet'
+    link.href = new URL(`./fonts/${face}.css`, import.meta.url).href
+    link.onload = () => (document.fonts?.load ? document.fonts.load(`600 40px "${getComputedStyle(root).getPropertyValue('--display').split(',')[0].replace(/"/g, '').trim()}"`).then(done, done) : done())
+    link.onerror = done
+    document.head.append(link)
+    setTimeout(done, 1500)
+  })
   const app = $('#app')
   const navPages = cfg.pages.filter((p) => !p.entity && !p.hidden)
   const fresh = h('span', { class: 'mast__fresh', 'data-pending': '' })
@@ -45,7 +58,7 @@ export async function dashboard(cfg) {
     const lists = cfg.filters.map((f) => (f.values ? Promise.resolve(f.values.map((v) => ({ v, n: null })))
       : query(`run: ${S.src()} -> { where: ${f.field} is not null; group_by: v is ${f.field}; aggregate: n is count(); order_by: ${f.sort === 'name' ? 'v' : 'n desc'}; limit: ${f.hidden ? 2000 : 500} }`)))
     const span = cfg.date ? query(`run: ${S.src()} -> { aggregate: first_day is min(${cfg.date.field}), last_day is max(${cfg.date.field}) }`) : Promise.resolve(null)
-    const [sp, ...rest] = await Promise.all([span, ...lists, d3Ready])
+    const [sp, ...rest] = await Promise.all([span, ...lists, d3Ready, faceReady])
     const known = { span: sp && sp[0]?.last_day ? { first: String(sp[0].first_day).slice(0, 10), last: String(sp[0].last_day).slice(0, 10) } : null }
     cfg.filters.forEach((f, i) => {
       known[f.key] = rest[i].map((r) => r.v)

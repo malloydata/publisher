@@ -38,6 +38,19 @@ the request, and decide:
 Write what you decided at the top of `app.js` and in your hand-over, in a few lines, so the reader can correct it in
 one reply. An app built on a stated guess is useful; an app waiting for an answer is not.
 
+## Make it about this subject
+
+Two dashboards built with this kit share a grammar, not a page. What makes one about bike share and the other about
+hospital bills:
+
+- **One form native to the field**, drawn as a block of your own (`reference/app-frame.md`): net arrivals per
+  station for a bike share, a price index against the national price for hospital charges, a cohort grid for
+  subscriptions, an hour-by-weekday grid for operations. Every dashboard has at least one.
+- **Its own sections**, chosen from what the data shows, in the order the reader needs them. The page plans in the
+  kit reference are examples of a shape; never copy one section for section.
+- **Its own words.** Kickers and headlines in the reader's vocabulary ("trips", "stays", "pull requests"), headlines
+  written for what matters in the domain rather than the kit's standard ones where you can.
+
 ## Pages, and the paths between them
 
 A dashboard is never one long page. Plan it as pages a reader moves between:
@@ -106,13 +119,39 @@ None of these are in the kit. Do not add them back.
 
 ## Each element
 
-**Type.** Geist for everything, Geist Mono for axes, dates in menus and queries. Weight 400 to read, 500 for labels
-and names, 600 only for the subject. Large numbers use proportional figures; columns use tabular ones. Currency
-symbols and units sit a step smaller than their number.
+**A look of its own.** Every dashboard follows the same rules and none should look like the last one. Its theme,
+chosen from the subject, sets the paper, the inks, the accent, the chart colours, the masthead, the weight of the
+rules between sections and the face of the large numbers:
 
-**Colour.** Paper, ink and four ink tones carry nearly everything. One accent marks the subject, the selection and
-focus; choose it from the subject (`accent`: steel by default, indigo, teal, plum, ochre, graphite). Good and bad
-appear only on changes and status. The comparison is always grey.
+| Theme | For | Its look |
+|---|---|---|
+| `ledger` | Finance, revenue, pricing, costs, investment | Cream paper, navy, a serif, a heavy ink rule under the masthead |
+| `clinic` | Health, medicine, care, safety, science | Cool mist, deep teal, a teal bar over the masthead |
+| `transit` | Operations, transport, logistics, energy | Grey, signal blue, a condensed face, a dark masthead |
+| `terminal` | Software, engineering, AI, infrastructure | White, violet, mono figures, a dark masthead |
+| `harvest` | Food, agriculture, environment, climate | Sand, pine green, a soft serif |
+| `civic` | Government, public data, elections, education, cities | Cool white, navy, a serif, a navy masthead |
+| `bloom` | Consumers, retail, media, travel, people | Blush, plum, a soft serif, the largest figures |
+| `paper` | Any business subject, Credible's own look | Warm paper, steel blue |
+| `stone` | Internal tools, anything that should recede | Grey, graphite |
+
+Pick the theme whose row names the subject; when two fit, the one nearer to who reads it (a hospital's finance team
+reads `ledger`, its clinicians `clinic`). Every theme is checked for contrast in light and dark, so never override
+its colours; a colour an app adds for meaning (a party, a brand) must hold 4.5:1 as text and 3:1 as a mark.
+
+**The lead's layout**, chosen by archetype (`subject({ layout })`):
+
+- `split`, the figure beside its line and the rest in a ledger under them: an overview of performance.
+- `band`, the same on a dark plane: a monitor, whose lead is a status read at a glance.
+- `board`, three or four figures equally large in a row, the chosen one's line across the page under them: a
+  scorecard whose figures matter equally, or a page whose subject is a mix.
+
+**Type.** Geist for the interface, Geist Mono for axes and queries; the theme's face for the large numbers and, in
+the serif themes, the headlines. Weight 400 to read, 500 for labels and names. Large numbers use proportional
+figures; columns use tabular ones. Currency symbols and units sit a step smaller than their number.
+
+**Colour.** Paper, ink and four ink tones carry nearly everything. The theme's accent marks the subject, the
+selection and focus. Good and bad appear only on changes and status. The comparison is always grey.
 
 **Changes.** Text, not badges: "+16.2%", "−0.4 pts", "no change", coloured by what the change means for the metric
 (`good: 'down'` makes a fall green). Percentages change in points.

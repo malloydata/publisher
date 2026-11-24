@@ -3,42 +3,21 @@
    edited; an app's rare overrides go in app.css. Read DESIGN.md (reference/dashboard-design.md) for why. */
 
 :root {
-  color-scheme: light;
-  --paper: #f8f7f4;
-  --surface: #ffffff;
-  --ink: #21201c;
-  --body: #45443f;
-  --muted: #6c6b66;
-  --faint: #8a8881;
-  --rule: #e6e3dc;
-  --rule-strong: #d2cec5;
-  --hover: #f0eee9;
-  --cmp: #a9a69e;
-  --cmp-bar: #e4e1d9;
-  --good: #3f7a3a;
-  --bad: #b1442f;
-  --watch: #9a6a10;
-  --accent: #2e6a8e;
-  --accent-wash: color-mix(in srgb, var(--accent) 9%, transparent);
-  --s2: #8aa36d; --s3: #c27f6f; --s4: #a7955e; --s5: #8a7fa3; --s6: #5e9a94;
-  --shadow: 0 1px 2px rgb(33 32 28 / 0.06), 0 10px 28px rgb(33 32 28 / 0.12);
+  /* Colours come from themes.css, a theme per subject; these are the rest of the design. */
   --sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --display: var(--sans);
+  --headline: var(--sans);
+  --display-stretch: 100%;
+  --display-weight: 600;
+  --accent-wash: color-mix(in srgb, var(--accent) 9%, transparent);
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 10px 28px rgb(0 0 0 / 0.12);
   --wrap: 1240px;
   --pad: 40px;
   --gap: 64px;
 }
-/* The accent, chosen per app from the subject: data-accent on <html>. */
-:root[data-accent="indigo"] { --accent: #4a59a8; }
-:root[data-accent="teal"] { --accent: #2b7a72; }
-:root[data-accent="plum"] { --accent: #7d4f86; }
-:root[data-accent="ochre"] { --accent: #9a6b14; }
-:root[data-accent="graphite"] { --accent: #3d3c38; }
-
-@media (prefers-color-scheme: dark) { :root:not([data-mode="light"]) { color-scheme: dark; --paper: #191917; --surface: #22211e; --ink: #f2f0ea; --body: #d5d2ca; --muted: #a29f97; --faint: #8a877f; --rule: #302e2a; --rule-strong: #45423d; --hover: #25241f; --cmp: #6f6d66; --cmp-bar: #33312c; --good: #8fc07a; --bad: #ee8f7b; --watch: #e0b04f; --accent: #7fb0d3; --s2: #a7c08a; --s3: #e0a08f; --s4: #cdbb84; --s5: #b2a7cc; --s6: #86c2bb; --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 10px 28px rgb(0 0 0 / 0.5); }
-  :root[data-accent="indigo"]:not([data-mode="light"]) { --accent: #9aa6e6; } :root[data-accent="teal"]:not([data-mode="light"]) { --accent: #6fc0b6; } :root[data-accent="plum"]:not([data-mode="light"]) { --accent: #c49ccc; } :root[data-accent="ochre"]:not([data-mode="light"]) { --accent: #dcae5a; } :root[data-accent="graphite"]:not([data-mode="light"]) { --accent: #d8d5cd; } }
-:root[data-mode="dark"] { color-scheme: dark; --paper: #191917; --surface: #22211e; --ink: #f2f0ea; --body: #d5d2ca; --muted: #a29f97; --faint: #8a877f; --rule: #302e2a; --rule-strong: #45423d; --hover: #25241f; --cmp: #6f6d66; --cmp-bar: #33312c; --good: #8fc07a; --bad: #ee8f7b; --watch: #e0b04f; --accent: #7fb0d3; --s2: #a7c08a; --s3: #e0a08f; --s4: #cdbb84; --s5: #b2a7cc; --s6: #86c2bb; --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 10px 28px rgb(0 0 0 / 0.5); }
-:root[data-mode="dark"][data-accent="indigo"] { --accent: #9aa6e6; } :root[data-mode="dark"][data-accent="teal"] { --accent: #6fc0b6; } :root[data-mode="dark"][data-accent="plum"] { --accent: #c49ccc; } :root[data-mode="dark"][data-accent="ochre"] { --accent: #dcae5a; } :root[data-mode="dark"][data-accent="graphite"] { --accent: #d8d5cd; }
+@media (prefers-color-scheme: dark) { :root:not([data-mode="light"]) { --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 10px 28px rgb(0 0 0 / 0.5); } }
+:root[data-mode="dark"] { --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 10px 28px rgb(0 0 0 / 0.5); }
 
 /* The names charts.js and charts.css read, so its forms take the same palette. */
 :root { --bg: var(--paper); --surface-2: var(--hover); --panel: var(--hover); --nodata: var(--cmp-bar); --border: var(--rule); --border-strong: var(--rule-strong); --text-strong: var(--ink); --text: var(--body); --text-muted: var(--muted); --text-soft: var(--faint); --grid: var(--rule); --accent-soft: var(--accent-wash); --up: var(--bad); --down: var(--good); --c-bar: var(--accent); --c1: var(--accent); --c2: var(--s2); --c3: var(--s3); --c4: var(--s4); --c5: var(--s5); --c6: var(--s6); --seq-0: color-mix(in srgb, var(--accent) 6%, var(--paper)); --seq-1: color-mix(in srgb, var(--accent) 22%, var(--paper)); --seq-2: color-mix(in srgb, var(--accent) 42%, var(--paper)); --seq-3: color-mix(in srgb, var(--accent) 64%, var(--paper)); --seq-4: var(--accent); --seq-5: color-mix(in srgb, var(--accent) 70%, var(--ink)); --period: var(--accent-wash); --font-ui: var(--sans); --font-mono: var(--mono); --font-display: var(--sans); --font-serif: var(--sans); --fs-xs: 12px; --fs-sm: 13px; --fs-md: 14px; --fs-lg: 16px; --fs-xl: 20px; --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --tr-caps: 0; }
@@ -57,7 +36,7 @@ code, pre { font-family: var(--mono); }
 .chg--good { color: var(--good); } .chg--bad { color: var(--bad); } .chg--flat { color: var(--muted); font-weight: 400; } .chg--watch { color: var(--watch); }
 
 /* ---- Masthead ---- */
-.mast { border-bottom: 1px solid var(--rule); }
+.mast { background: var(--mast-bg, transparent); border-top: 4px solid var(--mast-top, transparent); border-bottom: var(--mast-line-w, 1px) solid var(--mast-line, var(--rule)); --ink: var(--mast-ink); --muted: var(--mast-muted); --faint: var(--mast-muted); --rule: var(--mast-rule); }
 .mast__row { display: flex; align-items: center; gap: 40px; height: 56px; }
 .mast__name { display: flex; align-items: baseline; gap: 10px; white-space: nowrap; text-decoration: none; }
 .mast__title { font-weight: 600; font-size: 15px; color: var(--ink); letter-spacing: -0.01em; }
@@ -119,7 +98,7 @@ code, pre { font-family: var(--mono); }
 /* ---- Pages ---- */
 .page { padding-bottom: 24px; }
 .page-head { padding: 32px 0 4px; max-width: 72ch; }
-.page-head h1, .entity__name { font-size: 30px; font-weight: 500; color: var(--ink); letter-spacing: -0.025em; line-height: 1.15; }
+.page-head h1, .entity__name { font-family: var(--headline); font-stretch: var(--display-stretch); font-size: 30px; font-weight: 500; color: var(--ink); letter-spacing: -0.025em; line-height: 1.15; }
 .lede { margin: 10px 0 0; font-size: 16px; line-height: 1.55; color: var(--body); }
 .lede strong { color: var(--ink); font-weight: 500; }
 .entity { padding: 28px 0 6px; }
@@ -131,7 +110,7 @@ code, pre { font-family: var(--mono); }
 
 /* ---- Blocks on the grid ---- */
 .blocks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--gap); }
-.block { position: relative; grid-column: 1 / -1; padding: 32px 0 8px; border-top: 1px solid var(--rule); margin-top: 32px; min-width: 0; }
+.block { position: relative; grid-column: 1 / -1; padding: 32px 0 8px; border-top: 1px solid var(--section-rule, var(--rule)); margin-top: 32px; min-width: 0; }
 .block.span-6 { grid-column: span 1; }
 .page > .blocks:first-child > .block:first-child, .entity + .blocks > .block:first-child, .page-head + .blocks > .block:first-child { margin-top: 20px; }
 .block--subject { border-top: 0; padding-top: 24px; margin-top: 0 !important; }
@@ -140,7 +119,7 @@ code, pre { font-family: var(--mono); }
 .kicker__of { color: var(--faint); font-weight: 400; }
 .how { margin-left: auto; font-size: 12px; color: var(--faint); font-weight: 500; white-space: nowrap; }
 .how:hover { color: var(--ink); }
-.block__title { margin: 6px 0 20px; font-size: 20px; font-weight: 500; line-height: 1.35; color: var(--ink); letter-spacing: -0.015em; text-wrap: balance; max-width: 40ch; }
+.block__title { margin: 6px 0 20px; font-family: var(--headline); font-stretch: var(--display-stretch); font-size: 20px; font-weight: 500; line-height: 1.35; color: var(--ink); letter-spacing: -0.015em; text-wrap: balance; max-width: 40ch; }
 .block.span-12 .block__title { max-width: 60ch; }
 .block__title strong { font-weight: 500; }
 .block__title.is-loading { min-height: 54px; }
@@ -185,7 +164,7 @@ code, pre { font-family: var(--mono); }
 .subject { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 8fr); gap: 48px; padding-bottom: 32px; }
 .subject__text { min-width: 0; }
 .block--subject .state--loading { min-height: calc(298px + 142px * var(--rw, 1)); }
-.figure { display: block; margin: 10px 0 0; font-size: 64px; line-height: 1; font-weight: 600; color: var(--ink); letter-spacing: -0.035em; white-space: nowrap; }
+.figure { display: block; margin: 10px 0 0; font-family: var(--display); font-stretch: var(--display-stretch); font-size: var(--figure-size, 64px); line-height: 1; font-weight: var(--display-weight); color: var(--ink); letter-spacing: -0.035em; white-space: nowrap; }
 .figure__u { font-size: 0.55em; font-weight: 500; letter-spacing: -0.01em; vertical-align: 0.42em; color: var(--body); margin-right: 0.04em; }
 .figure__s { font-size: 0.55em; font-weight: 500; letter-spacing: -0.01em; color: var(--body); margin-left: 0.04em; }
 .subject__change { margin: 14px 0 0; font-size: 15px; color: var(--muted); }
@@ -198,7 +177,7 @@ code, pre { font-family: var(--mono); }
 .led:hover { background: var(--hover); }
 .led:first-child:hover { background: linear-gradient(90deg, transparent, var(--hover) 24px); }
 .led__label { font-size: 13px; color: var(--muted); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.led__value { font-size: 26px; font-weight: 500; color: var(--ink); letter-spacing: -0.025em; line-height: 1.2; white-space: nowrap; }
+.led__value { font-family: var(--display); font-stretch: var(--display-stretch); font-size: 26px; font-weight: 500; color: var(--ink); letter-spacing: -0.025em; line-height: 1.2; white-space: nowrap; }
 .led__value .figure__u, .led__value .figure__s { font-size: 0.62em; vertical-align: baseline; }
 .led__change { font-size: 13px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .spark { display: block; width: 100%; height: 26px; margin-top: 8px; overflow: visible; }
@@ -210,6 +189,26 @@ code, pre { font-family: var(--mono); }
 .status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: var(--body); white-space: nowrap; }
 .status i { width: 7px; height: 7px; border-radius: 4px; }
 .status--ok i { background: var(--good); } .status--watch i { background: var(--watch); } .status--breach i { background: var(--bad); }
+
+/* The band: a monitor's lead on a dark plane, the one lifted region a page may have. The plane's own tokens are set
+   on it, so everything inside (the chart, the changes) draws in its colours. */
+.subject--band { --paper: var(--band); --surface: var(--band); --ink: var(--band-ink); --body: var(--band-ink); --muted: var(--band-muted); --faint: var(--band-muted); --rule: var(--band-rule); --rule-strong: var(--band-rule); --cmp: var(--band-cmp); --accent: var(--band-accent); --good: var(--band-good); --bad: var(--band-bad); --hover: var(--band-rule);
+  background: var(--band); color: var(--body); border-radius: 14px; padding: 32px 36px 28px; margin: 0 calc(-1 * min(var(--pad), 36px)) 8px; }
+.subject--band .figure__u, .subject--band .figure__s { color: var(--band-muted); }
+.block--subject .block__head .how { position: relative; z-index: 1; }
+
+/* The scoreboard: a scorecard's figures, all large, one chosen; its line under them across the page. */
+.scores { display: grid; grid-template-columns: repeat(var(--n, 3), minmax(0, 1fr)); border-top: 1px solid var(--ink); border-bottom: 1px solid var(--rule); margin-bottom: 28px; }
+.score { text-align: left; padding: 18px 24px 16px; border-left: 1px solid var(--rule); display: grid; gap: 4px; align-content: start; position: relative; min-width: 0; transition: background 120ms; }
+.score:first-child { border-left: 0; padding-left: 0; }
+.score:hover { background: var(--hover); }
+.score[aria-pressed="true"]::after { content: ""; position: absolute; left: 24px; right: 24px; bottom: -1px; height: 3px; background: var(--accent); }
+.score:first-child[aria-pressed="true"]::after { left: 0; }
+.score .figure { font-size: 44px; margin: 4px 0 0; }
+.score__label { font-size: 13px; font-weight: 500; color: var(--muted); }
+.score__change { font-size: 13px; color: var(--faint); }
+.subject--board .subject__chart { min-height: 240px; }
+.subject--board .subject__say { max-width: 70ch; margin: 0 0 20px; }
 
 /* ---- Charts ---- */
 .chart { position: relative; min-width: 0; }
@@ -347,6 +346,11 @@ body[data-check="fail"] .self-check { background: color-mix(in srgb, var(--bad) 
   .mast__fresh { margin-left: 0; justify-content: flex-start; }
   .ctl__end { margin-left: 0; }
   .figure { font-size: 52px; }
+  .scores { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .score:nth-child(odd) { border-left: 0; padding-left: 0; }
+  .score:nth-child(n + 3) { border-top: 1px solid var(--rule); }
+  .score .figure { font-size: 34px; }
+  .subject--band { padding: 24px 20px; margin: 0 -8px 8px; }
   .ctl:empty { min-height: 142px; }
   .block--subject .state--loading { min-height: calc(532px + 142px * var(--rn, 1)); }
   .ledger { grid-template-columns: repeat(2, minmax(0, 1fr)); }
