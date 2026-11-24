@@ -1964,7 +1964,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             expect(error).toBeInstanceOf(Error);
             expect(error).not.toBeInstanceOf(CatalogAdminError);
             expect((error as Error).message).toContain(
-               "committed, but its record could not be read back; retrying it is safe",
+               "committed, but its record could not be read back; a retry runs the load again",
             );
             expect(
                await harness.collectCounter("publisher_load_rejections_total", {

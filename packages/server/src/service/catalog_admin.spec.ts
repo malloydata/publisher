@@ -277,6 +277,36 @@ describe("a storage destination's schema", () => {
       expect(await put(a, "materialized")).toBeUndefined();
    });
 
+   it("is not refused when the destination overlaps the catalog by data path alone", async () => {
+      const elsewhere = lake("dest", "c", "materialized", {
+         connectionString: "host=127.0.0.1 port=1 dbname=elsewhere",
+      });
+      const dest = {
+         ...elsewhere,
+         ducklakeConnection: {
+            ...elsewhere.ducklakeConnection,
+            storage: { bucketUrl: "s3://bucket/lake/dest" },
+         },
+      };
+      // Only a data path set on the admin's own storage can overlap one; the listener's config types it away.
+      const a = new CatalogAdmin(
+         {
+            catalogDatabase: CATALOG_DATABASE,
+            storage: { bucketUrl: "s3://bucket/lake" } as never,
+         },
+         fakeOf<LoadedEnvironmentsReader>({
+            getLoadedEnvironments: () => [
+               fakeOf<Environment>({
+                  getEnvironmentName: () => "prod",
+                  listStorageDestinations: () => [dest as never],
+                  listApiConnections: () => [],
+               }),
+            ],
+         }),
+      );
+      expect(await put(a, "materialized")).toBeUndefined();
+   });
+
    it("is refused only on the catalog the destination uses", async () => {
       const a = adminOver([
          {
