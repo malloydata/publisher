@@ -59,6 +59,7 @@ const FACADE_SURFACE = [
    "bind",
    "bindCompiled",
    "incompatibleTables",
+   "holdCarriedToContracts",
    "bindingState",
    "boundDatabaseEntries",
    "boundIncrementalEntries",

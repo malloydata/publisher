@@ -6,17 +6,22 @@
  * over a stored upstream whose table was altered in its destination after
  * its build (its `amt` column dropped and added back as text, out of band)
  * never builds from that table's new shape, and never recomputes the
- * upstream from raw: no run after the alter writes a downstream table, and
- * every answer equals live.
+ * upstream from raw.
  *
- * Unlike the database tier, it does not recover by itself today: the
- * downstream fails in every run with the engine's own error (no
- * `schema_incompatible` code) and no run rebuilds the upstream. Those
- * recovery assertions are skipped until that is fixed.
+ * - A host-instructed build of the downstream alone, with the upstream by
+ *   reference, is refused before it reaches the destination's engine:
+ *   SourceFailure code `schema_incompatible`, naming the column, never the
+ *   engine's own binder error.
+ * - The next standalone run (on a package loaded again) holds the
+ *   upstream's table to its contract, rebuilds it rather than carry it, and
+ *   builds the downstream over the rebuilt table, served equal to live; the
+ *   run after it carries both.
  *
  * `#@ persist` over `#@ persist`, a `#(materialize)` extension of a
- * `#(materialize)` parent, and a `#(rollup)` over a `#@ persist` base, each
- * in one DuckLake destination. Opt-in: set PUBLISHER_TEST_POSTGRES_URL, for
+ * `#(materialize)` parent, and a `#(rollup)` of a `#(materialize)` base,
+ * each in one DuckLake destination. (A `storage=` rollup over a `#@ persist`
+ * base's `->` is not carried onto its table at all, drift or not:
+ * `chained_shape_not_carried`.) Opt-in: set PUBLISHER_TEST_POSTGRES_URL, for
  * the warehouse and the DuckLake catalog.
  */
 
@@ -91,19 +96,18 @@ source: ext is a extend { dimension: big is amt > 5 }
       query: `run: ext -> { group_by: k; aggregate: total is amt.sum() } ${AS_TEXT}`,
    },
    {
-      label: "#(rollup) over a #@ persist base",
+      label: "#(rollup) over a #(materialize) base",
       cell: "l-drift-build rs",
       model: `${HEAD}
-#@ persist storage="lake"
-source: a is raw -> { select: k, amt }
-
-source: rolled is a extend {
+#(materialize) storage="lake"
+source: a is raw extend {
+  dimension: k2 is k
   #(rollup) grain=["k"] storage="lake"
   measure: total is amt.sum()
 }
 `,
-      downstream: /^rolled__rollup__/,
-      query: `run: rolled -> { group_by: k; aggregate: total } ${AS_TEXT}`,
+      downstream: /__rollup__/,
+      query: `run: a -> { group_by: k; aggregate: total } ${AS_TEXT}`,
    },
 ];
 
@@ -142,7 +146,7 @@ const EXPECTED = [
 ];
 
 for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
-   describe(`a storage= chained build over an upstream table altered since its build never builds from its new shape (${mechanism.label}, ${mechanism.cell}; Postgres, DuckLake)`, () => {
+   describe(`a storage= chained build over an upstream table altered since its build is refused, and a standalone run rebuilds the upstream rather than carry it (${mechanism.label}, ${mechanism.cell}; Postgres, DuckLake)`, () => {
       let restore: () => void;
       let root: string;
       let db: DuckDBConnection;
@@ -152,6 +156,7 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
       const dbs: string[] = [];
       let admin: PostgresConnection;
       let first: Materialization;
+      let instructed: Materialization;
       let afterAlter: Materialization;
       let second: Materialization;
       let betweenServed: { rows: unknown; kind?: string };
@@ -283,9 +288,44 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
          } finally {
             await lake.close();
          }
-         await env.getPackage(parsePackageName(PKG), true, {
+         let pkg = await env.getPackage(parsePackageName(PKG), true, {
             refreshSchemas: true,
          });
+         // A host instructs the downstream alone, with `a` by reference as
+         // its build recorded it.
+         const downstream = Object.values(
+            pkg.getBuildPlan()?.sources ?? {},
+         ).find((s) => mechanism.downstream.test(s.name))!;
+         const a = entriesOf(first)[0] as unknown as Record<string, unknown>;
+         instructed = await build({
+            buildInstructions: [
+               {
+                  sourceEntityId: downstream.sourceEntityId,
+                  sourceID: downstream.sourceID,
+                  materializedTableId: "mt-instructed",
+                  physicalTableName: "csd_instructed",
+                  realization: "COPY",
+                  destination: "lake",
+               },
+            ],
+            referenceManifest: [
+               {
+                  sourceEntityId: a.sourceEntityId,
+                  physicalTableName: a.physicalTableName,
+                  connectionName: "warehouse",
+                  storageDestinationName: a.storageDestinationName,
+                  schema: a.schema,
+                  contract: a.contract,
+                  builtAt: a.builtAt,
+               },
+            ],
+         });
+         // Loaded again: what that refusal reported to this package's drift
+         // handler is gone, so the run below decides from the table alone.
+         pkg = await env.getPackage(parsePackageName(PKG), true, {
+            refreshSchemas: true,
+         });
+         void pkg;
          afterAlter = await build({});
          betweenServed = await ask(mechanism.query);
          second = await build({});
@@ -313,39 +353,58 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
          expect(entriesOf(first).map((e) => e.sourceName)).toEqual(["a"]);
       });
 
-      it("never builds the downstream from the altered table, in the run after the alter or the next", () => {
-         for (const run of [afterAlter, second]) {
-            expect(run.status).toBe("FAILED");
-            expect(
-               entriesOf(run).filter((e) =>
-                  mechanism.downstream.test(e.sourceName ?? ""),
-               ),
-            ).toEqual([]);
-            expect(
-               failuresOf(run).filter((f) =>
-                  mechanism.downstream.test(f.sourceName ?? ""),
-               ),
-            ).toHaveLength(1);
-         }
+      it("refuses a host-instructed downstream over the altered table as schema_incompatible, naming the column", () => {
+         expect(instructed.status).toBe("FAILED");
+         expect(
+            entriesOf(instructed).filter((e) =>
+               mechanism.downstream.test(e.sourceName ?? ""),
+            ),
+         ).toEqual([]);
+         const failures = failuresOf(instructed);
+         expect(failures).toHaveLength(1);
+         expect(failures[0].code).toBe("schema_incompatible");
+         expect(failures[0].reason).toContain(
+            "was not read from its table, since its column 'amt' was built as DECIMAL(10,1) and is now VARCHAR",
+         );
       });
 
-      it("answers equal to live after each run", () => {
+      it("rebuilds the upstream in the next standalone run rather than carry it, and builds the downstream over its new table", () => {
+         expect([afterAlter.status, afterAlter.error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         const before = entriesOf(first)[0];
+         const upstream = entriesOf(afterAlter).find(
+            (e) => e.sourceName === "a",
+         );
+         expect(upstream?.builtAt).toBeDefined();
+         expect(upstream?.builtAt).not.toBe(before.builtAt);
+         const downstream = entriesOf(afterAlter).filter((e) =>
+            mechanism.downstream.test(e.sourceName ?? ""),
+         );
+         expect(downstream).toHaveLength(1);
+         expect(downstream[0].upstreamReuse).toBe("reused");
+         expect(
+            (downstream[0].builtFrom ?? []).map((b) => [
+               b.physicalTableName,
+               b.builtAt,
+            ]),
+         ).toEqual([[upstream!.physicalTableName, upstream!.builtAt]]);
+      });
+
+      it("carries both in the run after", () => {
+         expect([second.status, second.error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+      });
+
+      it("serves its table after each run, equal to live", () => {
+         expect(betweenServed.kind).not.toBe("live");
+         expect(served.kind).not.toBe("live");
          expect(betweenServed.rows).toEqual(live.rows);
          expect(served.rows).toEqual(live.rows);
          expect(live.rows).toEqual(EXPECTED);
-      });
-
-      // Skipped: the downstream's failure carries no `schema_incompatible`
-      // code and no run rebuilds the upstream, so it fails on every run.
-      it.skip("fails the downstream as schema_incompatible, then rebuilds the upstream and builds over it", () => {
-         expect(failuresOf(afterAlter).map((f) => f.code)).toContain(
-            "schema_incompatible",
-         );
-         const downstream = entriesOf(second).find((e) =>
-            mechanism.downstream.test(e.sourceName ?? ""),
-         );
-         expect(downstream?.upstreamReuse).toBe("reused");
-         expect(served.kind).not.toBe("live");
       });
    });
 }

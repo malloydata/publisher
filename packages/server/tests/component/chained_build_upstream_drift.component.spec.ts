@@ -5,14 +5,22 @@
  * A chained database build over a stored upstream whose table was altered in
  * its warehouse after its build (`ALTER TABLE … TYPE DECIMAL(10,0)`, which
  * rounds `2.4` to `2`) never reads that table, and never recomputes the
- * upstream from raw either. The first run's downstream (a `#@ persist` over
- * it, a `#(rollup)` over it) fails with SourceFailure code
- * `schema_incompatible`, naming the column, and reports the table to the
- * drift handler; the next run rebuilds the upstream rather than carry that
- * generation again, and builds the downstream over the rebuilt table
- * (`upstreamReuse: reused`, `builtFrom` naming its new build), served equal
- * to live as text. DuckDB, and Postgres when `PUBLISHER_TEST_POSTGRES_URL`
- * names one.
+ * upstream from raw either; no answer is ever served from it.
+ *
+ * - A host-instructed build of the downstream alone, with the upstream by
+ *   reference, is refused before it reads the table: SourceFailure code
+ *   `schema_incompatible`, naming the column, reported to the drift
+ *   handler. A `#(materialize)` extension is held to its parent's table as
+ *   a `#@ persist` or a `#(rollup)` is held to its upstream's.
+ * - The next standalone run (on a package loaded again, so nothing that
+ *   refusal reported decides it) holds the upstream's table to its contract
+ *   itself, rebuilds it rather than carry it, and builds the downstream
+ *   over the rebuilt table (`upstreamReuse: reused`, `builtFrom` naming its
+ *   new build), served equal to live as text.
+ *
+ * `#@ persist` over `#@ persist`, a `#(materialize)` extension of a
+ * `#(materialize)` parent, and a `#(rollup)` over a `#@ persist`. DuckDB,
+ * and Postgres when `PUBLISHER_TEST_POSTGRES_URL` names one.
  */
 
 import { PostgresConnection } from "@malloydata/db-postgres";
@@ -73,6 +81,7 @@ source: b is a -> { group_by: cat; aggregate: total is amt.sum() }
 `,
       query: `run: b ${AS_TEXT}`,
       servedBy: "materialized",
+      downstream: /^b$/,
    },
    {
       label: "#(materialize) extension of a #(materialize) parent",
@@ -85,14 +94,7 @@ source: ext is a extend { dimension: big is amt > 5 }
 `,
       query: `run: ext -> { group_by: cat; aggregate: total is amt.sum() } ${AS_TEXT}`,
       servedBy: "materialized",
-      /**
-       * Skipped until fix/extension-over-altered-parent lands: the run after
-       * the alter carries the parent's altered table and builds the
-       * extension over it (`upstreamReuse: reused`, amt `DECIMAL(10,0)`),
-       * served as 19 and 4 where live answers 19.0 and 4.8, on DuckDB and
-       * Postgres.
-       */
-      knownWrong: true,
+      downstream: /^ext$/,
    },
    {
       label: "#(rollup)",
@@ -104,6 +106,7 @@ source: rolled is a extend {
 `,
       query: `run: rolled -> { group_by: cat; aggregate: total } ${AS_TEXT}`,
       servedBy: "rollup",
+      downstream: /^rolled__rollup__/,
    },
 ] as const;
 
@@ -166,10 +169,9 @@ const tiers = [
 ];
 
 for (const [tier, mechanism] of tiers.flatMap((t) =>
-   // A known-wrong mechanism is left out, and named by a skipped test below.
-   MECHANISMS.filter((m) => !("knownWrong" in m)).map((m) => [t, m] as const),
+   MECHANISMS.map((m) => [t, m] as const),
 )) {
-   describe(`a chained build over an upstream table altered since its build fails once, then builds over the rebuilt table (${mechanism.label}, ${tier.label})`, () => {
+   describe(`a chained build over an upstream table altered since its build is refused, and a standalone run rebuilds the upstream rather than carry it (${mechanism.label}, ${tier.label})`, () => {
       let restore: () => void;
       let root: string;
       let env: Environment;
@@ -179,7 +181,7 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
       let pkg: Package;
       let drop: (() => Promise<void>) | undefined;
       let first: Materialization;
-      let failing: Materialization;
+      let instructed: Materialization;
       let second: Materialization;
       let served: Answer;
       let live: Answer;
@@ -270,7 +272,38 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
          pkg = await env.getPackage(parsePackageName(PKG), true, {
             refreshSchemas: true,
          });
-         failing = await build({});
+         // A host instructs the downstream alone, with `a` by reference as
+         // its build recorded it.
+         const downstream = Object.values(
+            pkg.getBuildPlan()?.sources ?? {},
+         ).find((s) => mechanism.downstream.test(s.name))!;
+         const a = entries[0] as unknown as Record<string, unknown>;
+         instructed = await build({
+            buildInstructions: [
+               {
+                  sourceEntityId: downstream.sourceEntityId,
+                  sourceID: downstream.sourceID,
+                  materializedTableId: "mt-instructed",
+                  physicalTableName: "cd_instructed",
+                  realization: "COPY",
+               },
+            ],
+            referenceManifest: [
+               {
+                  sourceEntityId: a.sourceEntityId,
+                  physicalTableName: a.physicalTableName,
+                  connectionName: "warehouse",
+                  nativeSchema: a.nativeSchema,
+                  contract: a.contract,
+                  builtAt: a.builtAt,
+               },
+            ],
+         });
+         // Loaded again: what that refusal reported to this package's drift
+         // handler is gone, so the run below decides from the table alone.
+         pkg = await env.getPackage(parsePackageName(PKG), true, {
+            refreshSchemas: true,
+         });
          second = await build({});
 
          served = await ask(mechanism.query);
@@ -293,11 +326,11 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
          ).toHaveLength(1);
       });
 
-      it("fails the downstream that would read the altered table, naming the column", () => {
-         expect(failing.status).toBe("FAILED");
+      it("refuses a host-instructed downstream over the altered table, naming the column", () => {
+         expect(instructed.status).toBe("FAILED");
          const failures = Object.values(
             (
-               failing.manifest as {
+               instructed.manifest as {
                   failures?: Record<string, { reason: string; code?: string }>;
                }
             ).failures ?? {},
@@ -309,7 +342,7 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
          );
       });
 
-      it("rebuilds the upstream next, and builds the downstream over its new table", () => {
+      it("rebuilds the upstream in the next standalone run rather than carry it, and builds the downstream over its new table", () => {
          expect(second.status).toBe("MANIFEST_FILE_READY");
          type Entry = {
             sourceName?: string;
@@ -354,11 +387,3 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
       });
    });
 }
-
-describe("a chained build over an upstream table altered since its build (known wrong)", () => {
-   for (const mechanism of MECHANISMS.filter((m) => "knownWrong" in m)) {
-      // Built over the altered parent and served wrong today; drop the
-      // filter above to run it once fix/extension-over-altered-parent lands.
-      it.skip(`fails once, then builds over the rebuilt table (${mechanism.label})`, () => {});
-   }
-});

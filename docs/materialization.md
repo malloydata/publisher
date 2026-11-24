@@ -1063,12 +1063,20 @@ live: a persisted upstream the run neither built nor was handed by reference
 (SourceFailure code `schema_incompatible`). `schema_incompatible` is non-terminal and `retryable`:
 the build reports the table to the drift handler, which reads the package's tables again and
 derives the plan again from them, so the next build is proven over the table as it is, or refused
-at plan. One table generation never fails `schema_incompatible` twice in a row.
+at plan. One table generation never fails `schema_incompatible` twice in a row. A `#(materialize)`
+extension holds its parent's table to the parent's recorded columns as any chained build does, and a
+`storage=` upstream's table is held to its contract as its destination reads it.
 
 A standalone run of named sources (`sourceNames`) also takes in every persisted upstream they read,
 through the plan's edges. It carries each upstream whose table it can serve and rebuilds the rest:
 a missing table, one at another tier or destination, one past its freshness window, one with no
 contract, or one a bind found incompatible.
+
+Every standalone run, named sources or not, first reads each table it would carry and holds it to
+the contract its build recorded, as a bind does (one catalog read per table: database tables on
+their warehouse, `storage=` tables in their destination). A table altered since its build, by an
+`ALTER` the package's last bind never saw, is rebuilt in full rather than carried, and its
+downstreams build over the rebuilt table in the same run.
 
 A run a host instructs (`buildInstructions`) ends every instructed source in exactly one of the
 manifest's `entries` or `failures`, never neither. Each source the run builds is held to the plan's
