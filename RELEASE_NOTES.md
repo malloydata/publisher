@@ -116,7 +116,7 @@ The name such a destination's file is named from may use only ASCII letters, dig
 - a persisted view or named query that reads its `#(materialize)` upstream in another time zone than the upstream's table was built in;
 - a rollup over a pair table, over an extension of a `#(materialize)` source in another file, or over any persisted base whose build over the base's table did not compile to the planned table at plan.
 
-**Changed: a `storage=` rollup over a gated base stored in its destination is built over that base's table.** The gates apply at read and the base's table holds every caller's rows, as its source does, so a rollup grouped from it holds what one grouped from the warehouse would. Before, it was built from the warehouse.
+**Changed: a `storage=` rollup over a gated base stored in its destination is never built from the warehouse.** Where the gate policy builds it, it groups the base's table: the gates apply at read and that table holds every caller's rows, as its source does, so it holds what one grouped from the warehouse would. A gated `#(materialize)` base's `storage=` rollup, whose gate it inherits rather than declares, is refused when the run reaches it (`access_filter`, in the run's `metadata.refusedSources`) and answers live: no table of it is built, over the base's table or the warehouse. Before, such a rollup was built from the warehouse.
 
 **Who is affected:** packages with such views, queries or rollups; each `upstream_table_unusable` refusal names the upstream. **What to do:** move the downstream next to its upstream (one file, one zone), or declare it over a source its build can read in place.
 
