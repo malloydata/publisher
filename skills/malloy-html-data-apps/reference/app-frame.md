@@ -19,9 +19,11 @@ SPDX-License-Identifier: MIT
 | `scope.js` | Every query the app runs and its address; no DOM | Once, then it is the app's own |
 | `styles.css` | The design system: tokens, frame, cards, states, phone layout, looks | Once, then it is the app's own |
 | `charts.js`, `charts.css` | The d3 chart module (`reference/charts.md`) | Whole; never edit, copy again to take a fix |
+| `themes.css` | Ten colour themes, each light and dark (below) | Whole; never edit, copy again to take new themes |
 | `vendor/d3.min.js`, `vendor/LICENSE-d3.txt` | d3 v7.9.0 and its ISC license | Whole |
 | `vendor/topojson-client.min.js`, `vendor/LICENSE-topojson-client.txt` | topojson-client 3.1.0 and its ISC license, for boundary maps only | Only with a map (`reference/maps.md`) |
 | `palette.py` | Checks the colour tokens (below) | Never: run it from here |
+| `themes.py` | Writes and checks `themes.css`; where a theme is added or changed | Never: run it from here |
 | `fonts.py` | Writes `fonts.css`, the faces as base64 text (below) | Never: run it from here |
 
 Run the copy from the package's own directory, the one holding `publisher.json`. The first line finds where the
@@ -35,7 +37,7 @@ test -f publisher.json || { echo "run this from the package directory, the one w
 test -n "$T" || { echo "assets/data-app is not on disk: build from the minimal scaffold in SKILL.md"; exit 1; }
 mkdir -p public/vendor
 for f in index.html app.js scope.js styles.css; do [ -e "public/$f" ] || cp "$T/$f" public/; done
-cp "$T/charts.js" "$T/charts.css" public/ && cp "$T/vendor/d3.min.js" "$T/vendor/LICENSE-d3.txt" public/vendor/
+cp "$T/charts.js" "$T/charts.css" "$T/themes.css" public/ && cp "$T/vendor/d3.min.js" "$T/vendor/LICENSE-d3.txt" public/vendor/
 chmod -R u+w public
 ```
 
@@ -162,30 +164,54 @@ data-filters="sentence" data-numbers="rules" data-sections="numbered" data-cards
 data-footer="colophon" data-lede="dropcap"`), for a subject read slowly; **Ledger** (`data-masthead="bar"
 data-numbers="rules" data-sections="numbered" data-buttons="square"`), for numbers read side by side.
 
-The page is light and its neutrals are fixed. The app chooses, from its subject, the tokens on `:root`:
+Colour comes from a theme, chosen from the subject. `themes.css` holds ten, each a complete palette for a light
+page and a dark one: the page tone, the accent, six categories, the ramp, and good and bad news. Every one passes
+the palette check in both modes. Set it on `<html>`, `<html data-theme="lagoon">`.
 
-- `--accent`: the lead number, links and the selection; 4.5:1 on `--bg` as text.
-- `--c1` to `--c6`: up to six categories, each meaning one thing on every chart, label and chip. Only `--c1` may be
-  the accent. Fewer is better.
-- `--c-bar`: the neutral for a count with no category.
-- `--seq-0` to `--seq-5`: the ramp, light to dark in one hue family, for maps and heatmaps.
-- `--up` and `--down`: bad news and good news, not up and down. A falling price is good for a buyer; choose which
-  applies, and keep a change neutral when its meaning is unclear.
+| Theme | Page | Accent | Suits |
+|---|---|---|---|
+| `ember` | warm paper | rust | heat, fire, energy, prices, the cost of living |
+| `harbor` | cool grey | navy | water, shipping, weather, cities, transport |
+| `meadow` | warm paper | forest green | nature, farming, food, birds, land, health |
+| `dusk` | cool grey | indigo | space, night, sleep, technology, science, culture |
+| `coral` | white | coral, with teal | oceans, beaches, tourism, people and places |
+| `ink` | white | newspaper red | politics, elections, courts, news, history |
+| `desert` | sand | gold | drought, mining, the West, dry land |
+| `orchard` | warm paper | plum | wine, fruit, fashion, the arts, retail |
+| `lagoon` | cool grey | teal | climate, coasts, public health, ecology |
+| `graphite` | cool grey | electric blue | technology, finance, markets, infrastructure |
+
+- **Choose from the subject, not from habit.** Where several apps are seen side by side, as in a gallery, don't
+  repeat the theme of the apps before it unless the subject calls for that theme alone.
+- **Light and dark.** With no `data-mode`, the reader's system setting decides; `data-mode="dark"` or `"light"`
+  fixes it, and `?mode=dark` in the address previews it, as `?theme=` previews another theme. The frame draws every
+  chart again when either changes, since charts read their colours when they draw. Shoot the app in both modes.
+- **Meanings are the app's; colours are the theme's.** List what each category means in a comment at the top of
+  `styles.css` (`/* --c1 as paid, --c2 in today's dollars, --c6 a year ago */`) and keep it the same on every view.
+  Only `--c1` may be the accent. Fewer categories are better.
+- **The tokens:** `--accent` for the lead number, links and the selection; `--c1` to `--c6` for categories;
+  `--c-bar` for a count with no category; `--seq-0` to `--seq-5` for the ramp, light to dark on a light page and dark
+  to light on a dark one; `--up` and `--down` for bad news and good news, not up and down (a falling price is good for
+  a buyer; keep a change neutral when its meaning is unclear).
+- **Overriding a colour** is for a subject with its own (a party, a client's brand): set the token on
+  `:root[data-theme="<theme>"]` and on `:root[data-theme="<theme>"][data-mode="dark"]` in `styles.css`, never in
+  `themes.css`, and check both modes. `themes.css` is written by `themes.py`; a new or changed theme goes there.
 
 The app is not the data's publisher: never use their logo, their name as a brand, their palette or their fonts.
 Credit them as a source in About. A client's own identity is different (`reference/token-contract.md`).
 
-Check the tokens after every change, until it prints `palette ok`:
+Check the colours in both modes after any override, until each prints `palette ok`:
 
 ```sh
 T=$(d=$PWD; while :; do for s in "$d/.claude/skills" "$d/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done; [ "$d" = / ] && break; d=$(dirname "$d"); done; for s in "$HOME/.claude/skills" "$HOME/.agents/skills"; do [ -d "$s/malloy-html-data-apps/assets/data-app" ] && { echo "$s/malloy-html-data-apps/assets/data-app"; exit; }; done)
-python3 -I "$T/palette.py" public/styles.css
+python3 -I "$T/palette.py" public/styles.css public/themes.css --theme lagoon --mode light
+python3 -I "$T/palette.py" public/styles.css public/themes.css --theme lagoon --mode dark
 ```
 
 It checks text contrast on the page and panel, marks at 3:1, categories far enough apart in colour, `--up` and
-`--down` apart in lightness, and a ramp that darkens at every step; each failure exits 1. Categories too close under
-red-green colour blindness are a note, not a failure, since no six colours separate fully for every reader: label
-those two directly wherever both appear.
+`--down` apart in lightness, and a ramp that steps evenly in the mode's direction; each failure exits 1. Categories
+too close under red-green colour blindness are a note, not a failure, since no six colours separate fully for every
+reader: label those two directly wherever both appear.
 
 ## Fonts
 
@@ -219,7 +245,7 @@ On top of `SKILL.md`'s recipe:
 - The fonts loaded: `[...document.fonts].some((f) => f.family === 'Source Serif 4 Variable' && f.status === 'loaded')`
   is true. `document.fonts.check` is true even when the face is missing.
 - Shoot every view, Explore with each scope control set, Explore after a click, and an entity with a scope, at 1280
-  and 390 px wide. Cards load as they near the screen, so shoot with a viewport taller than the view and wait for
+  and 390 px wide, in light mode and again with `?mode=dark`. Cards load as they near the screen, so shoot with a viewport taller than the view and wait for
   `body[data-ready="true"]`, which the frame sets once every card on the view has drawn or failed
   (`reference/verification-harness.md`). No label overlaps or runs off its chart.
 - Every card has a finding and a method note, and its working opens with a definition for every query.

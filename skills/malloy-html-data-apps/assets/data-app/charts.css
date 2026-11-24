@@ -51,7 +51,7 @@
 .fx-bump__row circle { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 1.5; }
 .fx-bump__row.is-on circle { fill: var(--accent); stroke: var(--accent); }
 .fx .fx-bump__n { font-size: 10px; font-weight: 650; fill: var(--text-muted); }
-.fx .fx-bump__row.is-on .fx-bump__n { fill: #ffffff; }
+.fx .fx-bump__row.is-on .fx-bump__n { fill: var(--bg); }
 .fx-bump__row:hover circle { stroke: var(--text-strong); }
 .fx-dot { fill: var(--c-bar); opacity: 0.55; }
 .fx-dot.is-on { fill: var(--accent); opacity: 1; stroke: var(--bg); stroke-width: 1; }
@@ -92,11 +92,11 @@
 .fx-mult.is-accent .fx-mult__line { stroke: var(--accent); stroke-width: 2.2; }
 .fx-mult.is-accent .fx-mult__dot { fill: var(--accent); }
 .fx-cmap { width: 100%; max-width: 920px; margin: 0 auto; }
-.fx-cmap__state { fill: var(--nodata, var(--surface-2)); stroke: #ffffff; stroke-width: 1; }
+.fx-cmap__state { fill: var(--nodata, var(--surface-2)); stroke: var(--bg); stroke-width: 1; }
 .fx-cmap__state[data-pick] { fill: var(--surface-2); }
 .fx-cmap__state[data-pick]:hover { fill: var(--border); }
 .fx-cmap__state.is-selected { fill: var(--accent-soft); stroke: var(--text-strong); stroke-width: 1.5; }
-.fx-cmap__dot { fill: var(--c-bar); fill-opacity: 0.62; stroke: #ffffff; stroke-width: 1; }
+.fx-cmap__dot { fill: var(--c-bar); fill-opacity: 0.62; stroke: var(--bg); stroke-width: 1; }
 .fx-cmap__dot.is-on { stroke: var(--text-strong); stroke-width: 2; }
 .fx-cmap__dot.is-selected { fill-opacity: 0.95; stroke: var(--text-strong); stroke-width: 2.5; }
 .fx-cmap__key circle { fill: none; stroke: var(--text-soft); }

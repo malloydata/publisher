@@ -25,6 +25,20 @@ const known = {} // filled by boot() from distinct-value queries
 let route = { view: 'overview', id: null, compare: [] }
 let scope = { ...S.DEFAULT_SCOPE }
 
+// ---- Theme and mode: the app's theme is data-theme on <html>; data-mode fixes light or dark, else the reader's
+// system setting decides. ?theme= and ?mode= in the address override both, for a preview or a screenshot. ----
+{
+  const p = new URLSearchParams(location.search)
+  if (p.get('theme')) document.documentElement.dataset.theme = p.get('theme')
+  if (['light', 'dark'].includes(p.get('mode'))) document.documentElement.dataset.mode = p.get('mode')
+}
+/** Charts read their colours when they draw, so a new theme or mode draws every loaded card again, in place. */
+function recolour() {
+  for (const c of document.querySelectorAll('#main article.card')) if (c.__loaded && c.__spec) c.__update?.(c.__spec)
+}
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', recolour)
+new MutationObserver(recolour).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-mode'] })
+
 // ---- Queries: one request per distinct text, at most four in flight ----
 
 const cache = new Map()
