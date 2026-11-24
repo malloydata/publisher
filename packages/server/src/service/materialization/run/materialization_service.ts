@@ -1485,14 +1485,15 @@ export class MaterializationService {
          // Each table it keeps (carried, or advanced by a delta), held to
          // its contract as it is now: one altered since the bind is
          // rebuilt in full, never carried and built over; an advanced one
-         // not read is reseeded. A forced refresh is not held.
-         const hold =
-            pkg.holdCarriedToContracts && !opts.forceRefresh
-               ? (kept: Readonly<Record<string, ManifestEntry>>) =>
-                    pkg.holdCarriedToContracts!(kept, environment, {
-                       signal: run.signal,
-                    })
-               : undefined;
+         // not read is reseeded. A forced run is held too: it carries
+         // nothing, but its incremental sources still take a delta (only
+         // `reseed` rebuilds them), so it reads the tables those advance.
+         const hold = pkg.holdCarriedToContracts
+            ? (kept: Readonly<Record<string, ManifestEntry>>) =>
+                 pkg.holdCarriedToContracts!(kept, environment, {
+                    signal: run.signal,
+                 })
+            : undefined;
          ({
             instructions,
             carried,
@@ -1542,7 +1543,7 @@ export class MaterializationService {
          // A delta advances only a table that read held: one whose ledger
          // names any other (a seed whose run never committed, a destination
          // it left) is reseeded (`ledger_unheld`).
-         if (incremental && hold) {
+         if (incremental) {
             incremental.heldAdvanced = new Map(Object.entries(advanced ?? {}));
          }
          // A carried table at the author's `name=` is reused only while

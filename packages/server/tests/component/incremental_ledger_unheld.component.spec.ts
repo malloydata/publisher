@@ -16,6 +16,10 @@
  * - A `storage=` destination switch, A to B and back to A: A's ledger
  *   survives the move to B; back at A, the table there is retyped and a row
  *   lands, and the run reseeds it.
+ * - A forced run (`forceRefresh`, as every scheduled fire sends) is held
+ *   too: it carries nothing, but its incremental sources still take a delta,
+ *   so it reads the tables those advance. The uncommitted seed above, and a
+ *   committed table retyped out of band, both reseed under one.
  *
  * Postgres only, when `PUBLISHER_TEST_POSTGRES_URL` names one: incremental
  * refresh reads its range out of Postgres, Snowflake or BigQuery only.
@@ -110,8 +114,10 @@ describe.skipIf(!POSTGRES_URL)(
       let unheld: string[] = [];
       let unpatchLogger = () => {};
 
-      async function build(): Promise<Materialization> {
-         const { id } = await service.createMaterialization(ENV, PKG, {});
+      async function build(
+         opts: { forceRefresh?: boolean } = {},
+      ): Promise<Materialization> {
+         const { id } = await service.createMaterialization(ENV, PKG, opts);
          const running = (
             service as unknown as {
                runningAbortControllers: Map<string, unknown>;
@@ -311,6 +317,50 @@ describe.skipIf(!POSTGRES_URL)(
          expect(a.refresh).toBe("full");
          expect(a.ledger?.seededBy).toBe(second.id);
          expect(unheld.length).toBe(1);
+
+         const { served, live, servedFrom } = await servedAndLive();
+         expect(servedFrom).toBe("database");
+         expect(served).toEqual(live);
+      });
+
+      it("reseeds an uncommitted seed on a forced run", async () => {
+         const committer = (
+            service as unknown as {
+               committer: { commit: (...args: unknown[]) => Promise<unknown> };
+            }
+         ).committer;
+         const commit = committer.commit.bind(committer);
+         committer.commit = async () => {
+            throw new Error("commit failed (test)");
+         };
+         const first = await build();
+         committer.commit = commit;
+         expect(first.status).toBe("FAILED");
+
+         await retypeAndLandARow("a");
+         const second = await build({ forceRefresh: true });
+         expect(second.status).toBe("MANIFEST_FILE_READY");
+         const a = entryOfA(second)!;
+         expect(a.refresh).toBe("full");
+         expect(a.ledger?.seededBy).toBe(second.id);
+         expect(unheld.length).toBe(1);
+
+         const { served, live, servedFrom } = await servedAndLive();
+         expect(servedFrom).toBe("database");
+         expect(served).toEqual(live);
+      });
+
+      it("reseeds a committed table retyped out of band on a forced run", async () => {
+         const first = await build();
+         expect(first.status).toBe("MANIFEST_FILE_READY");
+         expect(entryOfA(first)?.ledger?.seededBy).toBe(first.id);
+
+         await retypeAndLandARow("a");
+         const second = await build({ forceRefresh: true });
+         expect(second.status).toBe("MANIFEST_FILE_READY");
+         const a = entryOfA(second)!;
+         expect(a.refresh).toBe("full");
+         expect(a.ledger?.seededBy).toBe(second.id);
 
          const { served, live, servedFrom } = await servedAndLive();
          expect(servedFrom).toBe("database");
