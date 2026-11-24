@@ -15,7 +15,11 @@ import type {
 } from "./materialization/domain/chain_build";
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
-import { isManagedConnection, recordConnectionType } from "./connection_type";
+import {
+   managedSchemas,
+   managedSchemasOf,
+   recordConnectionType,
+} from "./connection_type";
 import { readUpstreamSchemas, withNameProblems } from "./materialization";
 import {
    type UpstreamSchemaReadings,
@@ -2490,16 +2494,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    public async formatAuthorSqlRefusals(): Promise<string> {
       const lines: string[] = [];
       // A connection the model compiled against resolves; one that no longer
-      // does is held to the managed scope too, failing closed.
-      const isManaged = (connectionName: string) =>
+      // does is held to the narrowest managed scope, failing closed.
+      const schemasOf = (connectionName: string) =>
          this.getMalloyConnection(connectionName).then(
-            (connection) => isManagedConnection(connection),
-            () => true,
+            (connection) => managedSchemasOf(connection),
+            () => managedSchemas(),
          );
       for (const [modelPath, model] of this.models) {
          lines.push(
             ...(await authorSqlRefusals(modelPath, model.getModelDef(), {
-               isManagedConnection: isManaged,
+               managedSchemas: schemasOf,
             })),
          );
       }

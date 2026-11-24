@@ -60,6 +60,8 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
    "admin.port": "PUBLISHER_ADMIN_PORT",
    "admin.host": "PUBLISHER_ADMIN_HOST",
    "admin.requestTimeoutMs": "PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS",
+   "admin.memoryLimit": "PUBLISHER_ADMIN_MEMORY_LIMIT",
+   "admin.maxTempDirectorySize": "PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE",
    "admin.catalogDatabase": "PUBLISHER_ADMIN_CATALOG_DATABASE",
    "admin.storage.provider": "PUBLISHER_ADMIN_STORAGE_PROVIDER",
    "admin.storage.keyId": "PUBLISHER_ADMIN_STORAGE_KEY_ID",

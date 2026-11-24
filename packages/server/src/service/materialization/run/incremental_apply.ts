@@ -643,18 +643,6 @@ export function shapeMismatch(
    return parts.join("; ");
 }
 
-/**
- * `left.column` matches `right.column`, a NULL matching a NULL: with plain
- * `=`, a NULL identity value never matches its own copy, so its row would be
- * written again on every run as a silent duplicate. `column` is quoted.
- */
-function nullSafeKeyMatch(left: string, right: string, column: string): string {
-   return (
-      `(${left}.${column} = ${right}.${column} OR ` +
-      `(${left}.${column} IS NULL AND ${right}.${column} IS NULL))`
-   );
-}
-
 /** The text a merge's key guard fails with; {@link isMergeKeyGuardFailure} reads it. */
 export const MERGE_KEY_GUARD_MESSAGE = "incremental-merge-key-not-unique";
 
@@ -821,9 +809,7 @@ export function deltaStatements(params: {
          ...(params.scopeColumns ?? []).filter((c) => !mergeKeys.includes(c)),
       ];
       const keys = new Set(mergeKeys);
-      const on = matchNames
-         .map((k) => nullSafeKeyMatch("__t", "__s", q(k)))
-         .join(" AND ");
+      const on = nullSafeKeyMatch(matchNames.map(q), "__t", "__s");
       const updates = columns
          .filter((c) => !keys.has(c))
          .map((c) => `${q(c)} = __s.${q(c)}`);
@@ -867,6 +853,25 @@ export const PAIR_GUARD_MESSAGE =
 /** Whether an error is a pair delta's check failing (and the delta rolled back). */
 export function isPairGuardFailure(err: unknown): boolean {
    return errMessage(err).includes(PAIR_GUARD_MESSAGE);
+}
+
+/**
+ * The predicate matching `left` to `right` on every key (already quoted),
+ * where a key NULL on both sides is a match: with plain `=` a NULL key never
+ * matches its own copy, so a merge would write its row again and a delete by
+ * key would miss it.
+ */
+export function nullSafeKeyMatch(
+   keys: readonly string[],
+   left: string,
+   right: string,
+): string {
+   return keys
+      .map(
+         (key) =>
+            `(${left}.${key} = ${right}.${key} OR (${left}.${key} IS NULL AND ${right}.${key} IS NULL))`,
+      )
+      .join(" AND ");
 }
 
 /**
@@ -920,8 +925,7 @@ export function pairDeltaStatements(params: {
       `CREATE OR REPLACE TEMP TABLE ${staged} AS ${params.deltaSQL}`,
       transaction.begin,
       `DELETE FROM ${quotedTablePath} AS __t WHERE EXISTS (` +
-         `SELECT 1 FROM ${staged} AS __s WHERE ` +
-         `${nullSafeKeyMatch("__t", "__s", key)})`,
+         `SELECT 1 FROM ${staged} AS __s WHERE ${nullSafeKeyMatch([key], "__t", "__s")})`,
       `INSERT INTO ${quotedTablePath} (${columnList}) ` +
          `SELECT ${columnList} FROM ${staged}`,
       ...(params.windowDeletes ?? []).map(
@@ -1946,7 +1950,7 @@ export async function probeRepeatedKeyInRange(params: {
       dialect,
       `SELECT 1 AS ${probeAlias("repeated", dialect)} FROM ` +
          `${params.quotedTablePath} AS __t JOIN (${touched}) AS __s ON ` +
-         `${keys.map((k) => nullSafeKeyMatch("__t", "__s", k)).join(" AND ")} ` +
+         `${nullSafeKeyMatch(keys, "__t", "__s")} ` +
          `GROUP BY ${keys.map((k) => `__t.${k}`).join(", ")} ` +
          `HAVING COUNT(*) > 1 LIMIT 1`,
    );
@@ -2019,7 +2023,7 @@ export function lateRowsSql(params: {
       `__t.${w} = __s.${w}`,
       ...matchColumns
          .filter((c) => c !== params.watermark)
-         .map((c) => nullSafeKeyMatch("__t", "__s", q(c))),
+         .map((c) => nullSafeKeyMatch([q(c)], "__t", "__s")),
    ].join(" AND ");
    return probeSelect(
       dialect,

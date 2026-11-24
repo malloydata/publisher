@@ -144,3 +144,53 @@ describe("GET /status", () => {
       ]);
    });
 });
+
+describe("POST /environments with a connection that lists a destination's schema", () => {
+   const catalog = {
+      host: "catalog.internal",
+      databaseName: "ducklake",
+      userName: "publisher",
+      password: "catalog-secret",
+   };
+   const lake = (name: string, ducklake: object, extra: object = {}) => ({
+      name,
+      type: "ducklake",
+      ...extra,
+      ducklakeConnection: {
+         catalog: { postgresConnection: catalog },
+         storage: { bucketUrl: `gs://managed-tier/${name}` },
+         ...ducklake,
+      },
+   });
+
+   it("is refused 400 before the environment store is touched", async () => {
+      let added = 0;
+      const res = await request(
+         buildRouteApp({
+            environmentStore: {
+               addEnvironment: () => {
+                  added++;
+                  return Promise.reject(new Error("reached the store"));
+               },
+            } as never,
+         }),
+      )
+         .post(`${API_PREFIX}/environments`)
+         .send({
+            name: "overlap",
+            connections: [
+               lake(
+                  "models",
+                  { readableSchemas: ["materialized"] },
+                  { managed: true },
+               ),
+            ],
+            storageDestinations: [
+               lake("lake", { destinationSchema: "materialized" }),
+            ],
+         });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toContain("readableSchemas");
+      expect(added).toBe(0);
+   });
+});

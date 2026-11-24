@@ -16,8 +16,46 @@
 import { externalEnv } from "../settings/external";
 
 const recorded = new WeakMap<object, string>();
-/** Connections configured `managed` (a catalog an orchestrator provisions). */
-const managed = new WeakSet<object>();
+/**
+ * Connections configured `managed` (a catalog an orchestrator provisions), with
+ * the schemas SQL on each may name (managed_catalog_scope.ts).
+ */
+const managed = new WeakMap<object, ReadonlySet<string>>();
+/**
+ * The schemas a managed read-only DuckLake view may read besides `main`, as one
+ * canonical list: sorted, deduplicated, `main` dropped, undefined when empty. The
+ * one place that decides which lists mean the same, so a reordering never
+ * reopens the connection, and the attach scopes, and the SQL check allows, what
+ * the identity names.
+ */
+export function normalizeReadableSchemas(
+   list?: string[],
+): string[] | undefined {
+   // A raw request body reaches here before the shape check that answers 400, so anything but a list of names is not one.
+   const names = [
+      ...new Set(
+         Array.isArray(list)
+            ? list.filter((name) => typeof name === "string")
+            : [],
+      ),
+   ]
+      .filter((name) => name !== "main")
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+   return names.length > 0 ? names : undefined;
+}
+
+/** The schemas SQL on a managed connection may name: `main` and its normalized readable schemas. */
+export function managedSchemas(
+   readableSchemas?: string[],
+): ReadonlySet<string> {
+   return new Set([
+      "main",
+      ...(normalizeReadableSchemas(readableSchemas) ?? []),
+   ]);
+}
+
+/** Kept here, not in managed_catalog_scope.ts, which would load DuckDB into the package-load worker. */
+export const MAIN_ONLY: ReadonlySet<string> = managedSchemas();
 
 /** Test seam layers: connection name -> the type to record instead. */
 const overrides: Map<string, string>[] = [];
@@ -113,17 +151,17 @@ function overrideOf(connection: object): string | undefined {
 
 /**
  * Record `connection`'s configured type, and whether it is configured
- * `managed`; returns `connection`.
+ * `managed`, with the schemas SQL on it may name (`managedSchemas`); returns `connection`.
  */
 export function recordConnectionType<T extends object>(
    connection: T,
    type: string | undefined,
-   options: { managed?: boolean } = {},
+   options: { managed?: boolean; schemas?: ReadonlySet<string> } = {},
 ): T {
    const recordedType = overrideOf(connection) ?? type;
    if (recordedType) recorded.set(connection, recordedType);
    if (options.managed === true || managedOverrideOf(connection)) {
-      managed.add(connection);
+      managed.set(connection, options.schemas ?? MAIN_ONLY);
    }
    return connection;
 }
@@ -133,6 +171,16 @@ export function isManagedConnection(
    connection: object | null | undefined,
 ): boolean {
    return !!connection && managed.has(connection);
+}
+
+/**
+ * The schemas SQL on `connection` may name when it was recorded as `managed`;
+ * undefined when it was not.
+ */
+export function managedSchemasOf(
+   connection: object | null | undefined,
+): ReadonlySet<string> | undefined {
+   return connection ? managed.get(connection) : undefined;
 }
 
 /**
