@@ -169,7 +169,7 @@ import {
    stringReadsRefusal,
    unstoredReadRefusal,
 } from "../domain/string_reads";
-import { keyCheckPassed } from "../domain/column_contract";
+import { keyCheckFailed, keyCheckPassed } from "../domain/column_contract";
 import { reachPersisted, SourceMap } from "../text/source_map";
 import { authorModelReachContext } from "../text/author_model";
 import { quotedIdentifier } from "../../malloy_text";
@@ -1042,7 +1042,7 @@ function pairParentUnusable(
    if (!contract) return undefined;
    const unpassed = leafKeys.filter((k) => !keyCheckPassed(contract, k));
    if (unpassed.length === 0) return undefined;
-   const failed = unpassed.filter((k) => contract.keys?.[k] !== undefined);
+   const failed = unpassed.filter((k) => keyCheckFailed(contract, k));
    // Name a key as the author wrote it (`items.item_id`), not as the contract
    // spells it (`leaf:items.item_id`).
    const shown = (keys: string[]) =>

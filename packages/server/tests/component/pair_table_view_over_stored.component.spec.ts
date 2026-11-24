@@ -23,13 +23,22 @@
  */
 
 import { PostgresConnection } from "@malloydata/db-postgres";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   beforeAll,
+   describe,
+   expect,
+   it,
+   spyOn,
+   type Mock,
+} from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
+import { DatabaseTier } from "../../src/service/materialization/run/database_build_strategy";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
 import { QueryPrivileges } from "../../src/service/model_query_request";
 import type { Package } from "../../src/service/package";
@@ -233,7 +242,12 @@ interface Entry {
       physicalTableName: string;
       builtAt?: string;
    }[];
-   contract?: { keys?: Record<string, { unique: boolean; level: string }> };
+   contract?: {
+      keys?: Record<
+         string,
+         { unique: boolean; level: string; unverified?: true }
+      >;
+   };
 }
 
 const entriesOf = (m: Materialization): Record<string, Entry> =>
@@ -761,6 +775,105 @@ for (const tier of tiers) {
          expect(pairOf(again)!.builtAt).toBe(pairOf(next)!.builtAt);
          expect(viewOf(again)!.builtAt).toBe(viewOf(next)!.builtAt);
          expect(failuresOf(again)).toEqual([]);
+      });
+   });
+}
+
+for (const tier of tiers) {
+   describe(`a pair table whose leaf key check cannot run is carried, not rebuilt, and the view over it stays refused (${tier.label})`, () => {
+      // Every leaf key check throws, in both runs. The pair table records the
+      // leaf key as unverified: the next run carries it (the key never
+      // moved), and nothing builds over it, since the check never passed.
+      const f = new Fixture(tier, MECHANISMS[0].model);
+      const query = asText(MECHANISMS[0]);
+      let live: Answer;
+      let first: Materialization;
+      let second: Materialization;
+      let afterFirst: Answer;
+      let afterSecond: Answer;
+      let checkKey: Mock<DatabaseTier["checkKey"]>;
+      // Leaf checks run by each build: one per build of the pair table.
+      let leafChecksInFirst = 0;
+      let leafChecksInSecond = 0;
+      const leafChecks = () =>
+         checkKey.mock.calls.filter((c) =>
+            (c[1] as { contractKey?: string }).contractKey?.startsWith("leaf:"),
+         ).length;
+
+      beforeAll(async () => {
+         const original = DatabaseTier.prototype.checkKey;
+         checkKey = spyOn(
+            DatabaseTier.prototype,
+            "checkKey",
+         ).mockImplementation(function (this: DatabaseTier, ...args) {
+            const check = args[1] as { contractKey?: string };
+            if (check.contractKey?.startsWith("leaf:")) {
+               return Promise.reject(new Error("leaf check unavailable"));
+            }
+            return original.apply(this, args);
+         });
+         await f.open();
+         live = await f.ask(query);
+         first = await f.build({});
+         leafChecksInFirst = leafChecks();
+         afterFirst = await f.ask(query);
+         second = await f.build({});
+         leafChecksInSecond = leafChecks() - leafChecksInFirst;
+         afterSecond = await f.ask(query);
+      }, 300_000);
+      afterAll(async () => {
+         checkKey.mockRestore();
+         await f.close();
+      });
+
+      const pairOf = (m: Materialization) =>
+         Object.values(entriesOf(m)).find(
+            (e) => e.sourceName?.startsWith("orders") ?? false,
+         );
+      const viewBuilt = (m: Materialization) =>
+         Object.values(entriesOf(m)).some(
+            (e) =>
+               MECHANISMS[0].downstream.test(e.sourceName ?? "") &&
+               e.builtAt !== undefined,
+         );
+
+      it("builds the pair table in the first run, whose leaf check threw", () => {
+         expect(pairOf(first)?.builtAt).toEqual(expect.any(String));
+         expect(leafChecksInFirst).toBe(1);
+      });
+
+      it("records the leaf key as unverified, never as passed", () => {
+         expect(pairOf(first)?.contract?.keys?.["leaf:items.item_id"]).toEqual({
+            unique: false,
+            level: "leaf",
+            unverified: true,
+         });
+      });
+
+      it("carries the pair table in the next run rather than rebuilding it", () => {
+         // A rebuild would have run its leaf check again.
+         expect(leafChecksInSecond).toBe(0);
+      });
+
+      it("never builds the view over it, in either run", () => {
+         expect(viewBuilt(first)).toBe(false);
+         expect(viewBuilt(second)).toBe(false);
+         for (const run of [first, second]) {
+            const failures = failuresOf(run).filter((x) =>
+               MECHANISMS[0].downstream.test(x.sourceName ?? ""),
+            );
+            expect(failures.map((x) => x.code)).toEqual([
+               "schema_incompatible",
+            ]);
+            expect(failures[0].reason).toMatch(
+               /recorded no result for the key 'items\.item_id'/,
+            );
+         }
+      });
+
+      it("answers equal to live throughout", () => {
+         expect(afterFirst.rows).toEqual(live.rows);
+         expect(afterSecond.rows).toEqual(live.rows);
       });
    });
 }

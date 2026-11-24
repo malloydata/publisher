@@ -728,6 +728,25 @@ describe("a prior table its bind cannot serve is rebuilt in full", () => {
          expect(carried).toEqual({});
       });
 
+      it("is carried when its check of the declared key could not run, recorded unverified, so a check that keeps failing to run does not rebuild it every run", () => {
+         const { instructions, carried } = deriveSelfInstructions(
+            pairCompiled("item_id"),
+            undefined,
+            prior({
+               ...contractFor(),
+               keys: {
+                  "leaf:items.item_id": {
+                     unique: false,
+                     level: "leaf",
+                     unverified: true,
+                  },
+               },
+            }) as never,
+         );
+         expect(instructions).toEqual([]);
+         expect(Object.keys(carried)).toEqual(["b1aaaaaaaaaaaaaa"]);
+      });
+
       it("is carried when its check of the declared key recorded a failure, which a rebuild would not change", () => {
          const { carried } = deriveSelfInstructions(
             pairCompiled("item_id"),

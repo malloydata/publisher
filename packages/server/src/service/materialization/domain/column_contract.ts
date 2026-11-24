@@ -61,10 +61,16 @@ type ContractColumn = {
    declaredType?: string;
 };
 
-/** One key check a build ran over its table (`ColumnContract.keys`). */
+/**
+ * One key check a build ran over its table (`ColumnContract.keys`), or one
+ * it was asked for and could not run (`unverified`, with `unique: false`):
+ * recorded so a later run knows the key was the one the table was built
+ * under, and still never read as passed.
+ */
 export type ContractKeyCheck = {
    unique: boolean;
    level?: string;
+   unverified?: true;
 };
 
 /**
@@ -204,6 +210,7 @@ export function parseContract(raw: unknown): ColumnContract | undefined {
          keys[column] = {
             unique: check.unique,
             ...(typeof check.level === "string" ? { level: check.level } : {}),
+            ...(check.unverified === true ? { unverified: true } : {}),
          };
       }
    }
@@ -279,7 +286,17 @@ export function keyCheckPassed(
    contract: ColumnContract | undefined,
    key: string,
 ): boolean {
-   return contract?.keys?.[key]?.unique === true;
+   const check = contract?.keys?.[key];
+   return check?.unique === true && check.unverified !== true;
+}
+
+/** Whether the key check named `key` ran and found the key repeated or NULL. */
+export function keyCheckFailed(
+   contract: Pick<ColumnContract, "keys"> | undefined,
+   key: string,
+): boolean {
+   const check = contract?.keys?.[key];
+   return check?.unique === false && check.unverified !== true;
 }
 
 /** The stored side of a table a build just wrote, as the bind reads it. */

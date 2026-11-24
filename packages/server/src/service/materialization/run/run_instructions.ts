@@ -810,7 +810,9 @@ interface SelfInstructions {
  * table whose contract records no check of a leaf key the model declares
  * now (`leafKeys`): a reload that moves the leaf's primary key leaves its
  * address alone, and nothing reads or builds over it until a build checks
- * the new key.
+ * the new key. A check the build could not run is recorded (`unverified`),
+ * so it does not count as a moved key: the table is carried, and nothing
+ * builds over it until a rebuild records the check passed.
  */
 function rebuiltInFull(
    prior: ManifestEntry | undefined,

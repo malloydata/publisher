@@ -50,6 +50,7 @@ import type {
    RollupKeyCheck,
 } from "../domain/table_plans";
 import type { InlineUniquenessCheck } from "../domain/table_plans";
+import { pairLeafContractKeys } from "../domain/table_plans";
 import {
    assertPlacementNamed,
    assertTierEligible,
@@ -946,10 +947,9 @@ export class InstructedBuild {
       if (storedBase && stacked) {
          (run.readFrom ??= new Map()).set(sourceEntityId, [storedBase.address]);
       }
+      const materialize = compiled.tables[persistSource.sourceID]?.materialize;
       const leafChecks = await runPairLeafKeyChecks(
-         pairLeafKeyChecksOf(
-            compiled.tables[persistSource.sourceID]?.materialize,
-         ),
+         pairLeafKeyChecksOf(materialize),
          connection,
          persistSource.name,
          writtenTableIdentity(instruction, graphConnectionName),
@@ -961,6 +961,7 @@ export class InstructedBuild {
             withRollupUpstreamReuse(run, persistSource, sourceEntityId, built),
          ),
          leafChecks,
+         materialize ? pairLeafContractKeys(materialize) : [],
       );
       // Before the entry is reported, so its contract carries what they found.
       const entry = withContractKeys(
@@ -2156,7 +2157,7 @@ async function checkParentKeys(
 }
 
 /** One leaf key check of a built pair table, and what it found (undefined: it did not run). */
-interface PairLeafCheck {
+export interface PairLeafCheck {
    check: ReturnType<typeof pairLeafKeyChecksOf>[number];
    record: KeyCheckRecord | undefined;
 }
@@ -2202,14 +2203,27 @@ async function runPairLeafKeyChecks(
    return out;
 }
 
-/** `entry` with its leaf key checks in its contract's `keys`. */
-function withLeafKeys(
+/**
+ * `entry` with its leaf key checks in its contract's `keys`. Each leaf key
+ * the plan declares (`declared`) whose check did not run (it threw, or was
+ * never compiled) is recorded `unverified`: never read as passed, so nothing
+ * builds over the table, but recorded under the key the table was built
+ * with, so a later run carries the table rather than rebuilding it for a
+ * key that never moved (see `rebuiltInFull` in run_instructions.ts).
+ */
+export function withLeafKeys(
    entry: ManifestEntry,
    leafChecks: readonly PairLeafCheck[],
+   declared: readonly string[] = [],
 ): ManifestEntry {
    const contract = parseContract(entry.contract);
-   if (!contract || leafChecks.length === 0) return entry;
+   if (!contract || (leafChecks.length === 0 && declared.length === 0)) {
+      return entry;
+   }
    const keys = { ...(contract.keys ?? {}) };
+   for (const key of declared) {
+      keys[key] = { unique: false, level: "leaf", unverified: true };
+   }
    for (const { check, record } of leafChecks) {
       if (record) {
          keys[check.contractKey] = { unique: record.unique, level: "leaf" };
