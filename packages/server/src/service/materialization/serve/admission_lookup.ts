@@ -38,11 +38,7 @@ import { placeTable, sqlProjects, TABLE_TYPES } from "./collation/bigquery";
 import { fieldPathsIn } from "./gate_paths";
 import { holdColumn, stringPaths } from "./collation/string_paths";
 import { entryGates } from "./gate_reads";
-import type {
-   CollationProbe,
-   GateReads,
-   ProbedTable,
-} from "./gate_reads_types";
+import type { GateReads, ProbedTable } from "./gate_reads_types";
 import {
    type ConnectionCapability,
    fieldKey,
@@ -481,8 +477,42 @@ export async function lookupStoredRefusal(args: {
       : `a stored table does not keep its source's collation: ${why}`;
 }
 
-/** The collation port answered by lookups. */
-export const lookupProbe: CollationProbe = {
+/**
+ * How read admission judges collation: whether the source compares what
+ * `reads` compare as a byte-exact copy does, and whether the stored tables an
+ * answer read compare their strings as their sources do. Each answers why
+ * not, or undefined, from what the bind and the build recorded. The one
+ * implementation is {@link collationLookup}; a spec may hand in a fake.
+ */
+export interface CollationLookup {
+   sourceRefusal(args: {
+      authorRunnable: QueryMaterializer;
+      reads: GateReads | undefined;
+      givens?: Record<string, unknown>;
+      /** The bind the query was pinned to: a lookup may keep reads per bind. */
+      bind?: object;
+   }): Promise<string | undefined>;
+   storedRefusal(args: {
+      tables: readonly ProbedTable[];
+      answerRunnable: QueryMaterializer;
+      virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined;
+      authorRunnable: QueryMaterializer;
+      reads: GateReads | undefined;
+      givens?: Record<string, unknown>;
+      /**
+       * The stored side's warehouse reads for one answer, by what they read:
+       * every comparison asked of that answer shares them.
+       */
+      storedReads?: Map<string, Promise<unknown>>;
+      /** The bind the query was pinned to: a lookup may keep reads per bind. */
+      bind?: object;
+      /** A database table its catalog does not list is passed over (a result's). */
+      unlistedPasses?: boolean;
+   }): Promise<string | undefined>;
+}
+
+/** Collation, judged by lookups. */
+export const collationLookup: CollationLookup = {
    sourceRefusal: lookupSourceRefusal,
    storedRefusal: lookupStoredRefusal,
 };

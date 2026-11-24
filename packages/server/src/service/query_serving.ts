@@ -22,8 +22,7 @@
 import type { ModelDef, QueryMaterializer } from "@malloydata/malloy";
 import { gateSwitches, getPersistStorageMode } from "../config";
 import {
-   type CollationProbe,
-   lookupProbe,
+   type CollationLookup,
    observeAdmission,
    ReadAdmission,
    reportQueryWalk,
@@ -133,13 +132,13 @@ export function variantsOf(
    legs: readonly Leg[],
    facts: QueryFacts,
    pinned: Pinned,
-   args: { modelPath: string; probe?: CollationProbe },
+   args: { modelPath: string; collation?: CollationLookup },
 ): Variant<LegAnswer>[] {
    const admission = new ReadAdmission(
       facts,
       gateSwitches(),
-      args.probe ?? lookupProbe,
       pinned.snapshot,
+      args.collation,
    );
    return legs.map((leg) => ({
       kind: leg.kind,

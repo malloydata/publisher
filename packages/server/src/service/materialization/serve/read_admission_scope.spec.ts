@@ -87,7 +87,6 @@ describe("read admission's recorded row scope reads", () => {
             } as never,
          },
          { materialize: true, gatedSources: true } as never,
-         (async () => ({})) as never,
          snapshot,
       );
       const scopeReads = (

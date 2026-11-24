@@ -14,7 +14,7 @@ import {
 import { gateSwitches } from "../../../config";
 import { LegDecline } from "../domain/leg_decline";
 import { makeLegs } from "./leg";
-import { lookupProbe, ReadAdmission } from "./read_admission";
+import { ReadAdmission } from "./read_admission";
 import { PersistedViewServe } from "./view_variants";
 
 /**
@@ -281,7 +281,7 @@ describe("PersistedViewServe (database)", () => {
       });
       // The path report does not carry it.
       expect(answer.viewTable).not.toHaveProperty("asOfBuild");
-      const admission = new ReadAdmission(query, gateSwitches(), lookupProbe);
+      const admission = new ReadAdmission(query, gateSwitches());
       // Past an entry-point gate: an access decision, declined.
       expect((await admission.decide("view", answer, true)).verdict).toEqual({
          admit: false,

@@ -49,10 +49,10 @@ import { keptTableAddresses, ungatedTableAddresses } from "./serve/bind";
 import * as gateReads from "./serve/gate_reads";
 import { type LegContext, makeLegs } from "./serve/leg";
 import {
-   type CollationProbe,
-   lookupProbe,
-   ReadAdmission,
-} from "./serve/read_admission";
+   type CollationLookup,
+   collationLookup,
+} from "./serve/admission_lookup";
+import { ReadAdmission } from "./serve/read_admission";
 
 const DUMP = process.env.ADMISSION_DUMP;
 const dumped: Record<string, unknown> = {};
@@ -317,8 +317,8 @@ async function routed(args: {
    query?: string;
    /** Add a declined candidate's internal detail to the outcome. */
    withDetail?: boolean;
-   /** The collation probe port; the real one when absent. */
-   probe?: CollationProbe;
+   /** How collation is judged; the real lookups when absent. */
+   collation?: CollationLookup;
 }): Promise<string> {
    // Each stored table's contract, as its build would record its strings:
    // byte-wise, or under the stored side's collation.
@@ -366,7 +366,10 @@ async function routed(args: {
          authorRunnable,
       },
       pinned,
-      { modelPath: "m.malloy", ...(args.probe ? { probe: args.probe } : {}) },
+      {
+         modelPath: "m.malloy",
+         ...(args.collation ? { collation: args.collation } : {}),
+      },
    );
    const unreadable = args.unreadable
       ? spyOn(gateReads, "gateReadsOfQuery").mockResolvedValue(undefined)
@@ -1767,7 +1770,7 @@ describe("admitRead reproduces the router's admission", () => {
  * differ between rows, and the verdicts must agree.
  */
 describe("the admission shell gathers the facts admitRead is held to", () => {
-   const probeAll: CollationProbe = {
+   const probeAll: CollationLookup = {
       sourceRefusal: async () => undefined,
       storedRefusal: async () => undefined,
    };
@@ -1802,8 +1805,8 @@ describe("the admission shell gathers the facts admitRead is held to", () => {
                      const gathered = await new ReadAdmission(
                         query,
                         { materialize: true, gatedSources },
-                        probeAll,
                         pinned.snapshot,
+                        probeAll,
                      ).decide(leg, answer, GATED(shape));
                      const hand = handFacts({ shape, tables: bindings });
                      const row = `${shape} | ${leg}, ${read}`;
@@ -1909,21 +1912,21 @@ describe("the collation probes run at most once per answer", () => {
                            }
                            seen.add(k);
                         };
-                        const probe: CollationProbe = {
+                        const probe: CollationLookup = {
                            sourceRefusal: (a) => {
                               count("source", a);
-                              return lookupProbe.sourceRefusal(a);
+                              return collationLookup.sourceRefusal(a);
                            },
                            storedRefusal: (a) => {
                               count("stored", a);
-                              return lookupProbe.storedRefusal(a);
+                              return collationLookup.storedRefusal(a);
                            },
                         };
                         await routed({
                            leg,
                            shape,
                            tables,
-                           probe,
+                           collation: probe,
                            ...(query ? { query } : {}),
                            ...collations,
                         });

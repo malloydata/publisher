@@ -6,8 +6,8 @@
  * (`domain/admission.ts`) decides a stored answer by, and turns its verdict
  * into the router's terms. The decision itself is pure; this module reads
  * the author's compile for the gates', the row scope's, the query filters'
- * and the result's reads, the bind's stored types, and the collation probes through
- * the {@link CollationProbe} port, each only when the decision needs it.
+ * and the result's reads, the bind's stored types, and collation through
+ * {@link CollationLookup}, each only when the decision needs it.
  *
  * One {@link ReadAdmission} per query: what it reads of the author's compile
  * is read once per set of stored sources an answer read, and each answer's
@@ -47,11 +47,8 @@ import {
    gateReadsOfQuery,
    queryFilterReadsOfQuery,
 } from "./gate_reads";
-import type {
-   CollationProbe,
-   GateReads,
-   ProbedTable,
-} from "./gate_reads_types";
+import type { GateReads, ProbedTable } from "./gate_reads_types";
+import { type CollationLookup, collationLookup } from "./admission_lookup";
 import type { LegAnswer, LegKind, QueryFacts } from "./leg";
 import { type ResultReads, resultReadsOfQuery } from "./result_reads";
 import { type QueryWalkSite, reportQueryWalk } from "./query_walks";
@@ -63,9 +60,7 @@ import {
    scopeFactsOf,
 } from "./scope_facts";
 
-// The port, and its implementation for the query pipeline to hand in.
-export type { CollationProbe } from "./gate_reads_types";
-export { lookupProbe } from "./admission_lookup";
+export type { CollationLookup } from "./admission_lookup";
 export { observeAdmission, reportQueryWalk } from "./query_walks";
 
 /** What admission decided about one answer, in the router's terms. */
@@ -109,9 +104,9 @@ export class ReadAdmission {
    constructor(
       private readonly query: QueryFacts,
       private readonly switches: GateSwitches,
-      private readonly probe: CollationProbe,
       /** The bind the query was pinned to (its serving snapshot). */
       private readonly bind?: object,
+      private readonly collation: CollationLookup = collationLookup,
    ) {
       this.givens = query.givens as Record<string, unknown> | undefined;
    }
@@ -531,12 +526,12 @@ export class ReadAdmission {
       };
       const refusal =
          request.side === "source"
-            ? await this.probe.sourceRefusal({
+            ? await this.collation.sourceRefusal({
                  authorRunnable: this.query.authorRunnable,
                  reads,
                  ...givens,
               })
-            : await this.probe.storedRefusal({
+            : await this.collation.storedRefusal({
                  tables: tables as readonly ProbedTable[],
                  answerRunnable: answer.runnable,
                  virtualMap: answer.virtualMap,

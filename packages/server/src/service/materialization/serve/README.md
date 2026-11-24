@@ -11,10 +11,9 @@ Whether an answer a leg produced is used is one decision, `admitRead`
 (`domain/admission.ts`): the row scope, the caller's own filters, the result's
 order and grouping, and, past an entry-point gate, the gate policy, exactness,
 zone and collation. `read_admission.ts` is its shell: it gathers the facts the
-decision asks for, each only when asked. Collation is judged through a port
-(`CollationProbe`, in `gate_reads_types.ts`) that `admission_lookup.ts`
-answers from what the bind and the build recorded; no query reads the
-warehouse for it.
+decision asks for, each only when asked. Collation is judged by
+`admission_lookup.ts` (`collationLookup`) from what the bind and the build
+recorded; no query reads the warehouse for it.
 
 ## Modules
 
