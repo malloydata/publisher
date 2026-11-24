@@ -25,7 +25,9 @@ import { describe, expect, it } from "bun:test";
 import { bigqueryBuildCompareBinary } from "./bigquery_build";
 import type { GateReads } from "../gate_reads_types";
 import { resultReadsOfQuery } from "../result_reads";
-import { lookupSourceRefusal } from "../admission_lookup";
+import { lookupSourceRefusal, lookupStoredRefusal } from "../admission_lookup";
+import { makeSnapshot } from "../../domain/binding";
+import { parseContract } from "../../domain/column_contract";
 import {
    readStringCapabilities,
    recordStringCapabilities,
@@ -495,6 +497,132 @@ describe("a BigQuery result's re-grouping and ordering", () => {
             )
          ).why,
       ).toBe(LIVE);
+   });
+});
+
+/**
+ * A BigQuery database table's stored side, looked up: the source's side from
+ * what a bind recorded of the catalog, the table's from the collation its
+ * build recorded in its contract. The lookup twin of the probe path's five
+ * cases, with the same outcomes: a table is kept only when every collated
+ * column it records is the one its source compares under, and declined
+ * for any other collation, on either side.
+ */
+describe("a BigQuery database table, looked up", () => {
+   const stored = async (
+      catalog: Catalog,
+      query: string,
+      collation: string | null,
+   ) => {
+      const { connection } = stubBigQuery(catalog);
+      const runtime = new SingleConnectionRuntime({ connection });
+      const materializer = runtime.loadModel(MODEL);
+      recordStringCapabilities(
+         runtime,
+         await readStringCapabilities({
+            modelDef: (await materializer.getModel())._modelDef,
+            load: (q) => materializer.loadQuery(q),
+            connection: async () => connection,
+         }),
+      );
+      const contract = parseContract({
+         v: 1,
+         dialect: "standardsql",
+         columns: [
+            { name: "id", nativeType: "INT64", collation: null },
+            { name: "region", nativeType: "STRING", collation },
+         ],
+      })!;
+      return lookupStoredRefusal({
+         tables: [
+            {
+               tier: "database",
+               tablePath: "proj.ds.copy_t",
+               virtualHandle: "h",
+            },
+         ],
+         authorRunnable: materializer.loadQuery(query),
+         reads: STRING_READS,
+         bind: makeSnapshot(
+            [],
+            {},
+            undefined,
+            undefined,
+            new Map([["h", contract]]),
+         ),
+      });
+   };
+   const UNMATCHED =
+      "a stored table compares strings under a unknown collation (a BigQuery table unmatched)";
+
+   it("is kept when neither it nor its source holds a collated string", async () => {
+      expect(
+         await stored(
+            { location: "US" },
+            "run: plain -> { group_by: region }",
+            null,
+         ),
+      ).toBeUndefined();
+   });
+
+   it("answers live when its source lost the collation its copy kept", async () => {
+      expect(
+         await stored(
+            {
+               location: "US",
+               projects: { proj: ["ds"] },
+               datasets: { "proj.ds": { copy_t: { region: "und:ci" } } },
+            },
+            "run: plain -> { group_by: region }",
+            "bigquery:und:ci",
+         ),
+      ).toBe(UNMATCHED);
+   });
+
+   it("answers live when its source's column is collated and its own is not", async () => {
+      expect(
+         await stored(
+            {
+               location: "US",
+               projects: { proj: ["ds"] },
+               datasets: { "proj.ds": CI_DS },
+            },
+            "run: ci -> { group_by: region }",
+            null,
+         ),
+      ).toBe(UNMATCHED);
+   });
+
+   it("is kept when its column recorded the source's collation", async () => {
+      expect(
+         await stored(
+            {
+               location: "US",
+               projects: { proj: ["ds"] },
+               datasets: {
+                  "proj.ds": { ...CI_DS, copy_t: { region: "und:ci" } },
+               },
+            },
+            "run: ci -> { group_by: region }",
+            "bigquery:und:ci",
+         ),
+      ).toBeUndefined();
+   });
+
+   it("answers live when its column recorded another collation", async () => {
+      expect(
+         await stored(
+            {
+               location: "US",
+               projects: { proj: ["ds"] },
+               datasets: {
+                  "proj.ds": { ...CI_DS, copy_t: { region: "und:cs" } },
+               },
+            },
+            "run: ci -> { group_by: region }",
+            "bigquery:und:cs",
+         ),
+      ).toBe(UNMATCHED);
    });
 });
 
