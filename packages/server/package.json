@@ -103,6 +103,7 @@
       "globals": "^15.9.0",
       "google-auth-library": "^9.15.1",
       "http-proxy-middleware": "^3.0.7",
+      "ignore": "^7.0.16",
       "lunr": "^2.3.6",
       "pg": "8.7.3",
       "recursive-readdir": "^2.2.3",

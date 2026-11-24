@@ -11,6 +11,11 @@ import {
    referencePointer,
    type SkillEntry,
 } from "./build_skills_bundle";
+import {
+   ASSET_MAX_DEPTH,
+   ASSET_MAX_ENTRIES,
+   ASSET_PATH_MAX_CHARS,
+} from "./skill_files";
 import skillsBundle from "./skills_bundle.json";
 import { compareText } from "../../compare_text";
 import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../../constants";
@@ -318,9 +323,6 @@ const PACKAGE_AGENT_ASSETS_MAX_BYTES = 4 * 1024 * 1024;
 const PACKAGE_AGENT_ASSETS_MAX_FILES = 200;
 /** Counted once per package path, however many agents share the skill. */
 const PACKAGE_ASSETS_MAX_BYTES = 8 * 1024 * 1024;
-const ASSET_PATH_MAX_CHARS = 200;
-const ASSET_MAX_DEPTH = 8;
-const ASSET_MAX_ENTRIES = 1000;
 /** Individually named skip warnings per agent; the rest are counted in one line. */
 const ASSET_WARNINGS_MAX = 20;
 const ASSET_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
