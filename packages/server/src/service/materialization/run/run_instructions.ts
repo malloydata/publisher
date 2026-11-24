@@ -933,6 +933,19 @@ function advancedTableEntry(
       : undefined;
 }
 
+/**
+ * Whether the delta path takes `persistSource`'s table: the SAME predicate
+ * the build's dispatch uses, so the two never disagree about which sources
+ * are incremental. A declaration the delta path cannot act on (unsupported
+ * dialect, unusable watermark) keeps skip-if-unchanged rather than
+ * rebuilding fully every run.
+ */
+function deltaPathTakes(
+   ...args: Parameters<typeof sourceIncrementalRefresh>
+): boolean {
+   return sourceIncrementalRefresh(...args) !== undefined;
+}
+
 /** The instruction that builds one source's table in an auto-run. */
 function selfInstruction(
    sourceEntityId: string,
@@ -1044,16 +1057,11 @@ export function deriveSelfInstructions(
          continue;
       }
 
-      // The SAME predicate the build's dispatch uses, so the two never
-      // disagree about which sources are incremental. A declaration the
-      // delta path cannot act on (unsupported dialect, unusable watermark)
-      // keeps skip-if-unchanged rather than rebuilding fully every run.
-      const deltaEligible =
-         sourceIncrementalRefresh(incremental, persistSource, {
-            physicalTableName: tableName,
-            storageDestinationName: destination,
-            sourceEntityId,
-         }) !== undefined;
+      const deltaEligible = deltaPathTakes(incremental, persistSource, {
+         physicalTableName: tableName,
+         storageDestinationName: destination,
+         sourceEntityId,
+      });
 
       // An incremental source keeps a table named before readable names
       // until it is reseeded: its ledger is keyed by the table's name, so
