@@ -1208,16 +1208,16 @@ export async function planChainedDownstream(params: {
    virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>>;
    connections: FixedConnectionMap;
    /**
-    * The planned source a recompute of the downstream builds. A chained
+    * The planned source, as a build from its definition would write it. A chained
     * build whose downstream lacks one of its stored columns (a column read
     * through a definition left out of a stored upstream, as a `select: *`
     * does) is a shape it could not carry: stored, the table would answer
     * with fewer columns than live. Absent: not checked.
     */
-   recomputes?: PersistSource;
+   plannedSource?: PersistSource;
    /**
-    * With `recomputes`: every column must also be declared as the type the
-    * recompute declares it, or the build is a shape it could not carry (a
+    * With `plannedSource`: every column must also be declared as the type the
+    * planned source declares it, or the build is a shape it could not carry (a
     * rollup over a stored base, whose aggregates could type otherwise).
     */
    sameDeclaredTypes?: boolean;
@@ -1289,11 +1289,11 @@ export async function planChainedDownstream(params: {
             `rebound parents don't provide).`,
       });
    }
-   if (params.recomputes) {
+   if (params.plannedSource) {
       let expected: string[] = [];
       let built: string[] = [];
       try {
-         expected = storedColumnNames(params.recomputes);
+         expected = storedColumnNames(params.plannedSource);
          built = storedColumnNames(downstream);
       } catch {
          // An unknown surface is refused where the table is projected to it.
@@ -1319,7 +1319,7 @@ export async function planChainedDownstream(params: {
             );
          let same = false;
          try {
-            same = typed(params.recomputes) === typed(downstream);
+            same = typed(params.plannedSource) === typed(downstream);
          } catch {
             // An unreadable surface is not proven the same.
          }
@@ -1348,9 +1348,7 @@ export async function planChainedDownstream(params: {
    // The CTAS runs on a read-write session on the destination, as a
    // same-catalog build does, so the same rule holds: only SQL Malloy
    // generated. The rebound parents are virtual, so this reads the
-   // downstream's own definition. Marked eligible, so the caller recomputes
-   // from raw, where author SQL runs in the source warehouse (or a
-   // same-catalog source is refused).
+   // downstream's own definition. Refused as ineligible.
    const cause = authorSqlCause(sourceDefOf(downstream));
    if (cause !== undefined) {
       throw new MaterializationEligibilityError({
@@ -1361,7 +1359,7 @@ export async function planChainedDownstream(params: {
       });
    }
    // Projected to the columns the source declares, hidden ones included, as
-   // a recompute writes them; a column `except:` drops is left out.
+   // a build from the definition writes them; a column `except:` drops is left out.
    const sql = projectToStoredColumns(
       downstream,
       buildSQLOf(downstream, { entries: {} }),
@@ -1392,8 +1390,8 @@ export async function buildDownstreamIntoStorage(params: {
    connectionName?: string;
    /** The downstream source's Malloy name, to locate it in the transient plan. */
    downstreamName: string;
-   /** See planChainedDownstream's `recomputes`. */
-   recomputes?: PersistSource;
+   /** See planChainedDownstream's `plannedSource`. */
+   plannedSource?: PersistSource;
    /** See planChainedDownstream's `sameDeclaredTypes`. */
    sameDeclaredTypes?: boolean;
    /** See planChainedDownstream's `givenFree`. */
@@ -1434,7 +1432,9 @@ export async function buildDownstreamIntoStorage(params: {
          model,
          downstreamName,
          virtualMap,
-         ...(params.recomputes ? { recomputes: params.recomputes } : {}),
+         ...(params.plannedSource
+            ? { plannedSource: params.plannedSource }
+            : {}),
          ...(params.sameDeclaredTypes ? { sameDeclaredTypes: true } : {}),
          ...(params.givenFree ? { givenFree: true } : {}),
          connections: new FixedConnectionMap(
@@ -1508,10 +1508,10 @@ export async function buildDownstreamIntoStorage(params: {
 }
 
 /**
- * Build a `storage=` source whose recompute runs the same query as a stored
+ * Build a `storage=` source whose definition runs the same query as a stored
  * upstream's (one compiler key: an `extend` of it that adds no query of its
  * own, folded onto a table of its own by a `name=` or a projection of its
- * own) as a projection of that upstream's table: the same rows a recompute
+ * own) as a projection of that upstream's table: the same rows a build from the definition
  * writes, the columns the source stores, cast to its declared types. The
  * caller proves the two builds are one; nothing is compiled here.
  */
@@ -1546,7 +1546,7 @@ export async function buildProjectionIntoStorage(params: {
    );
 }
 
-/** CTAS a stacked build's SQL into the destination, as a recompute types it. */
+/** CTAS a stacked build's SQL into the destination, typed as a build from the definition types it. */
 async function writeStackedTable(
    session: DuckDBConnection,
    params: {
@@ -1568,7 +1568,7 @@ async function writeStackedTable(
       ),
       STORAGE_DIALECT,
    );
-   // The downstream's own declared types, as for a recompute.
+   // The downstream's own declared types, as for a build from the definition.
    const casts = storageBuildCasts(downstream);
    const captured: { collations?: TableCollations } = {};
    const schema = await createTableWithDeclaredTypes(

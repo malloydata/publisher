@@ -327,7 +327,7 @@ describe("upstreamReuseFromManifest", () => {
       expect(out.fields).toEqual({ upstreamReuse: "reused" });
    });
 
-   it("a database build recomputes a storage-tier upstream and says which destination holds it", () => {
+   it("a database build that inlines a storage-tier upstream says which destination holds it", () => {
       const out = upstreamReuseFromManifest({
          reached: [daily],
          addressBySourceId,

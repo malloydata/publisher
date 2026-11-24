@@ -603,7 +603,7 @@ export class HostSuppliedWrongTierError extends Error {
  * package serves a model older than its files (its last reload did not
  * compile): the build text is read from those files, which the plan's content
  * addresses do not describe. A shape not carried, with its own code, so the
- * caller recomputes from the model the package serves (or, strict, refuses).
+ * caller refuses it as such.
  */
 export class ChainedPackageStaleError extends ChainedShapeNotCarriedError {
    /** The code a log or metric carries for it (errorCodeOf). */
@@ -669,7 +669,7 @@ export interface BuildEnvironment {
    /**
     * The package's text for a chained `storage=` build (the host port's
     * `chainBuildText`). Absent, a chained build cannot stack on its parents
-    * and recomputes, or under strict upstreams refuses.
+    * and is refused.
     */
    chainBuildText?(request: ChainBuildRequest): ChainBuildText;
    /**

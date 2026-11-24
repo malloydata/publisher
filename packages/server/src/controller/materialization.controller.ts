@@ -346,7 +346,7 @@ export class MaterializationController {
             : {}),
          // Where a stored upstream's table lives. Without it a reference to
          // a stored table reads as a warehouse table, and a chained
-         // `storage=` build over it refuses or recomputes it. The service
+         // `storage=` build over it refuses it. The service
          // checks it names a configured destination.
          ...(referenceDestination(ref.storageDestinationName) !== undefined
             ? {

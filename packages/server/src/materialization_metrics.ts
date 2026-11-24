@@ -273,10 +273,9 @@ export type EligibilityRefusalReason =
  * destination compares otherwise), so the build failed rather than
  * recomputing its upstreams from raw.
  *
- * Retained label values, no longer produced (every build is strict, and none
- * recomputes from raw): `inline_fallback` (stacking failed and the upstream
- * was recomputed, non-strict) and `strict_shape_fallback` (the one recompute
- * `strictUpstreams` used to permit).
+ * Retained label values, no longer produced (no build reads its upstreams'
+ * definitions in place of their tables): `inline_fallback` and
+ * `strict_shape_fallback`.
  */
 type ChainedStorageBuildOutcome =
    | "parent_reuse"
@@ -531,7 +530,7 @@ const chainedStorageBuildCounter = lazyCounter(
       "retained but no longer produced: no build recomputes its upstreams " +
       "from raw).",
 );
-const upstreamRecomputeCounter = lazyCounter(
+const uncheckedUpstreamReadCounter = lazyCounter(
    "publisher_materialization_upstream_recompute_total",
    "Builds that read a stored upstream's database table unchecked: a host's " +
       "reference carried no nativeSchema, so the table's columns could not be " +
@@ -938,10 +937,10 @@ export function recordChainedStorageBuild(
 
 /**
  * Record a build that read a host-referenced upstream table unchecked (see
- * {@link upstreamRecomputeCounter}). Once per build per upstream.
+ * {@link uncheckedUpstreamReadCounter}). Once per build per upstream.
  */
 export function recordUpstreamReadUnchecked(build: "chained" | "rollup"): void {
-   upstreamRecomputeCounter().add(1, {
+   uncheckedUpstreamReadCounter().add(1, {
       reason: "reference_types_unrecorded",
       build,
       outcome: "read_unchecked",

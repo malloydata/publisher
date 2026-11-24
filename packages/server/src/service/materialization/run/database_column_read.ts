@@ -303,7 +303,7 @@ export async function readTableCollations(args: {
  * downstream other values than live computes, under an address that says
  * otherwise. A table whose build captured no native types, or whose read
  * failed, cannot be told unmoved, so it counts as moved (fail safe: the
- * downstream recomputes it).
+ * downstream is refused).
  *
  * Native types compare exactly, case and spacing aside: the read is the
  * capture's own catalog query, so an unaltered table reads as captured. A

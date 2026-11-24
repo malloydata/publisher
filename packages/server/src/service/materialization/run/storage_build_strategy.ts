@@ -288,10 +288,11 @@ interface StorageBuildContext {
 }
 
 /**
- * Recompute from raw: the build SQL (stored upstreams inlined) run in the
- * source warehouse and written into the destination, its failure redacted.
+ * The build SQL run in the source warehouse and written into the
+ * destination, its failure redacted: for a source with no stored parent to
+ * build over.
  */
-async function recomputeIntoStorage(
+async function buildFromWarehouse(
    ctx: StorageBuildContext,
    refresh: StorageIncrementalRefresh | undefined,
 ): Promise<StorageBuildResult> {
@@ -417,11 +418,11 @@ function reportStoredColumns(
 }
 
 /**
- * What follows a failed build over the stored parents: the reason to
- * recompute the upstream from raw, or, where the failure or the run forbids
- * that recompute, the refusal thrown in its place.
+ * What follows a failed build over the stored parents: an infrastructure
+ * failure thrown as one, or the refusal for a missing upstream or a shape
+ * the parents cannot carry. Never a build from raw in its place.
  */
-function recomputeAfterStackFailure(
+function refuseAfterStackFailure(
    err: unknown,
    ctx: StorageBuildContext,
 ): never {
@@ -443,10 +444,10 @@ function recomputeAfterStackFailure(
    // An INFRA failure (attach, CTAS, destination down) throws as one; a
    // missing upstream or an uncarried shape is refused below as its type.
    // Neither is ever answered by recomputing the upstreams from raw.
-   const pinnedRecompute =
+   const refusedAsItsType =
       err instanceof ChainedUpstreamMissingError ||
       err instanceof ChainedShapeNotCarriedError;
-   if (!pinnedRecompute && !(err instanceof MaterializationEligibilityError)) {
+   if (!refusedAsItsType && !(err instanceof MaterializationEligibilityError)) {
       recordChainedStorageBuild("infra_failure");
       throw new Error(
          `Failed to materialize chained source '${persistSource.name}' ` +
@@ -454,7 +455,7 @@ function recomputeAfterStackFailure(
       );
    }
    // A host-instructed build refuses a host-supplied upstream entry
-   // at the wrong tier, strict or not, instead of recomputing it.
+   // at the wrong tier.
    // Only the upstreams whose own entry is at the wrong tier are named,
    // each with its own reason: one host-supplied wrong-tier entry is
    // enough to refuse, whatever else is missing.
@@ -657,8 +658,8 @@ function stackCollationRefusal(
 /**
  * The storage tier: materialize a source into a `storage=` destination
  * (DuckDB/DuckLake), never the source or serve connection. A source that
- * reads a stored upstream stacks on that parent's table when it can, and
- * recomputes from the source warehouse otherwise; a delta of an incremental
+ * reads a stored upstream stacks on that parent's table when it can, and is
+ * refused otherwise; a delta of an incremental
  * table applies inside the destination session. Whether a stored table can
  * be read is decided at bind, per source, by the served copy's stored-type
  * plan: a table whose columns no type declares faithfully is built and
@@ -821,10 +822,10 @@ export class StorageBuildStrategy
          params.storedBase.onStacked?.();
       }
 
-      // Recompute from raw: run `buildSQL` (storage upstreams inlined) in the
-      // source warehouse and CTAS it into the destination.
+      // Nothing stored to build over: run the build SQL in the source
+      // warehouse and CTAS it into the destination.
       if (!result) {
-         result = await recomputeIntoStorage(ctx, refresh);
+         result = await buildFromWarehouse(ctx, refresh);
       }
 
       reportStoredColumns(ctx, result.schema);
@@ -1035,7 +1036,7 @@ export class StorageBuildStrategy
    /**
     * Build over the stored parents, in the one destination. Refuses, or
     * throws an infrastructure failure, where it cannot
-    * ({@link recomputeAfterStackFailure}).
+    * ({@link refuseAfterStackFailure}).
     */
    private async stackOnParents(
       ctx: StorageBuildContext,
@@ -1106,7 +1107,7 @@ export class StorageBuildStrategy
          recordChainedStorageBuild("parent_reuse");
          return result;
       } catch (err) {
-         return recomputeAfterStackFailure(err, ctx);
+         return refuseAfterStackFailure(err, ctx);
       }
    }
 
@@ -1197,7 +1198,7 @@ export class StorageBuildStrategy
                   },
                   connectionName: text.connection,
                   downstreamName: text.downstreamName,
-                  recomputes: persistSource,
+                  plannedSource: persistSource,
                   sameDeclaredTypes: true,
                   givenFree: true,
                   virtualMap: text.virtualMap,
@@ -1223,7 +1224,7 @@ export class StorageBuildStrategy
     * its table as the served copy re-roots it, compiled on the destination
     * alone), through {@link buildDownstreamIntoStorage}.
     *
-    * Throws (the caller then recomputes or refuses) when an upstream it
+    * Throws (the caller then refuses) when an upstream it
     * reads has no table in this destination, it reads the warehouse, the
     * package writes no text, or the text does not compile.
     */
@@ -1259,9 +1260,9 @@ export class StorageBuildStrategy
          new Set(upstreams.map((b) => b.sourceName)),
       );
       // A path to the source warehouse (a joined table, a SQL source) has no
-      // stored stand-in, so only a recompute can build it. Decided from the
-      // model, not the compile, because strict treats "cannot express" and
-      // "could not carry" differently.
+      // stored stand-in, so no build over the parents can say it. Decided
+      // from the model, not the compile, so "cannot express" is refused as
+      // ineligible rather than as a shape it could not carry.
       if (reached.raw) {
          throw new MaterializationEligibilityError({
             message:
@@ -1277,7 +1278,7 @@ export class StorageBuildStrategy
          );
       }
       // An `extend` of a stored source that adds no query of its own runs
-      // that source's query: a recompute writes its rows. Over its table
+      // that source's query: a build from its definition writes its rows. Over its table
       // that is a projection, which no text written over the re-rooted
       // upstream can say (the re-root is a table, and Malloy persists only a
       // query-shaped source).
@@ -1384,9 +1385,9 @@ export class StorageBuildStrategy
                },
                connectionName: text.connection,
                downstreamName: text.downstreamName,
-               // A recompute writes the planned source's stored columns, hidden
+               // A build from the definition writes the planned source's stored columns, hidden
                // ones included; a stacked table must hold each of them.
-               recomputes: persistSource,
+               plannedSource: persistSource,
                virtualMap: text.virtualMap,
                physicalTableName,
                environmentPath: environment.getEnvironmentPath(),
@@ -1506,7 +1507,7 @@ export class StorageBuildStrategy
             },
             connectionName: stored.connection,
             downstreamName: stored.downstreamName,
-            recomputes: persistSource,
+            plannedSource: persistSource,
             sameDeclaredTypes: true,
             givenFree: true,
             virtualMap: new Map([[stored.connection, handles]]),
@@ -1527,8 +1528,8 @@ export class StorageBuildStrategy
     * alone, so nothing reads the warehouse. A parent with no current table in
     * this destination is {@link ChainedUpstreamMissingError}, and a chain the
     * destination cannot compile (the plan checked it can) is
-    * {@link ChainedShapeNotCarriedError}: the caller recomputes from raw, or,
-    * under `strictUpstreams`, refuses, as for any chained build.
+    * {@link ChainedShapeNotCarriedError}: the caller refuses, as for any
+    * chained build.
     */
    async buildExtensionOverStoredParent(
       persistSource: PersistSource,
@@ -1597,7 +1598,7 @@ export class StorageBuildStrategy
       };
       // A parent column no `type:` declares faithfully is left out: the
       // extension's build selects its columns by name, so one reading it does
-      // not compile and is recomputed, as for any chain it cannot carry.
+      // not compile and is refused, as for any chain it cannot carry.
       const { declared, leftOut } = declarableColumns(binding.schema);
       reportLeftOutColumns(parent.sourceName, leftOut);
       try {
@@ -1619,7 +1620,7 @@ export class StorageBuildStrategy
                   }),
                ),
                downstreamName: plan.buildSourceName,
-               recomputes: persistSource,
+               plannedSource: persistSource,
                virtualMap: new Map([
                   [
                      destinationName,

@@ -183,7 +183,7 @@ async function movedUpstreams(args: {
 /**
  * Logs and counts an upstream table read unchecked: a host's reference with
  * no `nativeSchema`, whose columns cannot be checked against its build, is
- * read as before, since no build recomputes an upstream. A build's own entry
+ * read as before, since no build reads its definition instead. A build's own entry
  * without types is refused instead (movedUpstreams).
  */
 export function noteUntypedReference(
@@ -227,15 +227,15 @@ function renderBuildSQL(
       instructionTier(instruction, getPersistStorageMode()) === "storage";
    // Warehouse-executed build SQL cannot see a storage upstream's
    // DuckDB/DuckLake table, so storage upstreams are excluded from the build
-   // manifest: non-strict they INLINE (recompute from raw); under
-   // `strictUpstreams` they are a strict-miss error.
+   // manifest, and a render that reads one inlines it.
    //
-   // A storage build renders this SQL permissively because for it the SQL is
-   // only the recompute fallback (stacking on the parent uses a separate
-   // DuckDB recompile); rendering strictly would refuse a chained source
-   // before parent reuse could run. Strict is enforced below, where a
-   // recompute would really happen. A database build keeps strict: its
-   // buildSQL IS what runs.
+   // A storage build renders this SQL permissively: a chained source is
+   // built over its parents by a separate DuckDB compile, never by this SQL,
+   // which it reads only to see what it inlines (`sqlInlinesStored`) and to
+   // classify its upstreams; a strict render would refuse it before the
+   // build over its parents could run. A missing upstream is refused below
+   // from the strict render (`compilerMissing`). A database build renders
+   // strictly: its buildSQL is what runs.
    //
    // `reducedManifest` is keyed by address only, as the ledger is; the
    // compiler looks an upstream up by its own key, which differs from the
@@ -249,7 +249,8 @@ function renderBuildSQL(
    // `upstreamReuse`: a visible gap, not a wrong answer.
    const { lift, reached, reachedIds } = reach;
    // An upstream whose table moved since its build is left out too, so the
-   // render recomputes it from its definition (movedUpstreams).
+   // render inlines it, and a build that reads it is refused
+   // (refuseMovedRead).
    const reducedManifest = withoutEntries(
       manifestExcludingStorage(manifest, builtEntries, planFacts),
       moved,
@@ -291,7 +292,7 @@ function renderBuildSQL(
          })),
       );
    };
-   // A host-instructed database build refuses, strict or not, an upstream
+   // A host-instructed database build refuses an upstream
    // the host supplied at the wrong tier, when this source reads it. A
    // source reads an upstream exactly when adding that upstream's entry back
    // changes its permissive render (the table replaces the inlined SQL);
@@ -500,8 +501,8 @@ function movedUpstreamsRead(
 /**
  * Classify the stored upstreams a source reads, once for both tiers: the
  * entry's `upstreamReuse` fields, what the substituted manifest is missing,
- * and whether the build SQL inlined a stored table. A database build that
- * recomputes a wrong-tier upstream notes it; a host-instructed one refuses.
+ * and whether the build SQL inlined a stored table. A host-instructed
+ * database build that reads a wrong-tier upstream refuses.
  */
 function classifyStoredUpstreams(
    persistSource: PersistSource,
@@ -799,9 +800,9 @@ export async function buildSource(
    // session (never the source or serve connection), capturing the
    // authoritative schema for the serve transform.
    if (isStorageBuild) {
-      // An upstream nothing supplied could only be recomputed, which no
-      // build does. The build SQL was rendered permissively, so the refusal
-      // is made here from the strict render (`compilerMissing`).
+      // An upstream nothing supplied is refused. The build SQL was rendered
+      // permissively, so the refusal is made here from the strict render
+      // (`compilerMissing`).
       if (reuse.missing.length > 0) {
          recordChainedStorageBuild("strict_refused");
          // Typed, so the failure can be attributed to an upstream that
