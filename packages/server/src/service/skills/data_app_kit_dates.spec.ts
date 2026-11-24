@@ -5,11 +5,9 @@
 
 /**
  * The data app kit's date math (skills/malloy-html-data-apps/assets/data-app/kit/period.js and state.js): which
- * days a period and its comparison cover, and which bucket each row lands in. The bucket rule is pinned against
- * DuckDB with SQL written by hand to compute what the kit's Malloy expression, `days(<field>.day to @<last day>)`,
- * does, so a row's bucket here is the one the server hands back.
+ * days a period and its comparison cover, and which bucket each row lands in. The bucket rule is pinned by running the
+ * queries the kit writes through Malloy on DuckDB, so a row's bucket here is the one the server hands back.
  */
-import { DuckDBInstance } from "@duckdb/node-api";
 import { describe, expect, it } from "bun:test";
 import path from "path";
 
@@ -121,54 +119,80 @@ describe("comparison periods", () => {
    });
 });
 
-describe("rolling buckets, against DuckDB", () => {
-   it("numbers the period's last day 0 and makes every week of a 91-day period whole", async () => {
+/** Run a query the kit wrote through Malloy on DuckDB, over one row per day from `from` to `to`, at `time`. */
+async function runKitQuery(
+   query: string,
+   from: string,
+   to: string,
+   time = "00:00:00",
+) {
+   const { SingleConnectionRuntime } = await import("@malloydata/malloy");
+   const { DuckDBConnection } = await import("@malloydata/db-duckdb");
+   const runtime = new SingleConnectionRuntime({
+      connection: new DuckDBConnection("duckdb", ":memory:"),
+   });
+   const model = `source: s is duckdb.sql("""select d::date + interval '${time}' as d, 1 as user_id from range(date '${from}', date '${to}', interval 1 day) t(d)""") extend { measure: n is count() }`;
+   const result = await runtime
+      .loadModel(model)
+      .loadQuery(query)
+      .run({ rowLimit: 10000 });
+   return JSON.parse(JSON.stringify(result.data.toObject()));
+}
+
+describe("rolling buckets, through Malloy", () => {
+   it("numbers the period's last day 0 and makes every week of a 91-day period whole, late-evening times included", async () => {
       configure();
       const r = range("2026-08-18", "2026-11-17");
-      // The Malloy the kit writes, and the SQL it compiles to.
-      expect(S.rollingKey("d", r, "week")).toBe(
-         "k is floor(days(d.day to @2026-11-16) / 7)",
-      );
-      const db = await (await DuckDBInstance.create(":memory:")).connect();
-      const reader = await db.runAndReadAll(`
-         select floor(date_diff('day', d, date '${lastDay(r)}') / 7)::int as k, count(*)::int as n
-         from range(date '${r.from}', date '${r.to}', interval 1 day) t(d)
-         group by 1 order by 1 desc`);
-      const rows = reader.getRowObjectsJS() as { k: number; n: number }[];
-      const weeks = S.buckets(rows, {
+      const s = {
          period: { preset: "custom", from: r.from, to: lastDay(r) },
          compare: "none",
          grain: "week",
          filters: {},
-      });
-      expect(weeks.length).toBe(13);
-      expect(
-         weeks.every(
-            (w: { n: number; partial: boolean }) => w.n === 7 && !w.partial,
-         ),
-      ).toBe(true);
-      expect(weeks.at(-1)).toMatchObject({
-         k: 0,
-         start: "2026-11-10",
-         end: "2026-11-17",
-      });
+      };
+      for (const time of ["00:00:00", "23:30:00"]) {
+         const rows = await runKitQuery(
+            S.seriesQuery(["n"], s),
+            r.from,
+            r.to,
+            time,
+         );
+         const weeks = S.buckets(rows, s);
+         expect(weeks.length).toBe(13);
+         expect(
+            weeks.every(
+               (w: { n: number; partial: boolean }) => w.n === 7 && !w.partial,
+            ),
+         ).toBe(true);
+         expect(weeks.at(-1)).toMatchObject({
+            k: 0,
+            start: "2026-11-10",
+            end: "2026-11-17",
+         });
+      }
    });
 
    it("labels a day bucket with its own day", async () => {
       configure();
       const r = range("2026-11-10", "2026-11-17");
-      const db = await (await DuckDBInstance.create(":memory:")).connect();
-      const reader = await db.runAndReadAll(`
-         select date_diff('day', d, date '${lastDay(r)}')::int as k, strftime(d, '%Y-%m-%d') as day
-         from range(date '${r.from}', date '${r.to}', interval 1 day) t(d)`);
-      const rows = reader.getRowObjectsJS() as { k: number; day: string }[];
-      const days = S.buckets(rows, {
+      const s = {
          period: { preset: "custom", from: r.from, to: lastDay(r) },
          compare: "none",
          grain: "day",
          filters: {},
-      });
-      for (const b of days) expect(b.start).toBe(b.day);
+      };
+      const rows = await runKitQuery(S.seriesQuery(["n"], s), r.from, r.to);
+      const days = S.buckets(rows, s);
+      expect(days.length).toBe(7);
+      expect(days.every((b: { n: number }) => b.n === 1)).toBe(true);
+      expect(days.map((b: { start: string }) => b.start)).toEqual([
+         "2026-11-10",
+         "2026-11-11",
+         "2026-11-12",
+         "2026-11-13",
+         "2026-11-14",
+         "2026-11-15",
+         "2026-11-16",
+      ]);
    });
 });
 
@@ -303,6 +327,8 @@ describe("shares of a whole", () => {
       expect(S.adds({ n: 3, s: 100, t: 100, lo: 10 })).toBe(true);
       expect(S.adds({ n: 3, s: 100, t: 100, lo: -30 })).toBe(false);
       expect(S.adds({ n: 3, s: 130, t: 100, lo: 10 })).toBe(false);
+      // One part with a value and two without, as an average over parts with no rows gives.
+      expect(S.adds({ n: 3, nn: 1, s: 10, t: 10, lo: 10 })).toBe(false);
    });
 });
 
@@ -336,7 +362,7 @@ describe("calendar buckets, through Malloy", () => {
       const result = await runtime
          .loadModel(model)
          .loadQuery(S.seriesQuery(["c"], s))
-         .run();
+         .run({ rowLimit: 10000 });
       const rows = JSON.parse(JSON.stringify(result.data.toObject()));
       const buckets = S.buckets(rows, s);
       expect(buckets.map((b: { start: string }) => b.start)).toEqual([

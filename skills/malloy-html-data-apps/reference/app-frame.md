@@ -37,9 +37,9 @@ chmod -R u+w public
 An app built earlier carries its kit's version as `KIT_VERSION`, exported from `public/kit/kit.js`, and on the
 running page (`<meta name="data-app-kit">`). Copying a newer kit over it is meant to be safe within one major
 version; across one, compare the app's config with the new kit's worked `app.js` before copying. An app with no
-`KIT_VERSION` was built on a kit before 1.0.0: before copying, drop any import of `askCredible` or `inCredible`
-(register a host with `setHost` instead, or leave Ask out) and write `credit: true` as `credit: { name }`, or the
-page will not load or will show no credit.
+`KIT_VERSION` was built on a kit before 1.0.0: before copying, drop each name `app.js` imports from the kit that
+the new `kit.js` does not export, and write `credit: true` as `credit: { name }`, or the page will not load or will
+show no credit.
 
 When the skill reached you only as text, `assets/` is not on disk: say so, and build from the minimal scaffold in
 `SKILL.md` to the same design.

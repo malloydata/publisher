@@ -318,7 +318,8 @@
          hostOrigin = e.origin && e.origin !== "null" ? e.origin : null;
          // The same mode again: a host that forgot the answer (a frame it reloaded) hears it again.
          if (d.mode === colorScheme) {
-            if (appliedScheme === d.mode) colorSchemeApplied(d.mode);
+            // What the page drew, which a page with a fixed mode (?mode=) may differ from.
+            if (appliedScheme) colorSchemeApplied(appliedScheme);
             return;
          }
          colorScheme = d.mode;

@@ -119,6 +119,20 @@ describe("Publisher runtime color scheme", () => {
       ]);
    });
 
+   it("answers a repeated mode with the mode the page drew, when that differs", () => {
+      const { publisher, posted, send } = framedPage();
+      send({ type: "publisher:color-scheme", mode: "dark" });
+      publisher.colorSchemeApplied("light"); // a page fixed to light by its address
+      posted.length = 0;
+      send({ type: "publisher:color-scheme", mode: "dark" });
+      expect(posted).toEqual([
+         {
+            data: { type: "publisher:color-scheme-applied", mode: "light" },
+            origin: "https://app.example",
+         },
+      ]);
+   });
+
    it("keeps a listener's error out of the page that adds it", () => {
       const { publisher, send } = framedPage();
       send({ type: "publisher:color-scheme", mode: "dark" });

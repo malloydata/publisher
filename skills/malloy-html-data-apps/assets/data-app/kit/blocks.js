@@ -298,7 +298,7 @@ function askButton(spec, qs, said, covers) {
   return h('button', { type: 'button', class: 'ghost ghost--accent back__ask', text: `Ask ${name} about this`, onclick: () => ask(prompt, context) })
 }
 
-/** Rows with a nested query (trend by's `series`) as flat rows: one per nested row, its fields named `series.bucket`. */
+/** Rows with a nested query (trend by's `by__series`) as flat rows: one per nested row, its fields named `by__series.bucket`. */
 function flatRows(rows) {
   return rows.flatMap((r) => {
     const nest = Object.keys(r).find((k) => Array.isArray(r[k]))
@@ -688,7 +688,7 @@ export function trend({ metric: n, by, top = 5, kicker, headline, span = 12, hei
       const bucket = S.rollingKey(S.config.date.field, S.range(s), g) || `bucket is ${S.config.date.field}.${g}::date`
       // One query: the top values, each with its own series nested in it, so a row limit can never leave holes in a
       // line, and a value past the top is never fetched.
-      return [S.run(`{ where: ${by} is not null; group_by: ${col === by ? by : `${col} is ${by}`}; aggregate: ${n}; nest: series is { group_by: ${bucket}; aggregate: ${n} }; order_by: ${n} desc; limit: ${top} }`, s, { where, ignore: S.config.filters.filter((f) => f.field === by).map((f) => f.key) })]
+      return [S.run(`{ where: ${by} is not null; group_by: ${col === by ? by : `${col} is ${by}`}; aggregate: ${n}; nest: by__series is { group_by: ${bucket}; aggregate: ${n} }; order_by: ${n} desc; limit: ${top} }`, s, { where, ignore: S.config.filters.filter((f) => f.field === by).map((f) => f.key) })]
     },
     draw: ([a, b], body, s) => {
       const g = S.grain(s)
@@ -710,7 +710,7 @@ export function trend({ metric: n, by, top = 5, kicker, headline, span = 12, hei
       const frame = S.buckets([], s)
       multi(body.appendChild(h('div', { class: 'chart' })), {
         ticks: frame.map((r) => tickOf(r, g)), labels: frame.map((r) => P.describe({ from: r.start, to: r.end })), height,
-        series: a.map((row) => ({ id: row[col], name: name(row[col]), values: S.buckets(row.series || [], s).map((r) => r[n] ?? null) })),
+        series: a.map((row) => ({ id: row[col], name: name(row[col]), values: S.buckets(row.by__series || [], s).map((r) => r[n] ?? null) })),
         format: (x, full) => F.fmtMetric(n, x, { compact: !full }), axis: F.axisFormat(n), act: actionFor(by),
       })
     },
