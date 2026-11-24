@@ -16,7 +16,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { createServer, type Server, type Socket } from "net";
 import { tmpdir } from "os";
 import { join } from "path";
-import { connectPgClient, pgClientConfig } from "./postgres_conninfo";
+import {
+   connectPgClient,
+   pgClientConfig,
+   pgConninfoPair,
+} from "./postgres_conninfo";
 
 const config = (conninfo: string) => pgClientConfig("test", conninfo);
 
@@ -259,8 +263,9 @@ describe("pgClientConfig", () => {
    it.each(["require", "verify-ca"])(
       "verifies the chain but not the host for %s with an sslrootcert",
       (sslmode) => {
-         const ssl = config(`host=h sslmode=${sslmode} sslrootcert=${ca}`)
-            .ssl as unknown as Record<string, unknown>;
+         const ssl = config(
+            `host=h sslmode=${sslmode} ${pgConninfoPair("sslrootcert", ca)}`,
+         ).ssl as unknown as Record<string, unknown>;
          expect(ssl).toMatchObject({
             rejectUnauthorized: true,
             ca: "PEM-BYTES",
@@ -271,13 +276,16 @@ describe("pgClientConfig", () => {
 
    it("verifies the chain and the host name for verify-full, leaving the server name to the driver", () => {
       expect(
-         config(`host=db.internal sslmode=verify-full sslrootcert=${ca}`).ssl,
+         config(
+            `host=db.internal sslmode=verify-full ${pgConninfoPair("sslrootcert", ca)}`,
+         ).ssl,
       ).toEqual({ rejectUnauthorized: true, ca: "PEM-BYTES" });
    });
 
    it("maps no-verify to require, as the attach does: it verifies a chain it is given a root for", () => {
-      const ssl = config(`host=h sslmode=no-verify sslrootcert=${ca}`)
-         .ssl as unknown as Record<string, unknown>;
+      const ssl = config(
+         `host=h sslmode=no-verify ${pgConninfoPair("sslrootcert", ca)}`,
+      ).ssl as unknown as Record<string, unknown>;
       expect(ssl).toMatchObject({ rejectUnauthorized: true, ca: "PEM-BYTES" });
    });
 
@@ -292,7 +300,7 @@ describe("pgClientConfig", () => {
          (sslmode) => {
             expect(
                config(
-                  `host=h sslmode=${sslmode} sslrootcert=${ca} sslcert=${cert} sslkey=${key} sslpassword=pw`,
+                  `host=h sslmode=${sslmode} ${pgConninfoPair("sslrootcert", ca)} ${pgConninfoPair("sslcert", cert)} ${pgConninfoPair("sslkey", key)} sslpassword=pw`,
                ).ssl,
             ).toMatchObject({
                cert: "CERT-BYTES",
@@ -304,7 +312,9 @@ describe("pgClientConfig", () => {
 
       it("sends none of it when TLS is off", () => {
          expect(
-            config(`host=h sslmode=disable sslcert=${cert} sslkey=${key}`).ssl,
+            config(
+               `host=h sslmode=disable ${pgConninfoPair("sslcert", cert)} ${pgConninfoPair("sslkey", key)}`,
+            ).ssl,
          ).toBe(false);
       });
 
@@ -312,7 +322,7 @@ describe("pgClientConfig", () => {
          let error = "";
          try {
             config(
-               `host=h password=hunter2 sslcert=${join(dir, "missing.crt")}`,
+               `host=h password=hunter2 ${pgConninfoPair("sslcert", join(dir, "missing.crt"))}`,
             );
          } catch (e) {
             error = String(e);
@@ -325,7 +335,9 @@ describe("pgClientConfig", () => {
    describe("the deployment's PGSSLMODE", () => {
       it("applies when the string sets no sslmode, as libpq reads it", () => {
          process.env.PGSSLMODE = "verify-full";
-         expect(config(`host=h sslrootcert=${ca}`)).toMatchObject({
+         expect(
+            config(`host=h ${pgConninfoPair("sslrootcert", ca)}`),
+         ).toMatchObject({
             ssl: { rejectUnauthorized: true, ca: "PEM-BYTES" },
             plaintextFallback: false,
          });
@@ -387,7 +399,7 @@ describe("pgClientConfig", () => {
          process.env.PGSSLCERT = join(dir, "missing.crt");
          expect(
             config(
-               `host=h sslmode=verify-full sslrootcert=${ca} sslcert=${cert}`,
+               `host=h sslmode=verify-full ${pgConninfoPair("sslrootcert", ca)} ${pgConninfoPair("sslcert", cert)}`,
             ).ssl,
          ).toMatchObject({ ca: "PEM-BYTES", cert: "ENV-CERT" });
       });
@@ -468,6 +480,17 @@ describe("pgClientConfig", () => {
       ).toThrow(
          "test: cannot read the sslrootcert file '/nonexistent/ca.pem' (ENOENT).",
       );
+   });
+
+   it("reads a backslash in a file path as libpq does: an escape, unless the path is quoted", () => {
+      expect(() =>
+         config("host=h sslmode=verify-full sslrootcert=C:\\certs\\ca.pem"),
+      ).toThrow("cannot read the sslrootcert file 'C:certsca.pem'");
+      expect(() =>
+         config(
+            `host=h sslmode=verify-full ${pgConninfoPair("sslrootcert", "C:\\certs\\ca.pem")}`,
+         ),
+      ).toThrow("cannot read the sslrootcert file 'C:\\certs\\ca.pem'");
    });
 
    it("refuses an sslmode it does not know, naming the mode and not the string", () => {
