@@ -121,10 +121,7 @@ export interface DatabaseBuildRequest {
    /** Every statement of the build carries these (see buildRunSQLOptions). */
    runOptions: { queryMetadata?: QueryMetadata };
    /** How the source's stored upstreams were read, for its entry. */
-   upstreamReuse: Pick<
-      ManifestEntry,
-      "upstreamReuse" | "upstreamRecomputeReason"
-   >;
+   upstreamReuse: Pick<ManifestEntry, "upstreamReuse">;
    /** The source's incremental refresh, when it declares one the run can act on. */
    incrementalRefresh?: IncrementalRefreshTarget;
    /**

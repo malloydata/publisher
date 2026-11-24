@@ -37,7 +37,7 @@ import {
    recordQueryRouteDuration,
    recordScheduledFire,
    recordSharedAddressInstructions,
-   recordUpstreamRecompute,
+   recordUpstreamReadUnchecked,
    recordStoredColumnTypeMismatch,
    recordTableCollision,
    recordStorageTableRetained,
@@ -474,7 +474,7 @@ const EMISSIONS: Record<string, () => void> = {
    publisher_storage_chained_build_total: () =>
       recordChainedStorageBuild("parent_reuse"),
    publisher_materialization_upstream_recompute_total: () =>
-      recordUpstreamRecompute("moved", "chained", "recomputed"),
+      recordUpstreamReadUnchecked("chained"),
 };
 
 /** Every instrument name `materialization_metrics.ts` passes to a lazy constructor. */

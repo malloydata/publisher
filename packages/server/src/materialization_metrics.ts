@@ -533,16 +533,15 @@ const chainedStorageBuildCounter = lazyCounter(
 );
 const upstreamRecomputeCounter = lazyCounter(
    "publisher_materialization_upstream_recompute_total",
-   "Builds that could not check a stored upstream's database table against " +
-      "the column types its build recorded. Labels: reason ('moved', a " +
-      "column retyped or dropped since its build; 'unreadable', its columns " +
-      "could not be read; 'types_unrecorded', its build recorded no column " +
-      "types; 'reference_types_unrecorded', a host's reference carried no " +
-      "nativeSchema; 'persisted_result', a persisted view or query, which " +
-      "builds from its source's definition by design), build ('chained' for a build over the upstream, " +
-      "'rollup' for a database rollup over its stored base), and outcome " +
-      "('recomputed' from its definition, or 'read_unchecked': a strict " +
-      "host-instructed build read the referenced table as before).",
+   "Builds that read a stored upstream's database table unchecked: a host's " +
+      "reference carried no nativeSchema, so the table's columns could not be " +
+      "checked against its build. No build recomputes an upstream, so this is " +
+      "the only reason and outcome produced. Labels: reason " +
+      "('reference_types_unrecorded'), build ('chained' for a build over the " +
+      "upstream, 'rollup' for a database rollup over its stored base), and " +
+      "outcome ('read_unchecked'). The reasons 'moved', 'unreadable', " +
+      "'types_unrecorded' and 'persisted_result' and the outcome 'recomputed' " +
+      "are retired: such a build is refused.",
 );
 
 /**
@@ -938,21 +937,15 @@ export function recordChainedStorageBuild(
 }
 
 /**
- * Record a build that recomputed a stored upstream whose database table it
- * could not read in place of it (see {@link upstreamRecomputeCounter}). Once
- * per build per upstream.
+ * Record a build that read a host-referenced upstream table unchecked (see
+ * {@link upstreamRecomputeCounter}). Once per build per upstream.
  */
-export function recordUpstreamRecompute(
-   reason:
-      | "moved"
-      | "unreadable"
-      | "types_unrecorded"
-      | "reference_types_unrecorded"
-      | "persisted_result",
-   build: "chained" | "rollup",
-   outcome: "recomputed" | "read_unchecked",
-): void {
-   upstreamRecomputeCounter().add(1, { reason, build, outcome });
+export function recordUpstreamReadUnchecked(build: "chained" | "rollup"): void {
+   upstreamRecomputeCounter().add(1, {
+      reason: "reference_types_unrecorded",
+      build,
+      outcome: "read_unchecked",
+   });
 }
 
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */

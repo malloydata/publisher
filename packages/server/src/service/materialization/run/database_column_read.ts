@@ -339,9 +339,9 @@ export async function movedSinceBuild(
 
 /**
  * Why a stored upstream's table cannot be read in place of its source, by
- * class, for the metric (`publisher_materialization_upstream_recompute_total`),
- * and in words, for the entry and the log: a column `moved`, the table's
- * columns `unreadable` now, or `types_unrecorded` by its build.
+ * class, and in words, for the build's refusal and the log: a column
+ * `moved`, the table's columns `unreadable` now, or `types_unrecorded` by
+ * its build.
  */
 export interface UpstreamMove {
    kind: "moved" | "unreadable" | "types_unrecorded";

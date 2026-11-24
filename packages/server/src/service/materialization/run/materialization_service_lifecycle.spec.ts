@@ -1077,14 +1077,16 @@ describe("runBuild (branch behavior)", () => {
                sourceEntityId: "build-orders",
                physicalTableName: '"orders_v1"',
                connectionName: "duckdb",
-               upstreamReuse: "recomputed",
-               upstreamRecomputeReason: `could not stack: ${where}`,
             },
          },
          failures: {
             other: {
                sourceEntityId: "other",
                reason: "Failed to materialize source 'other': /test/m.malloy",
+            },
+            third: {
+               sourceEntityId: "third",
+               reason: `could not compile: ${where}`,
             },
          },
          sourcesRefused: 1,
@@ -1113,15 +1115,14 @@ describe("runBuild (branch behavior)", () => {
          new AbortController().signal,
       );
 
-      const [, entries, failures, metadata] = svc.commitManifest.firstCall
-         .args as [
+      const [, , failures, metadata] = svc.commitManifest.firstCall.args as [
          string,
-         Record<string, { upstreamRecomputeReason?: string }>,
+         unknown,
          Record<string, { reason: string }>,
          { refusedSources: Record<string, { message: string }> },
       ];
-      expect(entries["build-orders"].upstreamRecomputeReason).toBe(
-         "could not stack: FILE: sub/m.malloy\nline 3: 'x' is not defined",
+      expect(failures.third.reason).toBe(
+         "could not compile: FILE: sub/m.malloy\nline 3: 'x' is not defined",
       );
       expect(failures.other.reason).toBe(
          "Failed to materialize source 'other': m.malloy",

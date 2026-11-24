@@ -2875,11 +2875,7 @@ function withRollupUpstreamReuse(
    ) {
       return entry;
    }
-   const {
-      upstreamReuse: _reuse,
-      upstreamRecomputeReason: _reason,
-      ...rest
-   } = entry;
+   const { upstreamReuse: _reuse, ...rest } = entry;
    return run.readFrom?.has(address)
       ? { ...rest, upstreamReuse: "reused" }
       : rest;

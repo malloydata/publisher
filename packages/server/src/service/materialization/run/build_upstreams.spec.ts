@@ -303,7 +303,7 @@ describe("upstreamReuseFromManifest", () => {
          fields: { upstreamReuse: "reused" },
          inManifestOnly: [],
          missing: [],
-         definitionsRead: [],
+         inlined: [],
       });
    });
 
@@ -339,8 +339,8 @@ describe("upstreamReuseFromManifest", () => {
          tier: "database",
       });
       expect(out.inManifestOnly).toEqual(["daily"]);
-      expect(out.fields.upstreamReuse).toBe("recomputed");
-      expect(out.fields.upstreamRecomputeReason).toMatch(
+      expect(out.fields.upstreamReuse).toBe("reused");
+      expect(out.inlined.join("; ")).toMatch(
          /'daily' is materialized in storage destination 'lake'/,
       );
    });
@@ -361,7 +361,7 @@ describe("upstreamReuseFromManifest", () => {
       expect(out.fields).toEqual({ upstreamReuse: "reused" });
    });
 
-   it("an upstream the compiler misses is missing, and the reason says what would have supplied it", () => {
+   it("an upstream the compiler misses is missing, refused as such, not inlined", () => {
       const out = upstreamReuseFromManifest({
          reached: [daily],
          addressBySourceId,
@@ -373,10 +373,7 @@ describe("upstreamReuseFromManifest", () => {
          tier: "storage",
       });
       expect(out.missing).toEqual(["daily"]);
-      expect(out.fields.upstreamReuse).toBe("recomputed");
-      expect(out.fields.upstreamRecomputeReason).toMatch(
-         /neither built in this run nor supplied by reference/,
-      );
+      expect(out.inlined).toEqual([]);
    });
 
    it("a source with no stored upstream reports nothing", () => {
@@ -394,26 +391,29 @@ describe("upstreamReuseFromManifest", () => {
       ).toEqual({});
    });
 
-   it("the compiler's reach is the floor: a stored table inlined past the walk is recomputed, with a reason", () => {
+   it("the compiler's reach is the floor: a stored table inlined past the walk is inlined for a database build, with a reason", () => {
       // Every upstream the walk named was read from its table, but the build
       // SQL differs from the SQL rendered with every stored entry available:
       // a join declared on a stored stop reached a storage-tier table.
-      const out = upstreamReuseFromManifest({
-         reached: [daily],
-         addressBySourceId,
-         substituted: { "addr-daily": {} },
-         full: { "addr-daily": {} },
-         builtEntries: {},
-         tier: "storage",
-         sqlInlinesStored: true,
-         compilerMissing: [],
-      });
+      const of = (tier: "database" | "storage") =>
+         upstreamReuseFromManifest({
+            reached: [daily],
+            addressBySourceId,
+            substituted: { "addr-daily": {} },
+            full: { "addr-daily": {} },
+            builtEntries: {},
+            tier,
+            sqlInlinesStored: true,
+            compilerMissing: [],
+         });
+      const out = of("database");
       expect(out.inManifestOnly).toEqual([]);
       expect(out.missing).toEqual([]);
-      expect(out.fields.upstreamReuse).toBe("recomputed");
-      expect(out.fields.upstreamRecomputeReason).toMatch(
+      expect(out.inlined.join("; ")).toMatch(
          /^the build SQL inlines a stored table reached through a refinement declared on a stored upstream/,
       );
+      // A `storage=` build reads it by stacking on its stored parents.
+      expect(of("storage").inlined).toEqual([]);
    });
 
    it("the floor reports even when the walk named nothing", () => {
@@ -427,7 +427,7 @@ describe("upstreamReuseFromManifest", () => {
          sqlInlinesStored: true,
          compilerMissing: [],
       });
-      expect(out.fields.upstreamReuse).toBe("recomputed");
+      expect(out.fields.upstreamReuse).toBe("reused");
    });
 
    it("an upstream with no content address is reached but unread: not missing, not a reason, not reported", () => {
@@ -448,7 +448,7 @@ describe("upstreamReuseFromManifest", () => {
          fields: {},
          inManifestOnly: [],
          missing: [],
-         definitionsRead: [],
+         inlined: [],
       });
    });
 
@@ -467,7 +467,7 @@ describe("upstreamReuseFromManifest", () => {
          compilerMissing: [{ name: "daily", sourceID: "daily@b" }],
       });
       expect(out.missing).toEqual(["daily"]);
-      expect(out.fields.upstreamReuse).toBe("recomputed");
+      expect(out.fields.upstreamReuse).toBe("reused");
    });
 
    it("a walk stop in no manifest that the compiler did not miss is a join the SQL never reads: not missing, not a reason", () => {
@@ -515,10 +515,7 @@ describe("upstreamReuseFromManifest", () => {
          compilerMissing: [{ name: "counts", sourceID: "counts@m" }],
       });
       expect(out.missing).toEqual(["counts"]);
-      expect(out.fields.upstreamReuse).toBe("recomputed");
-      expect(out.fields.upstreamRecomputeReason).toMatch(
-         /'counts' is not in this build's manifest/,
-      );
+      expect(out.inlined).toEqual([]);
    });
 
    it("a stop sharing the root's address is the table being built, not an upstream", () => {
@@ -537,7 +534,7 @@ describe("upstreamReuseFromManifest", () => {
          fields: {},
          inManifestOnly: [],
          missing: [],
-         definitionsRead: [],
+         inlined: [],
       });
    });
 });

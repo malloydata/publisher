@@ -29,7 +29,7 @@ import {
 import { logger } from "../../../logger";
 import {
    recordChainedStorageBuild,
-   recordUpstreamRecompute,
+   recordUpstreamReadUnchecked,
 } from "../../../materialization_metrics";
 import { getPersistStorageMode } from "../../../config";
 import { mergeQueryMetadata, type QueryMetadata } from "../../query_metadata";
@@ -59,6 +59,7 @@ import {
    manifestForCompiler,
    NO_PLAN_FACTS,
    presentedSourceName,
+   refuseInlinedUpstreams,
    strictMissSourceId,
    upstreamEntryIsCurrent,
    upstreamReuseFromManifest,
@@ -194,11 +195,7 @@ export function noteUntypedReference(
       "A strict build reads a referenced upstream table unchecked: the reference carries no nativeSchema, so a column altered since its build cannot be seen; send nativeSchema on each reference",
       { sourceName, upstream },
    );
-   recordUpstreamRecompute(
-      "reference_types_unrecorded",
-      build,
-      "read_unchecked",
-   );
+   recordUpstreamReadUnchecked(build);
 }
 
 /** {@link movedUpstreams}: each moved upstream's name and why, by address. */
@@ -604,18 +601,8 @@ function classifyStoredUpstreams(
               !overStoredUpstreams &&
               isPersistedResultSourceID(persistSource.sourceID),
         })
-      : { fields: {}, inManifestOnly: [], missing: [], definitionsRead: [] };
-   // A persisted view or query reads every upstream through its
-   // definition, by design (its companion blanks the source's `#@` lines):
-   // labelled `recomputed`, logged and counted, and exempt from strict
-   // upstreams, as a database rollup over a stored base is.
-   for (const upstream of reuse.definitionsRead) {
-      logger.info(
-         "A persisted view or query builds from its persisted source's definition, not its table",
-         { sourceName: persistSource.name, upstream },
-      );
-      recordUpstreamRecompute("persisted_result", "chained", "recomputed");
-   }
+      : { fields: {}, inManifestOnly: [], missing: [], inlined: [] };
+   refuseInlinedUpstreams(persistSource.name, reuse.inlined);
    // A host-instructed database build that read an upstream whose entry is
    // at the wrong tier refuses (HostSuppliedWrongTierError): the host handed
    // it another tier's table, which it must not. Any other such read failed

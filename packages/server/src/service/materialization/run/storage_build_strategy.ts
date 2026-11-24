@@ -225,7 +225,7 @@ export interface StorageBuildRequest {
     * The `upstreamReuse` fields for a build that does NOT stack on a parent
     * ({@link upstreamReuseFromManifest}).
     */
-   baseReuse?: Pick<ManifestEntry, "upstreamReuse" | "upstreamRecomputeReason">;
+   baseReuse?: Pick<ManifestEntry, "upstreamReuse">;
    /**
     * Statements that drop this package's own leftover `name=` view at the
     * name, run first in the transaction that creates the table
@@ -802,14 +802,10 @@ export class StorageBuildStrategy
 
       const startTime = performance.now();
       let result: StorageBuildResult | undefined;
-      // Set when stacking on the parents was declined and the recompute below
-      // ran instead, so the entry can say so and why.
-      let upstreamRecomputeReason: string | undefined;
 
-      // Stack on the parent: read its STORED lake table instead of recomputing
-      // from raw, so the downstream is a pure function of the parent's rows. On
-      // ineligibility it throws and we fall back to recompute (non-strict) or
-      // refuse (`strictUpstreams`).
+      // Stack on the parent: read its STORED lake table, so the downstream is
+      // a pure function of the parent's rows. A build that cannot is refused,
+      // never recomputed from raw (refuseAfterStackFailure).
       // A rollup over its base's stored table: grouped there when it can be.
       let stackedOnBase = false;
       if (params.storedInDestination) {
@@ -818,7 +814,7 @@ export class StorageBuildStrategy
             params.storedInDestination,
          );
       } else if (dependsOnStorageUpstream) {
-         ({ result, upstreamRecomputeReason } = await this.stackOnParents(ctx));
+         result = await this.stackOnParents(ctx);
       } else if (params.storedBase) {
          result = await this.stackRollupOnStoredBase(ctx, params.storedBase);
          stackedOnBase = true;
@@ -916,12 +912,7 @@ export class StorageBuildStrategy
          // How stored upstreams were read: a chained attempt answers for
          // itself; otherwise the manifest's answer for the passthrough SQL.
          ...(dependsOnStorageUpstream
-            ? {
-                 upstreamReuse: result.upstreamReuse ?? "recomputed",
-                 ...(upstreamRecomputeReason
-                    ? { upstreamRecomputeReason }
-                    : {}),
-              }
+            ? { upstreamReuse: "reused" as const }
             : stackedOnBase || params.storedInDestination
               ? { upstreamReuse: "reused" as const }
               : // A rollup that did not stack read the warehouse, whatever
@@ -1042,14 +1033,13 @@ export class StorageBuildStrategy
    }
 
    /**
-    * Build over the stored parents, in the one destination: the table, or,
-    * when only a recompute from raw can build it, none and the reason.
-    * Refuses or throws where the recompute is not allowed.
+    * Build over the stored parents, in the one destination. Refuses, or
+    * throws an infrastructure failure, where it cannot
+    * ({@link recomputeAfterStackFailure}).
     */
-   private async stackOnParents(ctx: StorageBuildContext): Promise<{
-      result: StorageBuildResult | undefined;
-      upstreamRecomputeReason?: string;
-   }> {
+   private async stackOnParents(
+      ctx: StorageBuildContext,
+   ): Promise<StorageBuildResult> {
       const {
          params,
          planFacts,
@@ -1114,7 +1104,7 @@ export class StorageBuildStrategy
                     ),
          );
          recordChainedStorageBuild("parent_reuse");
-         return { result };
+         return result;
       } catch (err) {
          return recomputeAfterStackFailure(err, ctx);
       }

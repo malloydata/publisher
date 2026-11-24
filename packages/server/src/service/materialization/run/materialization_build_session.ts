@@ -667,15 +667,12 @@ export interface StorageBuildResult {
     */
    seededThrough?: WatermarkBound;
    /**
-    * For a source that reads a persisted upstream: whether its rows were
-    * computed from the upstream's STORED table in the destination (`reused`),
-    * or by recomputing the upstream from the source warehouse with it inlined
-    * (`recomputed`). Absent for a source with no persisted upstream, whose only
-    * build reads the warehouse.
+    * For a source that reads a persisted upstream: its rows were computed
+    * from the upstream's STORED table in the destination (`reused`). Absent
+    * for a source with no persisted upstream, whose only build reads the
+    * warehouse.
     */
-   upstreamReuse?: "reused" | "recomputed";
-   /** Why the stored upstream was not read, when `upstreamReuse` is `recomputed`. */
-   upstreamRecomputeReason?: string;
+   upstreamReuse?: "reused";
 }
 
 /** What an in-place refresh did, for the manifest entry to report. */

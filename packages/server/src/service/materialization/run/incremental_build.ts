@@ -1507,10 +1507,7 @@ export async function refreshOneSourceIncrementally(params: {
     * {@link upstreamReuseFromManifest}). Carried on every entry, since an
     * absent field reads as "no persisted upstream".
     */
-   upstreamReuse: Pick<
-      ManifestEntry,
-      "upstreamReuse" | "upstreamRecomputeReason"
-   >;
+   upstreamReuse: Pick<ManifestEntry, "upstreamReuse">;
 }): Promise<ManifestEntry | undefined> {
    const { context, lineage, persistSource, instruction, target } = params;
    const sourceEntityId = instruction.sourceEntityId;
