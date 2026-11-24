@@ -6,7 +6,7 @@
 // loading, empty and error to itself, and draws again in place when the state changes. Every chart in one does
 // something when clicked: it filters the dashboard, opens an entity's page, or zooms the period.
 
-import { h, prose, asText, query, reason, answered, modelDocs, servedTables } from './core.js'
+import { h, prose, asText, query, reason, answered, modelDocs, servedTables, inCredible, askCredible } from './core.js'
 import * as S from './state.js'
 import * as P from './period.js'
 import * as F from './format.js'
@@ -260,7 +260,24 @@ function howMade(spec, qs, results, said = '') {
     srcs.length > 0 && part('Where the data comes from', sourceList(srcs)),
     part('Where the answer came from', where),
     deep,
+    inCredible() && askButton(spec, qs, said, covers),
   ].filter(Boolean)
+}
+
+/** Inside Credible: ask its agent about this block, with what it covers and the queries behind it attached. */
+function askButton(spec, qs, said, covers) {
+  const kicker = asText(spec.kicker || '')
+  const e = S.entityOf(store.state)
+  const about = e ? ` for ${e.name ? e.name(store.state.id) : store.state.id}` : ''
+  const prompt = `${S.config.title}, "${kicker}"${about}: ${said ? `${asText(said)} ` : ''}What is behind this, and what should I look at next?`
+  const context = {
+    scope: { model: S.config.model },
+    view: { type: 'block', id: spec.key || kicker, title: kicker },
+    entities: [{ kind: 'source', name: S.config.source }],
+    items: [{ label: 'what it covers', value: covers.join(' ').slice(0, 900) }, ...qs.slice(0, 3).map((q, i) => ({ label: `query ${i + 1}`, value: q.slice(0, 900) }))],
+    givens: Object.fromEntries(Object.entries(store.state.filters).filter(([, v]) => v.length)),
+  }
+  return h('button', { type: 'button', class: 'ghost ghost--accent back__ask', text: 'Ask Credible about this', onclick: () => askCredible(prompt, context) })
 }
 
 export function downloadCsv(rows, cols, name) {
@@ -868,6 +885,15 @@ export function entityHead({ metric: n } = {}) {
 }
 
 /** Each source: its name linked, who publishes it, what it is, its licence. */
+/** The articles the app responds to (config.articles: { title, outlet, date, url }), each linked; no quoted text. */
+export function newsList(items = S.config.articles || []) {
+  return h('ul', { class: 'news' }, ...items.map((a) => h('li', {},
+    h('a', { href: a.url, target: '_blank', rel: 'noopener', text: a.title }),
+    h('span', { class: 'news__by', text: [a.outlet, a.date && P.longDate(a.date)].filter(Boolean).join(', ') }))))
+}
+/** "In the news": a section of the articles, for the first page of an app made from a story. */
+export const news = ({ kicker = 'In the news' } = {}) => h('section', { class: 'news-block' }, h('p', { class: 'kicker', text: kicker }), newsList())
+
 export function sourceList(srcs = Object.values(S.config.sources || {})) {
   return h('ul', { class: 'sources' }, ...srcs.map((x) => h('li', {},
     x.url ? h('a', { href: x.url, target: '_blank', rel: 'noopener', text: x.name }) : h('strong', { text: x.name }),
@@ -882,6 +908,7 @@ export function sourceList(srcs = Object.values(S.config.sources || {})) {
 export function aboutPage({ title = 'About the data', lede, notes = [] } = {}) {
   return h('div', { class: 'about' }, pageHead(title, lede),
     h('section', { class: 'about__part' }, h('h2', { text: 'Where the data comes from' }), sourceList()),
+    (S.config.articles || []).length > 0 && h('section', { class: 'about__part' }, h('h2', { text: 'In the news' }), newsList()),
     ...notes.map((n) => h('section', { class: 'about__part' }, h('h2', { text: n.title }), h('p', {}, ...prose(n.text)))),
     S.dated() && h('p', { class: 'about__fresh', text: `The data runs to ${P.longDate(S.known.span.last)}.` }))
 }

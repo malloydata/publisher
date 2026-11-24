@@ -93,7 +93,9 @@ and the filters, in words, written by the kit); what each number means (from the
 `doc` when the app defines it) and the words a newcomer may not know (the config's `glossary`); where the data comes
 from (the config's `sources`); where the answer came from (a summary Credible keeps, with the grain it is kept at and
 when it was built; a stored copy; or the raw data just now) and how fast, from Publisher's own answer; and the query
-and its rows with a CSV. Write `what` for every block you add, and a `doc` for every metric the app defines itself.
+and its rows with a CSV. Inside Credible it also offers "Ask Credible about this", which opens Credible's chat with a
+question about the section and its queries attached. Write `what` for every block you add, and a `doc` for every
+metric the app defines itself.
 
 ## What makes a dashboard look generated, so you can avoid it
 

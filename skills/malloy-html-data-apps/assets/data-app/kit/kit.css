@@ -58,6 +58,23 @@ code, pre { font-family: var(--mono); }
 .mast__nav a { display: flex; align-items: center; color: var(--muted); text-decoration: none; font-weight: 500; font-size: 14px; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
 .mast__nav a:hover { color: var(--ink); }
 .mast__nav a[aria-current] { color: var(--ink); border-bottom-color: var(--ink); }
+.mast__credit { display: inline-flex; align-items: center; gap: 6px; padding-right: 12px; margin-right: 2px; border-right: 1px solid var(--rule); color: var(--muted); font-size: 11px; align-self: center; }
+.mast__credit svg { height: 13px; width: auto; color: var(--ink); }
+.mast__search { position: relative; margin-left: auto; flex: 0 1 200px; min-width: 120px; }
+.mast__find { width: 100%; height: 30px; padding: 0 10px; border: 1px solid var(--rule); border-radius: 6px; background: transparent; color: var(--ink); font: inherit; font-size: 13px; }
+.mast__find::placeholder { color: var(--muted); }
+.mast__find:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.mast__found { position: absolute; z-index: 20; top: 34px; left: 0; right: 0; margin: 0; padding: 4px; list-style: none; background: var(--paper); border: 1px solid var(--page-rule); border-radius: 6px; box-shadow: 0 6px 20px rgb(0 0 0 / 0.12); }
+:root { --page-ink: var(--ink); --page-rule: var(--rule); }
+.mast__found li { padding: 6px 8px; border-radius: 4px; cursor: pointer; font-size: 13px; color: var(--page-ink); }
+.mast__found li[aria-selected="true"], .mast__found li:hover { background: color-mix(in oklab, var(--accent) 12%, transparent); }
+.mast__search + .mast__fresh { margin-left: 0; }
+.news { margin: 0; padding: 0; list-style: none; }
+.news li { padding: 10px 0; border-top: 1px solid var(--rule); display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.news a { color: var(--ink); font-weight: 500; text-underline-offset: 3px; }
+.news__by { color: var(--muted); font-size: 13px; }
+.news-block { margin-top: 40px; }
+.back__ask { margin-top: 16px; }
 .mast__fresh { margin-left: auto; color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 8px; white-space: nowrap; min-width: 8em; justify-content: flex-end; }
 .mast__fresh:not(:empty)::before { content: ""; width: 6px; height: 6px; border-radius: 3px; background: var(--faint); }
 
@@ -359,6 +376,8 @@ body[data-check="fail"] .self-check { background: color-mix(in srgb, var(--bad) 
   .mast__name { flex-wrap: wrap; white-space: normal; row-gap: 0; }
   .mast__nav { order: 3; width: 100%; height: 40px; gap: 22px; }
   .mast__fresh { margin-left: 0; justify-content: flex-start; }
+  .mast__search { order: 4; flex-basis: 100%; margin: 6px 0 4px; }
+  .mast__credit { flex-basis: 100%; border-right: 0; padding: 0 0 2px; }
   .ctl__end { margin-left: 0; }
   .figure { font-size: 52px; }
   .scores { grid-template-columns: repeat(2, minmax(0, 1fr)); }

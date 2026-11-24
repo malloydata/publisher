@@ -222,7 +222,9 @@ export function heat(el, o) {
     const [lo, hi] = d3.extent(vals)
     const ramp = d3.scaleLinear([lo, hi], [0.06, 1])
     const svg = d3.select(el).append('svg').attr('width', w).attr('height', 22 + ch * o.rows.length).attr('role', 'group').attr('aria-label', o.label)
-    const every = Math.ceil(o.cols.length / Math.max(1, Math.floor((w - lw) / 34)))
+    // Every nth column labelled, n wide enough that the longest label clears its neighbour.
+    const longest = d3.max(o.cols, (c) => String(o.colLabel ? o.colLabel(c) : c).length)
+    const every = Math.max(Math.ceil(o.cols.length / Math.max(1, Math.floor((w - lw) / 34))), Math.ceil((longest * 6.6 + 10) / cw))
     svg.append('g').attr('class', 'ax').selectAll('text').data(o.cols.map((c, i) => [c, i]).filter(([, i]) => i % every === 0)).join('text')
       .attr('x', ([, i]) => lw + i * cw + cw / 2).attr('y', 12).attr('text-anchor', 'middle').text(([c]) => (o.colLabel ? o.colLabel(c) : c))
     svg.append('g').attr('class', 'ax ax--rows').selectAll('text').data(o.rows).join('text').attr('x', lw - 10).attr('y', (_, j) => 22 + j * ch + ch / 2).attr('dy', '0.32em').attr('text-anchor', 'end').text((r) => (o.rowLabel ? o.rowLabel(r) : r))

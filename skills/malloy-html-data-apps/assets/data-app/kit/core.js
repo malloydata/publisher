@@ -187,3 +187,26 @@ function recolour() {
 }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', recolour)
 new MutationObserver(recolour).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-mode'] })
+
+// ---- Credible's agent: a reader who wants to go further asks it, from the block they were reading. ----
+/** True inside Credible's viewer: in a frame, on a Credible data host ("data" or "<env>-data"). */
+export function inCredible(loc = location) {
+  const parts = loc.host.split('.')
+  const plane = parts[1] || ''
+  return window.parent !== window && parts.length >= 3 && (plane === 'data' || plane.endsWith('-data'))
+}
+/** Opens Credible's chat with `prompt` as the reader's question, after attaching `context` (what they were looking
+ * at and the queries behind it). Only inside Credible's viewer; anywhere else it does nothing and says so. */
+export function askCredible(prompt, context) {
+  const text = String(prompt ?? '').trim().slice(0, 4000)
+  if (!text || !inCredible()) return false
+  const parts = location.host.split('.')
+  parts[1] = parts[1].replace(/data$/, 'app')
+  const origin = `${location.protocol}//${parts.join('.')}`
+  if (context) {
+    const c = JSON.stringify(context).length > 7800 ? { ...context, items: (context.items || []).slice(0, 2) } : context
+    window.parent.postMessage({ type: 'credible:chat-context', context: c }, origin)
+  }
+  window.parent.postMessage({ type: 'credible:chat-message', prompt: text }, origin)
+  return true
+}

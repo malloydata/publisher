@@ -131,6 +131,7 @@ dashboard({
     store: { name: 'Store orders', by: "The shop's order system", what: 'Every order line since the store opened.' },
   },
   glossary: [{ term: 'Net revenue', match: ['net'], plain: 'What customers paid, less cancellations and returns.' }],
+  search: 'customer',                                        // find an entity by name from the masthead
   pages: [
     { id: 'overview', title: 'Overview', render: overview },
     { id: 'products', title: 'Products', lists: 'category', render: products },
@@ -161,6 +162,11 @@ dashboard({
 - **`sources`**: where the data comes from (`name`, `by`, `what`, `license`, `url`). Every block's info mark lists
   them, or the ones it names in its own `sources: ['eia']`; the footer credits them; `aboutPage()` lists them with
   their licences. An app on public data has `sources` and an About page.
+- **`search`**: an entity a reader looks up by name more often than they browse to it (a customer, a hospital, a
+  ZIP code). The masthead gets a search box over its names; picking one opens its page.
+- **`articles`** (`{ title, outlet, date, url }`): the stories an app made from the news responds to. `news()` lists
+  them as a section, and `aboutPage()` lists them too. Never quote their text.
+- **`credit: true`** puts "Made by" and Credible's logo in the masthead, for an app Credible itself publishes.
 - **`glossary`**: the words a newcomer may not know (`term`, the words that mean it in `match`, `plain`). An info
   mark explains the ones its own text uses.
 - **Periods** (`defaults.period`): `last_7`, `last_28`, `last_91`, `last_364` (days counted back from the data's
@@ -190,6 +196,7 @@ nothing matches, and has an info mark that turns it over to "How it's made".
 | `entityHead({ metric })` | An entity page's top: breadcrumb, name, and its rank among its peers by the metric, its share and its change | (Breadcrumb back) |
 | `pageHead(title, lede)` | A page's title and a sentence under it | |
 | `aboutPage({ title, lede, notes })` | Where the data comes from, each source with its licence, then `notes` (`{ title, text }`: what was reshaped, what is left out), then how fresh it is | |
+| `news()` | The config's `articles`, each linked with its outlet and date | Opens the article |
 | `blocks(...)` | Lays blocks out: span-12 ones take the row, span-6 ones pair | |
 
 `rank`, `share`, `trend`, `watch` and `heat` take `where`, a Malloy condition that narrows that block alone

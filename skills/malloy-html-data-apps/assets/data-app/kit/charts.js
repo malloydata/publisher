@@ -834,7 +834,8 @@ export function heatmap(el, rowsOrder, colsOrder, cells, opts = {}) {
     const ch = Math.max(14, Math.min(cw * 0.75, 34))
     const ht = m.t + ch * rowsOrder.length + 4
     const svg = svgIn(w, ht, label)
-    const every = Math.ceil(colsOrder.length / Math.max(1, Math.floor((w - m.l) / 28)))
+    // Label every nth column, n wide enough that the longest label clears its neighbour.
+    const every = Math.max(Math.ceil(colsOrder.length / Math.max(1, Math.floor((w - m.l) / 28))), Math.ceil((d3.max(colsOrder, (c) => String(c).length) * 6.6 + 10) / cw))
     colsOrder.forEach((c, i) => i % every === 0 && svg.append('text').attr('class', 'fx-lab fx-small').attr('x', m.l + i * cw + cw / 2).attr('y', 12).attr('text-anchor', 'middle').text(fit(c, cw * every - 2, 11)))
     rowsOrder.forEach((r, j) => {
       const t = svg.append('text').attr('class', 'fx-lab fx-small').attr('x', m.l - 6).attr('y', m.t + j * ch + ch / 2).attr('dy', '0.35em').attr('text-anchor', 'end').text(fit(r, m.l - 8, 11))
