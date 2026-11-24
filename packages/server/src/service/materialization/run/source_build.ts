@@ -294,9 +294,8 @@ export function noteUntypedReference(
  * no column contract, so a column altered in its destination since its
  * build cannot be seen ({@link storedUpstreamMove}). The `storage=` tier's
  * {@link noteUntypedReference}: a standalone run rebuilds such a table
- * rather than carry it, so only a build over a referenced one meets this.
- * (A `storage=` rollup over such a base is then refused: its base cannot be
- * re-rooted on a table with no contract.)
+ * rather than carry it, so only a build over a referenced one meets this,
+ * a `storage=` rollup grouped over its base's table included.
  */
 function noteUncontractedStoredReference(
    sourceName: string,

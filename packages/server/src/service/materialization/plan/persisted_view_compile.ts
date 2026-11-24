@@ -828,7 +828,12 @@ function overStoredUpstreamNotes(
       );
       if (!chainable) continue;
       if (base && "unusable" in base) {
-         unusable.set(plan.buildSourceID, base.unusable);
+         // A `storage=` view or query whose `#(materialize)` upstreams are
+         // all stored in its own destination is built there over their
+         // tables (storage_over_stored.ts), or refused there.
+         if (!materializedInOwnDestination(plan, modelDef, map, materialized)) {
+            unusable.set(plan.buildSourceID, base.unusable);
+         }
          continue;
       }
       if (spans.length === 0 && base === undefined) continue;
@@ -841,6 +846,26 @@ function overStoredUpstreamNotes(
       candidates.add(plan.buildSourceID);
    }
    return { keep, candidates, stored, upstreams, unusable };
+}
+
+/**
+ * Whether `plan` is a `storage=` view or query every planned
+ * `#(materialize)` upstream of which is stored in its own destination.
+ */
+function materializedInOwnDestination(
+   plan: { storage?: string; root: unknown },
+   modelDef: unknown,
+   map: SourceMap,
+   materialized: MaterializedBases | undefined,
+): boolean {
+   if (plan.storage === undefined || !materialized) return false;
+   const planned = new Set(materialized.plans.map((p) => p.sourceID));
+   const reached = reachedUpstreams(plan.root, modelDef, map).filter((u) =>
+      planned.has(u.sourceID),
+   );
+   return (
+      reached.length > 0 && reached.every((u) => u.storage === plan.storage)
+   );
 }
 
 /**
