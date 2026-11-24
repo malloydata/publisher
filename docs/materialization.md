@@ -854,7 +854,10 @@ live, with a `database-table-unread` package warning that names the table, a fix
 driver's own text, secrets redacted, is in the log alone) and whether a retry is pending, and read
 again with backoff (after 1 second, doubling to at most a
 minute, ten times), and by any later poll of an unchanged manifest, until a read succeeds, when the
-warning clears. A change made after a bind is read at the next one.
+warning clears. A change made after a bind is read at the next one. A `storage=` table is read the same way, on a
+read-only session of its destination, and one whose read fails is answered live with a
+`storage-table-unread` warning naming the table and its destination, and read again with the same
+backoff.
 
 **Columns with no Malloy basic type.** A `storage=` build stores an array column, public or hidden
 (a BigQuery `ARRAY`, a DuckDB or Postgres list, a persisted query's `nest:`), as a DuckDB list of its element type
