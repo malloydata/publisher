@@ -25,7 +25,7 @@ import {
 } from "../../governance/ir/prepared_query";
 import type { Binding } from "../domain/binding";
 import type { ServedCopyDeclineCode } from "../domain/leg_decline";
-import { lexAll } from "../text/malloy_lexer";
+import { lexAll } from "../../malloy_lexer_core";
 import { SourceMap } from "../text/source_map";
 import { boundTablePath, sqlReadsTable } from "./bindings";
 import { entryPointGateExprs, gateReadNames } from "./gate_reads";

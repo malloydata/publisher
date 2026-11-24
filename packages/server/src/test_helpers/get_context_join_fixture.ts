@@ -20,6 +20,7 @@
  * region_r.c.origin, the last one three joins deep.
  */
 
+import { fileURLToPath } from "url";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -216,6 +217,7 @@ export async function compileModelFiles(
          getSourceInfos: () => unknown[];
          getQueries: () => never[];
          getModelDef: () => ModelDef;
+         getCompiledSourceText: () => string;
       }
    >();
    const modelDefs: Record<string, ModelDef> = {};
@@ -235,11 +237,13 @@ export async function compileModelFiles(
          getSourceInfos: () => sourceInfos,
          getQueries: () => [],
          getModelDef: () => modelDef,
+         getCompiledSourceText: () => files[path]!,
       });
    }
    await duckdb.close();
    return {
       pkg: {
+         getPackagePath: () => fileURLToPath(ROOT),
          listSkills: () => [],
          listModels: async () => Object.keys(files).map((path) => ({ path })),
          getModel: (path: string) => models.get(path),

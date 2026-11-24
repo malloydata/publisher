@@ -19,13 +19,12 @@
 import { identifier, stringLiteral } from "../../malloy_text";
 import type { GivenReadTerm, TermUse } from "../domain/read_time_terms";
 import {
-   isName,
    lexAll,
-   offsetOf,
    statementHead,
    statementStarts,
    type Token,
-} from "./malloy_lexer";
+} from "../../malloy_lexer_core";
+import { isName, offsetOf } from "./malloy_lexer";
 
 /** A zero-based Malloy range, as a compiled source's `location.range` carries. */
 interface DeclarationRange {
