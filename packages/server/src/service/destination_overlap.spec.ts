@@ -5,7 +5,6 @@ import { describe, expect, it } from "bun:test";
 import type { components } from "../api";
 import { BadRequestError } from "../errors";
 import {
-   destinationOverlap,
    destinationOverlaps,
    refuseListedDestinationSchema,
 } from "./destination_overlap";
@@ -34,7 +33,11 @@ const lake = (
       },
    }) as ApiConnection;
 
-describe("destinationOverlap", () => {
+/** Why `connection` reaches `destination`, or undefined. */
+const destinationOverlap = (connection: ApiConnection, dest: ApiConnection) =>
+   destinationOverlaps([connection], [dest])[0]?.reason;
+
+describe("destinationOverlaps' reasons", () => {
    const destination = lake(
       "dest",
       { host: "pg", databaseName: "cat", metadataSchema: "lake" },

@@ -43,14 +43,6 @@ function overlapOf(
    return overlap(connection, destination);
 }
 
-/** Why `connection` reaches `destination`'s tables, or undefined when this check finds no overlap. */
-export function destinationOverlap(
-   connection: ApiConnection,
-   destination: ApiConnection,
-): string | undefined {
-   return overlapOf(connection, destination)?.reason;
-}
-
 /** Every connection that reaches a destination, with why, the destination's build schema, and whether the connection can read that schema. */
 export function destinationOverlaps(
    connections: readonly ApiConnection[],

@@ -247,7 +247,9 @@ export function storageSecretScope(input: {
       while (start < main.path.length && main.path[start] === "/") start++;
       mainScope = oneTrailingSlash(`${rootSlash}${main.path.slice(start)}`);
    }
-   const owners: [string, string][] = [];
+   // Only a catalog migrated from DuckLake 0.2 has a main that is the data path itself; any other main owns its directory like a listed schema.
+   const mainIsRoot = mainScope === rootSlash;
+   const owners: [string, string][] = mainIsRoot ? [] : [["main", mainScope]];
    for (const schema of input.readableSchemas ?? []) {
       const recorded = input.schemaPaths?.get(schema);
       const prefix = recorded && readableSchemaScope(rootSlash, recorded);
@@ -273,7 +275,7 @@ export function storageSecretScope(input: {
       );
       const reaching = owners.find(([, prefix]) => path.startsWith(prefix));
       if (!reaching) {
-         if (path.startsWith(mainScope)) underMain.push(name);
+         if (mainIsRoot && path.startsWith(mainScope)) underMain.push(name);
       } else {
          throw new ScopeContainmentError(
             `The storage scope of schema '${reaching[0]}' (${reaching[1]}) of DuckLake catalog '${input.catalog}' ` +
@@ -282,7 +284,7 @@ export function storageSecretScope(input: {
          );
       }
    }
-   // Shipped behavior: a 0.2-migrated catalog's main is the data path itself, so it is warned about and not refused.
+   // Shipped behavior, so warned about and not refused.
    if (underMain.length > 0) {
       logger.warn(
          `The storage scope of schema 'main' (${mainScope}) of DuckLake catalog '${input.catalog}' also reaches the files of unlisted schema(s) ${underMain.map((name) => `'${name}'`).join(", ")}: main's path is the data path itself, as in a catalog migrated from DuckLake 0.2.`,

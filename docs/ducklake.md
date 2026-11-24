@@ -73,9 +73,9 @@ Two consequences for models:
   is always readable): its storage secret, or on a local data path its file allowlist. A listed schema
   the catalog does not record, or whose path is not under the data path, is left out and logged. A
   listed schema's directory that also holds an unlisted schema's files (its path begins with the
-  listed one's) refuses the attach, naming both, since the scope would reach those files; `main` alone is
-  exempt, and a catalog migrated from DuckLake 0.2, whose `main` is the data path itself, attaches with a
-  warning naming the schemas under it. A read
+  listed one's) refuses the attach, naming both, since the scope would reach those files; only a `main` that
+  is the data path itself is exempt (a catalog migrated from DuckLake 0.2), and it attaches with a warning
+  naming the schemas under it; any other `main` is held like a listed schema. A read
   outside the scope goes out unsigned, so the bucket must not allow anonymous reads. Changing the list
   opens the connection afresh at once; the previous instance finishes its in-flight queries. Create a
   schema in the catalog before listing it: a schema listed before it exists gets no file access until

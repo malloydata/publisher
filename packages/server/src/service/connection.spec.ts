@@ -4972,6 +4972,17 @@ describe("storageSecretScope", () => {
          ).toThrow(/'extra_a'.*'nested'/);
       });
 
+      it("refuses an unlisted schema under a main that is not the data root", () => {
+         for (const main of [
+            { path: "x/", relative: true },
+            { path: "s3://bucket/org_a/db_b/x/", relative: false },
+         ]) {
+            expect(() =>
+               view([], { main, other: { path: "x/y/", relative: true } }),
+            ).toThrow(/'main'.*'other'/);
+         }
+      });
+
       it("keeps a catalog migrated from DuckLake 0.2 attachable: main's root-wide scope is warned about, not refused", () => {
          const warn = sinon.stub(logger, "warn");
          try {
