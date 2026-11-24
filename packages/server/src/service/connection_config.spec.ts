@@ -2152,7 +2152,8 @@ describe("ducklakeConnection.storage.s3Connection.region is held to a region's s
 describe("storageDestinationFile", () => {
    it("puts a destination's file under the destinations root", () => {
       expect(storageDestinationFile("/env", "lake")).toBe(
-         path.join(storageDestinationRoot("/env"), "lake.duckdb"),
+         // Resolved, so Windows adds the current drive (`D:\env\…`).
+         path.resolve(storageDestinationRoot("/env"), "lake.duckdb"),
       );
    });
 

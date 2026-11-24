@@ -121,6 +121,7 @@ import {
 } from "./run_instructions";
 import { packageRelativeText } from "../../../package_relative_text";
 import { buildSource } from "./source_build";
+import { deriveHoldingCarried } from "./carried_hold";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 import { TableClaims } from "./table_claims";
 import { uncarryLostTables, uncarryUnownedTables } from "./table_ownership";
@@ -1478,34 +1479,49 @@ export class MaterializationService {
             recheck = {},
             confirmExists = {},
             renamed = [],
-         } = this.collaborators.deriveSelfInstructions(
-            compiled,
-            opts.sourceNames,
-            priorEntries,
-            incremental,
-            {
-               environmentName,
-               packageName,
-               packagePath: pkg.getPackagePath(),
-               ...(owned !== undefined ? { ownedVersion: owned } : {}),
-            },
-            {
-               forceRefresh: opts.forceRefresh ?? false,
-               pastWindow: (sourceEntityId, prior) =>
-                  pastDeclaredWindow(
-                     prior,
-                     freshness.factsAt(sourceEntityId),
-                     new Date(run.startedAt),
-                  ),
-               upstreams: {
-                  windowSecondsAt: (address) =>
-                     freshness.factsAt(address)?.freshnessWindowSeconds,
-                  upstreamsOf: (address) => freshness.upstreamsOf(address),
-                  at: new Date(run.startedAt),
-               },
-               incompatible:
-                  pkg.incompatibleTables?.(priorEntries) ?? new Set(),
-            },
+         } = await deriveHoldingCarried(
+            (incompatible) =>
+               this.collaborators.deriveSelfInstructions(
+                  compiled,
+                  opts.sourceNames,
+                  priorEntries,
+                  incremental,
+                  {
+                     environmentName,
+                     packageName,
+                     packagePath: pkg.getPackagePath(),
+                     ...(owned !== undefined ? { ownedVersion: owned } : {}),
+                  },
+                  {
+                     forceRefresh: opts.forceRefresh ?? false,
+                     pastWindow: (sourceEntityId, prior) =>
+                        pastDeclaredWindow(
+                           prior,
+                           freshness.factsAt(sourceEntityId),
+                           new Date(run.startedAt),
+                        ),
+                     upstreams: {
+                        windowSecondsAt: (address) =>
+                           freshness.factsAt(address)?.freshnessWindowSeconds,
+                        upstreamsOf: (address) =>
+                           freshness.upstreamsOf(address),
+                        at: new Date(run.startedAt),
+                     },
+                     incompatible,
+                  },
+               ),
+            () => pkg.incompatibleTables?.(priorEntries) ?? new Set(),
+            // Each table it keeps (carried, or advanced by a delta), held to
+            // its contract as it is now: one altered since the bind is
+            // rebuilt in full, never carried and built over; an advanced one
+            // not read is reseeded. A forced refresh is not held.
+            pkg.holdCarriedToContracts && !opts.forceRefresh
+               ? (carried) =>
+                    pkg.holdCarriedToContracts!(carried, environment, {
+                       signal: run.signal,
+                    })
+               : undefined,
+            packageName,
          ));
          // A carried table at the author's `name=` is reused only while
          // it is still marked as this package's (table_ownership.ts).

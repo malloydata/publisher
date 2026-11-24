@@ -31,7 +31,12 @@ import {
    ducklakeStoresAsDouble,
    spelledNativeType,
 } from "../stored_column_types";
-import type { FreshnessManifest, ObservedColumns } from "../domain/types";
+import type {
+   FreshnessManifest,
+   ManifestEntry,
+   ObservedColumns,
+} from "../domain/types";
+import { compatible, parseContract } from "../domain/column_contract";
 import { NATIVE_SCHEMA_ROW_LIMIT } from "./database_native_types";
 import { redactConnectionSecrets } from "./connection_redaction";
 import type { TableCollations } from "../domain/collation";
@@ -394,6 +399,44 @@ function movedColumns(
       }
    }
    return undefined;
+}
+
+/**
+ * A stored upstream's `storage=` table, as `read` found it, held to the
+ * column contract its build recorded ({@link compatible}, the bind's one
+ * comparator): why a chained build must not read it, or undefined when it
+ * still matches. A `storage=` build records no `nativeSchema`, so its
+ * contract is what it is held to. An entry with no contract is not judged
+ * here (the run rebuilds a table it would carry with none, and a chained build
+ * over a referenced one warns and counts it: noteUncontractedStoredReference); a read that
+ * failed counts as moved (fail safe, as {@link movedSinceBuild}).
+ */
+export function storedUpstreamMove(
+   entry: Pick<ManifestEntry, "contract">,
+   read: ObservedColumns | undefined,
+): UpstreamMove | undefined {
+   const contract = parseContract(entry.contract);
+   if (!contract) return undefined;
+   if (!read || "unread" in read) {
+      return {
+         kind: "unreadable",
+         reason: `its columns could not be read (${read?.unread ?? "not_read"})`,
+      };
+   }
+   const verdict = compatible(contract, read);
+   if (verdict.ok) return undefined;
+   const name = verdict.columns[0] ?? "";
+   const built = contract.columns.find((c) => c.name === name);
+   const now = columnNamed(read.columns, name);
+   const reason =
+      verdict.code === "column_gone"
+         ? `its column '${name}' is gone`
+         : verdict.code === "column_retyped"
+           ? `its column '${name}' was built as ${built?.nativeType ?? "?"} ` +
+             `and is now ${now?.nativeType ?? now?.type ?? "of no readable type"}`
+           : `its column '${name}' no longer matches the contract its build ` +
+             `recorded (${verdict.code})`;
+   return { kind: "moved", reason };
 }
 
 /** A table {@link movedSinceBuild} checks, as its manifest entry names it. */

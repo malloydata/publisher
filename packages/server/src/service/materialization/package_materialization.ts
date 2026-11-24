@@ -28,10 +28,12 @@
 
 import {
    type ColumnContract,
+   compatible,
    type KeyedSource,
    keyUniquenessOfContract,
    parseContract,
 } from "./domain/column_contract";
+import { splitManifestEntries } from "./run/manifest_loader";
 import { packageRelativeSourceID } from "./text/read_text";
 import { refreshStringCapabilities } from "./serve/source_capability";
 import { recordScopeFacts } from "./serve/scope_facts";
@@ -80,12 +82,9 @@ import {
    readTableColumns,
    withCollations,
 } from "./run/database_column_read";
+import { storageTablePath } from "./domain/storage_table_path";
 import {
-   destinationSchemaOf,
-   storageTablePath,
-} from "./domain/storage_table_path";
-import {
-   readStoredTables,
+   readStoredEntries,
    type StoredTableSite,
 } from "./run/stored_table_read";
 import {
@@ -167,6 +166,27 @@ const UNREAD_RETRY_ATTEMPTS = 10;
 /** The first retry's delay; each next one doubles, up to {@link UNREAD_RETRY_MAX_MS}. */
 const UNREAD_RETRY_BASE_MS = 1_000;
 const UNREAD_RETRY_MAX_MS = 60_000;
+
+/**
+ * How long a standalone run's read of the tables it keeps may take in all
+ * ({@link PackageMaterialization.holdCarriedToContracts}) before the run
+ * starts without the rest. A table not read by then (or whose read failed)
+ * is reported `unread`, never moved: a carried one is carried, held only by
+ * the bind and by each downstream build's upstream check; an incremental
+ * one a delta would advance is reseeded instead (deriveHoldingCarried),
+ * since nothing else checks the table a delta writes into.
+ */
+const CARRIED_READ_BUDGET_MS = 60_000;
+
+/**
+ * What {@link PackageMaterialization.holdCarriedToContracts} found: the
+ * tables that no longer match their contracts, and those with a contract it
+ * did not read (a failed read, the budget, the run's cancel).
+ */
+interface CarriedHold {
+   moved: ReadonlySet<string>;
+   unread: ReadonlySet<string>;
+}
 
 /** What a {@link PackageMaterialization} reads of the package that holds it. */
 export interface PackageMaterializationOwner {
@@ -1355,6 +1375,114 @@ export class PackageMaterialization {
    }
 
    /**
+    * Hold each table a standalone run may carry (`prior`) to its contract
+    * as it is now, as a bind would: one schema read per table, database
+    * tables on their warehouse, `storage=` tables through their destination
+    * (`site`). The bind last held them when it bound, so a table altered
+    * since (an out-of-band `ALTER`, a column dropped and re-added) would
+    * otherwise be carried, and a downstream built over it. Each that no
+    * longer matches goes to the drift handler ({@link reportIncompatible}),
+    * so {@link incompatibleTables} names it and the run rebuilds it in full.
+    * A table with no contract is left to `rebuiltInFull`. The reads share
+    * one budget ({@link CARRIED_READ_BUDGET_MS}) and stop at `signal`: a
+    * table not read in time, or whose read failed, is never judged moved,
+    * and is returned `unread` for the caller to decide (deriveHoldingCarried
+    * reseeds an incremental one rather than advance it).
+    */
+   async holdCarriedToContracts(
+      prior: Readonly<Record<string, ManifestEntry>>,
+      site?: StoredTableSite,
+      options: { budgetMs?: number; signal?: AbortSignal } = {},
+   ): Promise<CarriedHold> {
+      if (Object.keys(prior).length === 0) {
+         return { moved: new Set(), unread: new Set() };
+      }
+      const { tableNameManifest, storageEntries } = splitManifestEntries(
+         { ...prior },
+         `prior entries (package ${this.owner.packageName()})`,
+         "store",
+         { quiet: true },
+      );
+      const observed = new Map<string, ObservedColumns>();
+      // Each tier's read lands only while the budget lasts: one that ends
+      // after it, or fails, leaves its tables unread, never judged moved.
+      let open = true;
+      const land = (read: Promise<ReadonlyMap<string, ObservedColumns>>) =>
+         read.then(
+            (found) => {
+               if (open) for (const [id, o] of found) observed.set(id, o);
+            },
+            () => undefined,
+         );
+      const reads: Promise<void>[] = [];
+      if (Object.keys(tableNameManifest).length > 0) {
+         reads.push(land(this.readDatabaseColumns(tableNameManifest)));
+      }
+      if (Object.keys(storageEntries).length > 0) {
+         reads.push(land(this.readStorageColumns(storageEntries, site)));
+      }
+      const { signal } = options;
+      const budgetMs = options.budgetMs ?? CARRIED_READ_BUDGET_MS;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let stop: (() => void) | undefined;
+      const outcome = await Promise.race([
+         Promise.all(reads).then(() => "read" as const),
+         new Promise<"budget" | "aborted">((resolve) => {
+            timer = setTimeout(() => resolve("budget"), budgetMs);
+            (timer as { unref?: () => void }).unref?.();
+            stop = () => resolve("aborted");
+            if (signal?.aborted) stop();
+            else signal?.addEventListener("abort", stop, { once: true });
+         }),
+      ]);
+      open = false;
+      clearTimeout(timer);
+      if (stop) signal?.removeEventListener("abort", stop);
+      if (outcome === "aborted") {
+         return { moved: new Set(), unread: new Set(Object.keys(prior)) };
+      }
+      if (outcome === "budget") {
+         logger.warn(
+            "The read of the tables a run would carry ran past its budget; the run carries the tables it did not read, and each build still checks its upstreams",
+            {
+               packageName: this.owner.packageName(),
+               budgetMs,
+               tables: Object.keys(prior).length,
+               unread: Object.keys(prior).filter((id) => !observed.has(id))
+                  .length,
+            },
+         );
+      }
+      const found: string[] = [];
+      const unread = new Set<string>();
+      for (const [id, entry] of Object.entries(prior)) {
+         const contract = parseContract(entry.contract);
+         const read = observed.get(id);
+         if (!contract) continue;
+         if (!read || "unread" in read) {
+            unread.add(id);
+            continue;
+         }
+         const verdict = compatible(contract, read);
+         if (verdict.ok) continue;
+         found.push(id);
+         recordIncompatibleDetected("run", verdict.code);
+         logger.warn(
+            "A table a run would carry no longer matches the column contract its build recorded, so the run rebuilds it in full",
+            {
+               packageName: this.owner.packageName(),
+               sourceEntityId: id,
+               reason: "incompatible",
+               code: verdict.code,
+               columns: verdict.columns,
+            },
+         );
+      }
+      if (found.length > 0) this.reportIncompatible(found);
+      return { moved: new Set(found), unread };
+   }
+
+   /**
     * The tables a standalone run rebuilds in full rather than carry, by
     * address: each a bind found incompatible with its contract or a stored
     * read failed closed, and each a build found altered since its build
@@ -1462,34 +1590,7 @@ export class PackageMaterialization {
        */
       site?: StoredTableSite,
    ): Promise<ReadonlyMap<string, ObservedColumns>> {
-      if (site) {
-         return readStoredTables(
-            site,
-            Object.entries(entries).flatMap(([key, entry]) => {
-               const destinationName = entry.storageDestinationName;
-               if (!destinationName) return [];
-               let schema: string | undefined;
-               try {
-                  schema = destinationSchemaOf(
-                     site.getStorageDestination(destinationName),
-                  );
-               } catch {
-                  schema = undefined;
-               }
-               return [
-                  {
-                     key,
-                     destinationName,
-                     tablePath: storageTablePath(
-                        destinationName,
-                        entry.physicalTableName,
-                        schema,
-                     ),
-                  },
-               ];
-            }),
-         );
-      }
+      if (site) return readStoredEntries(site, entries);
       const config = this.serveDestinationConfig?.();
       const tables = Object.entries(entries).flatMap(([id, entry]) =>
          entry.storageDestinationName
@@ -2223,17 +2324,29 @@ export class PackageMaterialization {
    }
 
    /**
-    * A warning per bound database table the bind could not read, while it
-    * is unread (`database-table-unread`).
+    * A warning per bound table the bind could not read, while it is unread
+    * (`database-table-unread`; `storage-table-unread` for a `storage=` one).
     */
    databaseTableUnreadWarnings(): ApiPackageWarning[] {
       return warnings.databaseTableUnreadWarnings(
-         this.knownUnread().map((u) => ({
-            ...u,
-            ...tableNameOf(this.databaseEntries?.[u.sourceEntityId]?.tableName),
-         })),
+         this.knownUnread().map((u) => {
+            const stored = this.storageEntries[u.sourceEntityId];
+            return stored?.storageDestinationName
+               ? {
+                    ...u,
+                    tableName: stored.physicalTableName,
+                    destinationName: stored.storageDestinationName,
+                 }
+               : {
+                    ...u,
+                    ...tableNameOf(
+                       this.databaseEntries?.[u.sourceEntityId]?.tableName,
+                    ),
+                 };
+         }),
          this.plan.servingPlan() ?? this.plan.buildPlan,
          this.unreadRetry !== undefined,
+         this.storageRetry !== undefined,
       );
    }
 

@@ -26,6 +26,11 @@ import {
    withCollations,
 } from "./database_column_read";
 import { withDestinationSession } from "./materialization_build_session";
+import {
+   destinationSchemaOf,
+   storageTablePath,
+} from "../domain/storage_table_path";
+import type { ManifestEntry } from "../domain/types";
 
 type ReadConnection = Pick<Connection, "runSQL" | "dialectName">;
 
@@ -38,13 +43,50 @@ export interface StoredTableSite {
 }
 
 /**
+ * {@link readStoredTables} for manifest entries, by their key: each
+ * `storage=` entry's table at its path in its destination (its schema, if
+ * the destination names one). An entry with no destination is not read.
+ */
+export function readStoredEntries(
+   site: StoredTableSite,
+   entries: Readonly<Record<string, ManifestEntry>>,
+): Promise<Map<string, ObservedColumns>> {
+   return readStoredTables(
+      site,
+      Object.entries(entries).flatMap(([key, entry]) => {
+         const destinationName = entry.storageDestinationName;
+         if (!destinationName) return [];
+         let schema: string | undefined;
+         try {
+            schema = destinationSchemaOf(
+               site.getStorageDestination(destinationName),
+            );
+         } catch {
+            schema = undefined;
+         }
+         return [
+            {
+               key,
+               destinationName,
+               tablePath: storageTablePath(
+                  destinationName,
+                  entry.physicalTableName,
+                  schema,
+               ),
+            },
+         ];
+      }),
+   );
+}
+
+/**
  * Each `storage=` table's columns and collations, read as its build's
  * session read them: on a destination session of its own (one per
  * destination, read-only, the catalog as it is now), its `DESCRIBE` with no
  * DuckLake rewrite and its definition's collations. A table whose read
  * fails, or whose destination does not open, is unread, never judged.
  */
-export async function readStoredTables(
+async function readStoredTables(
    site: StoredTableSite,
    tables: readonly {
       key: string;

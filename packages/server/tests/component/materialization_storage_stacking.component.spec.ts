@@ -1077,7 +1077,7 @@ source: mid is parent extend {
          );
       });
 
-      it("never stacks a storage= rollup on a gated #(materialize) base's table", async () => {
+      it("never stacks a storage= rollup on a gated #(materialize) base's table: it is refused at run, access_filter", async () => {
          await setUp({
             "m.malloy": materializeRollupModel()
                .replace(
@@ -1091,12 +1091,26 @@ source: mid is parent extend {
          });
          const m = await build();
          expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
-         // Its table holds every caller's rows: no rollup is grouped from it.
-         for (const e of entriesOf(m)) {
-            if (/^orders__rollup__/.test(e.sourceName)) {
-               expect(e.upstreamReuse).toBeUndefined();
-            }
-         }
+         // Its rollups are refused (`access_filter`) and answer live: none
+         // is built, from the base's table or from the warehouse.
+         expect(
+            entriesOf(m).filter((e) => /^orders__rollup__/.test(e.sourceName)),
+         ).toEqual([]);
+         const refused = Object.values(
+            (
+               m.metadata as {
+                  refusedSources?: Record<
+                     string,
+                     { name: string; reason: string }
+                  >;
+               } | null
+            )?.refusedSources ?? {},
+         );
+         expect(
+            refused
+               .filter((r) => /^orders__rollup__/.test(r.name))
+               .map((r) => r.reason),
+         ).toEqual(["access_filter"]);
       });
 
       it("refuses an extend-only #@ persist source named apart from its base whose base joins a stored table to the warehouse: never recomputed, answered live", async () => {

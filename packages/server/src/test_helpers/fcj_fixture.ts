@@ -303,11 +303,13 @@ export async function compileFcjFixture(
 ): Promise<FcjFixture> {
    const compiled = await compileModelFiles(files);
    const inner = compiled.pkg as {
+      getPackagePath: () => string;
       listModels: () => Promise<Array<{ path: string }>>;
       getModel: (path: string) => ModelStandIn | undefined;
    };
    const pkg = {
       getPackageName: () => FCJ_PACKAGE,
+      getPackagePath: inner.getPackagePath,
       getRetrievalSettings: () => retrieval,
       listSkills: () => [],
       listModels: served

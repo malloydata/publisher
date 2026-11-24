@@ -345,6 +345,32 @@ source: monthly is daily -> {
          ]);
       });
 
+      it("leaves out a source off its path with the block doc written on it", async () => {
+         const chain = await planChain(`${CHAIN}
+#|(doc)
+Off the downstream's path.
+|#
+source: other is raw extend {}
+`);
+         await writeLake(chain.dir, DAILY_ROWS);
+         const { result, error } = await stack(
+            chain,
+            "monthly",
+            parentEntry(chain, "daily"),
+         );
+         expect(error).toBeUndefined();
+         expect(result).toMatchObject({ rowCount: 2, upstreamReuse: "reused" });
+         expect(
+            await readLake(
+               chain.dir,
+               "SELECT CAST(m AS VARCHAR) AS m, total FROM monthly_t ORDER BY m",
+            ),
+         ).toEqual([
+            { m: "2026-01-01", total: 15 },
+            { m: "2026-02-01", total: 7 },
+         ]);
+      });
+
       it("keeps a parent's own refinements over its table, and a rename reads the re-rooted parent", async () => {
          const chain = await planChain(`${RAW}
 #@ persist storage="lake"

@@ -454,9 +454,11 @@ const contractCaptureCounter = lazyCounter(
 );
 const incompatibleDetectedCounter = lazyCounter(
    "publisher_materialization_incompatible_detected_total",
-   "Bound tables a bind's catalog read found no longer matching the column " +
-      "contract their build recorded, so they answer live until rebuilt. " +
-      "Labels: trigger ('bind'), code ('column_gone'|'column_retyped'|" +
+   "Bound tables a bind's catalog read, or a standalone run's read of the " +
+      "tables it would carry, found no longer matching the column contract " +
+      "their build recorded, so they answer live until rebuilt (a run " +
+      "rebuilds them rather than carry them). " +
+      "Labels: trigger ('bind'|'run'), code ('column_gone'|'column_retyped'|" +
       "'collation_changed'|'declared_moved'|...). A failed stored read is " +
       "never counted: it leaves the table unread until that read.",
 );
@@ -574,7 +576,7 @@ const upstreamRecomputeCounter = lazyCounter(
       "column retyped or dropped since its build; 'unreadable', its columns " +
       "could not be read; 'types_unrecorded', its build recorded no column " +
       "types; 'reference_types_unrecorded', a host's reference carried no " +
-      "nativeSchema; 'persisted_result', a persisted view or query, which " +
+      "nativeSchema (a storage= one, no contract); 'persisted_result', a persisted view or query, which " +
       "builds from its source's definition by design), build ('chained' for a build over the upstream, " +
       "'rollup' for a database rollup over its stored base), and outcome " +
       "('recomputed' from its definition, or 'read_unchecked': a strict " +
@@ -867,7 +869,7 @@ export function recordKeyCheck(
  * counted: it leaves the table unread until that read.
  */
 export function recordIncompatibleDetected(
-   trigger: "bind",
+   trigger: "bind" | "run",
    code: string,
 ): void {
    incompatibleDetectedCounter().add(1, { trigger, code });

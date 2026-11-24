@@ -49,7 +49,7 @@
  * `not_mergeable`.
  */
 
-import { lexAll, type Token as LexToken } from "../text/malloy_lexer";
+import { lexAll, type Token as LexToken } from "../../malloy_lexer_core";
 import type {
    AggregateLeaf,
    MeasureExpr,
