@@ -30,7 +30,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **[new] Light and dark between a framing page and a data app.** The page hears the reader's mode as `publisher:color-scheme` (`{ type, mode }`), asks for it with `publisher:color-scheme-request`, and answers `publisher:color-scheme-applied` once it has drawn it. The runtime handles the page's side: `Publisher.colorScheme`, `Publisher.onColorScheme(fn)` and `Publisher.colorSchemeApplied(mode)`. The SDK's `DataAppViewer`, and so the console, sends the console's mode to the page's own origin and gives the frame the page's colour scheme once the page answers; it exports the three message names and `PublisherColorScheme`. `Publisher.embed` does not send a mode.
 
-**[new] The `malloy-html-data-apps` skill builds from a kit.** An agent asked for a data app copies the kit and writes one config and its pages: several pages with drill-downs, every block explained on its back, nine themes, light and dark. A dashboard request still goes to `malloy-reports`.
+**[new] The `malloy-html-data-apps` skill builds from a kit.** An agent asked for a data app copies the kit and writes one config and its pages: several pages with drill-downs, every block explained on its back, nine themes, light and dark. A dashboard request goes to `malloy-reports` unless the user asks for an app.
 
 ## [Unreleased] — key-uniqueness verdicts are read only from the table's column contract
 
