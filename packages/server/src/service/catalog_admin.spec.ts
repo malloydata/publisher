@@ -12,7 +12,10 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
+import { fakeOf } from "../test_helpers/store_fakes";
 import { CatalogAdmin, CatalogAdminError, withLoadSlot } from "./catalog_admin";
+import type { Environment } from "./environment";
+import type { LoadedEnvironmentsReader } from "./environment_ports";
 import {
    LoadRefusalError,
    loadLayout,
@@ -64,35 +67,181 @@ describe("a schema name", () => {
    });
 });
 
+const source = { uri: "gs://b/p/a.parquet", format: "parquet" };
+
+/** What an attempt answers, or undefined when it got past every refusal and failed reaching the catalog database. */
+async function refusalOf(attempt: () => Promise<unknown>) {
+   const error = await attempt().then(
+      () => undefined,
+      (e) => e,
+   );
+   return error instanceof CatalogAdminError
+      ? [error.status, error.reason]
+      : undefined;
+}
+
 describe("the main schema", () => {
-   it("is refused as the target of a load, a table PUT and a table DELETE, in any case, before the catalog database is reached", async () => {
-      const source = { uri: "gs://b/p/a.parquet", format: "parquet" };
+   it("is refused as the target of a load, in any case, before the catalog database is reached", async () => {
       for (const schema of ["main", "Main", "MAIN"]) {
-         for (const attempt of [
-            () => admin.loadTable("c", schema, "t", valid),
-            () => admin.putTable("c", schema, "t", { source }, false),
-            () => admin.deleteTable("c", schema, "t"),
-         ]) {
-            const error = await attempt().then(
-               () => undefined,
-               (e) => e,
-            );
-            expect(error).toBeInstanceOf(CatalogAdminError);
-            expect([
-               schema,
-               (error as CatalogAdminError).status,
-               (error as CatalogAdminError).reason,
-            ]).toEqual([schema, 400, "SCHEMA_RESERVED"]);
-            // It says where tables go, which a schema create's refusal has no need to.
-            expect((error as CatalogAdminError).message).toContain(
-               "PUT /catalogs/{catalog}/schemas/{schema}",
-            );
-         }
+         const error = await admin.loadTable("c", schema, "t", valid).then(
+            () => undefined,
+            (e) => e,
+         );
+         expect(error).toBeInstanceOf(CatalogAdminError);
+         expect([
+            schema,
+            (error as CatalogAdminError).status,
+            (error as CatalogAdminError).reason,
+         ]).toEqual([schema, 400, "SCHEMA_RESERVED"]);
+         // It says where tables go, which a schema create's refusal has no need to.
+         expect((error as CatalogAdminError).message).toContain(
+            "PUT /catalogs/{catalog}/schemas/{schema}",
+         );
       }
       const create = await admin
          .createSchema("c", "main", {}, false)
          .catch((e) => e);
       expect((create as CatalogAdminError).message).not.toContain("PUT");
+   });
+
+   it("is not refused as the target of a table PUT or DELETE", async () => {
+      for (const schema of ["main", "Main", "MAIN"]) {
+         for (const attempt of [
+            () => admin.putTable("c", schema, "t", { source }, false),
+            () => admin.deleteTable("c", schema, "t"),
+         ]) {
+            // Past every refusal, it fails reaching the unreachable catalog database.
+            expect(await refusalOf(attempt)).toBeUndefined();
+         }
+      }
+   });
+});
+
+describe("a storage destination's schema", () => {
+   const CATALOG_DATABASE =
+      "host=127.0.0.1 port=1 dbname=none connect_timeout=1";
+   const lake = (
+      name: string,
+      metadataSchema: string,
+      destinationSchema?: string,
+   ) => ({
+      name,
+      type: "ducklake",
+      ducklakeConnection: {
+         catalog: {
+            postgresConnection: { connectionString: CATALOG_DATABASE },
+            metadataSchema,
+         },
+         ...(destinationSchema ? { destinationSchema } : {}),
+      },
+   });
+   interface StubEnvironment {
+      name: string;
+      destinations: ReturnType<typeof lake>[];
+      connections?: ReturnType<typeof lake>[];
+   }
+   const adminOver = (environments: StubEnvironment[]) =>
+      new CatalogAdmin(
+         { catalogDatabase: CATALOG_DATABASE },
+         fakeOf<LoadedEnvironmentsReader>({
+            getLoadedEnvironments: () =>
+               environments.map((e) =>
+                  fakeOf<Environment>({
+                     getEnvironmentName: () => e.name,
+                     listStorageDestinations: () => e.destinations,
+                     listApiConnections: () => e.connections ?? [],
+                  }),
+               ),
+         }),
+      );
+   const put = (a: CatalogAdmin, schema: string, catalog = "c") =>
+      refusalOf(() => a.putTable(catalog, schema, "t", { source }, false));
+   const load = (a: CatalogAdmin, schema: string, catalog = "c") =>
+      refusalOf(() => a.loadTable(catalog, schema, "t", valid));
+
+   it("is refused as the target of a table PUT and a load, naming the destination, in any case, before the catalog database is reached", async () => {
+      const a = adminOver([
+         {
+            name: "prod",
+            destinations: [lake("dest", "c", "materialized")],
+         },
+      ]);
+      for (const schema of ["materialized", "Materialized"]) {
+         const expected = [409, "SCHEMA_IS_DESTINATION"];
+         expect(await put(a, schema)).toEqual(expected);
+         expect(await load(a, schema)).toEqual(expected);
+      }
+      const error = await a
+         .putTable("c", "materialized", "t", { source }, false)
+         .catch((e) => e);
+      expect((error as CatalogAdminError).message).toContain("prod");
+      expect((error as CatalogAdminError).message).toContain("dest");
+      expect((error as CatalogAdminError).message).toContain(
+         "built by Publisher",
+      );
+   });
+
+   it("is main when the destination sets no destinationSchema: a PUT is refused as the destination's, a load as reserved", async () => {
+      const a = adminOver([
+         { name: "prod", destinations: [lake("dest", "c")] },
+      ]);
+      expect(await put(a, "main")).toEqual([409, "SCHEMA_IS_DESTINATION"]);
+      expect(await load(a, "main")).toEqual([400, "SCHEMA_RESERVED"]);
+   });
+
+   it("leaves a DELETE in it, and every other schema, alone", async () => {
+      const a = adminOver([
+         {
+            name: "prod",
+            destinations: [lake("dest", "c", "materialized")],
+         },
+      ]);
+      expect(
+         await refusalOf(() => a.deleteTable("c", "materialized", "t")),
+      ).toBeUndefined();
+      expect(await put(a, "staging")).toBeUndefined();
+      expect(await put(a, "main")).toBeUndefined();
+   });
+
+   it("is refused only on the catalog the destination uses", async () => {
+      const a = adminOver([
+         {
+            name: "prod",
+            destinations: [lake("dest", "c", "materialized")],
+         },
+      ]);
+      expect(await put(a, "materialized", "other")).toBeUndefined();
+      expect(await load(a, "materialized", "other")).toBeUndefined();
+   });
+
+   it("counts a destination of any loaded environment, read at each write", async () => {
+      const environments: StubEnvironment[] = [
+         { name: "a", destinations: [] },
+         { name: "b", destinations: [] },
+      ];
+      const a = adminOver(environments);
+      expect(await put(a, "materialized")).toBeUndefined();
+      environments[1].destinations = [lake("late", "c", "materialized")];
+      expect(await put(a, "materialized")).toEqual([
+         409,
+         "SCHEMA_IS_DESTINATION",
+      ]);
+   });
+
+   it("counts only a storage destination: a connection's destinationSchema refuses nothing", async () => {
+      const a = adminOver([
+         {
+            name: "prod",
+            destinations: [],
+            connections: [lake("db_x", "c", "materialized")],
+         },
+      ]);
+      expect(await put(a, "materialized")).toBeUndefined();
+      expect(await load(a, "materialized")).toBeUndefined();
+   });
+
+   it("refuses nothing when the admin API has no environments to ask", async () => {
+      expect(await put(admin, "materialized")).toBeUndefined();
    });
 });
 
@@ -483,6 +632,7 @@ describe("the admin API's documented reasons", () => {
             "LOAD_COLUMN_MISMATCH",
             "LOAD_DELETE_LIMIT_EXCEEDED",
             "OBJECT_UNREADABLE",
+            "SCHEMA_IS_DESTINATION",
          ]),
       );
    });

@@ -5322,7 +5322,7 @@ components:
           type: string
           x-immutable: true
           description: "The schema a destination builds its tables into and binds them from, so an orchestrator can keep
-            the tables it owns out of a catalog's `main`, which every managed connection reads. Absent means `main`, the
+            the tables it owns apart from a catalog's `main` (where people put their own). Absent means `main`, the
             pre-existing layout. The schema must already exist in the catalog: a build does not create it. A `#@ persist
             name=` that already names a schema keeps that schema. Must be a plain identifier (`[A-Za-z_][A-Za-z0-9_]*`).
             Set on create and never changed, since serving reads it to find every bound table: a write that changes it

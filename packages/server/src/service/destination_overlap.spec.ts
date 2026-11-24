@@ -116,6 +116,34 @@ describe("destinationOverlap", () => {
       expect(withReadable(["stripe", "main"])).toBeUndefined();
    });
 
+   it("names the schema each overlapping destination builds into, main when it sets none", () => {
+      const view = lake("c", {
+         host: "pg",
+         databaseName: "cat",
+         metadataSchema: "lake",
+      });
+      const set = lake(
+         "set",
+         { host: "pg", databaseName: "cat", metadataSchema: "lake" },
+         "s3://bucket/lake",
+      );
+      set.ducklakeConnection!.destinationSchema = "materialized";
+      const unset = lake(
+         "unset",
+         { host: "pg", databaseName: "cat", metadataSchema: "lake" },
+         "s3://bucket/lake",
+      );
+      expect(
+         destinationOverlaps([view], [set, unset]).map((o) => [
+            o.destination,
+            o.schema,
+         ]),
+      ).toEqual([
+         ["set", "materialized"],
+         ["unset", "main"],
+      ]);
+   });
+
    it("lists every overlapping pair", () => {
       expect(
          destinationOverlaps(

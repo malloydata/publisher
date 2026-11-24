@@ -20,6 +20,9 @@ import {
    CatalogAdmin,
    CatalogAdminError,
 } from "../../../src/service/catalog_admin";
+import type { Environment } from "../../../src/service/environment";
+import type { LoadedEnvironmentsReader } from "../../../src/service/environment_ports";
+import { fakeOf } from "../../../src/test_helpers/store_fakes";
 import {
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
@@ -144,6 +147,7 @@ describe.skipIf(!SUPERUSER)(
    () => {
       const root = mkdtempSync(join(tmpdir(), "admin-catalogs-"));
       let admin: CatalogAdmin;
+      let catalogDatabase: string;
       const responses: unknown[] = [];
       const keep = <T>(v: T): T => {
          responses.push(v);
@@ -187,9 +191,8 @@ describe.skipIf(!SUPERUSER)(
             .split(/\s+/)
             .filter((kv) => /^(host|port)=/.test(kv))
             .join(" ");
-         admin = new CatalogAdmin({
-            catalogDatabase: `${host} dbname=${DB} user=${DB}_admin password=${PASSWORD}`,
-         });
+         catalogDatabase = `${host} dbname=${DB} user=${DB}_admin password=${PASSWORD}`;
+         admin = new CatalogAdmin({ catalogDatabase });
          mkdirSync(join(root, "ds_owned"), { recursive: true });
          writeFileSync(
             join(root, "ds_owned", "orders.csv"),
@@ -578,6 +581,139 @@ describe.skipIf(!SUPERUSER)(
          ).toEqual(["legacy", "orders_copy"]);
       });
 
+      it("refuses a table PUT and a load in the schema a storage destination builds into, and allows a DELETE there, a copy from it and every other schema", async () => {
+         const lake = (name: string) => ({
+            name,
+            type: "ducklake",
+            ducklakeConnection: {
+               catalog: {
+                  postgresConnection: { connectionString: catalogDatabase },
+                  metadataSchema: "ds_owned",
+               },
+               destinationSchema: "materialized",
+            },
+         });
+         const over = (destinations: unknown[], connections: unknown[] = []) =>
+            new CatalogAdmin(
+               { catalogDatabase },
+               fakeOf<LoadedEnvironmentsReader>({
+                  getLoadedEnvironments: () => [
+                     fakeOf<Environment>({
+                        getEnvironmentName: () => "prod",
+                        listStorageDestinations: () => destinations,
+                        listApiConnections: () => connections,
+                     }),
+                  ],
+               }),
+            );
+         const guarded = over([lake("dest")]);
+         const source = {
+            uri: join(root, "ds_owned", "orders.csv"),
+            format: "csv",
+         };
+         // What a build wrote, put there without the guard.
+         await admin.putTable(
+            "ds_owned",
+            "materialized",
+            "built",
+            { source },
+            true,
+         );
+         const names = async (schema: string) =>
+            (await admin.listTables("ds_owned", schema)).map((t) => t.name);
+         try {
+            for (const attempt of [
+               () =>
+                  guarded.putTable(
+                     "ds_owned",
+                     "materialized",
+                     "mine",
+                     { source },
+                     true,
+                  ),
+               () =>
+                  guarded.loadTable("ds_owned", "materialized", "mine", {
+                     mode: "merge",
+                     key: ["id"],
+                     objects: [join(root, "ds_owned", "mine.parquet")],
+                  }),
+            ]) {
+               const error = await refusal(attempt());
+               expect([error.status, error.reason]).toEqual([
+                  409,
+                  "SCHEMA_IS_DESTINATION",
+               ]);
+               expect(error.message).toContain("'dest' of environment 'prod'");
+            }
+            expect(await names("materialized")).toEqual([
+               "built",
+               "legacy",
+               "orders_copy",
+            ]);
+
+            // Another schema of the catalog, `main` included, is not the destination's.
+            expect(
+               (
+                  await guarded.putTable(
+                     "ds_owned",
+                     "main",
+                     "upload",
+                     { source },
+                     true,
+                  )
+               ).created,
+            ).toBe(true);
+            await guarded.deleteTable("ds_owned", "main", "upload");
+            expect(await names("main")).toEqual([]);
+
+            // Copying out of the destination's schema is a read of it.
+            expect(
+               (
+                  await guarded.putTable(
+                     "ds_owned",
+                     "sales",
+                     "built_copy",
+                     {
+                        source: {
+                           catalog: "ds_owned",
+                           schema: "materialized",
+                           table: "built",
+                        },
+                     },
+                     true,
+                  )
+               ).created,
+            ).toBe(true);
+
+            // A connection's `destinationSchema` is not a destination's.
+            const plain = over([], [lake("db_x")]);
+            expect(
+               (
+                  await plain.putTable(
+                     "ds_owned",
+                     "materialized",
+                     "plain",
+                     { source },
+                     true,
+                  )
+               ).created,
+            ).toBe(true);
+
+            // Dropping a build's table is cleanup, so it is allowed.
+            await guarded.deleteTable("ds_owned", "materialized", "built");
+            expect(await names("materialized")).toEqual([
+               "legacy",
+               "orders_copy",
+               "plain",
+            ]);
+         } finally {
+            await admin.deleteTable("ds_owned", "materialized", "built");
+            await admin.deleteTable("ds_owned", "materialized", "plain");
+            await admin.deleteTable("ds_owned", "materialized", "mine");
+            await admin.deleteTable("ds_owned", "sales", "built_copy");
+         }
+      });
+
       it("copies a partitioned table with its partition spec and layout, and reports both", async () => {
          // A legacy catalog's partitioned table, as a `partition=` build writes
          // one: the spec set before the rows, so every file holds one partition.
@@ -667,13 +803,22 @@ describe.skipIf(!SUPERUSER)(
          }
       });
 
-      it("copies a table out of main into a created schema, and refuses to write main", async () => {
-         // The way off a table an earlier release put in `main`: its source may
-         // still be there, though the admin API no longer writes there.
-         await rawSql("ds_standalone", [
-            "CREATE TABLE ds_standalone.main.early (id INTEGER, amount INTEGER)",
-            "INSERT INTO ds_standalone.main.early VALUES (1, 5), (2, 6)",
-         ]);
+      it("writes a table to main, copies it into another schema and drops it, and a load refuses main", async () => {
+         const source = {
+            uri: join(root, "ds_standalone", "legacy.csv"),
+            format: "csv",
+         };
+         const written = keep(
+            await admin.putTable(
+               "ds_standalone",
+               "main",
+               "early",
+               { source },
+               true,
+            ),
+         );
+         expect(written.created).toBe(true);
+         expect(written.table).toMatchObject({ schema: "main", name: "early" });
          try {
             const copied = keep(
                await admin.putTable(
@@ -707,33 +852,17 @@ describe.skipIf(!SUPERUSER)(
                },
             );
 
-            const source = {
-               uri: join(root, "ds_standalone", "legacy.csv"),
-               format: "csv",
-            };
-            for (const attempt of [
-               () =>
-                  admin.putTable(
-                     "ds_standalone",
-                     "main",
-                     "late",
-                     { source },
-                     true,
-                  ),
-               () => admin.deleteTable("ds_standalone", "main", "early"),
-               () =>
-                  admin.loadTable("ds_standalone", "main", "late", {
-                     mode: "merge",
-                     key: ["id"],
-                     objects: [join(root, "ds_standalone", "late.parquet")],
-                  }),
-            ]) {
-               const error = await refusal(attempt());
-               expect([error.status, error.reason]).toEqual([
-                  400,
-                  "SCHEMA_RESERVED",
-               ]);
-            }
+            const error = await refusal(
+               admin.loadTable("ds_standalone", "main", "late", {
+                  mode: "merge",
+                  key: ["id"],
+                  objects: [join(root, "ds_standalone", "late.parquet")],
+               }),
+            );
+            expect([error.status, error.reason]).toEqual([
+               400,
+               "SCHEMA_RESERVED",
+            ]);
             expect(
                (await admin.listTables("ds_standalone", "main")).map(
                   (t) => t.name,
@@ -743,11 +872,10 @@ describe.skipIf(!SUPERUSER)(
             try {
                await admin.deleteTable("ds_standalone", "stage", "migrated");
             } finally {
-               await rawSql("ds_standalone", [
-                  "DROP TABLE ds_standalone.main.early",
-               ]);
+               await admin.deleteTable("ds_standalone", "main", "early");
             }
          }
+         expect(await admin.listTables("ds_standalone", "main")).toEqual([]);
       });
 
       it("refuses to copy an encrypted catalog's table into an unencrypted one", async () => {

@@ -172,9 +172,6 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    // storage setting fails startup. Null leaves the catalog routes answering 503.
    const ADMIN_CATALOG_CONFIG =
       ADMIN_PORT === null ? null : catalogAdminConfig();
-   const ADMIN_CATALOGS = ADMIN_CATALOG_CONFIG
-      ? new CatalogAdmin(ADMIN_CATALOG_CONFIG)
-      : null;
    // Resolved here, not in the listen callback: it throws on a typo,
    // and a throw there would be an uncaughtException after both ports are bound.
    const MCP_CONFIG_ENABLED = mcpConfigEnabled();
@@ -194,6 +191,10 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    // row/byte caps, so operators check that before chasing OOMKills.
    checkHeapConfiguration();
    const environmentStore = new EnvironmentStore(SERVER_ROOT);
+   // Asks the store at each write which storage destinations build into a catalog's schemas.
+   const ADMIN_CATALOGS = ADMIN_CATALOG_CONFIG
+      ? new CatalogAdmin(ADMIN_CATALOG_CONFIG, environmentStore)
+      : null;
    const watchModeController = new WatchModeController(environmentStore);
    const connectionController = new ConnectionController(environmentStore);
    const modelController = new ModelController(environmentStore);

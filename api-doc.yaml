@@ -3952,8 +3952,6 @@ paths:
         **DEPRECATED**: use the admin API's `DELETE
         /catalogs/{catalogName}/schemas/{schemaName}/tables/{tableName}`
         (`admin-api-doc.yaml`); this route is removed in a later release.
-        A table in `main`, which the admin API refuses, is dropped here (or with
-        DuckLake SQL).
 
         Drops one named table from a storage destination. Idempotent: a table that
         does not exist answers 204 as well, so a retried drop is free.
@@ -9657,9 +9655,9 @@ components:
           description: >-
             Storage destinations only; ignored on a connection. The schema a
             destination builds its tables into and binds them from, so an
-            orchestrator can keep the tables it owns out of a catalog's `main`,
-            which every managed connection reads. Absent means `main`, the
-            pre-existing layout. The schema must already exist in the catalog: a build does not
+            orchestrator can keep the tables it owns apart from a catalog's `main`
+            (where people put their own). Absent means `main`, the pre-existing
+            layout. The schema must already exist in the catalog: a build does not
             create it. A `#@ persist name=` that already names a schema keeps that
             schema. Must be a plain identifier (`[A-Za-z_][A-Za-z0-9_]*`).
             Serving reads the schema configured now, not the one a table was

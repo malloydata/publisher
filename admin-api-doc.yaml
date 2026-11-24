@@ -326,9 +326,8 @@ paths:
       operationId: put-table
       summary: Create or replace a table from a source
       description: |
-        The schema may not be `main` (`400 SCHEMA_RESERVED`); a copy's source
-        may be in it, which is how a table an earlier release put there moves
-        into a schema the admin API created.
+        The schema may not be the one a storage destination builds into
+        (`409 SCHEMA_IS_DESTINATION`, below); a copy's source may be in it.
 
         Writes the table from `source`: one CSV, Parquet, Excel or JSON object
         under the catalog's data path, the only location the session can read;
@@ -390,7 +389,8 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: A copy's source catalog is owned by a role the configured role cannot act as (`CATALOG_OWNER_UNSUPPORTED`)
+          description: |
+            A copy's source catalog is owned by a role the configured role cannot act as (`CATALOG_OWNER_UNSUPPORTED`), or the schema is the one a storage destination of an environment on this server builds into in this catalog (`SCHEMA_IS_DESTINATION`)
           content:
             application/json:
               schema:
@@ -420,9 +420,8 @@ paths:
       operationId: delete-table
       summary: Drop a table
       description: |
-        The schema may not be `main` (`400 SCHEMA_RESERVED`).
-
-        Drops the table. A table that does not exist answers 204 as well, so a
+        Drops the table, in a schema a storage destination builds into as in
+        any other, which is how a build's table is dropped. A table that does not exist answers 204 as well, so a
         retried drop is free. Its data files stay until a snapshot delete
         reclaims them, which is also the window in which the table can still be
         read at an earlier snapshot.
@@ -448,7 +447,8 @@ paths:
       operationId: load-table
       summary: Apply Parquet objects to a table by key
       description: |
-        The schema may not be `main` (`400 SCHEMA_RESERVED`).
+        The schema may not be `main` (`400 SCHEMA_RESERVED`), nor the one a
+        storage destination builds into (`409 SCHEMA_IS_DESTINATION`, below).
 
         Applies Parquet objects under the catalog's data path to the table,
         creating it when it does not exist. `merge` upserts the objects' rows by
@@ -567,7 +567,7 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           description: |
-            DuckLake refused the commit because another request changed the table (replaced, dropped or created it) while the load ran (`LOAD_CONFLICT`); nothing was written, retry. Or the `Idempotency-Key` was used for a different request to this table (`IDEMPOTENCY_KEY_REUSED`)
+            DuckLake refused the commit because another request changed the table (replaced, dropped or created it) while the load ran (`LOAD_CONFLICT`); nothing was written, retry. Or the `Idempotency-Key` was used for a different request to this table (`IDEMPOTENCY_KEY_REUSED`). Or the schema is the one a storage destination of an environment on this server builds into in this catalog (`SCHEMA_IS_DESTINATION`)
           content:
             application/json:
               schema:
@@ -1286,13 +1286,23 @@ components:
             CATALOG_DATABASE_NOT_CONFIGURED, CATALOG_OWNER_UNSUPPORTED,
             CATALOG_SETTING_UNREADABLE, SCHEMA_NOT_FOUND, TABLE_NOT_FOUND,
             SOURCE_NOT_FOUND, TABLE_EXISTS, OBJECT_OUTSIDE_DATA_PATH,
-            INVALID_REQUEST, SCHEMA_EXISTS, SCHEMA_RESERVED, LOAD_BUSY,
+            INVALID_REQUEST, SCHEMA_EXISTS, SCHEMA_RESERVED,
+            SCHEMA_IS_DESTINATION, LOAD_BUSY,
             LOAD_CONFLICT, LOAD_COLUMN_MISMATCH, LOAD_DELETE_LIMIT_EXCEEDED,
             OBJECT_UNREADABLE, LOAD_NOT_FOUND, IDEMPOTENCY_KEY_REUSED.
             `SCHEMA_EXISTS`: a create-only schema PUT found the schema.
             `SCHEMA_RESERVED`: the schema name is one the engine owns, `main`,
             or a name starting `__ducklake_metadata_`; also refused as the
-            target of a table PUT, DELETE or load. `LOAD_BUSY` (503): another load of the table, or another
+            target of a load (a table PUT or DELETE may write `main`).
+            `SCHEMA_IS_DESTINATION` (409): a table PUT or load targets the
+            schema (`destinationSchema`, or `main` when it sets none) that a
+            storage destination of an environment on this server builds into
+            in this catalog, which Publisher builds; the message names the
+            environment and the destination, and tables you write belong in
+            another schema. A table DELETE there is allowed, and a copy may read
+            its source from it. A connection's `destinationSchema` is not a
+            destination's, and an admin-only listener, with no environments,
+            refuses nothing. `LOAD_BUSY` (503): another load of the table, or another
             load on this server, is running; nothing was written, retry.
             `LOAD_CONFLICT` (409): DuckLake refused the commit because
             another request (a table PUT or DELETE, a schema drop) changed

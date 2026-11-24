@@ -41,7 +41,9 @@ import {
    type PartitionKey,
    tablePartitionKeys,
 } from "./dialects/ducklake_catalog";
+import { destinationOverlaps } from "./destination_overlap";
 import { applySessionResourceLimits, escapeSQL } from "./duckdb_session_setup";
+import type { LoadedEnvironmentsReader } from "./environment_ports";
 import {
    connectPgClient,
    createPgAttachSecret,
@@ -81,7 +83,7 @@ type DucklakeStorage = NonNullable<
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** A role name safe in a libpq `options=-crole=` value, hyphens included (`<prefix>-ducklake`). */
 const ROLE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
-/** Refused on a schema create or drop and on a table write; `main` is DuckLake's default and cannot be dropped. */
+/** Refused on a schema create or drop and on a load; `main` is DuckLake's default and cannot be dropped. */
 const RESERVED_SCHEMAS = ["main", ...RESERVED_SCHEMA_NAMES];
 /** DuckLake's interval spelling for `delete_older_than`, e.g. `1 day`, `12 hours`. */
 const INTERVAL = /^(\d+) (second|minute|hour|day|week)s?$/;
@@ -334,7 +336,14 @@ const pgLiteral = (value: string) => `'${value.replace(/'/g, "''")}'`;
 const pgIdent = (name: string) => `"${name.replace(/"/g, '""')}"`;
 
 export class CatalogAdmin {
-   constructor(private readonly config: CatalogAdminConfig) {}
+   /**
+    * `environments` is read at each write for the storage destinations whose
+    * build schema is refused; a standalone admin listener has none to ask.
+    */
+   constructor(
+      private readonly config: CatalogAdminConfig,
+      private readonly environments?: LoadedEnvironmentsReader,
+   ) {}
 
    async listCatalogs(): Promise<Catalog[]> {
       return this.withCatalogDatabase(async (pg) => {
@@ -636,8 +645,7 @@ export class CatalogAdmin {
    ): Promise<{ table: CatalogTable; created: boolean }> {
       identifier(schema, "schema");
       identifier(table, "table");
-      // Only the target is refused: a copy may still read its source from `main`.
-      refuseReserved(schema, TABLE_SCHEMA_HINT);
+      this.refuseDestinationSchema(name, schema);
       const source = tableSource(request.source);
       // Taken first, as a load takes it, so a busy server refuses before reading anything.
       const created = await withLoadSlot(async () => {
@@ -745,7 +753,6 @@ export class CatalogAdmin {
    ): Promise<void> {
       identifier(schema, "schema");
       identifier(table, "table");
-      refuseReserved(schema, TABLE_SCHEMA_HINT);
       const owner = await this.withCatalogDatabase(async (pg) => {
          await this.requireCatalog(pg, name);
          return this.schemaOwner(pg, name);
@@ -964,6 +971,7 @@ export class CatalogAdmin {
       identifier(schema, "schema");
       identifier(table, "table");
       refuseReserved(schema, TABLE_SCHEMA_HINT);
+      this.refuseDestinationSchema(name, schema);
       const request = loadRequest(body);
       const keyDigest = idempotencyKeyDigest(idempotencyKey);
       const record = {
@@ -1173,6 +1181,29 @@ export class CatalogAdmin {
          );
       }
       return mapped;
+   }
+
+   /**
+    * Refuses a write into the schema a storage destination of any loaded
+    * environment builds into on this catalog: a person's table there feeds the
+    * rebuild of an incompatible table and can be served as the build's.
+    */
+   private refuseDestinationSchema(catalog: string, schema: string): void {
+      const lake = this.connection(catalog, undefined);
+      for (const environment of this.environments?.getLoadedEnvironments() ??
+         []) {
+         const built = destinationOverlaps(
+            [lake],
+            environment.listStorageDestinations(),
+         ).find((o) => o.schema.toLowerCase() === schema.toLowerCase());
+         if (built) {
+            throw new CatalogAdminError(
+               409,
+               "SCHEMA_IS_DESTINATION",
+               `'${schema}' is built by Publisher: storage destination '${built.destination}' of environment '${environment.getEnvironmentName()}' materializes into it, so tables you write belong in another schema, created with PUT /catalogs/{catalog}/schemas/{schema}.`,
+            );
+         }
+      }
    }
 
    /** The catalog as a DuckLake config with no data path: its recorded one is used. */
@@ -1831,7 +1862,7 @@ function schemaName(value: unknown, what: string): string {
    return value;
 }
 
-/** Appended to a table write's refusal, so it says where tables go. */
+/** Appended to a load's refusal, so it says where tables go. */
 const TABLE_SCHEMA_HINT =
    "; tables go in a schema created with PUT /catalogs/{catalog}/schemas/{schema}";
 

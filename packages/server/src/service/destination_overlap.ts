@@ -46,9 +46,10 @@ export function destinationOverlap(
 }
 
 /**
- * Every connection that reaches a destination, with why, and
- * `listsDestinationSchema` when its `readableSchemas` names the destination's
- * own schema, which makes that schema's stored copies readable by name.
+ * Every connection that reaches a destination, with why and the schema the
+ * destination builds into, and `listsDestinationSchema` when the connection's
+ * `readableSchemas` names that schema, which makes the schema's stored copies
+ * readable by name.
  */
 export function destinationOverlaps(
    connections: readonly ApiConnection[],
@@ -56,6 +57,7 @@ export function destinationOverlaps(
 ): {
    connection: string;
    destination: string;
+   schema: string;
    reason: string;
    listsDestinationSchema?: string;
 }[] {
@@ -68,6 +70,7 @@ export function destinationOverlaps(
             out.push({
                connection: connection.name ?? "",
                destination: destination.name ?? "",
+               schema,
                reason,
                // DuckDB matches schema names regardless of case.
                ...(normalizeReadableSchemas(
