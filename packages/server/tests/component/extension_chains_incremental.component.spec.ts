@@ -1453,6 +1453,98 @@ source: ext_rr is ev extend { dimension: big is amt > 5 }
    });
 }
 
+// An extension's delta is a MERGE over its parent's table like any other:
+// one that reads its own merge_key= twice is rolled back and rebuilt in full,
+// and the rebuilt table, which repeats the key, records no boundary.
+{
+   let lakeRoot = "";
+   const tiers = POSTGRES_URL ? [POSTGRES, DUCKLAKE(() => lakeRoot)] : [];
+   for (const tier of tiers) {
+      describe(`an incremental extension whose delta repeats its merge_key= (${tier.label})`, () => {
+         const f = new Fixture(tier);
+         // Two new rows of one amount: unique on the parent's key (id),
+         // repeated on the extension's (amt).
+         const TIED: Row[] = [
+            { id: 4, ts: at(3_600_000), amt: 13 },
+            { id: 5, ts: at(7_200_000), amt: 13 },
+         ];
+         const DUP_MODEL = `##! experimental { persistence }
+source: raw is warehouse.table('__RAW__')
+
+#(materialize) name="__P__ev" refresh="incremental" watermark="ts" merge_key="id" lookback="7 days"__S__
+source: ev is raw
+
+#(materialize) name="__P__ext_amt" refresh="incremental" watermark="ts" merge_key="amt"__S__
+source: ext_amt is ev extend { dimension: big is amt > 5 }
+`;
+         let first: Materialization;
+         let second: Materialization;
+         const seedsInSecond: typeof f.seeds = [];
+
+         beforeAll(async () => {
+            if (tier.storage) {
+               lakeRoot = fs.realpathSync(
+                  fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), "xcl-")),
+               );
+            }
+            await f.open(
+               tier.storage
+                  ? DUP_MODEL.replace(/name="__P__[a-z_]+" /g, "")
+                  : DUP_MODEL,
+            );
+            first = await f.build({});
+            await f.insert(TIED);
+            const before = f.seeds.length;
+            second = await f.build({});
+            seedsInSecond.push(...f.seeds.slice(before));
+         }, 400_000);
+         afterAll(async () => {
+            await f.close();
+            if (lakeRoot) fs.rmSync(lakeRoot, { recursive: true, force: true });
+         });
+
+         it("deltas the parent, and rebuilds the extension in full with merge_key_not_unique", () => {
+            for (const run of [first, second]) {
+               expect([run.status, (run as { error?: unknown }).error]).toEqual(
+                  ["MANIFEST_FILE_READY", null],
+               );
+            }
+            expect(entryNamed(first, "ext_amt")![1].ledger).toBeDefined();
+            expect(entryNamed(second, "ev")![1].refresh).toBe("delta");
+            const ext = entryNamed(second, "ext_amt")![1];
+            expect(ext.refresh).toBe("full");
+            expect(
+               seedsInSecond.filter(
+                  (s) => s.physicalTableName === ext.physicalTableName,
+               ),
+            ).toEqual([
+               {
+                  physicalTableName: ext.physicalTableName,
+                  reasonCode: "merge_key_not_unique",
+               },
+            ]);
+            // The rebuilt table repeats the key: no boundary, so the next
+            // refresh rebuilds again rather than merging into it.
+            expect(ext.ledger).toBeUndefined();
+         });
+
+         it("serves the extension equal to live, and warns of the key", async () => {
+            const served = await f.totals("ext_amt");
+            expect([served.n, served.total]).toEqual([
+               5,
+               sumOf([...FIRST, ...TIED]),
+            ]);
+            const warnings = ((await f.pkg.getPackageMetadata()).warnings ??
+               []) as { code?: string; subject?: string }[];
+            const keyWarnings = warnings.filter(
+               (w) => w.code === "persist-incremental-merge-key-not-unique",
+            );
+            expect(keyWarnings.map((w) => w.subject)).toEqual(["ext_amt"]);
+         });
+      });
+   }
+}
+
 if (POSTGRES_URL) {
    describe("an incremental storage= extension stacked on its parent in one DuckLake destination", () => {
       let root = "";
@@ -1498,6 +1590,49 @@ if (POSTGRES_URL) {
                sumOf([...FIRST, ...SECOND]),
             ]);
          }
+      });
+   });
+
+   describe("an incremental storage= extension stacked on its parent with a column DuckDB computes as HUGEINT", () => {
+      // DuckDB computes a 128-bit integer (a sum of integers, or here an
+      // integer past BIGINT), which the build stores as DECIMAL(38,0): the
+      // delta's HUGEINT is no widening of it, or the extension would rebuild
+      // in full on every run.
+      let root = "";
+      const f = new Fixture(DUCKLAKE(() => root));
+      let second: Materialization;
+      const seedsInSecond: typeof f.seeds = [];
+
+      beforeAll(async () => {
+         root = fs.realpathSync(
+            fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), "xcl-")),
+         );
+         await f.open(`##! experimental { persistence }
+source: raw is warehouse.table('__RAW__')
+
+#(materialize) refresh="incremental" watermark="ts" merge_key="id" lookback="7 days"__S__
+source: ev is raw
+
+#(materialize) refresh="incremental" watermark="ts" merge_key="id"__S__
+source: ext_sum is ev extend { dimension: id_big is id + 100000000000000000000 }
+`);
+         await f.build({});
+         await f.insert(SECOND);
+         const before = f.seeds.length;
+         second = await f.build({});
+         seedsInSecond.push(...f.seeds.slice(before));
+      }, 400_000);
+      afterAll(async () => {
+         await f.close();
+         fs.rmSync(root, { recursive: true, force: true });
+      });
+
+      it("deltas on the second run, with no reseed", () => {
+         expect([second.status, (second as { error?: unknown }).error]).toEqual(
+            ["MANIFEST_FILE_READY", null],
+         );
+         expect(entryNamed(second, "ext_sum")![1].refresh).toBe("delta");
+         expect(seedsInSecond).toEqual([]);
       });
    });
 

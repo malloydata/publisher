@@ -108,7 +108,7 @@ export interface FlatPair {
    levelPresentFields?: readonly (string | undefined)[];
    /**
     * Whether the leaf's key is known unique and never null on a row of the
-    * leaf (its check, recorded beside the table, passed). Without it no
+    * leaf (its check, recorded in the table's contract, passed). Without it no
     * `count()`, `sum` or `avg` at the leaf is exact, not even of a stored
     * column: live skips a child whose key is NULL (malloydata/malloy#3208),
     * which the pair table holds as a row like any other, and the build's

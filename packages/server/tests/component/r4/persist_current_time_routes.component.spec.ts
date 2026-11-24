@@ -19,10 +19,7 @@ import {
    makeLegs,
    type PersistedQueryServe,
 } from "../../../src/service/materialization/serve/leg";
-import {
-   collationProbe,
-   ReadAdmission,
-} from "../../../src/service/materialization/serve/read_admission";
+import { ReadAdmission } from "../../../src/service/materialization/serve/read_admission";
 import type { PersistedViewServe } from "../../../src/service/materialization/serve/view_variants";
 import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
@@ -242,11 +239,7 @@ describe("stored relations that read the current time, by route", () => {
             kind,
             read: { tier: "database", asOfBuild: true },
          });
-         const admission = new ReadAdmission(
-            query,
-            gateSwitches(),
-            collationProbe,
-         );
+         const admission = new ReadAdmission(query, gateSwitches());
          expect({
             kind,
             verdict: (await admission.decide(kind, answer, true)).verdict,

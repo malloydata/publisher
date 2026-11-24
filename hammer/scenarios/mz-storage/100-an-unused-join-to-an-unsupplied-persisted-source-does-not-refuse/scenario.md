@@ -83,7 +83,7 @@ Expect:
 | ------------ | --------------- | ---------- |
 | 99           | 2026-01-03      | 1000       |
 
-## Build (orchestrated, strict, pkg=ujp)
+## Build (orchestrated, pkg=ujp)
 
 Strict: `rollup` over `daily` by reference, `counts` by nothing. The join is
 never read, so nothing is recomputed, and the build succeeds from `daily`'s

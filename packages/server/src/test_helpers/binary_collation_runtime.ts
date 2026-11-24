@@ -4,7 +4,7 @@
 /**
  * A stand-in for a compiled query's runtime whose every connection compares
  * strings byte-exact, for router specs whose stub answers read stored tables:
- * the stored-side collation check (`serve/gate_collation.ts`) then admits
+ * the stored-side collation check (`serve/admission_lookup.ts`) then admits
  * them, as a plain DuckDB or DuckLake destination does.
  */
 export function binaryCollationRuntime(): unknown {

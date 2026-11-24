@@ -63,8 +63,18 @@ export interface VersionHost<P> {
    ): Promise<P>;
    /** Release a loaded version's connections; it is no longer served. */
    releaseVersion(packageName: string, versionId: string, loaded: P): void;
-   /** Bind a loaded version to a build manifest, or to none (live). */
-   bindVersionManifest(loaded: P, manifestPath: string | null): Promise<void>;
+   /**
+    * Bind a loaded version to a build manifest, or to none (live). With
+    * `refuseOnFailure`, a manifest that cannot be fetched or bound throws
+    * ManifestBindFailedError and leaves the version serving what it served
+    * before; without, the failure is reported as `bind_failed` and the
+    * version serves live.
+    */
+   bindVersionManifest(
+      loaded: P,
+      manifestPath: string | null,
+      options?: { refuseOnFailure?: boolean },
+   ): Promise<void>;
    /** The downloader for a location, writing into a staging folder. */
    downloaderFor(
       packageName: string,
@@ -112,7 +122,10 @@ export interface VersionHost<P> {
    ): Promise<boolean>;
    /** Remove a package row this service created for a publish that failed. */
    removePackageRecord(packageName: string): Promise<void>;
-   /** The build manifest a loaded version is bound to now, or null. */
+   /**
+    * The build manifest a loaded version is bound to now, or null: never
+    * one whose bind failed, so naming it again binds it again.
+    */
    boundManifestOf?(loaded: P): string | null;
    /**
     * Whether the loaded version carries the host-owned mark: a host manifest
@@ -1243,8 +1256,8 @@ export class VersionService<P = unknown> {
             versionId,
             manifestLocation,
          );
+         const resident = this.cache.peek(packageName, versionId);
          try {
-            const resident = this.cache.peek(packageName, versionId);
             // Not loaded: load it (through memory admission, like any load).
             // A load already running read the row before this write and binds
             // the previous manifest, so it is brought up to the row after.
@@ -1255,10 +1268,18 @@ export class VersionService<P = unknown> {
                !host.boundManifestOf ||
                host.boundManifestOf(loaded) !== manifestLocation
             ) {
-               await host.bindVersionManifest(loaded, manifestLocation);
+               // A manifest that does not bind is refused, not served live.
+               await host.bindVersionManifest(loaded, manifestLocation, {
+                  refuseOnFailure: true,
+               });
             }
             return loaded;
          } catch (error) {
+            // A copy this request loaded bound the row's new manifest as it
+            // loaded: drop it, so the next read loads the row put back.
+            if (resident === undefined) {
+               this.cache.evict(packageName, versionId);
+            }
             // Nothing was bound: the row goes back, so it never names a
             // binding the version does not serve.
             await this.registry

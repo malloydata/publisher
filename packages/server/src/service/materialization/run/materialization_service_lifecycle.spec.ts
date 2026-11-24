@@ -746,8 +746,6 @@ describe("runBuild (branch behavior)", () => {
             connectionName: "sf",
          },
       });
-      // Every build is strict.
-      expect(svc.executeInstructedBuild.firstCall.args[0].strict).toBe(true);
       // Reused upstreams are counted as carried, not built.
       expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
          mode: "orchestrated",
@@ -758,7 +756,6 @@ describe("runBuild (branch behavior)", () => {
       expect(svc.commitManifest.firstCall.args[4]).toBeUndefined();
    });
 
-   // ms2data/service#6756: the host's warehouseReach reaches the run, last.
    it("auto-run: derives instructions and auto-loads the manifest", async () => {
       const svc = stubEngine();
 
@@ -791,7 +788,7 @@ describe("runBuild (branch behavior)", () => {
    it("auto-run: a stop that lands while the manifest loads does not cut it short, and the run says so", async () => {
       const svc = stubEngine();
       svc.autoLoadManifest.callsFake(async (...args: unknown[]) => {
-         const finish = args[5] as (s: {
+         const finish = args[4] as (s: {
             metadata: Record<string, unknown>;
          }) => Promise<void>;
          await finish({ metadata: { autoLoad: "loaded" } });
@@ -1079,14 +1076,16 @@ describe("runBuild (branch behavior)", () => {
                sourceEntityId: "build-orders",
                physicalTableName: '"orders_v1"',
                connectionName: "duckdb",
-               upstreamReuse: "recomputed",
-               upstreamRecomputeReason: `could not stack: ${where}`,
             },
          },
          failures: {
             other: {
                sourceEntityId: "other",
                reason: "Failed to materialize source 'other': /test/m.malloy",
+            },
+            third: {
+               sourceEntityId: "third",
+               reason: `could not compile: ${where}`,
             },
          },
          sourcesRefused: 1,
@@ -1115,15 +1114,14 @@ describe("runBuild (branch behavior)", () => {
          new AbortController().signal,
       );
 
-      const [, entries, failures, metadata] = svc.commitManifest.firstCall
-         .args as [
+      const [, , failures, metadata] = svc.commitManifest.firstCall.args as [
          string,
-         Record<string, { upstreamRecomputeReason?: string }>,
+         unknown,
          Record<string, { reason: string }>,
          { refusedSources: Record<string, { message: string }> },
       ];
-      expect(entries["build-orders"].upstreamRecomputeReason).toBe(
-         "could not stack: FILE: sub/m.malloy\nline 3: 'x' is not defined",
+      expect(failures.third.reason).toBe(
+         "could not compile: FILE: sub/m.malloy\nline 3: 'x' is not defined",
       );
       expect(failures.other.reason).toBe(
          "Failed to materialize source 'other': m.malloy",

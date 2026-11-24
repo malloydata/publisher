@@ -35,6 +35,7 @@ import type { TrinoConnection } from "@malloydata/db-trino";
 import {
    Connection,
    contextOverlay,
+   makeDigest,
    MalloyConfig,
    type QueryRecord,
    TableSourceDef,
@@ -58,11 +59,7 @@ import {
 } from "../errors";
 import { logAxiosError, logger } from "../logger";
 import { redactConnectionSecretShapes, redactPgSecrets } from "../pg_helpers";
-import {
-   assertSafeEnvironmentPath,
-   assertSafePackageName,
-   safeJoinUnderRoot,
-} from "../path_safety";
+import { assertSafePackageName } from "../path_safety";
 import {
    assembleEnvironmentConnections,
    EnvironmentConnectionMetadata,
@@ -95,7 +92,12 @@ import { buildSnowflakeConnection } from "./snowflake_connection";
 import { guardBigQueryTruncation } from "./bigquery_truncation";
 import { gcpImpersonationOverlay } from "./gcp_impersonation";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
-import { isManagedConnection, recordConnectionType } from "./connection_type";
+import {
+   isManagedConnection,
+   managedSchemas,
+   managedSchemasOf,
+   recordConnectionType,
+} from "./connection_type";
 import {
    managedCatalogMessage,
    managedCatalogRefusal,
@@ -723,6 +725,7 @@ const renewingStorageSecretOf = new AsyncLocalStorage<object>();
 
 class DuckLakeConnection extends DuckDBConnection {
    private connectionName: string;
+   private legacyDigest: string;
    private storageSecretRenewer?: () => Promise<void>;
    /**
     * The renewal in flight, shared by every statement that failed on the
@@ -915,15 +918,26 @@ class DuckLakeConnection extends DuckDBConnection {
 
    constructor(options: PublisherDuckDBOptions) {
       super(options);
-
-      if (!options.databasePath?.endsWith("_ducklake.duckdb")) {
-         throw new Error(
-            `DuckLakeConnection should only be used for DuckLake connections. ` +
-               `Expected database path ending with '_ducklake.duckdb', got: ${options.databasePath}`,
-         );
-      }
-
       this.connectionName = options.name;
+      // Malloy hard-codes 'duckdb' as the digest's first part; dialectName is that same string.
+      this.legacyDigest = makeDigest(
+         this.dialectName,
+         path.join(
+            options.workingDirectory ?? "",
+            `${options.name}_ducklake.duckdb`,
+         ),
+         options.workingDirectory,
+         undefined,
+      );
+   }
+
+   /**
+    * The digest Malloy computed when this connection opened a
+    * `<env>/<name>_ducklake.duckdb` file, which persisted-source addresses
+    * already embed and which, unlike an in-memory path, differs per lake.
+    */
+   getDigest(): string {
+      return this.legacyDigest;
    }
 
    /**
@@ -939,8 +953,8 @@ class DuckLakeConnection extends DuckDBConnection {
    ): Promise<TableSourceDef> {
       // Before the schema read: a DESCRIBE outside `main` is itself the
       // catalog metadata a managed connection keeps from models.
-      await this.assertManagedScope("A .table() source", () =>
-         managedTablePathRefusal(tablePath, this.connectionName),
+      await this.assertManagedScope("A .table() source", (schemas) =>
+         managedTablePathRefusal(tablePath, this.connectionName, schemas),
       );
       try {
          return await this.fetchTableSchemaIn(tableKey, tablePath);
@@ -953,8 +967,8 @@ class DuckLakeConnection extends DuckDBConnection {
    async fetchSelectSchema(
       sqlRef: Parameters<DuckDBConnection["fetchSelectSchema"]>[0],
    ): Promise<Awaited<ReturnType<DuckDBConnection["fetchSelectSchema"]>>> {
-      await this.assertManagedScope("A .sql() source", () =>
-         managedCatalogRefusal(sqlRef.selectStr, this.connectionName),
+      await this.assertManagedScope("A .sql() source", (schemas) =>
+         managedCatalogRefusal(sqlRef.selectStr, this.connectionName, schemas),
       );
       try {
          return await super.fetchSelectSchema(sqlRef);
@@ -965,14 +979,15 @@ class DuckLakeConnection extends DuckDBConnection {
 
    /**
     * On a connection configured `managed`, throw when `refusal` names a
-    * reference outside the catalog's `main` schema (managed_catalog_scope.ts).
+    * reference outside the schemas it may read (managed_catalog_scope.ts).
     */
    private async assertManagedScope(
       what: string,
-      refusal: () => Promise<string | undefined>,
+      refusal: (schemas: ReadonlySet<string>) => Promise<string | undefined>,
    ): Promise<void> {
-      if (!isManagedConnection(this)) return;
-      const refused = await refusal();
+      const schemas = managedSchemasOf(this);
+      if (!schemas) return;
+      const refused = await refusal(schemas);
       if (refused) {
          throw new BadRequestError(
             managedCatalogMessage(what, this.connectionName, refused),
@@ -1011,36 +1026,6 @@ class DuckLakeConnection extends DuckDBConnection {
          );
       }
       return result;
-   }
-}
-
-export async function deleteDuckLakeConnectionFile(
-   connectionName: string,
-   environmentPath: string,
-): Promise<void> {
-   assertSafePackageName(connectionName);
-   assertSafeEnvironmentPath(environmentPath);
-   const ducklakePath = safeJoinUnderRoot(
-      environmentPath,
-      `${connectionName}_ducklake.duckdb`,
-   );
-   try {
-      await fs.access(ducklakePath);
-      await fs.rm(ducklakePath);
-      logger.info(
-         `Removed DuckLake connection file ${connectionName}_ducklake.duckdb from ${environmentPath}`,
-      );
-   } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-         logger.debug(
-            `DuckLake connection file ${connectionName}_ducklake.duckdb does not exist, skipping deletion`,
-         );
-      } else {
-         logger.error(
-            `Failed to remove DuckLake connection file ${connectionName}_ducklake.duckdb from ${environmentPath}`,
-            { error },
-         );
-      }
    }
 }
 
@@ -1332,7 +1317,7 @@ function statementTimeoutSetupSQL(
    return ms === undefined ? undefined : `SET statement_timeout = ${ms}`;
 }
 
-function buildDuckLakeConnection(
+export function buildDuckLakeConnection(
    metadata: EnvironmentConnectionMetadata,
    entry: CoreConnectionEntry,
 ): DuckLakeConnection {
@@ -1379,7 +1364,7 @@ function getMetadataForLookup(
  * application would risk divergence and a silent live-serving fallback. The
  * value is an opaque token: never re-hashed, logged or parsed.
  */
-function applyConnectionFingerprint(
+export function applyConnectionFingerprint(
    connection: Connection,
    metadata: EnvironmentConnectionMetadata | undefined,
 ): Connection {
@@ -2045,6 +2030,10 @@ export function buildEnvironmentMalloyConfig(
                // from DuckLake, nor a managed catalog from another).
                recordConnectionType(connection, metadata?.apiConnection.type, {
                   managed: metadata?.apiConnection.managed === true,
+                  schemas: managedSchemas(
+                     metadata?.apiConnection.ducklakeConnection
+                        ?.readableSchemas,
+                  ),
                });
                return applyConnectionFingerprint(connection, metadata);
             },

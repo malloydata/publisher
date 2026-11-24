@@ -10,7 +10,7 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as gateClassification from "../../gate_classification";
 import { isDeclineOf } from "../domain/leg_decline";
-import { namedEntryOf } from "./gate_collation";
+import { namedEntryOf } from "./admission_lookup";
 import { entryGates, entryPointGateExprs } from "./gate_reads";
 import {
    liveEntryPointGates,

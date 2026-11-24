@@ -836,41 +836,18 @@ describe("MaterializationController.createMaterialization validation", () => {
          realization: "COPY",
       };
 
-      it("accepts recompute and refuse, ignores both, and warns once per request", async () => {
-         const warn = spyOn(logger, "warn");
-         try {
-            for (const warehouseReach of ["recompute", "refuse"]) {
-               warn.mockClear();
-               const parsed = await parse({
-                  buildInstructions: {
-                     sources: [SOURCE],
-                     strictUpstreams: true,
-                     warehouseReach,
-                  },
-               });
-               expect("warehouseReach" in parsed).toBe(false);
-               expect("strictUpstreams" in parsed).toBe(false);
-               const deprecations = warn.mock.calls.filter((c) =>
-                  String(c[0]).includes("deprecated and ignored"),
-               );
-               expect(deprecations).toHaveLength(1);
-               expect((deprecations[0] as unknown[])[1]).toMatchObject({
-                  options: ["strictUpstreams", "warehouseReach"],
-               });
-            }
-            warn.mockClear();
-            await parse({ buildInstructions: { sources: [SOURCE] } });
-            expect(
-               warn.mock.calls.some((c) =>
-                  String(c[0]).includes("deprecated and ignored"),
-               ),
-            ).toBe(false);
-         } finally {
-            warn.mockRestore();
+      it("refuses any value by name with a 400: the option was removed", async () => {
+         for (const warehouseReach of ["recompute", "refuse", "skip", 1]) {
+            const { controller } = build();
+            await expect(
+               controller.createMaterialization("env", "pkg", {
+                  buildInstructions: { sources: [SOURCE], warehouseReach },
+               }),
+            ).rejects.toThrow(/buildInstructions\.warehouseReach was removed/);
          }
       });
 
-      it("reads null and absent alike, as the default", async () => {
+      it("reads null and absent alike, as absent", async () => {
          for (const buildInstructions of [
             { sources: [SOURCE], warehouseReach: null },
             { sources: [SOURCE] },
@@ -880,16 +857,22 @@ describe("MaterializationController.createMaterialization validation", () => {
          }
       });
 
-      it("rejects any other value with a 400 naming the accepted ones", async () => {
-         for (const warehouseReach of ["REFUSE", "skip", 1, true]) {
-            const { controller } = build();
-            await expect(
-               controller.createMaterialization("env", "pkg", {
-                  buildInstructions: { sources: [SOURCE], warehouseReach },
-               }),
-            ).rejects.toThrow(
-               /warehouseReach must be one of recompute \| refuse/,
+      it("still accepts strictUpstreams, ignores it, and warns once per request", async () => {
+         const warn = spyOn(logger, "warn");
+         try {
+            const parsed = await parse({
+               buildInstructions: { sources: [SOURCE], strictUpstreams: true },
+            });
+            expect("strictUpstreams" in parsed).toBe(false);
+            const deprecations = warn.mock.calls.filter((c) =>
+               String(c[0]).includes("deprecated and ignored"),
             );
+            expect(deprecations).toHaveLength(1);
+            expect((deprecations[0] as unknown[])[1]).toMatchObject({
+               options: ["strictUpstreams"],
+            });
+         } finally {
+            warn.mockRestore();
          }
       });
    });

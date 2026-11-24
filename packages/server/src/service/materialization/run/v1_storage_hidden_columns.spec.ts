@@ -141,7 +141,6 @@ async function scenario() {
          instructions,
          seedEntries: {},
          signal: new AbortController().signal,
-         strict: false,
          priorRefusals: [],
          hostInstructed: false,
       });

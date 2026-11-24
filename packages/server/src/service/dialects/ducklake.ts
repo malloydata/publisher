@@ -51,12 +51,14 @@ import {
    createPgAttachSecret,
    validatePostgresSslmode,
 } from "../postgres_conninfo";
+import { managedSchemas, normalizeReadableSchemas } from "../connection_type";
 import { managedCatalogMessage } from "../managed_catalog_scope";
 import { quoteIdentifier } from "../quoting";
-import { buildDuckdbEntry } from "./duckdb";
 import {
+   METADATA_CATALOG_PREFIX,
    recordedCatalogSettings,
-   recordedSchemaPath,
+   recordedSchemaPaths,
+   ScopeContainmentError,
    storageSecretScope,
 } from "./ducklake_catalog";
 import { catalogKey, reconcileDataInlining } from "./ducklake_inlining";
@@ -92,7 +94,6 @@ export const DUCKLAKE: ConnectionDialect = Object.freeze({
    coreEntry: buildDuckLakeEntry,
    lockedDown: true,
    fileNamed: true,
-   fileCleanup: "deleteDuckLakeConnection",
    introspector: Object.freeze({
       schemas: getSchemasForDuckLake,
       tables: listTablesForDuckLake,
@@ -119,6 +120,23 @@ export const DUCKLAKE: ConnectionDialect = Object.freeze({
    }),
 });
 
+/** A plain identifier: what metadataSchema and destinationSchema allow. */
+const PLAIN_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** A lowercase schema name: what `readableSchemas` and the admin API's schema create accept. */
+export const READABLE_SCHEMA_NAME = /^[a-z_][a-z0-9_]*$/;
+
+/** Schemas the engine owns: never created, dropped, listed or read through the API. */
+export const SYSTEM_SCHEMAS = [
+   "information_schema",
+   "pg_catalog",
+   "temp",
+   "system",
+];
+
+/** Names no catalog schema may take: the engine's own, and `memory`, which would make `memory.t` ambiguous with DuckDB's built-in catalog. */
+export const RESERVED_SCHEMA_NAMES = ["memory", ...SYSTEM_SCHEMAS];
+
 function validateDuckLakeShape(
    connection: ApiConnection,
    origin: ConnectionOrigin,
@@ -127,10 +145,12 @@ function validateDuckLakeShape(
    // destination is only attached at its first BUILD, so a field missed here
    // would surface hours after the config change that caused it.
    if (!connection.ducklakeConnection) {
-      throw new Error("DuckLake connection configuration is missing.");
+      throw new BadRequestError(
+         "DuckLake connection configuration is missing.",
+      );
    }
    if (!connection.ducklakeConnection.catalog?.postgresConnection) {
-      throw new Error(
+      throw new BadRequestError(
          `PostgreSQL connection configuration is required for DuckLake catalog: ${connection.name}`,
       );
    }
@@ -166,11 +186,8 @@ function validateDuckLakeShape(
    // reach escapeSQL as a non-string, a TypeError at the first attach.
    if (connection.ducklakeConnection.catalog.metadataSchema !== undefined) {
       const schema = connection.ducklakeConnection.catalog.metadataSchema;
-      if (
-         typeof schema !== "string" ||
-         !/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)
-      ) {
-         throw new Error(
+      if (typeof schema !== "string" || !PLAIN_IDENTIFIER.test(schema)) {
+         throw new BadRequestError(
             `DuckLake catalog metadataSchema must be a plain identifier ` +
                `([A-Za-z_][A-Za-z0-9_]*), got '${schema}' for connection: ` +
                `${connection.name}`,
@@ -183,35 +200,88 @@ function validateDuckLakeShape(
    if (destinationSchema !== undefined && destinationSchema !== null) {
       if (
          typeof destinationSchema !== "string" ||
-         !/^[A-Za-z_][A-Za-z0-9_]*$/.test(destinationSchema)
+         !PLAIN_IDENTIFIER.test(destinationSchema)
       ) {
-         throw new Error(
+         throw new BadRequestError(
             `DuckLake destinationSchema must be a plain identifier ` +
                `([A-Za-z_][A-Za-z0-9_]*), got '${destinationSchema}' for connection: ` +
                `${connection.name}`,
          );
       }
    }
+   // Each name becomes a prefix of the view's storage secret scope, so anything
+   // but a plain lowercase identifier would widen or break it.
+   const readable = connection.ducklakeConnection.readableSchemas;
+   // An empty list grants nothing, and a client that defaults arrays to [] sends one on every connection.
+   if (
+      readable !== undefined &&
+      readable !== null &&
+      !(Array.isArray(readable) && readable.length === 0)
+   ) {
+      if (origin === "storage-destination") {
+         throw new BadRequestError(
+            `DuckLake readableSchemas applies to a managed connection view, not a ` +
+               `storage destination: ${connection.name}`,
+         );
+      }
+      if (
+         connection.managed !== true ||
+         connection.ducklakeConnection.readOnly === false
+      ) {
+         throw new BadRequestError(
+            `DuckLake readableSchemas requires a managed, read-only connection: ` +
+               `${connection.name}`,
+         );
+      }
+      if (
+         !Array.isArray(readable) ||
+         readable.some(
+            (name) =>
+               typeof name !== "string" || !READABLE_SCHEMA_NAME.test(name),
+         )
+      ) {
+         throw new BadRequestError(
+            `DuckLake readableSchemas must be a list of lowercase schema names ` +
+               `([a-z_][a-z0-9_]*) for connection: ${connection.name}`,
+         );
+      }
+      const reserved = readable.find(
+         (name) =>
+            RESERVED_SCHEMA_NAMES.includes(name) ||
+            name.startsWith(METADATA_CATALOG_PREFIX),
+      );
+      if (reserved !== undefined) {
+         throw new BadRequestError(
+            `DuckLake readableSchemas names '${reserved}', a reserved schema name, ` +
+               `for connection: ${connection.name}`,
+         );
+      }
+   }
 }
 
-function buildDuckLakeEntry(
-   connection: NamedConnection,
-   environmentPath: string,
-): CoreConnectionEntry {
+function buildDuckLakeEntry(connection: NamedConnection): CoreConnectionEntry {
    // Shape is validated up front by validateConnectionShape.
    return {
-      ...buildDuckdbEntry(
-         connection.name,
-         environmentPath,
-         `${connection.name}_ducklake.duckdb`,
-      ),
+      // The catalog is Postgres and the data remote, so the primary holds
+      // nothing: in memory, so a changed generation never waits on a file.
+      is: "duckdb",
+      databasePath: ":memory:",
       // Attached, then locked to its data path (duckdb_lockdown.ts). The key
       // digests the catalog config, so an edit opens a fresh instance rather
-      // than re-attaching on a locked one.
+      // than re-attaching on a locked one. The name keeps two lakes with
+      // identical config off one locked instance.
       ...networkedDuckDBOptions(
          "ducklake",
          setupIdentity({
-            ducklakeConnection: connection.ducklakeConnection ?? null,
+            name: connection.name,
+            ducklakeConnection: connection.ducklakeConnection
+               ? {
+                    ...connection.ducklakeConnection,
+                    readableSchemas: normalizeReadableSchemas(
+                       connection.ducklakeConnection.readableSchemas,
+                    ),
+                 }
+               : null,
             managed: connection.managed === true,
          }),
       ),
@@ -667,6 +737,7 @@ async function attachDuckLakeWithMode(
    await secureCatalogStorage(connection, dbName, storage, {
       dataPath,
       metadataSchema,
+      readableSchemas: normalizeReadableSchemas(ducklakeConfig.readableSchemas),
       options,
    });
    return true;
@@ -722,7 +793,7 @@ async function storageAttachment(
 
 /**
  * After the ATTACH: allow what the catalog's lock may read, and create its
- * storage secret scoped to the catalog's prefix, detaching the catalog again
+ * storage secret scoped to the catalog's prefixes, detaching the catalog again
  * when the secret fails on an unlocked instance.
  */
 async function secureCatalogStorage(
@@ -732,32 +803,51 @@ async function secureCatalogStorage(
    input: {
       dataPath: string | undefined;
       metadataSchema: string | undefined;
+      readableSchemas: string[] | undefined;
       options: DestinationAttachMode;
    },
 ): Promise<void> {
-   const { dataPath, metadataSchema, options } = input;
+   const { dataPath, metadataSchema, readableSchemas, options } = input;
    // Only a connection view is narrowed: an operator's destination serves
    // every schema, whatever flags its entry carries.
    const managedView =
       options.managed === true && options.origin !== "storage-destination";
    if (!storage) {
       // No storage secret (a local data path): what its lock allows is the
-      // whole data path, or, for a managed read-only view, only its `main`
-      // schema's files, as a secret would be scoped. A managed view whose main
-      // path cannot be read is allowed no data file at all.
-      const root =
+      // whole data path, or, for a managed read-only view, only the files of
+      // `main` and its readable schemas, as a secret would be scoped. A managed
+      // view whose main path cannot be read is allowed no data file at all.
+      const roots =
          managedView && options.readOnly
             ? await attachedDuckLakeScope(connection, dbName, {
                  configuredDataPath: dataPath,
                  metadataSchema,
+                 readableSchemas,
                  readOnly: true,
                  managed: true,
-              }).catch(() => undefined)
-            : dataPath ||
-              (await recordedCatalogSettings(connection, dbName, metadataSchema)
-                 .then((settings) => settings.data_path)
-                 .catch(() => undefined));
-      if (root) allowForLockdown(connection, root);
+              }).catch(async (error) => {
+                 // Detached on a refusal, or the next lookup would find the catalog attached and skip the check.
+                 if (error instanceof ScopeContainmentError) {
+                    await connection
+                       .runSQL(`DETACH ${quoteIdentifier(dbName, "duckdb")};`)
+                       .catch(() => {});
+                    throw error;
+                 }
+                 return undefined;
+              })
+            : [
+                 dataPath ||
+                    (await recordedCatalogSettings(
+                       connection,
+                       dbName,
+                       metadataSchema,
+                    )
+                       .then((settings) => settings.data_path)
+                       .catch(() => undefined)),
+              ];
+      for (const root of roots ?? []) {
+         if (root) allowForLockdown(connection, root);
+      }
    }
    if (storage) {
       // The storage secret, scoped to the catalog's prefix. After the ATTACH,
@@ -771,6 +861,7 @@ async function secureCatalogStorage(
          const scope = await attachedDuckLakeScope(connection, dbName, {
             configuredDataPath: dataPath,
             metadataSchema,
+            readableSchemas,
             readOnly: options.readOnly,
             managed: managedView,
          });
@@ -784,7 +875,7 @@ async function secureCatalogStorage(
          }
          await attachCloudStorage(connection, storage, options.origin, scope);
          // The lock allows exactly what the secret is scoped to.
-         allowForLockdown(connection, scope);
+         for (const prefix of scope) allowForLockdown(connection, prefix);
       } catch (error) {
          // Once the instance is locked the catalog is the locker's, attached
          // and scoped, and nothing could ATTACH it again: detaching it would
@@ -821,9 +912,9 @@ async function secureCatalogStorage(
 /**
  * The scope of an attached catalog's storage secret ({@link storageSecretScope}),
  * reading from the catalog's metadata whatever the config does not state: the
- * recorded data path when the config has none, and the `main` schema's path for
- * a managed read-only view. Runs on the attached catalog, so nothing here is a
- * guess the preflight could fail softly on.
+ * recorded data path when the config has none, and every live schema's path for
+ * a managed read-only view. Runs on the attached catalog,
+ * so nothing here is a guess the preflight could fail softly on.
  */
 async function attachedDuckLakeScope(
    connection: DuckDBConnection,
@@ -831,10 +922,11 @@ async function attachedDuckLakeScope(
    input: {
       configuredDataPath?: string;
       metadataSchema?: string;
+      readableSchemas?: string[];
       readOnly: boolean;
       managed: boolean;
    },
-): Promise<string | undefined> {
+): Promise<string[] | undefined> {
    const recordedDataPath = input.configuredDataPath
       ? undefined
       : (
@@ -844,19 +936,16 @@ async function attachedDuckLakeScope(
               input.metadataSchema,
            )
         ).data_path;
-   const mainSchemaPath =
+   const schemaPaths =
       input.managed && input.readOnly
-         ? await recordedSchemaPath(
-              connection,
-              dbName,
-              input.metadataSchema,
-              "main",
-           )
+         ? await recordedSchemaPaths(connection, dbName, input.metadataSchema)
          : undefined;
    return storageSecretScope({
+      catalog: dbName,
       configuredDataPath: input.configuredDataPath,
       recordedDataPath,
-      mainSchemaPath,
+      schemaPaths,
+      readableSchemas: input.readableSchemas,
       readOnly: input.readOnly,
       managed: input.managed,
    });
@@ -927,18 +1016,27 @@ async function getSchemasForDuckLake(
             malloyConnection,
             `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${sqlLiteral(catalogName, connection.type)}' ORDER BY schema_name`,
          );
-         // A managed connection reads only its catalog's `main` schema
-         // (managed_catalog_scope.ts): the others are not listed to it.
+         // A managed connection reads only its catalog's `main` and readable
+         // schemas (managed_catalog_scope.ts): the others are not listed to it.
+         const readable =
+            connection.managed === true
+               ? managedSchemas(connection.ducklakeConnection?.readableSchemas)
+               : undefined;
          const rows = standardizeRunSQLResult(result).filter(
             (row) =>
-               connection.managed !== true ||
-               (row as Record<string, unknown>).schema_name === "main",
+               !readable ||
+               readable.has(
+                  (row as Record<string, unknown>).schema_name as string,
+               ),
          );
 
          return rows.map((row: unknown) => {
             const typedRow = row as Record<string, unknown>;
             const schemaName = typedRow.schema_name as string;
-            const shouldShow = schemaName === "main" || schemaName === "public";
+            const shouldShow =
+               schemaName === "main" ||
+               schemaName === "public" ||
+               readable?.has(schemaName) === true;
             return {
                name: schemaName,
                isHidden: !shouldShow,
@@ -966,7 +1064,9 @@ async function listTablesForDuckLake(
    if (
       connection.managed === true &&
       (catalogName.toLowerCase() !== (connection.name ?? "").toLowerCase() ||
-         actualSchemaName?.toLowerCase() !== "main" ||
+         !managedSchemas(connection.ducklakeConnection?.readableSchemas).has(
+            actualSchemaName?.toLowerCase() ?? "",
+         ) ||
          schemaName.split(".").length !== 2)
    ) {
       throw new BadRequestError(
@@ -998,7 +1098,7 @@ async function listTablesForDuckLake(
 function ducklakeOverlap(
    connection: ApiConnection,
    destination: ApiConnection,
-): string | undefined {
+): { reason: string; sameCatalog: boolean } | undefined {
    const c = connection.ducklakeConnection;
    const d = destination.ducklakeConnection;
    if (!c || !d) return undefined;
@@ -1008,12 +1108,18 @@ function ducklakeOverlap(
       cCatalog === catalogKey(d.catalog?.postgresConnection) &&
       (c.catalog?.metadataSchema ?? "") === (d.catalog?.metadataSchema ?? "")
    ) {
-      return "it names the same DuckLake catalog";
+      return {
+         reason: "it names the same DuckLake catalog",
+         sameCatalog: true,
+      };
    }
    const cPath = dataPath(c.storage?.bucketUrl);
    const dPath = dataPath(d.storage?.bucketUrl);
    if (cPath && dPath && (cPath.startsWith(dPath) || dPath.startsWith(cPath))) {
-      return "its data path overlaps the destination's";
+      return {
+         reason: "its data path overlaps the destination's",
+         sameCatalog: false,
+      };
    }
    return undefined;
 }

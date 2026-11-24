@@ -30,10 +30,19 @@ import {
 } from "@malloydata/malloy";
 import { leaveOutDefinitionAt } from "../text/declarations_kept";
 import { inMemoryRuntime } from "../text/generated_files";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+   existsSync,
+   mkdirSync,
+   mkdtempSync,
+   readdirSync,
+   rmSync,
+   statSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { components } from "../../../api";
+import { duckDBByteSize, getDuckDBMemoryLimit } from "../../../config";
+import { settings } from "../../../settings";
 import {
    BadRequestError,
    MaterializationEligibilityError,
@@ -236,6 +245,74 @@ export function passthroughSourceType(
    );
 }
 
+const BUILD_DIR_PREFIX = "malloy-build-";
+
+/** Whether a process with `pid` exists; EPERM is one this process may not signal. */
+function processAlive(pid: number): boolean {
+   try {
+      process.kill(pid, 0);
+      return true;
+   } catch (err) {
+      return (err as NodeJS.ErrnoException).code === "EPERM";
+   }
+}
+
+/**
+ * Removes the working directories of sessions an earlier process never
+ * disposed: an OOM kill restarts the container with its emptyDir, so their
+ * spill still counts against the ephemeral-storage limit. A directory is named
+ * for its process (`malloy-build-<pid>-…`), and goes when that process is gone.
+ * One named for this process's own pid goes only if it predates this process,
+ * since a restarted container reuses its pids (pid 1); a directory of another
+ * live process is never touched, nor a live session's. One with no pid in its
+ * name (an earlier release's) is left alone. Liveness is by pid, so the temp
+ * root must not be shared across PID namespaces. Returns how many it removed.
+ */
+export function removeStaleBuildDirs(
+   root: string = os.tmpdir(),
+   startedAtMs: number = Date.now() - process.uptime() * 1000,
+   ownPid: number = process.pid,
+): number {
+   let removed = 0;
+   try {
+      for (const entry of readdirSync(root, { withFileTypes: true })) {
+         if (!entry.isDirectory() || !entry.name.startsWith(BUILD_DIR_PREFIX)) {
+            continue;
+         }
+         const dir = path.join(root, entry.name);
+         const owner = /^malloy-build-(\d+)-/.exec(entry.name)?.[1];
+         // With no pid there is no telling whether an older publisher sharing this temp root still uses it.
+         if (owner === undefined) continue;
+         const pid = Number(owner);
+         try {
+            if (
+               pid !== ownPid
+                  ? processAlive(pid)
+                  : statSync(dir).mtimeMs >= startedAtMs
+            ) {
+               continue;
+            }
+            rmSync(dir, { recursive: true, force: true });
+            removed += 1;
+         } catch (err) {
+            logger.warn("Failed to remove a stale build working directory", {
+               dir,
+               code: errorCodeOf(err),
+            });
+         }
+      }
+   } catch (err) {
+      logger.warn("Failed to list stale build working directories", {
+         root,
+         code: errorCodeOf(err),
+      });
+   }
+   if (removed > 0) {
+      logger.info("Removed stale build working directories", { removed });
+   }
+   return removed;
+}
+
 /**
  * A build-scoped DuckDB session on its OWN in-memory instance, plus a disposer
  * that closes it and removes its throwaway working directory.
@@ -265,7 +342,9 @@ export function createIsolatedBuildSession(sessionName: string): {
     */
    workDir: string;
 } {
-   const workDir = mkdtempSync(path.join(os.tmpdir(), "malloy-build-"));
+   const workDir = mkdtempSync(
+      path.join(os.tmpdir(), `${BUILD_DIR_PREFIX}${process.pid}-`),
+   );
    // The disposer that owns removing workDir does not exist until this function
    // returns, so a throw from the constructor would strand the directory with
    // nothing left holding a reference to it.
@@ -510,6 +589,34 @@ export async function withDestinationSession<T>(
 }
 
 /**
+ * The bounds for an admin table load or copy, which runs beside the server's
+ * other work in a pod sized for it: a memory cap below the pod's (the
+ * operator's own `duckdb.memoryLimit` when that is lower), a spill cap under
+ * its ephemeral storage, unordered output (so the writer streams), and
+ * metadata caches for the many small reads of a Parquet scan.
+ */
+export async function applyLoadSessionSettings(
+   session: DuckDBConnection,
+): Promise<void> {
+   const cap = settings.get("admin.memoryLimit");
+   const configured = getDuckDBMemoryLimit();
+   const memoryLimit =
+      configured !== undefined &&
+      duckDBByteSize(configured) < duckDBByteSize(cap)
+         ? configured
+         : cap;
+   for (const setting of [
+      `memory_limit='${escapeSQL(memoryLimit)}'`,
+      `max_temp_directory_size='${escapeSQL(settings.get("admin.maxTempDirectorySize"))}'`,
+      "preserve_insertion_order=false",
+      "enable_http_metadata_cache=true",
+      "parquet_metadata_cache=true",
+   ]) {
+      await session.runSQL(`SET ${setting}`);
+   }
+}
+
+/**
  * Throws unless `sql` is exactly one SELECT, by DuckDB's own parser and as
  * the connector would split it: what a build in a session that also reads
  * another destination may run from a model. Its data path is in the
@@ -667,15 +774,12 @@ export interface StorageBuildResult {
     */
    seededThrough?: WatermarkBound;
    /**
-    * For a source that reads a persisted upstream: whether its rows were
-    * computed from the upstream's STORED table in the destination (`reused`),
-    * or by recomputing the upstream from the source warehouse with it inlined
-    * (`recomputed`). Absent for a source with no persisted upstream, whose only
-    * build reads the warehouse.
+    * For a source that reads a persisted upstream: its rows were computed
+    * from the upstream's STORED table in the destination (`reused`). Absent
+    * for a source with no persisted upstream, whose only build reads the
+    * warehouse.
     */
-   upstreamReuse?: "reused" | "recomputed";
-   /** Why the stored upstream was not read, when `upstreamReuse` is `recomputed`. */
-   upstreamRecomputeReason?: string;
+   upstreamReuse?: "reused";
 }
 
 /** What an in-place refresh did, for the manifest entry to report. */
@@ -1211,16 +1315,16 @@ export async function planChainedDownstream(params: {
    virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>>;
    connections: FixedConnectionMap;
    /**
-    * The planned source a recompute of the downstream builds. A chained
+    * The planned source, as a build from its definition would write it. A chained
     * build whose downstream lacks one of its stored columns (a column read
     * through a definition left out of a stored upstream, as a `select: *`
     * does) is a shape it could not carry: stored, the table would answer
     * with fewer columns than live. Absent: not checked.
     */
-   recomputes?: PersistSource;
+   plannedSource?: PersistSource;
    /**
-    * With `recomputes`: every column must also be declared as the type the
-    * recompute declares it, or the build is a shape it could not carry (a
+    * With `plannedSource`: every column must also be declared as the type the
+    * planned source declares it, or the build is a shape it could not carry (a
     * rollup over a stored base, whose aggregates could type otherwise).
     */
    sameDeclaredTypes?: boolean;
@@ -1292,11 +1396,11 @@ export async function planChainedDownstream(params: {
             `rebound parents don't provide).`,
       });
    }
-   if (params.recomputes) {
+   if (params.plannedSource) {
       let expected: string[] = [];
       let built: string[] = [];
       try {
-         expected = storedColumnNames(params.recomputes);
+         expected = storedColumnNames(params.plannedSource);
          built = storedColumnNames(downstream);
       } catch {
          // An unknown surface is refused where the table is projected to it.
@@ -1322,7 +1426,7 @@ export async function planChainedDownstream(params: {
             );
          let same = false;
          try {
-            same = typed(params.recomputes) === typed(downstream);
+            same = typed(params.plannedSource) === typed(downstream);
          } catch {
             // An unreadable surface is not proven the same.
          }
@@ -1351,9 +1455,7 @@ export async function planChainedDownstream(params: {
    // The CTAS runs on a read-write session on the destination, as a
    // same-catalog build does, so the same rule holds: only SQL Malloy
    // generated. The rebound parents are virtual, so this reads the
-   // downstream's own definition. Marked eligible, so the caller recomputes
-   // from raw, where author SQL runs in the source warehouse (or a
-   // same-catalog source is refused).
+   // downstream's own definition. Refused as ineligible.
    const cause = authorSqlCause(sourceDefOf(downstream));
    if (cause !== undefined) {
       throw new MaterializationEligibilityError({
@@ -1364,7 +1466,7 @@ export async function planChainedDownstream(params: {
       });
    }
    // Projected to the columns the source declares, hidden ones included, as
-   // a recompute writes them; a column `except:` drops is left out.
+   // a build from the definition writes them; a column `except:` drops is left out.
    const sql = projectToStoredColumns(
       downstream,
       buildSQLOf(downstream, { entries: {} }),
@@ -1395,8 +1497,8 @@ export async function buildDownstreamIntoStorage(params: {
    connectionName?: string;
    /** The downstream source's Malloy name, to locate it in the transient plan. */
    downstreamName: string;
-   /** See planChainedDownstream's `recomputes`. */
-   recomputes?: PersistSource;
+   /** See planChainedDownstream's `plannedSource`. */
+   plannedSource?: PersistSource;
    /** See planChainedDownstream's `sameDeclaredTypes`. */
    sameDeclaredTypes?: boolean;
    /** See planChainedDownstream's `givenFree`. */
@@ -1437,7 +1539,9 @@ export async function buildDownstreamIntoStorage(params: {
          model,
          downstreamName,
          virtualMap,
-         ...(params.recomputes ? { recomputes: params.recomputes } : {}),
+         ...(params.plannedSource
+            ? { plannedSource: params.plannedSource }
+            : {}),
          ...(params.sameDeclaredTypes ? { sameDeclaredTypes: true } : {}),
          ...(params.givenFree ? { givenFree: true } : {}),
          connections: new FixedConnectionMap(
@@ -1511,10 +1615,10 @@ export async function buildDownstreamIntoStorage(params: {
 }
 
 /**
- * Build a `storage=` source whose recompute runs the same query as a stored
+ * Build a `storage=` source whose definition runs the same query as a stored
  * upstream's (one compiler key: an `extend` of it that adds no query of its
  * own, folded onto a table of its own by a `name=` or a projection of its
- * own) as a projection of that upstream's table: the same rows a recompute
+ * own) as a projection of that upstream's table: the same rows a build from the definition
  * writes, the columns the source stores, cast to its declared types. The
  * caller proves the two builds are one; nothing is compiled here.
  */
@@ -1549,7 +1653,7 @@ export async function buildProjectionIntoStorage(params: {
    );
 }
 
-/** CTAS a stacked build's SQL into the destination, as a recompute types it. */
+/** CTAS a stacked build's SQL into the destination, typed as a build from the definition types it. */
 async function writeStackedTable(
    session: DuckDBConnection,
    params: {
@@ -1571,7 +1675,7 @@ async function writeStackedTable(
       ),
       STORAGE_DIALECT,
    );
-   // The downstream's own declared types, as for a recompute.
+   // The downstream's own declared types, as for a build from the definition.
    const casts = storageBuildCasts(downstream);
    const captured: { collations?: TableCollations } = {};
    const schema = await createTableWithDeclaredTypes(
@@ -2126,13 +2230,14 @@ export async function writePartitionedTable(
 /**
  * Run a build's statements as one transaction: COMMIT when `body` returns,
  * ROLLBACK when it throws, which restores the previous generation of the
- * table. A failed rollback is logged, never raised over the error that caused
- * it.
+ * table. A failed rollback is logged as `rollbackFailure`, never raised over
+ * the error that caused it.
  */
-async function inTransaction<T>(
+export async function inTransaction<T>(
    session: DuckDBConnection,
    quotedTablePath: string,
    body: () => Promise<T>,
+   rollbackFailure = "Failed to roll back a storage build; the served generation may have been replaced",
 ): Promise<T> {
    await session.runSQL("BEGIN TRANSACTION");
    let result: T;
@@ -2143,17 +2248,13 @@ async function inTransaction<T>(
       try {
          await session.runSQL("ROLLBACK");
       } catch (rollbackErr) {
-         logger.warn(
-            "Failed to roll back a storage build; the served generation may " +
-               "have been replaced",
-            {
-               table: quotedTablePath,
-               code: errorCodeOf(rollbackErr),
-               // The build's error can quote its SQL or a value; it is
-               // rethrown to the run's record.
-               causeCode: errorCodeOf(buildErr),
-            },
-         );
+         logger.warn(rollbackFailure, {
+            table: quotedTablePath,
+            code: errorCodeOf(rollbackErr),
+            // The build's error can quote its SQL or a value; it is
+            // rethrown to the run's record.
+            causeCode: errorCodeOf(buildErr),
+         });
       }
       throw buildErr;
    }

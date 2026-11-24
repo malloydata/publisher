@@ -24,6 +24,7 @@ import {
    describe,
    expect,
    it,
+   setSystemTime,
    spyOn,
 } from "bun:test";
 import { logger } from "../logger";
@@ -347,6 +348,38 @@ describe("a served copy compiles once per thing it is compiled from", () => {
       expect(
          compileInputOf({ ...BINDING, unlisted: 1 } as unknown as Binding),
       ).not.toBe(compileInputOf(BINDING));
+   });
+
+   it("leaves a table past its window out of what the copy reports served, before any commit recompiles it", async () => {
+      const { model } = await buildModel(PLAIN, STORED);
+      const id = SourceMap.of(
+         (model as unknown as { modelDef: unknown }).modelDef,
+      ).sourceIDOf("X")!;
+      const start = Date.now();
+      try {
+         model.setServeBindings([
+            {
+               ...BINDING,
+               sourceIDs: [id],
+               freshAsOf: new Date(start - 50_000).toISOString(),
+               freshnessWindowSeconds: 60,
+               freshnessFallback: "live",
+            },
+         ]);
+         await model.prepareServedCopy();
+         expect(model.servedCopySourceIDs()).toEqual(new Set([id]));
+         const seen = compileCount();
+         // Past the edge, with no commit at it yet: the kept copy still
+         // re-roots the table, but what it reports leaves it out.
+         setSystemTime(new Date(start + 20_000));
+         expect(model.servedCopySourceIDs()).toEqual(new Set());
+         expect(model.servedCopyDatabaseOnlyIDs()).toEqual(new Set());
+         expect(compileCount()).toBe(seen);
+         // A query pinned now compiles its own copy without the table.
+         expect(await total(model)).toBe(0);
+      } finally {
+         setSystemTime();
+      }
    });
 
    it("compiles nothing for a model with no bindings", async () => {

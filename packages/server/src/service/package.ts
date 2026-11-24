@@ -15,7 +15,11 @@ import type {
 } from "./materialization/domain/chain_build";
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
-import { isManagedConnection, recordConnectionType } from "./connection_type";
+import {
+   managedSchemas,
+   managedSchemasOf,
+   recordConnectionType,
+} from "./connection_type";
 import { readUpstreamSchemas, withNameProblems } from "./materialization";
 import {
    type UpstreamSchemaReadings,
@@ -126,6 +130,7 @@ import type {
 } from "./materialization/domain/chain_build";
 import type { KeptTable, LateRows } from "./materialization/domain/types";
 import type {
+   IncrementalCheckFinding,
    LedgerParent,
    UnprovenGeneration,
 } from "./materialization/domain/incremental";
@@ -1641,6 +1646,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          buildPlanMs = await pkg.mz.applyLoadBuildPlan(outcome.buildPlan);
          // Before any bind, so a database rollup bound later is routed.
          pkg.mz.pushServedCopyContextToModels();
+         void pkg.mz.recordStringCapabilitiesAtLoad();
 
          await applyLoadGates(pkg);
          const entitiesStarted = performance.now();
@@ -1719,11 +1725,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.packageName;
    }
 
-   /**
-    * The host port's `forgetKeyUniqueness`: a run about to write these
-    * tables drops their bound key checks first (see
-    * PackageMaterialization.forgetKeyUniqueness).
-    */
    /** The host port's `boundLateRows` (PackageMaterialization.boundLateRows). */
    public boundLateRows(): ReadonlyMap<string, LateRows> {
       return this.mz.boundLateRows();
@@ -1747,6 +1748,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.mz.setUnprovenGenerations(list);
    }
 
+   /**
+    * The host port's `forgetKeyUniqueness`: a run about to write these
+    * tables drops their passed key checks first (see
+    * PackageMaterialization.forgetKeyUniqueness).
+    */
    public forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
       this.mz.forgetKeyUniqueness(sourceEntityIds);
    }
@@ -1766,6 +1772,17 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
+    * The host port's `noteIncrementalCheck`: what a run found of a source's
+    * incremental checks (see PackageMaterialization.noteIncrementalCheck).
+    */
+   public noteIncrementalCheck(
+      sourceEntityId: string,
+      finding: IncrementalCheckFinding,
+   ): void {
+      this.mz.noteIncrementalCheck(sourceEntityId, finding);
+   }
+
+   /**
     * The host port's `setKeptTables`: the tables the newest auto-run lists as
     * kept after a rename (see PackageMaterialization.setKeptTables).
     */
@@ -1778,6 +1795,15 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       prior?: Readonly<Record<string, ManifestEntry>>,
    ): ReadonlySet<string> {
       return this.mz.incompatibleTables(prior);
+   }
+
+   /** The host port's `holdCarriedToContracts` (see PackageMaterialization.holdCarriedToContracts). */
+   public holdCarriedToContracts(
+      prior: Readonly<Record<string, ManifestEntry>>,
+      site?: Parameters<PackageMaterialization["holdCarriedToContracts"]>[1],
+      options?: Parameters<PackageMaterialization["holdCarriedToContracts"]>[2],
+   ): ReturnType<PackageMaterialization["holdCarriedToContracts"]> {
+      return this.mz.holdCarriedToContracts(prior, site, options);
    }
 
    /** The host port's `chainBuildText` (see PackageMaterialization.chainBuildText). */
@@ -2233,6 +2259,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.mz.servedCopyWarnings(),
          ...this.mz.repeatedJoinOneKeyWarnings(),
          ...this.mz.lateRowWarnings(),
+         ...this.mz.incrementalCheckWarnings(),
          ...this.mz.unprovenGenerationWarnings(),
          ...this.mz.keptTableWarnings(),
          ...this.mz.annotationFindingWarnings(),
@@ -2468,16 +2495,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    public async formatAuthorSqlRefusals(): Promise<string> {
       const lines: string[] = [];
       // A connection the model compiled against resolves; one that no longer
-      // does is held to the managed scope too, failing closed.
-      const isManaged = (connectionName: string) =>
+      // does is held to the narrowest managed scope, failing closed.
+      const schemasOf = (connectionName: string) =>
          this.getMalloyConnection(connectionName).then(
-            (connection) => isManagedConnection(connection),
-            () => true,
+            (connection) => managedSchemasOf(connection),
+            () => managedSchemas(),
          );
       for (const [modelPath, model] of this.models) {
          lines.push(
             ...(await authorSqlRefusals(modelPath, model.getModelDef(), {
-               isManagedConnection: isManaged,
+               managedSchemas: schemasOf,
             })),
          );
       }

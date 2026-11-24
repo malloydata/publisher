@@ -20,6 +20,8 @@
  * region_r.c.origin, the last one three joins deep.
  */
 
+import * as path from "path";
+import { fileURLToPath, pathToFileURL } from "url";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -35,7 +37,9 @@ import { dbmetaAnnotations } from "@malloydata/malloy/connection";
 
 export const JOIN_FIXTURE_MODEL_PATH = "m.malloy";
 
-const ROOT = "file:///join-fixture/";
+// An absolute file URL on every platform: a drive-less file:/// URL has no
+// path on Windows, so getPackagePath's fileURLToPath would throw there.
+const ROOT = `${pathToFileURL(path.resolve("/join-fixture")).href}/`;
 
 const MODEL_TEXT = `
 source: country is duckdb.sql("select 1 as id, 'US' as code") extend {
@@ -216,6 +220,7 @@ export async function compileModelFiles(
          getSourceInfos: () => unknown[];
          getQueries: () => never[];
          getModelDef: () => ModelDef;
+         getCompiledSourceText: () => string;
       }
    >();
    const modelDefs: Record<string, ModelDef> = {};
@@ -235,11 +240,13 @@ export async function compileModelFiles(
          getSourceInfos: () => sourceInfos,
          getQueries: () => [],
          getModelDef: () => modelDef,
+         getCompiledSourceText: () => files[path]!,
       });
    }
    await duckdb.close();
    return {
       pkg: {
+         getPackagePath: () => fileURLToPath(ROOT),
          listSkills: () => [],
          listModels: async () => Object.keys(files).map((path) => ({ path })),
          getModel: (path: string) => models.get(path),

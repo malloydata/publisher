@@ -3,6 +3,7 @@
 
 import { DuckDBInstance } from "@duckdb/node-api";
 import { describe, expect, it } from "bun:test";
+import { managedSchemas } from "./connection_type";
 import {
    managedCatalogRefusal,
    scrubCatalogSuggestions,
@@ -119,6 +120,75 @@ describe("managed catalog scope", () => {
       expect(
          await managedTablePathRefusal("lake.materialized.gated", "lake"),
       ).toBe("'lake.materialized.gated'");
+   });
+
+   describe("with readableSchemas listing stripe", () => {
+      const schemas = managedSchemas(["stripe", "main", "stripe"]);
+
+      it("is main plus the normalized list", () => {
+         expect([...schemas]).toEqual(["main", "stripe"]);
+         expect([...managedSchemas()]).toEqual(["main"]);
+      });
+
+      it.each([
+         ["main, as before", "SELECT * FROM orders"],
+         ["a listed schema, bare-qualified", "SELECT * FROM stripe.charges"],
+         [
+            "a listed schema, alias-qualified",
+            "SELECT * FROM lake.stripe.charges",
+         ],
+         ["a listed schema, cased", 'SELECT * FROM "LAKE"."Stripe".charges'],
+         [
+            "a listed schema in a scalar subquery",
+            "SELECT (SELECT count(*) FROM stripe.charges)",
+         ],
+      ])("admits %s", async (_label, sql) => {
+         expect(
+            await managedCatalogRefusal(sql, "lake", schemas),
+         ).toBeUndefined();
+      });
+
+      it.each([
+         ["an unlisted schema", "SELECT * FROM materialized.t"],
+         ["an unlisted schema, qualified", "SELECT * FROM lake.materialized.t"],
+         [
+            "a catalog view in a listed schema",
+            "SELECT * FROM stripe.duckdb_tables",
+         ],
+         [
+            "a catalog view in a listed schema, qualified",
+            "SELECT * FROM lake.stripe.pg_class",
+         ],
+         ["a function in a listed schema", "SELECT stripe.upper('x')"],
+         ["a path under a listed schema", `SELECT * FROM stripe."x.parquet"`],
+         ["DESCRIBE of a listed schema's table", "DESCRIBE stripe.charges"],
+         [
+            "a listed schema of another catalog",
+            "SELECT * FROM memory.stripe.t",
+         ],
+      ])("refuses %s", async (_label, sql) => {
+         expect(await managedCatalogRefusal(sql, "lake", schemas)).toBeString();
+      });
+
+      it("reads a .table() path as Malloy places it", async () => {
+         expect(
+            await managedTablePathRefusal("stripe.charges", "lake", schemas),
+         ).toBeUndefined();
+         expect(
+            await managedTablePathRefusal(
+               "lake.stripe.charges",
+               "lake",
+               schemas,
+            ),
+         ).toBeUndefined();
+         expect(
+            await managedTablePathRefusal("materialized.t", "lake", schemas),
+         ).toBe("'materialized.t'");
+         // The default is main alone, so a caller that forgets the set fails closed.
+         expect(await managedTablePathRefusal("stripe.charges", "lake")).toBe(
+            "'stripe.charges'",
+         );
+      });
    });
 
    it("covers every relation DuckDB's search path reaches with a refused prefix", async () => {

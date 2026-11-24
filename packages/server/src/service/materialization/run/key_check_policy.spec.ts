@@ -3,7 +3,7 @@
 
 /**
  * One policy for a key check that throws, on either tier: the key reads as
- * unknown. It warns, records nothing, and never fails the build.
+ * unknown. It warns, returns nothing, and never fails the build.
  */
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
@@ -16,24 +16,21 @@ import {
    type MetricsHarness,
 } from "../../../test_helpers/metrics_harness";
 import { DatabaseTier } from "./database_build_strategy";
-import { UniquenessLedger } from "./inline_uniqueness";
-import { checkAndRecordKey } from "./instructed_build";
+import { checkKeyAndWarn } from "./instructed_build";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 
 const CHECK = { keyColumn: "id", sql: "SELECT 1 WHERE false" };
 const MESSAGES = { notRun: "did not run", notUnique: "not unique" };
 
-/** Record one check on a fresh ledger: what it recorded, and what it warned. */
+/** Run one check: what it returned for the contract, and what it warned. */
 async function record(
-   runCheck: Parameters<typeof checkAndRecordKey>[3],
+   runCheck: Parameters<typeof checkKeyAndWarn>[1],
 ): Promise<{ recorded: unknown; warned: string[] }> {
-   const ledger = new UniquenessLedger(undefined, "run-1");
-   const recordRollupKey = sinon.spy(ledger, "recordRollupKey");
    const warn = sinon.stub(logger, "warn");
    try {
-      await checkAndRecordKey(ledger, "addr", "rollup", runCheck, MESSAGES, {});
+      const recorded = await checkKeyAndWarn("rollup", runCheck, MESSAGES, {});
       return {
-         recorded: recordRollupKey.firstCall?.args[1],
+         recorded,
          warned: warn.getCalls().map((c) => String(c.args[0])),
       };
    } finally {
@@ -47,7 +44,7 @@ describe("a key check that throws", () => {
          runSQL: sinon.stub().rejects(new Error("warehouse went away")),
       } as unknown as MalloyConnection;
       const result = await record(() =>
-         new DatabaseTier().checkKey({ connection }, CHECK, "t"),
+         new DatabaseTier().checkKey({ connection }, CHECK),
       );
       expect(result).toEqual({ recorded: undefined, warned: ["did not run"] });
    });
@@ -60,21 +57,16 @@ describe("a key check that throws", () => {
          environmentPath: "/tmp/env",
       } as Parameters<StorageBuildStrategy["checkKey"]>[0];
       await expect(
-         new StorageBuildStrategy().checkKey(site, CHECK, "t"),
+         new StorageBuildStrategy().checkKey(site, CHECK),
       ).rejects.toThrow();
       const result = await record(() =>
-         new StorageBuildStrategy().checkKey(site, CHECK, "t"),
+         new StorageBuildStrategy().checkKey(site, CHECK),
       );
       expect(result).toEqual({ recorded: undefined, warned: ["did not run"] });
    });
 
    it("is told from a check that ran and found the key repeated", async () => {
-      const found = {
-         table: "t",
-         keyColumn: "id",
-         digest: "d",
-         unique: false,
-      };
+      const found = { keyColumn: "id", unique: false };
       const result = await record(async () => found);
       expect(result.warned).toEqual(["not unique"]);
       expect(result.recorded).toMatchObject(found);
@@ -93,7 +85,7 @@ describe("publisher_materialization_key_check_total", () => {
    });
 
    it("counts each check once, by its kind and what it found", async () => {
-      const found = { table: "t", keyColumn: "id", digest: "d" };
+      const found = { keyColumn: "id" };
       await record(async () => ({ ...found, unique: true }));
       await record(async () => ({ ...found, unique: false }));
       await record(async () => undefined);

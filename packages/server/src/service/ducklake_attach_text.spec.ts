@@ -166,7 +166,7 @@ function s3Secret(scope: string): string[] {
       "LOAD httpfs;",
       ...HTTPFS_AMBIENT_OFF,
       "SELECT COUNT(*) AS count FROM duckdb_secrets() WHERE name = 'secret_s3_lake_storage';",
-      `CREATE OR REPLACE SECRET secret_s3_lake_storage ( TYPE s3, KEY_ID 'AKIATESTKEY', SECRET 'test-secret-key', REGION 'us-east-1', SCOPE '${scope}' );`,
+      `CREATE OR REPLACE SECRET secret_s3_lake_storage ( TYPE s3, KEY_ID 'AKIATESTKEY', SECRET 'test-secret-key', REGION 'us-east-1', SCOPE ['${scope}'] );`,
    ];
 }
 
@@ -176,7 +176,7 @@ function gcsSecret(scope: string): string[] {
       "LOAD httpfs;",
       ...HTTPFS_AMBIENT_OFF,
       "SELECT COUNT(*) AS count FROM duckdb_secrets() WHERE name = 'secret_gcs_lake_storage';",
-      `CREATE OR REPLACE SECRET secret_gcs_lake_storage ( TYPE gcs, KEY_ID 'GOOGTESTKEY', SECRET 'test-gcs-secret', SCOPE '${scope}' );`,
+      `CREATE OR REPLACE SECRET secret_gcs_lake_storage ( TYPE gcs, KEY_ID 'GOOGTESTKEY', SECRET 'test-gcs-secret', SCOPE ['${scope}'] );`,
    ];
 }
 

@@ -222,7 +222,7 @@ describe("connection setup is dispatched by type", () => {
          }),
       ).toEqual({
          is: "duckdb",
-         databasePath: "/env/c_ducklake.duckdb",
+         databasePath: ":memory:",
          tempDirectory: "<tmp>/publisher-duckdb/locked-ducklake-<digest>",
       });
    });

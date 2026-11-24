@@ -117,6 +117,14 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
    "admin.port": () => settings.get("admin.port") ?? null,
    "admin.host": () => settings.get("admin.host"),
    "admin.requestTimeoutMs": () => settings.get("admin.requestTimeoutMs"),
+   "admin.memoryLimit": () => {
+      assertDuckDBResourceConfig();
+      return settings.get("admin.memoryLimit");
+   },
+   "admin.maxTempDirectorySize": () => {
+      assertDuckDBResourceConfig();
+      return settings.get("admin.maxTempDirectorySize");
+   },
    "admin.catalogDatabase": () => catalogAdminConfig()?.catalogDatabase ?? null,
    "admin.storage.provider": adminStorage,
    "admin.storage.keyId": adminStorage,

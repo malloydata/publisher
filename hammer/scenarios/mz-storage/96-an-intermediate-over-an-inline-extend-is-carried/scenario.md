@@ -96,7 +96,7 @@ Expect:
 | ------------ | ------------- | ---------- |
 | 99           | 10            | 1000       |
 
-## Build (orchestrated, strict, pkg=iie)
+## Build (orchestrated, pkg=iie)
 
 Strict: `rollup` alone over the two stored tables, through the inline extend.
 

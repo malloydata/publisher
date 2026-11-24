@@ -19,7 +19,7 @@ import { projectToStoredColumns, storedColumnOf } from "./run_plan";
 import {
    canonicalBoundValue,
    deltaSelect,
-   probeMaxWatermark,
+   sqlDeltaTarget,
    type DeltaTarget,
    type IncrementalLineage,
    type SqlRunner,
@@ -34,7 +34,9 @@ import type { FederatedSourceType } from "../../dialects";
 import type { QueryMetadata } from "../../query_metadata";
 import { quoteIdentifier } from "../../quoting";
 import { errMessage } from "../../../utils";
+import { errorCodeOf } from "../../../error_code";
 import { storageTablePath } from "../domain/storage_table_path";
+import { storedTypesAsBuilt } from "../stored_column_types";
 import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
 import {
    decimalTypeOf,
@@ -205,6 +207,32 @@ function storageWindowRows(params: {
    };
 }
 
+/**
+ * A delta's column types as the destination session reads them (`DESCRIBE`
+ * of its SELECT), for a `storage=` table whose source is Postgres, whose
+ * passthrough's DESCRIBE prepares the query on the server, reading no row,
+ * and for an extension stacked on its parent's table in the destination.
+ * Another engine's may run it, so its delta's types are not read, and not
+ * judged (DeltaTarget.deltaColumnTypes).
+ */
+function describedTypes(
+   session: DuckDBConnection,
+): NonNullable<DeltaTarget["deltaColumnTypes"]> {
+   return async (deltaSQL) => {
+      try {
+         const rows = (await session.runSQL(`DESCRIBE (${deltaSQL})`))
+            .rows as Record<string, unknown>[];
+         return {
+            types: new Map(
+               rows.map((r) => [String(r.column_name), String(r.column_type)]),
+            ),
+         };
+      } catch (err) {
+         return { error: errMessage(err), errorCode: errorCodeOf(err) };
+      }
+   };
+}
+
 export function storageDeltaTarget(params: {
    /** The build-scoped session: destination attached read-write, source federated. */
    session: DuckDBConnection;
@@ -342,6 +370,13 @@ export function storageDeltaTarget(params: {
                : read.selectSQL;
          },
 
+         ...(capabilitiesOf(sourceType).passthroughNumericAsDouble
+            ? {
+                 deltaColumnTypes: describedTypes(session),
+                 storedAsBuilt: storedTypesAsBuilt,
+              }
+            : {}),
+
          ...storageWindowRows({
             session,
             sourceType,
@@ -405,43 +440,27 @@ export function stackedDeltaTarget(params: {
    persistSource: PersistSource;
    storedSQL: string;
 }): DeltaTarget {
-   const { session, lineage, storedSQL } = params;
+   const { session, lineage } = params;
    const storedColumn = storedColumnOf(params.persistSource);
-   const watermarkColumn = storedColumn(lineage.watermarkName);
-   const runner = sessionRunner(session);
-   const range = (
-      start: Parameters<DeltaTarget["deltaRows"]>[0],
-      end: Parameters<DeltaTarget["deltaRows"]>[1],
-   ) =>
-      deltaSelect({
-         dialect: STORAGE_DIALECT,
-         sourceSQL: storedSQL,
-         watermarkName: watermarkColumn,
-         start,
-         end,
-      });
    return {
-      dialect: STORAGE_DIALECT,
-      storedColumn,
-      runner,
-      quotedTablePath: params.quotedTablePath,
-      logicalTablePath: storageTablePath(
-         params.destinationName,
-         params.physicalTableName,
-         params.destinationSchema,
-      ),
-      deltaRows: async (start, end) => range(start, end),
-      windowRows: async (start, end, columns) =>
-         `SELECT ${columns
-            .map((c) => quoteIdentifier(c, STORAGE_DIALECT))
-            .join(", ")} FROM (${range(start, end)}) AS __c`,
-      probeSourceFrontier: () =>
-         probeMaxWatermark(
-            runner,
-            STORAGE_DIALECT,
-            storedSQL,
-            watermarkColumn,
-            lineage.watermarkType,
+      ...sqlDeltaTarget({
+         dialect: STORAGE_DIALECT,
+         runner: sessionRunner(session),
+         quotedTablePath: params.quotedTablePath,
+         logicalTablePath: storageTablePath(
+            params.destinationName,
+            params.physicalTableName,
+            params.destinationSchema,
          ),
+         sourceSQL: params.storedSQL,
+         watermarkName: storedColumn(lineage.watermarkName),
+         watermarkType: lineage.watermarkType,
+      }),
+      storedColumn,
+      // The parent's table is in the destination, so DESCRIBE reads no
+      // row: a parent rebuilt at a wider type is seen before the delta.
+      deltaColumnTypes: describedTypes(session),
+      // What the stacked build's casts store each computed type as.
+      storedAsBuilt: storedTypesAsBuilt,
    };
 }

@@ -39,6 +39,8 @@ await build({
       "@malloydata/db-bigquery",
       "@malloydata/db-mysql",
       "@malloydata/db-postgres",
+      // pg's optional native binding, required only when `native` is asked for; never installed.
+      "pg-native",
       "@malloydata/db-snowflake",
       "@malloydata/db-sqlserver",
       "@malloydata/db-trino",

@@ -32,7 +32,7 @@ import { incrementalPolicyRejections } from "./incremental_policy";
 import {
    assertInlinedJoinsUnique,
    pairLeafKeyChecksOf,
-   runRollupKeyCheck,
+   runKeyCheck,
 } from "../run/inline_uniqueness";
 import { rollingWindowsOf } from "../domain/read_time_terms";
 import { buildCopyText } from "./materialize_build_copy";
@@ -684,7 +684,10 @@ source: orders_ext is orders extend {
             expect(
                generatedPlans(c).find((p) => p.sourceName === "orders_ext")
                   ?.buildsOver?.mode,
-            ).toEqual({ tier: "same", pair: { leafKeys: ["lines.line_id"] } });
+            ).toEqual({
+               tier: "same",
+               pair: { leafKeys: ["leaf:lines.line_id"] },
+            });
             expect(
                (c.annotationFindings ?? []).filter(
                   (f) => f.code === "materialize-not-built",
@@ -1037,17 +1040,17 @@ source: orders_one is ${orders} extend {
                   keyColumn: "line_id",
                   sourceID: expect.stringMatching(/^lines@/),
                });
-               expect(
-                  (await runRollupKeyCheck(leaf, bad.duckdb, "t"))?.unique,
-               ).toBe(false);
+               expect((await runKeyCheck(leaf, bad.duckdb))?.unique).toBe(
+                  false,
+               );
             }
          }
          // A clean leaf passes its check.
          for (const name of ["orders_hop", "orders_blocks", "orders_one"]) {
             for (const leaf of pairLeafKeyChecksOf(clean.byName.get(name))) {
-               expect(
-                  (await runRollupKeyCheck(leaf, clean.duckdb, "t"))?.unique,
-               ).toBe(true);
+               expect((await runKeyCheck(leaf, clean.duckdb))?.unique).toBe(
+                  true,
+               );
             }
          }
          // A null source key fails all three.

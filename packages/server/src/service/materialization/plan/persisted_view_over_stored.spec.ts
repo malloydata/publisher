@@ -206,7 +206,7 @@ source: s is a extend {
       // recomputed from raw.
       const variant = view!.overStoredBase!;
       expect(variant.rerootedSourceID).toBe(a.source.sourceID);
-      expect(variant.pairLeafKeys).toEqual(["p.pick_id"]);
+      expect(variant.pairLeafKeys).toEqual(["leaf:p.pick_id"]);
       const aAddress = computeSourceEntityId(a.source, c.connectionDigests);
       const manifest = new Manifest();
       manifest.update(aAddress, { tableName: "os_pair_table" });

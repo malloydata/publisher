@@ -74,14 +74,15 @@ describe("the serveVerdicts contract", () => {
       );
    });
 
-   // A bind compiles every model's served copy before its tables are swapped
-   // in, so the pending marker is deprecated: never left behind by a bind.
-   it("deprecates the served copy's pending marker", () => {
+   // Every change to the tables a query reads compiles the served copy
+   // before the swap (a bind, a freshness edge), so the pending marker is
+   // retained in the schema for older clients and never produced.
+   it("retains the served copy's pending marker, never produced", () => {
       const pending = schemas.ServeVerdict.properties?.servedCopyPending as
          | { type?: string; deprecated?: boolean; description?: string }
          | undefined;
       expect(pending?.type).toBe("boolean");
       expect(pending?.deprecated).toBe(true);
-      expect(pending?.description).toContain("never pending");
+      expect(pending?.description).toContain("no longer produced");
    });
 });

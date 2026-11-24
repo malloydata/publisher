@@ -49,7 +49,6 @@ import {
    createTableWithDeclaredTypes,
    issuePassthroughRead,
 } from "./run/materialization_build_session";
-import { noteWrongTierRecompute } from "./run/build_upstreams";
 import { MaterializationScheduler } from "./run/materialization_scheduler";
 import {
    MaterializationService,
@@ -408,41 +407,6 @@ describe("the build loop's instruments", () => {
       expect(
          await harness.collectCounter(
             "publisher_materialization_manifest_bind_degraded_total",
-         ),
-      ).toBe(1);
-   });
-
-   it("publisher_materialization_stale_upstream_entry_total: once per run per upstream, by the recomputing build's tier", async () => {
-      const planFacts = {};
-      const note = (upstream: string, build: "database" | "storage") =>
-         noteWrongTierRecompute({
-            planFacts,
-            build,
-            sourceName: "down",
-            upstream,
-            detail: "moved",
-         });
-      note("up_a", "storage");
-      note("up_a", "storage");
-      note("up_b", "database");
-      // Another run (its own plan facts) counts the same upstream again.
-      noteWrongTierRecompute({
-         planFacts: {},
-         build: "storage",
-         sourceName: "down",
-         upstream: "up_a",
-         detail: "moved",
-      });
-      expect(
-         await harness.collectCounter(
-            "publisher_materialization_stale_upstream_entry_total",
-            { tier: "storage" },
-         ),
-      ).toBe(2);
-      expect(
-         await harness.collectCounter(
-            "publisher_materialization_stale_upstream_entry_total",
-            { tier: "database" },
          ),
       ).toBe(1);
    });

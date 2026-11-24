@@ -30,8 +30,10 @@ import { capabilitiesOf, dialectsWith } from "../domain/dialect";
 import { errMessage } from "../../../utils";
 import { foldedTablePathParts, quoteIdentifier } from "../../quoting";
 import {
+   deltaColumnTypesSql,
    escapeSqlString,
    inOneTransaction,
+   passesUnless,
    probeSelect,
    serverVersionSql,
    targetColumnsProbeSql,
@@ -40,6 +42,7 @@ import {
    withStatementTimeout,
 } from "./warehouse_sql";
 import type { PairDelta } from "../domain/incremental";
+import { widenedColumns } from "./delta_type_widening";
 import type { LateRows } from "../domain/types";
 import {
    windowDeleteBefore,
@@ -408,15 +411,19 @@ function probeAlias(name: string, dialect: string): string {
 }
 
 /**
- * The target table's column names in ordinal order, or a reason it could not be
- * read. An absent table reports `columns: []` with no error, which is the SEED
- * signal.
+ * The target table's column names in ordinal order, each one's type as the
+ * catalog spells it, or a reason they could not be read. An absent table
+ * reports `columns: []` with no error, which is the SEED signal.
  */
 export async function probeTargetColumns(
    runner: SqlRunner,
    dialect: string,
    physicalTableName: string,
-): Promise<{ columns: string[]; error?: string }> {
+): Promise<{
+   columns: string[];
+   types?: ReadonlyMap<string, string>;
+   error?: string;
+}> {
    const segments = decodeTablePathSegments(dialect, physicalTableName);
    if (!segments || segments.length === 0) {
       return {
@@ -436,11 +443,18 @@ export async function probeTargetColumns(
       };
    }
    try {
-      const result = await runner(sql);
-      const columns = probeRows(result.rows)
-         .map((r) => r["column_name"])
-         .filter((n): n is string => typeof n === "string" && n.length > 0);
-      return { columns };
+      const rows = probeRows((await runner(sql)).rows).filter(
+         (r): r is Record<string, unknown> & { column_name: string } =>
+            typeof r["column_name"] === "string" && r["column_name"] !== "",
+      );
+      const types = new Map(
+         rows.flatMap((r) =>
+            typeof r["column_type"] === "string"
+               ? [[r.column_name, r["column_type"]] as const]
+               : [],
+         ),
+      );
+      return { columns: rows.map((r) => r.column_name), types };
    } catch (err) {
       return { columns: [], error: errMessage(err) };
    }
@@ -629,11 +643,133 @@ export function shapeMismatch(
    return parts.join("; ");
 }
 
+/** A rolling-window delete: the rows of `column` below `before`. */
+type WindowDelete = { column: string; before: WatermarkBound };
+
+/**
+ * The rolling-window deletes, run after the write in the same transaction:
+ * each removes the rows of its column below its bound (rolling_window.ts).
+ */
+function windowDeleteStatements(
+   dialect: string,
+   quotedTablePath: string,
+   deletes: readonly WindowDelete[] | undefined,
+): string[] {
+   return (deletes ?? []).map(
+      (d) =>
+         `DELETE FROM ${quotedTablePath} WHERE ` +
+         `${quoteIdentifier(d.column, dialect)} < ` +
+         renderSqlBound(d.before, dialect),
+   );
+}
+
+/**
+ * What a merge matches a row by: the merge keys, then any scope columns not
+ * already among them, each passed through `column` (a field's stored name;
+ * the name itself when absent).
+ */
+export function lineageMatchColumns(
+   lineage: {
+      readonly mergeKeys: readonly string[];
+      readonly scopeColumns?: readonly string[];
+   },
+   column: (name: string) => string = (name) => name,
+): string[] {
+   return [
+      ...new Set([...lineage.mergeKeys, ...(lineage.scopeColumns ?? [])]),
+   ].map(column);
+}
+
+/** The text a merge's key guard fails with; {@link isMergeKeyGuardFailure} reads it. */
+export const MERGE_KEY_GUARD_MESSAGE = "incremental-merge-key-not-unique";
+
+/**
+ * The errors an engine raises itself when a merge's source holds one key on
+ * more than one row that matches a stored row: where there is no guard
+ * ({@link mergeKeyGuard}), they are how a repeated key is known. Matched by
+ * message text only; neither engine is run in these tests.
+ *
+ *  - BigQuery: "UPDATE/MERGE must match at most one source row for each
+ *    target row".
+ *  - Snowflake, under its default `ERROR_ON_NONDETERMINISTIC_MERGE`:
+ *    "Duplicate row detected during DML action" (error 100090).
+ *  - Postgres, past the guard: "MERGE command cannot affect row a second
+ *    time".
+ */
+const ENGINE_REPEATED_KEY_ERRORS = [
+   /UPDATE\/MERGE must match at most one source row for each target row/i,
+   /Duplicate row detected during DML action/i,
+   /MERGE command cannot affect row a second time/i,
+];
+
+/**
+ * Whether an error is a merge's key guard failing, or the engine refusing a
+ * merge whose source repeats a key (ENGINE_REPEATED_KEY_ERRORS); either way
+ * the delta rolled back.
+ */
+export function isMergeKeyGuardFailure(err: unknown): boolean {
+   const message = errMessage(err);
+   return (
+      message.includes(MERGE_KEY_GUARD_MESSAGE) ||
+      ENGINE_REPEATED_KEY_ERRORS.some((pattern) => pattern.test(message))
+   );
+}
+
+/**
+ * The merge's source, failing when it holds one identity (`matchNames`: the
+ * merge keys and any scope columns) more than once.
+ *
+ * A delta is the source's own rows in a range, so a key repeated there is
+ * repeated in the source: `merge_key=` is not unique in it, and no merge
+ * leaves the table equal to live. Postgres refuses to update one stored row
+ * twice; DuckDB updates it from either row, or inserts both when the key is
+ * new; keeping only the newest would drop a row live returns. So the delta
+ * fails and rolls back, and the source is rebuilt in full, which copies
+ * live's rows as they are (`merge_key_not_unique`, see applyIncrementalStep).
+ *
+ * A window over the read the merge already makes, so the guard costs no
+ * second read of the source and judges the rows the merge writes.
+ * `PARTITION BY` groups NULLs as equal: the relation of the merge's
+ * {@link nullSafeKeyMatch}.
+ *
+ * Postgres, DuckDB and BigQuery ({@link passesUnless}). On Snowflake the
+ * delta is merged unguarded: a repeated key that matches a stored row is
+ * refused by the engine itself (see isMergeKeyGuardFailure), and a new key
+ * inserted twice is found after the commit by
+ * {@link probeRepeatedKeyInRange}.
+ */
+/** Whether `dialect`'s merge fails in its own statement on a repeated key. */
+export function mergeGuardedInStatement(dialect: string): boolean {
+   return passesUnless(dialect, "false", MERGE_KEY_GUARD_MESSAGE) !== undefined;
+}
+
+function mergeKeyGuard(
+   dialect: string,
+   deltaSQL: string,
+   matchNames: readonly string[],
+): string {
+   const passes = passesUnless(
+      dialect,
+      "__merge_key_rows > 1",
+      MERGE_KEY_GUARD_MESSAGE,
+   );
+   if (passes === undefined) return deltaSQL;
+   const partition = matchNames
+      .map((k) => quoteIdentifier(k, dialect))
+      .join(", ");
+   return (
+      `SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY ${partition}) ` +
+      `AS __merge_key_rows FROM (${deltaSQL}) AS __g) AS __k ` +
+      `WHERE ${passes}`
+   );
+}
+
 /**
  * The statements that apply one delta, in the order they must run.
  *
  *  - MERGE (merge_key= declared): match on the identity columns, update matches,
- *    insert the rest. Tolerates a row RESTATED with a new watermark value.
+ *    insert the rest. Tolerates a row RESTATED with a new watermark value. Its
+ *    source fails when it repeats an identity ({@link mergeKeyGuard}).
  *
  *  - RANGE REPLACE (no merge_key=): delete the watermark range, then insert.
  *    Correct when a row's watermark never changes.
@@ -666,7 +802,7 @@ export function deltaStatements(params: {
     * each removes the rows of `column` below `before`, which no read from
     * this refresh on needs (rolling_window.ts).
     */
-   windowDeletes?: readonly { column: string; before: WatermarkBound }[];
+   windowDeletes?: readonly WindowDelete[];
    /**
     * A pair table's parent key and parent-row flag: the delta replaces whole
     * parents by the key instead of merging rows ({@link pairDeltaStatements}).
@@ -689,10 +825,10 @@ export function deltaStatements(params: {
    } = params;
    const q = (name: string) => quoteIdentifier(name, dialect);
    const columnList = columns.map(q).join(", ");
-   const windowDeletes = (params.windowDeletes ?? []).map(
-      (d) =>
-         `DELETE FROM ${quotedTablePath} WHERE ${q(d.column)} < ` +
-         renderSqlBound(d.before, dialect),
+   const windowDeletes = windowDeleteStatements(
+      dialect,
+      quotedTablePath,
+      params.windowDeletes,
    );
 
    if (mergeKeys.length > 0) {
@@ -705,25 +841,18 @@ export function deltaStatements(params: {
       //
       // Scoping is all-or-nothing: a term contributing no column is refused
       // upstream rather than arriving here partially scoped.
-      const matchNames = [
-         ...mergeKeys,
-         ...(params.scopeColumns ?? []).filter((c) => !mergeKeys.includes(c)),
-      ];
+      const matchNames = lineageMatchColumns({
+         mergeKeys,
+         scopeColumns: params.scopeColumns,
+      });
       const keys = new Set(mergeKeys);
-      // NULL-safe: with plain `=`, a NULL identity column never matches its own
-      // copy, so the row would be re-inserted every run as a silent duplicate.
-      const on = matchNames
-         .map(
-            (k) =>
-               `(__t.${q(k)} = __s.${q(k)} OR (__t.${q(k)} IS NULL AND __s.${q(k)} IS NULL))`,
-         )
-         .join(" AND ");
+      const on = nullSafeKeyMatch(matchNames.map(q), "__t", "__s");
       const updates = columns
          .filter((c) => !keys.has(c))
          .map((c) => `${q(c)} = __s.${q(c)}`);
       const clauses = [
          `MERGE INTO ${quotedTablePath} AS __t`,
-         `USING (${deltaSQL}) AS __s`,
+         `USING (${mergeKeyGuard(dialect, deltaSQL, matchNames)}) AS __s`,
          `ON ${on}`,
       ];
       // When every column is an identity column there is nothing to SET, and an
@@ -764,6 +893,25 @@ export function isPairGuardFailure(err: unknown): boolean {
 }
 
 /**
+ * The predicate matching `left` to `right` on every key (already quoted),
+ * where a key NULL on both sides is a match: with plain `=` a NULL key never
+ * matches its own copy, so a merge would write its row again and a delete by
+ * key would miss it.
+ */
+export function nullSafeKeyMatch(
+   keys: readonly string[],
+   left: string,
+   right: string,
+): string {
+   return keys
+      .map(
+         (key) =>
+            `(${left}.${key} = ${right}.${key} OR (${left}.${key} IS NULL AND ${right}.${key} IS NULL))`,
+      )
+      .join(" AND ");
+}
+
+/**
  * A pair table's delta (an inlined join_many, `#(materialize)`): replace every
  * row of each parent the delta holds, by the parent key, so the parent-row
  * flag stays exactly one row per parent.
@@ -797,7 +945,7 @@ export function pairDeltaStatements(params: {
    deltaSQL: string;
    columns: string[];
    pair: PairDelta & { stagingTable: string };
-   windowDeletes?: readonly { column: string; before: WatermarkBound }[];
+   windowDeletes?: readonly WindowDelete[];
 }): string[] {
    const { dialect, quotedTablePath, pair } = params;
    if (!capabilitiesOf(dialect).pairDelta) {
@@ -814,15 +962,10 @@ export function pairDeltaStatements(params: {
       `CREATE OR REPLACE TEMP TABLE ${staged} AS ${params.deltaSQL}`,
       transaction.begin,
       `DELETE FROM ${quotedTablePath} AS __t WHERE EXISTS (` +
-         `SELECT 1 FROM ${staged} AS __s WHERE ` +
-         `(__t.${key} = __s.${key} OR (__t.${key} IS NULL AND __s.${key} IS NULL)))`,
+         `SELECT 1 FROM ${staged} AS __s WHERE ${nullSafeKeyMatch([key], "__t", "__s")})`,
       `INSERT INTO ${quotedTablePath} (${columnList}) ` +
          `SELECT ${columnList} FROM ${staged}`,
-      ...(params.windowDeletes ?? []).map(
-         (d) =>
-            `DELETE FROM ${quotedTablePath} WHERE ${q(d.column)} < ` +
-            renderSqlBound(d.before, dialect),
-      ),
+      ...windowDeleteStatements(dialect, quotedTablePath, params.windowDeletes),
       // The uniqueness check over the whole table, two columns read: a parent
       // with no flag or two would be counted wrongly by every parent measure.
       // A path's level flags are checked the same way, each over the keys
@@ -1141,6 +1284,11 @@ export type IncrementalStep =
         reasonCode: IncrementalStepReasonCode;
         /** Why a full rebuild, for the log. */
         reason: string;
+        /**
+         * A check that could not run, which rebuilds in full on every
+         * refresh until it can: the package warns of it.
+         */
+        failedCheck?: { check: "delta_types"; errorCode: string };
      }
    | {
         mode: "skip";
@@ -1338,6 +1486,30 @@ export interface DeltaTarget {
       columns: string[],
    ): Promise<string>;
    /**
+    * Each column of a delta's rows (`deltaSQL`, from {@link deltaRows}) with
+    * its type as the TARGET's catalog would spell it, read without reading a
+    * row. Absent where it cannot be read: the delta's types are then not
+    * judged (see delta_type_widening.ts).
+    */
+   /**
+    * The types a full build stores a column of `deltaType` as, where the
+    * build's own casts change it: a `storage=` build stores a 128-bit integer
+    * as `DECIMAL(38,0)`, or, when that cast fails, as computed (see
+    * storedTypesAsBuilt). Absent: a build stores the delta's type as it is.
+    * Read by the widening check, so a column a rebuild would write the same
+    * way is not a widening.
+    */
+   storedAsBuilt?(deltaType: string): readonly string[];
+   deltaColumnTypes?(
+      deltaSQL: string,
+      columns: readonly string[],
+   ): Promise<{
+      types?: ReadonlyMap<string, string>;
+      error?: string;
+      /** The error's code (errorCodeOf), for a warning. */
+      errorCode?: string;
+   }>;
+   /**
     * The SOURCE's watermark frontier, for a number or string watermark (see
     * resolveDeltaEnd).
     */
@@ -1349,6 +1521,45 @@ export interface DeltaTarget {
     * rolling-window columns through it. Absent: every field is its column.
     */
    storedColumn?(field: string): string;
+}
+
+/**
+ * What every delta target whose rows are one SQL statement shares: that SQL
+ * with a range predicate on `watermarkName` for the delta and the late-row
+ * window, and its watermark frontier, all run by `runner` in `dialect`.
+ */
+export function sqlDeltaTarget(params: {
+   dialect: string;
+   runner: SqlRunner;
+   quotedTablePath: string;
+   logicalTablePath: string;
+   /** The rows-yielding SELECT, executable on the target. */
+   sourceSQL: string;
+   /** The watermark's column in `sourceSQL`. */
+   watermarkName: string;
+   watermarkType: IncrementalLineage["watermarkType"];
+}): DeltaTarget {
+   const { dialect, runner, sourceSQL, watermarkName } = params;
+   const range = (start: WatermarkBound, end: WatermarkBound | undefined) =>
+      deltaSelect({ dialect, sourceSQL, watermarkName, start, end });
+   return {
+      dialect,
+      runner,
+      quotedTablePath: params.quotedTablePath,
+      logicalTablePath: params.logicalTablePath,
+      deltaRows: async (start, end) => range(start, end),
+      windowRows: async (start, end, columns) =>
+         `SELECT ${columns.map((c) => quoteIdentifier(c, dialect)).join(", ")} ` +
+         `FROM (${range(start, end)}) AS __c`,
+      probeSourceFrontier: () =>
+         probeMaxWatermark(
+            runner,
+            dialect,
+            sourceSQL,
+            watermarkName,
+            params.watermarkType,
+         ),
+   };
 }
 
 /**
@@ -1370,36 +1581,27 @@ export function warehouseDeltaTarget(params: {
 }): DeltaTarget {
    const { dialect, runner, lineage, sourceSQL } = params;
    return {
-      dialect,
-      runner,
+      ...sqlDeltaTarget({
+         dialect,
+         runner,
+         quotedTablePath: params.quotedTablePath,
+         logicalTablePath: lineage.physicalTableName,
+         sourceSQL,
+         watermarkName: lineage.watermarkName,
+         watermarkType: lineage.watermarkType,
+      }),
       ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
-      quotedTablePath: params.quotedTablePath,
-      logicalTablePath: lineage.physicalTableName,
-      deltaRows: async (start, end) =>
-         deltaSelect({
-            dialect,
-            sourceSQL,
-            watermarkName: lineage.watermarkName,
-            start,
-            end,
-         }),
-      windowRows: async (start, end, columns) =>
-         `SELECT ${columns.map((c) => quoteIdentifier(c, dialect)).join(", ")} ` +
-         `FROM (${deltaSelect({
-            dialect,
-            sourceSQL,
-            watermarkName: lineage.watermarkName,
-            start,
-            end,
-         })}) AS __c`,
-      probeSourceFrontier: () =>
-         probeMaxWatermark(
-            runner,
-            dialect,
-            sourceSQL,
-            lineage.watermarkName,
-            lineage.watermarkType,
-         ),
+      deltaColumnTypes: async (deltaSQL, columns) => {
+         const read = deltaColumnTypesSql(dialect, deltaSQL, columns);
+         if (!read) return {};
+         try {
+            return {
+               types: read.typesOf(probeRows((await runner(read.sql)).rows)),
+            };
+         } catch (err) {
+            return { error: errMessage(err), errorCode: errorCodeOf(err) };
+         }
+      },
    };
 }
 
@@ -1593,20 +1795,29 @@ export async function planIncrementalStep(inputs: {
    }
 
    // Built LAST: producing it can issue the source read (DeltaTarget.deltaRows),
-   // which no failed check should pay for.
+   // which no failed check should pay for. A pair table's range is open
+   // above. Its watermark is a parent's greatest field over all its rows, so
+   // one child stamped past the clock would hold the parent above every
+   // bounded range until the clock caught up, and the parent's own changes
+   // with it; replacing a parent whole is idempotent, so reading it again on
+   // each refresh is safe.
+   const deltaSQL = await target.deltaRows(
+      start,
+      lineage.pair ? undefined : end.bound,
+   );
+   const narrower = await storedColumnsNarrower(
+      target,
+      deltaSQL,
+      inputs.columns,
+      probe.types,
+   );
+   if (narrower)
+      return { mode: "seed", reasonCode: "shape_mismatch", ...narrower };
    const column = (field: string) => target.storedColumn?.(field) ?? field;
    const statements = deltaStatements({
       dialect,
       quotedTablePath: target.quotedTablePath,
-      // A pair table's range is open above. Its watermark is a parent's
-      // greatest field over all its rows, so one child stamped past the clock
-      // would hold the parent above every bounded range until the clock
-      // caught up, and the parent's own changes with it; replacing a parent
-      // whole is idempotent, so reading it again on each refresh is safe.
-      deltaSQL: await target.deltaRows(
-         start,
-         lineage.pair ? undefined : end.bound,
-      ),
+      deltaSQL,
       columns: inputs.columns,
       mergeKeys: (lineage.mergeKeys ?? []).map(column),
       scopeColumns: lineage.scopeColumns?.map(column),
@@ -1635,6 +1846,55 @@ export async function planIncrementalStep(inputs: {
       end: end.bound,
       coveredThrough: end.bound,
       statements,
+   };
+}
+
+/**
+ * Why the stored table cannot hold the delta's values as they are, or
+ * undefined when it can: a column whose stored type is narrower than the
+ * delta's (an upstream widened after the table was built, which Malloy's
+ * types do not show; see delta_type_widening.ts), or a delta whose types
+ * could not be read, which is not proven to fit (`failedCheck`, which the
+ * package warns of). Either rebuilds the table in full, at the source's
+ * types. Not judged when the target reads no types.
+ */
+async function storedColumnsNarrower(
+   target: DeltaTarget,
+   deltaSQL: string,
+   columns: readonly string[],
+   storedTypes: ReadonlyMap<string, string> | undefined,
+): Promise<
+   | {
+        reason: string;
+        failedCheck?: { check: "delta_types"; errorCode: string };
+     }
+   | undefined
+> {
+   if (!target.deltaColumnTypes || !storedTypes || storedTypes.size === 0) {
+      return undefined;
+   }
+   const delta = await target.deltaColumnTypes(deltaSQL, columns);
+   if (delta.error !== undefined) {
+      return {
+         reason: `the delta's column types could not be read (${delta.error}), so they are not proven to fit the table's columns`,
+         failedCheck: {
+            check: "delta_types",
+            errorCode: delta.errorCode ?? "unknown",
+         },
+      };
+   }
+   if (!delta.types) return undefined;
+   const widened = widenedColumns(
+      storedTypes,
+      delta.types,
+      target.storedAsBuilt,
+   );
+   if (widened.length === 0) return undefined;
+   return {
+      reason:
+         `the table's columns cannot hold the delta's values exactly: ` +
+         `${widened.join(", ")} (stored → source). The source's column was ` +
+         `widened after the table was built, so the table is rebuilt at its type`,
    };
 }
 
@@ -1679,6 +1939,84 @@ export async function seedCoveredThrough(
    return type === "date" || type === "timestamp"
       ? { bound: snapshotBound(type, now) }
       : frontier;
+}
+
+/**
+ * Whether a table a full rebuild just wrote holds one identity (`matchNames`,
+ * stored column names: the merge keys and any scope columns) on more than one
+ * row, NULLs grouped as equal as the merge matches them. Such a table equals
+ * live, but a later delta that reads the key once would match every stored
+ * copy and rewrite them all as that one row, so no boundary is recorded and
+ * the source is rebuilt in full until the key is unique (advanceLedgerAfterSeed).
+ */
+export async function probeRepeatedKey(
+   runner: SqlRunner,
+   dialect: string,
+   quotedTablePath: string,
+   matchNames: readonly string[],
+): Promise<{ repeated: boolean; error?: string; errorCode?: string }> {
+   const keys = matchNames.map((k) => quoteIdentifier(k, dialect)).join(", ");
+   const sql = probeSelect(
+      dialect,
+      `SELECT 1 AS ${probeAlias("repeated", dialect)} FROM ${quotedTablePath} ` +
+         `GROUP BY ${keys} HAVING COUNT(*) > 1 LIMIT 1`,
+   );
+   try {
+      return { repeated: probeRows((await runner(sql)).rows).length > 0 };
+   } catch (err) {
+      return {
+         repeated: false,
+         error: errMessage(err),
+         errorCode: errorCodeOf(err),
+      };
+   }
+}
+
+/**
+ * Whether a table a merge just wrote, unguarded in its statement
+ * ({@link mergeGuardedInStatement}: Snowflake), holds an identity the delta
+ * touched on more than one row: a new key the delta read twice was inserted
+ * twice, which no engine refuses. Restricted to the keys of the rows whose
+ * watermark is in the delta's range (every row the merge wrote is), read off
+ * the table itself, so the source is not read again. NULLs match as the
+ * merge matches them.
+ */
+export async function probeRepeatedKeyInRange(params: {
+   runner: SqlRunner;
+   dialect: string;
+   quotedTablePath: string;
+   matchNames: readonly string[];
+   watermark: string;
+   start: WatermarkBound;
+   end: WatermarkBound;
+}): Promise<{ repeated: boolean; error?: string; errorCode?: string }> {
+   const { dialect } = params;
+   const q = (name: string) => quoteIdentifier(name, dialect);
+   const keys = params.matchNames.map(q);
+   const w = q(params.watermark);
+   const touched =
+      `SELECT DISTINCT ${keys.join(", ")} FROM ${params.quotedTablePath} ` +
+      `WHERE ${w} >= ${renderSqlBound(params.start, dialect)} AND ` +
+      `${w} < ${renderSqlBound(params.end, dialect)}`;
+   const sql = probeSelect(
+      dialect,
+      `SELECT 1 AS ${probeAlias("repeated", dialect)} FROM ` +
+         `${params.quotedTablePath} AS __t JOIN (${touched}) AS __s ON ` +
+         `${nullSafeKeyMatch(keys, "__t", "__s")} ` +
+         `GROUP BY ${keys.map((k) => `__t.${k}`).join(", ")} ` +
+         `HAVING COUNT(*) > 1 LIMIT 1`,
+   );
+   try {
+      return {
+         repeated: probeRows((await params.runner(sql)).rows).length > 0,
+      };
+   } catch (err) {
+      return {
+         repeated: false,
+         error: errMessage(err),
+         errorCode: errorCodeOf(err),
+      };
+   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1737,11 +2075,7 @@ export function lateRowsSql(params: {
       `__t.${w} = __s.${w}`,
       ...matchColumns
          .filter((c) => c !== params.watermark)
-         .map(
-            (c) =>
-               `(__t.${q(c)} = __s.${q(c)} OR ` +
-               `(__t.${q(c)} IS NULL AND __s.${q(c)} IS NULL))`,
-         ),
+         .map((c) => nullSafeKeyMatch([q(c)], "__t", "__s")),
    ].join(" AND ");
    return probeSelect(
       dialect,
@@ -1812,15 +2146,7 @@ export async function countLateRows(params: {
    const column = (field: string) => target.storedColumn?.(field) ?? field;
    const watermark = column(lineage.watermarkName);
    const matchColumns =
-      lineage.mergeKeys.length > 0
-         ? [
-              ...new Set(
-                 [...lineage.mergeKeys, ...(lineage.scopeColumns ?? [])].map(
-                    column,
-                 ),
-              ),
-           ]
-         : [];
+      lineage.mergeKeys.length > 0 ? lineageMatchColumns(lineage, column) : [];
    const timeoutMs = params.timeoutMs ?? LATE_ROWS_CHECK_TIMEOUT_MS;
    const abort = new AbortController();
    const check = (async () => {

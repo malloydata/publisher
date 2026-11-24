@@ -139,13 +139,15 @@ export interface ViewAnswer {
    /**
     * For a database view: its table, for the check that a later stage's
     * filter compares its columns as live compares them
-    * (`gate_collation.ts`): its binding, or its path as the manifest
+    * (`admission_lookup.ts`): its binding, or its path as the manifest
     * substitutes it.
     */
    databaseTableRead?: {
       tier: "database";
       tablePath?: string;
       destinationName?: string;
+      /** Its content address, which its column contract is kept under. */
+      virtualHandle?: string;
       /** Stored as of its build: see `Binding.asOfBuild`. */
       asOfBuild?: true;
    };
@@ -874,6 +876,7 @@ export async function readStoredVariant(args: {
                  tier: "database" as const,
                  tablePath: binding.tablePath,
                  destinationName: binding.destinationName,
+                 virtualHandle: binding.virtualHandle,
                  ...stamp,
               },
            }
@@ -882,6 +885,9 @@ export async function readStoredVariant(args: {
                 databaseTableRead: {
                    tier: "database" as const,
                    tablePath: databaseTable,
+                   ...(table.tableId !== undefined
+                      ? { virtualHandle: table.tableId }
+                      : {}),
                    ...stamp,
                 },
              }

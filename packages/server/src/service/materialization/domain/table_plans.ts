@@ -18,7 +18,9 @@
  * Pure.
  */
 
+import { contractKeyName } from "./column_contract";
 import type { StringReads } from "./string_reads";
+import type { UpstreamColumn } from "./upstream_schemas";
 import type { TableKind as StoredTableKind } from "./vocabulary";
 import type { BuildTarget, PersistSource } from "@malloydata/malloy";
 import type {
@@ -296,10 +298,10 @@ export interface InlineUniquenessCheck {
    pairLevel?: number;
    /**
     * Set on a pair table's leaf key check ({@link pairKeyChecks}): it never
-    * fails the build. An auto-run runs it once the table is written and
-    * records what it found beside the table (unique and never null, under
-    * {@link joinedSourceID}); the served copy re-declares a count through the
-    * path over the leaf's key only where that record passed.
+    * fails the build. Every build runs it once the table is written and
+    * records what it found in the table's contract (`leaf:<join path>.<key>`,
+    * read back as {@link joinedSourceID}'s); the served copy re-declares a
+    * count through the path over the leaf's key only where that check passed.
     */
    recordOnly?: true;
 }
@@ -788,6 +790,13 @@ interface TablePlanFacts {
    /** The entry point's `#(authorize)` gate, classified where it compiled. */
    gate?: PersistSourceGateOutcome;
    /**
+    * Each stored column that is a plain copy of one warehouse column, by its
+    * stored name: a `.table()` source's own columns. A `storage=` build
+    * records a destination double as gate-exact only over a binary64 one
+    * (`deriveContract`). Held in memory with the plan, never on the wire.
+    */
+   columnOrigins?: ReadonlyMap<string, UpstreamColumn>;
+   /**
     * The declared primary key a build checks for a repeated or NULL value
     * over this table, when it is stored in a destination and read beside a
     * `storage=` rollup through a join_many keyed on it (the join-to-rollup
@@ -939,11 +948,62 @@ export interface OverStoredBase {
    /**
     * With `rerootedSourceID` a pair table (an inlined join_many, re-rooted
     * with its join put back, pair_reroot.ts): the contract keys of the leaf
-    * key checks the build relies on (`items.item_id`). A build refuses
+    * key checks the build relies on (`leaf:items.item_id`). A build refuses
     * unless the upstream's table records each as passed (unique and never
     * null), and never builds from raw instead.
     */
    pairLeafKeys?: readonly string[];
+}
+
+/**
+ * A pair path's leaf: the join names from the source to it, its key, and its
+ * source. The leaf key check's writer (the build's inline uniqueness checks) and
+ * its readers ({@link pairLeafContractKeys}) both name the check from this.
+ */
+export function pairLeafPath(p: MaterializePair): {
+   names: string[];
+   keyColumn: string;
+   sourceID: string;
+} {
+   const hops = p.hops ?? [];
+   const last = hops[hops.length - 1];
+   return {
+      names: [p.join, ...hops.map((h) => h.join)],
+      keyColumn: last?.key ?? p.childKey,
+      sourceID: last?.sourceID ?? p.childSourceID,
+   };
+}
+
+/**
+ * The contract keys (`ColumnContract.keys`) of the leaf checks a build over
+ * the pair table needs passed (unique and never null): one per path, as
+ * `run/inline_uniqueness.ts` records them (`leaf:items.options.option_id`).
+ */
+export function pairLeafContractKeys(plan: MaterializePlan): string[] {
+   return pairPathsOf(plan).map((p) => {
+      const leaf = pairLeafPath(p);
+      return contractKeyName("leaf", leaf.names.join("."), leaf.keyColumn);
+   });
+}
+
+/**
+ * Each pair path's leaf, as a bind reads its check off the table's contract:
+ * the join path its contract key names (`items.options`) and the leaf
+ * source's sourceID. The key column is left out: a bind looks the check up
+ * under the primary key the leaf declares now, not the one the plan names.
+ */
+export function pairLeavesOf(
+   plan: MaterializePlan,
+): { joinPath: string; sourceID: string }[] {
+   return pairPathsOf(plan).map((p) => {
+      const leaf = pairLeafPath(p);
+      return { joinPath: leaf.names.join("."), sourceID: leaf.sourceID };
+   });
+}
+
+/** A plan's pair paths: its blocks', else its one pair's. */
+function pairPathsOf(plan: MaterializePlan): MaterializePair[] {
+   return plan.pairBlocks?.blocks ?? (plan.pair ? [plan.pair] : []);
 }
 
 /** A `#(materialize)` plan's kind: `pair` when it stores an inlined join_many. */

@@ -33,21 +33,26 @@ import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { installSettings } from "../../test_helpers/settings_env";
 import { routeQuery } from "../query_router";
 import { variantsOf } from "../query_serving";
-import { type Binding, EMPTY_SNAPSHOT, pin } from "./domain/binding";
+import { type Binding, makeSnapshot, pin } from "./domain/binding";
+import type { ColumnContract } from "./domain/column_contract";
+import {
+   readStringCapabilities,
+   recordStringCapabilities,
+} from "./serve/source_capability";
 import {
    admitRead,
    keepsGatesWhenReadExact,
    type ReadFacts,
 } from "./domain/admission";
-import type { TableRead } from "./domain/gate_policy";
+import { gateColumnTypeExact, type TableRead } from "./domain/gate_policy";
 import { keptTableAddresses, ungatedTableAddresses } from "./serve/bind";
 import * as gateReads from "./serve/gate_reads";
 import { type LegContext, makeLegs } from "./serve/leg";
 import {
-   type CollationProbe,
-   collationProbe,
-   ReadAdmission,
-} from "./serve/read_admission";
+   type CollationLookup,
+   collationLookup,
+} from "./serve/admission_lookup";
+import { ReadAdmission } from "./serve/read_admission";
 
 const DUMP = process.env.ADMISSION_DUMP;
 const dumped: Record<string, unknown> = {};
@@ -127,6 +132,17 @@ beforeAll(async () => {
          await connection.runSQL("SET default_collation = 'nocase'");
       }
       authors[collation] = new SingleConnectionRuntime({ connection });
+      // What a bind reads for the model, for the lookups (shadow and lookup
+      // admission).
+      const materializer = authors[collation].loadModel(MODEL);
+      recordStringCapabilities(
+         authors[collation],
+         await readStringCapabilities({
+            modelDef: (await materializer.getModel())._modelDef,
+            load: (q) => materializer.loadQuery(q),
+            connection: async () => connection,
+         }),
+      );
    }
 });
 afterAll(async () => {
@@ -187,6 +203,44 @@ function storedRuntime(collation: "binary" | "nocase"): unknown {
       }),
    };
    return { connections: { lookupConnection: async () => connection } };
+}
+
+/** The tables' contracts, their strings stored as `storedCollation`. */
+function contractsOf(args: {
+   tables: Binding[];
+   storedCollation?: "binary" | "nocase";
+}): Map<string, ColumnContract> {
+   const collation =
+      (args.storedCollation ?? "binary") === "binary"
+         ? "binary"
+         : "duckdb:nocase";
+   return new Map(
+      args.tables.map((t) => [
+         t.virtualHandle,
+         {
+            v: 1,
+            dialect: "duckdb",
+            columns: SCHEMA.map((c) => ({
+               name: c.name,
+               nativeType: c.type,
+               collation: c.type === "VARCHAR" ? collation : null,
+               compare: "exact" as const,
+               // As a build records it (`deriveContract`): a `storage=`
+               // column is exact by its type and the warehouse column it
+               // copies (none here); a database column unless held as a
+               // double.
+               gateExact:
+                  t.tier === "storage"
+                     ? gateColumnTypeExact(c.type, undefined)
+                     : !(t.retypedColumns ?? []).some(
+                          (r) =>
+                             r.name === c.name &&
+                             !gateColumnTypeExact(r.type, undefined),
+                       ),
+            })),
+         },
+      ]),
+   );
 }
 
 // ---------------------------------------------------------------------------
@@ -263,10 +317,24 @@ async function routed(args: {
    query?: string;
    /** Add a declined candidate's internal detail to the outcome. */
    withDetail?: boolean;
-   /** The collation probe port; the real one when absent. */
-   probe?: CollationProbe;
+   /** How collation is judged; the real lookups when absent. */
+   collation?: CollationLookup;
 }): Promise<string> {
-   const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
+   // Each stored table's contract, as its build would record its strings:
+   // byte-wise, or under the stored side's collation.
+   const pinned = pin(
+      makeSnapshot(
+         [],
+         {},
+         undefined,
+         undefined,
+         contractsOf({
+            ...args,
+            storedCollation: args.storedCollation ?? "binary",
+         }),
+      ),
+      new Date(0),
+   );
    const authorRunnable = authorOf(
       SHAPES[args.shape],
       args.authorCollation,
@@ -275,8 +343,17 @@ async function routed(args: {
    // The routed compile: the author's own query (so a composite resolves to
    // the same member), read through a runtime whose stored tables compare
    // as `storedCollation`.
+   // A database table sits in its source's own warehouse: its instance is
+   // the author's, so an author instance's collation is the stored side's
+   // too (no deployment reads a database table on another instance).
+   const storedCollation =
+      args.storedCollation ??
+      (args.tables.some((t) => t.tier === "database")
+         ? args.authorCollation
+         : undefined) ??
+      "binary";
    const runnable = {
-      runtime: storedRuntime(args.storedCollation ?? "binary"),
+      runtime: storedRuntime(storedCollation),
       getPreparedQuery: () => authorRunnable.getPreparedQuery(),
    } as unknown as QueryMaterializer;
    const candidates = variantsOf(
@@ -289,7 +366,10 @@ async function routed(args: {
          authorRunnable,
       },
       pinned,
-      { modelPath: "m.malloy", ...(args.probe ? { probe: args.probe } : {}) },
+      {
+         modelPath: "m.malloy",
+         ...(args.collation ? { collation: args.collation } : {}),
+      },
    );
    const unreadable = args.unreadable
       ? spyOn(gateReads, "gateReadsOfQuery").mockResolvedValue(undefined)
@@ -306,7 +386,11 @@ async function routed(args: {
          : "used";
    }
    return `skipped ${c.reason}${c.code ? ` (${c.code})` : ""}${
-      args.withDetail && c.detail ? `: ${c.detail}` : ""
+      args.withDetail && c.detail
+         ? // The lookups name why a stored side is unknown; the probes do
+           // not. Compared without it, so the table holds in every mode.
+           `: ${c.detail.replace(/ collation \([^()]*\)$/, " collation")}`
+         : ""
    }`;
 }
 
@@ -805,7 +889,7 @@ const COLLATION: Record<string, Record<string, string>> = {
          "used, past the gate",
    },
    "row filter, string equality": {
-      "author instance nocase, database": "used, past the gate",
+      "author instance nocase, database": "skipped row_level_gate",
       "author instance nocase, storage, kept past its own gate":
          "skipped row_level_gate",
       "stored table nocase, database": "skipped row_level_gate",
@@ -813,7 +897,7 @@ const COLLATION: Record<string, Record<string, string>> = {
          "skipped row_level_gate",
    },
    "row filter, string ordering": {
-      "author instance nocase, database": "used, past the gate",
+      "author instance nocase, database": "skipped row_level_gate",
       "author instance nocase, storage, kept past its own gate":
          "skipped row_level_gate",
       "stored table nocase, database": "skipped row_level_gate",
@@ -823,7 +907,7 @@ const COLLATION: Record<string, Record<string, string>> = {
    // A gate on a boolean computed by ordering a string is judged as the
    // string gates above are: both collation probes run.
    "row filter, boolean over a string": {
-      "author instance nocase, database": "used, past the gate",
+      "author instance nocase, database": "skipped row_level_gate",
       "author instance nocase, storage, kept past its own gate":
          "skipped row_level_gate",
       "stored table nocase, database": "skipped row_level_gate",
@@ -841,7 +925,8 @@ const COLLATION: Record<string, Record<string, string>> = {
    // An ungated scope on a database table is judged by the stored side's
    // collation too, whatever its columns' types.
    "no gate, a where: ordering a string": {
-      "author instance nocase, database": "used",
+      "author instance nocase, database":
+         "skipped does_not_answer (served_copy_not_served)",
       "author instance nocase, storage, kept past its own gate":
          "skipped does_not_answer (served_copy_not_served)",
       "stored table nocase, database":
@@ -1063,16 +1148,20 @@ const QUERY_FILTERS: Record<string, Record<string, string>> = {
       "binary, view, storage": "used",
       "binary, query, database": "used",
       "binary, query, storage": "used",
-      "author instance nocase, served, database": "used",
+      "author instance nocase, served, database":
+         "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
       "author instance nocase, served, storage":
          "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
-      "author instance nocase, rollup, database": "used",
+      "author instance nocase, rollup, database":
+         "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
       "author instance nocase, rollup, storage":
          "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
-      "author instance nocase, view, database": "used",
+      "author instance nocase, view, database":
+         "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
       "author instance nocase, view, storage":
          "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
-      "author instance nocase, query, database": "used",
+      "author instance nocase, query, database":
+         "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
       "author instance nocase, query, storage":
          "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
       "stored table nocase, served, database":
@@ -1101,16 +1190,20 @@ const QUERY_FILTERS: Record<string, Record<string, string>> = {
       "binary, view, storage": "used",
       "binary, query, database": "used",
       "binary, query, storage": "used",
-      "author instance nocase, served, database": "used",
+      "author instance nocase, served, database":
+         "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
       "author instance nocase, served, storage":
          "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
-      "author instance nocase, rollup, database": "used",
+      "author instance nocase, rollup, database":
+         "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
       "author instance nocase, rollup, storage":
          "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
-      "author instance nocase, view, database": "used",
+      "author instance nocase, view, database":
+         "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
       "author instance nocase, view, storage":
          "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
-      "author instance nocase, query, database": "used",
+      "author instance nocase, query, database":
+         "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
       "author instance nocase, query, storage":
          "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
       "stored table nocase, served, database":
@@ -1489,7 +1582,15 @@ function handFacts(args: {
       probes: {
          scope: {
             source: { refusal: refusal(args.authorCollation) },
-            stored: { refusal: refusal(args.storedCollation) },
+            // A database table is on the author's instance (see routed).
+            stored: {
+               refusal: refusal(
+                  args.storedCollation ??
+                     (args.tables.some((t) => t.tier === "database")
+                        ? args.authorCollation
+                        : undefined),
+               ),
+            },
          },
       },
    };
@@ -1669,7 +1770,7 @@ describe("admitRead reproduces the router's admission", () => {
  * differ between rows, and the verdicts must agree.
  */
 describe("the admission shell gathers the facts admitRead is held to", () => {
-   const probeAll: CollationProbe = {
+   const probeAll: CollationLookup = {
       sourceRefusal: async () => undefined,
       storedRefusal: async () => undefined,
    };
@@ -1679,7 +1780,17 @@ describe("the admission shell gathers the facts admitRead is held to", () => {
             for (const shape of Object.keys(SHAPES) as Shape[]) {
                for (const leg of LEGS) {
                   for (const [read, bindings] of Object.entries(READS)) {
-                     const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
+                     // Each table's contract, as its build records it.
+                     const pinned = pin(
+                        makeSnapshot(
+                           [],
+                           {},
+                           undefined,
+                           undefined,
+                           contractsOf({ tables: bindings }),
+                        ),
+                        new Date(0),
+                     );
                      const authorRunnable = authorOf(SHAPES[shape]);
                      const query = {
                         queryString: `run: ${SHAPES[shape]} -> v`,
@@ -1694,6 +1805,7 @@ describe("the admission shell gathers the facts admitRead is held to", () => {
                      const gathered = await new ReadAdmission(
                         query,
                         { materialize: true, gatedSources },
+                        pinned.snapshot,
                         probeAll,
                      ).decide(leg, answer, GATED(shape));
                      const hand = handFacts({ shape, tables: bindings });
@@ -1800,21 +1912,21 @@ describe("the collation probes run at most once per answer", () => {
                            }
                            seen.add(k);
                         };
-                        const probe: CollationProbe = {
+                        const probe: CollationLookup = {
                            sourceRefusal: (a) => {
                               count("source", a);
-                              return collationProbe.sourceRefusal(a);
+                              return collationLookup.sourceRefusal(a);
                            },
                            storedRefusal: (a) => {
                               count("stored", a);
-                              return collationProbe.storedRefusal(a);
+                              return collationLookup.storedRefusal(a);
                            },
                         };
                         await routed({
                            leg,
                            shape,
                            tables,
-                           probe,
+                           collation: probe,
                            ...(query ? { query } : {}),
                            ...collations,
                         });

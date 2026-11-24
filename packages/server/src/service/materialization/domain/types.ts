@@ -181,10 +181,10 @@ export interface FreshnessAwareManifestEntry {
     */
    nativeSchema?: { name: string; type: string }[];
    /**
-    * A `#(rollup)` rollup's key check, as the
-    * auto-run that wrote or carried this table recorded it: whether the rows
-    * it grouped held its one grain dimension once per value. Internal, never
-    * on the wire; absent (unknown) on every entry a host's manifest binds.
+    * The key checks the table's contract records, as a bind reads them
+    * under the primary keys the models declare now (`keyUniquenessOfContract`):
+    * a `#(rollup)` rollup's own key, and each checked source's primary key.
+    * Internal, never on the wire: set only by a bind, off the contract.
     */
    keyUniqueness?: KeyUniqueness;
    /**
@@ -237,6 +237,12 @@ export interface KeyUniqueness {
     * source known true here.
     */
    parentKeys?: Record<string, boolean>;
+   /**
+    * The primary key column each of {@link parentKeys} checked, by sourceID.
+    * A check is read only while the source still declares that key: one with
+    * no column recorded, or another, is unknown, and its joins answer live.
+    */
+   parentKeyColumns?: Record<string, string>;
 }
 
 /**
@@ -324,4 +330,16 @@ export interface KeptTable extends TableRecord {
    connectionName: string;
    storageDestinationName?: string;
    reason: KeptTableReason;
+}
+
+/** A run that can write nothing more. */
+const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
+   "MANIFEST_FILE_READY",
+   "FAILED",
+   "CANCELLED",
+]);
+
+/** Whether a run with `status` has not settled: it may still write. */
+export function isActiveRun(status: string): boolean {
+   return !TERMINAL_RUN_STATUSES.has(status);
 }

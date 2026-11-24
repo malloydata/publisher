@@ -33,8 +33,9 @@ import { getFreePort } from "../../harness/spawn_server";
  * materialization_versions.spec.ts.
  *
  * The manifest a version is bound to is a `gs://` URI that cannot be fetched
- * here: what a restart must keep is the binding itself, on that version only,
- * and the version tries it (`live_fallback`) where the others have none.
+ * here, named by its publish (a manifest PUT refuses it): what a restart must
+ * keep is the binding itself, on that version only, and the version tries it
+ * (`bind_failed`) where the others have none.
  */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -206,6 +207,7 @@ describe("published versions across a restart", () => {
       version: string,
       n: number,
       scope?: "version" | "package",
+      manifestLocation?: string,
    ): Promise<{ status: number; reason?: string }> {
       const res = await fetch(
          `${server.baseUrl}/api/v0/environments/${ENV_NAME}/packages`,
@@ -215,6 +217,7 @@ describe("published versions across a restart", () => {
             body: JSON.stringify({
                name,
                location: packageDir(name, version, n, scope),
+               ...(manifestLocation ? { manifestLocation } : {}),
             }),
          },
       );
@@ -299,7 +302,11 @@ describe("published versions across a restart", () => {
       server = new Server(serverRoot);
       await server.start();
 
-      expect(await publish("kept", "1.0.0", 7)).toEqual({ status: 200 });
+      // A publish binds the manifest it names, reporting a failed bind as
+      // `bind_failed` rather than refusing the version.
+      expect(await publish("kept", "1.0.0", 7, undefined, manifestUri)).toEqual(
+         { status: 200 },
+      );
       expect(await publish("kept", "1.1.0", 8)).toEqual({ status: 200 });
       expect(await publish("kept", "1.2.0", 9)).toEqual({ status: 200 });
       const rollback = await fetch(`${pkgApi("kept")}/latest`, {
@@ -314,12 +321,16 @@ describe("published versions across a restart", () => {
          body: JSON.stringify({ archiveStatus: "archive" }),
       });
       expect(archived.status).toBe(200);
+      // The PUT refuses a manifest that does not bind, and keeps the row.
       const bound = await fetch(`${pkgApi("kept")}/versions/1.0.0/manifest`, {
          method: "PUT",
          headers: json,
          body: JSON.stringify({ manifestLocation: manifestUri }),
       });
-      expect(bound.status).toBe(200);
+      expect(bound.status).toBe(500);
+      expect(((await bound.json()) as { reason?: string }).reason).toBe(
+         "MANIFEST_BIND_FAILED",
+      );
 
       expect(await publish("owned", "1.0.0", 1, "version")).toEqual({
          status: 200,

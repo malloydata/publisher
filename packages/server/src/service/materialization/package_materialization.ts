@@ -26,7 +26,19 @@
  * Effects: logs, and the bind metrics.
  */
 
-import { type ColumnContract, parseContract } from "./domain/column_contract";
+import {
+   type ColumnContract,
+   compatible,
+   contractWithoutPassedKeys,
+   type KeyedSource,
+   keyUniquenessOfContract,
+   parseContract,
+} from "./domain/column_contract";
+import { splitManifestEntries } from "./run/manifest_loader";
+import { packageRelativeSourceID } from "./text/read_text";
+import { refreshStringCapabilities } from "./serve/source_capability";
+import { stopsReadAt } from "./domain/freshness";
+import { recordScopeFacts } from "./serve/scope_facts";
 import type { Connection, MalloyConfig } from "@malloydata/malloy";
 import { components } from "../../api";
 import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
@@ -64,6 +76,7 @@ import {
    pin,
    type Snapshot,
    underCompilerKeys,
+   withEntryKeyChecks,
 } from "./domain/binding";
 import {
    observedDatabaseColumns,
@@ -71,12 +84,9 @@ import {
    readTableColumns,
    withCollations,
 } from "./run/database_column_read";
+import { storageTablePath } from "./domain/storage_table_path";
 import {
-   destinationSchemaOf,
-   storageTablePath,
-} from "./domain/storage_table_path";
-import {
-   readStoredTables,
+   readStoredEntries,
    type StoredTableSite,
 } from "./run/stored_table_read";
 import {
@@ -87,26 +97,24 @@ import {
    deriveDatabaseServeBindings,
    holdStorageToContracts,
    type IncompatibleTable,
-   type ObservedDrift,
    type UnreadTable,
    kindFromPlan,
    v1StoredColumnsOf,
 } from "./serve/bind";
 import {
    type ContractVerdict,
-   MATERIALIZATION_TYPES_UNRECORDED_CODE,
    type ServeVerdict,
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
 import {
    type BoundTableTypeFinding,
    boundTableTypeFindings,
-   type DatabaseDriftFinding,
-   databaseDriftFindings,
 } from "./serve/storage_bindings";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import { tablePathParts } from "../quoting";
 import * as warnings from "./package_warnings";
+import type { IncrementalCheckState } from "./package_warnings";
+import type { IncrementalCheckFinding } from "./domain/incremental";
 import { PlanLifecycle } from "./plan_lifecycle";
 import { type DeploymentFacts, ServeVerdicts } from "./serve_verdicts";
 import { SourceMap } from "./text/source_map";
@@ -118,7 +126,11 @@ import {
    incrementalEntriesOf,
    type UnprovenGeneration,
 } from "./run/incremental_upstream";
-import { isRollupOrigin, originOfTable } from "./domain/table_plans";
+import {
+   isRollupOrigin,
+   originOfTable,
+   pairLeavesOf,
+} from "./domain/table_plans";
 import { queryTimezoneOf } from "../governance/ir/compiled_model";
 import type {
    BuildManifest,
@@ -156,6 +168,27 @@ const UNREAD_RETRY_ATTEMPTS = 10;
 /** The first retry's delay; each next one doubles, up to {@link UNREAD_RETRY_MAX_MS}. */
 const UNREAD_RETRY_BASE_MS = 1_000;
 const UNREAD_RETRY_MAX_MS = 60_000;
+
+/**
+ * How long a standalone run's read of the tables it keeps may take in all
+ * ({@link PackageMaterialization.holdCarriedToContracts}) before the run
+ * starts without the rest. A table not read by then (or whose read failed)
+ * is reported `unread`, never moved: a carried one is carried, held only by
+ * the bind and by each downstream build's upstream check; an incremental
+ * one a delta would advance is reseeded instead (deriveHoldingCarried),
+ * since nothing else checks the table a delta writes into.
+ */
+const CARRIED_READ_BUDGET_MS = 60_000;
+
+/**
+ * What {@link PackageMaterialization.holdCarriedToContracts} found: the
+ * tables that no longer match their contracts, and those with a contract it
+ * did not read (a failed read, the budget, the run's cancel).
+ */
+interface CarriedHold {
+   moved: ReadonlySet<string>;
+   unread: ReadonlySet<string>;
+}
 
 /** What a {@link PackageMaterialization} reads of the package that holds it. */
 export interface PackageMaterializationOwner {
@@ -212,6 +245,13 @@ export class PackageMaterialization {
     */
    private keptTables: readonly KeptTable[] = [];
    /**
+    * What the newest refreshes found of each incremental source's checks,
+    * by content address, while one is unpassed (see noteIncrementalCheck).
+    * In memory: after a restart, the next run that finds it again restores
+    * it.
+    */
+   private incrementalChecks = new Map<string, IncrementalCheckState>();
+   /**
     * The same entries as table names only, the manifest models hydrate with
     * and /compile reads. Surfaced on /status so the control plane can confirm
     * a worker bound it.
@@ -224,7 +264,7 @@ export class PackageMaterialization {
     * none (a hand-made bind), whose tables are read as their build wrote them.
     */
    private observedColumns: ReadonlyMap<string, ObservedColumns> | undefined;
-   /** What the last snapshot found of the observation: drift, and tables not read. */
+   /** What the last snapshot found of the observation: tables left out, and why. */
    /** The pending re-read of the tables the last read left unread. */
    /** Set by {@link dispose}: the package is released. */
    private disposed = false;
@@ -232,17 +272,13 @@ export class PackageMaterialization {
       | { timer: ReturnType<typeof setTimeout>; attempt: number }
       | undefined;
    private observedOutcome: {
-      drifted: ObservedDrift[];
       unread: UnreadTable[];
-      uncaptured: string[];
       /** Bound tables whose entry carries no column contract (both tiers). */
       contractMissing: string[];
       /** Bound tables that no longer match their contract (both tiers). */
       incompatible: IncompatibleTable[];
    } = {
-      drifted: [],
       unread: [],
-      uncaptured: [],
       contractMissing: [],
       incompatible: [],
    };
@@ -275,6 +311,12 @@ export class PackageMaterialization {
    private commitChain: Promise<void> = Promise.resolve();
    /** The snapshot from before a bind that is compiling ({@link servedSnapshot}). */
    private committing: Snapshot | undefined;
+   /**
+    * The commit at the next freshness edge ({@link scheduleLapse}): when a
+    * bound table's window lapses, the tables a query reads change with no
+    * bind, so the served copy is compiled over them then.
+    */
+   private lapseTimer: ReturnType<typeof setTimeout> | undefined;
    /** The pending re-read of the `storage=` tables the last bind left unread. */
    private storageRetry: ReturnType<typeof setTimeout> | undefined;
    /** The `storage=` entries {@link storageBindings} were made from, by address. */
@@ -339,10 +381,6 @@ export class PackageMaterialization {
          snapshot: () => this.snapshot(),
          storageBindings: () => this.storageBindings,
          databaseEntries: () => this.databaseEntries,
-         typesUnrecorded: () => {
-            this.snapshot();
-            return this.observedOutcome.uncaptured;
-         },
          contractVerdicts: () => this.contractVerdicts(),
          deploymentFacts: () => this.deploymentFacts,
          destinationSchema: (name) => this.serveDestinationSchema?.(name),
@@ -713,7 +751,6 @@ export class PackageMaterialization {
          observed: this.storageObserved,
       });
       this.observedOutcome = {
-         drifted: observed.drifted,
          // A table a stored read failed on is unread until the rebind reads
          // it: a failed read is never a verdict on the table (a swap's
          // rename window, a permission, a live table it joined).
@@ -726,7 +763,6 @@ export class PackageMaterialization {
                detail: "a query's read of it failed; it is read again",
             })),
          ],
-         uncaptured: observed.uncaptured,
          contractMissing: [
             ...observed.contractMissing,
             ...stored.contractMissing,
@@ -772,9 +808,40 @@ export class PackageMaterialization {
               ),
          plan.withdrawn,
          plan.compilerKeys,
+         this.servedContracts(bindings, entries),
       );
       this.snapshotMemo = { key, snapshot, signature };
       return snapshot;
+   }
+
+   /**
+    * Each served table's column contract, by content address: a `storage=`
+    * binding's from its entry, a database table's from its entry. Every one
+    * served has one (a table without is never bound).
+    */
+   private servedContracts(
+      bindings: readonly Binding[],
+      entries: Readonly<FreshnessManifest>,
+   ): Map<string, ColumnContract> {
+      const out = new Map<string, ColumnContract>();
+      const keep = (id: string, raw: unknown) => {
+         if (out.has(id)) return;
+         const contract = parseContract(raw);
+         if (contract) out.set(id, contract);
+      };
+      for (const b of bindings) {
+         keep(
+            b.virtualHandle,
+            (b.tier === "storage"
+               ? this.storageEntries[b.virtualHandle]
+               : (entries[b.virtualHandle] ??
+                 this.databaseEntries?.[b.virtualHandle])
+            )?.contract,
+         );
+      }
+      for (const [id, entry] of Object.entries(entries))
+         keep(id, entry.contract);
+      return out;
    }
 
    /**
@@ -937,6 +1004,23 @@ export class PackageMaterialization {
       try {
          change();
          const next = this.snapshot();
+         // How each model's sources compare strings, read again on every
+         // commit that serves a table, and for models a reload just
+         // installed: read admission looks it up per query. Started, never
+         // awaited: a warehouse catalog read must not hold a commit (or a
+         // reload), and a query waits for a read still running only as long
+         // as `stringCapabilitiesOf` bounds it.
+         if (
+            models ||
+            next.bindings.length > 0 ||
+            Object.keys(next.entries).length > 0
+         ) {
+            for (const model of this.owner.models().values()) {
+               model.setStringCapabilityReader(refreshStringCapabilities);
+               model.setScopeFactsRecorder(recordScopeFacts);
+               void model.refreshStringCapabilities();
+            }
+         }
          if (next.bindings !== this.publishedBindings || models) {
             this.publishedBindings = next.bindings;
             await Promise.all(
@@ -947,8 +1031,71 @@ export class PackageMaterialization {
             );
             this.bindTypeFindings(next.bindings);
          }
+         // What each source's gates and row scope read, over this commit's
+         // tables: a commit that changes only the manifest entries (a
+         // database table) is a new snapshot too.
+         if (next.bindings.length > 0 || Object.keys(next.entries).length > 0) {
+            for (const model of this.owner.models().values()) {
+               model.recordScopeFactsOver(next);
+            }
+         }
       } finally {
          this.committing = undefined;
+         this.scheduleLapse();
+      }
+   }
+
+   /**
+    * Arm the commit at the next instant a bound table stops being read (its
+    * freshness window lapses, and its fallback does not serve stale): the
+    * bindings a query pins change then with no bind, so each model's served
+    * copy, its problems and its scope facts are compiled over the tables
+    * read from that edge, as a bind's commit compiles them. Re-armed after
+    * every commit; one timer per package, never holding the process open.
+    */
+   private scheduleLapse(): void {
+      if (this.lapseTimer) clearTimeout(this.lapseTimer);
+      this.lapseTimer = undefined;
+      if (this.disposed) return;
+      const now = Date.now();
+      let edge: number | undefined;
+      for (const b of this.snapshot().bindings) {
+         const at = stopsReadAt({
+            dataAsOf: b.freshAsOf,
+            freshnessWindowSeconds: b.freshnessWindowSeconds,
+            freshnessFallback: b.freshnessFallback,
+         });
+         if (
+            at !== undefined &&
+            at > now &&
+            (edge === undefined || at < edge)
+         ) {
+            edge = at;
+         }
+      }
+      if (edge === undefined) return;
+      // setTimeout's longest delay; a later edge re-arms when this fires.
+      const delay = Math.min(edge - now, 2_147_483_647);
+      const timer = setTimeout(() => {
+         this.lapseTimer = undefined;
+         const run = this.commitChain.then(() => this.commitLapse());
+         this.commitChain = run.catch(() => undefined);
+      }, delay);
+      (timer as { unref?: () => void }).unref?.();
+      this.lapseTimer = timer;
+   }
+
+   /** The commit {@link scheduleLapse} arms: every model compiled over the tables read now. */
+   private async commitLapse(): Promise<void> {
+      if (this.disposed) return;
+      try {
+         await Promise.all(
+            [...this.owner.models().values()].map((model) =>
+               model.prepareServedCopy(),
+            ),
+         );
+      } finally {
+         this.scheduleLapse();
       }
    }
 
@@ -977,28 +1124,128 @@ export class PackageMaterialization {
       this.afterBind(update);
    }
 
+   /**
+    * `entries`, each given the key checks its contract records
+    * (`keyUniquenessOfContract`): the rollup and source checks, and a pair
+    * table's leaf checks, named through the current plan's pair paths, all
+    * under the primary keys the models declare now. The contract is the one
+    * store of key verdicts, for a table this server built and one a host
+    * built alike; a verdict an entry brings any other way is dropped. Read
+    * again on every bind and every change of the models, never kept: a
+    * primary key the models moved finds no check recorded under it, and its
+    * joins to rollups and through pair tables answer live.
+    */
+   private withRecordedKeyChecks<
+      E extends { contract?: unknown; keyUniqueness?: unknown },
+   >(entries: Readonly<Record<string, E>>): Readonly<Record<string, E>> {
+      let sources: KeyedSource[] | undefined;
+      let leaves:
+         | ReadonlyMap<string, ReturnType<typeof pairLeavesOf>>
+         | undefined;
+      let out: Record<string, E> | undefined;
+      for (const [id, entry] of Object.entries(entries)) {
+         let keyUniqueness;
+         if (entry.contract !== undefined) {
+            sources ??= this.keyedSources();
+            leaves ??= this.pairLeavesByAddress();
+            keyUniqueness = keyUniquenessOfContract(
+               entry.contract,
+               sources,
+               leaves.get(id),
+            );
+         }
+         if (!keyUniqueness && entry.keyUniqueness === undefined) continue;
+         out ??= { ...entries };
+         if (keyUniqueness) {
+            out[id] = { ...entry, keyUniqueness };
+         } else {
+            const { keyUniqueness: _stale, ...rest } = entry;
+            out[id] = rest as E;
+         }
+      }
+      return out ?? entries;
+   }
+
+   /** Each pair table's leaves in the current plan ({@link pairLeavesOf}), by the table's content address. */
+   private pairLeavesByAddress(): Map<string, ReturnType<typeof pairLeavesOf>> {
+      const out = new Map<string, ReturnType<typeof pairLeavesOf>>();
+      const plans = this.plan.materializePlans;
+      for (const [sourceID, source] of Object.entries(
+         this.plan.buildPlan?.sources ?? {},
+      )) {
+         const plan = plans[sourceID];
+         const leaves = plan ? pairLeavesOf(plan) : [];
+         if (leaves.length > 0) out.set(source.sourceEntityId, leaves);
+      }
+      return out;
+   }
+
+   /** Every source the models declare with a primary key, as a contract's key checks name it. */
+   private keyedSources(): KeyedSource[] {
+      const packagePath = this.owner.packagePath();
+      const bySourceID = new Map<string, KeyedSource>();
+      for (const model of this.owner.models().values()) {
+         // An empty or markdown-only notebook has no model definition.
+         const contents: Record<string, unknown> =
+            model.getModelDef()?.contents ?? {};
+         for (const def of Object.values(contents)) {
+            const { sourceID, primaryKey } = def as {
+               sourceID?: unknown;
+               primaryKey?: unknown;
+            };
+            if (
+               typeof sourceID !== "string" ||
+               typeof primaryKey !== "string" ||
+               bySourceID.has(sourceID)
+            ) {
+               continue;
+            }
+            bySourceID.set(sourceID, {
+               sourceID,
+               relativeID: packageRelativeSourceID(packagePath, sourceID),
+               primaryKey,
+            });
+         }
+      }
+      return [...bySourceID.values()];
+   }
+
    /** {@link bind}'s change of the bound state, before any publish. */
    private applyBind(update: Parameters<PackageMaterialization["bind"]>[0]) {
       if (update.database) {
+         const database = this.withRecordedKeyChecks(update.database);
          this.adoptDatabase(
-            update.databaseAsGiven
-               ? update.database
-               : this.admitDatabase(update.database),
+            update.databaseAsGiven ? database : this.admitDatabase(database),
          );
          this.observedColumns = update.observed;
          this.cancelUnreadRetry();
       }
       if (update.storage) {
-         this.storageEntries = update.storage;
+         const storage = this.withRecordedKeyChecks(update.storage);
+         this.storageEntries = storage;
          this.storageObserved = update.storageObserved;
          this.storageSite = update.storageSite;
          this.cancelStorageRetry();
-         this.storageBindings = this.admitStorage(update.storage);
+         this.storageBindings = this.admitStorage(storage);
          this.storageLateRows = new Map(
-            Object.entries(update.storage).flatMap(([id, entry]) =>
+            Object.entries(storage).flatMap(([id, entry]) =>
                entry.lateRows ? [[id, entry.lateRows]] : [],
             ),
          );
+      } else if (update.models) {
+         // New models may declare other primary keys: the `storage=`
+         // tables' key checks are read off their contracts again, under them.
+         const before = this.storageEntries;
+         const storage = this.withRecordedKeyChecks(before);
+         if (storage !== before) {
+            this.storageEntries = storage;
+            this.storageBindings = this.storageBindings.map((b) => {
+               const entry = storage[b.virtualHandle];
+               return entry && entry !== before[b.virtualHandle]
+                  ? withEntryKeyChecks(b, entry)
+                  : b;
+            });
+         }
       }
    }
 
@@ -1050,6 +1297,8 @@ export class PackageMaterialization {
     */
    dispose(): void {
       this.disposed = true;
+      if (this.lapseTimer) clearTimeout(this.lapseTimer);
+      this.lapseTimer = undefined;
       this.cancelUnreadRetry();
       this.cancelStorageRetry();
    }
@@ -1194,6 +1443,113 @@ export class PackageMaterialization {
    }
 
    /**
+    * Hold each table a standalone run may carry (`prior`) to its contract
+    * as it is now, as a bind would: one schema read per table, database
+    * tables on their warehouse, `storage=` tables through their destination
+    * (`site`). The bind last held them when it bound, so a table altered
+    * since (an out-of-band `ALTER`, a column dropped and re-added) would
+    * otherwise be carried, and a downstream built over it. Each that no
+    * longer matches goes to the drift handler ({@link reportIncompatible}),
+    * so {@link incompatibleTables} names it and the run rebuilds it in full.
+    * A table with no contract is left to `rebuiltInFull`. The reads share
+    * one budget ({@link CARRIED_READ_BUDGET_MS}) and stop at `signal`: a
+    * table not read in time, or whose read failed, is never judged moved,
+    * and is returned `unread` for the caller to decide (deriveHoldingCarried
+    * reseeds an incremental one rather than advance it).
+    */
+   async holdCarriedToContracts(
+      prior: Readonly<Record<string, ManifestEntry>>,
+      site?: StoredTableSite,
+      options: { budgetMs?: number; signal?: AbortSignal } = {},
+   ): Promise<CarriedHold> {
+      if (Object.keys(prior).length === 0) {
+         return { moved: new Set(), unread: new Set() };
+      }
+      const { tableNameManifest, storageEntries } = splitManifestEntries(
+         { ...prior },
+         `prior entries (package ${this.owner.packageName()})`,
+         { quiet: true },
+      );
+      const observed = new Map<string, ObservedColumns>();
+      // Each tier's read lands only while the budget lasts: one that ends
+      // after it, or fails, leaves its tables unread, never judged moved.
+      let open = true;
+      const land = (read: Promise<ReadonlyMap<string, ObservedColumns>>) =>
+         read.then(
+            (found) => {
+               if (open) for (const [id, o] of found) observed.set(id, o);
+            },
+            () => undefined,
+         );
+      const reads: Promise<void>[] = [];
+      if (Object.keys(tableNameManifest).length > 0) {
+         reads.push(land(this.readDatabaseColumns(tableNameManifest)));
+      }
+      if (Object.keys(storageEntries).length > 0) {
+         reads.push(land(this.readStorageColumns(storageEntries, site)));
+      }
+      const { signal } = options;
+      const budgetMs = options.budgetMs ?? CARRIED_READ_BUDGET_MS;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let stop: (() => void) | undefined;
+      const outcome = await Promise.race([
+         Promise.all(reads).then(() => "read" as const),
+         new Promise<"budget" | "aborted">((resolve) => {
+            timer = setTimeout(() => resolve("budget"), budgetMs);
+            (timer as { unref?: () => void }).unref?.();
+            stop = () => resolve("aborted");
+            if (signal?.aborted) stop();
+            else signal?.addEventListener("abort", stop, { once: true });
+         }),
+      ]);
+      open = false;
+      clearTimeout(timer);
+      if (stop) signal?.removeEventListener("abort", stop);
+      if (outcome === "aborted") {
+         return { moved: new Set(), unread: new Set(Object.keys(prior)) };
+      }
+      if (outcome === "budget") {
+         logger.warn(
+            "The read of the tables a run would carry ran past its budget; the run carries the tables it did not read, and each build still checks its upstreams",
+            {
+               packageName: this.owner.packageName(),
+               budgetMs,
+               tables: Object.keys(prior).length,
+               unread: Object.keys(prior).filter((id) => !observed.has(id))
+                  .length,
+            },
+         );
+      }
+      const found: string[] = [];
+      const unread = new Set<string>();
+      for (const [id, entry] of Object.entries(prior)) {
+         const contract = parseContract(entry.contract);
+         const read = observed.get(id);
+         if (!contract) continue;
+         if (!read || "unread" in read) {
+            unread.add(id);
+            continue;
+         }
+         const verdict = compatible(contract, read);
+         if (verdict.ok) continue;
+         found.push(id);
+         recordIncompatibleDetected("run", verdict.code);
+         logger.warn(
+            "A table a run would carry no longer matches the column contract its build recorded, so the run rebuilds it in full",
+            {
+               packageName: this.owner.packageName(),
+               sourceEntityId: id,
+               reason: "incompatible",
+               code: verdict.code,
+               columns: verdict.columns,
+            },
+         );
+      }
+      if (found.length > 0) this.reportIncompatible(found);
+      return { moved: new Set(found), unread };
+   }
+
+   /**
     * The tables a standalone run rebuilds in full rather than carry, by
     * address: each a bind found incompatible with its contract or a stored
     * read failed closed, and each a build found altered since its build
@@ -1301,34 +1657,7 @@ export class PackageMaterialization {
        */
       site?: StoredTableSite,
    ): Promise<ReadonlyMap<string, ObservedColumns>> {
-      if (site) {
-         return readStoredTables(
-            site,
-            Object.entries(entries).flatMap(([key, entry]) => {
-               const destinationName = entry.storageDestinationName;
-               if (!destinationName) return [];
-               let schema: string | undefined;
-               try {
-                  schema = destinationSchemaOf(
-                     site.getStorageDestination(destinationName),
-                  );
-               } catch {
-                  schema = undefined;
-               }
-               return [
-                  {
-                     key,
-                     destinationName,
-                     tablePath: storageTablePath(
-                        destinationName,
-                        entry.physicalTableName,
-                        schema,
-                     ),
-                  },
-               ];
-            }),
-         );
-      }
+      if (site) return readStoredEntries(site, entries);
       const config = this.serveDestinationConfig?.();
       const tables = Object.entries(entries).flatMap(([id, entry]) =>
          entry.storageDestinationName
@@ -1368,48 +1697,13 @@ export class PackageMaterialization {
    }
 
    /**
-    * Log and count what the bind's column read found: drifted tables, each
-    * column of them the package warning reports counted as a `storage=`
-    * table's is, and tables it could not read. `only`: the tables a retry
-    * read again, so a table is counted and logged once per read of it.
+    * Log and count what the bind's column read found: tables with no
+    * contract, tables that no longer match theirs, and tables it could not
+    * read. `only`: the tables a retry read again, so a table is counted and
+    * logged once per read of it.
     */
    private logObservedOutcome(only?: ReadonlySet<string>): void {
       const read = (id: string) => only === undefined || only.has(id);
-      for (const finding of this.databaseDriftFindings()) {
-         if (!read(finding.sourceEntityId)) continue;
-         for (const m of finding.mismatches) {
-            recordStoredColumnTypeMismatch("serve", m.declaredType);
-         }
-      }
-      for (const drift of this.observedOutcome.drifted) {
-         if (!read(drift.sourceEntityId)) continue;
-         const asDouble = drift.columns.filter((c) => c.storedAsDouble);
-         if (asDouble.length > 0) {
-            logger.warn(
-               "A DuckLake table holds a 128-bit integer column as a DOUBLE, so it is never read as exact: each such column is answered live where live keeps more digits",
-               {
-                  code: warnings.DATABASE_COLUMN_TYPE_MISMATCH_CODE,
-                  packageName: this.owner.packageName(),
-                  sourceEntityId: drift.sourceEntityId,
-                  columns: asDouble,
-               },
-            );
-            if (asDouble.length === drift.columns.length) continue;
-         }
-         const reported = drift.columns.filter(
-            (c) => !c.storedAsDouble && !c.castOnly,
-         );
-         if (reported.length === 0) continue;
-         logger.warn(
-            "A database table's column types changed outside a build; each changed column is read through a faithful cast or answered live",
-            {
-               code: warnings.DATABASE_COLUMN_TYPE_MISMATCH_CODE,
-               packageName: this.owner.packageName(),
-               sourceEntityId: drift.sourceEntityId,
-               columns: reported,
-            },
-         );
-      }
       for (const id of this.observedOutcome.contractMissing) {
          if (!read(id)) continue;
          logger.warn(
@@ -1435,17 +1729,6 @@ export class PackageMaterialization {
             },
          );
       }
-      for (const id of this.observedOutcome.uncaptured) {
-         if (!read(id)) continue;
-         logger.warn(
-            "A database table's build recorded no column types, so a change since the build cannot be ruled out; its sources answer live until it is rebuilt",
-            {
-               code: MATERIALIZATION_TYPES_UNRECORDED_CODE,
-               packageName: this.owner.packageName(),
-               sourceEntityId: id,
-            },
-         );
-      }
       for (const miss of this.observedOutcome.unread) {
          if (!read(miss.sourceEntityId)) continue;
          logger.warn(
@@ -1466,41 +1749,33 @@ export class PackageMaterialization {
    }
 
    /**
-    * Drop the rollup key checks bound for these content
-    * addresses: a run is about to write their tables, so what a check found
-    * over the rows before no longer describes them. The routing itself is
-    * kept; the join-to-rollup branch reads the table as unknown until a run
-    * binds a new check.
+    * Drop the passed key checks bound for these content addresses: a run is
+    * about to write their tables, so what a check found over the rows before
+    * no longer describes them. They are stripped from the entries' contracts
+    * ({@link contractWithoutPassedKeys}), the one store every bind reads, so
+    * no later bind before the run's own (a reload's, for one) reads them
+    * back. A check that found its key repeated, or could not run, stays: it
+    * only declines. The routing itself is kept; a join that needs a passed
+    * check answers live until the run binds a new one.
     */
    forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
       const ids = new Set(sourceEntityIds);
-      // A stored table's own primary key check, and a stored rollup's key
-      // check, on its storage binding.
-      const checked = (b: Binding) =>
-         (b.primaryKeys || b.rollupKey) && ids.has(b.virtualHandle);
-      if (this.storageBindings.some(checked)) {
+      const storage = withoutPassedKeysAt(this.storageEntries, ids);
+      if (storage !== this.storageEntries) {
+         const rechecked = this.withRecordedKeyChecks(storage);
+         this.storageEntries = rechecked;
          this.storageBindings = this.storageBindings.map((b) => {
-            if (!checked(b)) return b;
-            const {
-               primaryKeys: _forgotten,
-               rollupKey: _forgottenKey,
-               ...rest
-            } = b;
-            return rest;
+            const entry = rechecked[b.virtualHandle];
+            return ids.has(b.virtualHandle) && entry
+               ? withEntryKeyChecks(b, entry)
+               : b;
          });
       }
-      const entries = this.databaseEntries;
-      let next: FreshnessManifest | undefined;
-      for (const id of ids) {
-         const entry = entries?.[id];
-         if (!entry?.keyUniqueness) continue;
-         next ??= { ...entries };
-         const { keyUniqueness: _forgotten, ...rest } = entry;
-         next[id] = rest;
+      const database =
+         this.databaseEntries && withoutPassedKeysAt(this.databaseEntries, ids);
+      if (database && database !== this.databaseEntries) {
+         this.databaseEntries = this.withRecordedKeyChecks(database);
       }
-      // A database pair table's leaf key check rides on its binding
-      // (`primaryKeys`): the snapshot drops it too.
-      if (next) this.databaseEntries = next;
       this.publish();
    }
 
@@ -1715,6 +1990,7 @@ export class PackageMaterialization {
          void model.prepareServedCopy();
       }
       this.bindTypeFindings(bindings);
+      this.scheduleLapse();
    }
 
    /**
@@ -1765,7 +2041,25 @@ export class PackageMaterialization {
       }
    }
 
+   /**
+    * Start reading how every loaded model's sources compare strings, to
+    * record with each model's runtime: read admission only looks it up, and
+    * waits a bounded time for a read still running, so a query over a table
+    * bound later never judges it unread. Load does not wait for it (a warehouse catalog
+    * read must not hold a load). Every commit that serves a table reads it
+    * again. Never throws.
+    */
+   async recordStringCapabilitiesAtLoad(): Promise<void> {
+      await Promise.all(
+         [...this.owner.models().values()].map((model) =>
+            model.refreshStringCapabilities(),
+         ),
+      );
+   }
+
    private setServedCopyContextOn(model: Model): void {
+      model.setStringCapabilityReader(refreshStringCapabilities);
+      model.setScopeFactsRecorder(recordScopeFacts);
       model.setServedCopyContext(
          this.owner.packagePath(),
          this.owner.malloyConfig(),
@@ -1870,6 +2164,32 @@ export class PackageMaterialization {
 
    keptTableWarnings(): ApiPackageWarning[] {
       return warnings.keptTableWarnings(this.plan.buildPlan, this.keptTables);
+   }
+
+   /**
+    * What a run found of a source's incremental check: a finding that is not
+    * `passed` is kept, and warned of, until that check passes.
+    */
+   noteIncrementalCheck(
+      sourceEntityId: string,
+      finding: IncrementalCheckFinding,
+   ): void {
+      const state = { ...this.incrementalChecks.get(sourceEntityId) };
+      if (finding.outcome === "passed") delete state[finding.check];
+      else state[finding.check] = finding;
+      if (Object.keys(state).length === 0) {
+         this.incrementalChecks.delete(sourceEntityId);
+      } else {
+         this.incrementalChecks.set(sourceEntityId, state);
+      }
+   }
+
+   /** See package_warnings.ts, `incrementalCheckWarnings`. */
+   incrementalCheckWarnings(): ApiPackageWarning[] {
+      return warnings.incrementalCheckWarnings(
+         this.plan.buildPlan,
+         this.incrementalChecks,
+      );
    }
 
    /**
@@ -1982,39 +2302,13 @@ export class PackageMaterialization {
       return warnings.storedColumnTypeWarnings(
          this.owner.models(),
          this.boundTypeFindings,
-         this.databaseDriftFindings(),
       );
    }
 
    /**
-    * The database tables whose columns the last bind found moved outside a
-    * build, as the `storage-column-type-mismatch` warning reports them.
-    */
-   private databaseDriftFindings(): DatabaseDriftFinding[] {
-      this.snapshot();
-      const { drifted } = this.observedOutcome;
-      if (drifted.length === 0) return [];
-      return databaseDriftFindings(drifted, this.plan.buildPlan, {
-         queryTimezone: this.driftQueryTimezone,
-      });
-   }
-
-   /** The time zone a moved column of `source`'s table is read in. */
-   private readonly driftQueryTimezone = (
-      sourceID: string,
-      source: NonNullable<NonNullable<BuildPlan>["sources"]>[string],
-   ): string | undefined =>
-      queryTimezoneOf(
-         source.preaggregate
-            ? this.baseDeclaration(source)
-            : this.declarationLookup(sourceID),
-      );
-
-   /**
-    * What a substituted database table's moved columns must read as, by its
-    * content address: its build source's declared columns and reader's time
-    * zone, the inputs {@link databaseDriftFindings} reads, so the bind and
-    * the warning decide each column alike.
+    * What a bound database table's source declares now, by its content
+    * address: its build source's declared columns and connection, which the
+    * bind holds the table's contract to (`declared_moved`).
     */
    private driftDeclaration(
       sourceEntityId: string,
@@ -2023,27 +2317,37 @@ export class PackageMaterialization {
          ([, s]) => s.sourceEntityId === sourceEntityId,
       );
       if (!found) return undefined;
-      const [sourceID, source] = found;
-      const queryTimezone = this.driftQueryTimezone(sourceID, source);
+      const [, source] = found;
       return {
          columns: source.columns ?? [],
          connectionName: source.connectionName,
-         ...(queryTimezone ? { queryTimezone } : {}),
       };
    }
 
    /**
-    * A warning per bound database table the bind could not read, while it
-    * is unread (`database-table-unread`).
+    * A warning per bound table the bind could not read, while it is unread
+    * (`database-table-unread`; `storage-table-unread` for a `storage=` one).
     */
    databaseTableUnreadWarnings(): ApiPackageWarning[] {
       return warnings.databaseTableUnreadWarnings(
-         this.knownUnread().map((u) => ({
-            ...u,
-            ...tableNameOf(this.databaseEntries?.[u.sourceEntityId]?.tableName),
-         })),
+         this.knownUnread().map((u) => {
+            const stored = this.storageEntries[u.sourceEntityId];
+            return stored?.storageDestinationName
+               ? {
+                    ...u,
+                    tableName: stored.physicalTableName,
+                    destinationName: stored.storageDestinationName,
+                 }
+               : {
+                    ...u,
+                    ...tableNameOf(
+                       this.databaseEntries?.[u.sourceEntityId]?.tableName,
+                    ),
+                 };
+         }),
          this.plan.servingPlan() ?? this.plan.buildPlan,
          this.unreadRetry !== undefined,
+         this.storageRetry !== undefined,
       );
    }
 
@@ -2169,4 +2473,25 @@ export class PackageMaterialization {
          this.plan.versionOwnsTables(),
       );
    }
+}
+
+/**
+ * `entries`, each at one of `ids` without the key checks its contract
+ * records as passed ({@link contractWithoutPassedKeys}); `entries` itself
+ * when none had one.
+ */
+function withoutPassedKeysAt<E extends { contract?: unknown }>(
+   entries: Readonly<Record<string, E>>,
+   ids: ReadonlySet<string>,
+): Readonly<Record<string, E>> {
+   let out: Record<string, E> | undefined;
+   for (const id of ids) {
+      const entry = entries[id];
+      if (entry?.contract === undefined) continue;
+      const contract = contractWithoutPassedKeys(entry.contract);
+      if (contract === entry.contract) continue;
+      out ??= { ...entries };
+      out[id] = { ...entry, contract };
+   }
+   return out ?? entries;
 }

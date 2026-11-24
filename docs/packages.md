@@ -254,6 +254,10 @@ until the swap. Four things follow from how that is recorded:
   recompiled beyond what a new `manifestLocation` requires. A `PATCH` with a different `location`
   installs from it. A `PATCH` never changes the recorded location by itself. To fetch the same
   location again, reload the package.
+- A `PATCH` naming a `manifestLocation` that cannot be fetched or bound answers 500 with `reason`
+  `MANIFEST_BIND_FAILED`, and nothing of that `PATCH` is applied: `publisher.json` and the
+  package's metadata stay as they were, and it serves what it served before. A manifest that binds
+  with a table declined (one the warehouse does not hold) answers 200, with that source live.
 - A `PATCH` that arrives while a load of the package is in progress waits for it, and is applied
   to whichever copy that load leaves resident. So it lands on the copy being installed, or, if the
   install failed, on the copy that is still serving.

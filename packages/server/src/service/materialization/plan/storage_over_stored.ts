@@ -89,19 +89,67 @@ export async function compileStorageOverStored(args: {
       if (destination === undefined || c.root === undefined) continue;
       // An extension of a stored source reads its base's table: the base,
       // a query, is the upstream re-rooted.
-      const upstreams = reachedUpstreams(c.root, args.modelDef, map).filter(
+      // A `#(materialize)` upstream planned as a table is one too, unless
+      // it is the parent an extension table reached here builds over: the
+      // extension's table is read, not its parent's.
+      const materialized = args.materializePlans ?? {};
+      const reached = reachedUpstreams(c.root, args.modelDef, map).filter(
          (u) =>
             u.storage === destination &&
-            (map.node(u.sourceID)?.def as { type?: unknown } | undefined)
-               ?.type === "query_source",
+            (materialized[u.sourceID] !== undefined ||
+               (map.node(u.sourceID)?.def as { type?: unknown } | undefined)
+                  ?.type === "query_source"),
       );
+      const parents = new Set(
+         reached.flatMap((u) => {
+            const parent = materialized[u.sourceID]?.buildsOver?.sourceID;
+            return parent ? [parent] : [];
+         }),
+      );
+      const upstreams = reached.filter((u) => !parents.has(u.sourceID));
       if (upstreams.length === 0) continue;
+      // A pair table holds a row per pair of its inlined join_many, not one
+      // per row of its source: the stand-in would be read as the source's
+      // rows, and a count over it would count pairs. An extension of a pair
+      // parent is built over the parent's table, so it is refused the same.
+      const pair = upstreams.find((u) =>
+         overPairTable(u.sourceID, materialized),
+      );
       out.set(
          c.plan.buildSourceID,
-         await compileOne({ ...args, map, destination, upstreams, ...c }),
+         pair
+            ? {
+                 refused:
+                    `its upstream '${pair.name}' is a pair table, one row ` +
+                    `per pair of an inlined join_many, which a view or ` +
+                    `query is not yet built over in its destination`,
+              }
+            : await compileOne({ ...args, map, destination, upstreams, ...c }),
       );
    }
    return out;
+}
+
+/**
+ * Whether `sourceID`'s `#(materialize)` table is a pair table, or is built
+ * over one through its `buildsOver` chain (an extension of a pair parent,
+ * whose own plan declares no pair).
+ */
+function overPairTable(
+   sourceID: string,
+   materialized: Readonly<Record<string, MaterializePlan>>,
+): boolean {
+   const seen = new Set<string>();
+   for (
+      let id: string | undefined = sourceID;
+      id !== undefined && !seen.has(id);
+      id = materialized[id]?.buildsOver?.sourceID
+   ) {
+      seen.add(id);
+      const plan = materialized[id];
+      if (plan?.pair || plan?.pairBlocks) return true;
+   }
+   return false;
 }
 
 async function compileOne(args: {
@@ -133,6 +181,7 @@ async function compileOne(args: {
       // proven over the table's real types. Else as its build writes them.
       const columns =
          args.boundStorageColumns?.(u.sourceID, args.destination) ??
+         args.materializePlans?.[u.sourceID]?.storedColumns ??
          storedColumnsOf(args.map.node(u.sourceID)?.def);
       if (columns === undefined) {
          return why(
@@ -164,17 +213,15 @@ async function compileOne(args: {
          name: args.plan.buildSourceName,
       },
       destination: { name: args.destination, schema: "main" },
-      upstreams: args.upstreams.map((u, i) => ({
-         entry: {
-            sourceEntityId: standIns[i].handle,
-            sourceName: u.name,
-            physicalTableName: standIns[i].handle,
-            connectionName: args.destination,
-            storageDestinationName: args.destination,
-            schema: standIns[i].columns.map((c) => ({ ...c })),
-         },
-         names: { [u.name]: [u.sourceID] },
-      })),
+      upstreams: args.upstreams.map((u, i) =>
+         standInUpstream({
+            handle: standIns[i].handle,
+            name: u.name,
+            sourceID: u.sourceID,
+            destination: args.destination,
+            columns: standIns[i].columns,
+         }),
+      ),
       view: {
          authorName: args.authorName,
          ...(args.keepAlso ? { keepAlso: args.keepAlso } : {}),
@@ -224,6 +271,31 @@ async function compileOne(args: {
          `it does not compile there (${error instanceof Error ? error.message : String(error)})`,
       );
    }
+}
+
+/**
+ * A stored upstream a plan proves a build over before any table exists: an
+ * entry naming a stand-in table `handle` in `destination` that holds
+ * `columns`, read as the source `name` (`sourceID`).
+ */
+export function standInUpstream(u: {
+   handle: string;
+   name: string;
+   sourceID: string;
+   destination: string;
+   columns: readonly { name: string; type: string }[];
+}): ChainBuildRequest["upstreams"][number] {
+   return {
+      entry: {
+         sourceEntityId: u.handle,
+         sourceName: u.name,
+         physicalTableName: u.handle,
+         connectionName: u.destination,
+         storageDestinationName: u.destination,
+         schema: u.columns.map((c) => ({ ...c })),
+      },
+      names: { [u.name]: [u.sourceID] },
+   };
 }
 
 /**

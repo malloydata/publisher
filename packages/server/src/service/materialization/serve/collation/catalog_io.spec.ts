@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The collation reads' I/O adapter (`probeIO` in gate_collation.ts): it alone
+ * The collation reads' I/O adapter (`catalogIO`): it alone
  * reads a BigQuery connection's driver duck-typed (its client's
  * `getDatasets`, its `projectId`, `billingProjectId` and `location`), so the
  * readers in `collation/` see only the answers.
@@ -12,8 +12,7 @@ import type { Connection } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
-import { CATALOG_ROW_LIMIT } from "./collation/probe_io";
-import { probeIO } from "./gate_collation";
+import { CATALOG_ROW_LIMIT, catalogIO } from "./catalog_io";
 
 function fake(fields: Record<string, unknown>): Connection {
    return {
@@ -26,7 +25,7 @@ function fake(fields: Record<string, unknown>): Connection {
 describe("the collation reads' I/O adapter", () => {
    it("lists a project's dataset locations through the driver's client, lower-cased and once each", async () => {
       const asked: unknown[] = [];
-      const io = probeIO(
+      const io = catalogIO(
          fake({
             bigQuery: {
                getDatasets: async (options: unknown) => {
@@ -47,10 +46,10 @@ describe("the collation reads' I/O adapter", () => {
    });
 
    it("refuses a connection with no client, and a dataset with no location", async () => {
-      await expect(probeIO(fake({})).datasetLocations("p")).rejects.toThrow(
+      await expect(catalogIO(fake({})).datasetLocations("p")).rejects.toThrow(
          "no BigQuery client",
       );
-      const noLocation = probeIO(
+      const noLocation = catalogIO(
          fake({ bigQuery: { getDatasets: async () => [[{ metadata: {} }]] } }),
       );
       await expect(noLocation.datasetLocations("p")).rejects.toThrow(
@@ -60,23 +59,23 @@ describe("the collation reads' I/O adapter", () => {
 
    it("reads the job's projects and location off the driver", () => {
       expect(
-         probeIO(
+         catalogIO(
             fake({ projectId: "a", billingProjectId: "b", location: "US" }),
          ).jobContext(),
       ).toEqual({ projects: ["a", "b"], location: "us" });
       // One project named twice; an unresolved placeholder; no location.
       expect(
-         probeIO(
+         catalogIO(
             fake({ projectId: "a", billingProjectId: "a", location: "" }),
          ).jobContext(),
       ).toEqual({ projects: ["a"], location: undefined });
       expect(
-         probeIO(fake({ projectId: "{{projectId}}" })).jobContext(),
+         catalogIO(fake({ projectId: "{{projectId}}" })).jobContext(),
       ).toEqual({ projects: [], location: undefined });
    });
 
    it("hands back the connection's dialect, and no rows as an empty list", async () => {
-      const io = probeIO(fake({}));
+      const io = catalogIO(fake({}));
       expect(io.dialectName).toBe("standardsql");
       expect(await io.rows("SELECT 1")).toEqual([]);
    });
@@ -84,7 +83,7 @@ describe("the collation reads' I/O adapter", () => {
    it("answers a complete read only when it is provably whole", async () => {
       const asked: unknown[] = [];
       const reading = (answer: Record<string, unknown>) =>
-         probeIO(
+         catalogIO(
             fake({
                runSQL: async (_sql: string, options: unknown) => {
                   asked.push(options);
@@ -114,6 +113,7 @@ describe("the collation reads' I/O adapter", () => {
    });
 
    it("is the one place in serve/ that reads the BigQuery driver", () => {
+      const serveDir = path.join(__dirname, "..");
       const driverReads = /\.bigQuery\b|\bprojectId\b|\bbillingProjectId\b/;
       const offenders: string[] = [];
       const visit = (dir: string) => {
@@ -123,20 +123,20 @@ describe("the collation reads' I/O adapter", () => {
             else if (
                /\.ts$/.test(entry.name) &&
                !/\.spec\.ts$/.test(entry.name) &&
-               entry.name !== "gate_collation.ts" &&
+               path.relative(serveDir, file) !== "collation/catalog_io.ts" &&
                driverReads.test(fs.readFileSync(file, "utf8"))
             ) {
-               offenders.push(path.relative(__dirname, file));
+               offenders.push(path.relative(serveDir, file));
             }
          }
       };
-      visit(__dirname);
+      visit(serveDir);
       expect(offenders).toEqual([]);
    });
 
-   it("leaves the BigQuery reads' scope to gate_collation.ts: the reader keeps no map of its own", () => {
+   it("leaves the BigQuery reads' scope to its caller: the reader keeps no map of its own", () => {
       const reader = fs.readFileSync(
-         path.join(__dirname, "collation/bigquery.ts"),
+         path.join(__dirname, "bigquery.ts"),
          "utf8",
       );
       // A top-level map would outlive the runtime and bind it was read under.

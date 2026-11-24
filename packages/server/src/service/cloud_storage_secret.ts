@@ -52,8 +52,8 @@ export function buildCloudStorageSecretSQL(
    const isGCS = credentials.type === "gcs";
    const escapedKeyId = escapeSQL(credentials.accessKeyId);
    const escapedSecret = escapeSQL(credentials.secretAccessKey);
-   const scopeClause = credentials.scope
-      ? `SCOPE '${escapeSQL(credentials.scope)}'`
+   const scopeClause = credentials.scope?.length
+      ? `SCOPE [${credentials.scope.map((prefix) => `'${escapeSQL(prefix)}'`).join(", ")}]`
       : "";
 
    let createSecretCommand: string;
@@ -147,7 +147,7 @@ export async function attachCloudStorage(
    connection: DuckDBConnection,
    attachedDb: AttachedDatabase,
    origin: ConnectionOrigin = "connection",
-   scope?: string,
+   scope?: string[],
 ): Promise<void> {
    const storageType = attachedDb.type?.toUpperCase() || "";
    // The scope rides on the credentials so the renewer re-emits it.

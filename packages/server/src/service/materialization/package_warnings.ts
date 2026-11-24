@@ -32,8 +32,12 @@ import { DUCKLAKE_DATA_INLINING_ON } from "../dialects/ducklake_inlining";
 import { CronEvaluator } from "./run/cron_evaluator";
 import type { Binding } from "./domain/binding";
 import {
+   INCREMENTAL_CHECK_FAILED_CODE,
    INCREMENTAL_LATE_ROWS_CODE,
+   INCREMENTAL_MERGE_KEY_NOT_UNIQUE_CODE,
    MATERIALIZE_EXTENSION_GENERATION_UNPROVEN_CODE,
+   type IncrementalCheck,
+   type IncrementalCheckFinding,
 } from "./domain/incremental";
 import type { UnprovenGeneration } from "./run/incremental_upstream";
 import {
@@ -71,7 +75,6 @@ import {
 } from "./stored_column_types";
 import type {
    BoundTableTypeFinding,
-   DatabaseDriftFinding,
    MismatchHandling,
 } from "./serve/storage_bindings";
 
@@ -89,50 +92,12 @@ const MISMATCH_HANDLING_TEXT: Record<
       `\`::"double"\`) so the warehouse returns the declared type.`,
 };
 
-/**
- * What a database-table drift warning says of how the column is read: the table
- * was altered outside a build, so rebuilding it is the fix.
- */
-const DRIFT_HANDLING_TEXT: Record<
-   DatabaseDriftFinding["mismatches"][number]["handling"],
-   (declaredType: string) => string
-> = {
-   cast: (declaredType) =>
-      `It is read through a cast to \`${declaredType}\`, so it still serves ` +
-      `from the table; rebuilding the table clears this.`,
-   live: () =>
-      `No cast reads it as declared, so queries that read it are answered ` +
-      `live until the table is rebuilt.`,
-};
-
-/**
- * What a drift warning says when the table is as built but its source now
- * declares another type: the table's content address did not move, so a run
- * reuses it, and only a forced rebuild stores the declared type.
- */
-const UPSTREAM_DRIFT_HANDLING_TEXT: Record<
-   DatabaseDriftFinding["mismatches"][number]["handling"],
-   (declaredType: string) => string
-> = {
-   cast: (declaredType) =>
-      `It is read through a cast to \`${declaredType}\`, so it still serves ` +
-      `from the table; a forced rebuild (forceRefresh) clears this.`,
-   live: () =>
-      `No cast reads it as declared, so queries that read it are answered ` +
-      `live until the table is rebuilt with a forced refresh (forceRefresh): ` +
-      `its content address did not move, so a run reuses it.`,
-};
-
 type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 type Models = ReadonlyMap<string, Model>;
 
 /** The code on the warning for a rollup whose build found its join_one key repeated. */
 const ROLLUP_JOIN_ONE_KEY_REPEATED_CODE = "rollup-join-one-key-repeated";
-
-/** The code on the warning for a database table whose columns drifted outside a build. */
-export const DATABASE_COLUMN_TYPE_MISMATCH_CODE =
-   "database-column-type-mismatch";
 
 /**
  * The findings on authored annotations: an unservable one (a valid
@@ -328,6 +293,86 @@ export function lateRowWarnings(
                `(\`lateRows\`).`,
          },
       ];
+   });
+}
+
+/** A source's unpassed incremental checks (PackageMaterialization's record). */
+export type IncrementalCheckState = Partial<
+   Record<IncrementalCheck, IncrementalCheckFinding>
+>;
+
+/** What a failed check could not do, for its warning. */
+const CHECK_DOES: Record<IncrementalCheck, string> = {
+   merge_key:
+      "check, after rebuilding it in full, that its table holds each merge_key= value once",
+   delta_types:
+      "read the column types of its delta to check the table's columns hold them",
+};
+
+/**
+ * The warnings for incremental sources whose checks the newest refreshes
+ * did not pass, each kept until that check passes:
+ *
+ *  - `persist-incremental-merge-key-not-unique`: a refresh read one
+ *    `merge_key=` value on more than one row of the source. No merge leaves
+ *    its table equal to live, so the source is rebuilt in full, as it is on
+ *    every refresh that reads a repeated key.
+ *  - `persist-incremental-check-failed`: a check could not run (named with
+ *    its error's code, never its message), so the source is rebuilt in full
+ *    on every refresh until it can, which would otherwise show only as a
+ *    `refresh: full` on each run.
+ */
+export function incrementalCheckWarnings(
+   plan: BuildPlan | null,
+   checks: ReadonlyMap<string, IncrementalCheckState>,
+): ApiPackageWarning[] {
+   if (checks.size === 0) return [];
+   return Object.values(plan?.sources ?? {}).flatMap((source) => {
+      const state = source.sourceEntityId
+         ? checks.get(source.sourceEntityId)
+         : undefined;
+      if (!state) return [];
+      const annotation =
+         source.origin === "materialize" ? "#(materialize)" : "#@ persist";
+      const key = source.annotationFields?.merge_key;
+      const at = {
+         ...(source.modelPath ? { model: source.modelPath } : {}),
+         subject: source.name,
+         severity: "warn" as const,
+      };
+      return Object.values(state).flatMap((finding) => {
+         if (!finding || finding.outcome === "passed") return [];
+         if (finding.outcome === "not_unique") {
+            return [
+               {
+                  ...at,
+                  code: INCREMENTAL_MERGE_KEY_NOT_UNIQUE_CODE,
+                  message:
+                     `its merge_key=${key ? JSON.stringify(key) : ""} is not ` +
+                     `unique: an incremental refresh read the same key on more ` +
+                     `than one row of the source. A merge cannot store both ` +
+                     `rows, so the refresh was rolled back and the table ` +
+                     `rebuilt in full (reason merge_key_not_unique), as it will ` +
+                     `be on every refresh that reads a repeated key. Declare a ` +
+                     `merge_key= the source holds once per row in its ` +
+                     `${annotation} annotation, or drop merge_key= to refresh ` +
+                     `by watermark range.`,
+               },
+            ];
+         }
+         return [
+            {
+               ...at,
+               code: INCREMENTAL_CHECK_FAILED_CODE,
+               message:
+                  `its incremental refresh could not ` +
+                  `${CHECK_DOES[finding.check]} (${finding.errorCode}), so ` +
+                  `the table is rebuilt in full on every refresh until it ` +
+                  `can. The server log names the failure under the same ` +
+                  `source.`,
+            },
+         ];
+      });
    });
 }
 
@@ -686,14 +731,12 @@ export function servedCopyWarnings(
  * Warnings for stored columns whose type does not serve as the type Malloy
  * declares, one per source and column, read from the bindings bound now:
  * each model's `#@ persist` sources', then every other `storage=` table's
- * (`bound`), then each database table's whose columns moved outside a build
- * (`database`). Keyed by the source's sourceID, so two models' same-named
+ * (`bound`). Keyed by the source's sourceID, so two models' same-named
  * sources both report and a source several models import reports once.
  */
 export function storedColumnTypeWarnings(
    models: Models,
    bound: readonly BoundTableTypeFinding[],
-   database: readonly DatabaseDriftFinding[] = [],
 ): ApiPackageWarning[] {
    const warnings: ApiPackageWarning[] = [];
    const seen = new Set<string>();
@@ -729,31 +772,6 @@ export function storedColumnTypeWarnings(
    for (const finding of bound) {
       for (const m of finding.mismatches) {
          add(finding.modelPath ?? "", finding.subject, finding.sourceID, m);
-      }
-   }
-   for (const finding of database) {
-      for (const m of finding.mismatches) {
-         const key = `${finding.sourceID}\u0000${m.column}`;
-         if (seen.has(key)) continue;
-         seen.add(key);
-         warnings.push({
-            model: finding.modelPath ?? "",
-            subject: finding.subject,
-            code: DATABASE_COLUMN_TYPE_MISMATCH_CODE,
-            severity: "warn",
-            message:
-               (m.gone
-                  ? `no longer has column \`${m.column}\` (declared Malloy ` +
-                    `type \`${m.declaredType}\`): `
-                  : `stores column \`${m.column}\` as ` +
-                    `${m.storedType ?? "a type Malloy reads as no basic type"}, ` +
-                    `not its declared Malloy type \`${m.declaredType}\`: `) +
-               (m.declaredMoved
-                  ? `what its source reads changed type since the build. ` +
-                    UPSTREAM_DRIFT_HANDLING_TEXT[m.handling](m.declaredType)
-                  : `its table was altered outside a build. ` +
-                    DRIFT_HANDLING_TEXT[m.handling](m.declaredType)),
-         });
       }
    }
    return warnings;
@@ -1126,6 +1144,8 @@ function servedCopyProblemReasonMessage(
 
 /** The code of the warning for a bound database table the bind could not read. */
 const DATABASE_TABLE_UNREAD_CODE = "database-table-unread";
+/** The code of the warning for a bound `storage=` table the bind could not read. */
+const STORAGE_TABLE_UNREAD_CODE = "storage-table-unread";
 
 /** What a `database-table-unread` warning says of each reason. */
 const UNREAD_REASON_TEXT: Readonly<Record<UnreadReason, string>> = {
@@ -1139,8 +1159,10 @@ const UNREAD_REASON_TEXT: Readonly<Record<UnreadReason, string>> = {
 };
 
 /**
- * One warning per bound database table whose columns the bind could not read
- * (`database-table-unread`): its sources answer live until a read succeeds.
+ * One warning per bound table whose columns the bind could not read
+ * (`database-table-unread`, or `storage-table-unread` for a `storage=` table
+ * its destination session could not read): its sources answer live until a
+ * read succeeds.
  * The reason is a fixed class, never the driver's text (the log has that).
  * Named by the table, and by the source a query names (a rollup's base), in
  * the model that declares it.
@@ -1150,13 +1172,25 @@ export function databaseTableUnreadWarnings(
       sourceEntityId: string;
       reason: UnreadReason;
       tableName?: string;
+      /**
+       * The `storage=` destination the table is in, for one that is
+       * (`storage-table-unread`); absent for a database table.
+       */
+      destinationName?: string;
    }[],
    plan: BuildPlan | null,
    retryPending: boolean,
+   /** Whether a re-read of the unread `storage=` tables is pending. */
+   storageRetryPending = false,
 ): ApiPackageWarning[] {
    const warnings: ApiPackageWarning[] = [];
    const sources = Object.values(plan?.sources ?? {});
-   for (const { sourceEntityId, reason, tableName } of unread) {
+   for (const {
+      sourceEntityId,
+      reason,
+      tableName,
+      destinationName,
+   } of unread) {
       const source = sources.find((s) => s.sourceEntityId === sourceEntityId);
       const name = source?.preaggregate?.baseSourceName ?? source?.name;
       const table = source?.preaggregate
@@ -1164,15 +1198,24 @@ export function databaseTableUnreadWarnings(
          : tableName
            ? `The table \`${tableName}\``
            : "A table";
+      const where =
+         destinationName !== undefined
+            ? `in its storage= destination \`${destinationName}\``
+            : "in its database";
+      const pending =
+         destinationName !== undefined ? storageRetryPending : retryPending;
       warnings.push({
          ...(source?.modelPath ? { model: source.modelPath } : {}),
          ...(name ? { subject: name } : {}),
-         code: DATABASE_TABLE_UNREAD_CODE,
+         code:
+            destinationName !== undefined
+               ? STORAGE_TABLE_UNREAD_CODE
+               : DATABASE_TABLE_UNREAD_CODE,
          reason,
          severity: "warn",
          message:
-            `${table}${name ? ` of \`${name}\`` : ""} could not be read in its database when it was bound (${UNREAD_REASON_TEXT[reason]}), so its queries are answered live. ` +
-            (retryPending
+            `${table}${name ? ` of \`${name}\`` : ""} could not be read ${where} when it was bound (${UNREAD_REASON_TEXT[reason]}), so its queries are answered live. ` +
+            (pending
                ? "A retry is pending."
                : "It is read again at the next bind or manifest poll."),
       });

@@ -93,7 +93,6 @@ export interface InstructedBuildOptions {
    instructions: BuildInstruction[];
    seedEntries: Record<string, ManifestEntry>;
    signal: AbortSignal;
-   strict?: boolean;
    /** Used only to reclaim this run's storage tables on failure. */
    owner?: { environmentId: string; packageName: string };
    buildMetadata?: BuildQueryMetadata;
@@ -109,6 +108,15 @@ export interface InstructedBuildOptions {
     * source is not asserted again.
     */
    clearedTiers?: ReadonlyMap<string, EligibilityTier>;
+   /**
+    * The plan's own refusal of an instructed source the run's plan holds no
+    * table for: the plan refused it (for example `upstream_table_unusable`,
+    * judged against an upstream table the package had bound), so the build
+    * loop never meets it. Its failure carries this refusal. An instruction
+    * that matches no planned source and no refusal fails as
+    * `instruction_unresolved`; none is dropped.
+    */
+   refusedAtPlan?: (instruction: BuildInstruction) => RefusedSource | undefined;
    /**
     * The host instructed this run (orchestrated): a host-supplied upstream
     * entry at the wrong tier is refused, not recomputed (see
@@ -175,6 +183,12 @@ export interface InstructedRun
    // cannot say which of them is actually unreferenced.
    retainedThisRun: ManifestEntry[];
    failures: Record<string, SourceFailure>;
+   /**
+    * The instructions a planned source resolved to in the loop: every other
+    * instruction is failed when the loop ends (recordUnresolvedInstructions),
+    * so each instructed source ends in `entries` or `failures`.
+    */
+   resolvedInstructions: Set<BuildInstruction>;
    // The sources that failed (or were refused) so far, by sourceID, so a
    // dependent refused for want of one inherits its classification.
    failedBySourceID: Map<string, FailedUpstream>;
@@ -377,6 +391,34 @@ export function resolveInstruction(
       return undefined;
    }
    return { instruction, orchestrated: false, sourceEntityId };
+}
+
+/**
+ * The plan's refusal of the source an instruction names: by its `sourceID`
+ * when it carries one, else by its content address through the plan the
+ * caller read (`served`), where a base and its `extend` share one address,
+ * so every source on it is consulted, in sourceID order.
+ */
+export function planRefusalOf(
+   served: Readonly<Record<string, { sourceEntityId: string }>>,
+   refusals: Readonly<Record<string, RefusedSource>>,
+): (instruction: BuildInstruction) => RefusedSource | undefined {
+   const sourceIDsByAddress = new Map<string, string[]>();
+   for (const [sourceID, source] of Object.entries(served)) {
+      const ids = sourceIDsByAddress.get(source.sourceEntityId) ?? [];
+      ids.push(sourceID);
+      sourceIDsByAddress.set(source.sourceEntityId, ids);
+   }
+   return (instruction) => {
+      if (instruction.sourceID !== undefined) {
+         return refusals[instruction.sourceID];
+      }
+      const ids = sourceIDsByAddress.get(instruction.sourceEntityId) ?? [];
+      for (const sourceID of [...ids].sort()) {
+         if (refusals[sourceID]) return refusals[sourceID];
+      }
+      return undefined;
+   };
 }
 
 /**

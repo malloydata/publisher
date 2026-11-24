@@ -1277,11 +1277,13 @@ export async function authorSqlRefusals(
    modelDef: unknown,
    options: {
       /**
-       * Whether the connection of that name is configured `managed`: author
-       * SQL on one is also held to the catalog's `main` schema
+       * The schemas author SQL on the connection of that name may name when
+       * it is configured `managed`, undefined when it is not
        * (managed_catalog_scope.ts).
        */
-      isManagedConnection?: (connectionName: string) => Promise<boolean>;
+      managedSchemas?: (
+         connectionName: string,
+      ) => Promise<ReadonlySet<string> | undefined>;
    } = {},
 ): Promise<string[]> {
    const checks = new Map<string, string>();
@@ -1363,17 +1365,15 @@ export async function authorSqlRefusals(
    };
    walk(modelDef, undefined, undefined, 0);
    const refusals: string[] = [];
-   if (options.isManagedConnection) {
-      const managed = new Map<string, boolean>();
+   if (options.managedSchemas) {
+      const managed = new Map<string, ReadonlySet<string> | undefined>();
       for (const { connection, what, sql } of byConnection) {
          if (!managed.has(connection)) {
-            managed.set(
-               connection,
-               await options.isManagedConnection(connection),
-            );
+            managed.set(connection, await options.managedSchemas(connection));
          }
-         if (!managed.get(connection)) continue;
-         const refused = await managedCatalogRefusal(sql, connection);
+         const schemas = managed.get(connection);
+         if (!schemas) continue;
+         const refused = await managedCatalogRefusal(sql, connection, schemas);
          if (refused) {
             refusals.push(
                `${modelPath}: ${managedCatalogMessage(what, connection, refused)}`,

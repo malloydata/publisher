@@ -22,10 +22,12 @@
 import type { ModelDef, QueryMaterializer } from "@malloydata/malloy";
 import { gateSwitches, getPersistStorageMode } from "../config";
 import {
-   type CollationProbe,
-   collationProbe,
+   type CollationLookup,
+   observeAdmission,
    ReadAdmission,
+   reportQueryWalk,
 } from "./materialization/serve/read_admission";
+import { recordQueryWalk } from "../materialization_metrics";
 import { logger } from "../logger";
 import { SourceMap, sourceChain } from "./materialization/text/source_map";
 import {
@@ -130,13 +132,13 @@ export function variantsOf(
    legs: readonly Leg[],
    facts: QueryFacts,
    pinned: Pinned,
-   args: { modelPath: string; probe?: CollationProbe },
+   args: { modelPath: string; collation?: CollationLookup },
 ): Variant<LegAnswer>[] {
    const admission = new ReadAdmission(
       facts,
       gateSwitches(),
-      args.probe ?? collationProbe,
       pinned.snapshot,
+      args.collation,
    );
    return legs.map((leg) => ({
       kind: leg.kind,
@@ -175,6 +177,11 @@ export function variantsOf(
       onSkip: (err) => logSkip(leg.kind, args.modelPath, err),
    }));
 }
+
+// What read admission reports, counted and logged here, outside its layer.
+observeAdmission({
+   queryWalk: recordQueryWalk,
+});
 
 /** The answer the router's decision describes, before anything runs. */
 export function answerOf(route: RouteDecision<LegAnswer>): Answer {
@@ -334,12 +341,14 @@ export async function queryPathFor(
             ? (host.persistedViews.reportedTable(args.queryString, pinned) ??
               host.persistedQueries.reportedTable(args.queryString, pinned))
             : undefined);
+      // The `#(materialize)` tables the served copy reads at this pin.
+      const servedBound = host.servedCopy.materializeBindings(pinned, "bound");
       // Nothing materialized for this model: the answer is live and there is
       // nothing to name, so skip the chain walks and the catalog reads.
       if (
          (catalog?.planned.size ?? 0) === 0 &&
          host.storageTables(pinned.snapshot).length === 0 &&
-         host.servedCopy.materializeBindings(pinned, "bound").length === 0 &&
+         servedBound.length === 0 &&
          variantRollups.length === 0 &&
          viewTable === undefined &&
          answer.considered.length === 0
@@ -365,7 +374,7 @@ export async function queryPathFor(
       return buildQueryPath({
          shape,
          modelPath: host.modelPath,
-         chain: chainOfQuerySource(struct, modelDef, host.modelDef()),
+         chain: queriedChain(host, struct, modelDef),
          catalog,
          freshDatabase: pinned.hasEntries
             ? new Set(Object.keys(pinned.compilerManifest.entries))
@@ -376,7 +385,7 @@ export async function queryPathFor(
          storage: {
             all: [
                ...storageTables,
-               ...host.servedCopy.materializeBindings(pinned, "bound"),
+               ...servedBound,
                ...host.rollupVariants.rollupBindings(pinned, "bound"),
             ].map(toTable),
             fresh: [
@@ -399,13 +408,9 @@ export async function queryPathFor(
               }
             : {}),
          ...(answer.leg === "served" ? { via: "served_copy" as const } : {}),
-         servedCopyTables: new Set(
-            host.servedCopy
-               .materializeBindings(pinned, "bound")
-               .map((b) => b.tablePath),
-         ),
+         servedCopyTables: new Set(servedBound.map((b) => b.tablePath)),
          servedCopyDetails: servedCopyDetailsOf(
-            host.servedCopy.materializeBindings(pinned, "bound"),
+            servedBound,
             host.servedCopy.problems(),
          ),
          runFailed: answer.leg !== "live" && answer.runFailed,
@@ -456,6 +461,25 @@ function servedCopyDetailsOf(
       }
    }
    return out;
+}
+
+/**
+ * The queried source's chain for the path report: the chain the model
+ * recorded for a source it declares ({@link QueryServingHost.sourceChains},
+ * read once per compile); a source it does not declare (one only the
+ * query's compile holds) is walked, and counted.
+ */
+export function queriedChain(
+   host: Pick<QueryServingHost, "modelDef" | "sourceChains">,
+   struct: unknown,
+   queryModelDef: unknown,
+): string[] {
+   const id = (struct as { sourceID?: unknown } | undefined)?.sourceID;
+   const recorded =
+      typeof id === "string" ? host.sourceChains().get(id) : undefined;
+   if (recorded) return [...recorded];
+   reportQueryWalk("path_chain");
+   return chainOfQuerySource(struct, queryModelDef, host.modelDef());
 }
 
 /**

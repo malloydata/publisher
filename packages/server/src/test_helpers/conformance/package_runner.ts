@@ -35,9 +35,10 @@
 import { capturedNativeSchema } from "../../service/materialization/run/database_native_types";
 import {
    pairLeafKeyChecksOf,
-   runRollupKeyCheck,
+   runKeyCheck,
 } from "../../service/materialization/run/inline_uniqueness";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
+import type { ColumnContract } from "../../service/materialization/domain/column_contract";
 import {
    FixedConnectionMap,
    type GivenValue,
@@ -60,6 +61,13 @@ import { QueryPrivileges } from "../../service/model_query_request";
 import type { Package } from "../../service/package";
 import { installSettings } from "../settings_env";
 import { readableTableName } from "../../service/materialization/domain/table_name";
+import {
+   columnOriginsOf,
+   type UpstreamSchemaReadings,
+   type UpstreamTableSchema,
+   upstreamTableKey,
+   upstreamTypesOf,
+} from "../../service/materialization/domain/upstream_schemas";
 import { writePackageFiles } from "../temp_package";
 import { sharedTables } from "../../service/materialization/plan/eligibility_collect";
 import { compilePackageBuildPlan } from "../../service/materialization/plan/build_plan_compile";
@@ -348,7 +356,14 @@ export async function loadFixture(
    /** The temporary directory the environment and the lake live in. */
    root: string;
    /** The storage destination the `storage=` tables are built in. */
-   lake: DuckDBConnection;
+   readonly lake: DuckDBConnection;
+   /**
+    * Reopen the destination (a `duckdb` fixture's) with `setupSQL` as its
+    * configuration, which every session it opens runs, as an operator's
+    * changed destination configuration does after a restart; undefined
+    * restores none. The served copy and every bind read it from then on.
+    */
+   reconfigureLake(setupSQL: string | undefined): Promise<void>;
    /**
     * The connection the fixture's models read and its database tables are
     * built on: `duckdb` (the sandbox), or the origin a `parquet` fixture or
@@ -421,7 +436,8 @@ export async function loadFixture(
            ]
          : []),
    ];
-   const lake =
+   const lakePath = path.join(root, `${LAKE}.duckdb`);
+   let lake =
       format === "parquet"
          ? // The catalog is attached under the destination's name, which a
            // served read qualifies its table with.
@@ -430,7 +446,7 @@ export async function loadFixture(
               databasePath: ":memory:",
               setupSQL: parquetLakeSQL(root, LAKE),
            })
-         : new DuckDBConnection(LAKE, path.join(root, `${LAKE}.duckdb`));
+         : new DuckDBConnection(LAKE, lakePath);
    let env: Environment | undefined;
    let releaseSandbox = (): void => {};
    const dispose = async () => {
@@ -455,11 +471,26 @@ export async function loadFixture(
       await dispose();
       throw error;
    }
-   const lakeConfig = new MalloyConfig({ connections: {} });
-   lakeConfig.wrapConnections(
-      () => new FixedConnectionMap(new Map([[LAKE, lake]]), LAKE),
-   );
-   pkg.materialization().setServeDestinationConfig(() => lakeConfig);
+   const wireLake = () => {
+      const lakeConfig = new MalloyConfig({ connections: {} });
+      lakeConfig.wrapConnections(
+         () => new FixedConnectionMap(new Map([[LAKE, lake]]), LAKE),
+      );
+      pkg.materialization().setServeDestinationConfig(() => lakeConfig);
+   };
+   wireLake();
+   const reconfigureLake = async (setupSQL: string | undefined) => {
+      if (format !== "duckdb") {
+         throw new Error("only a duckdb fixture's destination is reopened");
+      }
+      await lake.close();
+      lake = new DuckDBConnection({
+         name: LAKE,
+         databasePath: lakePath,
+         ...(setupSQL !== undefined ? { setupSQL } : {}),
+      });
+      wireLake();
+   };
    // The environment configures no destinations of its own (the lake is wired
    // straight to the package above), so its deployment facts would call `lake`
    // unconfigured and every unbuilt `storage=` source `destination_missing`
@@ -553,7 +584,10 @@ export async function loadFixture(
       dispose,
       pkg,
       root,
-      lake,
+      get lake() {
+         return lake;
+      },
+      reconfigureLake,
       origin: strict
          ? STRICT_ORIGIN_NAME
          : format === "parquet"
@@ -791,28 +825,30 @@ async function buildAll(
             Number(a.annotationFields?.name === a.name),
       );
    // A pair table's leaf key check, run on the source's connection once its
-   // table is written and bound beside it, as an auto-run records it (known
-   // limitation 40). The package's own plans hold the check's compiled SQL.
+   // table is written and recorded in its contract, as a build records it
+   // (known limitation 40). The package's own plans hold the check's
+   // compiled SQL.
    const materializePlans = (
       pkg.materialization() as unknown as {
          plan: { materializePlans: Record<string, unknown> };
       }
    ).plan.materializePlans;
-   const leafKeys = async (
+   const withLeafChecks = async (
+      contract: ColumnContract,
       sourceID: string,
       warehouse: DuckDBConnection,
-   ): Promise<{ keyUniqueness?: { parentKeys: Record<string, boolean> } }> => {
+   ): Promise<ColumnContract> => {
       const checks = pairLeafKeyChecksOf(
          (materializePlans as Record<string, never>)[sourceID],
       );
-      const parentKeys: Record<string, boolean> = {};
+      const keys = { ...contract.keys };
       for (const check of checks) {
-         const record = await runRollupKeyCheck(check, warehouse, "pair");
-         if (record) parentKeys[check.sourceID] = record.unique;
+         const record = await runKeyCheck(check, warehouse);
+         if (record) {
+            keys[check.contractKey] = { unique: record.unique, level: "leaf" };
+         }
       }
-      return Object.keys(parentKeys).length > 0
-         ? { keyUniqueness: { parentKeys } }
-         : {};
+      return Object.keys(keys).length > 0 ? { ...contract, keys } : contract;
    };
    try {
       // Sources an author's name= puts on one table are refused by a
@@ -895,11 +931,18 @@ async function buildAll(
                   rowLimit: 10_000,
                });
                // Its column contract, read back as a build records it.
+               // Each column's gate judged by its origin's warehouse type,
+               // as a build judges it from its plan (instructed_build.ts).
+               const upstreamTypes = upstreamTypesOf(
+                  columnOriginsOf(structFor(pkg, entry)),
+                  readingsOf(entry.upstreamSchemas),
+               );
                const contract = await captureTableContract({
                   connection: lake,
                   tableName: table,
                   tier: "storage",
                   live: liveCollationsOf(warehouse, entry.sql),
+                  ...(upstreamTypes ? { upstreamTypes } : {}),
                });
                stored[entry.sourceEntityId] = {
                   sourceEntityId: entry.sourceEntityId,
@@ -916,13 +959,16 @@ async function buildAll(
                         column_type: string;
                      }[]
                   ).map((r) => ({ name: r.column_name, type: r.column_type })),
-                  ...(await leafKeys(entry.sourceID, warehouse)),
                   // What the plan read of its upstream tables, as a build
                   // records it on its entry (instructed_build.ts).
                   ...(entry.upstreamSchemas
                      ? { upstreamSchemas: entry.upstreamSchemas }
                      : {}),
-                  contract,
+                  contract: await withLeafChecks(
+                     contract,
+                     entry.sourceID,
+                     warehouse,
+                  ),
                };
                built.push({ name: entry.name, tier: "storage" });
             } else {
@@ -955,8 +1001,15 @@ async function buildAll(
                   tableName: table,
                   connectionName: entry.connectionName ?? "duckdb",
                   ...(nativeSchema ? { nativeSchema } : {}),
-                  ...(contract ? { contract } : {}),
-                  ...(await leafKeys(entry.sourceID, warehouse)),
+                  ...(contract
+                     ? {
+                          contract: await withLeafChecks(
+                             contract,
+                             entry.sourceID,
+                             warehouse,
+                          ),
+                       }
+                     : {}),
                };
                built.push({ name: entry.name, tier: "database" });
             }
@@ -968,15 +1021,17 @@ async function buildAll(
    } finally {
       fs.rmSync(scratch, { recursive: true, force: true });
    }
-   // With the column read the server binds with (package.ts), so a stored
-   // column the database holds as another type (F-13: a HUGEINT DuckLake
-   // keeps as a DOUBLE) is guarded here as it is there.
+   // As the server binds (environment.ts): with the column reads it binds
+   // with, so a stored column the database holds as another type (F-13: a
+   // HUGEINT DuckLake keeps as a DOUBLE) is guarded here as it is there, and
+   // each bind's commit compiling the served copy and reading what read
+   // admission looks up before the next bind starts.
    const mz = pkg.materialization();
-   mz.bind({
+   await mz.bindCompiled({
       database: database as never,
       observed: await mz.readDatabaseColumns(database as never),
    });
-   pkg.materialization().bind({
+   await mz.bindCompiled({
       storage: stored as never,
       storageObserved: await mz.readStorageColumns(stored as never),
    });
@@ -1039,6 +1094,35 @@ function castOptionsFor(
  * be read (the build then runs uncast, as a build does when it cannot read
  * the field list).
  */
+/** The author's compiled source a plan entry names, or undefined (a generated build source). */
+function structFor(
+   pkg: Package,
+   entry: { name: string; modelPath?: string },
+): unknown {
+   const def = entry.modelPath
+      ? pkg.getModel(entry.modelPath)?.getModelDef()
+      : undefined;
+   return def?.contents?.[entry.name];
+}
+
+/** A plan entry's upstream tables, as the readings its plan read them from. */
+function readingsOf(
+   schemas: readonly UpstreamTableSchema[] | null | undefined,
+): UpstreamSchemaReadings | undefined {
+   if (!schemas) return undefined;
+   return Object.fromEntries(
+      schemas.map((t) => [
+         upstreamTableKey(t),
+         t.columns
+            ? {
+                 columns: t.columns,
+                 ...(t.dialect ? { dialect: t.dialect } : {}),
+              }
+            : { unread: t.unread ?? "read_failed" },
+      ]),
+   );
+}
+
 function declaredColumnsFor(
    pkg: Package,
    entry: { name: string; modelPath?: string; columns?: unknown[] },
