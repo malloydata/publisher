@@ -26,11 +26,14 @@ import type { Relationship } from "@malloydata/malloy-interfaces";
 import { compareText as comparePaths } from "../../compare_text";
 import { splitSourceId } from "../../service/source_id";
 import { forEachFieldPath } from "../../service/governance/ir/array_query";
+import { directlyDeclaredNotes } from "../../service/entities/field_helpers";
+import { modelCodeOf, type ModelCode } from "../../service/entities/model_text";
 import {
    collectRecordMembers,
    entityDocs,
    enterJoin,
    type FieldType,
+   makeSourceTextReader,
    MAX_RECORD_MEMBERS_PER_SOURCE,
    memberSegment,
    modelPathOfUrl,
@@ -225,6 +228,9 @@ export interface CatalogModel {
    sourceInfos: readonly unknown[];
 }
 
+/** A model file's compiled text, lexed, by the file URL its IR reports. */
+type ModelCodeReader = (url: string) => ModelCode | undefined;
+
 interface CatalogInput {
    /** The entity index's direct entities: no joined copy assembly would rebuild. */
    entities: readonly Entity[];
@@ -234,6 +240,8 @@ interface CatalogInput {
    /** Deny-all sources, by (model path, source): nothing they document is copied. */
    droppedSources?: ReadonlySet<string>;
    models: readonly CatalogModel[];
+   /** Each model file's text as it compiled, lexed; absent: read by line contiguity. */
+   modelCode?: ModelCodeReader;
    /**
     * PROVISIONAL, a diagnostic of the connect rule (`retrieval.fcj.collapseCopies`).
     * Fold a field an extension inherits unchanged into the same field on the
@@ -532,51 +540,18 @@ function parentIdOf(compiled: CompiledSource | undefined): string | undefined {
 }
 
 /**
- * Start lines of compiled sources, memoized per model list. A list is read,
- * never changed, so this is a pure function's memo, not retrieval state.
- */
-const sourceStartsCache = new WeakMap<
-   readonly CatalogModel[],
-   Map<string, number[]>
->();
-
-/** Start lines of every compiled source definition, by file URL. */
-function sourceStarts(models: readonly CatalogModel[]): Map<string, number[]> {
-   const cached = sourceStartsCache.get(models);
-   if (cached) return cached;
-   const out = new Map<string, Set<number>>();
-   for (const model of models) {
-      const contents = (
-         model.modelDef as { contents?: Record<string, unknown> }
-      )?.contents;
-      for (const c of Object.values(contents ?? {})) {
-         const loc = (c as CompiledSource).location;
-         if (!loc?.url || !loc.range) continue;
-         const set = out.get(loc.url) ?? new Set<number>();
-         set.add(loc.range.start.line);
-         out.set(loc.url, set);
-      }
-   }
-   const sorted = new Map(
-      [...out].map(([u, set]) => [u, [...set].sort((a, b) => a - b)]),
-   );
-   sourceStartsCache.set(models, sorted);
-   return sorted;
-}
-
-/**
  * The notes a source writes itself. The compiler hands an extension (or a
  * plain reference) with no notes of its own its parent's notes as its own
  * `blockNotes`. When the parent is known (`extends`, `referenceID`), a note
  * is the source's own when the parent, or anything the parent inherits,
  * does not hold the same note at the same place. A table source's
- * extension does not record its parent; then a note is the source's own
- * when it sits in the source's file above the source's definition, with no
- * other source definition in between.
+ * extension does not record its parent; then its own notes are read from
+ * its file's text by discovery's rule, so the two never disagree.
  */
 function ownNoteTexts(
    models: readonly CatalogModel[],
    compiled: CompiledSource,
+   codeOf: ModelCodeReader,
 ): string[] {
    const notes = compiled.annotations?.blockNotes ?? [];
    const parent = compiledById(models, parentIdOf(compiled));
@@ -585,21 +560,7 @@ function ownNoteTexts(
       const inherited = new Set(allNotes(parent.annotations).map(noteKey));
       own = notes.filter((n) => !inherited.has(noteKey(n)));
    } else {
-      const loc = compiled.location;
-      const starts = loc?.url ? (sourceStarts(models).get(loc.url) ?? []) : [];
-      own = notes.filter((n) => {
-         if (!loc?.range || !n.at?.range || n.at.url !== loc.url) {
-            // Nothing to place it by: read as the source's own only when
-            // the source has no location to compare against either.
-            return !loc?.range;
-         }
-         const line = n.at.range.start.line;
-         const start = loc.range.start.line;
-         return (
-            line <= start &&
-            !starts.some((other) => other > line && other < start)
-         );
-      });
+      own = directlyDeclaredNotes(notes, compiled.location, codeOf);
    }
    return own.map((n) => n.text ?? "").filter(Boolean);
 }
@@ -617,9 +578,10 @@ const OWN_GATE = /^#\|?\s*[([{<]?\s*(access_filter|authorize)\b/;
 function isAgentHidden(
    models: readonly CatalogModel[],
    compiled: CompiledSource | undefined,
+   codeOf: ModelCodeReader,
 ): boolean {
    if (!compiled) return false;
-   return ownNoteTexts(models, compiled).some((t) =>
+   return ownNoteTexts(models, compiled, codeOf).some((t) =>
       marksAgentHidden(t, "source"),
    );
 }
@@ -1044,6 +1006,7 @@ function unservedCopies(args: {
  */
 export function buildCatalog(input: CatalogInput): Catalog {
    const modelPaths = input.models.map((m) => m.modelPath);
+   const codeOf: ModelCodeReader = input.modelCode ?? (() => undefined);
    const modelByPath = new Map(input.models.map((m) => [m.modelPath, m]));
    const sourceKeyByContext = new Map<string, string>();
    const sources = new Map<string, CatalogSource>();
@@ -1092,6 +1055,7 @@ export function buildCatalog(input: CatalogInput): Catalog {
          isAgentHidden(
             input.models,
             compiledSource(modelByPath.get(e.modelPath)?.modelDef, e.name),
+            codeOf,
          )
       ) {
          hidden.add(e.name);
@@ -1487,7 +1451,7 @@ export function buildCatalog(input: CatalogInput): Catalog {
             sameRows(
                compiled,
                compiledOf.get(parentKey),
-               compiled ? ownNoteTexts(input.models, compiled) : [],
+               compiled ? ownNoteTexts(input.models, compiled, codeOf) : [],
             ) &&
             sources.get(key)?.gated === sources.get(parentKey)?.gated;
          const out = same ? parentKey : undefined;
@@ -1529,7 +1493,7 @@ export function buildCatalog(input: CatalogInput): Catalog {
                   sameRows(
                      compiled,
                      compiledOf.get(definer.sourceKey),
-                     ownNoteTexts(input.models, compiled),
+                     ownNoteTexts(input.models, compiled, codeOf),
                   ) &&
                   sources.get(n.sourceKey)?.gated ===
                      sources.get(definer.sourceKey)?.gated
@@ -1652,5 +1616,19 @@ export async function catalogInputOf(
       gatedByContext,
       droppedSources: pkgIndex.droppedSources,
       models,
+      modelCode: modelCodeReader(pkgIndex.pkg),
+   };
+}
+
+/** Each file's compile snapshot (never disk), lexed once per catalog input. */
+function modelCodeReader(pkg: PackageIndex["pkg"]): ModelCodeReader {
+   const textOf = makeSourceTextReader(pkg);
+   const codes = new Map<string, ModelCode | undefined>();
+   return (url) => {
+      if (!codes.has(url)) {
+         const text = textOf(url);
+         codes.set(url, text === undefined ? undefined : modelCodeOf(text));
+      }
+      return codes.get(url);
    };
 }

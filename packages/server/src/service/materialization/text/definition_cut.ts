@@ -15,12 +15,13 @@
  */
 
 import {
-   isName,
    lexAll,
+   statementAnnotationsFrom,
    statementHead,
    statementStarts,
    type Token,
-} from "./malloy_lexer";
+} from "../../malloy_lexer_core";
+import { isName } from "./malloy_lexer";
 
 /** The statements a definition can be left out of. */
 const DEFINITION_KEYWORDS = new Set([
@@ -204,16 +205,12 @@ export function definitionCutAt(
       name,
       ...(declaration && declaration !== name ? { declaration } : {}),
    };
-   // The whole statement, with its access label and the annotation lines
-   // written on it.
+   // The whole statement, with its access label and the annotations written
+   // on it.
    const head = statementHead(tokens, tokens.indexOf(stmt.keyword));
-   const before = tokens.filter((t) => t.end <= head.start);
+   const before = tokens[tokens.indexOf(head) - 1];
    const whole = {
-      start: annotationsStart(
-         text,
-         before[before.length - 1]?.end ?? 0,
-         head.start,
-      ),
+      start: statementAnnotationsFrom(text, before?.end ?? 0, head.start),
       end: stmtLast.end,
    };
    if (defs.length === 1) return { ...whole, left };
@@ -231,34 +228,6 @@ export function definitionCutAt(
       left,
       statement,
    };
-}
-
-/**
- * Where the annotation lines written on a statement at `keyword` begin: the
- * run of `#` lines (and blank lines) right above it, no further back than
- * `floor`. A `##` model annotation is the file's, not the statement's, so the
- * run stops at one; nothing on the statement's own line before it moves.
- */
-function annotationsStart(
-   text: string,
-   floor: number,
-   keyword: number,
-): number {
-   const lineStart = text.lastIndexOf("\n", keyword - 1) + 1;
-   if (lineStart < floor || text.slice(lineStart, keyword).trim() !== "") {
-      return keyword;
-   }
-   let start = lineStart;
-   while (start > floor) {
-      const prevStart = text.lastIndexOf("\n", start - 2) + 1;
-      if (prevStart < floor) break;
-      const line = text.slice(prevStart, start - 1).trim();
-      if (line !== "" && !(line.startsWith("#") && !line.startsWith("##"))) {
-         break;
-      }
-      start = prevStart;
-   }
-   return start;
 }
 
 /** The name of the top-level `source:` or `query:` holding `offset`. */
