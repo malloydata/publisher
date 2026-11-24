@@ -80,8 +80,10 @@ async function refusalOf(attempt: () => Promise<unknown>) {
    );
    if (error instanceof CatalogAdminError) return [error.status, error.reason];
    // DuckDB's attach (a PUT or DELETE) and node-pg's lock client (a load) word the same refusal differently.
+   // Windows retries a refused SYN for about two seconds, so libpq's one-second
+   // connect_timeout fires first there and the attach reports a timeout instead.
    expect(String(error?.message)).toMatch(
-      /port 1 failed: Connection refused|ECONNREFUSED 127\.0\.0\.1:1/,
+      /port 1 failed: (Connection refused|timeout expired)|ECONNREFUSED 127\.0\.0\.1:1/,
    );
    return undefined;
 }
