@@ -5,8 +5,8 @@
 // is a copy over it. The app's own code is public/app.js (its config and pages) and, rarely, public/app.css.
 //
 // KIT_VERSION says which kit an app carries; the running page shows it as <meta name="data-app-kit">. A new major
-// version changes what an app's config or its own blocks must say: read the kit's notes before copying it over an
-// app built on an older major. A minor or patch version is a copy over, nothing else.
+// version changes what an app's config or its own blocks must say: compare the app's config with the new kit's worked
+// app.js before copying it over an app built on an older major. A minor or patch version is a copy over, nothing else.
 
 export { dataApp, KIT_VERSION } from './shell.js'
 export { block, subject, rank, share, trend, table, dataTable, heat, watch, entityHead, pageHead, aboutPage, sourceList, newsList, news, blocks, figure, changeText, statusMark, downloadCsv, markReady } from './blocks.js'

@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 //
 // The app's state and every query it runs. The state lives in the address, so any view can be linked and Back
-// works; a value from the address or a click reaches a query only when the model returned it at load (`known`).
+// works. A filter value from the address or a click reaches a query only when the model returned it at load (`known`);
+// an entity's id is taken as the address gives it. Every value reaches a query through `lit`.
 // No DOM: test it with node by calling configure() and setKnown() with sample values.
 
 import * as P from './period.js'
@@ -113,7 +114,7 @@ export function fromHash(hash) {
     // An id the kit has not loaded takes the type of the ids it has: a number key stays a number in the query.
     const key = config.entities[p.entity].key
     const sample = (known[key] || [])[0]
-    s.id = knownValue(key, id) ?? (typeof sample === 'number' && /^-?\d+(\.\d+)?$/.test(id) ? Number(id) : id)
+    s.id = knownValue(key, id) ?? (typeof sample === 'number' && /^-?\d+(\.\d+)?$/.test(id) && Number.isSafeInteger(Math.trunc(Number(id))) ? Number(id) : id)
   }
   const q = new URLSearchParams(qs)
   const preset = q.get('p')
@@ -302,9 +303,10 @@ export function withCompare(rows, cmpRows, field) {
  */
 export function partsQuery(field, metric, s, opts = {}) {
   // opts may carry the block's own `where` and `ignore`.
-  return `${run(`{ where: ${field} is not null; group_by: f is ${field}; aggregate: m is ${metric}, t is all(${metric}) }`, s, { ...opts, which: 'current' })} -> { aggregate: n is count(), s is m.sum(), t is t.max() }`
+  return `${run(`{ where: ${field} is not null; group_by: f is ${field}; aggregate: m is ${metric}, t is all(${metric}) }`, s, { ...opts, which: 'current' })} -> { aggregate: n is count(), s is m.sum(), t is t.max(), lo is m.min() }`
 }
-export const adds = (p) => p && Number.isFinite(p.s) && Number.isFinite(p.t) && Math.abs(p.s - p.t) <= Math.abs(p.t) * 1e-6 + 1e-9
+/** The parts add up to the whole, and none is below zero, so each is a share of it. */
+export const adds = (p) => p && Number.isFinite(p.s) && Number.isFinite(p.t) && !(p.lo < 0) && Math.abs(p.s - p.t) <= Math.abs(p.t) * 1e-6 + 1e-9
 
 /** The column name a field comes back as: the last part of its path. */
 export const colOf = (field) => field.split('.').pop()

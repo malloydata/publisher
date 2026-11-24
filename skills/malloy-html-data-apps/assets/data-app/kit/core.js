@@ -100,6 +100,26 @@ export function servedTables() {
   return servedP
 }
 
+/** When each stored table was last built, by its id, from the package's runs: for an answer whose path report
+ *  carries no data-as-of, which Publisher sets only when the table declares how fresh it must be. */
+let builtP = null
+export function builtTables() {
+  if (!builtP) {
+    builtP = (typeof Publisher.packageResource === 'function' ? Publisher.packageResource('materializations') : Promise.resolve(null))
+      .then((runs) => {
+        const built = new Map()
+        for (const run of Array.isArray(runs) ? runs : []) {
+          for (const [id, e] of Object.entries(run?.manifest?.entries || {})) {
+            if (e && !e.error && e.builtAt && !(built.get(id) > e.builtAt)) built.set(id, e.builtAt)
+          }
+        }
+        return built
+      })
+      .catch(() => null)
+  }
+  return builtP
+}
+
 // ---- Queries ----
 
 const cache = new Map()

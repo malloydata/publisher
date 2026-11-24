@@ -408,6 +408,14 @@ A new markdown surface should go through `Prose` rather than call the library di
 `event.origin`. Source-matching is the stronger of the two checks and the payload is a single
 number, so the exposure is bounded, but the check is one line.
 
+The light or dark messages make a different choice on each side. The Console's viewer takes
+`publisher:color-scheme-request` and `-applied` only from its own frame and the frame's origin, and
+sends the mode only to that origin. A page's runtime takes `publisher:color-scheme` from whatever
+window framed it, at any origin, since the mode changes only how the page looks; it answers at the
+origin the mode came from, and sends its request to the framing page's origin where the browser
+reports it (`location.ancestorOrigins`) and to any origin where it does not. The request carries
+nothing.
+
 **5. MCP has no tenant scoping, so a directly-reachable worker must be single-tenant.** Every
 MCP tool takes `environmentName` and `packageName` as ordinary arguments, and the two discovery
 tools treat them as optional: `list_packages` declares an empty argument schema and walks every

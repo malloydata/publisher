@@ -129,6 +129,20 @@ describe("Publisher runtime color scheme", () => {
       ).not.toThrow();
    });
 
+   it("tells the other listeners when one throws, and stops one that asks to stop", () => {
+      const { publisher, send } = framedPage();
+      const seen: string[] = [];
+      publisher.onColorScheme(() => {
+         throw new Error("listener");
+      });
+      const stop = publisher.onColorScheme((m) => seen.push(`stopped:${m}`));
+      publisher.onColorScheme((m) => seen.push(m));
+      send({ type: "publisher:color-scheme", mode: "dark" });
+      stop();
+      send({ type: "publisher:color-scheme", mode: "light" });
+      expect(seen).toEqual(["stopped:dark", "dark", "light"]);
+   });
+
    it("tells a listener added later the mode already known", () => {
       const { publisher, send } = framedPage();
       send({ type: "publisher:color-scheme", mode: "dark" });

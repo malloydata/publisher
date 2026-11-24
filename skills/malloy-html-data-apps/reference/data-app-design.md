@@ -97,7 +97,7 @@ shows (one sentence you write for a reader who does not know the data); what it 
 and the filters, in words, written by the kit); what each number means (from the model's `#(doc)`, or the metric's
 `doc` when the app defines it) and the words a newcomer may not know (the config's `glossary`); where the data comes
 from (the config's `sources`); where the answer came from (a summary built ahead of time, with the grain it is kept at and
-how fresh its rows are; a stored copy; or the raw data just now) and how fast, from Publisher's own answer; and the
+how fresh its rows are, or when it was last built; a stored copy; or the raw data just now) and how fast, from Publisher's own answer; and the
 query and its rows with a CSV. Where the app has registered a host that takes questions (`setHost`), it also offers
 "Ask <host> about this", with the section's queries attached. Write `what` for every block you add, and a `doc` for every
 metric the app defines itself.

@@ -6,7 +6,7 @@
 // loading, empty and error to itself, and draws again in place when the state changes. Every chart in one does
 // something when clicked: it filters the app, opens an entity's page, or zooms the period.
 
-import { h, prose, asText, query, reason, answered, modelDocs, servedTables, host } from './core.js'
+import { h, prose, asText, query, reason, answered, modelDocs, servedTables, builtTables, host } from './core.js'
 import * as S from './state.js'
 import * as P from './period.js'
 import * as F from './format.js'
@@ -218,10 +218,12 @@ function howMade(spec, qs, results, said = '') {
   else if (kinds.every((k) => k === 'live')) say(['Worked out from the raw data just now.'])
   else {
     say([kinds.includes('rollup') ? 'Read from a summary built ahead of time.' : 'Read from a copy of the data stored ahead of time.'])
-    // How fresh: the served table's own data-as-of, from the answer's path report, never another table's build.
+    // How fresh: the served table's own data-as-of, from the answer's path report; else when that table, by its id,
+    // was last built. Never another table's build.
     const asOf = seen.map((a) => a.path?.servedBy?.dataAsOf).filter(Boolean).sort()[0]
-    const built = asOf ? `, its rows as of ${P.longDate(String(asOf).slice(0, 10))}` : ''
-    servedTables().then((t) => {
+    Promise.all([servedTables(), asOf ? null : builtTables()]).then(([t, runs]) => {
+      const at = seen.map((a) => runs?.get(a.path?.servedBy?.tableId)).filter(Boolean).sort()[0]
+      const built = asOf ? `, its rows as of ${P.longDate(String(asOf).slice(0, 10))}` : at ? `, last built ${P.longDate(String(at).slice(0, 10))}` : ''
       const used = seen.map((a) => t?.tables.get(a.path?.servedBy?.tableId)).filter(Boolean)
       const roll = used.find((x) => x.rollup)
       const doc = (n) => (F.metric(n).label || n).toLowerCase()
@@ -280,13 +282,13 @@ function askButton(spec, qs, said, covers) {
   const prompt = `${S.config.title}, "${kicker}"${about}: ${said ? `${asText(said)} ` : ''}What is behind this, and what should I look at next?`
   const context = {
     scope: { package: decodeURIComponent(location.pathname.match(/\/packages\/([^/]+)/)?.[1] || ''), model: S.config.model },
-    view: { type: 'block', id: spec.key || kicker, title: kicker },
+    view: { type: 'block', id: String(spec.key || kicker).slice(0, 200), title: String(kicker).slice(0, 200) },
     entities: [{ kind: 'source', name: S.config.source }],
     items: [{ label: 'what it covers', value: covers.join(' ').slice(0, 900) }, ...qs.slice(0, 3).map((q, i) => ({ label: `query ${i + 1}`, value: q.slice(0, 900) }))],
     givens: Object.fromEntries(Object.entries(store.state.filters).filter(([, v]) => v.length)),
   }
   // A host caps what it takes, so the context stays under 7,800 characters: the queries go first, from the last, then
-  // the longest filter lists are cut, and last the text of what it covers.
+  // each filter's values are cut to 20, then the filters go, and last the text of what it covers is cut.
   const fits = () => JSON.stringify(context).length <= 7800
   while (!fits() && context.items.length > 1) context.items.pop()
   for (const k of Object.keys(context.givens)) if (!fits()) context.givens[k] = context.givens[k].slice(0, 20)
@@ -455,8 +457,12 @@ export function subject({ metrics, by, kicker, layout = 'split' } = {}) {
         const col = S.colOf(by)
         rankList(chart, cur, { col, n, field: by, name: nameOf(by), compare: false })
         const top = [{ b: nameOf(by)(cur[0][col]) }]
-        if (S.adds(partsOf) && partsOf.t > 0) say.replaceChildren(...prose([...top, ` accounts for ${pct0(cur[0][n] / partsOf.t)} of it.`]))
-        else say.replaceChildren(...prose([...top, ` is highest, at ${F.fmtMetric(n, cur[0][n], { compact: true })} against ${F.fmtMetric(n, v, { compact: true })} for all of them.`]))
+        // The list and its whole leave out the filter on `by`; the figure above keeps it. With that filter set, say
+        // which whole the share is of, and do not set the list against the filtered figure.
+        const own = S.config.filters.find((f) => f.field === by && (s.filters[f.key] || []).length)
+        const whole = own ? ` of the total over every ${lower(own.label)}, the filter on it set aside` : ' of it'
+        if (S.adds(partsOf) && partsOf.t > 0) say.replaceChildren(...prose([...top, ` accounts for ${pct0(cur[0][n] / partsOf.t)}${whole}.`]))
+        else say.replaceChildren(...prose([...top, ` is highest, at ${F.fmtMetric(n, cur[0][n], { compact: true })}${own ? '.' : ` against ${F.fmtMetric(n, v, { compact: true })} for all of them.`}`]))
       }
       // The ledger
       const others = layout === 'board' ? [] : metrics.filter((x) => x !== n)
@@ -557,9 +563,10 @@ export function rank({ field, entity, metric: n, top = 10, kicker, headline, ext
         const best = m.good === 'down' ? g.at(-1) : g[0]
         const worst = m.good === 'down' ? g[0] : g.at(-1)
         const verb = (x) => (x.g > 0 ? (m.good === 'down' ? 'rose least' : 'grew fastest') : m.good === 'down' ? 'fell fastest' : 'fell least')
-        if (best.r !== top1 && Math.abs(best.g) > 0.03) parts.push('; ', { b: name(best.r[col]) }, ` ${verb(best)}, ${F.delta(n, best.r[n], best.r[`${n}__cmp`]).text}`)
+        const named = best.r !== top1 && Math.abs(best.g) > 0.03
+        if (named) parts.push('; ', { b: name(best.r[col]) }, ` ${verb(best)}, ${F.delta(n, best.r[n], best.r[`${n}__cmp`]).text}`)
         const bad = m.good === 'down' ? worst.g > 0.03 : worst.g < -0.03
-        if (bad && worst.r !== best.r && g.some((x) => (m.good === 'down' ? x.g <= 0 : x.g >= 0))) parts.push('; ', ...(worst.r === top1 ? ['it'] : [{ b: name(worst.r[col]) }]), ` ${worst.g > 0 ? 'rose' : 'fell'} most, ${F.delta(n, worst.r[n], worst.r[`${n}__cmp`]).text}`)
+        if (bad && worst.r !== best.r && g.some((x) => (m.good === 'down' ? x.g <= 0 : x.g >= 0))) parts.push('; ', ...(worst.r === top1 && !named ? ['it'] : [{ b: name(worst.r[col]) }]), ` ${worst.g > 0 ? 'rose' : 'fell'} most, ${F.delta(n, worst.r[n], worst.r[`${n}__cmp`]).text}`)
       }
       parts.push('.')
       return parts
@@ -652,8 +659,10 @@ export function share({ field, entity, metric: n, top = 6, kicker, headline, spa
         const none = g.every((x) => x.g < 0)
         g.sort((a, b) => b.g - a.g)
         const one = (e?.label || filter?.label || col.replace(/_/g, ' ')).toLowerCase()
-        // Sign-aware: when every part fell, the best of them fell least, never "grew fastest".
-        parts.push(all ? `; every ${one} grew, ` : none ? `; every ${one} fell, ` : '; ', { b: name(g[0].r[col]) }, ` ${all ? 'fastest' : none ? 'least' : 'grew fastest'} at ${F.delta(n, g[0].r[n], g[0].r[`${n}__cmp`]).text}`)
+        // Sign-aware: when every part fell, the best of them fell least, and when the best held level, none grew; never
+        // "grew fastest" for a part that did not grow.
+        if (!all && !none && g[0].g <= 0) parts.push(`; none grew, `, { b: name(g[0].r[col]) }, ' held level')
+        else parts.push(all ? `; every ${one} grew, ` : none ? `; every ${one} fell, ` : '; ', { b: name(g[0].r[col]) }, ` ${all ? 'fastest' : none ? 'least' : 'grew fastest'} at ${F.delta(n, g[0].r[n], g[0].r[`${n}__cmp`]).text}`)
       }
       parts.push('.')
       return parts

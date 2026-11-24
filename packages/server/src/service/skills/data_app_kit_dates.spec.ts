@@ -249,9 +249,91 @@ describe("reading an address", () => {
       configure();
       expect(S.fromHash("#/user/2001").id).toBe(2001);
       expect(S.fromHash("#/user/2").id).toBe(2);
+      expect(S.fromHash("#/user/9007199254740993").id).toBe("9007199254740993");
    });
 
    it("writes control characters in a literal as escapes", () => {
       expect(S.lit("a\nb'c\\d\u0001")).toBe("'a\\nb\\'c\\\\d\\u0001'");
+   });
+});
+
+describe("periods that end with their month", () => {
+   it("compares a quarter or month to date through its last day with whole months", () => {
+      const span = { first: "2020-01-01" };
+      const qtd = P.resolve(
+         { preset: "qtd" },
+         { first: "2020-01-01", last: "2026-06-30" },
+      );
+      expect(P.compareRange({ preset: "qtd" }, qtd, "previous", span)).toEqual(
+         range("2026-01-01", "2026-04-01"),
+      );
+      const mtd = P.resolve(
+         { preset: "mtd" },
+         { first: "2020-01-01", last: "2026-04-30" },
+      );
+      expect(P.compareRange({ preset: "mtd" }, mtd, "previous", span)).toEqual(
+         range("2026-03-01", "2026-04-01"),
+      );
+   });
+
+   it("starts a quarter on its first month", () => {
+      expect(
+         ["2026-01-15", "2026-05-15", "2026-09-30", "2026-12-31"].map((d) =>
+            P.bucketStart(d, "quarter"),
+         ),
+      ).toEqual(["2026-01-01", "2026-04-01", "2026-07-01", "2026-10-01"]);
+   });
+});
+
+describe("shares of a whole", () => {
+   it("are said only when the parts add up to the whole and none is below zero", () => {
+      expect(S.adds({ n: 3, s: 100, t: 100, lo: 10 })).toBe(true);
+      expect(S.adds({ n: 3, s: 100, t: 100, lo: -30 })).toBe(false);
+      expect(S.adds({ n: 3, s: 130, t: 100, lo: 10 })).toBe(false);
+   });
+});
+
+describe("calendar buckets, through Malloy", () => {
+   it("keeps a month bucket on its first day under a model timezone east of UTC", async () => {
+      const { SingleConnectionRuntime } = await import("@malloydata/malloy");
+      const { DuckDBConnection } = await import("@malloydata/db-duckdb");
+      const runtime = new SingleConnectionRuntime({
+         connection: new DuckDBConnection("duckdb", ":memory:"),
+      });
+      const model = `source: t is duckdb.sql("""select timestamp '2026-02-10 12:00:00' + to_days(cast(i * 9 as integer)) as ts from range(0, 20) x(i)""") extend {
+  timezone: 'Asia/Tokyo'
+  measure: c is count()
+}`;
+      S.configure({
+         source: "t",
+         model: "m.malloy",
+         date: { field: "ts" },
+         filters: [],
+         entities: {},
+         metrics: { c: {} },
+         pages: [{ id: "overview" }],
+      });
+      S.setKnown({ span: { first: "2026-02-10", last: "2026-07-08" } });
+      const s = {
+         period: { preset: "custom", from: "2026-02-10", to: "2026-07-08" },
+         compare: "none",
+         grain: "month",
+         filters: {},
+      };
+      const result = await runtime
+         .loadModel(model)
+         .loadQuery(S.seriesQuery(["c"], s))
+         .run();
+      const rows = JSON.parse(JSON.stringify(result.data.toObject()));
+      const buckets = S.buckets(rows, s);
+      expect(buckets.map((b: { start: string }) => b.start)).toEqual([
+         "2026-02-10",
+         "2026-03-01",
+         "2026-04-01",
+         "2026-05-01",
+         "2026-06-01",
+         "2026-07-01",
+      ]);
+      expect(buckets.every((b: { empty?: boolean }) => !b.empty)).toBe(true);
    });
 });

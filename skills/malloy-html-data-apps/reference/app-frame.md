@@ -25,6 +25,7 @@ Run the copy from the package's own directory, the one holding `publisher.json`.
 read this skill's `SKILL.md` from, wherever your host installed it:
 
 ```sh
+: "${SKILL_DIR:?set SKILL_DIR to the directory holding this skill's SKILL.md}"
 T="$SKILL_DIR/assets/data-app"
 test -f publisher.json || { echo "run this from the package directory, the one with publisher.json"; exit 1; }
 test -d "$T/kit" || { echo "assets/data-app is not on disk: build from the minimal scaffold in SKILL.md"; exit 1; }
@@ -102,7 +103,7 @@ source: sales is order_items extend {
   rollup answers those and never a measure that carries its own filter; a block of your own does the same
   (`S.kpiQueries`, `S.breakdownCompareQuery` with `S.withCompare`).
 - **Check it** on a ranked list's info mark: it names the summary that answered, its grain, and how fresh its rows
-  are. "Worked out from the raw data just now" means the source was not stored or the query missed the rollup.
+  are (their data-as-of when the table declares a freshness window, else when it was last built). "Worked out from the raw data just now" means the source was not stored or the query missed the rollup.
 
 ## The config
 
@@ -184,6 +185,11 @@ Two things come from the page that frames the app, not the config:
 - **Asking the host.** `setHost({ name, ask(prompt, context) })` registers a host that takes a reader's question;
   every block's info mark then offers "Ask <name> about this", with what the block covers and its queries in
   `context`. Register it only where the app knows it runs inside that host; the kit knows no host of its own.
+  `prompt` is one sentence naming the app, the block and its finding. `context` is
+  `{ scope: { package, model }, view: { type: 'block', id, title }, entities: [{ kind: 'source', name }],
+  items: [{ label, value }], givens: { [filter key]: [values] } }`: `items` holds what the block covers and up to
+  three of its queries, each value at most 900 characters. The whole stays under 7,800 characters as JSON: the
+  queries go first, from the last, then each filter's values are cut to 20, then the filters, then the covers text.
 
 ## The blocks
 
