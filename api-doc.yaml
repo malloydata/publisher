@@ -3954,7 +3954,12 @@ paths:
         (`admin-api-doc.yaml`); this route is removed in a later release.
 
         Drops one named table from a storage destination. Idempotent: a table that
-        does not exist answers 204 as well, so a retried drop is free.
+        does not exist answers 204 as well, so a retried drop is free. The path's
+        schema qualifies the table. On a destination whose `destinationSchema` is
+        set and is not `main`, a `main` path answers `400` naming the
+        `destinationSchema` (an earlier release read `main` as the destination's
+        own schema): name the `destinationSchema` to drop a build table, and drop
+        a table in `main` through the admin API.
 
         For a DuckLake destination this retires the table in the catalog; its data
         files stay in storage until a file cleanup reclaims them (see
@@ -9128,9 +9133,11 @@ components:
             This is a rule on statements, not on what a SELECT reads: that is
             bounded by the catalog role and by the session's storage secret,
             which on a managed connection attached read-only is scoped to the
-            `main` schema's recorded path, so a SELECT reads only that schema's
-            files; another schema's files, and any other object in the bucket,
-            are unsigned (403). Absent or false is the pre-existing behavior.
+            recorded paths of the `main` schema and of the schemas
+            `ducklakeConnection.readableSchemas` lists, so a SELECT reads only
+            those schemas' files; another schema's files, and any other object
+            in the bucket, are unsigned (403). Absent or false is the
+            pre-existing behavior.
         fingerprint:
           type: string
           description: >
@@ -9661,13 +9668,47 @@ components:
             Storage destinations only; ignored on a connection. The schema a
             destination builds its tables into and binds them from, so an
             orchestrator can keep the tables it owns apart from a catalog's `main`
-            (where people put their own). Absent means `main`, the pre-existing
+            (a table PUT may write people's own tables there; a load may not, so
+            loads go in a schema created through the admin API). Absent means
+            `main`, the pre-existing
             layout. The schema must already exist in the catalog: a build does not
             create it. A `#@ persist name=` that already names a schema keeps that
             schema. Must be a plain identifier (`[A-Za-z_][A-Za-z0-9_]*`).
             Serving reads the schema configured now, not the one a table was
             built into, so changing it on a destination re-points every bound
             table at once: rebuild or rebind as you change it.
+        readableSchemas:
+          type: array
+          items:
+            type: string
+            pattern: "^[a-z_][a-z0-9_]*$"
+          description: >-
+            Additional schemas a managed read-only view may read. Only on a
+            connection with `managed: true` and a read-only attach (never on a
+            storage destination). `main` is always readable and may be omitted.
+            The view's storage secret is scoped to the recorded path of `main`
+            and of each schema listed here, so a SELECT reads those schemas'
+            files and nothing else in the bucket. Each name is a plain lowercase
+            identifier (`[a-z_][a-z0-9_]*`); order and duplicates are ignored. A
+            schema the catalog does not record, or whose recorded path is not
+            under the catalog's data path, is left out of the scope. On a local
+            data path the view's file allowlist is scoped the same way. SQL on
+            the connection may name a listed schema's tables as it does
+            `main`'s, its schema and table listings show the listed schemas
+            beside `main`, and every other schema stays refused. `main` is
+            implicit, and the request is refused with a 400 when it lists
+            `memory`, `information_schema`, `pg_catalog`, `temp`, `system` or a
+            name starting with `__ducklake_metadata_`, or a schema that a storage
+            destination of the same environment on the same catalog builds into
+            (that destination's stored copies, gated sources' rows among them,
+            would be readable by name without their gate); the same pair in a
+            configured environment fails that environment's load at startup. A
+            destination that shares the catalog and builds into `main` must set
+            `destinationSchema`. Create a schema in the
+            catalog before listing it: a schema listed before it exists gets no
+            file access until the connection is next edited or the server
+            restarts. Removing a schema from the list takes effect for
+            already-loaded packages only after they reload.
         readOnly:
           type: boolean
           default: true
@@ -12919,8 +12960,10 @@ components:
       in: path
       required: true
       description: |
-        Schema within the storage destination. A table built from a bare
-        physical name lives in `main`.
+        Schema within the storage destination: the path's table is `{schemaName}.{tableName}`.
+        A build writes a bare physical name into the destination's `destinationSchema`
+        (`main` when it declares none), so a drop in `main` on a destination that sets
+        another `destinationSchema` answers `400` naming it.
       schema:
         $ref: "#/components/schemas/IdentifierPattern"
     materializationId:

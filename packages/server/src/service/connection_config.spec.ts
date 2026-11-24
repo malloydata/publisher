@@ -21,6 +21,7 @@ import {
 } from "./connection_config";
 import { BadRequestError } from "../errors";
 import { normalizeSnowflakePrivateKey } from "./dialects/snowflake";
+import { normalizeReadableSchemas } from "./connection_type";
 import { installSettings } from "../test_helpers/settings_env";
 import { toPublicConnection } from "./connection_public_view";
 
@@ -1061,6 +1062,202 @@ describe("ducklake shape validation", () => {
             assembleEnvironmentConnections([withSchema(bad)], "/tmp/env"),
          ).toThrow(/metadataSchema must be a plain identifier/i);
       }
+   });
+
+   it("answers every DuckLake shape error as a BadRequestError, a 400 and not an unhandled 500", () => {
+      const lake = valid.ducklakeConnection!;
+      const shapes: ApiConnection[] = [
+         { name: "lake", type: "ducklake" },
+         {
+            ...valid,
+            ducklakeConnection: { storage: lake.storage },
+         } as ApiConnection,
+         withSchema("not a plain identifier"),
+         {
+            ...valid,
+            ducklakeConnection: { ...lake, destinationSchema: "has space" },
+         },
+         {
+            ...valid,
+            ducklakeConnection: { ...lake, readableSchemas: ["stripe"] },
+         },
+         {
+            ...valid,
+            managed: true,
+            ducklakeConnection: { ...lake, readableSchemas: ["Stripe"] },
+         },
+         {
+            ...valid,
+            managed: true,
+            ducklakeConnection: {
+               ...lake,
+               readableSchemas: ["information_schema"],
+            },
+         },
+      ];
+      for (const shape of shapes) {
+         expect(() =>
+            assembleEnvironmentConnections([shape], "/tmp/env"),
+         ).toThrow(BadRequestError);
+      }
+   });
+
+   describe("readableSchemas", () => {
+      const withReadable = (
+         readableSchemas: unknown,
+         extra: Partial<ApiConnection> = { managed: true },
+         readOnly?: boolean,
+      ): ApiConnection =>
+         ({
+            ...valid,
+            ...extra,
+            ducklakeConnection: {
+               ...valid.ducklakeConnection,
+               ...(readOnly === undefined ? {} : { readOnly }),
+               readableSchemas,
+            },
+         }) as ApiConnection;
+      const assemble = (connection: ApiConnection) =>
+         assembleEnvironmentConnections([connection], "/tmp/env");
+
+      it("accepts lowercase schema names on a managed read-only connection", () => {
+         expect(() =>
+            assemble(withReadable(["extra_a", "_b2", "main", "extra_a"])),
+         ).not.toThrow();
+         expect(() => assemble(withReadable([]))).not.toThrow();
+         expect(() =>
+            assemble(withReadable(["extra_a"], { managed: true }, true)),
+         ).not.toThrow();
+      });
+
+      it("rejects a name that is not a plain lowercase identifier", () => {
+         for (const bad of [
+            "Extra_A",
+            "extra-a",
+            "1extra",
+            "",
+            "a.b",
+            "x'; --",
+            "a b",
+            1,
+            null,
+         ]) {
+            expect(() => assemble(withReadable([bad]))).toThrow(
+               /readableSchemas must be a list of lowercase schema names/,
+            );
+         }
+         expect(() => assemble(withReadable("extra_a"))).toThrow(
+            /readableSchemas must be a list/,
+         );
+      });
+
+      it("rejects the names a schema create refuses, and the metadata catalog's prefix", () => {
+         for (const name of [
+            "memory",
+            "information_schema",
+            "pg_catalog",
+            "temp",
+            "system",
+            "__ducklake_metadata_",
+            "__ducklake_metadata_lake",
+         ]) {
+            expect(() => assemble(withReadable(["extra_a", name]))).toThrow(
+               new RegExp(`readableSchemas names '${name}', a reserved schema`),
+            );
+         }
+         // Only the whole name is reserved.
+         expect(() =>
+            assemble(
+               withReadable(["memory_x", "system_a", "_ducklake_metadata"]),
+            ),
+         ).not.toThrow();
+      });
+
+      it("rejects the field on a connection that is not managed", () => {
+         for (const extra of [{}, { managed: false }]) {
+            expect(() => assemble(withReadable(["extra_a"], extra))).toThrow(
+               /readableSchemas requires a managed, read-only connection/,
+            );
+         }
+      });
+
+      it("rejects the field on a read-write connection", () => {
+         expect(() =>
+            assemble(withReadable(["extra_a"], { managed: true }, false)),
+         ).toThrow(/readableSchemas requires a managed, read-only connection/);
+      });
+
+      it("rejects the field on a storage destination, even a managed one", () => {
+         const { accepted, rejected } = validateStorageDestinations([
+            withReadable(["extra_a"]),
+            valid,
+         ]);
+         expect(accepted).toHaveLength(1);
+         expect(rejected).toHaveLength(1);
+         expect(rejected[0].reason).toMatch(
+            /readableSchemas applies to a managed connection view, not a storage destination/,
+         );
+      });
+
+      it("accepts an absent or empty field without a managed connection", () => {
+         expect(() => assemble(valid)).not.toThrow();
+         expect(() => assemble(withReadable(undefined, {}))).not.toThrow();
+         expect(() => assemble(withReadable([], {}))).not.toThrow();
+         expect(() =>
+            assemble(withReadable([], { managed: true }, false)),
+         ).not.toThrow();
+         expect(
+            validateStorageDestinations([withReadable([])]).rejected,
+         ).toEqual([]);
+      });
+   });
+
+   describe("setup identity of a managed view", () => {
+      const tempDirectory = (readableSchemas?: string[]): unknown => {
+         const { pojo } = assembleEnvironmentConnections(
+            [
+               {
+                  ...valid,
+                  managed: true,
+                  ducklakeConnection: {
+                     ...valid.ducklakeConnection,
+                     readableSchemas,
+                  },
+               } as ApiConnection,
+            ],
+            "/tmp/env",
+         );
+         return (pojo.connections.lake as { tempDirectory?: string })
+            .tempDirectory;
+      };
+
+      it("is the same for absent, empty, main-only and reordered or duplicated lists", () => {
+         const same = tempDirectory(["extra_a", "extra_b"]);
+         expect(same).toBeDefined();
+         expect(tempDirectory(["extra_b", "extra_a", "extra_b"])).toBe(same);
+         expect(tempDirectory(["main", "extra_b", "extra_a"])).toBe(same);
+         const none = tempDirectory(undefined);
+         expect(tempDirectory([])).toBe(none);
+         expect(tempDirectory(["main"])).toBe(none);
+      });
+
+      it("differs when the readable set changes", () => {
+         const base = tempDirectory(["extra_a"]);
+         expect(tempDirectory(["extra_a", "extra_b"])).not.toBe(base);
+         expect(tempDirectory(undefined)).not.toBe(base);
+      });
+   });
+
+   describe("normalizeReadableSchemas", () => {
+      it("sorts, dedupes, drops main, and returns undefined for nothing", () => {
+         expect(normalizeReadableSchemas(["b", "a", "b", "main"])).toEqual([
+            "a",
+            "b",
+         ]);
+         expect(normalizeReadableSchemas([])).toBeUndefined();
+         expect(normalizeReadableSchemas(["main"])).toBeUndefined();
+         expect(normalizeReadableSchemas(undefined)).toBeUndefined();
+      });
    });
 
    // The attach applies a catalog's own sslmode and throws on one it cannot

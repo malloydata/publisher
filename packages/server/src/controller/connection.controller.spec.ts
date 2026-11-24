@@ -2314,6 +2314,79 @@ describe("raw SQL on a managed database", () => {
       },
    );
 
+   describe("whose readableSchemas lists stripe", () => {
+      const readable = {
+         ...managed,
+         ducklakeConnection: { readableSchemas: ["stripe"] },
+      };
+
+      it.each([
+         ["bare-qualified", "SELECT count(*) FROM stripe.charges"],
+         ["alias-qualified", "SELECT * FROM sales.stripe.charges"],
+      ])(
+         "runs a listed schema's read, %s, on the query and schema routes",
+         async (_label, sql) => {
+            const { controller, runSQL, fetchSelectSchema } =
+               controllerOn(readable);
+            await controller.getConnectionQueryData(
+               "env",
+               "sales",
+               sql,
+               "",
+               undefined,
+               undefined,
+               undefined,
+               {},
+            );
+            expect(runSQL.calledOnce).toBe(true);
+            await controller.getConnectionSqlSource("env", "sales", sql);
+            expect(fetchSelectSchema.calledOnce).toBe(true);
+         },
+      );
+
+      it.each([
+         ["an unlisted schema", "SELECT count(*) FROM materialized.t"],
+         [
+            "a catalog view in the listed schema",
+            "SELECT * FROM stripe.duckdb_tables",
+         ],
+         ["a DESCRIBE of the listed schema", "DESCRIBE stripe.charges"],
+      ])("still refuses %s with a 400", async (_label, sql) => {
+         const { controller, runSQL } = controllerOn(readable);
+         const refused = controller.getConnectionQueryData(
+            "env",
+            "sales",
+            sql,
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         );
+         await expect(refused).rejects.toThrow(
+            "reads only its own catalog's tables",
+         );
+         expect(runSQL.called).toBe(false);
+      });
+
+      it("refuses the listed schema on a managed connection that does not list it", async () => {
+         const { controller, runSQL } = controllerOn(managed);
+         await expect(
+            controller.getConnectionQueryData(
+               "env",
+               "sales",
+               "SELECT count(*) FROM stripe.charges",
+               "",
+               undefined,
+               undefined,
+               undefined,
+               {},
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+         expect(runSQL.called).toBe(false);
+      });
+   });
+
    it("still runs another schema's read on a DuckDB connection that is not managed", async () => {
       const { controller, runSQL } = controllerOn({
          name: "sales",

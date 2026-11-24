@@ -692,7 +692,12 @@ function buildWorkerMalloyConfig(
                         refresh,
                      ),
                      response.metadata.connectionType,
-                     { managed: response.metadata.managed === true },
+                     response.metadata.managedSchemas
+                        ? {
+                             managed: true,
+                             schemas: new Set(response.metadata.managedSchemas),
+                          }
+                        : {},
                   );
                   proxies.set(effectiveName, proxy);
                   inflight.delete(effectiveName);

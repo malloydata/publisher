@@ -6,7 +6,9 @@
  * and file cleanup an orchestrator's garbage collection used. The admin API's
  * catalog resources replace them (admin-api-doc.yaml: GET and DELETE
  * `/catalogs/{c}/schemas/{s}/tables[/{t}]`, and DELETE `/catalogs/{c}/snapshots`).
- * Every response carries `Deprecation: true`. Removing them is deleting this
+ * The table drop answers `400` for `main` on a destination that builds into another
+ * schema, where the admin API's DELETE accepts it: an earlier release read `main`
+ * as the build schema. Every response carries `Deprecation: true`. Removing them is deleting this
  * module, its controller, and the one call in routes/api.ts.
  */
 
