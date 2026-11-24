@@ -553,27 +553,29 @@ export class ServedCopyServe {
    }
 
    /**
-    * The bindings the compiled copy re-rooted that are still read now. Past
-    * a table's freshness edge, and before the commit at that edge replaces
-    * the copy, the copy kept still re-roots it; a query compiles its own
-    * copy over what it pins, so only what this copy reports must leave the
-    * lapsed table out. A recorded fact checked against the clock, no I/O.
+    * The bindings the compiled copy re-rooted that are still read at `atMs`
+    * (all of them when it is absent). Past a table's freshness edge, and
+    * before the commit at that edge replaces the copy, the copy kept still
+    * re-roots it; a query compiles its own copy over what it pins, so only
+    * what this copy reports must leave the lapsed table out. A recorded
+    * fact checked against the caller's clock, no I/O.
     */
-   private rerootedNow(compiled: Compiled): Binding[] {
-      const now = Date.now();
-      return compiled.rerooted.filter((b) => !readsLapsedAt([b], now));
+   private rerootedAt(compiled: Compiled, atMs: number | undefined): Binding[] {
+      return atMs === undefined
+         ? compiled.rerooted
+         : compiled.rerooted.filter((b) => !readsLapsedAt([b], atMs));
    }
 
    /**
     * The author `sourceID`s the compiled copy re-rooted on a stored table
-    * still read now, which are the sources it answers from storage;
-    * undefined before the first compile.
+    * (still read at `atMs`, when given), which are the sources it answers
+    * from storage; undefined before the first compile.
     */
-   rerootedSourceIDs(): ReadonlySet<string> | undefined {
+   rerootedSourceIDs(atMs?: number): ReadonlySet<string> | undefined {
       const compiled = this.lanes.kept(0);
       if (!compiled) return undefined;
       return new Set(
-         this.rerootedNow(compiled).flatMap((b) => b.sourceIDs ?? []),
+         this.rerootedAt(compiled, atMs).flatMap((b) => b.sourceIDs ?? []),
       );
    }
 
@@ -593,12 +595,13 @@ export class ServedCopyServe {
 
    /**
     * The author `sourceID`s the compiled copy re-rooted on a database table
-    * and on no storage table; undefined before the first compile.
+    * and on no storage table (still read at `atMs`, when given); undefined
+    * before the first compile.
     */
-   rerootedOnDatabaseOnly(): ReadonlySet<string> | undefined {
+   rerootedOnDatabaseOnly(atMs?: number): ReadonlySet<string> | undefined {
       const compiled = this.lanes.kept(0);
       if (!compiled) return undefined;
-      const rerooted = this.rerootedNow(compiled);
+      const rerooted = this.rerootedAt(compiled, atMs);
       const onStorage = new Set(
          rerooted
             .filter((b) => !isDatabase(b))
@@ -619,10 +622,10 @@ export class ServedCopyServe {
     * compile. Not one that opts out of persist, or whose served surface the
     * load-time checks flag: those are declined at query time.
     */
-   servedThroughBaseSourceIDs(): ReadonlySet<string> {
+   servedThroughBaseSourceIDs(atMs?: number): ReadonlySet<string> {
       const compiled = this.lanes.kept(0);
       if (!compiled?.throughBase) return new Set();
-      const rerooted = this.rerootedNow(compiled);
+      const rerooted = this.rerootedAt(compiled, atMs);
       const ids = new Set(rerooted.flatMap((b) => b.sourceIDs ?? []));
       const names = new Set(rerooted.map((b) => b.sourceName));
       const declined = (id: string) =>

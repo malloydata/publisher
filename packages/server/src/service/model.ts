@@ -3269,7 +3269,7 @@ export class Model {
       | "uncompiled"
       | undefined {
       if (!this.servedCopyEnabled()) return undefined;
-      return this.servedCopy.rerootedSourceIDs() ?? "uncompiled";
+      return this.servedCopy.rerootedSourceIDs(Date.now()) ?? "uncompiled";
    }
 
    /**
@@ -3279,7 +3279,7 @@ export class Model {
     */
    public servedCopyDatabaseOnlyIDs(): ReadonlySet<string> | undefined {
       if (!this.servedCopyEnabled()) return undefined;
-      return this.servedCopy.rerootedOnDatabaseOnly();
+      return this.servedCopy.rerootedOnDatabaseOnly(Date.now());
    }
 
    /**
@@ -3289,7 +3289,7 @@ export class Model {
     */
    public servedCopyThroughBaseIDs(): ReadonlySet<string> {
       if (!this.servedCopyEnabled()) return new Set();
-      return this.servedCopy.servedThroughBaseSourceIDs();
+      return this.servedCopy.servedThroughBaseSourceIDs(Date.now());
    }
 
    /**

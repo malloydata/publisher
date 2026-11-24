@@ -321,7 +321,7 @@ export function keyCheckPassed(
 }
 
 /** Whether the key check named `key` ran and found the key repeated or NULL. */
-export function keyCheckFailed(
+function keyCheckFailed(
    contract: Pick<ColumnContract, "keys"> | undefined,
    key: string,
 ): boolean {

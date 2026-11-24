@@ -146,7 +146,7 @@ export function recordStringCapabilities(
  * judges with none (a catalog read can hang on an unreachable host). The read
  * goes on, and records when it lands.
  */
-export const CAPABILITY_WAIT_MS = 3_000;
+const CAPABILITY_WAIT_MS = 3_000;
 let capabilityWaitMs = CAPABILITY_WAIT_MS;
 
 /** Set the bound {@link stringCapabilitiesOf} waits; returns a restore. */
