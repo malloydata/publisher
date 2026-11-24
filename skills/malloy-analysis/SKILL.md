@@ -116,6 +116,8 @@ This is different from a genuine ambiguity about WHICH metric they meant; there,
 
 Answer in plain language, lead with the number that was asked for, and show the supporting rows. State the assumptions you made (filter values, date ranges, any ad-hoc field). Acknowledge caveats the verification step surfaced, and say so if you could not fully verify something. When the result lends itself to a chart, say which Malloy render tag fits and why (load `skill:malloy-charts`), for example `# bar_chart` for a category breakdown or `# line_chart` for a trend over time.
 
+**Answer at the grain the question asked for.** "By quarter" means a value for each quarter, not a range across them ("between 22% and 26% in 2025"); "for each code" means every code. Summarize after the full answer if it helps, never instead of it.
+
 **A table in your answer uses the result's own columns and values.** Show the rows that carry the finding, and add no column the query didn't return: a rank, a share or a difference you work out by hand is a number nothing checked. When a derived figure matters, compute it in the query and show that.
 
 **A list says whether it is complete.** When you list what exists (packages, sources, fields, values), list all of it or say it is a selection ("the 10 largest of 31"). When `get_context` reports N of M sources, never present the N as everything: pass a returned `next_offset` back as `offset` for the rest, or follow its warning (narrow the search, raise `limit`), or say how many more there are. Never estimate a count you can read off a result ("about 25"). Give counts in the unit the tool reported, and add no total it did not report unless asked; then count it from the list you give or compute it in a query.
