@@ -485,6 +485,15 @@ export { s0 }
       expect(message).toContain("joins more than 16 deep");
    });
 
+   it("reads an empty or markdown-only notebook as no gate when a walk is cut short", async () => {
+      write("m.malloy", chain(17, false));
+      expect(await bypasses()).toEqual([]);
+      // Neither notebook has a model definition, and neither gates anything.
+      write("empty.malloynb", "");
+      write("notes.malloynb", ">>>markdown\n# Notes\nProse only.\n");
+      expect(await bypasses()).toEqual([]);
+   });
+
    it("warns on a fan-out past the join-path budget in a package that has a gate", async () => {
       let out = `${GIVENS}source: f10 is ${PEOPLE}\n`;
       for (let i = 9; i >= 0; i--) {

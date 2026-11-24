@@ -779,6 +779,18 @@ export class ServeVerdicts {
       for (const { modelPath, names, queries } of entries) {
          const model = models.get(modelPath);
          const modelDef = model?.getModelDef();
+         // An empty or markdown-only notebook has no definition and names
+         // nothing, so it reaches nothing: it must not unknow the rest. A
+         // model that failed to compile is unknown, not empty, and stays so.
+         if (
+            model &&
+            !modelDef &&
+            !names.length &&
+            !queries?.length &&
+            model.getCompilationError() === undefined
+         ) {
+            continue;
+         }
          if (!model || !modelDef) return undefined;
          // Gated as the router's veto finds it: the governor's walk of the
          // entry point's own and inherited gates (`collectEntryPointGates`).
