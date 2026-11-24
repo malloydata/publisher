@@ -74,6 +74,7 @@ import {
    probeRepeatedKey,
    probeRepeatedKeyInRange,
    probeServerVersion,
+   lineageMatchColumns,
    seedCoveredThrough,
    type DeltaTarget,
    type ExtensionParent,
@@ -765,6 +766,87 @@ export async function resetLedger(
 }
 
 /**
+ * When a merge key's uniqueness is judged: after a full rebuild, after a
+ * committed delta, or when a delta's statement guard rolled it back.
+ */
+type MergeKeyPhase = "rebuild" | "delta" | "rolled_back";
+
+const MERGE_KEY_UNCHECKED: Record<
+   Exclude<MergeKeyPhase, "rolled_back">,
+   string
+> = {
+   rebuild:
+      "Could not check a merge key's uniqueness after a full rebuild; " +
+      "the next refresh will rebuild again",
+   delta:
+      "Could not check a merge key's uniqueness after a delta; the next " +
+      "refresh will rebuild in full",
+};
+
+const MERGE_KEY_REPEATED =
+   "An incremental source's merge_key= is not unique in its rows, so no " +
+   "boundary is recorded and it is rebuilt in full until it is";
+const MERGE_KEY_ROLLED_BACK =
+   "An incremental source's merge_key= is not unique in its rows, " +
+   "so its delta was rolled back and it is rebuilt in full";
+
+/**
+ * Logs and notes on the package what a merge-key check found, and answers
+ * whether the key held. A check that failed, or a repeat, is false. Only the
+ * rebuild notes a pass here: a delta's pass is noted with its other checks.
+ */
+function judgeMergeKey(
+   found: { repeated: boolean; error?: string; errorCode?: string },
+   args: {
+      context: IncrementalRunContext;
+      lineage: IncrementalLineage;
+      phase: MergeKeyPhase;
+      sourceName?: string;
+   },
+): boolean {
+   const { context, lineage, phase } = args;
+   const at = {
+      packageName: context.packageName,
+      ...(args.sourceName !== undefined ? { sourceName: args.sourceName } : {}),
+      physicalTableName: lineage.physicalTableName,
+   };
+   if (found.error !== undefined && phase !== "rolled_back") {
+      logger.warn(MERGE_KEY_UNCHECKED[phase], {
+         ...at,
+         errorCode: found.errorCode,
+      });
+      context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+         check: "merge_key",
+         outcome: "failed",
+         errorCode: found.errorCode ?? "unknown",
+      });
+      return false;
+   }
+   if (found.repeated) {
+      logger.warn(
+         phase === "rolled_back" ? MERGE_KEY_ROLLED_BACK : MERGE_KEY_REPEATED,
+         {
+            ...at,
+            code: INCREMENTAL_MERGE_KEY_NOT_UNIQUE_CODE,
+            mergeKeys: lineage.mergeKeys,
+         },
+      );
+      context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+         check: "merge_key",
+         outcome: "not_unique",
+      });
+      return false;
+   }
+   if (phase === "rebuild") {
+      context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+         check: "merge_key",
+         outcome: "passed",
+      });
+   }
+   return true;
+}
+
+/**
  * Whether a merge source's freshly rebuilt table holds each identity once
  * ({@link probeRepeatedKey}); always true for a range replace or a pair
  * table, whose delta does not match rows one to one. A repeat, or a check
@@ -782,49 +864,13 @@ async function seededKeyIsUnique(params: {
 }): Promise<boolean> {
    const { context, lineage } = params;
    if (lineage.strategy !== "merge" || lineage.pair) return true;
-   const stored = (field: string) => params.storedColumn?.(field) ?? field;
-   const matchNames = [
-      ...new Set([...lineage.mergeKeys, ...(lineage.scopeColumns ?? [])]),
-   ].map(stored);
    const found = await probeRepeatedKey(
       params.runner,
       params.dialect,
       params.quotedTablePath,
-      matchNames,
+      lineageMatchColumns(lineage, params.storedColumn),
    );
-   const at = {
-      packageName: context.packageName,
-      physicalTableName: lineage.physicalTableName,
-   };
-   if (found.error !== undefined) {
-      logger.warn(
-         "Could not check a merge key's uniqueness after a full rebuild; " +
-            "the next refresh will rebuild again",
-         { ...at, errorCode: found.errorCode },
-      );
-      context.noteIncrementalCheck?.(lineage.sourceEntityId, {
-         check: "merge_key",
-         outcome: "failed",
-         errorCode: found.errorCode ?? "unknown",
-      });
-      return false;
-   }
-   if (found.repeated) {
-      logger.warn(
-         "An incremental source's merge_key= is not unique in its rows, so " +
-            "no boundary is recorded and it is rebuilt in full until it is",
-         {
-            ...at,
-            code: INCREMENTAL_MERGE_KEY_NOT_UNIQUE_CODE,
-            mergeKeys: lineage.mergeKeys,
-         },
-      );
-   }
-   context.noteIncrementalCheck?.(lineage.sourceEntityId, {
-      check: "merge_key",
-      outcome: found.repeated ? "not_unique" : "passed",
-   });
-   return !found.repeated;
+   return judgeMergeKey(found, { context, lineage, phase: "rebuild" });
 }
 
 /**
@@ -854,46 +900,17 @@ async function mergedKeyIsUnique(params: {
       runner: target.runner,
       dialect: target.dialect,
       quotedTablePath: target.quotedTablePath,
-      matchNames: [
-         ...new Set([...lineage.mergeKeys, ...(lineage.scopeColumns ?? [])]),
-      ].map(stored),
+      matchNames: lineageMatchColumns(lineage, stored),
       watermark: stored(lineage.watermarkName),
       start: step.start,
       end: step.end,
    });
-   const at = {
-      packageName: context.packageName,
+   return judgeMergeKey(found, {
+      context,
+      lineage,
+      phase: "delta",
       sourceName: params.sourceName,
-      physicalTableName: lineage.physicalTableName,
-   };
-   if (found.error !== undefined) {
-      logger.warn(
-         "Could not check a merge key's uniqueness after a delta; the next " +
-            "refresh will rebuild in full",
-         { ...at, errorCode: found.errorCode },
-      );
-      context.noteIncrementalCheck?.(lineage.sourceEntityId, {
-         check: "merge_key",
-         outcome: "failed",
-         errorCode: found.errorCode ?? "unknown",
-      });
-      return false;
-   }
-   if (!found.repeated) return true;
-   logger.warn(
-      "An incremental source's merge_key= is not unique in its rows, so no " +
-         "boundary is recorded and it is rebuilt in full until it is",
-      {
-         ...at,
-         code: INCREMENTAL_MERGE_KEY_NOT_UNIQUE_CODE,
-         mergeKeys: lineage.mergeKeys,
-      },
-   );
-   context.noteIncrementalCheck?.(lineage.sourceEntityId, {
-      check: "merge_key",
-      outcome: "not_unique",
    });
-   return false;
 }
 
 /**
@@ -1027,21 +1044,15 @@ export async function applyIncrementalStep(params: {
          physicalTableName: lineage.physicalTableName,
       });
       if (rolledBack.reasonCode === "merge_key_not_unique") {
-         logger.warn(
-            "An incremental source's merge_key= is not unique in its rows, " +
-               "so its delta was rolled back and it is rebuilt in full",
+         judgeMergeKey(
+            { repeated: true },
             {
-               packageName: context.packageName,
+               context,
+               lineage,
+               phase: "rolled_back",
                sourceName: params.sourceName,
-               physicalTableName: lineage.physicalTableName,
-               code: INCREMENTAL_MERGE_KEY_NOT_UNIQUE_CODE,
-               mergeKeys: lineage.mergeKeys,
             },
          );
-         context.noteIncrementalCheck?.(lineage.sourceEntityId, {
-            check: "merge_key",
-            outcome: "not_unique",
-         });
       }
       return { applied: false };
    }
