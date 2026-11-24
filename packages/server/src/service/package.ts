@@ -1725,11 +1725,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.packageName;
    }
 
-   /**
-    * The host port's `forgetKeyUniqueness`: a run about to write these
-    * tables drops their bound key checks first (see
-    * PackageMaterialization.forgetKeyUniqueness).
-    */
    /** The host port's `boundLateRows` (PackageMaterialization.boundLateRows). */
    public boundLateRows(): ReadonlyMap<string, LateRows> {
       return this.mz.boundLateRows();
@@ -1753,6 +1748,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.mz.setUnprovenGenerations(list);
    }
 
+   /**
+    * The host port's `forgetKeyUniqueness`: a run about to write these
+    * tables drops their passed key checks first (see
+    * PackageMaterialization.forgetKeyUniqueness).
+    */
    public forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
       this.mz.forgetKeyUniqueness(sourceEntityIds);
    }
