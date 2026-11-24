@@ -82,6 +82,18 @@ export async function dashboard(cfg) {
       known[`${f.key}__n`] = Object.fromEntries(rest[i].filter((r) => r.n !== null).map((r) => [String(r.v), r.n]))
     })
     S.setKnown(known)
+    // A default filter value the data does not have would filter nothing while its token says otherwise: drop it,
+    // and let ?check=1 say so.
+    for (const [k, vs] of Object.entries(cfg.defaults?.filters || {})) {
+      const f = cfg.filters.find((x) => x.key === k)
+      const have = new Set((known[k] || []).map(String))
+      const kept = f && known[k]?.length < (f.limit || (f.hidden ? 2000 : 500)) ? vs.filter((v) => have.has(String(v))) : vs
+      if (kept.length < vs.length) {
+        missingDefaults.push(...vs.filter((v) => !kept.includes(v)).map((v) => `${f?.label || k} “${v}”`))
+        console.error(`defaults.filters.${k}: the data has no ${vs.filter((v) => !kept.includes(v)).join(', ')}`)
+        cfg.defaults.filters[k] = kept
+      }
+    }
   } catch (err) {
     main.replaceChildren(h('div', { class: 'state state--error', text: err?.whole ? err.message : `Could not reach the model: ${reason(err)}` }))
     return
@@ -111,7 +123,8 @@ function searchBox(key) {
   let hits = []
   let at = 0
   const f = () => S.config.filters.find((x) => x.field === e.field)
-  const name = (v) => (f()?.format ? f().format(v) : String(v))
+  const more = new Map()   // names of values found by asking the model
+  const name = (v) => more.get(String(v)) ?? (f()?.format ? f().format(v) : String(v))
   const pick = (v) => {
     input.value = ''
     show([])
@@ -122,12 +135,28 @@ function searchBox(key) {
     at = 0
     list.hidden = !xs.length
     input.setAttribute('aria-expanded', String(xs.length > 0))
-    list.replaceChildren(...xs.map((v, i) => h('li', { role: 'option', 'aria-selected': String(i === 0), text: name(v), onpointerdown: (ev) => (ev.preventDefault(), pick(v)) })))
+    list.replaceChildren(...xs.map((v, i) => h('li', { id: `mast-found-${i}`, role: 'option', 'aria-selected': String(i === 0), text: name(v), onpointerdown: (ev) => (ev.preventDefault(), pick(v)) })))
+    if (xs.length) input.setAttribute('aria-activedescendant', 'mast-found-0')
+    else input.removeAttribute('aria-activedescendant')
   }
+  // The names loaded with the filter come first; when that list was cut at its limit, the model is asked too.
+  let asked = 0
   input.oninput = () => {
     const q = input.value.trim().toLowerCase()
     const vals = S.known[f()?.key] || []
-    show(q ? vals.filter((v) => name(v).toLowerCase().includes(q)).sort((a, b) => name(a).toLowerCase().indexOf(q) - name(b).toLowerCase().indexOf(q)).slice(0, 8) : [])
+    const local = q ? vals.filter((v) => name(v).toLowerCase().includes(q)).sort((a, b) => name(a).toLowerCase().indexOf(q) - name(b).toLowerCase().indexOf(q)).slice(0, 8) : []
+    show(local)
+    const cut = vals.length >= (f()?.limit || (f()?.hidden ? 2000 : 500))
+    if (!q || !cut || local.length >= 8) return
+    const mine = ++asked
+    const by = e.nameField || e.field
+    clearTimeout(input.__t)
+    input.__t = setTimeout(() => query(`run: ${S.src()} -> { where: lower(${by}) ~ ${S.lit(`%${q.replace(/[%_\\]/g, '')}%`)}; group_by: v is ${e.field}${e.nameField ? `, nm is ${e.nameField}` : ''}; aggregate: n is count(); order_by: n desc; limit: 8 }`).then((rows) => {
+      if (mine !== asked) return
+      for (const r of rows) if (r.nm !== undefined) more.set(String(r.v), r.nm)
+      const seen = new Set(local.map(String))
+      show([...local, ...rows.map((r) => r.v).filter((v) => !seen.has(String(v)))].slice(0, 8))
+    }, () => {}), 200)
   }
   input.onkeydown = (ev) => {
     if (ev.key === 'Enter' && hits.length) pick(hits[at])
@@ -136,12 +165,14 @@ function searchBox(key) {
       ev.preventDefault()
       at = (at + (ev.key === 'ArrowDown' ? 1 : -1) + hits.length) % hits.length
       list.querySelectorAll('li').forEach((li, i) => li.setAttribute('aria-selected', String(i === at)))
+      input.setAttribute('aria-activedescendant', `mast-found-${at}`)
     }
   }
   input.onblur = () => setTimeout(() => show([]), 100)
   return h('div', { class: 'mast__search' }, input, list)
 }
 
+const missingDefaults = []
 let shown = null
 function render({ toTop = false } = {}) {
   const s = store.state
@@ -201,6 +232,7 @@ async function selfCheck() {
   })
   const fails = []
   if (document.body.dataset.ready !== 'true') fails.push('The page did not finish loading within a minute')
+  for (const m of missingDefaults) fails.push(`A default filter names ${m}, which the data does not have`)
   for (const c of document.querySelectorAll('#main .block')) if (c.querySelector('.state--error')) fails.push(`“${c.querySelector('.kicker')?.textContent}” failed: ${c.querySelector('.state--error').textContent}`)
   const text = $('#main').innerText
   for (const bad of [/\bundefined\b/, /\bNaN\b/, /\[object /, /\bnull\b/, /Infinity/]) if (bad.test(text)) fails.push(`The page says ${bad}`)

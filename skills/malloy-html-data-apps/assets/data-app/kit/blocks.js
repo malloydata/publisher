@@ -55,12 +55,12 @@ export function block(spec) {
   let results = []
   const kick = h('span', { class: 'kicker__of' })
   // An info mark opens the back; it says what it does to a screen reader and on hover.
-  const how = h('button', { type: 'button', class: 'how', 'aria-expanded': 'false', 'aria-label': `How “${spec.kicker}” is made`, title: 'How it’s made' }, icon('info'))
+  const how = h('button', { type: 'button', class: 'how', 'aria-expanded': 'false', 'aria-label': `How “${blockName(spec)}” is made`, title: 'How it’s made' }, icon('info'))
   const head = h('div', { class: 'block__head' }, h('p', { class: 'kicker' }, spec.kicker, kick), how)
   const title = h('h2', { class: 'block__title is-loading', 'data-pending': '' }, h('span', { class: 'skel' }))
   const body = h('div', { class: 'block__body' }, h('div', { class: 'state state--loading', style: { '--reserve': `${spec.reserve ?? 240}px` } }, h('span', { class: 'visually-hidden', text: 'Loading' })))
   const note = h('p', { class: 'block__note' })
-  const back = h('div', { class: 'back', role: 'region', 'aria-label': `How “${spec.kicker}” is made`, inert: true })
+  const back = h('div', { class: 'back', role: 'region', 'aria-label': `How “${blockName(spec)}” is made`, inert: true })
   const el = h('article', { class: `block span-${span}${spec.cls ? ` ${spec.cls}` : ''}`, 'data-key': spec.key || spec.kicker, style: spec.rows || null }, head, spec.headline === null ? null : title, body, note, back)
   if (spec.headline === null) title.removeAttribute('data-pending')
   // The back: a circle growing out of "How it's made", closing back into it.
@@ -81,7 +81,7 @@ export function block(spec) {
   how.onclick = () => open(true)
   back.addEventListener('keydown', (e) => e.key === 'Escape' && open(false))
   const fillBack = () => back.replaceChildren(
-    h('div', { class: 'back__head' }, h('h3', { text: `How “${current.kicker}” is made` }), h('button', { type: 'button', class: 'back__close', 'aria-label': 'Close', title: 'Close', onclick: () => open(false) }, icon('close'))),
+    h('div', { class: 'back__head' }, h('h3', { text: `How “${blockName(current)}” is made` }), h('button', { type: 'button', class: 'back__close', 'aria-label': 'Close', title: 'Close', onclick: () => open(false) }, icon('close'))),
     ...howMade(current, current.queries(store.state), results, title.textContent))
   el.__spec = spec
   const run = (updating) => {
@@ -264,9 +264,14 @@ function howMade(spec, qs, results, said = '') {
   ].filter(Boolean)
 }
 
+/** What to call a block: its kicker, else its first metric (a subject has no kicker of its own). */
+function blockName(spec) {
+  return asText(spec.kicker || '').trim() || (spec.metrics?.[0] ? F.metric(spec.metrics[0]).label : '') || 'this section'
+}
+
 /** Inside Credible: ask its agent about this block, with what it covers and the queries behind it attached. */
 function askButton(spec, qs, said, covers) {
-  const kicker = asText(spec.kicker || '')
+  const kicker = blockName(spec)
   const e = S.entityOf(store.state)
   const about = e ? ` for ${e.name ? e.name(store.state.id) : store.state.id}` : ''
   const prompt = `${S.config.title}, "${kicker}"${about}: ${said ? `${asText(said)} ` : ''}What is behind this, and what should I look at next?`

@@ -196,7 +196,7 @@ export function inCredible(loc = location) {
   return window.parent !== window && parts.length >= 3 && (plane === 'data' || plane.endsWith('-data'))
 }
 /** Opens Credible's chat with `prompt` as the reader's question, after attaching `context` (what they were looking
- * at and the queries behind it). Only inside Credible's viewer; anywhere else it does nothing and says so. */
+ * at and the queries behind it). Only inside Credible's viewer; anywhere else it does nothing and returns false. */
 export function askCredible(prompt, context) {
   const text = String(prompt ?? '').trim().slice(0, 4000)
   if (!text || !inCredible()) return false
@@ -204,7 +204,13 @@ export function askCredible(prompt, context) {
   parts[1] = parts[1].replace(/data$/, 'app')
   const origin = `${location.protocol}//${parts.join('.')}`
   if (context) {
-    const c = JSON.stringify(context).length > 7800 ? { ...context, items: (context.items || []).slice(0, 2) } : context
+    // Credible drops a context over 8,000 characters whole, so shed the least useful parts until it fits:
+    // the later queries, then the filter values, then everything but what the reader was looking at.
+    const fits = (c) => JSON.stringify(c).length <= 7800
+    let c = context
+    while (!fits(c) && (c.items || []).length > 1) c = { ...c, items: c.items.slice(0, -1) }
+    if (!fits(c)) c = { ...c, givens: Object.fromEntries(Object.entries(c.givens || {}).map(([k, v]) => [k, Array.isArray(v) && v.length > 5 ? [...v.slice(0, 5), `and ${v.length - 5} more`] : v])) }
+    if (!fits(c)) c = { scope: c.scope, view: c.view }
     window.parent.postMessage({ type: 'credible:chat-context', context: c }, origin)
   }
   window.parent.postMessage({ type: 'credible:chat-message', prompt: text }, origin)

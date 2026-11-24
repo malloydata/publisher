@@ -191,7 +191,7 @@ def main(kit):
     for k, v in THEMES.items():
         v["name"] = k
     out = ["/* Copyright (c) Credible Data Inc. SPDX-License-Identifier: MIT */",
-           "/* The kit's themes, written by dash/themes.py: edit there. Set dashboard({ theme }) or data-theme on <html>.",
+           "/* The kit's themes, written by themes.py in the malloy-html-data-apps skill's assets/data-app: edit there. Set dashboard({ theme }) or data-theme on <html>.",
            "   data-mode=\"dark\" or \"light\" fixes the mode; with neither, the reader's system setting decides. */", ""]
     for name, t in THEMES.items():
         light = palette(name, t, "light")

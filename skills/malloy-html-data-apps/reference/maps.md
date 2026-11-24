@@ -53,8 +53,8 @@ a674dfa31b625e92635f32684a61ae135b05a91507f17f2d5164833237fecf46  maps/counties-
 2516c915867c7baf18ddec727aec46c315541a07cfb3d79a6559b05d5e94eee8  maps/countries-110m.json        (world-atlas@2.0.2)
 ```
 
-Never keep a file whose sum differs. If the fetch fails or the sum differs, draw the places as a ranked table instead and say so. Add to `public/vendor/README.md`: topojson-client 3.1.0, ISC license, by Mike
-Bostock; the boundary file, ISC license, from us-atlas (US Census Bureau cartographic boundaries, public domain) or
+Never keep a file whose sum differs. If the fetch fails or the sum differs, draw the places as a ranked table instead and say so. topojson-client carries its licence in `kit/vendor/`. Add to
+`public/vendor/README.md` the boundary file, ISC license, from us-atlas (US Census Bureau cartographic boundaries, public domain) or
 world-atlas (Natural Earth, public domain). Credit the boundaries in About the data. Load topojson-client with a
 plain script before `app.js` in `index.html`: `<script src="./kit/vendor/topojson-client.min.js"></script>`.
 It is 7 KB, and the module calls it only once d3 is in.

@@ -134,9 +134,10 @@ Each form needs its numbers ready from the model, in the shape the last column g
   line (`refs`).
 - **Colours come from the kit's tokens** (`reference/dashboard-design.md`, "Colour"), each with one meaning across the app.
   Neutral bars use `--c-bar`; the accent is for the lead number and the selection.
-- **Every chart's finding is also a sentence** in the tile, from a query, for readers who cannot see the chart.
-- **Every query behind a chart says what it counts**, in the tile's `explain`, so the working under the card reads
-  as a definition, the query and its rows.
+- **Every chart's finding is also a sentence**: the block's headline, written from its rows, for readers who cannot
+  see the chart.
+- **Every block says what it shows**, in its `what`, so its info mark reads as a definition, then the query and its
+  rows.
 - **Verification reads SVG, not pixels.** The module draws SVG, so a check counts marks (`svg path`, `svg rect`,
   `svg circle`) and reads their labels, where a canvas library's check reads pixels
   (`reference/verification-harness.md`).

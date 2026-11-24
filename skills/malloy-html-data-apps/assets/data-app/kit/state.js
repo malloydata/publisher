@@ -21,6 +21,7 @@ export function configure(c) {
   // An entity is also a filter on its field, so its values are known and its page can be filtered to from anywhere.
   for (const [key, e] of Object.entries(config.entities)) {
     e.key = key
+    e.label ||= key.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase())
     if (!config.filters.some((f) => f.field === e.field)) config.filters.push({ key, field: e.field, label: e.label, hidden: true, format: e.name, nameField: e.nameField })
     else if (e.nameField) Object.assign(config.filters.find((f) => f.field === e.field), { nameField: e.nameField })
   }
