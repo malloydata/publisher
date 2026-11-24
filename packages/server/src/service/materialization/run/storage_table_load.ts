@@ -531,14 +531,19 @@ export async function writeTableAs(
    // data_inlining_row_limit (dataInliningRowLimit on POST/PATCH) keeps it, so a
    // table under that limit would sit as rows in the catalog database,
    // unencrypted whatever the catalog's encryption. Flush them to its Parquet.
-   await flushInlinedRows(session, destinationName, schemaName, tableName);
-   const counted = rows(
-      await session.runSQL(`SELECT count(*) AS n FROM ${target}`),
-   );
-   return {
-      rowCount: Number(counted[0]?.n ?? 0),
-      columns: await describeColumns(session, target),
-   };
+   // The table is committed: what fails from here is not a write that left nothing behind.
+   try {
+      await flushInlinedRows(session, destinationName, schemaName, tableName);
+      const counted = rows(
+         await session.runSQL(`SELECT count(*) AS n FROM ${target}`),
+      );
+      return {
+         rowCount: Number(counted[0]?.n ?? 0),
+         columns: await describeColumns(session, target),
+      };
+   } catch (error) {
+      return afterCommit(error);
+   }
 }
 
 /** Moves the rows a table holds inlined in the catalog database into Parquet; a table with none is untouched. */
@@ -1463,12 +1468,7 @@ async function compareBudget(
    );
 }
 
-/**
- * The bytes a row holds of each key and compared column in a join's hash
- * table: the larger of what the objects' footers say and its type's width, since
- * a Parquet encoding is smaller than the row a join holds and a column the
- * objects lack has only its type to go by.
- */
+/** Each column's bytes per row in a hash table: its type's width at least, since a Parquet encoding is smaller than the row a join holds. */
 async function rowWidths(
    session: DuckDBConnection,
    params: KeyedLoadParams,

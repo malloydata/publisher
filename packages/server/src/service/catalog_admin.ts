@@ -721,7 +721,10 @@ export class CatalogAdmin {
                );
             }
             const mapped = this.redacted(error);
-            throw this.tooLarge(mapped, "Write less") ?? mapped;
+            // Once the table is committed, "nothing was written" would mislead.
+            throw error instanceof CommittedLoadError
+               ? mapped
+               : (this.tooLarge(mapped, "Write less") ?? mapped);
          }
          logger.info(
             source.kind === "table"
@@ -1039,7 +1042,7 @@ export class CatalogAdmin {
                      (r) => r.result.rowsInserted + r.result.rowsReplaced,
                   );
                } catch (error) {
-                  throw this.loadFailure(error);
+                  throw this.loadFailure(error, request.key.length > 0);
                }
                const { result, committedAfter } = outcome;
                logger.info("Loaded rows into a DuckLake table", {
@@ -1145,8 +1148,10 @@ export class CatalogAdmin {
    // ---- internals ----
 
    /** A load's failure as an admin refusal: DuckLake's commit conflict, or a table another request created first, as a 409; a memory or spill failure before the commit as a 422; the load's own 422s come through {@link redacted}. */
-   private loadFailure(error: unknown): unknown {
+   private loadFailure(error: unknown, keyed = false): unknown {
       const mapped = this.redacted(error);
+      // After the commit the rows are written, so a 409 or 422 that says otherwise would mislead.
+      if (error instanceof CommittedLoadError) return mapped;
       if (
          mapped instanceof Error &&
          !(mapped instanceof CatalogAdminError) &&
@@ -1168,13 +1173,14 @@ export class CatalogAdmin {
             "The schema was dropped before the load began.",
          );
       }
-      // After the commit the rows are written, so a 422 that says otherwise would mislead.
-      return error instanceof CommittedLoadError
-         ? mapped
-         : (this.tooLarge(
-              mapped,
-              "Give the load a key, split its objects across loads",
-           ) ?? mapped);
+      return (
+         this.tooLarge(
+            mapped,
+            keyed
+               ? "Split the load's objects across loads"
+               : "Give the load a key, split its objects across loads",
+         ) ?? mapped
+      );
    }
 
    /** A write that outgrew the session's memory or spill cap as a 422 with `advice`; a full disk stays a 500, and `redacted()` leaves it so for the reads that share it. */

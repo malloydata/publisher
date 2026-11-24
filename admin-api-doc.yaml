@@ -466,17 +466,17 @@ paths:
         needs no compare. A stored row with no identical row in the objects
         counts in `rowsDeleted`, and an object row with no identical stored row
         in `rowsInserted`; an edited row is one of each, and `maxDeletedRows`
-        guards `rowsDeleted`. A keyless replace that changes any row rewrites
-        the whole table, and `rowsUnchanged` counts the rows matched, not rows
-        left in place.
+        guards `rowsDeleted`.
 
-        A keyed load leaves the rows the objects do not change as they are, so a load repeated
-        after it committed, with no other load of the same table committed in
-        between, finds nothing to do, writes nothing and takes no snapshot. It
-        reports the same `rowCount` and `cursorMax` as the first call, with
-        every row counted in `rowsUnchanged` and none inserted, replaced or
-        deleted, and answers `200` (below). A retry is safe because it finds
-        nothing to change.
+        A load that changes no row, keyed or keyless, writes nothing and takes
+        no snapshot, so a load repeated after it committed, with no other load
+        of the same table committed in between, finds nothing to do. It reports
+        the same `rowCount` and `cursorMax` as the first call, with every row
+        counted in `rowsUnchanged` and none inserted, replaced or deleted, and
+        answers `200` (below). A retry is safe because it finds nothing to
+        change. When some row does change, a keyed load rewrites only the rows
+        it changes, and a keyless replace rewrites the whole table, so there
+        `rowsUnchanged` counts the rows matched, not rows left in place.
         Of two rows of one key, the later one wins: the later object in
         `objects`, then the later row of an object. A key stored more than once
         is rewritten once.
@@ -1211,7 +1211,7 @@ components:
         rowsUnchanged:
           type: integer
           format: int64
-          description: Rows the objects held that the table already held. A keyed load leaves them alone; a keyless replace that changes any row rewrites the whole table, and this counts the rows matched
+          description: Rows the objects held that the table already held. A keyed load leaves them in place; a keyless replace that changes any row rewrites the whole table, and this counts the rows matched
         rowsDeleted:
           type: integer
           format: int64

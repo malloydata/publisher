@@ -593,6 +593,20 @@ describe("a load's failure as an admin refusal", () => {
       }
    });
 
+   it("advises a keyed load to split its objects, not to give a key it has", () => {
+      const mapped = (
+         admin as unknown as {
+            loadFailure(error: unknown, keyed: boolean): CatalogAdminError;
+         }
+      ).loadFailure(
+         new Error("Out of Memory Error: failed to pin block"),
+         true,
+      );
+      expect(mapped.reason).toBe("LOAD_TOO_LARGE");
+      expect(mapped.message).toContain("Split the load's objects");
+      expect(mapped.message).not.toContain("a key");
+   });
+
    it("quotes only the first line of DuckDB's message, which goes on to advise PRAGMA and SET a caller cannot run", () => {
       const mapped = failure(
          new Error(
@@ -602,6 +616,15 @@ describe("a load's failure as an admin refusal", () => {
       expect(mapped.reason).toBe("LOAD_TOO_LARGE");
       expect(mapped.message).toContain("6.0 GiB used)");
       expect(mapped.message).not.toMatch(/PRAGMA|SET threads|\n/);
+   });
+
+   it("leaves a transaction conflict after the load committed to answer 500, not as a 409 that says nothing was written", () => {
+      const flush = new CommittedLoadError(
+         new Error("Transaction conflict - attempting to insert"),
+      );
+      const mapped = failure(flush);
+      expect(mapped).not.toBeInstanceOf(CatalogAdminError);
+      expect((mapped as Error).message).toContain("Transaction conflict");
    });
 
    it("leaves an out-of-memory after the load committed to answer 500, since the rows are written", () => {
@@ -666,6 +689,18 @@ describe("a table PUT that outgrows its write session", () => {
       expect(error.message).toContain("Write less");
       expect(error.message).not.toContain("key");
       expect(error.message).toContain("admin.memoryLimit");
+   });
+
+   it("answers an out-of-memory after the table was written as a 500, not as a PUT that wrote nothing", async () => {
+      const error = await put(
+         new CommittedLoadError(
+            new Error(
+               "Out of Memory Error: failed to pin block of size 256.0 KiB",
+            ),
+         ),
+      );
+      expect(error).toBeInstanceOf(CommittedLoadError);
+      expect(error).not.toBeInstanceOf(CatalogAdminError);
    });
 
    it("answers a full spill disk as a 500 to retry", async () => {

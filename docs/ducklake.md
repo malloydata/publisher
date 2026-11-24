@@ -311,13 +311,14 @@ stream in batches:
   LOAD_DELETE_LIMIT_EXCEEDED`), so an empty or truncated extract cannot empty a table. A keyless replace
   compares whole rows as a multiset: a stored row with no identical row in the objects counts as deleted,
   an object row with no identical stored row as inserted (an edited row is one of each, and
-  `rowsReplaced` is 0), and `maxDeletedRows` guards the deleted count. A keyless replace that changes any
-  row rewrites the whole table, so there `rowsUnchanged` counts the rows matched, not rows left in place.
-- A keyed load does not rewrite a row the objects do not change, so a load retried after it committed writes nothing
-  and takes no snapshot. It reports the same `rowCount` and `cursorMax` as the first call, with every row
-  counted in `rowsUnchanged` and none inserted, replaced or deleted, and it answers `200`, with no `id`. A
-  retry is safe because it finds nothing to change, provided no other load of the table committed in
-  between; an `Idempotency-Key` (below) makes it safe even then.
+  `rowsReplaced` is 0), and `maxDeletedRows` guards the deleted count.
+- A load that changes no row, keyed or keyless, writes nothing and takes no snapshot, so a load retried
+  after it committed writes nothing. It reports the same `rowCount` and `cursorMax` as the first call,
+  with every row counted in `rowsUnchanged` and none inserted, replaced or deleted, and it answers `200`,
+  with no `id`. A retry is safe because it finds nothing to change, provided no other load of the table
+  committed in between; an `Idempotency-Key` (below) makes it safe even then. When some row does change,
+  a keyed load rewrites only the rows it changes, and a keyless replace rewrites the whole table, so
+  there `rowsUnchanged` counts the rows matched, not rows left in place.
   Of two rows with one key, the later object in `objects` wins, then the later row of an object.
 - A load that commits records `commitMessage` (optional; `load <schema>.<table>` when absent) as its
   snapshot's message, with the author `publisher-admin`; `GET …/snapshots` lists both as `commitMessage`

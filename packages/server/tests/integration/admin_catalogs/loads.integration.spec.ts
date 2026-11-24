@@ -2709,8 +2709,14 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             expect(compares(one.seen)).toHaveLength(1);
             expect(compares(many.seen).length).toBeGreaterThan(1);
             expect(many.value).toEqual(one.value);
-            expect(one.value.rowsUnchanged).toBeGreaterThan(1000);
-            expect(one.value.rowsInserted + one.value.rowsUnchanged).toBe(2000);
+            // Rows 300..1999 are on both sides; -0.0 equals 0.0 and NaN equals NaN, as an EXCEPT ALL of the two bags counts them.
+            expect(one.value).toMatchObject({
+               rowsInserted: 300,
+               rowsReplaced: 0,
+               rowsUnchanged: 1700,
+               rowsDeleted: 300,
+               rowCount: 2000,
+            });
          });
 
          it("deletes everything for an empty stage and inserts everything into an empty table, with no compare", async () => {

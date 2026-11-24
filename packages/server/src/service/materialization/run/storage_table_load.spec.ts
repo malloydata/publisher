@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path, { join } from "path";
@@ -13,6 +13,7 @@ import {
 import type { components } from "../../../api";
 import { BadRequestError, ConflictError } from "../../../errors";
 import {
+   CommittedLoadError,
    comparePasses,
    LoadRefusalError,
    loadLayout,
@@ -534,6 +535,40 @@ describe("writeTableAs: the load's and the copy's write", () => {
          rowCount: 1,
          columns: [{ name: "id", type: "INTEGER" }],
       });
+   });
+
+   it("throws a CommittedLoadError for a failure after the table was written, which `refused` never sees", async () => {
+      const conn = await attached();
+      const original = conn.runSQL.bind(conn);
+      const spy = spyOn(conn, "runSQL").mockImplementation(((
+         sql: string,
+         ...rest: unknown[]
+      ) =>
+         sql.startsWith("SELECT count(*)")
+            ? Promise.reject(
+                 new Error(
+                    "Out of Memory Error: failed to pin block of size 256.0 KiB",
+                 ),
+              )
+            : (original as (...a: unknown[]) => unknown)(
+                 sql,
+                 ...rest,
+              )) as never);
+      const refused = () => new Error("refused");
+      const error = await writeTableAs(
+         conn,
+         params("create"),
+         ROWS,
+         refused,
+      ).then(
+         () => undefined,
+         (e: unknown) => e,
+      );
+      spy.mockRestore();
+      expect(error).toBeInstanceOf(CommittedLoadError);
+      expect((error as Error).message).toContain("failed to pin block");
+      const stored = await conn.runSQL("SELECT count(*) AS n FROM lake.s.t");
+      expect(Number(stored.rows[0].n)).toBe(2);
    });
 
    it("throws what `refused` returns for a failed write, and the failure itself otherwise", async () => {
