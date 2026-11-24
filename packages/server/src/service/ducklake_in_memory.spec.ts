@@ -94,11 +94,16 @@ describe("a DuckLake connection's in-memory primary", () => {
 
 describe("a DuckLake connection's digest", () => {
    // Fixed values over a fixed directory: the digest keys cached query results, so it must not drift.
+   // Malloy digested the database path as the platform joined it, so a Windows
+   // worker's addresses carry backslashes; each platform keeps its own golden.
    const directory = "/environments/digest-fixture";
-   const goldenA =
-      "ad6f58a426af5d34bebb4111356b9e75283445bb822cbc2b0efba8372b2195c4";
-   const goldenB =
-      "68f49a294b83de536ad4b8f0e2205538881dd526718a8a1ccc2dd7320e6995ac";
+   const windows = process.platform === "win32";
+   const goldenA = windows
+      ? "dd14e1c1ee9e77d3db131306ad94db3c4643bdf40d51763e1f2d16eee6cbc9d8"
+      : "ad6f58a426af5d34bebb4111356b9e75283445bb822cbc2b0efba8372b2195c4";
+   const goldenB = windows
+      ? "92162d2e78458f3212189d1a6f479c42e3c68d0363540215a40b29ea6ad2d076"
+      : "68f49a294b83de536ad4b8f0e2205538881dd526718a8a1ccc2dd7320e6995ac";
 
    it("is the one Malloy computed for its old database file", () => {
       const a = open(lake("a"), directory).built;
