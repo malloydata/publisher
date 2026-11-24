@@ -17,12 +17,15 @@
  *   builds the downstream over the rebuilt table, served equal to live; the
  *   run after it carries both.
  *
+ * - With every raw row then deleted, a forced rebuild of the downstream
+ *   alone builds it over the carried upstream table, still equal to what
+ *   live answered before.
+ *
  * `#@ persist` over `#@ persist`, a `#(materialize)` extension of a
- * `#(materialize)` parent, and a `#(rollup)` of a `#(materialize)` base,
- * each in one DuckLake destination. (A `storage=` rollup over a `#@ persist`
- * base's `->` is not carried onto its table at all, drift or not:
- * `chained_shape_not_carried`.) Opt-in: set PUBLISHER_TEST_POSTGRES_URL, for
- * the warehouse and the DuckLake catalog.
+ * `#(materialize)` parent, a `#(rollup)` of a `#(materialize)` base, and a
+ * `#(rollup)` on an `extend` of a `#@ persist` query source (`->`), each in
+ * one DuckLake destination. Opt-in: set PUBLISHER_TEST_POSTGRES_URL, for the
+ * warehouse and the DuckLake catalog.
  */
 
 import { DuckDBConnection as MalloyDuckDBConnection } from "@malloydata/db-duckdb";
@@ -109,6 +112,21 @@ source: a is raw extend {
       downstream: /__rollup__/,
       query: `run: a -> { group_by: k; aggregate: total } ${AS_TEXT}`,
    },
+   {
+      label: "#(rollup) on an extend of a #@ persist query source",
+      cell: "l-drift-build rs",
+      model: `${HEAD}
+#@ persist storage="lake"
+source: a is raw -> { select: k, amt }
+
+source: rolled is a extend {
+  #(rollup) grain=["k"] storage="lake"
+  measure: total is amt.sum()
+}
+`,
+      downstream: /^rolled__rollup__/,
+      query: `run: rolled -> { group_by: k; aggregate: total } ${AS_TEXT}`,
+   },
 ];
 
 interface Entry {
@@ -162,6 +180,8 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
       let betweenServed: { rows: unknown; kind?: string };
       let served: { rows: unknown; kind?: string };
       let live: { rows: unknown };
+      let rawless: Materialization;
+      let rawlessServed: { rows: unknown; kind?: string };
 
       const ask = async (query: string) => {
          const pkg = await env.getPackage(parsePackageName(PKG), false);
@@ -331,6 +351,16 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
          second = await build({});
          served = await ask(mechanism.query);
          live = await ask(LIVE);
+         // Out of band: every raw row gone. A downstream recomputed from raw
+         // would hold none.
+         await warehouse.runSQL("DELETE FROM public.cs_raw");
+         rawless = await build({
+            sourceNames: entriesOf(second)
+               .filter((e) => mechanism.downstream.test(e.sourceName ?? ""))
+               .map((e) => e.sourceName!),
+            forceRefresh: true,
+         });
+         rawlessServed = await ask(mechanism.query);
       }, 300_000);
       afterAll(async () => {
          await env?.closeAllConnections().catch(() => undefined);
@@ -405,6 +435,23 @@ for (const mechanism of POSTGRES_URL ? MECHANISMS : []) {
          expect(betweenServed.rows).toEqual(live.rows);
          expect(served.rows).toEqual(live.rows);
          expect(live.rows).toEqual(EXPECTED);
+      });
+
+      it("rebuilds the downstream over the carried upstream table with every raw row deleted, and serves it equal to live before", () => {
+         expect([rawless.status, rawless.error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         const was = entriesOf(second).find((e) =>
+            mechanism.downstream.test(e.sourceName ?? ""),
+         )!;
+         const now = entriesOf(rawless).find((e) =>
+            mechanism.downstream.test(e.sourceName ?? ""),
+         )!;
+         expect(now.builtAt).not.toBe(was.builtAt);
+         expect(now.upstreamReuse).toBe("reused");
+         expect(rawlessServed.kind).not.toBe("live");
+         expect(rawlessServed.rows).toEqual(EXPECTED);
       });
    });
 }

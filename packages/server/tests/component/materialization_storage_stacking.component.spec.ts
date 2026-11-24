@@ -93,6 +93,31 @@ source: daily is raw -> {
 const ROLLUP_QUERY =
    "run: daily -> { group_by: cat; aggregate: grand, rows, least }";
 
+/**
+ * A `storage=` rollup declared on a plain `extend` of a `#@ persist storage=`
+ * query source (`->`): the rollup's base is the extension, which reads the
+ * persisted source's table and adds a dimension.
+ */
+const ROLLUP_OVER_PERSIST_EXTEND_MODEL = `##! experimental.persistence
+source: raw is ${RAW}
+
+#@ persist storage="${LAKE}"
+source: daily is raw -> {
+  group_by: cat, sub
+  aggregate: total is amt.sum(), n is count(), lo is amt.min()
+}
+
+source: rolled is daily extend {
+  dimension: upper_cat is upper(cat)
+  #(rollup) grain=["cat"] storage="${LAKE}"
+  measure: grand is total.sum()
+  #(rollup) grain=["cat"] storage="${LAKE}"
+  measure: rows is n.sum()
+}
+`;
+const ROLLUP_OVER_PERSIST_EXTEND_QUERY =
+   "run: rolled -> { group_by: cat; aggregate: grand, rows }";
+
 const CHAIN_FILES = {
    "a.malloy": `source: raw is ${RAW}
 
@@ -663,6 +688,36 @@ describe.skipIf(process.platform === "win32")(
             await plannedRows(rollup),
          );
          const served = await answer("m.malloy", ROLLUP_QUERY);
+         expect(served.servedBy).toBe("rollup");
+         expect(served.rows).toEqual(live.rows);
+      });
+
+      it("builds a storage= rollup on an extend of a #@ persist query source over that source's stored table, equal to live", async () => {
+         await setUp({ "m.malloy": ROLLUP_OVER_PERSIST_EXTEND_MODEL });
+         const live = await answer(
+            "m.malloy",
+            ROLLUP_OVER_PERSIST_EXTEND_QUERY,
+         );
+         expect(live.servedBy).toBe("live");
+         const m = await build();
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         const base = entryOf(m, "daily");
+         const rollup = entryOf(m, /^rolled__rollup__/);
+         expect(rollup.storageDestinationName).toBe(LAKE);
+         expect(rollup.upstreamReuse).toBe("reused");
+         expect(
+            (
+               rollup as Entry & { builtFrom?: { sourceEntityId: string }[] }
+            ).builtFrom?.map((b) => b.sourceEntityId),
+         ).toEqual([base.sourceEntityId]);
+         expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
+         expect(await storedRows(rollup.physicalTableName)).toEqual(
+            await plannedRows(rollup),
+         );
+         const served = await answer(
+            "m.malloy",
+            ROLLUP_OVER_PERSIST_EXTEND_QUERY,
+         );
          expect(served.servedBy).toBe("rollup");
          expect(served.rows).toEqual(live.rows);
       });
