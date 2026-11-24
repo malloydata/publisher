@@ -11,6 +11,10 @@ import {
    pinnedOf,
 } from "../../../test_helpers/persisted_result_fixture";
 import type { Binding } from "../domain/binding";
+import {
+   contractWithoutPassedKeys,
+   keyUniquenessOfContract,
+} from "../domain/column_contract";
 import { LegDecline } from "../domain/leg_decline";
 import { splitSourceID } from "../domain/table_plans";
 import { rollupCompanionURLOf } from "../text/read_text";
@@ -636,6 +640,40 @@ describe("RollupVariantServe (a joined source's rollup, read through the join)",
             parentKeyColumns: { [flightsID]: "id", [segmentsID]: "seg_id" },
          },
       });
+      expect(answer.rollupSourceName).toStartWith("segments__rollup__");
+   });
+
+   it("declines a join_many read beside a join_one whose rollup's build found its key repeated, also while a run is active", async () => {
+      const query =
+         "run: flights -> { group_by: crew.size; aggregate: segments.seg_miles }";
+      const segments = {
+         parentKeys: { [flightsID]: true, [segmentsID]: true },
+         parentKeyColumns: { [flightsID]: "id", [segmentsID]: "seg_id" },
+      };
+      // `crew`'s contract as the store holds it, and as a bind reads it while
+      // a run of the package is active: only a passed check is stripped, so
+      // the repeat is still known.
+      const crewContract = {
+         v: 1,
+         dialect: "duckdb",
+         columns: [],
+         keys: { "rollup:flight_id": { unique: false, level: "rollup" } },
+      };
+      const whileRunning = keyUniquenessOfContract(
+         contractWithoutPassedKeys(crewContract),
+         [],
+      );
+      expect(whileRunning).toEqual({ keyColumn: "flight_id", unique: false });
+      expect(
+         await outcomeOf(attempt(query, { segments, crew: whileRunning })),
+      ).toMatchObject({
+         code: "rollup_count_semantics",
+         detail:
+            "the query reads the join_one `crew`, whose key the data holds more than once, so live repeats rows through it",
+      });
+      // Unknown is served (known limitation 29): what stripping every check
+      // would have done.
+      const answer = await attempt(query, { segments });
       expect(answer.rollupSourceName).toStartWith("segments__rollup__");
    });
 

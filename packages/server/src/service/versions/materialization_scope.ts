@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { leafKey } from "../materialization/domain/physical_table";
-import { contractWithoutKeys } from "../materialization/domain/column_contract";
+import { contractWithoutPassedKeys } from "../materialization/domain/column_contract";
 import { isActiveRun } from "../materialization/domain/types";
 import { createHash } from "crypto";
 import type {
@@ -242,9 +242,10 @@ export function tableIdentity(physicalTableName: string): string {
 /**
  * How a loaded package finds, in the store, the tables it serves from (see
  * newestServingEntries). While a run of the package is still active it may
- * be rewriting a table in place, so no key check a contract records is
- * bound then: those tables' joins that need a verdict answer live until a
- * bind after the run ends (the run's own load binds what it found).
+ * be rewriting a table in place, so no key check a contract records as
+ * passed is bound then: those tables' joins that need a verdict answer live
+ * until a bind after the run ends (the run's own load binds what it found).
+ * A check that found its key repeated stays bound: it only ever declines.
  */
 export function storageBindingResolverFor(
    repository: Pick<ResourceRepository, "listMaterializations">,
@@ -261,13 +262,13 @@ export function storageBindingResolverFor(
       );
       const entries = storedServingEntries(runs, reader);
       return runs.some((run) => isActiveRun(run.status))
-         ? withoutKeyChecks(entries)
+         ? withoutPassedKeyChecks(entries)
          : entries;
    };
 }
 
-/** `entries`, each with no key check in its contract ({@link contractWithoutKeys}). */
-function withoutKeyChecks(
+/** `entries`, each with no passed key check in its contract ({@link contractWithoutPassedKeys}). */
+function withoutPassedKeyChecks(
    entries: Record<string, ManifestEntry>,
 ): Record<string, ManifestEntry> {
    return Object.fromEntries(
@@ -277,7 +278,7 @@ function withoutKeyChecks(
             ? entry
             : {
                  ...entry,
-                 contract: contractWithoutKeys(
+                 contract: contractWithoutPassedKeys(
                     entry.contract,
                  ) as ManifestEntry["contract"],
               },

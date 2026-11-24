@@ -29,6 +29,7 @@
 import {
    type ColumnContract,
    compatible,
+   contractWithoutPassedKeys,
    type KeyedSource,
    keyUniquenessOfContract,
    parseContract,
@@ -1748,42 +1749,33 @@ export class PackageMaterialization {
    }
 
    /**
-    * Drop the rollup key checks bound for these content
-    * addresses: a run is about to write their tables, so what a check found
-    * over the rows before no longer describes them. The routing itself is
-    * kept; the join-to-rollup branch reads the table as unknown until a run
-    * binds a new check.
+    * Drop the passed key checks bound for these content addresses: a run is
+    * about to write their tables, so what a check found over the rows before
+    * no longer describes them. They are stripped from the entries' contracts
+    * ({@link contractWithoutPassedKeys}), the one store every bind reads, so
+    * no later bind before the run's own (a reload's, for one) reads them
+    * back. A check that found its key repeated, or could not run, stays: it
+    * only declines. The routing itself is kept; a join that needs a passed
+    * check answers live until the run binds a new one.
     */
    forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
       const ids = new Set(sourceEntityIds);
-      // A stored table's own primary key check, and a stored rollup's key
-      // check, on its storage binding.
-      const checked = (b: Binding) =>
-         (b.primaryKeys || b.rollupKey) && ids.has(b.virtualHandle);
-      if (this.storageBindings.some(checked)) {
+      const storage = withoutPassedKeysAt(this.storageEntries, ids);
+      if (storage !== this.storageEntries) {
+         const rechecked = this.withRecordedKeyChecks(storage);
+         this.storageEntries = rechecked;
          this.storageBindings = this.storageBindings.map((b) => {
-            if (!checked(b)) return b;
-            const {
-               primaryKeys: _forgotten,
-               primaryKeyColumns: _forgottenColumns,
-               rollupKey: _forgottenKey,
-               ...rest
-            } = b;
-            return rest;
+            const entry = rechecked[b.virtualHandle];
+            return ids.has(b.virtualHandle) && entry
+               ? withEntryKeyChecks(b, entry)
+               : b;
          });
       }
-      const entries = this.databaseEntries;
-      let next: FreshnessManifest | undefined;
-      for (const id of ids) {
-         const entry = entries?.[id];
-         if (!entry?.keyUniqueness) continue;
-         next ??= { ...entries };
-         const { keyUniqueness: _forgotten, ...rest } = entry;
-         next[id] = rest;
+      const database =
+         this.databaseEntries && withoutPassedKeysAt(this.databaseEntries, ids);
+      if (database && database !== this.databaseEntries) {
+         this.databaseEntries = this.withRecordedKeyChecks(database);
       }
-      // A database pair table's leaf key check rides on its binding
-      // (`primaryKeys`): the snapshot drops it too.
-      if (next) this.databaseEntries = next;
       this.publish();
    }
 
@@ -2481,4 +2473,25 @@ export class PackageMaterialization {
          this.plan.versionOwnsTables(),
       );
    }
+}
+
+/**
+ * `entries`, each at one of `ids` without the key checks its contract
+ * records as passed ({@link contractWithoutPassedKeys}); `entries` itself
+ * when none had one.
+ */
+function withoutPassedKeysAt<E extends { contract?: unknown }>(
+   entries: Readonly<Record<string, E>>,
+   ids: ReadonlySet<string>,
+): Readonly<Record<string, E>> {
+   let out: Record<string, E> | undefined;
+   for (const id of ids) {
+      const entry = entries[id];
+      if (entry?.contract === undefined) continue;
+      const contract = contractWithoutPassedKeys(entry.contract);
+      if (contract === entry.contract) continue;
+      out ??= { ...entries };
+      out[id] = { ...entry, contract };
+   }
+   return out ?? entries;
 }

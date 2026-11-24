@@ -828,34 +828,63 @@ describe("a key check, bound for serving", () => {
       });
    });
 
-   it("forgets a storage binding's key check when a run is about to write its table", () => {
+   it("forgets a storage binding's passed key check when a run is about to write its table, and a reload does not read it back", () => {
       const materialization = new PackageMaterialization({
          models: () => new Map(),
          packageName: () => "pkg",
          packagePath: () => "/nowhere",
       } as unknown as PackageMaterializationOwner);
       const held = materialization as unknown as {
+         storageEntries: Record<string, ManifestEntry>;
          storageBindings: ReturnType<typeof deriveServeBindings>;
       };
-      const binding: ReturnType<typeof deriveServeBindings>[number] = {
-         kind: "persist",
-         tier: "storage",
-         sourceName: "flights",
-         destinationName: "lake",
-         virtualHandle: "h",
-         tablePath: "lake.flights_t",
-         schema: [],
-         primaryKeys: { flights: true },
+      const entry = (id: string, unique: boolean) =>
+         ({
+            sourceEntityId: id,
+            sourceName: `crew_${id}__rollup`,
+            physicalTableName: `crew_${id}_t`,
+            connectionName: "duckdb",
+            storageDestinationName: "lake",
+            origin: "rollup",
+            contract: rollupChecked("flight_id", unique),
+         }) as unknown as ManifestEntry;
+      const binding = (id: string, unique: boolean) =>
+         ({
+            kind: "rollup",
+            tier: "storage",
+            sourceName: `crew_${id}__rollup`,
+            destinationName: "lake",
+            virtualHandle: id,
+            tablePath: `lake.crew_${id}_t`,
+            schema: [],
+            rollupKey: { keyColumn: "flight_id", unique },
+         }) as ReturnType<typeof deriveServeBindings>[number];
+      held.storageEntries = {
+         h: entry("h", true),
+         r: entry("r", false),
+         o: entry("o", true),
       };
       held.storageBindings = [
-         binding,
-         { ...binding, sourceName: "other", virtualHandle: "o" },
+         binding("h", true),
+         binding("r", false),
+         binding("o", true),
       ];
-      materialization.forgetKeyUniqueness(["h"]);
-      expect(held.storageBindings[0]?.primaryKeys).toBeUndefined();
-      expect(held.storageBindings[1]?.primaryKeys).toEqual({
-         flights: true,
-      });
+      const keys = () =>
+         held.storageBindings.map((b) => [b.virtualHandle, b.rollupKey]);
+      materialization.forgetKeyUniqueness(["h", "r"]);
+      const forgotten = [
+         ["h", undefined],
+         // A repeat stays: it only declines.
+         ["r", { keyColumn: "flight_id", unique: false }],
+         // Not written by the run.
+         ["o", { keyColumn: "flight_id", unique: true }],
+      ];
+      expect(keys()).toEqual(forgotten);
+      // A reload binds with models only and reads the contracts again,
+      // under the keys the models declare now: the run's table stays
+      // forgotten until the run binds its own check.
+      materialization.bind({ models: "installed" });
+      expect(keys()).toEqual(forgotten);
    });
 
    it("binds a stored rollup's own key check, warns while it says repeated, and forgets it", () => {
@@ -868,6 +897,7 @@ describe("a key check, bound for serving", () => {
             storageDestinationName: "lake",
             origin: "rollup",
             schema: [{ name: "flight_id", type: "INTEGER" }],
+            contract: rollupChecked("flight_id", unique),
             keyUniqueness: { keyColumn: "flight_id", unique },
          }) as unknown as ManifestEntry;
       // Each entry carries its check as a bind reads it off the contract.
@@ -906,18 +936,27 @@ describe("a key check, bound for serving", () => {
             },
          },
       } as never;
-      (
-         materialization as unknown as {
-            storageBindings: typeof bindings;
-         }
-      ).storageBindings = bindings;
-      expect(
+      const held = materialization as unknown as {
+         storageEntries: Record<string, ManifestEntry>;
+         storageBindings: typeof bindings;
+      };
+      held.storageEntries = { a: stored("a", false), b: stored("b", true) };
+      held.storageBindings = bindings;
+      const warned = () =>
          materialization
             .repeatedJoinOneKeyWarnings()
-            .map((w) => [w.subject, w.code]),
-      ).toEqual([["crew", "rollup-join-one-key-repeated"]]);
-      materialization.forgetKeyUniqueness(["a"]);
-      expect(materialization.repeatedJoinOneKeyWarnings()).toEqual([]);
+            .map((w) => [w.subject, w.code]);
+      expect(warned()).toEqual([["crew", "rollup-join-one-key-repeated"]]);
+      // A run about to rewrite both tables forgets the passed check only:
+      // the repeat, and its warning, stay until the run binds its own.
+      materialization.forgetKeyUniqueness(["a", "b"]);
+      expect(warned()).toEqual([["crew", "rollup-join-one-key-repeated"]]);
+      expect(
+         held.storageBindings.map((b) => [b.virtualHandle, b.rollupKey]),
+      ).toEqual([
+         ["a", { keyColumn: "flight_id", unique: false }],
+         ["b", undefined],
+      ]);
    });
 
    it("asks for stored-table key checks only when a storage rollup is read as a join_many", () => {
@@ -970,13 +1009,20 @@ describe("a key check, bound for serving", () => {
       expect(
          materialization.verdicts.tableCatalog().bound.a?.keyUniqueness,
       ).toEqual({ keyColumn: "k", unique: true });
-      materialization.forgetKeyUniqueness(["a"]);
-      const bound = materialization.verdicts.tableCatalog().bound;
-      expect(bound.a).toEqual({
-         tableName: "r_t",
-         contract: rollupChecked("k", true),
-      });
-      expect(bound.b?.keyUniqueness?.unique).toBe(false);
+      materialization.forgetKeyUniqueness(["a", "b"]);
+      const forgotten = () => {
+         const bound = materialization.verdicts.tableCatalog().bound;
+         // The passed check leaves the contract too, so no bind reads it back.
+         expect(bound.a).toEqual({ tableName: "r_t", contract: contractFor() });
+         // A repeat stays: it only declines.
+         expect(bound.b?.keyUniqueness).toEqual({
+            keyColumn: "k",
+            unique: false,
+         });
+      };
+      forgotten();
+      materialization.bind({ models: "installed" });
+      forgotten();
    });
 
    it("warns the package of a rollup whose build found its join_one key repeated, while that is bound", () => {
@@ -1017,9 +1063,12 @@ describe("a key check, bound for serving", () => {
          ["crew", "rollup-join-one-key-repeated", "m.malloy"],
       ]);
       expect(warnings[0].message).toContain("`flight_id` more than once");
-      // A run about to rewrite the table forgets the check, and the warning.
+      // A run about to rewrite the table keeps the repeat, and the warning:
+      // only a passed check is forgotten.
       materialization.forgetKeyUniqueness(["a"]);
-      expect(materialization.repeatedJoinOneKeyWarnings()).toEqual([]);
+      expect(
+         materialization.repeatedJoinOneKeyWarnings().map((w) => w.subject),
+      ).toEqual(["crew"]);
    });
 
    it("does not warn of a join_one key for a rollup whose build ran only query source key checks", () => {
