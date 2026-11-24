@@ -123,7 +123,8 @@ describe("the collation reads' I/O adapter", () => {
             else if (
                /\.ts$/.test(entry.name) &&
                !/\.spec\.ts$/.test(entry.name) &&
-               path.relative(serveDir, file) !== "collation/catalog_io.ts" &&
+               path.relative(serveDir, file) !==
+                  path.join("collation", "catalog_io.ts") &&
                driverReads.test(fs.readFileSync(file, "utf8"))
             ) {
                offenders.push(path.relative(serveDir, file));

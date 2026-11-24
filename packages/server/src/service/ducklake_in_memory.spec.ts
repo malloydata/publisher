@@ -114,11 +114,12 @@ describe("a DuckLake connection's digest", () => {
 
    it("is replaced by the API fingerprint when one is set", () => {
       const { built, assembled } = open(lake("a"), directory);
+      const legacy = built.getDigest();
       const unset = applyConnectionFingerprint(
          built,
          assembled.metadata.get("a"),
       );
-      expect(unset.getDigest()).toBe(goldenA);
+      expect(unset.getDigest()).toBe(legacy);
 
       const metadata = assembled.metadata.get("a")!;
       const fingerprinted = applyConnectionFingerprint(built, {

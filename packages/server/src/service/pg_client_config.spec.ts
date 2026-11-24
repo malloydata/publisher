@@ -51,8 +51,12 @@ afterEach(() => {
 });
 
 describe("pgClientConfig", () => {
-   const dir = mkdtempSync(join(tmpdir(), "pg-client-config-"));
-   const ca = join(dir, "ca.pem");
+   // libpq reads a backslash in a keyword value as an escape, so a Windows path goes in with forward slashes.
+   const dir = mkdtempSync(join(tmpdir(), "pg-client-config-")).replace(
+      /\\/g,
+      "/",
+   );
+   const ca = `${dir}/ca.pem`;
    writeFileSync(ca, "PEM-BYTES");
    afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -282,8 +286,8 @@ describe("pgClientConfig", () => {
    });
 
    describe("the client certificate", () => {
-      const cert = join(dir, "client.crt");
-      const key = join(dir, "client.key");
+      const cert = `${dir}/client.crt`;
+      const key = `${dir}/client.key`;
       writeFileSync(cert, "CERT-BYTES");
       writeFileSync(key, "KEY-BYTES");
 
@@ -311,9 +315,7 @@ describe("pgClientConfig", () => {
       it("names the file and no secret when one cannot be read", () => {
          let error = "";
          try {
-            config(
-               `host=h password=hunter2 sslcert=${join(dir, "missing.crt")}`,
-            );
+            config(`host=h password=hunter2 sslcert=${`${dir}/missing.crt`}`);
          } catch (e) {
             error = String(e);
          }
@@ -362,9 +364,9 @@ describe("pgClientConfig", () => {
    });
 
    describe("the deployment's certificate files", () => {
-      const cert = join(dir, "env.crt");
-      const key = join(dir, "env.key");
-      const otherCa = join(dir, "other-ca.pem");
+      const cert = `${dir}/env.crt`;
+      const key = `${dir}/env.key`;
+      const otherCa = `${dir}/other-ca.pem`;
       writeFileSync(cert, "ENV-CERT");
       writeFileSync(key, "ENV-KEY");
       writeFileSync(otherCa, "OTHER-PEM");
@@ -384,7 +386,7 @@ describe("pgClientConfig", () => {
 
       it("yields to the string's own files, as libpq does", () => {
          process.env.PGSSLROOTCERT = otherCa;
-         process.env.PGSSLCERT = join(dir, "missing.crt");
+         process.env.PGSSLCERT = `${dir}/missing.crt`;
          expect(
             config(
                `host=h sslmode=verify-full sslrootcert=${ca} sslcert=${cert}`,
