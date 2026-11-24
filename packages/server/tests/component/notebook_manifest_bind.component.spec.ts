@@ -26,6 +26,7 @@ import {
 import { unrecordedAudit } from "../../src/service/access_record";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName, VersionRef } from "../../src/service/identity";
+import * as manifestLoader from "../../src/service/materialization/run/manifest_loader";
 import { QueryPrivileges } from "../../src/service/model_query_request";
 import type { Package } from "../../src/service/package";
 import type {
@@ -401,6 +402,77 @@ describe("an unversioned package's manifest PATCH", () => {
          expect(served.servedBy).not.toBe("live");
       } finally {
          await plainEnv.closeAllConnections().catch(() => undefined);
+      }
+   });
+});
+
+describe("a manifest that cannot be fetched", () => {
+   /** Every manifest fetch fails, as an unreachable bucket does; counts them. */
+   function unreachable() {
+      return spyOn(manifestLoader, "fetchManifestEntries").mockImplementation(
+         async () => {
+            throw new Error("the bucket did not answer");
+         },
+      );
+   }
+
+   it("is fetched once by a PUT to a version that is not loaded", async () => {
+      await publishLive();
+      versions().cache.evict(PKG, "1.0.0");
+      const fetches = unreachable();
+      try {
+         const refused = await versions()
+            .setManifest(PKG, "1.0.0", "gs://unreachable/manifest.json")
+            .catch((error: unknown) => error);
+         expect(refused).toBeInstanceOf(ManifestBindFailedError);
+         // The load's bind and the refusing bind read it once between them.
+         expect(fetches).toHaveBeenCalledTimes(1);
+      } finally {
+         fetches.mockRestore();
+      }
+      expect((await versions().getVersion(PKG, "1.0.0")).manifestPath).toBe(
+         null,
+      );
+   });
+
+   it("is fetched once by a publish again of a loaded version that names it", async () => {
+      const { pkg } = await publishLive();
+      const fetches = unreachable();
+      try {
+         const dir = path.join(root, "sources", "1.0.0");
+         await versions().publish(
+            PKG,
+            async (stagingPath) => {
+               await fs.promises.cp(dir, stagingPath, { recursive: true });
+            },
+            {
+               sourceLocation: dir,
+               manifestLocation: "gs://unreachable/manifest.json",
+               promotion: "on-publish",
+            },
+         );
+         expect(fetches).toHaveBeenCalledTimes(1);
+      } finally {
+         fetches.mockRestore();
+      }
+      // A publish reports the failure and serves live.
+      expect(pkg.materialization().bindingState().manifestBindingStatus).toBe(
+         "bind_failed",
+      );
+   });
+
+   it("is fetched again by the next request", async () => {
+      await publishLive();
+      const fetches = unreachable();
+      try {
+         for (let i = 0; i < 2; i++) {
+            await versions()
+               .setManifest(PKG, "1.0.0", "gs://unreachable/manifest.json")
+               .catch(() => undefined);
+         }
+         expect(fetches).toHaveBeenCalledTimes(2);
+      } finally {
+         fetches.mockRestore();
       }
    });
 });

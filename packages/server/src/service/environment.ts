@@ -13,6 +13,7 @@ import {
 } from "../telemetry";
 import { measurePackageOperation } from "../package_load_metrics";
 import { Mutex } from "async-mutex";
+import { AsyncLocalStorage } from "async_hooks";
 import crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
@@ -3079,6 +3080,7 @@ export class Environment {
                "bind_failed"
                   ? null
                   : (loaded.getManifestLocation() ?? null),
+            shareManifestFetches: (fn) => this.shareManifestFetches(fn),
             hostMarked: (loaded) => loaded.materialization().isHostOwned(),
             isVersionBuilding: (packageName, versionId) =>
                this.versionBuilds.has(`${packageName}@${versionId}`),
@@ -4816,8 +4818,54 @@ export class Environment {
       }
    }
 
-   /** Fetch manifest entries, rejecting after {@link MANIFEST_FETCH_TIMEOUT_MS}. */
-   private async fetchManifestEntriesWithTimeout(
+   /**
+    * The manifest fetches of the request running now, by location, while it
+    * runs ({@link shareManifestFetches}).
+    */
+   private readonly sharedManifestFetches = new AsyncLocalStorage<{
+      fetches: Map<string, Promise<FetchedManifest>>;
+      open: boolean;
+   }>();
+
+   /**
+    * Run `fn` fetching each build manifest at most once: a version's load and
+    * a bind after it that name the same location share one fetch, its result
+    * or its error, so an unreachable manifest costs one timeout, not two.
+    * Scoped to `fn`: work it leaves running reads afresh once it returns,
+    * and so does the next request, which may name a manifest fixed since.
+    */
+   private async shareManifestFetches<T>(fn: () => Promise<T>): Promise<T> {
+      if (this.sharedManifestFetches.getStore()?.open) return fn();
+      const scope = {
+         fetches: new Map<string, Promise<FetchedManifest>>(),
+         open: true,
+      };
+      try {
+         return await this.sharedManifestFetches.run(scope, fn);
+      } finally {
+         scope.open = false;
+         scope.fetches.clear();
+      }
+   }
+
+   /**
+    * Fetch manifest entries, rejecting after {@link MANIFEST_FETCH_TIMEOUT_MS};
+    * once per location inside {@link shareManifestFetches}.
+    */
+   private fetchManifestEntriesWithTimeout(
+      manifestLocation: string,
+   ): Promise<FetchedManifest> {
+      const scope = this.sharedManifestFetches.getStore();
+      if (!scope?.open) return this.fetchManifestOnce(manifestLocation);
+      let fetching = scope.fetches.get(manifestLocation);
+      if (!fetching) {
+         fetching = this.fetchManifestOnce(manifestLocation);
+         scope.fetches.set(manifestLocation, fetching);
+      }
+      return fetching;
+   }
+
+   private async fetchManifestOnce(
       manifestLocation: string,
    ): Promise<FetchedManifest> {
       let timer: ReturnType<typeof setTimeout> | undefined;
