@@ -28,7 +28,7 @@ because the server reads it as well; it has no flag or config-file key because t
 shim sees only the process environment. The driver prepends its own
 `[ADBC][Go-<version>]` to any name that does not already start with `[ADBC]`
 (adbc-drivers/snowflake `go/database.go`), so these sessions report
-`[ADBC][Go-1.12.0]<name>` while snowflake-sdk sessions report `<name>`.
+`[ADBC][Go-v1.12.0]<name>` while snowflake-sdk sessions report `<name>`.
 
 An unset or empty variable sets nothing for that option, so with none set — the
 image default — the shim is a pure pass-through and the driver behaves exactly as
