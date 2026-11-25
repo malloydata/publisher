@@ -1064,7 +1064,7 @@ export class PackageMaterialization {
          // database table) is a new snapshot too.
          if (next.bindings.length > 0 || Object.keys(next.entries).length > 0) {
             for (const model of this.owner.models().values()) {
-               model.recordScopeFactsOver(next);
+               await model.recordScopeFactsOver(next);
             }
          }
       } finally {

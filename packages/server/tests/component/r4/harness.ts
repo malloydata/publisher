@@ -1434,7 +1434,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // here, so a scenario that alters a table first still compiles over it:
    // its lane is recorded after the first served run compiles it.
    model.setServeBindings(bindings);
-   model.recordScopeFactsOver();
+   await model.recordScopeFactsOver();
    model.setServeBindings([]);
    let laneRecorded = false;
 
@@ -1646,7 +1646,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          if (!laneRecorded) {
             // The first served run compiled the served copy: record its lane.
             laneRecorded = true;
-            model.recordScopeFactsOver();
+            await model.recordScopeFactsOver();
          }
          const truth = query.truthSql
             ? ((await duckdb.runSQL(query.truthSql, { rowLimit: 10_000 }))

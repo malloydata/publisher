@@ -24,6 +24,7 @@
 import type { ModelDef } from "@malloydata/malloy";
 import { parseAuthorizeAnnotation } from "../../authorize";
 import { rowFilterOnComposite } from "../../composite_row_filter";
+import { createEventLoopYielder } from "../../event_loop_yield";
 import { resolveStructRefSource } from "../../governance/ir/prepared_query";
 import type { Binding, Snapshot } from "../domain/binding";
 import { gateReadsOfSource } from "./gate_reads";
@@ -84,14 +85,46 @@ function readsNothing(r: GateReads | undefined): boolean {
 }
 
 /**
+ * An empty set that keeps every ID it is asked about. The walk reads its
+ * stored and re-rooted sets only through `has`, and is otherwise a pure
+ * function of the model, so a walk over sets holding none of the IDs a walk
+ * over two of these asked about takes the same path and returns the same
+ * reads.
+ */
+class AskedSet extends Set<string> {
+   readonly asked = new Set<string>();
+   override has(value: string): boolean {
+      this.asked.add(value);
+      return super.has(value);
+   }
+}
+
+function disjoint(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+   for (const id of a) if (b.has(id)) return false;
+   return true;
+}
+
+/** The recording each runtime last started, so an older one finishing later is dropped. */
+const generations = new WeakMap<object, number>();
+
+/**
  * Record, for `runtime`'s model, every named source's scope facts over the
  * tables `snapshot` binds. Called by each bind commit; never throws.
+ *
+ * A source is walked once over no stored set, and again over a binding's
+ * set only when that set holds an ID the first walk asked about; otherwise
+ * the first walk's reads stand for it. The loop yields to the event loop
+ * as it goes: a model with many sources and a snapshot with many bound
+ * tables is otherwise one long main-thread task.
  */
-export function recordScopeFacts(
+export async function recordScopeFacts(
    runtime: object,
    args: { modelDef: ModelDef; snapshot: Snapshot; lane?: ScopeLane },
-): void {
+): Promise<void> {
    const { modelDef, snapshot, lane } = args;
+   const generation = (generations.get(runtime) ?? 0) + 1;
+   generations.set(runtime, generation);
+   const yielder = createEventLoopYielder();
    const flags = new Map<string, SourceFlags>();
    const reads = new Map<string, GateReads | undefined>();
    const empty = new Set<string>();
@@ -108,36 +141,51 @@ export function recordScopeFacts(
       addSet(b.sourceIDs ?? []);
    }
    for (const name of Object.keys(modelDef.contents ?? {})) {
+      await yielder.maybeYield();
       const struct = resolveStructRefSource<unknown>(name, modelDef);
       if (struct === undefined) continue;
       flags.set(name, {
          carriesGate: carriesAGate(struct),
          compositeRowFilter: compositeOf(struct, modelDef),
       });
-      const none = gateReadsOfSource(struct, modelDef, empty, empty);
+      const askedStored = new AskedSet();
+      const askedRerooted = new AskedSet();
+      const none = gateReadsOfSource(
+         struct,
+         modelDef,
+         askedStored,
+         askedRerooted,
+      );
       if (readsNothing(none)) {
          reads.set(readsKey(name), none);
          continue;
       }
       reads.set(readsKey(name, empty, empty), none);
+      const readsOver = (
+         set: ReadonlySet<string>,
+         rerooted: ReadonlySet<string>,
+      ): GateReads | undefined =>
+         disjoint(set, askedStored.asked) &&
+         disjoint(rerooted, askedRerooted.asked)
+            ? none
+            : gateReadsOfSource(struct, modelDef, set, rerooted);
       for (const set of storedSets) {
          for (const rerooted of lane ? [empty, lane.rerooted] : [empty]) {
             const key = readsKey(name, set, rerooted);
             if (!reads.has(key)) {
-               reads.set(
-                  key,
-                  gateReadsOfSource(struct, modelDef, set, rerooted),
-               );
+               reads.set(key, readsOver(set, rerooted));
+               await yielder.maybeYield();
             }
          }
       }
       if (lane) {
          reads.set(
             readsKey(name, lane.stored, lane.rerooted),
-            gateReadsOfSource(struct, modelDef, lane.stored, lane.rerooted),
+            readsOver(lane.stored, lane.rerooted),
          );
       }
    }
+   if (generations.get(runtime) !== generation) return;
    recorded.set(runtime, {
       snapshot,
       tables: tablesOf(snapshot),

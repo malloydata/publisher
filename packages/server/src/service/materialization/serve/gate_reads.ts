@@ -703,10 +703,12 @@ class GateReadWalk {
             ?.contents ?? {};
       for (const c of Object.values(contents)) {
          const d = c as { sourceID?: unknown; query?: unknown } | undefined;
+         // `query` first: the stored set is asked only about the sources
+         // that could answer (scope_facts.ts reads what a walk asked).
          if (
             typeof d?.sourceID === "string" &&
-            this.stored.has(d.sourceID) &&
-            d.query !== undefined
+            d.query !== undefined &&
+            this.stored.has(d.sourceID)
          ) {
             out.add(JSON.stringify(d.query));
          }

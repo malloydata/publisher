@@ -31,7 +31,9 @@ export function storedUpstreamResolver(
          const d = c as { sourceID?: unknown; query?: unknown } | undefined;
          if (typeof d?.sourceID !== "string") continue;
          byID.set(d.sourceID, d);
-         if (stored.has(d.sourceID) && d.query !== undefined) {
+         // `query` first: the stored set is asked only about the sources
+         // that could answer (scope_facts.ts reads what a walk asked).
+         if (d.query !== undefined && stored.has(d.sourceID)) {
             byQuery.set(JSON.stringify(d.query), d.sourceID);
          }
       }
