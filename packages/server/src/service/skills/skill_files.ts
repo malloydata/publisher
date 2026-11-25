@@ -409,3 +409,30 @@ export function skillFiles(
    files.sort(compareText);
    return { files, warnings, skillignore };
 }
+
+/**
+ * A skill's files for a build that copies or embeds them. `skillFiles` returns
+ * a link as a candidate, and a build would follow it to whatever it names, so
+ * the root and every file must be a regular file; a walk finding throws too,
+ * since it would leave the copy or the manifest quietly short.
+ */
+export function buildTimeSkillFiles(dir: string): string[] {
+   const name = path.basename(dir);
+   const only = "a bundled skill holds regular files only";
+   if (fs.lstatSync(dir).isSymbolicLink()) {
+      throw new Error(`skill '${name}' is a link; ${only}`);
+   }
+   const { files, warnings } = skillFiles(dir);
+   if (warnings.length > 0) {
+      throw new Error(`skill '${name}': ${warnings.join("; ")}`);
+   }
+   for (const file of files) {
+      const stat = fs.lstatSync(path.join(dir, file));
+      if (!stat.isFile()) {
+         throw new Error(
+            `skill '${name}': '${file}' is ${stat.isSymbolicLink() ? "a link" : "not a regular file"}; ${only}`,
+         );
+      }
+   }
+   return files;
+}

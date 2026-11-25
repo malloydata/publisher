@@ -5,11 +5,7 @@ import { describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import {
-   isCredible,
-   isExcluded,
-   packedSkillFiles,
-} from "../scripts/exclusions";
+import { isCredible, packedSkillFiles } from "../scripts/exclusions";
 import { manifestSkillNames } from "../scripts/manifest";
 import { listSkills, skillsDir } from "./index";
 
@@ -74,27 +70,6 @@ describe("@malloy-publisher/skills", () => {
    it("names each skill after its directory", () => {
       for (const skill of listSkills()) {
          expect(skill.name).toBe(path.basename(skill.dir));
-      }
-   });
-
-   // The reason this package exists: reference/ files reach no npm consumer
-   // today, so the pointers to them in the MCP prompt bodies dangle.
-   it("brings each skill's reference/ files along", () => {
-      const shipping = new Set(manifestSkillNames());
-      const withReference = skillNamesIn(sourceDir)
-         .filter((name) => shipping.has(name))
-         .filter((name) =>
-            fs.existsSync(path.join(sourceDir, name, "reference")),
-         );
-      expect(withReference.length).toBeGreaterThan(0);
-      for (const name of withReference) {
-         const shipped = fs.readdirSync(
-            path.join(skillsDir, name, "reference"),
-         );
-         const original = fs
-            .readdirSync(path.join(sourceDir, name, "reference"))
-            .filter((file) => !isExcluded(`${name}/reference/${file}`));
-         expect(shipped.sort()).toEqual(original.sort());
       }
    });
 

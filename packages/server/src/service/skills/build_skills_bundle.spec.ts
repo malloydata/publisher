@@ -36,6 +36,7 @@ describe("buildSkills", () => {
       write("pricing/scripts/run.py", "print('hi')\n");
       write("pricing/scripts/run_test.py", "assert True\n");
       write("pricing/assets/logo.png", BINARY);
+      write("pricing/assets/notes.md", "# Notes\n");
       write("pricing/.skillignore", "*_test.py\n");
       write("pricing/.env", "SECRET=1\n");
       // Neither is in the manifest, so neither is bundled.
@@ -49,6 +50,7 @@ describe("buildSkills", () => {
       expect(Object.keys(skill!.files)).toEqual([
          "SKILL.md",
          "assets/logo.png",
+         "assets/notes.md",
          "reference/rules.md",
          "references/more.md",
          "scripts/run.py",
@@ -59,7 +61,7 @@ describe("buildSkills", () => {
       });
    });
 
-   it("embeds the verbatim text of Markdown files only, and the parsed frontmatter", () => {
+   it("embeds the verbatim text of Markdown files outside assets/ only, and the parsed frontmatter", () => {
       const [skill] = buildSkills(skillsDir);
       expect(skill!.name).toBe("pricing");
       expect(skill!.frontmatter).toEqual({
@@ -101,6 +103,79 @@ describe("buildSkills", () => {
       expect(flat[0]!.body).toContain("Reference files over MCP");
       expect(flat[1]!.body).toBe("# Rules\n\nDetail.");
    });
+});
+
+describe("buildSkills refuses a link, which would be followed to whatever it names", () => {
+   // Each case builds a skill `pricing` in `skills/` whose one odd entry is a link, beside a target outside it.
+   const cases: Array<[string, (root: string) => void, RegExp]> = [
+      [
+         "a file link",
+         (root) => {
+            fs.writeFileSync(path.join(root, "outside.txt"), "secret\n");
+            fs.symlinkSync(
+               "../../../outside.txt",
+               path.join(root, "skills/pricing/scripts/run.py"),
+            );
+         },
+         /skill 'pricing': 'scripts\/run\.py' is a link/,
+      ],
+      [
+         "a linked Markdown file",
+         (root) => {
+            fs.writeFileSync(path.join(root, "outside.md"), "# Secret\n");
+            fs.symlinkSync(
+               "../../../outside.md",
+               path.join(root, "skills/pricing/reference/more.md"),
+            );
+         },
+         /skill 'pricing': 'reference\/more\.md' is a link/,
+      ],
+      [
+         "a linked directory",
+         (root) => {
+            fs.mkdirSync(path.join(root, "outside"));
+            fs.symlinkSync(
+               "../../outside",
+               path.join(root, "skills/pricing/data"),
+            );
+         },
+         /skill 'pricing': 'data' is a link/,
+      ],
+      [
+         "a linked skill root",
+         (root) => {
+            fs.renameSync(
+               path.join(root, "skills/pricing"),
+               path.join(root, "elsewhere"),
+            );
+            fs.symlinkSync("../elsewhere", path.join(root, "skills/pricing"));
+         },
+         /skill 'pricing' is a link/,
+      ],
+   ];
+
+   for (const [label, setup, message] of cases) {
+      it(`throws for ${label}`, () => {
+         const root = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-link-"));
+         try {
+            fs.mkdirSync(path.join(root, "manifests"));
+            fs.writeFileSync(
+               path.join(root, "manifests", "publisher-local.json"),
+               JSON.stringify({ auto_discovered: ["pricing"], supporting: [] }),
+            );
+            const skill = path.join(root, "skills/pricing");
+            fs.mkdirSync(path.join(skill, "scripts"), { recursive: true });
+            fs.mkdirSync(path.join(skill, "reference"));
+            fs.writeFileSync(path.join(skill, "SKILL.md"), SKILL_MD);
+            setup(root);
+            expect(() => buildSkills(path.join(root, "skills"))).toThrow(
+               message,
+            );
+         } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+         }
+      });
+   }
 });
 
 describe("build_skills_bundle parseSkill", () => {

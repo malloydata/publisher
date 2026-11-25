@@ -57,15 +57,7 @@ function pack(): Set<string> {
    }
 }
 
-/**
- * The manifest's skills, each as `skillFiles` decides it, decide what the
- * tarball must contain, for the same reason the copy asks them: an audit that
- * globs `skills/` demands whatever happens to be on disk, so the first file a
- * `.skillignore` or the manifest holds back fails the publish while pointing at
- * the copy rather than at its cause. `exclusions.ts` names this hazard directly
- * -- "a filter that only the copy applies makes the audit demand a file that
- * will never be there."
- */
+// The same list the copy packs, so a file a `.skillignore` holds back is never demanded of the tarball.
 const expected = manifestSkillNames().flatMap((name) =>
    packedSkillFiles(source, name).map((file) => `skills/${name}/${file}`),
 );

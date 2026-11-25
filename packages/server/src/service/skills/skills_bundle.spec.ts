@@ -128,7 +128,10 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
    it("every skill has a name, a description in its frontmatter, and a SKILL.md", () => {
       for (const s of skills) {
          expect(s.name.length).toBeGreaterThan(0);
-         expect(String(s.frontmatter.description).length).toBeGreaterThan(0);
+         expect(typeof s.frontmatter.description).toBe("string");
+         expect(
+            (s.frontmatter.description as string).trim().length,
+         ).toBeGreaterThan(0);
          expect(s.bodies["SKILL.md"]!.length).toBeGreaterThan(0);
       }
    });
@@ -180,10 +183,12 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
          }
       });
 
-      it("embeds the text of every Markdown file and of nothing else", () => {
+      it("embeds the text of every Markdown file outside assets/ and of nothing else", () => {
          for (const s of skills) {
             expect(Object.keys(s.bodies)).toEqual(
-               Object.keys(s.files).filter((f) => f.endsWith(".md")),
+               Object.keys(s.files).filter(
+                  (f) => f.endsWith(".md") && !f.startsWith("assets/"),
+               ),
             );
             for (const [file, text] of Object.entries(s.bodies)) {
                expect(text).toBe(

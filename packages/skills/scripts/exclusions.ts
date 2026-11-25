@@ -11,7 +11,7 @@
  */
 import * as path from "node:path";
 // By path: the published package cannot depend on the server, and `tsconfig.build.json` never builds scripts/.
-import { skillFiles } from "../../server/src/service/skills/skill_files";
+import { buildTimeSkillFiles } from "../../server/src/service/skills/skill_files";
 
 /** Path segments of a forward-slash or platform-separated relative path. */
 function segments(relative: string): string[] {
@@ -62,16 +62,9 @@ export function isExcluded(relative: string): boolean {
    );
 }
 
-/**
- * The files of one skill that reach the package, relative to the skill: what
- * `skillFiles` decides, with no further skip, because other clients (Claude
- * Code, `npx skills`) read the folder whole, minus `isExcluded`. A finding of
- * the walk throws, since it would drop files from the copy and the audit alike.
- */
+/** A skill's files that reach the package: no skip beyond `isExcluded`, because other clients (Claude Code, `npx skills`) read the folder whole. */
 export function packedSkillFiles(skillsDir: string, name: string): string[] {
-   const { files, warnings } = skillFiles(path.join(skillsDir, name));
-   if (warnings.length > 0) {
-      throw new Error(`skill '${name}': ${warnings.join("; ")}`);
-   }
-   return files.filter((file) => !isExcluded(`${name}/${file}`));
+   return buildTimeSkillFiles(path.join(skillsDir, name)).filter(
+      (file) => !isExcluded(`${name}/${file}`),
+   );
 }

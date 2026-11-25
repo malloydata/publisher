@@ -6,9 +6,7 @@
  * MCP prompts (dual-channel): skill-aware hosts read the skill files directly, while
  * hosts that only ingest MCP get the same guidance through these prompts.
  *
- * A skill is its whole directory as `skillFiles` decides it: every file in a
- * manifest of `{digest, size}`, and the Markdown files' text verbatim. Scripts,
- * data and binaries are never embedded, which keeps the bundle small.
+ * Every file of a skill is in its manifest; only Markdown text is embedded, which keeps the bundle small.
  *
  * Committed as a build-time asset so the server has no runtime dependency on the
  * skills directory layout. Regenerate when the skills change:
@@ -26,7 +24,7 @@ import { createHash } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { parseFrontmatter } from "./frontmatter";
-import { decodeText, skillFiles } from "./skill_files";
+import { buildTimeSkillFiles, decodeText } from "./skill_files";
 import { compareText } from "../../compare_text";
 
 export interface SkillEntry {
@@ -152,28 +150,26 @@ function manifestSkillNames(skillsDir: string): Set<string> {
    ]);
 }
 
-/**
- * One skill directory as the bundle holds it. A bundled skill must read clean,
- * so a finding of the walk or of the frontmatter fails the build rather than
- * leaving the manifest quietly short.
- */
+/** One skill directory as the bundle holds it; a finding of the frontmatter fails the build, like one of the walk. */
 function bundleSkill(skillDir: string, dirName: string): BundledSkill {
-   const found = skillFiles(skillDir);
    const files: BundledSkill["files"] = {};
    const bodies: BundledSkill["bodies"] = {};
-   for (const relative of found.files) {
+   for (const relative of buildTimeSkillFiles(skillDir)) {
       const bytes = fs.readFileSync(path.join(skillDir, relative));
       files[relative] = {
          digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
          size: bytes.length,
       };
-      const text = relative.endsWith(".md") ? decodeText(bytes) : undefined;
+      // Decision 1's inline rule: every Markdown file outside assets/.
+      const text =
+         relative.endsWith(".md") && !relative.startsWith("assets/")
+            ? decodeText(bytes)
+            : undefined;
       if (text !== undefined) bodies[relative] = text;
    }
    const fm = parseFrontmatter(bodies["SKILL.md"] ?? "", dirName);
-   const problems = [...found.warnings, ...fm.warnings];
-   if (problems.length > 0) {
-      throw new Error(`skill '${dirName}': ${problems.join("; ")}`);
+   if (fm.warnings.length > 0) {
+      throw new Error(`skill '${dirName}': ${fm.warnings.join("; ")}`);
    }
    return { name: fm.name, frontmatter: fm.frontmatter, files, bodies };
 }
@@ -187,8 +183,9 @@ export function buildSkills(skillsDir: string): BundledSkill[] {
    const shipping = manifestSkillNames(skillsDir);
    const skills: BundledSkill[] = [];
    for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
-      if (!entry.isDirectory() || isCredible(entry.name)) continue;
-      if (!shipping.has(entry.name)) continue;
+      if (isCredible(entry.name) || !shipping.has(entry.name)) continue;
+      // A link is kept so that bundleSkill refuses it rather than the bundle quietly lacking the skill.
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
       const skillDir = path.join(skillsDir, entry.name);
       if (!fs.existsSync(path.join(skillDir, "SKILL.md"))) continue;
       skills.push(bundleSkill(skillDir, entry.name));
