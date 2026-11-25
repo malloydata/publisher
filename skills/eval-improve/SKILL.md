@@ -190,11 +190,29 @@ here.
 ### A speed edit (component `performance`)
 
 An issue from a query replay (`SLOW-QUERY`, `HOT-SOURCE`, `PERSIST-REFUSED`) is a speed gap,
-not a wrong answer. Its edit is a `#@ persist` or a `#@ preaggregate` on the
-source the issue names, or a fix to the refusal the build plan reported. Write
-it with the `malloy-materialization` skill (in the `modeling` manifest group, not
-the `eval` group), which covers the annotation, chaining,
-and the access-filter cases where a persist must not be added at all.
+not a wrong answer. Its edit adds a table that answers the issue's queries, or
+fixes the refusal the build plan reported. Write it with the
+`malloy-materialization` skill (in the `modeling` manifest group, not the
+`eval` group), which covers each annotation, chaining, and the access-filter
+cases where a table must not be added at all.
+
+Pick the annotation from each query's `shape` (its path report: `groupedBy`,
+`filteredBy`, `measures`):
+
+- **`#(rollup) grain=[...]` on the measures** when the queries aggregate. The
+  grain must hold every field the queries group or filter by, and every
+  measure they use must be one a rollup can merge (sum, count, min, max and
+  arithmetic over them; not `avg`, `count(distinct)` or `stddev`). One grain
+  that covers several queries beats one table per query.
+- **`#(materialize)` on the source** when the queries read rows, or the
+  source is slow to compute. Not over a base that declares measures, views or
+  joins: that table is built and never read (`fields_not_carried`).
+- **`#@ persist` on a view or a named query** when one call dominates.
+
+`skipped` says why an existing table did not answer: `GRAIN_TOO_COARSE` names
+a field the grain lacks, `MISSING_FIELD` a measure it does not store. Fix that
+before adding another table. The acceptance check requires the targeted
+queries to be answered by your table, so a table they cannot use is rejected.
 
 Two differences from every other edit here:
 

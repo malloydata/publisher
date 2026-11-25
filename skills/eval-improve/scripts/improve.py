@@ -403,8 +403,12 @@ def golden_keys(cases: dict[str, Any], set_dir: pathlib.Path | None
     return keys, queries, accepted
 
 
+# `served_by`, `skipped` and `shape` come from each query's path report: what
+# answered it, why existing tables did not (GRAIN_TOO_COARSE, MISSING_FIELD,
+# with the server's sentence), and the grouped-by, filtered-by and measures a
+# table must hold to answer it. They are what picks a rollup's grain.
 REPLAY_FIELDS = ("qid", "source", "query", "givens", "modelPath", "count",
-                 "median_ms", "error")
+                 "median_ms", "error", "served_by", "skipped", "shape")
 
 
 def cluster_members(issue: dict[str, Any], cases: dict[str, Any],
