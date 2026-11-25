@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { execFileSync } from "child_process";
 import fs from "fs";
 import os from "os";
@@ -454,8 +454,30 @@ describe("skillFiles", () => {
                path.join(dir, "reference"),
                "dir",
             );
+         // How many directory entries `run` reads through opendir, which only a reference/ listing does.
+         const listingReads = (run: () => void) => {
+            let reads = 0;
+            const open = fs.opendirSync;
+            const spy = spyOn(fs, "opendirSync").mockImplementation(((
+               ...args: Parameters<typeof fs.opendirSync>
+            ) => {
+               const opened = open(...args);
+               const read = opened.readSync.bind(opened);
+               opened.readSync = () => {
+                  reads++;
+                  return read();
+               };
+               return opened;
+            }) as typeof fs.opendirSync);
+            try {
+               run();
+            } finally {
+               spy.mockRestore();
+            }
+            return reads;
+         };
 
-         it("holds at most 1,000 entries of its own, whatever the shared budget has left", () => {
+         it("serves at most 1,000 Markdown files of its own, whatever the shared budget has left", () => {
             fillReference("reference", ASSET_MAX_ENTRIES + 200);
             const { files, warnings } = skillFiles(dir, {
                budget: {
@@ -467,31 +489,67 @@ describe("skillFiles", () => {
             expect(inReference(files)).toHaveLength(ASSET_MAX_ENTRIES);
             expect(warnings).toHaveLength(1);
             expect(warnings[0]).toContain(
-               `reference/ holds more than ${ASSET_MAX_ENTRIES} entries`,
+               `reference/ holds more than ${ASSET_MAX_ENTRIES} Markdown files`,
             );
          });
 
-         it("counts the entries of a link it skips, and stops at 1,000", () => {
-            for (let i = 0; i < ASSET_MAX_ENTRIES; i++)
-               write(`shared/d${i}.txt`);
+         it("does not count what it holds besides Markdown, so a thousand figures cannot cost it overview.md", () => {
+            for (let i = 0; i < ASSET_MAX_ENTRIES; i++) {
+               write(`reference/fig${i}.png`);
+            }
+            write("reference/overview.md");
+            const { files, warnings } = skillFiles(dir);
+            expect(files.filter((f) => f.endsWith(".md"))).toEqual([
+               "reference/overview.md",
+            ]);
+            expect(warnings).toEqual([]);
+         });
+
+         it("does not count what a link holds besides Markdown, so a thousand figures cannot cost it z.md", () => {
+            for (let i = 0; i < ASSET_MAX_ENTRIES; i++) {
+               write(`shared/fig${i}.png`);
+            }
             write("shared/z.md");
             link();
             const { files, warnings } = skillFiles(dir, {
                followReference: (target) => target,
             });
-            expect(inReference(files)).toEqual([]);
-            expect(warnings).toContain(
-               `skill walk stopped at 'reference/z.md': reference/ holds more than ${ASSET_MAX_ENTRIES} entries, so the rest are not read`,
+            expect(inReference(files)).toEqual(["reference/z.md"]);
+            expect(warnings.some((w) => w.includes("Markdown files"))).toBe(
+               false,
             );
          });
 
-         it("reads a link to a directory of five thousand Markdown files for no more than 1,000", () => {
+         it("does not count a Markdown file it leaves out, and reads on past a thousand of them", () => {
+            for (let i = 0; i < 600; i++) {
+               write(`reference/.h${i}.md`);
+               write(`reference/skip${i}.md`);
+            }
+            write("reference/z.md");
+            skillignore("reference/skip*.md");
+            let files: string[] = [];
+            let warnings: string[] = [];
+            const reads = listingReads(() => {
+               ({ files, warnings } = skillFiles(dir));
+            });
+            expect(inReference(files)).toEqual(["reference/z.md"]);
+            expect(warnings).toEqual([]);
+            expect(reads).toBeGreaterThanOrEqual(1201);
+         });
+
+         it("lists a link to a directory of five thousand Markdown files for no more than 1,001 entries", () => {
             fillReference("shared", 5000);
             link();
-            const { files } = skillFiles(dir, {
-               followReference: (target) => target,
+            let files: string[] = [];
+            const reads = listingReads(() => {
+               ({ files } = skillFiles(dir, {
+                  followReference: (target) => target,
+               }));
             });
             expect(inReference(files)).toHaveLength(ASSET_MAX_ENTRIES);
+            // The spy must see the listing, or the bound below is vacuous.
+            expect(reads).toBeGreaterThanOrEqual(ASSET_MAX_ENTRIES);
+            expect(reads).toBeLessThanOrEqual(ASSET_MAX_ENTRIES + 1);
          });
       });
 

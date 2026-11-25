@@ -11,7 +11,7 @@ import { compareText } from "../../compare_text";
 export const ASSET_PATH_MAX_CHARS = 200;
 /** Directories nested deeper than this are not walked. */
 export const ASSET_MAX_DEPTH = 8;
-/** Entries one walk may see, kept or not; the files `WalkBudget` names as always walked are outside it, and a skill's `reference/` has its own count of this size. */
+/** Entries one walk may see, kept or not; the files `WalkBudget` names as always walked are outside it, and a skill's `reference/` has its own count of Markdown files of this size. */
 export const ASSET_MAX_ENTRIES = 1000;
 
 const SKILL_MD = "SKILL.md";
@@ -180,8 +180,9 @@ type Zone = "root" | "reference" | "linked reference" | "assets" | "other";
  * `SKILL.md` comes first, then `reference/`, then `assets/`, then the rest, so
  * a bound cuts the newest locations first. An ignored directory is not
  * descended, but every entry seen still counts against the budget; hitting a
- * bound adds a warning and keeps what was found so far. The entries directly in
- * `reference/` are bounded by a count of their own, linked or not.
+ * bound adds a warning and keeps what was found so far. The Markdown files
+ * directly in `reference/` are bounded by a count of their own, linked or not,
+ * and `reference/` is listed no further than that.
  */
 export function skillFiles(
    dir: string,
@@ -215,17 +216,49 @@ export function skillFiles(
       }
       return false;
    };
-   // Every direct entry of the always-walked reference/ counts, skipped ones too, so a linked one cannot make the walk read a whole directory.
-   const reference = { left: ASSET_MAX_ENTRIES };
+   // The always-walked reference/ serves this many Markdown files; what it holds besides is not counted.
+   const reference = { left: ASSET_MAX_ENTRIES, warned: false };
    const takeReference = (relative: string): boolean => {
       if (reference.left > 0) {
          reference.left--;
          return true;
       }
-      warnings.push(
-         `skill walk stopped at '${relative}': ${REFERENCE_DIR}/ holds more than ${ASSET_MAX_ENTRIES} entries, so the rest are not read`,
-      );
+      if (!reference.warned) {
+         reference.warned = true;
+         warnings.push(
+            `skill walk stopped at '${relative}': ${REFERENCE_DIR}/ holds more than ${ASSET_MAX_ENTRIES} Markdown files, so the rest are not read`,
+         );
+      }
       return false;
+   };
+   const servedMarkdown = (entry: fs.Dirent, relative: string) =>
+      entry.name.endsWith(".md") &&
+      !entry.isDirectory() &&
+      !builtInExcluded(entry.name, false) &&
+      !matcher.ignores(relative);
+   // Stops one Markdown file past the cap, so a link to a huge directory is not listed in full; opendir does not sort, so which files survive a directory over the cap is unspecified.
+   const listReference = (absolute: string, rel: string): fs.Dirent[] => {
+      const entries: fs.Dirent[] = [];
+      const opened = fs.opendirSync(absolute);
+      try {
+         let markdown = 0;
+         for (
+            let entry = opened.readSync();
+            entry !== null;
+            entry = opened.readSync()
+         ) {
+            entries.push(entry);
+            if (
+               servedMarkdown(entry, `${rel}/${entry.name}`) &&
+               ++markdown > ASSET_MAX_ENTRIES
+            ) {
+               break;
+            }
+         }
+      } finally {
+         opened.closeSync();
+      }
+      return entries;
    };
    const rank = (name: string) => {
       const place = [SKILL_MD, REFERENCE_DIR, ASSETS_DIR].indexOf(name);
@@ -241,7 +274,10 @@ export function skillFiles(
    ): void => {
       let entries: fs.Dirent[];
       try {
-         entries = fs.readdirSync(absolute, { withFileTypes: true });
+         entries =
+            zone === "reference" || zone === "linked reference"
+               ? listReference(absolute, rel)
+               : fs.readdirSync(absolute, { withFileTypes: true });
       } catch (error) {
          warnings.push(
             `directory '${rel || "."}' cannot be listed (${errorCode(error)}), so its files are not included`,
@@ -258,12 +294,6 @@ export function skillFiles(
       }
       for (const entry of entries) {
          const relative = rel ? `${rel}/${entry.name}` : entry.name;
-         if (
-            (zone === "reference" || zone === "linked reference") &&
-            !takeReference(relative)
-         ) {
-            break;
-         }
          const linked =
             zone === "root" &&
             entry.name === REFERENCE_DIR &&
@@ -309,6 +339,13 @@ export function skillFiles(
             warnings.push(
                `${SKILLIGNORE} matches ${SKILL_MD}, which a skill always keeps`,
             );
+         }
+         if (
+            (zone === "reference" || zone === "linked reference") &&
+            servedMarkdown(entry, relative) &&
+            !takeReference(relative)
+         ) {
+            continue;
          }
          if (!isDirectory) {
             files.push(relative);

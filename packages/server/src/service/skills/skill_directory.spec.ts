@@ -979,7 +979,7 @@ describe("a skill read whole still serves what it served before", () => {
          for (let i = 0; i < count; i++) write(`${dir}/r${i}.md`, "# R\n");
       };
 
-      it("is read for at most 1,000 entries when it is a link to a large directory in the package", () => {
+      it("serves at most 1,000 Markdown files when it is a link to a large directory in the package", () => {
          skill("s");
          fill("shared-ref", 5000);
          fs.symlinkSync(
@@ -995,12 +995,12 @@ describe("a skill read whole still serves what it served before", () => {
             result.warnings.filter(
                (w) =>
                   w.includes(`Package skill '${ROOT}/s'`) &&
-                  w.includes("reference/ holds more than 1000 entries"),
+                  w.includes("reference/ holds more than 1000 Markdown files"),
             ),
          ).toHaveLength(1);
       });
 
-      it("is read for at most 1,000 entries when it is a real directory", () => {
+      it("serves at most 1,000 Markdown files when it is a real directory", () => {
          skill("s");
          fill(`${ROOT}/s/reference`, 1200);
          const result = read();
@@ -1008,8 +1008,20 @@ describe("a skill read whole still serves what it served before", () => {
             inline(agentOf(result)).filter((f) => f.startsWith("s/reference/")),
          ).toHaveLength(1000);
          expect(result.warnings.join("\n")).toContain(
-            "reference/ holds more than 1000 entries",
+            "reference/ holds more than 1000 Markdown files",
          );
+      });
+
+      it("keeps overview.md when a thousand figures sit beside it", () => {
+         skill("s");
+         for (let i = 0; i < 1000; i++) {
+            write(
+               `${ROOT}/s/reference/fig${pad(i)}.png`,
+               Buffer.from([0x89, 0]),
+            );
+         }
+         write(`${ROOT}/s/reference/overview.md`, "# Overview\n");
+         expect(inline(agentOf())).toContain("s/reference/overview.md");
       });
    });
 });
