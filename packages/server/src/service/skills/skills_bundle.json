@@ -811,10 +811,6 @@
             "scripts/themes.py": {
                "digest": "sha256:40aa15ed3575966fa97c60ccea2669ac5fcdb053831aadce636f2a406d75f216",
                "size": 15771
-            },
-            "scripts/themes_test.py": {
-               "digest": "sha256:4ab84e4d32b540eeca361d9a9d8e85ec435f9871cf18587227d9e136f394dac4",
-               "size": 1956
             }
          },
          "bodies": {
