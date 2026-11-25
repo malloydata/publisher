@@ -21,8 +21,10 @@ const REFERENCE_DIR = "reference";
 const ASSETS_DIR = "assets";
 const SKILLIGNORE = ".skillignore";
 const SKILLIGNORE_MAX_BYTES = 16 * 1024;
-const SKILLIGNORE_MAX_PATTERNS = 200;
+const SKILLIGNORE_MAX_PATTERNS = 50;
 const SKILLIGNORE_PATTERN_MAX_CHARS = 200;
+/** Each pattern runs against every path the walk examines, so the sum of their lengths is what bounds the matching time. */
+const SKILLIGNORE_MAX_TOTAL_CHARS = 1024;
 /** `ignore` backtracks on each further `*` or whole-segment `**` between literals, so a pattern holds at most this many. */
 const SKILLIGNORE_MAX_STARS = 2;
 
@@ -162,6 +164,9 @@ function readSkillignore(
    let patterns = 0;
    let excess = 0;
    let firstExcess = "";
+   let chars = 0;
+   let charsExcess = 0;
+   let firstCharsExcess = "";
    for (const line of text.replace(/^\uFEFF/, "").split(/\r?\n/)) {
       if (line.trim() === "" || line.startsWith("#")) continue;
       if (++patterns > SKILLIGNORE_MAX_PATTERNS) {
@@ -181,6 +186,15 @@ function readSkillignore(
          );
          continue;
       }
+      // Once the sum is spent every later pattern is skipped, so the warning's "last N" is true.
+      if (
+         charsExcess > 0 ||
+         chars + line.length > SKILLIGNORE_MAX_TOTAL_CHARS
+      ) {
+         if (charsExcess++ === 0) firstCharsExcess = line;
+         continue;
+      }
+      chars += line.length;
       if (line.startsWith("./")) {
          warnings.push(
             `${SKILLIGNORE} pattern ${shown(line)} starts with './', which matches nothing; drop the './'`,
@@ -191,6 +205,11 @@ function readSkillignore(
    if (excess > 0) {
       warnings.push(
          `${SKILLIGNORE} has more than ${SKILLIGNORE_MAX_PATTERNS} patterns, so the last ${excess} are skipped, from ${shown(firstExcess)}`,
+      );
+   }
+   if (charsExcess > 0) {
+      warnings.push(
+         `${SKILLIGNORE} patterns total more than ${SKILLIGNORE_MAX_TOTAL_CHARS} characters, so the last ${charsExcess} are skipped, from ${shown(firstCharsExcess)}`,
       );
    }
    return text;

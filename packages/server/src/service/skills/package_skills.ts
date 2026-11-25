@@ -994,7 +994,7 @@ function listFile(
 
 const SHA_PREFIX = "sha256:";
 
-/** The load-time digest of each inline file, so the content hash covers the bytes served and does not read them again. */
+/** The load-time digest of each inline file, so the content hash covers the bytes read at load and does not read them again. */
 function inlineShas(read: ReadSkill, shas: Map<string, string>) {
    for (const f of read.inline) {
       shas.set(

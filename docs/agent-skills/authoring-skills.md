@@ -198,9 +198,9 @@ which Publisher lists by path, size and sha256 and reads on request.
 | Listed files per package, across agents | 8 MiB, each path counted once, agents charged in manifest order | Later files are skipped |
 | Listed files of a package's own `skills/` | 4 MiB and 200 files per package, apart from the agents' 8 MiB | Later files are skipped |
 | A listed path | Segments of `[A-Za-z0-9_][A-Za-z0-9._-]*`, at most 200 characters with the skill's directory name, at most 8 levels deep, no control character, no `.malloy` or `.malloynb`, a regular file | The file is skipped. Inline Markdown keeps lenient names |
-| Entries walked | Per agent, 1,000 under `assets/` and 1,000 elsewhere, shared by its skills. The package's `skills/` has the same pair. Ignored entries count | The walk stops there, and the rest are not included |
-| `reference/` | At most 1,000 Markdown files per skill, read no further than 10,000 entries of any kind. It is outside the entries walked, is followed when it is a link, and is read before other Markdown. `references/` has none of this and counts against the entries walked | The rest are not read |
-| `.skillignore` | 16 KiB, 200 patterns of at most 200 characters, two `*` or `**` segments a pattern, a run of `**` counting once | The pattern, or the file, is skipped |
+| Entries walked | Per agent, 1,000 under `assets/` and 1,000 elsewhere, shared by its skills. The package's `skills/` has the same pair. Entries `.skillignore` matches count | The walk stops there, and the rest are not included |
+| `reference/` | At most 1,000 Markdown files per skill, whether or not `.skillignore` matches them, read no further than 10,000 entries of any kind. It is outside the entries walked, is followed when it is a link, and is read before other Markdown. `references/` has none of this and counts against the entries walked | The rest are not read |
+| `.skillignore` | 16 KiB; at most 50 patterns, of at most 200 characters each and 1,024 together (comments and blank lines are free); two `*` or `**` segments a pattern, a run of `**` counting once | The pattern, or the file, is skipped |
 | Frontmatter | YAML 1.2; at most 100 references to one anchor; output at most 5 times the source plus 10,000 characters | An empty `frontmatter` and a line read of `name` and `description` |
 | `get_skill` result | 35,000 characters, Cursor's limit | Keeps the body and trims `files` with a count, then drops the parsed frontmatter, then the body |
 

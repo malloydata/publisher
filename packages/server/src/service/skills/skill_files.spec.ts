@@ -12,6 +12,7 @@ import {
    newWalkBudget,
    REFERENCE_MAX_EXAMINED,
    skillFiles,
+   type SkillFilesResult,
 } from "./skill_files";
 
 describe("skillFiles", () => {
@@ -219,20 +220,21 @@ describe("skillFiles", () => {
          expect(warnings[0]).toContain("./x");
       });
 
-      it("skips patterns past the 200th, naming how many", () => {
+      it("skips patterns past the 50th, naming how many", () => {
          write("SKILL.md");
          write("p0.txt");
-         write("p205.txt");
-         const lines = Array.from({ length: 210 }, (_, i) => `p${i}.txt`);
+         write("p55.txt");
+         const lines = Array.from({ length: 60 }, (_, i) => `p${i}.txt`);
          skillignore(...lines);
          const { files, warnings } = skillFiles(dir);
-         expect(files).toEqual(["SKILL.md", "p205.txt"]);
+         expect(files).toEqual(["SKILL.md", "p55.txt"]);
          expect(warnings).toHaveLength(1);
+         expect(warnings[0]).toContain("more than 50 patterns");
          expect(warnings[0]).toContain("last 10");
-         expect(warnings[0]).toContain("p200.txt");
+         expect(warnings[0]).toContain("p50.txt");
       });
 
-      it("counts neither comments nor blank lines toward the 200", () => {
+      it("counts neither comments nor blank lines toward the 50", () => {
          write("SKILL.md");
          write("a.txt");
          skillignore(
@@ -244,6 +246,42 @@ describe("skillFiles", () => {
             files: ["SKILL.md"],
             warnings: [],
          });
+      });
+
+      it("skips the patterns that bring the total past 1,024 characters, naming how many", () => {
+         write("SKILL.md");
+         write("a0.txt");
+         write("a10.txt");
+         write("a11.txt");
+         write("a12.txt");
+         const pad = (i: number) => `a${i}.txt`.padEnd(100, "z");
+         skillignore(...Array.from({ length: 13 }, (_, i) => pad(i)));
+         // Each line is 100 characters, so ten fit and the 11th brings the sum to 1,100.
+         const { files, warnings } = skillFiles(dir);
+         expect(files).toEqual([
+            "SKILL.md",
+            "a0.txt",
+            "a10.txt",
+            "a11.txt",
+            "a12.txt",
+         ]);
+         expect(warnings).toHaveLength(1);
+         expect(warnings[0]).toContain("total more than 1024 characters");
+         expect(warnings[0]).toContain("last 3");
+      });
+
+      it("counts the characters of a kept pattern only, not a comment or a skipped line", () => {
+         write("SKILL.md");
+         write("a.txt");
+         skillignore(
+            ...Array.from({ length: 40 }, () => `# ${"c".repeat(100)}`),
+            "z".repeat(201),
+            "a.txt",
+         );
+         const { files, warnings } = skillFiles(dir);
+         expect(files).toEqual(["SKILL.md"]);
+         expect(warnings).toHaveLength(1);
+         expect(warnings[0]).toContain("over 200 characters");
       });
 
       it("skips a pattern over 200 characters", () => {
@@ -342,31 +380,14 @@ describe("skillFiles", () => {
       expect(result.warnings[0]).toContain("ENOENT");
    });
 
-   it("matches a skill at the entry limit against 200 patterns within a second", () => {
-      for (let d = 0; d < 2; d++) {
-         for (let f = 0; f < 490; f++) write(`dir${d}/file${f}.txt`);
-      }
-      write("SKILL.md");
-      skillignore(
-         ...Array.from({ length: 200 }, (_, i) =>
-            i % 2 === 0 ? `*_gen${i}*.tmp` : `!keep${i}/**/*.md`,
-         ),
-      );
-      const started = performance.now();
-      const result = skillFiles(dir);
-      const elapsed = performance.now() - started;
-      expect(result.files).toHaveLength(981);
-      expect(elapsed).toBeLessThan(1000);
-   });
-
-   it("matches a full-depth walk against 200 patterns sharing a prefix, at the star cap, within a second", () => {
+   it("matches a full-depth walk against patterns sharing a prefix, at the star cap, within a second", () => {
       const deep = Array.from({ length: 6 }, (_, i) => `dir-number-${i}`);
       for (let f = 0; f < 10; f++) write(`a/${deep.join("/")}/f${f}.txt`);
       write("SKILL.md");
       skillignore(
-         ...Array.from({ length: 200 }, (_, i) =>
+         ...Array.from({ length: 30 }, (_, i) =>
             i % 2 === 0
-               ? `a/${"**/".repeat(30)}b${i}`
+               ? `a/${"**/".repeat(8)}b${i}`
                : `a/**/${deep[i % 6]}/**/z${i}`,
          ),
       );
@@ -376,6 +397,72 @@ describe("skillFiles", () => {
       expect(result.warnings).toEqual([]);
       expect(result.files).toHaveLength(11);
       expect(elapsed).toBeLessThan(1000);
+   });
+
+   describe("total matching work", () => {
+      const longName = (prefix: string, i: number, suffix: string) =>
+         `${prefix}${String(i).padStart(4, "0")}`.padEnd(248, "n") + suffix;
+      const walkSeconds = (run: () => SkillFilesResult) => {
+         const started = performance.now();
+         const result = run();
+         return { result, elapsed: performance.now() - started };
+      };
+
+      it("matches the most paths the walk allows against the most patterns of the slowest shape within a second", () => {
+         write("SKILL.md");
+         for (let i = 0; i < ASSET_MAX_ENTRIES + 100; i++) {
+            write(`reference/${longName("r", i, ".md")}`);
+         }
+         for (let i = 0; i <= ASSET_MAX_ENTRIES; i++) {
+            write(`assets/${longName("a", i, ".dat")}`);
+            write(longName("x", i, ".dat"));
+         }
+         // The matching rules come first, as `ignore` tests last to first, so every later rule runs on every path.
+         // 48 slow rules of 20 characters fill both caps (50 patterns, 979 characters); the 149 after them are skipped.
+         const slow = (questionMarks: number) =>
+            `*${"?".repeat(questionMarks)}zq`;
+         skillignore(
+            "reference/*.md",
+            "*.dat",
+            ...Array.from({ length: 48 }, () => slow(17)),
+            ...Array.from({ length: 149 }, () => slow(77)),
+         );
+         const { result, elapsed } = walkSeconds(() =>
+            skillFiles(dir, { budget: newWalkBudget("package") }),
+         );
+         expect(elapsed).toBeLessThan(1000);
+         expect(result.files).toEqual(["SKILL.md"]);
+         expect(
+            result.warnings.filter((w) => w.startsWith("skill walk stopped")),
+         ).toHaveLength(3);
+      }, 30_000);
+
+      it("bounds ten thousand ignored Markdown files in reference/ against two hundred slow patterns", () => {
+         write("SKILL.md");
+         for (let i = 0; i < REFERENCE_MAX_EXAMINED; i++) {
+            write(
+               `reference/${String(i).padStart(4, "0").padEnd(245, "n")}.md`,
+               "x",
+            );
+         }
+         skillignore(
+            "reference/*",
+            ...Array.from(
+               { length: 199 },
+               (_, i) =>
+                  `*${"?".repeat(77)}${String.fromCharCode(97 + (i % 26))}${String.fromCharCode(97 + ((i >> 2) % 26))}`,
+            ),
+         );
+         const { result, elapsed } = walkSeconds(() => skillFiles(dir));
+         expect(elapsed).toBeLessThan(1000);
+         expect(result.files).toEqual(["SKILL.md"]);
+         expect(result.warnings).toHaveLength(3);
+         expect(result.warnings[0]).toContain("more than 50 patterns");
+         expect(result.warnings[1]).toContain("more than 1024 characters");
+         expect(result.warnings[2]).toContain(
+            `reference/ holds more than ${ASSET_MAX_ENTRIES} Markdown files`,
+         );
+      }, 30_000);
    });
 
    describe("SKILL.md", () => {
