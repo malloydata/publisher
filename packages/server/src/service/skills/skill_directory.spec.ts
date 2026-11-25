@@ -30,7 +30,7 @@ import {
    readSkillsDir,
    type PackageAgent,
 } from "./package_skills";
-import { skillFiles } from "./skill_files";
+import { REFERENCE_MAX_EXAMINED, skillFiles } from "./skill_files";
 
 const EXPECTED = path.join(
    import.meta.dir,
@@ -1022,6 +1022,71 @@ describe("a skill read whole still serves what it served before", () => {
          }
          write(`${ROOT}/s/reference/overview.md`, "# Overview\n");
          expect(inline(agentOf())).toContain("s/reference/overview.md");
+      });
+
+      describe("that is a link to a directory in the package", () => {
+         const linkReference = (target: string) =>
+            fs.symlinkSync(
+               path.join(pkg, target),
+               path.join(pkg, ROOT, "s/reference"),
+            );
+         // The most entries any one directory listing returned while `run` ran, whole or through opendir.
+         const largestListing = (run: () => void) => {
+            let largest = 0;
+            const listings = spyOn(fs, "readdirSync");
+            const open = fs.opendirSync;
+            const opens = spyOn(fs, "opendirSync").mockImplementation(((
+               ...args: Parameters<typeof fs.opendirSync>
+            ) => {
+               const opened = open(...args);
+               const read = opened.readSync.bind(opened);
+               let reads = 0;
+               opened.readSync = () => {
+                  largest = Math.max(largest, ++reads);
+                  return read();
+               };
+               return opened;
+            }) as typeof fs.opendirSync);
+            try {
+               run();
+               for (const result of listings.mock.results) {
+                  if (result.type === "return" && Array.isArray(result.value)) {
+                     largest = Math.max(largest, result.value.length);
+                  }
+               }
+            } finally {
+               listings.mockRestore();
+               opens.mockRestore();
+            }
+            return largest;
+         };
+
+         it("is listed for no more than 10,001 entries, to serve it or to look for a publisher.json", () => {
+            skill("s");
+            fs.mkdirSync(path.join(pkg, "shared-big"));
+            for (let i = 0; i < 2 * REFERENCE_MAX_EXAMINED; i++) {
+               fs.writeFileSync(path.join(pkg, "shared-big", `n${i}.txt`), "x");
+            }
+            linkReference("shared-big");
+            const largest = largestListing(() => {
+               expect(read().agents.has("analyst")).toBe(true);
+            });
+            // The spies must see the listing, or the bound below is vacuous.
+            expect(largest).toBeGreaterThanOrEqual(REFERENCE_MAX_EXAMINED);
+            expect(largest).toBeLessThanOrEqual(REFERENCE_MAX_EXAMINED + 1);
+         });
+
+         it("still refuses the agent when it holds a publisher.json", () => {
+            skill("s");
+            write("shared-ref/a.md", "# A\n");
+            write("shared-ref/publisher.json", "{}");
+            linkReference("shared-ref");
+            const result = read();
+            expect(result.agents.has("analyst")).toBe(false);
+            expect(result.warnings.join("\n")).toContain(
+               "nested publisher.json at 's/reference/publisher.json'",
+            );
+         });
       });
    });
 });

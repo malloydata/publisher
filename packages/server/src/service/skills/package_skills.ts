@@ -15,6 +15,7 @@ import {
    ASSET_MAX_DEPTH,
    ASSET_MAX_ENTRIES,
    ASSET_PATH_MAX_CHARS,
+   listReference,
    newWalkBudget,
    skillFiles,
    type WalkBudget,
@@ -1136,14 +1137,23 @@ function agentPath(value: unknown, what: string): string {
    return normalized;
 }
 
-/** The name of a publisher.json sitting directly in `dir`, which must resolve inside the package; undefined when there is none. */
-function manifestIn(packageRoot: string, dir: string): string | undefined {
+const isManifest = (name: string) => name.toLowerCase() === "publisher.json";
+
+/** The name of a publisher.json sitting directly in `dir`, which must resolve inside the package; undefined when there is none. A skill's `reference/` is read as skillFiles reads it, so a link to a huge directory is not listed whole. */
+function manifestIn(
+   packageRoot: string,
+   dir: string,
+   reference = false,
+): string | undefined {
    try {
       const inside = insidePackage(packageRoot, dir);
       if (inside === undefined) return undefined;
-      return fs
-         .readdirSync(inside)
-         .find((f) => f.toLowerCase() === "publisher.json");
+      const names = reference
+         ? listReference(inside, (entry) => isManifest(entry.name)).entries.map(
+              (entry) => entry.name,
+           )
+         : fs.readdirSync(inside);
+      return names.find(isManifest);
    } catch {
       return undefined;
    }
@@ -1192,7 +1202,7 @@ function servedManifest(packageRoot: string, root: string): string | undefined {
          if (entry.name.startsWith(".")) continue;
          if (left-- <= 0) return undefined;
          const relative = `${rel}/${entry.name}`;
-         if (entry.name.toLowerCase() === "publisher.json") return relative;
+         if (isManifest(entry.name)) return relative;
          if (entry.isDirectory() && depth < ASSET_MAX_DEPTH) {
             const found = below(
                path.join(dir, entry.name),
@@ -1209,7 +1219,11 @@ function servedManifest(packageRoot: string, root: string): string | undefined {
       if (!skill.isDirectory() && !skill.isSymbolicLink()) continue;
       const dir = path.join(root, skill.name);
       for (const place of ["", "reference"]) {
-         const found = manifestIn(packageRoot, path.join(dir, place));
+         const found = manifestIn(
+            packageRoot,
+            path.join(dir, place),
+            place === "reference",
+         );
          if (found !== undefined) {
             return path.posix.join(skill.name, place, found);
          }

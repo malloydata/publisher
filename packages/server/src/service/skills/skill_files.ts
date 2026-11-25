@@ -171,6 +171,38 @@ function readSkillignore(
    return text;
 }
 
+/**
+ * The entries of a skill's `reference/`, real or linked, in opendir order: at
+ * most `REFERENCE_MAX_EXAMINED` of them (`cut` says the bound stopped it), and
+ * none after the first that `last` accepts. The one reader of `reference/`, so
+ * the served set and the publisher.json refusal read it in the same order to
+ * the same bound.
+ */
+export function listReference(
+   absolute: string,
+   last: (entry: fs.Dirent) => boolean,
+): { entries: fs.Dirent[]; cut: boolean } {
+   const entries: fs.Dirent[] = [];
+   const opened = fs.opendirSync(absolute);
+   try {
+      for (
+         let entry = opened.readSync();
+         entry !== null;
+         entry = opened.readSync()
+      ) {
+         // opendir does not sort, so which entries survive a directory over the bound is unspecified.
+         if (entries.length >= REFERENCE_MAX_EXAMINED) {
+            return { entries, cut: true };
+         }
+         entries.push(entry);
+         if (last(entry)) break;
+      }
+   } finally {
+      opened.closeSync();
+   }
+   return { entries, cut: false };
+}
+
 /** Where a directory sits, which decides what an entry in it is charged to. */
 type Zone = "root" | "reference" | "linked reference" | "assets" | "other";
 
@@ -239,33 +271,19 @@ export function skillFiles(
       !entry.isDirectory() &&
       !builtInExcluded(entry.name, false) &&
       !matcher.ignores(relative);
-   // Stops one Markdown file past the cap, or one entry of any kind past REFERENCE_MAX_EXAMINED, so a link to a huge directory is not listed in full; opendir does not sort, so which files survive a directory over either is unspecified.
-   const listReference = (absolute: string, rel: string): fs.Dirent[] => {
-      const entries: fs.Dirent[] = [];
-      const opened = fs.opendirSync(absolute);
-      try {
-         let markdown = 0;
-         for (
-            let entry = opened.readSync();
-            entry !== null;
-            entry = opened.readSync()
-         ) {
-            if (entries.length >= REFERENCE_MAX_EXAMINED) {
-               warnings.push(
-                  `skill walk stopped in '${rel}': ${REFERENCE_DIR}/ holds more than ${REFERENCE_MAX_EXAMINED} entries, so the rest are not read`,
-               );
-               break;
-            }
-            entries.push(entry);
-            if (
-               servedMarkdown(entry, `${rel}/${entry.name}`) &&
-               ++markdown > ASSET_MAX_ENTRIES
-            ) {
-               break;
-            }
-         }
-      } finally {
-         opened.closeSync();
+   // Stops one Markdown file past the cap, so a link to a directory of Markdown is not listed in full.
+   const listMarkdownCapped = (absolute: string, rel: string) => {
+      let markdown = 0;
+      const { entries, cut } = listReference(
+         absolute,
+         (entry) =>
+            servedMarkdown(entry, `${rel}/${entry.name}`) &&
+            ++markdown > ASSET_MAX_ENTRIES,
+      );
+      if (cut) {
+         warnings.push(
+            `skill walk stopped in '${rel}': ${REFERENCE_DIR}/ holds more than ${REFERENCE_MAX_EXAMINED} entries, so the rest are not read`,
+         );
       }
       return entries;
    };
@@ -285,7 +303,7 @@ export function skillFiles(
       try {
          entries =
             zone === "reference" || zone === "linked reference"
-               ? listReference(absolute, rel)
+               ? listMarkdownCapped(absolute, rel)
                : fs.readdirSync(absolute, { withFileTypes: true });
       } catch (error) {
          warnings.push(
