@@ -799,7 +799,10 @@ describe("readPackageAgents", () => {
          expect(result.warnings).toEqual([]);
          expect("assets" in agentOf(result)).toBe(false);
          expect("asset_roots" in agentOf(result)).toBe(false);
-         expect(result.contentShas.size).toBe(0);
+         // Only inline Markdown is covered: no asset was listed.
+         expect(
+            [...result.contentShas.keys()].every((k) => k.endsWith(".md")),
+         ).toBe(true);
       });
 
       it("moves definitionSha when an asset changes and not otherwise", () => {

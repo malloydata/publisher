@@ -200,7 +200,7 @@ which Publisher lists by path, size and sha256 and reads on request.
 | A listed path | Segments of `[A-Za-z0-9_][A-Za-z0-9._-]*`, at most 200 characters with the skill's directory name, at most 8 levels deep, no control character, no `.malloy` or `.malloynb`, a regular file | The file is skipped. Inline Markdown keeps lenient names |
 | Entries walked | Per agent, 1,000 under `assets/` and 1,000 elsewhere, shared by its skills. The package's `skills/` has the same pair. Ignored entries count | The walk stops there, and the rest are not included |
 | `reference/` | At most 1,000 Markdown files per skill, read no further than 10,000 entries of any kind. It is outside the entries walked, is followed when it is a link, and is read before other Markdown. `references/` has none of this and counts against the entries walked | The rest are not read |
-| `.skillignore` | 16 KiB, 200 patterns of at most 200 characters, two single `*` a pattern | The pattern, or the file, is skipped |
+| `.skillignore` | 16 KiB, 200 patterns of at most 200 characters, two `*` or `**` segments a pattern, a run of `**` counting once | The pattern, or the file, is skipped |
 | Frontmatter | YAML 1.2; at most 100 references to one anchor; output at most 5 times the source plus 10,000 characters | An empty `frontmatter` and a line read of `name` and `description` |
 | `get_skill` result | 35,000 characters, Cursor's limit | Keeps the body and trims `files` with a count, then drops the parsed frontmatter, then the body |
 
@@ -224,13 +224,13 @@ since nothing bounds their number. On a development machine with a warm page cac
 | Package | Blocks the loop for |
 | --- | --- |
 | One agent, `SKILL.md` only | 2 ms |
-| Every budget spent in nine skills: about 11.7 MiB in 1,800 listed files, 1,000 entries under `assets/`, 999 files in `references/` and 907 in `reference/` each | 1.9 s |
-| The 300 large listed files alone (about 11.7 MiB) | 126 ms |
-| The 1,000 `assets/` entries alone | 267 ms |
-| The 999 `references/` files alone | 970 ms |
-| The 907 `reference/` files alone | 904 ms |
+| Every budget spent in nine skills: about 11.7 MiB in 1,800 listed files, 1,000 entries under `assets/`, 999 files in `references/` and 907 in `reference/` each | 1.3 s |
+| The 300 large listed files alone (about 11.7 MiB) | 109 ms |
+| The 1,000 `assets/` entries alone | 257 ms |
+| The 999 `references/` files alone | 616 ms |
+| The 907 `reference/` files alone | 581 ms |
 
-A Markdown file costs about 0.1 ms to read and hash and a walked entry about 10 microseconds, so
+A Markdown file costs about 0.07 ms to read and digest and a walked entry about 10 microseconds, so
 file count moves the time most. Keep a skill to the files an agent uses.
 
 ## Authoring a new skill

@@ -228,6 +228,30 @@ describe("a skill is its whole directory", () => {
       expect(contentSha()).not.toBe(afterScript.content);
    });
 
+   it("hashes an agent's content without reading an inline Markdown file again, and still moves with an edit to one", () => {
+      const before = contentSha();
+      const result = read();
+      const reads = spyOn(fs, "readFileSync");
+      try {
+         computeSourceContentSha(
+            pkg,
+            result.paths,
+            undefined,
+            result.contentShas,
+         );
+         const hashed = reads.mock.calls.map((c) => String(c[0]));
+         const inline = agentOf(result).skills.map((f) => f.relative_filepath);
+         expect(inline.length).toBeGreaterThan(0);
+         for (const file of inline) {
+            expect(hashed.some((p) => p.endsWith(`/${file}`))).toBe(false);
+         }
+      } finally {
+         reads.mockRestore();
+      }
+      write("NOTES.md", "# Notes\n\nChanged.\n");
+      expect(contentSha()).not.toBe(before);
+   });
+
    it("serves a skill of today's shape, SKILL.md with reference/*.md and assets/**, as it always did", () => {
       fs.rmSync(skillDir(), { recursive: true });
       write("SKILL.md", "---\nname: pricing\ndescription: d\n---\n\nbody\n");
@@ -587,6 +611,27 @@ describe("a package's own skills", () => {
       ]);
    });
 
+   it("hashes a package's skills without reading an inline Markdown file again", () => {
+      writeSkill(pkg, "skills");
+      const result = readSkillsDir(pkg);
+      const read = spyOn(fs, "readFileSync");
+      try {
+         computeSourceContentSha(
+            pkg,
+            result.paths,
+            undefined,
+            result.contentShas,
+         );
+         const hashed = read.mock.calls.map((c) => String(c[0]));
+         for (const f of result.files) {
+            expect(hashed.some((p) => p.endsWith(f.path))).toBe(false);
+         }
+         expect(result.files.length).toBeGreaterThan(0);
+      } finally {
+         read.mockRestore();
+      }
+   });
+
    it("reads every file it lists by its path: Markdown verbatim, a script as text, a binary as a message", () => {
       writeSkill(pkg, "skills");
       const [skill] = readSkillsDir(pkg).skills;
@@ -684,7 +729,7 @@ describe("a package's own skills", () => {
       const { skills, warnings, contentShas } = readSkillsDir(pkg);
       const catalog = skills.map((s) => s.catalog);
       expect(Object.keys(catalog[0]!.files)).toHaveLength(1 + 200);
-      expect(contentShas.size).toBe(200);
+      expect(contentShas.size).toBe(1 + 200);
       expect(warnings.join("\n")).toContain(
          "the package's skills already have 200 assets",
       );

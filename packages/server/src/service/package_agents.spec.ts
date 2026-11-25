@@ -708,7 +708,7 @@ describe("package agents", () => {
       it("pins sourceContentSha for a package whose agents ship no assets", async () => {
          const pkg = await load();
          expect(pkg.getSourceContentSha()).toBe(
-            "00e29ff908aab56d8b8810270241bf96d0e3d11506ba341d6fba153377728954",
+            "a47f540b0384cfb37c4388408b1e3630d9760adf4bc3fdd18420e2374bc4613f",
          );
       });
    });

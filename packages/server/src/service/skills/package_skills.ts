@@ -774,7 +774,7 @@ function readFirst(s: ScannedSkill, ctx: FinishContext): SkillDraft {
          );
       } else {
          ctx.walk.skipped.push(`asset '${shown}' is not served: it ${why}`);
-         // A publisher.json below assets/ is refused with the rest of the tree, before any skill is read.
+         // A publisher.json below assets/ is refused by servedManifest; a SKILL.md there is refused here.
          if (
             !controlChar &&
             underAssets(relative) &&
@@ -994,6 +994,16 @@ function listFile(
 
 const SHA_PREFIX = "sha256:";
 
+/** The load-time digest of each inline file, so the content hash covers the bytes served and does not read them again. */
+function inlineShas(read: ReadSkill, shas: Map<string, string>) {
+   for (const f of read.inline) {
+      shas.set(
+         `${read.rel}/${f.relative}`,
+         read.catalog.files[f.relative]!.digest.slice(SHA_PREFIX.length),
+      );
+   }
+}
+
 /** A package skill as `get_skill` and the REST routes read it: inline Markdown from what load read, every listed file from disk against its listed sha. */
 function packageSkill(packagePath: string, read: ReadSkill): ServedSkill {
    const texts = new Map(read.inline.map((f) => [f.relative, f.text]));
@@ -1054,6 +1064,7 @@ export function readSkillsDir(
             text: f.text,
          })),
       );
+      inlineShas(read, result.contentShas);
       if (read.skillignore !== null) {
          result.paths.push(`${read.rel}/.skillignore`);
       }
@@ -1264,7 +1275,7 @@ function servedManifest(packageRoot: string, root: string): string | undefined {
    return undefined;
 }
 
-/** Read a Markdown file the agent serves as text, capped at 16 KB. */
+/** Read a Markdown file the agent serves as text, capped at 16 KiB. */
 function readAgentText(
    packagePath: string,
    packageRoot: string,
@@ -1470,6 +1481,7 @@ function startAgentSkills(
    packageRoot: string,
    raw: unknown,
    paths: string[],
+   shas: Map<string, string>,
    warnings: string[],
    assetBudget: PackageAssetBudget,
 ): { walk: AssetWalk; finish: () => AgentSkills } {
@@ -1574,7 +1586,8 @@ function startAgentSkills(
    if (ctx.refusals.length > 0) throw new AgentProblem(ctx.refusals[0]!);
    return {
       walk,
-      finish: () => finishAgentSkills(drafts, ctx, roots, paths, warnings),
+      finish: () =>
+         finishAgentSkills(drafts, ctx, roots, paths, shas, warnings),
    };
 }
 
@@ -1584,6 +1597,7 @@ function finishAgentSkills(
    ctx: FinishContext,
    roots: string[],
    paths: string[],
+   shas: Map<string, string>,
    warnings: string[],
 ): AgentSkills {
    const served = new Map<string, string>();
@@ -1614,6 +1628,7 @@ function finishAgentSkills(
          }
       }
       catalog.push(read.catalog);
+      inlineShas(read, shas);
       if (read.skillignore !== null) {
          paths.push(`${read.rel}/.skillignore`);
          skillignores.set(read.dirName, read.skillignore);
@@ -1651,7 +1666,11 @@ function finishAgentSkills(
 /** An agent between its two phases: `walk` holds what the first charged, and `finish` reads the rest. */
 interface StartedAgent {
    walk: AssetWalk;
-   finish: () => { agent: PackageAgent; paths: string[] };
+   finish: () => {
+      agent: PackageAgent;
+      paths: string[];
+      shas: Map<string, string>;
+   };
 }
 
 function startAgent(
@@ -1685,6 +1704,7 @@ function startAgent(
    const model = raw.model ?? "inherit";
    const warnings: string[] = [];
    const paths: string[] = [];
+   const shas = new Map<string, string>();
 
    const instructions = readAgentText(
       packagePath,
@@ -1705,6 +1725,7 @@ function startAgent(
       packageRoot,
       raw.skills,
       paths,
+      shas,
       warnings,
       assetBudget,
    );
@@ -1752,6 +1773,7 @@ function startAgent(
                definitionSha,
             },
             paths,
+            shas,
          };
       },
    };
@@ -1847,6 +1869,9 @@ export function readPackageAgents(
          chargePackage(assetBudget, agent.walk, result.contentShas);
          result.agents.set(name, read.agent);
          result.paths.push(...read.paths);
+         for (const [inlinePath, sha] of read.shas) {
+            result.contentShas.set(inlinePath, sha);
+         }
          for (const w of read.agent.warnings) {
             notes[i]!.push(`Package agent '${name}' ${w}.`);
          }

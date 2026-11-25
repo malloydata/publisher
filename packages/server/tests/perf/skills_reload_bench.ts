@@ -212,9 +212,10 @@ function measure(title: string, root: string, declared: unknown): void {
    let listedFiles = 0;
    let listedBytes = 0;
    for (const { name } of pkg.listAgents()) {
+      if (name === undefined) continue;
       for (const a of pkg.getAgent(name)?.assets ?? []) {
          listedFiles++;
-         listedBytes += a.bytes;
+         listedBytes += a.bytes ?? 0;
       }
    }
    console.log(
