@@ -1,0 +1,146 @@
+name: Credible runners cache check
+
+# Throwaway, for a draft pull request only, and never merged: checks the Credible runners' Actions
+# cache end to end after it moved next to the runners. Each job's last step says what it showed.
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/credible-cache-check.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  KEY: credible-cache-check-${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  save:
+    runs-on: credible-ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Make a small and a large cache
+        run: |
+          mkdir -p small large
+          head -c 20000000 /dev/urandom > small/data
+          head -c 200000000 /dev/urandom > large/data
+          sha256sum small/data large/data > sums.txt
+          cat sums.txt
+
+      # Under 128 MiB compressed: one upload request.
+      - uses: actions/cache/save@v4
+        with:
+          path: small
+          key: ${{ env.KEY }}-small
+
+      # Over 128 MiB: 32 MiB blocks, then a block list.
+      - uses: actions/cache/save@v5
+        with:
+          path: large
+          key: ${{ env.KEY }}-large
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sums-${{ github.run_attempt }}
+          path: sums.txt
+
+  restore:
+    needs: save
+    runs-on: credible-ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sums-${{ github.run_attempt }}
+
+      - name: Exact key
+        id: exact
+        uses: actions/cache/restore@v4
+        with:
+          path: small
+          key: ${{ env.KEY }}-small
+          fail-on-cache-miss: true
+
+      - name: Restore key prefix
+        id: prefix
+        uses: actions/cache/restore@v5
+        with:
+          path: large
+          key: ${{ env.KEY }}-missing
+          restore-keys: ${{ env.KEY }}-lar
+          fail-on-cache-miss: true
+
+      - name: Check what came back
+        env:
+          EXACT: ${{ steps.exact.outputs.cache-matched-key }}
+          PREFIX: ${{ steps.prefix.outputs.cache-matched-key }}
+        run: |
+          test "$EXACT" = "$KEY-small"
+          test "$PREFIX" = "$KEY-large"
+          sha256sum -c sums.txt
+          echo "exact and prefix restores matched the saved keys and bytes"
+
+  container:
+    runs-on: credible-ubuntu-24.04
+    timeout-minutes: 15
+    container: node:24-bookworm-slim
+    steps:
+      - name: The results URL reaches the container
+        run: |
+          echo "ACTIONS_RESULTS_URL=${ACTIONS_RESULTS_URL:-<unset>}"
+          test -n "${ACTIONS_RESULTS_URL:-}"
+
+      - name: Make a cache and an artifact in the container
+        run: |
+          mkdir -p from-container
+          head -c 1000000 /dev/urandom > from-container/data
+          sha256sum from-container/data > container-sum.txt
+
+      # Saved and restored inside the container: the cache version includes the compression method,
+      # and this image has no zstd, so an entry the host saved wouldn't match here.
+      - uses: actions/cache/save@v4
+        with:
+          path: from-container
+          key: ${{ env.KEY }}-container
+
+      - run: rm -rf from-container
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: from-container
+          key: ${{ env.KEY }}-container
+          fail-on-cache-miss: true
+
+      - run: sha256sum -c container-sum.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: from-container-${{ github.run_attempt }}
+          path: from-container
+
+  buildkit:
+    runs-on: credible-ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: A Dockerfile with one large layer
+        run: |
+          mkdir ctx
+          printf 'FROM busybox:1.37\nRUN head -c 30000000 /dev/urandom > /blob\n' > ctx/Dockerfile
+
+      # Exposes the runtime token and results URL to run steps, which buildx's type=gha cache reads.
+      - uses: crazy-max/ghaction-github-runtime@v3
+
+      - name: Export to type=gha
+        run: |
+          docker buildx create --name export --driver docker-container --use
+          docker buildx build --progress=plain --cache-to "type=gha,mode=max,scope=$KEY" ctx
+
+      # A fresh builder has no local cache, so a CACHED layer here came through type=gha.
+      - name: Import from type=gha
+        run: |
+          docker buildx create --name import --driver docker-container --use
+          docker buildx build --progress=plain --cache-from "type=gha,scope=$KEY" ctx 2>&1 | tee build.log
+          grep -E 'RUN head -c 30000000.*' build.log
+          grep -qE '^#[0-9]+ CACHED' build.log
+          echo "the layer came back from the type=gha cache"
