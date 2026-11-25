@@ -93,7 +93,7 @@ A row is a **direct mapping** only where it says so. Everywhere else the constru
 | `SUBTOTAL(9, r)` | `sum(c)` | Every `SUBTOTAL` code excludes filter-hidden rows; 1-11 vs 101-111 differ only for manually hidden rows. `AGGREGATE` over a filtered or hidden range reflects UI state too: the port needs the filter as a `where:`, reported |
 | `LARGE`, `SMALL`, `PERCENTILE`, `MEDIAN` | no portable measure | `rank()` in a query for top-N; a percentile through the lifting SQL |
 | `STDEV.S`, `STDEV.P` | `stddev()` where the dialect has it | Check sample against population |
-| `GETPIVOTDATA(...)` | the view cell it reads | `cookbook-pivot.md#p8` |
+| `GETPIVOTDATA(...)` | the view cell it reads | `cookbook-pivot-2.md#p8` |
 
 ## Matching and Lookups
 
@@ -157,7 +157,7 @@ DuckDB has no `PMT`, `NPV`, `IRR` or `NORM.INV`. Each routes **C** and is writte
 
 | Excel | Malloy | Notes |
 |--------|--------|-------|
-| Data Table (What-If) | a precomputed scenario grid, with a `given:` choosing the row | `cookbook-scenario.md#sc8` |
+| Data Table (What-If) | a precomputed scenario grid, with a `given:` choosing the row | `cookbook-scenario-2.md#sc8` |
 | Goal Seek, Solver over a discrete range | the same grid | The cache holds the last optimum |
 | Goal Seek, Solver over a continuous range | **X**, stays in Excel | `#sc9` names the seam |
 | Scenario Manager | a scenario table plus a `given:` | `#sc10` |

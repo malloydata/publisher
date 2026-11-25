@@ -20,9 +20,9 @@ SPDX-License-Identifier: MIT
 1. **Discover.** Establish the input shape, run the classifier, inventory and classify every sheet, and decide where the data really comes from. `reference/discover.md`.
 2. **Recover sources.** Turn ranges into sources, lifting only cells that are data, and check the lift against the workbook's own totals. `reference/recover-sources.md`.
 3. **Translate formulas.** Route every formula region, then port it from a recipe: `reference/translate-formulas.md` decides where each goes, and the cookbooks carry the worked Malloy. A routing table is not a migration; the recipe is the deliverable.
-   - Aggregates and lookups: `reference/cookbook-lookup-aggregate.md` and `cookbook-lookup-aggregate-2.md`
-   - Pivot tables: `reference/cookbook-pivot.md` and `cookbook-pivot-2.md`
-   - Assumptions, roll-forwards, circularity, Monte Carlo: `reference/cookbook-scenario.md` and `cookbook-scenario-2.md`
+   - Aggregates and lookups: `reference/cookbook-lookup-aggregate.md` and `reference/cookbook-lookup-aggregate-2.md`
+   - Pivot tables: `reference/cookbook-pivot.md` and `reference/cookbook-pivot-2.md`
+   - Assumptions, roll-forwards, circularity, Monte Carlo: `reference/cookbook-scenario.md` and `reference/cookbook-scenario-2.md`
 4. **Power Pivot handoff**, only when the workbook carries a data model. `reference/power-pivot.md`.
 5. **Prove the numbers.** Cached-value parity at more than one context. `reference/parity.md`.
 6. **Say what changed.** Every cell accounted for as translated, translated at a cost, staying in Excel, or unresolved. `reference/review-coverage.md`.

@@ -251,7 +251,10 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
          store,
          skills,
       );
-      const scopes = [{ environment: "home", package: "a-package-name" }];
+      // Both names at 100 characters: the scope is in the reply's URI, so a long one is the worst case for a read near the cap.
+      const scopes = [
+         { environment: "e".repeat(100), package: "p".repeat(100) },
+      ];
       const trimmed: string[] = [];
       for (const s of skills) {
          for (const file of Object.keys(s.bodies)) {
@@ -272,6 +275,33 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
          }
       }
       expect([...new Set(trimmed)]).toEqual([]);
+   });
+
+   // A cookbook split in two keeps its explicit anchors, so a `file.md#id` pointer to the half that lacks the id sends a reader to a file with no such section.
+   it("points every explicit-anchor pointer at the file that holds the anchor", () => {
+      const anchor = /<a id="([A-Za-z0-9_-]+)"><\/a>/g;
+      const pointer = /([A-Za-z0-9_-]+\.md)#([A-Za-z0-9_-]+)/g;
+      const wrong: string[] = [];
+      for (const s of skills) {
+         const held = Object.entries(s.bodies).map(
+            ([file, text]) =>
+               [
+                  path.posix.basename(file),
+                  new Set([...text.matchAll(anchor)].map((m) => m[1]!)),
+               ] as const,
+         );
+         const defined = new Set(held.flatMap(([, ids]) => [...ids]));
+         for (const [file, text] of Object.entries(s.bodies)) {
+            for (const [, target, id] of text.matchAll(pointer)) {
+               // A heading-style pointer names no explicit anchor, and is not this check's.
+               if (!defined.has(id!)) continue;
+               if (!held.some(([n, ids]) => n === target && ids.has(id!))) {
+                  wrong.push(`${s.name}/${file}: ${target}#${id}`);
+               }
+            }
+         }
+      }
+      expect(wrong).toEqual([]);
    });
 
    // No allowlist: every Markdown file in the bundle honours the house style, so

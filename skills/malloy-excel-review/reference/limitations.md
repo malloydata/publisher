@@ -122,7 +122,7 @@ The route is a priority order, not a verdict: it cannot prove a formula safe.
 - **`GETPIVOTDATA` routes NR** with the flag `getpivotdata`, because its value is a read of
   the pivot's snapshot. Each region lists the pivot it reads under `pivots` (name, location,
   source), or an empty list when its first argument is outside every pivot
-  (`cookbook-pivot.md#p8`).
+  (`cookbook-pivot-2.md#p8`).
 - **Sheet classes are heuristics.** They are tested on the fixture and on hand-built
   workbooks. Confirm each with the user.
 - **A relative reference with an offset** is read as a prior-period reference. A

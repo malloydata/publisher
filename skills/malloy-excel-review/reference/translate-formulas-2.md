@@ -8,19 +8,19 @@ SPDX-License-Identifier: MIT
 | Excel | Go to |
 |---|---|
 | `SUMIF(S)`, `COUNTIF(S)`, `AVERAGEIF(S)`, `MAXIFS`, `MINIFS`, `SUMPRODUCT`, `COUNT`, `COUNTA`, `AVERAGE`, `SUBTOTAL` | `cookbook-lookup-aggregate.md` |
-| `VLOOKUP`, `HLOOKUP`, `XLOOKUP`, `INDEX`/`MATCH`, `LOOKUP`, `IFERROR` | `cookbook-lookup-aggregate.md#la8` to `#la10` |
+| `VLOOKUP`, `HLOOKUP`, `XLOOKUP`, `INDEX`/`MATCH`, `LOOKUP`, `IFERROR` | `cookbook-lookup-aggregate.md#la8` to `cookbook-lookup-aggregate-2.md#la10` |
 | pivot tables, `GETPIVOTDATA` | `cookbook-pivot.md` |
 | roll-forwards, compounding, depreciation, circular references, `NPV`/`PMT`, Monte Carlo, Data Tables, Goal Seek | `cookbook-scenario.md` |
 | `xl/model/` (Power Pivot), `CUBEVALUE` | `power-pivot.md`, then `skill:malloy-powerbi-review` |
 | `RAND*`, `WEBSERVICE`, vendor feeds, VBA UDFs | X or NR: name the seam, do not invent Malloy |
-| `RANK`, `MEDIAN`, `PERCENTILE`, `STDEV` | `cookbook-lookup-aggregate.md#la13` |
-| `DSUM`, `DCOUNT`, `DAVERAGE`, `DMAX`, `DMIN`, `DGET` | C: `cookbook-lookup-aggregate.md#la15`; the criteria range is cells, so it is a given or a source |
-| a share, maximum or average taken over the groups of another aggregate | `cookbook-lookup-aggregate.md#la16` |
+| `RANK`, `MEDIAN`, `PERCENTILE`, `STDEV` | `cookbook-lookup-aggregate-2.md#la13` |
+| `DSUM`, `DCOUNT`, `DAVERAGE`, `DMAX`, `DMIN`, `DGET` | C: `cookbook-lookup-aggregate-2.md#la15`; the criteria range is cells, so it is a given or a source |
+| a share, maximum or average taken over the groups of another aggregate | `cookbook-lookup-aggregate-2.md#la16` |
 | `CHOOSE`, `SWITCH` returning a value; `OFFSET`/`INDEX` as a case selector | the section after next |
 | `LET`, `FILTER`, `UNIQUE`, `SORT`, `SEQUENCE` | next section |
 | `PROPER`, `UPPER`, `LOWER`, `TRIM`, `CLEAN`, `SUBSTITUTE`, `TEXTJOIN`, `CONCAT` | T. Malloy has `upper()`, `lower()`, `trim()` and `replace()`; `CLEAN`, `TEXTJOIN` and `CONCAT` need a stanza-side expression over the same columns. `PROPER` has no direct built-in; Excel capitalises after any non-letter, so use a per-character expression, *(semantics-cited, run on DuckDB 1.4.5)*: `list_aggr(list_transform(range(1, length(x) + 1), i -> case when i = 1 or not regexp_matches(substr(x, i - 1, 1), '\pL') then upper(substr(x, i, 1)) else lower(substr(x, i, 1)) end), 'string_agg', '')` gives `O'Neil Smith` and `3Rd Street` (an empty string returns null, so wrap it in `coalesce`). Splitting on spaces gives `O'neil` and is wrong for this. Flag `proper_semantics` marks the formula |
 | `FORECAST.ETS`, `.CONFINT`, `.SEASONALITY`, `.STAT` | NR: Excel's exponential smoothing (AAA ETS) is internal, with no Malloy or DuckDB equivalent. The user chooses a model (statsmodels or similar, outside Malloy) and the cached values are the only oracle. `FORECAST`, `FORECAST.LINEAR`, `SLOPE`, `INTERCEPT` (T) and `TREND`, `LINEST` (C) are closed-form and keep their routes. The constant row before a forecast run is usually the forecast's anchor or input, not a plug: confirm before reporting `plug_at_end` as a defect |
-| `NORM.S.INV`, `NORM.S.DIST`, `NORM.DIST`, `NORM.INV` | C, with a recipe: DuckDB 1.4.5 core has no normal quantile or CDF (`erf`, `erfinv`, `probit` and `norm_*` do not exist; checked in `duckdb_functions()`), so write one stanza-side. Use a closed form accurate to 1e-12 or better, such as an AS241-class rational approximation for the quantile (about 1e-16), or an `erf` Taylor series with Newton iteration in a recursive `duckdb.sql` source for the CDF. State the precision, and check it against the cached `NORM.*` constants before relying on it: such forms matched Excel's cached `NORM.INV`, `NORM.S.DIST` and `NORM.DIST` at 1e-9 to 1e-17 on real workbooks. An approximation that is looser than 1e-12 or unchecked against the cache is not acceptable. *(semantics-cited)*. Box-Muller is for `RAND`-driven simulation only (`cookbook-scenario.md#sc7`), never for a `NORM.*` of a non-random argument |
+| `NORM.S.INV`, `NORM.S.DIST`, `NORM.DIST`, `NORM.INV` | C, with a recipe: DuckDB 1.4.5 core has no normal quantile or CDF (`erf`, `erfinv`, `probit` and `norm_*` do not exist; checked in `duckdb_functions()`), so write one stanza-side. Use a closed form accurate to 1e-12 or better, such as an AS241-class rational approximation for the quantile (about 1e-16), or an `erf` Taylor series with Newton iteration in a recursive `duckdb.sql` source for the CDF. State the precision, and check it against the cached `NORM.*` constants before relying on it: such forms matched Excel's cached `NORM.INV`, `NORM.S.DIST` and `NORM.DIST` at 1e-9 to 1e-17 on real workbooks. An approximation that is looser than 1e-12 or unchecked against the cache is not acceptable. *(semantics-cited)*. Box-Muller is for `RAND`-driven simulation only (`cookbook-scenario-2.md#sc7`), never for a `NORM.*` of a non-random argument |
 
 ### `LET` and the dynamic-array functions
 
@@ -120,7 +120,7 @@ dimension: growth is
 ```
 
 Prefer a scenario table and a `filter<string>` given when the cases have names or more than a
-handful of values (`cookbook-scenario.md#sc10`). `OFFSET` itself stays **NR** (it is volatile
+handful of values (`cookbook-scenario-2.md#sc10`). `OFFSET` itself stays **NR** (it is volatile
 and returns a reference): port the intent only after the user confirms the selector is all it
 does. `OFFSET` is zero-based and `INDEX` is one-based; an out-of-range `INDEX` is `#REF!`, and
 index `0` returns the whole row or column, neither of which the `else null` reproduces.
@@ -132,7 +132,7 @@ A formula in a copied-down row or column that differs by one term from its neigh
 
 ### Solver report sheets
 
-The Answer, Sensitivity and Limits sheets a Solver run leaves behind hold constants copied from that run. They are typed results, not sources: compare the model to their values and do not model them as data. Their cell addresses can be stale against the saved Solver names (a report may describe an older copy of the model), so match by position and say so. A changing cell that no formula reads is an inert model; report it (`cookbook-scenario.md#sc9`).
+The Answer, Sensitivity and Limits sheets a Solver run leaves behind hold constants copied from that run. They are typed results, not sources: compare the model to their values and do not model them as data. Their cell addresses can be stale against the saved Solver names (a report may describe an older copy of the model), so match by position and say so. A changing cell that no formula reads is an inert model; report it (`cookbook-scenario-2.md#sc9`).
 
 ## 6. Constants and plugs are findings
 
@@ -140,7 +140,7 @@ A formula region with a `hardcoded_constant` flag has a literal the author typed
 a region with `plug` has a cell where someone overwrote one formula of the copied-down
 set. **Never absorb either into the translation.** Translate the region as the formula
 says, show where the workbook disagrees with it, and ask the owner which is right
-(`cookbook-lookup-aggregate.md#la12` does this for `Report!I6` = 999 against a
+(`cookbook-lookup-aggregate-2.md#la12` does this for `Report!I6` = 999 against a
 formula that gives 100).
 
 ## 7. Reporting
@@ -151,7 +151,7 @@ same context, measured, not asserted:
 | Region | Cell | Recipe | Route | Excel cached | Malloy | Match | Label |
 |---|---|---|---|---|---|---|---|
 
-A workbook with hundreds of regions registers one combined oracle source, not hundreds (`cookbook-lookup-aggregate.md#la17`).
+A workbook with hundreds of regions registers one combined oracle source, not hundreds (`cookbook-lookup-aggregate-2.md#la17`).
 
 Give at least two filter contexts per reporting measure, including one that hits the
 case-insensitive and blank cases on purpose. A report with no mismatches and no `C`
