@@ -13,7 +13,7 @@ export const ASSET_PATH_MAX_CHARS = 200;
 export const ASSET_MAX_DEPTH = 8;
 /** Entries one walk may see, kept or not; the files `WalkBudget` names as always walked are outside it, and a skill's `reference/` has its own count of Markdown files of this size. */
 export const ASSET_MAX_ENTRIES = 1000;
-/** Entries of any kind read from a skill's `reference/`, real or linked, before the listing stops. */
+/** Entries of any kind `listBounded` reads (a skill's `reference/`, or a linked `assets/`) before the listing stops. */
 export const REFERENCE_MAX_EXAMINED = 10_000;
 
 const SKILL_MD = "SKILL.md";
@@ -172,13 +172,14 @@ function readSkillignore(
 }
 
 /**
- * The entries of a skill's `reference/`, real or linked, in opendir order: at
- * most `REFERENCE_MAX_EXAMINED` of them (`cut` says the bound stopped it), and
- * none after the first that `last` accepts. The one reader of `reference/`, so
- * the served set and the publisher.json refusal read it in the same order to
- * the same bound.
+ * The entries of a directory a link can make huge, in opendir order: at most
+ * `REFERENCE_MAX_EXAMINED` of them (`cut` says the bound stopped it), and none
+ * after the first that `last` accepts. It reads a skill's `reference/`, real or
+ * linked, for the served set and the publisher.json refusal alike, so both read
+ * it in the same order to the same bound; and a linked `assets/` for the
+ * refusal.
  */
-export function listReference(
+export function listBounded(
    absolute: string,
    last: (entry: fs.Dirent) => boolean,
 ): { entries: fs.Dirent[]; cut: boolean } {
@@ -274,7 +275,7 @@ export function skillFiles(
    // Stops one Markdown file past the cap, so a link to a directory of Markdown is not listed in full.
    const listMarkdownCapped = (absolute: string, rel: string) => {
       let markdown = 0;
-      const { entries, cut } = listReference(
+      const { entries, cut } = listBounded(
          absolute,
          (entry) =>
             servedMarkdown(entry, `${rel}/${entry.name}`) &&

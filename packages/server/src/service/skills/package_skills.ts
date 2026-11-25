@@ -15,7 +15,7 @@ import {
    ASSET_MAX_DEPTH,
    ASSET_MAX_ENTRIES,
    ASSET_PATH_MAX_CHARS,
-   listReference,
+   listBounded,
    newWalkBudget,
    skillFiles,
    type WalkBudget,
@@ -1149,7 +1149,7 @@ function manifestIn(
       const inside = insidePackage(packageRoot, dir);
       if (inside === undefined) return undefined;
       const names = reference
-         ? listReference(inside, (entry) => isManifest(entry.name)).entries.map(
+         ? listBounded(inside, (entry) => isManifest(entry.name)).entries.map(
               (entry) => entry.name,
            )
          : fs.readdirSync(inside);
@@ -1169,9 +1169,11 @@ const holdsManifest = (packageRoot: string, dir: string) =>
  * else is skipped with the rest of the files a skill may not hold. It reads the
  * real tree, folders a `.skillignore` ignores included: that file decides what
  * a skill is made of, never what may sit in it. It follows a link only to a
- * skill directory inside the package, and bounds what it walks under `assets/`
- * the way skillFiles does, so a link cannot make it scan the filesystem or
- * report on files outside the package.
+ * directory inside the package, reads a `reference/` or a linked `assets/` for
+ * at most `REFERENCE_MAX_EXAMINED` entries, and bounds what it walks under
+ * `assets/` the way skillFiles does, so a link cannot make it scan the
+ * filesystem, list a huge directory whole, or report on files outside the
+ * package.
  */
 function servedManifest(packageRoot: string, root: string): string | undefined {
    const atRoot = manifestIn(packageRoot, root);
@@ -1194,7 +1196,10 @@ function servedManifest(packageRoot: string, root: string): string | undefined {
       try {
          const inside = insidePackage(packageRoot, dir);
          if (inside === undefined) return undefined;
-         entries = fs.readdirSync(inside, { withFileTypes: true });
+         // Only assets/ itself can be a link here (a linked entry is never descended); it may lead anywhere in the package.
+         entries = fs.lstatSync(dir).isSymbolicLink()
+            ? listBounded(inside, () => false).entries
+            : fs.readdirSync(inside, { withFileTypes: true });
       } catch {
          return undefined;
       }

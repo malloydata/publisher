@@ -720,6 +720,43 @@ describe("a skill read whole still serves what it served before", () => {
       agent.skills.map((f) => f.relative_filepath);
    const listed = (agent: PackageAgent) =>
       (agent.assets ?? []).map((a) => a.relative_filepath);
+   /** Twice REFERENCE_MAX_EXAMINED files in `shared-big`, for a link to point at. */
+   const fillBig = () => {
+      fs.mkdirSync(path.join(pkg, "shared-big"));
+      for (let i = 0; i < 2 * REFERENCE_MAX_EXAMINED; i++) {
+         fs.writeFileSync(path.join(pkg, "shared-big", `n${i}.txt`), "x");
+      }
+   };
+   // The most entries any one directory listing returned while `run` ran, whole or through opendir.
+   const largestListing = (run: () => void) => {
+      let largest = 0;
+      const listings = spyOn(fs, "readdirSync");
+      const open = fs.opendirSync;
+      const opens = spyOn(fs, "opendirSync").mockImplementation(((
+         ...args: Parameters<typeof fs.opendirSync>
+      ) => {
+         const opened = open(...args);
+         const read = opened.readSync.bind(opened);
+         let reads = 0;
+         opened.readSync = () => {
+            largest = Math.max(largest, ++reads);
+            return read();
+         };
+         return opened;
+      }) as typeof fs.opendirSync);
+      try {
+         run();
+         for (const result of listings.mock.results) {
+            if (result.type === "return" && Array.isArray(result.value)) {
+               largest = Math.max(largest, result.value.length);
+            }
+         }
+      } finally {
+         listings.mockRestore();
+         opens.mockRestore();
+      }
+      return largest;
+   };
 
    beforeEach(() => {
       pkg = fs.mkdtempSync(path.join(os.tmpdir(), "skill-compat-"));
@@ -1030,43 +1067,9 @@ describe("a skill read whole still serves what it served before", () => {
                path.join(pkg, target),
                path.join(pkg, ROOT, "s/reference"),
             );
-         // The most entries any one directory listing returned while `run` ran, whole or through opendir.
-         const largestListing = (run: () => void) => {
-            let largest = 0;
-            const listings = spyOn(fs, "readdirSync");
-            const open = fs.opendirSync;
-            const opens = spyOn(fs, "opendirSync").mockImplementation(((
-               ...args: Parameters<typeof fs.opendirSync>
-            ) => {
-               const opened = open(...args);
-               const read = opened.readSync.bind(opened);
-               let reads = 0;
-               opened.readSync = () => {
-                  largest = Math.max(largest, ++reads);
-                  return read();
-               };
-               return opened;
-            }) as typeof fs.opendirSync);
-            try {
-               run();
-               for (const result of listings.mock.results) {
-                  if (result.type === "return" && Array.isArray(result.value)) {
-                     largest = Math.max(largest, result.value.length);
-                  }
-               }
-            } finally {
-               listings.mockRestore();
-               opens.mockRestore();
-            }
-            return largest;
-         };
-
          it("is listed for no more than 10,001 entries, to serve it or to look for a publisher.json", () => {
             skill("s");
-            fs.mkdirSync(path.join(pkg, "shared-big"));
-            for (let i = 0; i < 2 * REFERENCE_MAX_EXAMINED; i++) {
-               fs.writeFileSync(path.join(pkg, "shared-big", `n${i}.txt`), "x");
-            }
+            fillBig();
             linkReference("shared-big");
             const largest = largestListing(() => {
                expect(read().agents.has("analyst")).toBe(true);
@@ -1087,6 +1090,44 @@ describe("a skill read whole still serves what it served before", () => {
                "nested publisher.json at 's/reference/publisher.json'",
             );
          });
+      });
+   });
+
+   describe("an assets/ that is a link to a directory in the package", () => {
+      const linkAssets = (skillName: string, target: string) =>
+         fs.symlinkSync(
+            path.join(pkg, target),
+            path.join(pkg, ROOT, skillName, "assets"),
+         );
+
+      it("is listed for no more than 10,001 entries, and still refuses the agent", () => {
+         skill("s");
+         fillBig();
+         linkAssets("s", "shared-big");
+         let result: ReturnType<typeof read> | undefined;
+         const largest = largestListing(() => {
+            result = read();
+         });
+         expect(result!.agents.has("analyst")).toBe(false);
+         expect(result!.warnings.join("\n")).toContain(
+            `'${ROOT}/s/assets' is a link`,
+         );
+         // The spies must see the listing, or the bound below is vacuous.
+         expect(largest).toBeGreaterThanOrEqual(REFERENCE_MAX_EXAMINED);
+         expect(largest).toBeLessThanOrEqual(REFERENCE_MAX_EXAMINED + 1);
+      });
+
+      // A dot-named skill directory is never scanned, so its linked assets/ is refused only by the publisher.json check.
+      it("still refuses the agent for a publisher.json behind it in a dot-named skill directory", () => {
+         skill("s");
+         write(`${ROOT}/.old/SKILL.md`, "x");
+         write("shared-assets/publisher.json", "{}");
+         linkAssets(".old", "shared-assets");
+         const result = read();
+         expect(result.agents.has("analyst")).toBe(false);
+         expect(result.warnings.join("\n")).toContain(
+            "nested publisher.json at '.old/assets/publisher.json'",
+         );
       });
    });
 });
