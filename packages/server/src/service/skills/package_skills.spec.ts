@@ -286,6 +286,23 @@ describe("readSkillsDir", () => {
       expect(warnings[0]).toContain("skills/empty");
    });
 
+   it("does not serve a skill whose SKILL.md is not UTF-8 text, and names it", () => {
+      writeSkill("good", "---\nname: good\ndescription: d\n---\n\nbody\n");
+      fs.mkdirSync(path.join(pkg, "skills", "latin"), { recursive: true });
+      fs.writeFileSync(
+         path.join(pkg, "skills", "latin", "SKILL.md"),
+         Buffer.concat([
+            Buffer.from("---\nname: latin\ndescription: d\n---\n\ncaf"),
+            Buffer.from([0xe9]),
+         ]),
+      );
+      const { skills, warnings } = readSkillsDir(pkg);
+      expect(skills.map((s) => s.name)).toEqual(["good"]);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("skills/latin/SKILL.md");
+      expect(warnings[0]).toContain("not UTF-8 text");
+   });
+
    it("warns when a skill has no description, since a listing shows nothing else", () => {
       writeSkill("quiet", "---\nname: quiet\n---\n\nbody\n");
       expect(readSkillsDir(pkg).warnings[0]).toContain("no description");

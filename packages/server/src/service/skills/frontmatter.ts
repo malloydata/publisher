@@ -29,8 +29,8 @@ function lineRead(front: string, key: string): string | undefined {
    return value === undefined ? undefined : unquote(value);
 }
 
-/** Alias-free output is at most its source size (key stringification stays under 4x); an alias, even of a scalar, can exceed it. */
-const EMIT_FACTOR = 4;
+/** Alias-free output stays under 5x its source (a number like `1e20` prints 21 digits); an alias, even of a scalar, can exceed it. */
+const EMIT_FACTOR = 5;
 const EMIT_SLACK = 10_000;
 
 /** The frontmatter block as a JSON object, or why it is not one. Never throws. */

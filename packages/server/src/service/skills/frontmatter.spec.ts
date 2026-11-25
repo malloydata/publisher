@@ -46,6 +46,17 @@ describe("parseFrontmatter: what an alias can expand to", () => {
       expect((out.frontmatter.items as string[]).length).toBe(6000);
    });
 
+   it("still parses an alias-free list of 6,000 values that print far longer than they are written", () => {
+      const out = parseFrontmatter(
+         skill(
+            `name: big\ndescription: d\nv: [${Array(6000).fill("1e20").join(",")}]`,
+         ),
+         "big",
+      );
+      expect(out.warnings).toEqual([]);
+      expect((out.frontmatter.v as number[]).length).toBe(6000);
+   });
+
    it("still parses a short mapping referenced twice", () => {
       const out = parseFrontmatter(
          skill("name: ok\ndescription: d\nbase: &b {x: 1}\na: *b\nc: *b"),

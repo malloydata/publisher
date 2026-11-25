@@ -560,6 +560,11 @@ function scanSkills(
          unserved(skillNotServed(rel, read.problem));
          continue;
       }
+      // Its text is served and carried inline, so a lossy decode would be the skill.
+      if (decodeText(read.raw) === undefined) {
+         unserved(skillNotServed(rel, "is not UTF-8 text"));
+         continue;
+      }
 
       const fm = parseFrontmatter(read.text, entry.name);
       for (const w of fm.warnings) {
