@@ -241,8 +241,8 @@ type Zone = "root" | "reference" | "linked reference" | "assets" | "other";
  * a bound cuts the newest locations first. An ignored directory is not
  * descended, but every entry seen still counts against the budget; hitting a
  * bound adds a warning and keeps what was found so far. The Markdown files
- * directly in `reference/` are bounded by a count of their own, linked or not,
- * and `reference/` is listed no further than that, nor past
+ * directly in `reference/` are bounded by a count of their own, linked or not
+ * and ignored or not, and `reference/` is listed no further than that, nor past
  * `REFERENCE_MAX_EXAMINED` entries of any kind.
  */
 export function skillFiles(
@@ -277,7 +277,7 @@ export function skillFiles(
       }
       return false;
    };
-   // The always-walked reference/ serves this many Markdown files; what it holds besides is not counted.
+   // The always-walked reference/ examines this many Markdown files, ignored or not; what it holds besides is not counted.
    const reference = { left: ASSET_MAX_ENTRIES, warned: false };
    const takeReference = (relative: string): boolean => {
       if (reference.left > 0) {
@@ -292,19 +292,17 @@ export function skillFiles(
       }
       return false;
    };
-   const servedMarkdown = (entry: fs.Dirent, relative: string) =>
+   // Counted whether or not `.skillignore` matches it, so an ignored file cannot be examined for free.
+   const countedMarkdown = (entry: fs.Dirent) =>
       entry.name.endsWith(".md") &&
       !entry.isDirectory() &&
-      !builtInExcluded(entry.name, false) &&
-      !matcher.ignores(relative);
+      !builtInExcluded(entry.name, false);
    // Stops one Markdown file past the cap, so a link to a directory of Markdown is not listed in full.
    const listMarkdownCapped = (absolute: string, rel: string) => {
       let markdown = 0;
       const { entries, cut } = listBounded(
          absolute,
-         (entry) =>
-            servedMarkdown(entry, `${rel}/${entry.name}`) &&
-            ++markdown > ASSET_MAX_ENTRIES,
+         (entry) => countedMarkdown(entry) && ++markdown > ASSET_MAX_ENTRIES,
       );
       if (cut) {
          warnings.push(
@@ -387,18 +385,18 @@ export function skillFiles(
          }
          if (cost && !take(cost, relative)) continue;
          if (builtInExcluded(entry.name, isDirectory)) continue;
+         if (
+            (zone === "reference" || zone === "linked reference") &&
+            countedMarkdown(entry) &&
+            !takeReference(relative)
+         ) {
+            continue;
+         }
          if (matcher.ignores(isDirectory ? `${relative}/` : relative)) {
             if (relative !== SKILL_MD || isDirectory) continue;
             warnings.push(
                `${SKILLIGNORE} matches ${SKILL_MD}, which a skill always keeps`,
             );
-         }
-         if (
-            (zone === "reference" || zone === "linked reference") &&
-            servedMarkdown(entry, relative) &&
-            !takeReference(relative)
-         ) {
-            continue;
          }
          if (!isDirectory) {
             files.push(relative);

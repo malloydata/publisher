@@ -572,13 +572,9 @@ describe("skillFiles", () => {
             );
          });
 
-         it("does not count a Markdown file it leaves out, and reads on past a thousand of them", () => {
-            for (let i = 0; i < 600; i++) {
-               write(`reference/.h${i}.md`);
-               write(`reference/skip${i}.md`);
-            }
+         it("does not count a dot Markdown file, and reads on past a thousand of them", () => {
+            for (let i = 0; i < 1200; i++) write(`reference/.h${i}.md`);
             write("reference/z.md");
-            skillignore("reference/skip*.md");
             let files: string[] = [];
             let warnings: string[] = [];
             const reads = listingReads(() => {
@@ -587,6 +583,43 @@ describe("skillFiles", () => {
             expect(inReference(files)).toEqual(["reference/z.md"]);
             expect(warnings).toEqual([]);
             expect(reads).toBeGreaterThanOrEqual(1201);
+         });
+
+         it("counts a Markdown file .skillignore matches, so a thousand ignored ones end the listing", () => {
+            for (let i = 0; i < ASSET_MAX_ENTRIES + 100; i++) {
+               write(`reference/skip${i}.md`);
+            }
+            skillignore("reference/skip*.md");
+            let files: string[] = [];
+            let warnings: string[] = [];
+            const reads = listingReads(() => {
+               ({ files, warnings } = skillFiles(dir));
+            });
+            expect(inReference(files)).toEqual([]);
+            expect(warnings).toHaveLength(1);
+            expect(warnings[0]).toContain(
+               `reference/ holds more than ${ASSET_MAX_ENTRIES} Markdown files`,
+            );
+            expect(reads).toBeGreaterThanOrEqual(ASSET_MAX_ENTRIES);
+            expect(reads).toBeLessThanOrEqual(ASSET_MAX_ENTRIES + 1);
+         });
+
+         it("counts an ignored file of a linked reference/ the same way", () => {
+            for (let i = 0; i < ASSET_MAX_ENTRIES + 100; i++) {
+               write(`shared/skip${i}.md`);
+            }
+            link();
+            skillignore("reference/skip*.md");
+            let warnings: string[] = [];
+            const reads = listingReads(() => {
+               ({ warnings } = skillFiles(dir, {
+                  followReference: (target) => target,
+               }));
+            });
+            expect(warnings.some((w) => w.includes("Markdown files"))).toBe(
+               true,
+            );
+            expect(reads).toBeLessThanOrEqual(ASSET_MAX_ENTRIES + 1);
          });
 
          it("lists a link to a directory of five thousand Markdown files for no more than 1,001 entries", () => {
