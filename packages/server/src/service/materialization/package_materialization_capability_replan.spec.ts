@@ -16,6 +16,8 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import type { Model } from "../model";
 import { stringCapabilityKey } from "./domain/compiled_build_plan";
 import { capabilityFingerprint } from "./domain/string_reads";
@@ -30,7 +32,10 @@ import {
    okWorkerPlan,
 } from "../../test_helpers/materialization_test_fixtures";
 
-const SOURCE_ID = "m@file:///pkg/m.malloy";
+// An absolute package root and file URL on every platform: a drive-less
+// file:/// URL has no path on Windows, so the lookup would read it as unread.
+const PKG = path.resolve("/pkg");
+const SOURCE_ID = `m@${pathToFileURL(path.join(PKG, "m.malloy")).href}`;
 const KEY = stringCapabilityKey(SOURCE_ID, "lake");
 
 /** What one model's read records for its source `m`, by field. */
@@ -85,7 +90,7 @@ async function facade(judged: string) {
       metadata: () => ({}) as never,
       models: () => new Map([["m.malloy", model]]),
       modelPolicy: () => ({ setServingResolvers: () => {} }) as never,
-      packagePath: () => "/pkg",
+      packagePath: () => PKG,
       malloyConfig: () => ({}) as never,
       connection: async () => {
          throw new Error("no connection");
@@ -96,7 +101,7 @@ async function facade(judged: string) {
             state.derived++;
             return [];
          },
-         getPackagePath: () => "/pkg",
+         getPackagePath: () => PKG,
          getMalloyConfig: () => ({}) as never,
          getMalloyConnection: async () => {
             throw new Error("no connection");
@@ -242,7 +247,7 @@ describe("the capability a plan judges an unbound upstream by", () => {
          metadata: () => ({}) as never,
          models: () => models,
          modelPolicy: () => ({ setServingResolvers: () => {} }) as never,
-         packagePath: () => "/pkg",
+         packagePath: () => PKG,
          malloyConfig: () => ({}) as never,
          connection: async () => {
             throw new Error("no connection");
