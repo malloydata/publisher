@@ -7,7 +7,7 @@ import {
    recordConsoleAliasUse,
    isLegacyReportAlias,
 } from "../service/legacy_report_views";
-import type { EnvironmentStore } from "../service/environment_store";
+import type { LoadedEnvironmentsReader } from "../service/environment_ports";
 import { resolveSpaFallback, type LoadedRoutes } from "../spa_fallback";
 import { withRequestQuery } from "./data_apps";
 
@@ -20,7 +20,7 @@ export function registerSpaFallback(
    app: express.Express,
    apiPrefix: string,
    appRoot: string,
-   environmentStore: EnvironmentStore,
+   environmentStore: LoadedEnvironmentsReader,
 ): void {
    const SPA_INDEX = path.resolve(appRoot, "index.html");
    const escapeHtml = (value: string) =>
@@ -32,6 +32,7 @@ export function registerSpaFallback(
    // resolves from storage (see `LoadedRoutes`). The cost: an environment or
    // package not loaded yet (a cold start, a lazily loaded environment) gets
    // the 404 page, which names the canonical URL that does load it.
+   // A versioned package is found by name through its loaded `latest`.
    const loadedPackage = (environmentName: string, packageName: string) =>
       environmentStore
          .getLoadedEnvironments()
@@ -39,8 +40,7 @@ export function registerSpaFallback(
             (environment) =>
                environment.getEnvironmentName() === environmentName,
          )
-         ?.getLoadedPackages()
-         .find((pkg) => pkg.getPackageName() === packageName);
+         ?.peekPackage(packageName);
    const loadedRoutes: LoadedRoutes = {
       hasEnvironment: (environmentName) =>
          environmentStore

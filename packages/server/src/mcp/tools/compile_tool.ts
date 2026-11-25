@@ -5,15 +5,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
 import type { GivenValue } from "@malloydata/malloy";
 import { logger } from "../../logger";
-import { EnvironmentStore } from "../../service/environment_store";
-import { CompileController } from "../../controller/compile.controller";
-import { type ErrorDetails } from "../error_messages";
-import { buildMalloyUri, classifyToolError } from "../handler_utils";
-import {
-   type QuerySlotHandle,
-   tryAcquireQuerySlot,
-} from "../../query_concurrency";
-import { jsonResource, jsonToolError } from "../tool_response";
+import type { CompileController } from "../../controller/compile.controller";
+import { buildMalloyUri } from "../handler_utils";
+import { registerGuardedTool } from "../register_tool";
+import type { QuerySlotHandle, QuerySlots } from "../../query_concurrency";
+import { jsonResource } from "../tool_response";
 
 const compileShape = {
    environmentName: z
@@ -53,18 +49,18 @@ const compileShape = {
       ),
 };
 
-const COMPILE_DESCRIPTION = `Compile-check Malloy without running a query. Use this while authoring instead of a throwaway execute_query.
+const COMPILE_DESCRIPTION = `Compile-check Malloy without running a query; use it while authoring instead of a throwaway execute_query.
 
 ## Scopes (the scope parameter)
-- "append" (default): append source to modelPath. Use for NEW definitions; existing definitions report "Cannot redefine". Positions refer to the concatenated file (a ## artifact document reads only your text, and no document is returned). Refused here, with a 400: import, connection.table(...), connection.sql(...), raw-SQL functions, given: declarations (reading the model's givens as $NAME is fine), ##! flags, and text that does not stand alone as top-level Malloy — a bare view:/dimension:/measure:, or anything parsing only as a continuation of the model's last statement. A ## artifact document also refuses # image, # link and @env.; plain text keeps them. Wrap a view body in a top-level query:, a field in a throwaway source: check is <source> extend { … }; use "file" or "package" for a model that declares data roots.
-- "file": compile source AS modelPath. Use to validate an EDIT before saving; positions match the submitted file.
-- "package": dry-run a reload of every .malloy/.malloynb file without serving the result, with its render-tag and report checks (no position) but not its other warnings. A source replaces modelPath so importers see the edit. Diagnostics may name hidden files; no rows or SQL are returned, and authorize gates still apply to caller text. An unmatched path is warned and treated as new. Save, then reload_package to serve it.
+- "append" (default): append source to modelPath. Use for NEW definitions; existing definitions report "Cannot redefine". Positions refer to the concatenated file (a ## artifact document reads only your text, and no document is returned). Refused (400): import, connection.table(...), connection.sql(...), raw-SQL functions, given: declarations (reading a given as $NAME is fine), ##! flags, and text that does not stand alone as top-level Malloy — a bare view:/dimension:/measure:, or text that only continues the model's last statement. A ## artifact document also refuses # image, # link and @env.; plain text keeps them. Wrap a view body in a top-level query:, a field in a throwaway source: check is <source> extend { … }; use "file" or "package" for a model that declares data roots.
+- "file": compile source AS modelPath, to validate an EDIT before saving (positions match the submitted file). If it names a materialization annotation, also reports what the load would refuse or leave unbuilt.
+- "package": dry-run a reload of every .malloy/.malloynb file, unserved: render-tag and report checks (no position), plus what the load would refuse (errors) or leave unbuilt (warnings); no other warnings. A source replaces modelPath so importers see it; an unmatched path is treated as new. May name hidden files; no rows or SQL; authorize gates apply to caller text. Save, then reload_package to serve it.
 
 ## Parameters
-- environmentName, packageName, modelPath: required. source: required at append/file, optional at package. Caller source may not declare an access-control gate outside prose — neither #(authorize) nor #(access_filter).
+- environmentName, packageName, modelPath: required. source: required at append/file, optional at package. Caller source may not declare #(authorize) or #(access_filter) outside prose.
 
 ## Response
-{ status: "success"|"error", diagnostics: [{ severity, message, code, model, line, character, endLine, endCharacter, replacement }], sql? }. Positions are 0-based; model is the package-relative file the diagnostic points at (which can be pre-existing content, not your source). status is "error" only when an error-severity diagnostic exists; errors are also stated in a plain text block.`;
+{ status: "success"|"error", diagnostics: [{ severity, message, code, model, line, character, endLine, endCharacter, replacement }], sql? }. Positions are 0-based; model is the package-relative file it points at (possibly existing content, not your source). status is "error" only if an error-severity diagnostic exists; errors also appear in a plain text block.`;
 
 /** The flattened diagnostic shape this tool returns. */
 type CompileDiagnostic = {
@@ -108,15 +104,36 @@ export function formatDiagnosticsText(
  */
 export function registerCompileTool(
    mcpServer: McpServer,
-   environmentStore: EnvironmentStore,
+   compileController: CompileController,
+   querySlots: QuerySlots,
 ): void {
-   const compileController = new CompileController(environmentStore);
-
-   mcpServer.tool(
-      "compile_model",
-      COMPILE_DESCRIPTION,
-      compileShape,
-      async (params) => {
+   registerGuardedTool(mcpServer, {
+      name: "compile_model",
+      description: COMPILE_DESCRIPTION,
+      inputSchema: compileShape,
+      // A thrown failure: not found, a notebook, an authorize denial, an
+      // unloadable model (a modelPath typo lands here at append scope), or a
+      // system error.
+      op: "compile",
+      failed: "compile failed",
+      uri: ({ environmentName, packageName, modelPath }) =>
+         buildMalloyUri(
+            {
+               environment: environmentName,
+               package: packageName,
+               resourceType: "models",
+               resourceName: modelPath,
+            },
+            "compile",
+         ),
+      identifier: ({ environmentName, packageName, modelPath }) =>
+         `${environmentName}/${packageName}/${modelPath}`,
+      logFields: ({ environmentName, packageName, modelPath }) => ({
+         environmentName,
+         packageName,
+         modelPath,
+      }),
+      run: async (params, uri) => {
          const {
             environmentName,
             packageName,
@@ -135,22 +152,12 @@ export function registerCompileTool(
             scope: scope ?? "append",
          });
 
-         const uri = buildMalloyUri(
-            {
-               environment: environmentName,
-               package: packageName,
-               resourceType: "models",
-               resourceName: modelPath,
-            },
-            "compile",
-         );
-
          // Compile resolves schemas against the warehouse, so it takes a query
          // slot like the HTTP compile route; one ungated surface would relocate
-         // the bypass. A refusal throws into the catch below.
+         // the bypass. A refusal throws, answered as a classified error.
          let querySlot: QuerySlotHandle | null = null;
          try {
-            querySlot = tryAcquireQuerySlot("mcp:compile");
+            querySlot = querySlots.tryAcquire("mcp:compile");
             const result = await compileController.compile(
                environmentName,
                packageName,
@@ -189,25 +196,9 @@ export function registerCompileTool(
                isError,
                ...(isError && { text: formatDiagnosticsText(diagnostics) }),
             });
-         } catch (error) {
-            // Not found, a notebook, an authorize denial, an unloadable model
-            // (a modelPath typo lands here at append scope), or a system error:
-            // a clean isError payload rather than a transport fault.
-            logger.warn("[MCP Tool compile] compile failed", {
-               environmentName,
-               packageName,
-               modelPath,
-               error: error instanceof Error ? error.message : String(error),
-            });
-            const errorDetails: ErrorDetails = classifyToolError(
-               "compile",
-               `${environmentName}/${packageName}/${modelPath}`,
-               error,
-            );
-            return jsonToolError(uri, errorDetails);
          } finally {
             querySlot?.release();
          }
       },
-   );
+   });
 }

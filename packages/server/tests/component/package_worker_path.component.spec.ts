@@ -23,6 +23,7 @@
  * loaded concurrently into multiple worker isolates of the same Bun
  * process. Production uses one pool; this matches.
  */
+import { unrecordedAudit } from "../../src/service/access_record";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
@@ -102,11 +103,10 @@ describe("Package.create via worker pool", () => {
          // recompile, then runs the SQL against the *main thread's*
          // DuckDB connection (the only one with the in-memory `nums`
          // source loaded via duckdb.sql()).
-         const { result } = await model!.getQueryResults(
-            "nums",
-            "total_v",
-            undefined,
-         );
+         const { result } = await model!.runQuery(unrecordedAudit(), {
+            sourceName: "nums",
+            queryName: "total_v",
+         });
          expect(result.data).toBeDefined();
       } finally {
          await duckdb.close();
@@ -173,6 +173,7 @@ run: s -> { where: d ~ @2025 aggregate: n }
          path.join(tempDir, "gated.malloy"),
          `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -239,6 +240,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
 >>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -271,6 +273,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
             `>>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -289,8 +292,8 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
          }
       });
 
-      it("a notebook cell hydrated from the worker's cellModelDef receives only its own scope's givens", async () => {
-         // Here a cell's modelDef comes from the worker's cellModelDef, not a live compile.
+      it("a worker-loaded notebook's gated cell filters by its given, and an ungated cell ignores it", async () => {
+         // Here the notebook's model comes from the worker, not a live compile.
          writeManifest();
          fs.writeFileSync(
             path.join(tempDir, "nb.malloynb"),
@@ -304,6 +307,7 @@ run: plain -> { aggregate: c }
 >>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -324,41 +328,18 @@ run: gated -> { aggregate: c }`,
             );
             const model = pkg.getModel("nb.malloynb");
 
-            const preImport = await model!.executeNotebookCell(
-               1,
-               undefined,
-               false,
-               { GROUPS: [1] },
-            );
-            const preImportRows = JSON.parse(preImport.result!) as {
-               data?: {
-                  array_value?: Array<{
-                     record_value?: Array<{ number_value?: number }>;
-                  }>;
-               };
-            };
-            expect(
-               preImportRows.data?.array_value?.[0]?.record_value?.[0]
-                  ?.number_value,
-            ).toBe(4);
+            // Each cell's query, run on the notebook's own path.
+            const ungated = await model!.runQuery(unrecordedAudit(), {
+               query: "run: plain -> { aggregate: c }",
+               givens: { GROUPS: [1] },
+            });
+            expect((ungated.compactResult as { c: number }[])[0].c).toBe(4);
 
-            const postImport = await model!.executeNotebookCell(
-               2,
-               undefined,
-               false,
-               { GROUPS: [1] },
-            );
-            const postImportRows = JSON.parse(postImport.result!) as {
-               data?: {
-                  array_value?: Array<{
-                     record_value?: Array<{ number_value?: number }>;
-                  }>;
-               };
-            };
-            const count =
-               postImportRows.data?.array_value?.[0]?.record_value?.[0]
-                  ?.number_value;
-            expect(count).toBe(2);
+            const gated = await model!.runQuery(unrecordedAudit(), {
+               query: "run: gated -> { aggregate: c }",
+               givens: { GROUPS: [1] },
+            });
+            expect((gated.compactResult as { c: number }[])[0].c).toBe(2);
          } finally {
             await duckdb.close();
          }
@@ -376,7 +357,10 @@ run: gated -> { aggregate: c }`,
             );
             const err = await pkg
                .getModel("og_nb.malloynb")!
-               .executeNotebookCell(0, undefined, false, { HIDE: "a" })
+               .runQuery(unrecordedAudit(), {
+                  query: "run: mid_ungated -> { aggregate: c }",
+                  givens: { HIDE: "a" },
+               })
                .catch((e: unknown) => e);
             expect((err as Error).message).toMatch(/unknown given 'HIDE'/);
          } finally {
@@ -431,6 +415,7 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          path.join(tempDir, "split.malloy"),
          `##! experimental.givens
 
+#(secure)
 given:
   DENY :: number[]
   ROLE :: string[]
@@ -471,6 +456,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
          path.join(tempDir, "badgate.malloy"),
          `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -501,6 +487,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
          path.join(tempDir, "og_base.malloy"),
          `##! experimental.givens
 
+#(secure)
 given:
   HIDE :: string is 'none'
 
@@ -514,6 +501,7 @@ source: ungated_deep is ${table} extend {
          path.join(tempDir, "og_gate.malloy"),
          `##! experimental.givens
 
+#(secure)
 given:
   HIDE :: string
 
@@ -552,14 +540,10 @@ run: mid_ungated -> { aggregate: c }`,
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const err = await pkg
             .getModel("og_entry.malloy")!
-            .getQueryResults(
-               undefined,
-               undefined,
-               "run: mid_ungated -> { aggregate: c }",
-               undefined,
-               undefined,
-               { HIDE: "a" },
-            )
+            .runQuery(unrecordedAudit(), {
+               query: "run: mid_ungated -> { aggregate: c }",
+               givens: { HIDE: "a" },
+            })
             .catch((e: unknown) => e);
          expect((err as Error).message).toMatch(/unknown given 'HIDE'/);
       } finally {
@@ -726,6 +710,66 @@ run: mid_ungated -> { aggregate: c }`,
       } finally {
          spy.mockRestore();
          prepareSpy.mockRestore();
+         await duckdb.close();
+      }
+   });
+
+   it("judges render tags once per prepared content: a hit on the same, a miss on changed text or schema", async () => {
+      writeManifest();
+      const { renderTagFindingsCache } = await import(
+         "../../src/service/render_tag_findings_cache"
+      );
+      const validator = await import("@malloydata/render-validator");
+      const validate = spyOn(validator, "validateRenderTags");
+      const model = (sparkline: string) =>
+         `source: cached is duckdb.table('cached.csv') extend {
+  measure: total is a.sum()
+  # big_value { sparkline=${sparkline} }
+  view: card is {
+    aggregate: total
+    nest:
+      # line_chart { size=spark }
+      trend is { group_by: a; aggregate: total }
+  }
+}`;
+      fs.writeFileSync(path.join(tempDir, "cached.csv"), "a,b\n1,2\n");
+      fs.writeFileSync(path.join(tempDir, "cached.malloy"), model("trend"));
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      const load = async () => {
+         validate.mockClear();
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         return {
+            calls: validate.mock.calls.length,
+            warnings: pkg.getPackageMetadata().warnings ?? [],
+         };
+      };
+      try {
+         renderTagFindingsCache.clear();
+         const first = await load();
+         expect(first.calls).toBe(1);
+         expect(
+            first.warnings.some(
+               (w) => w.subject === "cached -> card" && w.severity === "error",
+            ),
+         ).toBe(true);
+
+         // The same content: the findings come from the cache, unchanged.
+         const again = await load();
+         expect(again.calls).toBe(0);
+         expect(again.warnings).toEqual(first.warnings);
+
+         // Changed model text: judged afresh.
+         fs.writeFileSync(path.join(tempDir, "cached.malloy"), model("other"));
+         expect((await load()).calls).toBe(1);
+
+         // The same text over a table whose schema changed: judged afresh,
+         // which a key on model text alone would miss.
+         fs.writeFileSync(path.join(tempDir, "cached.csv"), "a,b\n1.5,2\n");
+         fs.writeFileSync(path.join(tempDir, "cached.malloy"), model("trend"));
+         expect((await load()).calls).toBe(1);
+         expect((await load()).calls).toBe(0);
+      } finally {
+         validate.mockRestore();
          await duckdb.close();
       }
    });
@@ -996,39 +1040,35 @@ run: mid_ungated -> { aggregate: c }`,
       [
          "JSON that is not an object",
          `["pkg"]`,
-         /Invalid publisher\.json: expected a JSON object, got \["pkg"\]/,
+         // The kind of value, never the value: the file is not quoted.
+         /Invalid publisher\.json: expected a JSON object, got an array\./,
       ],
       [
          "an unknown retrieval key",
          JSON.stringify({ name: "pkg", retrieval: { rephrase: true } }),
-         /retrieval: unknown key 'rephrase'\. Valid keys: representation, keyphrases, refine, rerank, sourceMatch, sourceSummary, prompts\./,
+         /retrieval: unknown key 'rephrase'\. Valid keys: sourceSummary, prompts, fcj\./,
       ],
       [
-         "an invalid retrieval.refine.minLevel",
+         "an invalid retrieval.fcj.perTarget",
          JSON.stringify({
             name: "pkg",
-            retrieval: { refine: { minLevel: "NONE" } },
+            retrieval: { fcj: { perTarget: 0 } },
          }),
-         /retrieval\.refine\.minLevel: expected one of LOW, MEDIUM, HIGH/,
+         /retrieval\.fcj\.perTarget: expected an integer from 1 to 500/,
       ],
       [
-         "an invalid retrieval.rerank.topSources",
+         "an invalid retrieval.sourceSummary.enabled",
          JSON.stringify({
             name: "pkg",
-            retrieval: { rerank: { topSources: 0 } },
+            retrieval: { sourceSummary: { enabled: "yes" } },
          }),
-         /retrieval\.rerank\.topSources: expected a positive integer/,
-      ],
-      [
-         "an invalid retrieval.representation",
-         JSON.stringify({ name: "pkg", retrieval: { representation: "x" } }),
-         /retrieval\.representation: expected one of single, facets/,
+         /retrieval\.sourceSummary\.enabled: expected "auto", true or false/,
       ],
       [
          "a retrieval prompt path that climbs out of the package",
          JSON.stringify({
             name: "pkg",
-            retrieval: { prompts: { keyphrase: "../p.md" } },
+            retrieval: { prompts: { judge: "../p.md" } },
          }),
          /resolves outside the package directory/,
       ],
@@ -1067,15 +1107,14 @@ run: mid_ungated -> { aggregate: c }`,
 
    it("reads the retrieval block, prompt file included, at load and again on reload", async () => {
       fs.mkdirSync(path.join(tempDir, "prompts"));
-      fs.writeFileSync(path.join(tempDir, "prompts", "k.md"), "first prompt");
+      fs.writeFileSync(path.join(tempDir, "prompts", "j.md"), "first prompt");
       fs.writeFileSync(
          path.join(tempDir, "publisher.json"),
          JSON.stringify({
             name: "pkg",
             retrieval: {
-               representation: "facets",
-               keyphrases: "never",
-               prompts: { keyphrase: "prompts/k.md" },
+               fcj: { perTarget: 50 },
+               prompts: { judge: "prompts/j.md" },
             },
          }),
       );
@@ -1087,9 +1126,8 @@ run: mid_ungated -> { aggregate: c }`,
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const settings = pkg.getRetrievalSettings();
-         expect(settings.representation).toBe("facets");
-         expect(settings.keyphrases).toBe("never");
-         expect(settings.prompts.keyphrase?.text).toBe("first prompt");
+         expect(settings.fcj?.perTarget).toBe(50);
+         expect(settings.prompts.judge?.text).toBe("first prompt");
 
          // A package with no block takes the defaults.
          fs.writeFileSync(
@@ -1102,11 +1140,57 @@ run: mid_ungated -> { aggregate: c }`,
             tempDir,
             malloyConfig,
          );
-         expect(plain.getRetrievalSettings()).toEqual({
-            representation: "single",
-            keyphrases: "auto",
+         expect(plain.getRetrievalSettings()).toEqual({ prompts: {} });
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("loads a package whose publisher.json still sets the keys of the removed search, and warns about each", async () => {
+      fs.writeFileSync(
+         path.join(tempDir, "publisher.json"),
+         JSON.stringify({
+            name: "pkg",
+            retrieval: {
+               representation: "facets",
+               keyphrases: "never",
+               refine: { enabled: true, minLevel: "HIGH" },
+               rerank: { topSources: 3 },
+               sourceMatch: { enabled: false },
+               // No such file: a prompt of a removed step is never read.
+               prompts: { refine: "prompts/refine.md" },
+               fcj: { perTarget: 50 },
+            },
+         }),
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "trivial.malloy"),
+         `source: nums is duckdb.sql("select 1 as a")`,
+      );
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         // The settings that still work are read; the rest are not in them.
+         expect(pkg.getRetrievalSettings()).toEqual({
+            fcj: expect.objectContaining({ perTarget: 50 }),
             prompts: {},
          });
+         const messages = (pkg.getPackageMetadata().warnings ?? []).map(
+            (w) => w.message,
+         );
+         for (const key of [
+            "retrieval.representation",
+            "retrieval.keyphrases",
+            "retrieval.refine",
+            "retrieval.rerank",
+            "retrieval.sourceMatch",
+            "retrieval.prompts.refine",
+         ]) {
+            const mine = messages.filter((m) =>
+               m?.startsWith(`publisher.json ${key} no longer does anything`),
+            );
+            expect(mine).toHaveLength(1);
+         }
       } finally {
          await duckdb.close();
       }
@@ -1121,6 +1205,7 @@ run: mid_ungated -> { aggregate: c }`,
             `##! experimental.persistence
 ##! experimental.givens
 
+#(secure)
 given:
   ORG :: number
 
@@ -1187,14 +1272,14 @@ source: orders is duckdb.sql("""
             }
             // The package serves the worker's plan rather than compiling its own.
             expect(pkg.getPackageMetadata().buildPlan).toEqual(
-               workerPlan.outcome.plan ?? undefined,
+               workerPlan.packagePlan.plan ?? undefined,
             );
 
             const { computePackageBuildPlan } = await import(
-               "../../src/service/build_plan_compile"
+               "../../src/service/materialization/plan/build_plan_compile"
             );
             const mainThread = await computePackageBuildPlan(pkg);
-            expect(workerPlan.outcome).toEqual(mainThread);
+            expect(workerPlan.packagePlan).toEqual(mainThread);
             // The fixture reaches every part of the plan, so equality above is
             // not equality of empty results.
             expect(
@@ -1204,9 +1289,18 @@ source: orders is duckdb.sql("""
             ).toEqual([
                "persist:by_category",
                "persist:gated",
-               "persist:stored",
-               "preaggregate:orders__preagg__category__edb2cd3b",
+               // The rollup leg's name for the v1 rollup (the v1 cutover, G4).
+               "rollup:orders__rollup__category__81e09214",
             ]);
+            // `stored` is a `storage=` source on the package's DuckDB
+            // sandbox, which a storage build cannot read: the worker, which
+            // knows the sandbox only from the main thread's connection
+            // metadata, refuses it as the main thread does.
+            expect(
+               Object.values(mainThread.plan?.refusedSources ?? {})
+                  .filter((source) => source.name === "stored")
+                  .map((source) => source.reason),
+            ).toEqual(["storage_source_unsupported"]);
 
             // A plan the worker left at its soft deadline is derived here, and
             // it is the same plan.
@@ -1229,7 +1323,7 @@ source: orders is duckdb.sql("""
                   malloyConfig,
                );
                expect(derivedHere.getPackageMetadata().buildPlan).toEqual(
-                  workerPlan.outcome.plan ?? undefined,
+                  workerPlan.packagePlan.plan ?? undefined,
                );
                expect(durations.mock.calls.map((call) => call[1])).toEqual([
                   "main_thread",
@@ -1368,6 +1462,194 @@ source: from_sql is warehouse.sql("select 1 as ${token}")
       { timeout: 60000 },
    );
 
+   /** A `warehouse` connection over an in-memory DuckDB, as an environment's. */
+   async function warehouseConfig() {
+      const { MalloyConfig, FixedConnectionMap } = await import(
+         "@malloydata/malloy"
+      );
+      const { DuckDBConnection } = await import("@malloydata/db-duckdb");
+      const duckdb = new DuckDBConnection("warehouse", ":memory:");
+      const malloyConfig = new MalloyConfig({ connections: {} });
+      malloyConfig.wrapConnections(
+         () =>
+            new FixedConnectionMap(
+               new Map([["warehouse", duckdb]]),
+               "warehouse",
+            ),
+      );
+      return { malloyConfig, duckdb };
+   }
+
+   /** The served columns of `source` in each of the package's models. */
+   function columns(pkg: Package, source: string): string[][] {
+      return pkg.getModelPaths().map((modelPath) => {
+         const def = pkg.getModel(modelPath)?.getModelDef()?.contents[
+            source
+         ] as { fields?: { name: string }[] } | undefined;
+         return (def?.fields ?? []).map((f) => f.name);
+      });
+   }
+
+   it(
+      "refetches each schema once in a refreshing load, and caches what it fetched",
+      async () => {
+         const token = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+         writeManifest();
+         for (const name of ["one", "two"]) {
+            fs.writeFileSync(
+               path.join(tempDir, `${name}.malloy`),
+               `source: from_table is warehouse.table('${token}')
+source: from_sql is warehouse.sql("select * from ${token}")
+`,
+            );
+         }
+         const timings: {
+            schemaFetchCount: number;
+            schemaCacheHits?: number;
+         }[] = [];
+         const loadPackage = workers.pool.loadPackage.bind(workers.pool);
+         const spy = spyOn(workers.pool, "loadPackage").mockImplementation(
+            async (request) => {
+               const outcome = await loadPackage(request);
+               timings.push(outcome.timings);
+               return outcome;
+            },
+         );
+         const { malloyConfig, duckdb } = await warehouseConfig();
+         const load = (refreshSchemas: boolean) =>
+            Package.create(token, "pkg", tempDir, malloyConfig, false, {
+               refreshSchemas,
+            });
+         try {
+            await duckdb.runSQL(`create table ${token} as select 1 as a`);
+            const first = await load(false);
+            expect(columns(first, "from_table")).toEqual([["a"], ["a"]]);
+
+            await duckdb.runSQL(`alter table ${token} add column b integer`);
+            // A plain load (a watch-mode reload) keeps the cached columns.
+            const kept = await load(false);
+            expect(columns(kept, "from_table")).toEqual([["a"], ["a"]]);
+            expect(columns(kept, "from_sql")).toEqual([["a"], ["a"]]);
+
+            const refreshed = await load(true);
+            expect(columns(refreshed, "from_table")).toEqual([
+               ["a", "b"],
+               ["a", "b"],
+            ]);
+            expect(columns(refreshed, "from_sql")).toEqual([
+               ["a", "b"],
+               ["a", "b"],
+            ]);
+
+            const after = await load(false);
+            expect(columns(after, "from_table")).toEqual([
+               ["a", "b"],
+               ["a", "b"],
+            ]);
+
+            const [, keptTimings, refreshTimings, afterTimings] = timings;
+            expect(keptTimings.schemaFetchCount).toBe(0);
+            // Two models ask for the table and the SQL; each is refetched
+            // once, and the second ask waits on that refetch.
+            expect(refreshTimings.schemaFetchCount).toBe(2);
+            expect(refreshTimings.schemaCacheHits).toBe(2);
+            // The refetched schemas replaced the cached ones.
+            expect(afterTimings.schemaFetchCount).toBe(0);
+            expect(afterTimings.schemaCacheHits).toBe(4);
+         } finally {
+            spy.mockRestore();
+            await duckdb.close();
+         }
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "refetches a table once for refreshing loads queued behind one worker",
+      async () => {
+         const token = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+         const tables = [0, 1, 2, 3, 4].map((i) => `${token}_${i}`);
+         writeManifest();
+         fs.writeFileSync(
+            path.join(tempDir, "shared.malloy"),
+            tables
+               .map((t, i) => `source: s${i} is warehouse.table('${t}')`)
+               .join("\n") + "\n",
+         );
+         const { malloyConfig, duckdb } = await warehouseConfig();
+         try {
+            for (const t of tables) {
+               await duckdb.runSQL(`create table ${t} as select 1 as a`);
+            }
+            // Cached before the storm, as a served package's tables are.
+            await Package.create(token, "pkg", tempDir, malloyConfig);
+            const reads = spyOn(duckdb, "fetchTableSchema");
+            // Three packages reloaded at once; the pool's one worker runs
+            // them in turn, and each was requested before the first began.
+            const reloaded = await Promise.all(
+               ["a", "b", "c"].map((name) =>
+                  Package.create(token, name, tempDir, malloyConfig, false, {
+                     refreshSchemas: true,
+                  }),
+               ),
+            );
+            expect(reloaded).toHaveLength(3);
+            expect(reads.mock.calls.map((call) => call[1]).sort()).toEqual(
+               [...tables].sort(),
+            );
+            reads.mockRestore();
+         } finally {
+            await duckdb.close();
+         }
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "has every other worker drop what a refreshing load refetched",
+      async () => {
+         const token = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+         writeManifest();
+         fs.writeFileSync(
+            path.join(tempDir, "one.malloy"),
+            `source: from_table is warehouse.table('${token}')
+`,
+         );
+         const pool = new PackageLoadPool(2);
+         await __setPackageLoadPoolForTests(pool);
+         const { malloyConfig, duckdb } = await warehouseConfig();
+         const load = (refreshSchemas = false) =>
+            Package.create(token, "pkg", tempDir, malloyConfig, false, {
+               refreshSchemas,
+            });
+         const servedBy = (pkgs: Package[]) =>
+            pkgs.map((pkg) => columns(pkg, "from_table")[0]);
+         try {
+            await duckdb.runSQL(`create table ${token} as select 1 as a`);
+            // Two loads at once run on both workers, and both cache the table.
+            expect(servedBy(await Promise.all([load(), load()]))).toEqual([
+               ["a"],
+               ["a"],
+            ]);
+            expect(pool.size).toBe(2);
+
+            await duckdb.runSQL(`alter table ${token} add column b integer`);
+            // Runs on one worker; the other is told to drop its entry.
+            expect(servedBy([await load(true)])).toEqual([["a", "b"]]);
+            // Whichever worker each runs on, neither reads the old columns.
+            expect(servedBy(await Promise.all([load(), load()]))).toEqual([
+               ["a", "b"],
+               ["a", "b"],
+            ]);
+         } finally {
+            await duckdb.close();
+            await workers.restore();
+            await pool.shutdown();
+         }
+      },
+      { timeout: 60000 },
+   );
+
    it("logs what the worker logged through this thread's logger", async () => {
       writeManifest();
       // A malformed `#@ persist` tag is reported while the worker collects the
@@ -1383,7 +1665,11 @@ source: t is base -> { group_by: a }
       const logSpy = spyOn(logger, "log");
       const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
-         await Package.create("env", "pkg", tempDir, malloyConfig);
+         // The tag is invalid, so the load fails; the worker's log still
+         // reaches this thread first.
+         await expect(
+            Package.create("env", "pkg", tempDir, malloyConfig),
+         ).rejects.toThrow("[persist-unparseable]");
          expect(
             logSpy.mock.calls.some(([entry]) => {
                const { message, modelPath } = entry as unknown as Record<
@@ -1404,7 +1690,7 @@ source: t is base -> { group_by: a }
       }
    });
 
-   it("hydrates the pre-aggregation companion the worker compiled, without compiling it here", async () => {
+   it("compiles no pre-aggregation companion, in the worker or here", async () => {
       writeManifest();
       fs.writeFileSync(
          path.join(tempDir, "orders.malloy"),
@@ -1418,15 +1704,13 @@ source: orders is duckdb.sql("""
 }
 `,
       );
-      const { Model } = await import("../../src/service/model");
-      const runtimeSpy = spyOn(Model, "getModelRuntime");
+      const modelRuntime = await import("../../src/service/model_runtime");
+      const runtimeSpy = spyOn(modelRuntime, "createModelRuntime");
       const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
-         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         const model = pkg.getModel("orders.malloy") as unknown as {
-            preaggregateServeMaterializer?: unknown;
-         };
-         expect(model.preaggregateServeMaterializer).toBeDefined();
+         await Package.create("env", "pkg", tempDir, malloyConfig);
+         // A v1 rollup is the rollup leg's: no composite companion is
+         // compiled in the worker, and none is compiled here in its place.
          expect(runtimeSpy).not.toHaveBeenCalled();
       } finally {
          runtimeSpy.mockRestore();

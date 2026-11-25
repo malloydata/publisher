@@ -6,7 +6,10 @@ import { ConnectionNotFoundError, FrozenConfigError } from "../errors";
 import { logger } from "../logger";
 import { buildEnvironmentMalloyConfig } from "./connection";
 import { mergeConnectionUpdate } from "./connection_public_view";
-import { EnvironmentStore } from "./environment_store";
+import { refuseListedDestinationSchema } from "./destination_overlap";
+import { connectionDialectOf } from "./dialects";
+import type { ConnectionAdmin } from "./environment_ports";
+import { parseEnvironmentName } from "./identity";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ReleaseCallback = () => Promise<void>;
@@ -19,7 +22,6 @@ type ConnectionUpdateEnvironment = {
    ) => void;
    deleteConnection?: (connectionName: string) => Promise<void>;
    deleteDuckDBConnection?: (connectionName: string) => Promise<void>;
-   deleteDuckLakeConnection?: (connectionName: string) => Promise<void>;
 };
 
 async function runEnvironmentConnectionUpdate<T>(
@@ -49,27 +51,19 @@ function buildDeletedConnectionCleanup(
    deletedConnection: ApiConnection,
    connectionName: string,
 ): ReleaseCallback | undefined {
-   if (
-      deletedConnection.type === "duckdb" &&
-      typeof environment.deleteDuckDBConnection === "function"
-   ) {
-      return () => environment.deleteDuckDBConnection!(connectionName);
-   }
-
-   if (
-      deletedConnection.type === "ducklake" &&
-      typeof environment.deleteDuckLakeConnection === "function"
-   ) {
-      return () => environment.deleteDuckLakeConnection!(connectionName);
+   // The type's own release of its local file, when the environment has it.
+   const cleanup = connectionDialectOf(deletedConnection.type)?.fileCleanup;
+   if (cleanup !== undefined && typeof environment[cleanup] === "function") {
+      return () => environment[cleanup]!(connectionName);
    }
 
    return undefined;
 }
 
 export class ConnectionService {
-   private environmentStore: EnvironmentStore;
+   private environmentStore: ConnectionAdmin;
 
-   constructor(environmentStore: EnvironmentStore) {
+   constructor(environmentStore: ConnectionAdmin) {
       this.environmentStore = environmentStore;
    }
 
@@ -137,7 +131,7 @@ export class ConnectionService {
       }
 
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       await runEnvironmentConnectionUpdate(environment, async () => {
@@ -145,6 +139,10 @@ export class ConnectionService {
          const nextMalloyConfig = buildEnvironmentMalloyConfig(
             [...existingConnections, connection],
             environment.metadata.location || "",
+         );
+         refuseListedDestinationSchema(
+            nextMalloyConfig.apiConnections,
+            environment.listStorageDestinations(),
          );
 
          await this.environmentStore.addConnection(
@@ -180,7 +178,7 @@ export class ConnectionService {
          await this.getConnection(environmentName, connectionName);
 
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       await runEnvironmentConnectionUpdate(environment, async () => {
@@ -209,6 +207,10 @@ export class ConnectionService {
             updatedConnections,
             environment.metadata.location || "",
             true,
+         );
+         refuseListedDestinationSchema(
+            nextMalloyConfig.apiConnections,
+            environment.listStorageDestinations(),
          );
 
          await this.environmentStore.updateConnection(
@@ -245,7 +247,7 @@ export class ConnectionService {
       );
 
       const environment = await this.environmentStore.getEnvironment(
-         environmentName,
+         parseEnvironmentName(environmentName),
          false,
       );
       await runEnvironmentConnectionUpdate(environment, async () => {

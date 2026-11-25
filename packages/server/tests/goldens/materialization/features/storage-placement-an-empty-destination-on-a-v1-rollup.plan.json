@@ -1,0 +1,3 @@
+{
+  "loadError": "m.malloy: Measure `v1_empty` declares `#@ preaggregate storage=\"\"` with no destination. Name the storage destination the rollup should be built into, or remove the key to build it alongside its base. [rollup-invalid]"
+}

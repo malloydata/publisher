@@ -14,19 +14,23 @@ import {
    StorageDestinationNotFoundError,
 } from "../errors";
 import { storageDestinationRoot } from "../service/connection_config";
-import type { EnvironmentStore } from "../service/environment_store";
 import { StorageDestinationController } from "./storage_destination.controller";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { PackageLookup } from "../service/environment_ports";
 
 type ApiConnection = components["schemas"]["Connection"];
 
 describe("StorageDestinationController", () => {
    let envPath: string;
    let controller: StorageDestinationController;
+   let declared: ApiConnection;
 
    beforeEach(() => {
+      declared = { name: "lake", type: "duckdb" } as ApiConnection;
       envPath = mkdtempSync(join(tmpdir(), "dest-controller-"));
       mkdirSync(storageDestinationRoot(envPath), { recursive: true });
       const environment = {
+         getEnvironmentName: () => "env",
          getEnvironmentPath: () => envPath,
          getStorageDestination: (name: string): ApiConnection => {
             if (name !== "lake") {
@@ -34,12 +38,12 @@ describe("StorageDestinationController", () => {
                   `Storage destination ${name} not found`,
                );
             }
-            return { name: "lake", type: "duckdb" } as ApiConnection;
+            return declared;
          },
       };
-      const store = {
+      const store = fakeOf<PackageLookup>({
          getEnvironment: async () => environment,
-      } as unknown as EnvironmentStore;
+      });
       controller = new StorageDestinationController(store);
    });
    afterEach(() => rmSync(envPath, { recursive: true, force: true }));
@@ -67,8 +71,7 @@ describe("StorageDestinationController", () => {
          { name: "daily__g001" },
       ]);
 
-      // A non-`main` schema qualifies the name, so the same table name in `main`
-      // is left alone.
+      // The schema qualifies the name, so the same table name in `main` is left alone.
       await controller.dropTable("env", "lake", "analytics", "daily__g001");
       expect(await controller.listTables("env", "lake", "analytics")).toEqual(
          [],
@@ -76,6 +79,68 @@ describe("StorageDestinationController", () => {
       expect(await controller.listTables("env", "lake", "main")).toEqual([
          { name: "daily__g001" },
       ]);
+   });
+
+   describe("a destination that builds into a schema other than main", () => {
+      beforeEach(async () => {
+         declared = {
+            name: "lake",
+            type: "duckdb",
+            ducklakeConnection: { destinationSchema: "materialized" },
+         } as ApiConnection;
+         await seed(
+            "CREATE TABLE orders AS SELECT 1 AS x; " +
+               "CREATE SCHEMA materialized; " +
+               "CREATE TABLE materialized.orders AS SELECT 1 AS x;",
+         );
+      });
+
+      it("drops from the schema the path names", async () => {
+         await controller.dropTable("env", "lake", "materialized", "orders");
+         expect(
+            await controller.listTables("env", "lake", "materialized"),
+         ).toEqual([]);
+         expect(await controller.listTables("env", "lake", "main")).toEqual([
+            { name: "orders" },
+         ]);
+      });
+
+      it("refuses a drop in main, which a caller of an earlier release meant as the build schema, naming the schema to use", async () => {
+         for (const schema of ["main", "Main"]) {
+            const error = await controller
+               .dropTable("env", "lake", schema, "orders")
+               .catch((e) => e);
+            expect(error).toBeInstanceOf(BadRequestError);
+            expect(internalErrorToHttpError(error).status).toBe(400);
+            expect(error.message).toContain("'materialized'");
+            expect(error.message).toContain("DELETE /catalogs/");
+         }
+         expect(await controller.listTables("env", "lake", "main")).toEqual([
+            { name: "orders" },
+         ]);
+         expect(
+            await controller.listTables("env", "lake", "materialized"),
+         ).toEqual([{ name: "orders" }]);
+      });
+   });
+
+   it("drops in main on a destination that builds into main, however it spells it", async () => {
+      for (const destinationSchema of [undefined, "main", "Main"]) {
+         declared = {
+            name: "lake",
+            type: "duckdb",
+            ...(destinationSchema
+               ? { ducklakeConnection: { destinationSchema } }
+               : {}),
+         } as ApiConnection;
+         for (const schema of ["main", "Main"]) {
+            await seed("CREATE OR REPLACE TABLE orders AS SELECT 1 AS x;");
+            await controller.dropTable("env", "lake", schema, "orders");
+            expect(await controller.listTables("env", "lake", "main")).toEqual(
+               [],
+            );
+         }
+      }
    });
 
    it("answers an unknown destination as a 404, not the build path's 422", async () => {

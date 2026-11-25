@@ -1,0 +1,163 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * A request's `files` overlay: package files a compile or query reads instead
+ * of, or in addition to, the package's own, for that one request. Nothing is
+ * written to disk or kept: the overlay is served to the compiler by its file
+ * URL and dropped with the request.
+ *
+ * Overlay files are author content, read exactly as the package's own files:
+ * they are not restricted like `append` text or an ad-hoc query, and their
+ * `#(authorize)` and `#(access_filter)` annotations gate as written. A host
+ * must therefore offer `files` only to callers who may edit the package.
+ */
+
+import * as path from "path";
+import {
+   MAX_OVERLAY_BYTES,
+   MAX_OVERLAY_FILES,
+   MODEL_FILE_SUFFIX,
+   NOTEBOOK_FILE_SUFFIX,
+} from "../constants";
+import { BadRequestError, PayloadTooLargeError } from "../errors";
+import { assertSafeRelativeModelPath } from "../path_safety";
+import { lazyCounter } from "../telemetry";
+import { overlayKeyOfPath } from "./overlay_key";
+
+/** One overlaid file: its package-relative path and its whole text. */
+export interface OverlayFile {
+   path: string;
+   content: string;
+}
+
+const overlayRequests = lazyCounter(
+   "publisher_request_overlay_total",
+   "Compile requests that carried a `files` overlay. Labels: outcome (accepted | refused_entry = a malformed or unsafe entry, 400 | refused_bounds = past MAX_OVERLAY_FILES files or MAX_OVERLAY_BYTES bytes, 413).",
+);
+
+/**
+ * The request's `files`, checked: undefined when absent or empty. A malformed
+ * entry, an unsafe or non-model path, or a path given twice is a 400; more
+ * files or bytes than the server's bounds is a 413. Counted either way.
+ */
+export function parseOverlayFiles(input: unknown): OverlayFile[] | undefined {
+   if (input === undefined || input === null) return undefined;
+   try {
+      const files = checkOverlayFiles(input);
+      // An empty overlay overlays nothing: the request is an ordinary one.
+      if (files.length === 0) return undefined;
+      overlayRequests().add(1, { outcome: "accepted" });
+      return files;
+   } catch (error) {
+      overlayRequests().add(1, {
+         outcome:
+            error instanceof PayloadTooLargeError
+               ? "refused_bounds"
+               : "refused_entry",
+      });
+      throw error;
+   }
+}
+
+function checkOverlayFiles(input: unknown): OverlayFile[] {
+   if (!Array.isArray(input)) {
+      throw new BadRequestError(
+         "`files` must be an array of { path, content } entries.",
+      );
+   }
+   if (input.length > MAX_OVERLAY_FILES) {
+      throw new PayloadTooLargeError(
+         `\`files\` holds ${input.length} files; a request takes at most ${MAX_OVERLAY_FILES}.`,
+      );
+   }
+   const seen = new Set<string>();
+   const files: OverlayFile[] = [];
+   let bytes = 0;
+   input.forEach((entry: unknown, index: number) => {
+      const where = `\`files[${index}]\``;
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+         throw new BadRequestError(
+            `${where} must be an object with \`path\` and \`content\`.`,
+         );
+      }
+      const { path: filePath, content } = entry as Record<string, unknown>;
+      if (typeof content !== "string") {
+         throw new BadRequestError(`${where}.content must be a string.`);
+      }
+      try {
+         assertSafeRelativeModelPath(filePath);
+      } catch {
+         throw new BadRequestError(
+            `${where}.path must be a package-relative path with no "." or ".." segment, no leading "/" and no backslash (got ${JSON.stringify(filePath)}).`,
+         );
+      }
+      if (
+         !filePath.endsWith(MODEL_FILE_SUFFIX) &&
+         !filePath.endsWith(NOTEBOOK_FILE_SUFFIX)
+      ) {
+         throw new BadRequestError(
+            `${where}.path must name a ${MODEL_FILE_SUFFIX} or ${NOTEBOOK_FILE_SUFFIX} file (got "${filePath}"); other files are read from the package as published.`,
+         );
+      }
+      if (seen.has(filePath)) {
+         throw new BadRequestError(
+            `${where}.path "${filePath}" appears more than once in \`files\`.`,
+         );
+      }
+      seen.add(filePath);
+      bytes += Buffer.byteLength(content, "utf8");
+      if (bytes > MAX_OVERLAY_BYTES) {
+         throw new PayloadTooLargeError(
+            `\`files\` holds more than ${MAX_OVERLAY_BYTES} bytes of text; a request takes at most that.`,
+         );
+      }
+      files.push({ path: filePath, content });
+   });
+   return files;
+}
+
+/**
+ * The overlay keyed as the compiler asks for files: each file's absolute
+ * `file://` URL (`href`) under `packagePath`.
+ */
+export function overlayByUrl(
+   packagePath: string,
+   files: readonly OverlayFile[] | undefined,
+): Map<string, string> {
+   const byUrl = new Map<string, string>();
+   for (const file of files ?? []) {
+      byUrl.set(
+         overlayKeyOfPath(path.join(packagePath, file.path)),
+         file.content,
+      );
+   }
+   return byUrl;
+}
+
+/** The overlaid text of `filePath`, if the overlay holds it. */
+export function overlaidText(
+   files: readonly OverlayFile[] | undefined,
+   filePath: string,
+): string | undefined {
+   return files?.find((file) => file.path === filePath)?.content;
+}
+
+/**
+ * Whether `requestPath` is the compile route, the one that takes a `files`
+ * overlay: `…/packages/{package}/models/{model path}/compile`. Plain string
+ * checks rather than a pattern, so the work is linear in the path's length
+ * whatever a caller sends.
+ */
+export function isOverlayRoute(requestPath: string): boolean {
+   const suffix = "/compile";
+   if (!requestPath.endsWith(suffix)) return false;
+   const packages = requestPath.indexOf("/packages/");
+   if (packages < 0) return false;
+   const packageStart = packages + "/packages/".length;
+   const packageEnd = requestPath.indexOf("/", packageStart);
+   if (packageEnd <= packageStart) return false;
+   if (!requestPath.startsWith("/models/", packageEnd)) return false;
+   // A model path of at least one character between "/models/" and the suffix.
+   return packageEnd + "/models/".length < requestPath.length - suffix.length;
+}

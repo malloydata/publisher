@@ -17,7 +17,7 @@ function compileDataStyles(styles: string): DataStyles {
  * Data styles named by `--! styles <file>` lines. A file that cannot be read
  * is logged and contributes nothing, so the author sees no error.
  */
-async function dataStylesForFile(
+export async function dataStylesForFile(
    url: string,
    text: string,
    urlReader: URLReader,

@@ -17,10 +17,7 @@ type ApiTheme = components["schemas"]["Theme"];
  *   DELETE /api/v0/theme → reset to boot seed / built-in default
  */
 export class ThemeController {
-   constructor(
-      private themeStore: ThemeStore,
-      private serverRoot: string,
-   ) {}
+   constructor(private themeStore: ThemeStore) {}
 
    getTheme = async (): Promise<ApiTheme> => {
       const theme = await this.themeStore.get();
@@ -35,7 +32,7 @@ export class ThemeController {
     * re-applies).
     */
    putTheme = async (body: unknown): Promise<ApiTheme> => {
-      if (isPublisherConfigFrozen(this.serverRoot)) {
+      if (isPublisherConfigFrozen()) {
          throw new FrozenConfigError(
             'Cannot edit theme: publisher.config.json has "frozenConfig": true.',
          );
@@ -58,7 +55,7 @@ export class ThemeController {
 
    /** Drops the persisted row so the config's `theme` seed re-applies. */
    resetTheme = async (): Promise<ApiTheme> => {
-      if (isPublisherConfigFrozen(this.serverRoot)) {
+      if (isPublisherConfigFrozen()) {
          throw new FrozenConfigError(
             'Cannot reset theme: publisher.config.json has "frozenConfig": true.',
          );

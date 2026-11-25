@@ -115,6 +115,77 @@ describe("the generated suggest query", () => {
    });
 });
 
+// With quoteNames, as on a server whose PUBLISHER_MODEL_PAGE is viewer and in
+// the model viewer: every name backtick-quoted. Without it (above), the names
+// go as the suggest gave them, as before.
+describe("the generated suggest query, names quoted", () => {
+   const quoted = { quoteNames: true };
+
+   it("quotes the source, each segment of the path, and the output column", () => {
+      expect(
+         buildSuggestQuery(
+            "order_items",
+            "products.category",
+            undefined,
+            quoted,
+         ),
+      ).toBe(
+         "run: `order_items` -> {\n" +
+            "  group_by: `products`.`category`\n" +
+            "  order_by: `category` asc\n" +
+            `  limit: ${SUGGEST_OPTION_LIMIT + 1}\n` +
+            "}",
+      );
+      expect(
+         buildSuggestQuery("products", "category", undefined, quoted),
+      ).toContain("order_by: `category` asc");
+   });
+
+   it("quotes every name, so a reserved word is still a name", () => {
+      // `year` and `source` are Malloy keywords: bare, the query does not
+      // compile. A name the author already quoted is kept as written.
+      expect(buildSuggestQuery("source", "dates.year", undefined, quoted)).toBe(
+         "run: `source` -> {\n" +
+            "  group_by: `dates`.`year`\n" +
+            "  order_by: `year` asc\n" +
+            `  limit: ${SUGGEST_OPTION_LIMIT + 1}\n` +
+            "}",
+      );
+      expect(
+         buildSuggestQuery("`order items`", "`has space`", undefined, quoted),
+      ).toContain("group_by: `has space`\n");
+      // A quoted name holding a dot is one name, not a path.
+      expect(buildSuggestQuery("items", "`a.b`", undefined, quoted)).toContain(
+         "group_by: `a.b`\n  order_by: `a.b` asc\n",
+      );
+      expect(
+         buildSuggestQuery("items", "maker.`a.b`", undefined, quoted),
+      ).toContain("group_by: `maker`.`a.b`\n");
+   });
+
+   it("splits a long unclosed quoted name in linear time", () => {
+      // The shape a backtracking pattern stalls on: a backtick that never
+      // closes, then many escaped backticks.
+      const name = "`" + "\\`".repeat(50_000) + "x";
+      const started = performance.now();
+      buildSuggestQuery("items", name, undefined, quoted);
+      expect(performance.now() - started).toBeLessThan(500);
+   });
+
+   it("quotes a search the same way", () => {
+      expect(
+         buildSuggestQuery("recalls", "maker.name", "General Motors", quoted),
+      ).toBe(
+         "run: `recalls` -> {\n" +
+            "  group_by: `maker`.`name`\n" +
+            "  where: strpos(lower(`maker`.`name`::string), 'general motors') > 0\n" +
+            "  order_by: `name` asc\n" +
+            `  limit: ${SUGGEST_SEARCH_LIMIT + 1}\n` +
+            "}",
+      );
+   });
+});
+
 describe("a search of a cut-off list", () => {
    it("matches ignoring case, as a plain substring, with a limit and the same order", () => {
       expect(buildSuggestQuery("recalls", "maker.name", "General Motors")).toBe(

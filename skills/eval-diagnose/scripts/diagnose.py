@@ -1032,7 +1032,7 @@ def main(argv: list[str] | None = None) -> int:
     # The agent's clusters are the clusters of record, in the file the package
     # builder reads. Until 2026-09-02 only cluster_failures.py wrote this file,
     # so the browsable package always carried the mechanical grouping -- which
-    # on both the ecommerce and VideoAmp runs charged everything to retrieval
+    # on both the ecommerce and warehouse-backed runs charged everything to retrieval
     # while the diagnosis beside it said otherwise.
     # Imported, not spelled: this file and `cluster_failures.py` both write
     # `clusters.jsonl`, and when `score_retrieval` renamed the labels these two

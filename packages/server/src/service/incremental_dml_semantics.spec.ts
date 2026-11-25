@@ -17,14 +17,23 @@
 // dialects (see the Postgres integration path in the docs).
 //
 // DuckDB's OWN dialect is a target in its own right — it is what a `storage=`
-// destination's DML is issued in — and it is exercised as itself in
-// incremental_storage_engine.spec.ts rather than here. Snowflake's range replace
+// destination's DML is issued in — so the range-replace semantics run in both
+// spellings. What the storage engine adds beyond the SQL (the driver's row
+// limit, session recovery after a failed script) is in
+// incremental_storage_engine.spec.ts. Snowflake's range replace
 // (a Snowflake Scripting block) has no local stand-in at all: its text is pinned
 // in incremental_apply.spec.ts and its semantics are provable only against a
 // real Snowflake account.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { beforeAll, describe, expect, it } from "bun:test";
-import { applyDeltaScript, deltaStatements } from "./incremental_apply";
+import {
+   applyDeltaScript,
+   deltaStatements,
+   isMergeKeyGuardFailure,
+   planIncrementalStep,
+   probeRepeatedKeyInRange,
+   warehouseDeltaTarget,
+} from "./materialization/run/incremental_apply";
 
 let duckdb: DuckDBConnection;
 // One `:memory:` database is shared by every connection in a process (see
@@ -75,9 +84,11 @@ async function applyDelta(params: {
    mergeKeys: string[];
    start: string;
    end: string;
+   dialect?: string;
 }): Promise<void> {
+   const dialect = params.dialect ?? "postgres";
    const statements = deltaStatements({
-      dialect: "postgres",
+      dialect,
       quotedTablePath: `"${params.table}"`,
       deltaSQL: rowsSQL(params.rows),
       columns: COLUMNS,
@@ -86,89 +97,97 @@ async function applyDelta(params: {
       start: { malloyType: "date", value: params.start },
       end: { malloyType: "date", value: params.end },
    });
-   await applyDeltaScript(runner, "postgres", statements);
+   await applyDeltaScript(runner, dialect, statements);
 }
 
-describe("range replace (no merge_key=)", () => {
-   it("replaces the range and leaves everything below it alone", async () => {
-      const name = await seed([
-         [1, "2024-05-01", 10],
-         [2, "2024-06-01", 20],
-      ]);
-      await applyDelta({
-         table: name,
-         rows: [
-            [2, "2024-06-01", 25],
-            [3, "2024-06-15", 30],
-         ],
-         mergeKeys: [],
-         start: "2024-06-01",
-         end: "2024-07-01",
+describe.each(["postgres", "duckdb"])(
+   "range replace (no merge_key=), %s spelling",
+   (dialect) => {
+      it("replaces exactly the half-open range and leaves the rest alone", async () => {
+         const name = await seed([
+            [1, "2024-05-01", 10],
+            [2, "2024-06-01", 20],
+            [4, "2024-07-01", 40],
+         ]);
+         await applyDelta({
+            table: name,
+            rows: [
+               [2, "2024-06-01", 25],
+               [3, "2024-06-15", 30],
+            ],
+            mergeKeys: [],
+            start: "2024-06-01",
+            end: "2024-07-01",
+            dialect,
+         });
+         expect(await contents(name)).toEqual([
+            "1|2024-05-01|10", // below the range: untouched
+            "2|2024-06-01|25", // inside: recomputed, not duplicated
+            "3|2024-06-15|30", // new
+            "4|2024-07-01|40", // the excluded end: untouched
+         ]);
       });
-      expect(await contents(name)).toEqual([
-         "1|2024-05-01|10", // below the range: untouched
-         "2|2024-06-01|25", // inside: recomputed, not duplicated
-         "3|2024-06-15|30", // new
-      ]);
-   });
 
-   it("converges when the SAME range is applied twice", async () => {
-      // The retry-safety property: a crash between the DML and the ledger
-      // advance costs a repeat, not a corruption.
-      const name = await seed([[1, "2024-06-01", 10]]);
-      const delta = {
-         table: name,
-         rows: [[1, "2024-06-01", 99]] as [number, string, number][],
-         mergeKeys: [],
-         start: "2024-06-01",
-         end: "2024-07-01",
-      };
-      await applyDelta(delta);
-      const once = await contents(name);
-      await applyDelta(delta);
-      expect(await contents(name)).toEqual(once);
-      expect(once).toEqual(["1|2024-06-01|99"]);
-   });
-
-   it("DUPLICATES a row restated with an advanced watermark", async () => {
-      // The documented weakness of range replace, and the reason the load-time
-      // advisory tells an author to declare merge_key= when rows are restated:
-      // the older copy sits BELOW the new range, so nothing deletes it.
-      const name = await seed([[1, "2024-06-01", 10]]);
-      await applyDelta({
-         table: name,
-         rows: [[1, "2024-07-15", 10]],
-         mergeKeys: [],
-         start: "2024-07-01",
-         end: "2024-08-01",
+      it("converges when the SAME range is applied twice", async () => {
+         // The retry-safety property: a crash between the DML and the ledger
+         // advance costs a repeat, not a corruption.
+         const name = await seed([[1, "2024-06-01", 10]]);
+         const delta = {
+            table: name,
+            rows: [[1, "2024-06-01", 99]] as [number, string, number][],
+            mergeKeys: [],
+            start: "2024-06-01",
+            end: "2024-07-01",
+            dialect,
+         };
+         await applyDelta(delta);
+         const once = await contents(name);
+         await applyDelta(delta);
+         expect(await contents(name)).toEqual(once);
+         expect(once).toEqual(["1|2024-06-01|99"]);
       });
-      expect(await contents(name)).toEqual([
-         "1|2024-06-01|10",
-         "1|2024-07-15|10",
-      ]);
-   });
 
-   it("is atomic: a failed insert leaves the deleted range in place", async () => {
-      // The claim the dialect allowlist exists to guarantee. Without the
-      // transaction the DELETE would autocommit on its own and the range would
-      // be empty in a table that is already serving.
-      const name = await seed([[1, "2024-06-01", 10]]);
-      const statements = deltaStatements({
-         dialect: "postgres",
-         quotedTablePath: `"${name}"`,
-         deltaSQL: `SELECT 1 AS "order_id", DATE '2024-06-02' AS "order_date", 'not a number' AS "revenue"`,
-         columns: COLUMNS,
-         mergeKeys: [],
-         watermarkName: "order_date",
-         start: { malloyType: "date", value: "2024-06-01" },
-         end: { malloyType: "date", value: "2024-07-01" },
+      it("DUPLICATES a row restated with an advanced watermark", async () => {
+         // The documented weakness of range replace, and the reason the load-time
+         // advisory tells an author to declare merge_key= when rows are restated:
+         // the older copy sits BELOW the new range, so nothing deletes it.
+         const name = await seed([[1, "2024-06-01", 10]]);
+         await applyDelta({
+            table: name,
+            rows: [[1, "2024-07-15", 10]],
+            mergeKeys: [],
+            start: "2024-07-01",
+            end: "2024-08-01",
+            dialect,
+         });
+         expect(await contents(name)).toEqual([
+            "1|2024-06-01|10",
+            "1|2024-07-15|10",
+         ]);
       });
-      await expect(
-         applyDeltaScript(runner, "postgres", statements),
-      ).rejects.toThrow();
-      expect(await contents(name)).toEqual(["1|2024-06-01|10"]);
-   });
-});
+
+      it("is atomic: a failed insert leaves the deleted range in place", async () => {
+         // The claim the dialect allowlist exists to guarantee. Without the
+         // transaction the DELETE would autocommit on its own and the range would
+         // be empty in a table that is already serving.
+         const name = await seed([[1, "2024-06-01", 10]]);
+         const statements = deltaStatements({
+            dialect,
+            quotedTablePath: `"${name}"`,
+            deltaSQL: `SELECT 1 AS "order_id", DATE '2024-06-02' AS "order_date", 'not a number' AS "revenue"`,
+            columns: COLUMNS,
+            mergeKeys: [],
+            watermarkName: "order_date",
+            start: { malloyType: "date", value: "2024-06-01" },
+            end: { malloyType: "date", value: "2024-07-01" },
+         });
+         await expect(
+            applyDeltaScript(runner, dialect, statements),
+         ).rejects.toThrow();
+         expect(await contents(name)).toEqual(["1|2024-06-01|10"]);
+      });
+   },
+);
 
 describe("merge (merge_key= declared)", () => {
    it("replaces a row restated with an advanced watermark, in place", async () => {
@@ -247,3 +266,235 @@ describe("merge (merge_key= declared)", () => {
       ]);
    });
 });
+
+describe.each(["postgres", "duckdb"])(
+   "merge of a delta that repeats a merge key, %s spelling",
+   (dialect) => {
+      /** The merge's error, or undefined when it committed. */
+      async function failure(
+         name: string,
+         rows: [number | null, string, number][],
+      ): Promise<unknown> {
+         const statements = deltaStatements({
+            dialect,
+            quotedTablePath: `"${name}"`,
+            deltaSQL: rows
+               .map(
+                  ([id, date, revenue]) =>
+                     `SELECT CAST(${id ?? "NULL"} AS INTEGER) AS "order_id", ` +
+                     `DATE '${date}' AS "order_date", ${revenue} AS "revenue"`,
+               )
+               .join(" UNION ALL "),
+            columns: COLUMNS,
+            mergeKeys: ["order_id"],
+            watermarkName: "order_date",
+            start: { malloyType: "date", value: "2024-06-01" },
+            end: { malloyType: "date", value: "2024-07-01" },
+         });
+         try {
+            await applyDeltaScript(runner, dialect, statements);
+            return undefined;
+         } catch (err) {
+            return err;
+         }
+      }
+
+      // Each case leaves the table as it was: the delta is rolled back, and
+      // the source is rebuilt in full (incremental_reasons.spec.ts), where a
+      // merge would have stored one of the two rows, or both.
+      it.each([
+         [
+            "a stored key, at two watermarks",
+            [
+               [1, "2024-06-02", 11],
+               [1, "2024-06-03", 12],
+            ],
+         ],
+         [
+            "a new key, at two watermarks",
+            [
+               [2, "2024-06-02", 21],
+               [2, "2024-06-03", 22],
+            ],
+         ],
+         [
+            "a key at one watermark twice (a tie)",
+            [
+               [1, "2024-06-02", 11],
+               [1, "2024-06-02", 12],
+            ],
+         ],
+         [
+            "a NULL key twice, as the merge matches NULL to NULL",
+            [
+               [null, "2024-06-02", 31],
+               [null, "2024-06-03", 32],
+            ],
+         ],
+      ] as [string, [number | null, string, number][]][])(
+         "fails on %s, and leaves the table as it was",
+         async (_label, rows) => {
+            const name = await seed([[1, "2024-06-01", 10]]);
+            const err = await failure(name, rows);
+            expect(isMergeKeyGuardFailure(err)).toBe(true);
+            expect(await contents(name)).toEqual(["1|2024-06-01|10"]);
+         },
+      );
+
+      it("merges a NULL key beside a non-NULL one: they are distinct keys", async () => {
+         const name = await seed([[1, "2024-06-01", 10]]);
+         expect(
+            await failure(name, [
+               [null, "2024-06-02", 31],
+               [1, "2024-06-03", 12],
+            ]),
+         ).toBeUndefined();
+         expect(await contents(name)).toEqual([
+            "1|2024-06-03|12",
+            "null|2024-06-02|31",
+         ]);
+      });
+   },
+);
+
+describe("a DuckDB table whose source column was widened after the build", () => {
+   // DuckDB (and MotherDuck) reads the delta's types with DESCRIBE, which
+   // runs nothing. A FLOAT column given a DOUBLE rounds it with no error.
+   async function plan(storedAmt: string, sourceAmt: string) {
+      const name = `widened_${table++}`;
+      await duckdb.runSQL(
+         `CREATE TABLE "${name}" AS SELECT 1 AS "order_id", ` +
+            `DATE '2024-06-01' AS "order_date", CAST(1.5 AS ${storedAmt}) AS "revenue"`,
+      );
+      const lineage = {
+         physicalTableName: `memory.main.${name}`,
+         connectionName: "duckdb",
+         sourceEntityId: "sid",
+         watermarkName: "order_date",
+         watermarkType: "date",
+         mergeKeys: [] as string[],
+         scopeColumns: [] as string[],
+         strategy: "range_replace" as const,
+      };
+      return planIncrementalStep({
+         target: warehouseDeltaTarget({
+            dialect: "duckdb",
+            runner: (sql) => duckdb.runSQL(sql),
+            quotedTablePath: `"${name}"`,
+            lineage,
+            sourceSQL:
+               `SELECT 2 AS "order_id", DATE '2024-06-15' AS "order_date", ` +
+               `CAST(0.123456789 AS ${sourceAmt}) AS "revenue"`,
+         }),
+         lineage,
+         ledgerEntry: {
+            sourceEntityId: "sid",
+            coveredThroughValue: "2024-06-01",
+            coveredThroughType: "date",
+            watermarkDimension: "order_date",
+            mergeKeyDimensions: [],
+            derivedStrategy: "range_replace",
+            physicalTableName: lineage.physicalTableName,
+            connectionName: "duckdb",
+            storageDestinationName: undefined,
+         } as never,
+         forceRefresh: false,
+         now: new Date("2024-07-01T00:00:00Z"),
+         columns: COLUMNS,
+      });
+   }
+
+   it("rebuilds a FLOAT column the source now gives as DOUBLE", async () => {
+      const step = await plan("FLOAT", "DOUBLE");
+      expect(step).toMatchObject({
+         mode: "seed",
+         reasonCode: "shape_mismatch",
+      });
+      if (step.mode !== "seed") return;
+      expect(step.reason).toContain('"revenue" (FLOAT → DOUBLE)');
+   });
+
+   it("still deltas when the type did not move", async () => {
+      expect((await plan("DOUBLE", "DOUBLE")).mode).toBe("delta");
+   });
+});
+
+describe.each(["snowflake", "duckdb"])(
+   "the after-merge repeated-key probe, %s spelling",
+   (dialect) => {
+      // What Snowflake's unguarded merge can leave: a new key the delta read
+      // twice, inserted twice. The probe reads only keys the delta's range
+      // wrote, off the table.
+      const probe = (name: string) =>
+         probeRepeatedKeyInRange({
+            runner,
+            dialect,
+            quotedTablePath: `"${name}"`,
+            matchNames: ["order_id"],
+            watermark: "order_date",
+            start: { malloyType: "date", value: "2024-06-01" },
+            end: { malloyType: "date", value: "2024-07-01" },
+         });
+
+      it.each([
+         [
+            "a new key inserted twice in the range",
+            [
+               [1, "2024-05-01", 1],
+               [2, "2024-06-02", 2],
+               [2, "2024-06-03", 3],
+            ],
+            true,
+         ],
+         [
+            "a NULL key twice in the range",
+            [
+               [null, "2024-06-02", 2],
+               [null, "2024-06-03", 3],
+            ],
+            true,
+         ],
+         [
+            "a key once in the range and once below it",
+            [
+               [1, "2024-05-01", 1],
+               [1, "2024-06-02", 2],
+            ],
+            true,
+         ],
+         [
+            "a repeat only below the range, which no delta touched",
+            [
+               [1, "2024-05-01", 1],
+               [1, "2024-05-02", 2],
+               [2, "2024-06-02", 3],
+            ],
+            false,
+         ],
+         [
+            "each key once",
+            [
+               [1, "2024-05-01", 1],
+               [2, "2024-06-02", 2],
+            ],
+            false,
+         ],
+      ] as [string, [number | null, string, number][], boolean][])(
+         "finds %s: %p",
+         async (_label, rows, repeated) => {
+            const name = `probe_${table++}`;
+            await duckdb.runSQL(
+               `CREATE TABLE "${name}" AS ` +
+                  rows
+                     .map(
+                        ([id, date, revenue]) =>
+                           `SELECT CAST(${id ?? "NULL"} AS INTEGER) AS "order_id", ` +
+                           `DATE '${date}' AS "order_date", ${revenue} AS "revenue"`,
+                     )
+                     .join(" UNION ALL "),
+            );
+            expect(await probe(name)).toEqual({ repeated });
+         },
+      );
+   },
+);

@@ -23,6 +23,7 @@ import { orders_base } from "internal.malloy"
 // nothing would otherwise silently resolve to that default). An admin caller
 // is not a separate role — it is simply handed every tenant on this list by
 // the trusted tier that resolves identity into givens.
+#(secure)
 given:
   TENANTS :: string[]
 

@@ -3,20 +3,21 @@
 
 import { describe, expect, it } from "bun:test";
 import { SkillNotFoundError } from "../errors";
-import { BUNDLED_SKILLS } from "../mcp/skills/package_skills";
-import type { EnvironmentStore } from "../service/environment_store";
+import { BUNDLED_SKILLS } from "../service/skills/package_skills";
 import { SkillController } from "./skill.controller";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { PackageLookup } from "../service/environment_ports";
 
 const bundled = BUNDLED_SKILLS[0]!;
 
 const storeWith = (
    skills: Array<{ name: string; description: string; body: string }>,
-): EnvironmentStore =>
-   ({
+): PackageLookup =>
+   fakeOf<PackageLookup>({
       getEnvironment: async () => ({
          getPackage: async () => ({ listSkills: () => skills }),
       }),
-   }) as unknown as EnvironmentStore;
+   });
 
 describe("SkillController skills", () => {
    it("lists the bundled set with origin when the package ships none", async () => {

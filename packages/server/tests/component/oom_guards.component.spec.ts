@@ -37,11 +37,13 @@ import {
    ServiceUnavailableError,
 } from "../../src/errors";
 import {
-   queryConcurrency,
-   resetActiveQueryCountForTesting,
+   QuerySlots,
    resetQueryConcurrencyTelemetryForTesting,
 } from "../../src/query_concurrency";
-import type { EnvironmentStore } from "../../src/service/environment_store";
+import { accessIdentityOf } from "../../src/service/access_record";
+import { installSettings } from "../../src/test_helpers/settings_env";
+import { fakeOf } from "../../src/test_helpers/store_fakes";
+import type { ConnectionAdmin } from "../../src/service/environment_ports";
 
 function buildApp(
    runSQL: sinon.SinonStub,
@@ -54,10 +56,14 @@ function buildApp(
    const fakeConnection = { runSQL } as unknown as Connection;
    const assertCanAdmitQuery =
       opts.assertCanAdmitQuery ?? sinon.stub().returns(undefined);
-   const fakeEnv = { assertCanAdmitQuery };
-   const fakeStore = {
+   const fakeEnv = {
+      assertCanAdmitQuery,
+      // Not a managed database, so the single-SELECT check does not apply.
+      getApiConnection: () => ({ name: "warehouse", type: "postgres" }),
+   };
+   const fakeStore = fakeOf<ConnectionAdmin>({
       getEnvironment: sinon.stub().resolves(fakeEnv),
-   } as unknown as EnvironmentStore;
+   });
    const controller = new ConnectionController(fakeStore);
    // Bypass the connector lookup; the test only cares about the
    // guardrail chain on top of a stub.
@@ -77,7 +83,7 @@ function buildApp(
    // first, then a thin route handler that delegates to the controller.
    app.post(
       "/api/v0/environments/:env/connections/:conn/sqlQuery",
-      queryConcurrency(),
+      new QuerySlots().middleware,
       async (req, res) => {
          try {
             const result = await controller.getConnectionQueryData(
@@ -85,6 +91,10 @@ function buildApp(
                req.params.conn,
                req.body.sqlStatement as string,
                (req.body.options as string | undefined) ?? "",
+               undefined,
+               undefined,
+               undefined,
+               accessIdentityOf(req.headers),
             );
             res.status(200).json(result);
          } catch (error) {
@@ -115,34 +125,31 @@ function buildApp(
 }
 
 describe("OOM guardrails: end-to-end chain", () => {
-   const savedEnv = {
-      max: process.env.PUBLISHER_MAX_QUERY_ROWS,
-      timeout: process.env.PUBLISHER_QUERY_TIMEOUT_MS,
-      concurrency: process.env.PUBLISHER_MAX_CONCURRENT_QUERIES,
-      metadata: process.env.PUBLISHER_QUERY_METADATA,
-   };
+   /** Puts back this suite's settings, so none bleed into later tests. */
+   let restoreSettings: (() => void) | undefined;
+
+   /**
+    * Install this case's settings: query metadata on (it ships dark; the happy
+    * path below asserts the correlation id the response carries, which needs
+    * it on) plus `env`. Replaces the case's earlier install.
+    */
+   function installEnv(env: Record<string, string> = {}): void {
+      restoreSettings?.();
+      restoreSettings = installSettings({
+         env: { PUBLISHER_QUERY_METADATA: "on", ...env },
+      }).restore;
+   }
 
    beforeEach(() => {
-      resetActiveQueryCountForTesting();
       resetQueryConcurrencyTelemetryForTesting();
-      // Query metadata ships dark; the happy path below asserts the correlation
-      // id the response carries, which needs it on.
-      process.env.PUBLISHER_QUERY_METADATA = "on";
+      installEnv();
    });
 
    afterEach(() => {
       sinon.restore();
-      resetActiveQueryCountForTesting();
       resetQueryConcurrencyTelemetryForTesting();
-      // Restore env so later tests don't see this suite's bleed-through.
-      const restore = (key: keyof typeof savedEnv, envVar: string): void => {
-         if (savedEnv[key] === undefined) delete process.env[envVar];
-         else process.env[envVar] = savedEnv[key]!;
-      };
-      restore("max", "PUBLISHER_MAX_QUERY_ROWS");
-      restore("timeout", "PUBLISHER_QUERY_TIMEOUT_MS");
-      restore("concurrency", "PUBLISHER_MAX_CONCURRENT_QUERIES");
-      restore("metadata", "PUBLISHER_QUERY_METADATA");
+      restoreSettings?.();
+      restoreSettings = undefined;
    });
 
    it("admission gate fires FIRST: 503 before the connector is touched", async () => {
@@ -167,42 +174,44 @@ describe("OOM guardrails: end-to-end chain", () => {
    });
 
    it("concurrency cap fires SECOND: 503 before the controller is touched, once the slot pool is full", async () => {
-      process.env.PUBLISHER_MAX_CONCURRENT_QUERIES = "1";
-      // First request: runSQL takes ~200 ms so the slot stays
-      // held while we fire the second. Using a real timer rather
-      // than an unresolved deferred keeps the test deterministic
-      // even when supertest spawns one ephemeral http server per
-      // `request(app)` call — both sockets will eventually close
-      // on their own regardless of orchestration order.
-      const runSQL = sinon
-         .stub()
-         .callsFake(
-            () =>
-               new Promise((resolve) =>
-                  setTimeout(() => resolve({ rows: [], totalRows: 0 }), 200),
-               ),
-         );
+      installEnv({ PUBLISHER_MAX_CONCURRENT_QUERIES: "1" });
+      // The first query holds its slot until the second request has been
+      // answered. Ordered by events, not timers: a fixed head start for the
+      // first request and a fixed hold time for its query lost the race on a
+      // loaded runner, where the second request arrived after the slot was
+      // released and got a 200.
+      let entered!: () => void;
+      const firstHoldsSlot = new Promise<void>(
+         (resolve) => (entered = resolve),
+      );
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => (release = resolve));
+      const runSQL = sinon.stub().callsFake(async (sql: string) => {
+         // Only the first request's query waits, so a second request that
+         // wrongly gets a slot fails the assertions below rather than hanging.
+         if (sql === "SELECT 1") {
+            entered();
+            await released;
+         }
+         return { rows: [], totalRows: 0 };
+      });
       const { app } = buildApp(runSQL);
 
-      // Drive both requests in parallel — `Promise.all` keeps the
-      // event loop turning on the first request's pending timer
-      // while the second runs through the middleware.
-      const [first, second] = await Promise.all([
-         request(app)
-            .post("/api/v0/environments/e/connections/c/sqlQuery")
-            .send({ sqlStatement: "SELECT 1" }),
-         (async () => {
-            // Yield a few ticks so the first request actually
-            // enters the middleware and holds the slot before
-            // the second one is dispatched. 20 ms is far longer
-            // than any scheduler hop but well below the 200 ms
-            // runSQL timer, leaving the slot definitely held.
-            await new Promise((r) => setTimeout(r, 20));
-            return request(app)
-               .post("/api/v0/environments/e/connections/c/sqlQuery")
-               .send({ sqlStatement: "SELECT 2" });
-         })(),
-      ]);
+      // `.then` starts the request; supertest sends nothing until then.
+      const firstResponse = request(app)
+         .post("/api/v0/environments/e/connections/c/sqlQuery")
+         .send({ sqlStatement: "SELECT 1" })
+         .then((res) => res);
+      // The middleware takes the slot before the controller runs, and gives it
+      // back when the response finishes, so the slot is held from here on. A
+      // first request answered without reaching the query ends the wait too,
+      // so that regression fails the status checks instead of timing out.
+      await Promise.race([firstHoldsSlot, firstResponse]);
+      const second = await request(app)
+         .post("/api/v0/environments/e/connections/c/sqlQuery")
+         .send({ sqlStatement: "SELECT 2" });
+      release();
+      const first = await firstResponse;
 
       expect(first.status).toBe(200);
       expect(second.status).toBe(503);
@@ -213,7 +222,7 @@ describe("OOM guardrails: end-to-end chain", () => {
    });
 
    it("timeout fires THIRD: 504 when the driver outlasts PUBLISHER_QUERY_TIMEOUT_MS, and the abort signal is delivered to the driver", async () => {
-      process.env.PUBLISHER_QUERY_TIMEOUT_MS = "20";
+      installEnv({ PUBLISHER_QUERY_TIMEOUT_MS: "20" });
       let observedSignal: AbortSignal | undefined;
       const runSQL = sinon.stub().callsFake(
          (_sql: string, opts: RunSQLOptions) =>
@@ -240,7 +249,7 @@ describe("OOM guardrails: end-to-end chain", () => {
    });
 
    it("row cap fires LAST: 413 when the driver overshoots PUBLISHER_MAX_QUERY_ROWS", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "2";
+      installEnv({ PUBLISHER_MAX_QUERY_ROWS: "2" });
       // Driver returns 3 rows even though we asked for cap+1 = 3
       // — the sentinel pattern catches this and 413s.
       const rows = [{ a: 1 }, { a: 2 }, { a: 3 }];

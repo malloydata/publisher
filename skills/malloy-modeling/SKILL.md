@@ -72,7 +72,7 @@ DISCOVER → SCOPE → SOURCES → DEFINITIONS → BUILD BASE → BUILD JOINED �
 | 5. Build Base Sources | `skill:malloy-model` | Write fully documented base source files (one per table), check diagnostics. Read `skill:malloy-document` for doc standards. |
 | 6. Build Joined Sources | `skill:malloy-model` | Write fully documented joined source files, validate. Read `skill:malloy-document` for doc standards. |
 | 7. Review | (none) | Present the review checklist below; user confirms or corrects |
-| 8. Curate | `skill:malloy-model` | Propose the published surface (an `index.malloy` with `export { ... }`) and access controls (access modifiers, gates); always propose, the user decides whether to apply |
+| 8. Curate | `skill:malloy-model` | Propose the published surface (an `index.malloy` with `export { ... }`) and access controls (gates, `private:` fields; `internal:` is curation only); always propose, the user decides whether to apply |
 
 ### The pauses are the point
 
@@ -116,6 +116,8 @@ Publishing is out of scope for open-source v1. Self-hosters move a finished mode
 |-------------|----------|
 | "Model my data", "create a model" | 8-step workflow (`skill:malloy-discover`) |
 | "Model from LookML" | 8-step with prior art via `skill:malloy-lookml-review` |
+| "Model from Power BI" | 8-step with prior art via `skill:malloy-powerbi-review` |
+| "Model from an Excel workbook" (formulas or pivots) | 8-step with prior art via `skill:malloy-excel-review` |
 | "Explore this data", "what's interesting?", "show me the top X" | `skill:malloy-analysis` (no specific question) |
 | "Build a dashboard", "build a notebook", "create views" on existing model | `skill:malloy-reports` for a saved report (`layout=grid` for a dashboard, `layout=linear` for a notebook), written at the package root; `skill:malloy-charts` for views in the model |
 | "Build a model but not sure what metrics" | `skill:malloy-model-as-you-go`: answer their first real question, codify what it assumed, repeat |

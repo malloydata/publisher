@@ -11,6 +11,8 @@ import {
    describe,
    expect,
    it,
+   mock,
+   spyOn,
 } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
@@ -20,23 +22,28 @@ import { components } from "../api";
 import {
    attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
-   buildCloudStorageSecretSQL,
    buildEnvironmentMalloyConfig,
-   buildPgConnectionString,
    buildProxiedSslQuery,
    createEnvironmentConnections,
    EnvironmentPooledPostgresConnection,
-   resolveProxiedTls,
-   testConnectionConfig,
    isExpiredCredentialError,
    redactTestFailure,
+   resolveProxiedTls,
+   testConnectionConfig,
 } from "./connection";
+import { buildCloudStorageSecretSQL } from "./cloud_storage_secret";
+import { storageSecretScope } from "./dialects/ducklake_catalog";
+import { bigQueryAttachSQL } from "./dialects/bigquery";
+import { snowflakeAttachSQL } from "./dialects/snowflake";
+import { buildPgConnectionString } from "./postgres_conninfo";
+import { countStatements } from "./single_select";
 import {
    DEFAULT_S3_CREDENTIAL_CHAIN,
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
-import { listStorageTables } from "./materialization_build_session";
+import { runInternalSQL } from "./duckdb_lockdown";
+import { listStorageTables } from "./materialization/run/storage_admin";
 import {
    ConnectionPoolExhaustedError,
    internalErrorToHttpError,
@@ -46,12 +53,22 @@ import {
    UnsupportedCatalogFormatError,
 } from "../errors";
 import { logger } from "../logger";
+import { pollUntil } from "../test_helpers/poll";
+import {
+   clientPrivatePem,
+   closeQuietly,
+   startSshServer,
+} from "../test_helpers/ssh_tunnel_harness";
+import type { ProxyEndpoint } from "./proxy";
 import { isStreamingConnection, streamSqlWithBudget } from "../stream_helpers";
 import {
    startClosingListener,
    type ClosingListener,
 } from "../test_helpers/closing_listener";
+import { installSettings } from "../test_helpers/settings_env";
 import { EnvironmentStore } from "./environment_store";
+import { parseEnvironmentName, parsePackageName } from "./identity";
+import { startedStore } from "../test_helpers/started_store";
 
 type ApiConnection = components["schemas"]["Connection"];
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
@@ -203,7 +220,7 @@ describe("connection integration tests", () => {
                expect(dbNames).toContain("pg_test");
 
                const result = await connection.runSQL(
-                  "SELECT 1 as test_value FROM pg_test.information_schema.tables LIMIT 1",
+                  "SELECT 1 as test_value FROM information_schema.schemata WHERE catalog_name = 'pg_test' LIMIT 1",
                );
                expect(result.rows).toBeDefined();
             },
@@ -254,7 +271,7 @@ describe("connection integration tests", () => {
 
                // listSchemas equivalent
                const result = await connection.runSQL(
-                  "SELECT schema_name FROM pg_schemas.information_schema.schemata ORDER BY schema_name",
+                  "SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'pg_schemas' ORDER BY schema_name",
                );
                expect(result.rows.length).toBeGreaterThan(0);
                const schemaNames = result.rows.map(
@@ -310,8 +327,9 @@ describe("connection integration tests", () => {
                // listTables equivalent
                const result = await connection.runSQL(`
                   SELECT table_schema, table_name, table_type
-                  FROM pg_tables_db.information_schema.tables
-                  WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+                  FROM information_schema.tables
+                  WHERE table_catalog = 'pg_tables_db'
+                    AND table_schema NOT IN ('pg_catalog', 'information_schema')
                   ORDER BY table_schema, table_name
                `);
                expect(result.rows).toBeDefined();
@@ -320,7 +338,7 @@ describe("connection integration tests", () => {
          );
 
          it(
-            "should get table columns from attached PostgreSQL database",
+            "refuses reading the attached PostgreSQL database's own information_schema",
             async () => {
                if (!hasPostgresCredentials()) {
                   console.log(
@@ -361,19 +379,16 @@ describe("connection integration tests", () => {
                ) as DuckDBConnection;
                createdConnections.push(connection);
 
-               const result = await connection.runSQL(`
-                  SELECT column_name, data_type, is_nullable
-                  FROM pg_cols.information_schema.columns
-                  WHERE table_schema = 'information_schema'
-                    AND table_name = 'tables'
-                  ORDER BY ordinal_position
-               `);
-               expect(result.rows.length).toBeGreaterThan(0);
-               const columnNames = result.rows.map(
-                  (row) => (row as Record<string, unknown>)["column_name"],
-               );
-               expect(columnNames).toContain("table_name");
-               expect(columnNames).toContain("table_schema");
+               // The attached database's own system schemas are not
+               // readable from caller SQL; only its tables are.
+               await expect(
+                  connection.runSQL(`
+                     SELECT column_name, data_type, is_nullable
+                     FROM pg_cols.information_schema.columns
+                     WHERE table_schema = 'information_schema'
+                       AND table_name = 'tables'
+                  `),
+               ).rejects.toThrow("pg_cols.information_schema");
             },
             { timeout: 30000 },
          );
@@ -519,7 +534,7 @@ describe("connection integration tests", () => {
                createdConnections.push(connection);
 
                const result = await connection.runSQL(
-                  "SELECT schema_name FROM bq_schemas.information_schema.schemata",
+                  "SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'bq_schemas'",
                );
                expect(result.rows.length).toBeGreaterThan(0);
                const datasetNames = result.rows.map(
@@ -901,11 +916,15 @@ describe("connection integration tests", () => {
                // DO NOT copy this pattern into a test that points
                // EnvironmentStore at a non-empty or shared serverRoot
                // — it will delete state.
-               const previousInitializeStorage = process.env.INITIALIZE_STORAGE;
-               process.env.INITIALIZE_STORAGE = "true";
+               const { restore } = installSettings({
+                  env: { INITIALIZE_STORAGE: "true" },
+                  cwd: tempServerRoot,
+               });
 
                try {
-                  const envStore = new EnvironmentStore(tempServerRoot);
+                  const envStore = startedStore(
+                     new EnvironmentStore(tempServerRoot),
+                  );
                   await envStore.finishedInitialization;
 
                   // initialize() swallows top-level errors and just calls
@@ -919,7 +938,9 @@ describe("connection integration tests", () => {
                   expect(status.operationalState).toBe("serving");
                   expect(status.loadErrors).toBeUndefined();
 
-                  const env = await envStore.getEnvironment("malloy-samples");
+                  const env = await envStore.getEnvironment(
+                     parseEnvironmentName("malloy-samples"),
+                  );
                   const apiPackages = await env.listPackages();
                   expect(apiPackages.map((p) => p.name)).toContain(
                      "bigquery-hackernews",
@@ -937,7 +958,9 @@ describe("connection integration tests", () => {
                   // if every BQ schema introspection failed. Filter for
                   // models that compiled cleanly: at least one is the
                   // real proof that BQ-on-behalf-of-a-package works.
-                  const pkg = await env.getPackage("bigquery-hackernews");
+                  const pkg = await env.getPackage(
+                     parsePackageName("bigquery-hackernews"),
+                  );
                   const models = await pkg.listModels();
                   const okModels = models.filter((m) => !m.error);
                   if (okModels.length === 0) {
@@ -948,11 +971,7 @@ describe("connection integration tests", () => {
                   }
                   expect(okModels.length).toBeGreaterThan(0);
                } finally {
-                  if (previousInitializeStorage === undefined) {
-                     delete process.env.INITIALIZE_STORAGE;
-                  } else {
-                     process.env.INITIALIZE_STORAGE = previousInitializeStorage;
-                  }
+                  restore();
                }
             },
             { timeout: 180000 },
@@ -1080,7 +1099,8 @@ describe("connection integration tests", () => {
                expect(connection).toBeDefined();
                createdConnections.push(connection);
 
-               const secrets = await connection.runSQL(
+               const secrets = await runInternalSQL(
+                  connection,
                   "SELECT name FROM duckdb_secrets()",
                );
                const secretNames = secrets.rows.map(
@@ -1173,7 +1193,8 @@ describe("connection integration tests", () => {
                expect(connection).toBeDefined();
                createdConnections.push(connection);
 
-               const secrets = await connection.runSQL(
+               const secrets = await runInternalSQL(
+                  connection,
                   "SELECT name FROM duckdb_secrets()",
                );
                const secretNames = secrets.rows.map(
@@ -1985,9 +2006,9 @@ describe("connection integration tests", () => {
          });
 
          it("should drop explicitly-null Snowflake options from private-key connOptions", async () => {
-            // This is the path that actually throws. A key-pair connection
+            // This is the path that actually throws. A Snowflake connection
             // bypasses the core connection registry (which strips nulls itself)
-            // and is built directly by buildSnowflakePrivateKeyConnection, where
+            // and is built directly by buildSnowflakeConnection, where
             // cloneApiConnection's shallow spread leaves nulls intact. A
             // surviving null reaches SnowflakeConnection.getDigest(), whose
             // makeDigest reads `.length` off each part and special-cases only
@@ -2193,8 +2214,9 @@ describe("connection integration tests", () => {
                   );
                   return;
                }
-               const previous = process.env.PUBLISHER_POSTGRES_POOL_MAX;
-               process.env.PUBLISHER_POSTGRES_POOL_MAX = "3";
+               const { restore } = installSettings({
+                  env: { PUBLISHER_POSTGRES_POOL_MAX: "3" },
+               });
                const config = buildPlainPostgresConfig();
                try {
                   const connection =
@@ -2207,11 +2229,7 @@ describe("connection integration tests", () => {
                   expect(pool.options.max).toBe(3);
                } finally {
                   await config.releaseConnections();
-                  if (previous === undefined) {
-                     delete process.env.PUBLISHER_POSTGRES_POOL_MAX;
-                  } else {
-                     process.env.PUBLISHER_POSTGRES_POOL_MAX = previous;
-                  }
+                  restore();
                }
             },
             { timeout: 30000 },
@@ -2501,7 +2519,8 @@ describe("connection integration tests", () => {
                createdConnections.push(connection);
                // postgres_query runs on the attach's own Postgres session, so
                // this reads the setting the libpq `options` pair gave it.
-               const result = await connection.runSQL(
+               const result = await runInternalSQL(
+                  connection,
                   "SELECT * FROM postgres_query('pg_stmt_timeout', 'SELECT current_setting(''statement_timeout'') AS v')",
                );
                expect(Object.values(result.rows[0])[0]).toBe("750ms");
@@ -2552,7 +2571,8 @@ describe("connection integration tests", () => {
                // libpq's own parse of the merged string, read back from the
                // session it opened: the string's search_path survives and the
                // field's timeout replaces the string's.
-               const result = await connection.runSQL(
+               const result = await runInternalSQL(
+                  connection,
                   `SELECT * FROM postgres_query('${name}', 'SELECT current_setting(''search_path'') AS sp, current_setting(''statement_timeout'') AS st')`,
                );
                expect(result.rows[0]).toEqual({
@@ -2788,7 +2808,7 @@ describe("connection integration tests", () => {
       // where an unscreened setupSQL would run first. The marker file is the
       // proof: setupSQL either ran (file present) or it did not.
       describe("DuckDB setupSQL opt-in", () => {
-         const originalAllow = process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+         let restoreSettings: (() => void) | undefined;
          let dir: string;
 
          beforeEach(async () => {
@@ -2796,11 +2816,8 @@ describe("connection integration tests", () => {
          });
 
          afterEach(async () => {
-            if (originalAllow === undefined) {
-               delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
-            } else {
-               process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = originalAllow;
-            }
+            restoreSettings?.();
+            restoreSettings = undefined;
             await fs.rm(dir, { recursive: true, force: true });
          });
 
@@ -2819,7 +2836,7 @@ describe("connection integration tests", () => {
             );
 
          it("refuses setupSQL without running it when the opt-in is unset", async () => {
-            delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+            restoreSettings = installSettings({ env: {} }).restore;
             const marker = path.join(dir, "ran.csv");
 
             const result = await testConnectionConfig(markerConfig(marker));
@@ -2832,43 +2849,61 @@ describe("connection integration tests", () => {
          });
 
          it("runs setupSQL when the opt-in is set", async () => {
-            process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "true";
+            restoreSettings = installSettings({
+               env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
+            }).restore;
+
+            // An error only a statement that ran can raise.
+            const result = await testConnectionConfig({
+               name: "setup_sql_gate",
+               type: "duckdb",
+               duckdbConnection: {
+                  setupSQL: "SELECT error('setupSQL ran')",
+               },
+            });
+
+            expect(result.status).toBe("failed");
+            expect(result.errorMessage).toContain("setupSQL ran");
+         });
+
+         it("runs setupSQL confined to the environment directory", async () => {
+            restoreSettings = installSettings({
+               env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
+            }).restore;
             const marker = path.join(dir, "ran.csv");
 
             const result = await testConnectionConfig(markerConfig(marker));
 
-            expect(result.status).toBe("ok");
-            expect(await exists(marker)).toBe(true);
+            // A write outside it is refused (duckdb_lockdown.ts).
+            expect(result.status).toBe("failed");
+            expect(await exists(marker)).toBe(false);
          });
       });
 
       // These specs drive real attach failures offline: the closing listener
       // accepts the connection and drops it, so DuckDB's postgres extension
       // fails with "server closed the connection unexpectedly" and echoes the
-      // full connection string into the error message. The assertions prove
-      // that string reaches the caller redacted (`***`) and never in
-      // cleartext.
+      // attach path into the error message. The assertions prove that the
+      // message reaches the caller with no credential in it: the attach path
+      // carries none, and the redaction still covers anything that would.
       describe("errorMessage redaction", () => {
          const leakedPassword = "supersecretpw";
 
          // The security invariant is unconditional: the cleartext password
          // must never appear (this is also what fails if the fix regresses).
-         // The positive redaction marker is asserted only once the DSN has
-         // actually reached the message (the attach got as far as the connect
-         // refusal, so the host is present). On a runner where a DuckDB
-         // extension can't load, the attach fails earlier with a message that
-         // carries no DSN to redact, and the marker check would then be
-         // meaningless rather than a real failure.
-         const expectRedacted = (
-            errorMessage: string | undefined,
-            marker: string,
-         ) => {
+         // Once the attach path has reached the message (the attach got as
+         // far as the connect refusal, so the host is present), it carries
+         // neither a password keyword nor URI userinfo, redacted or not. On a
+         // runner where a DuckDB extension can't load, the attach fails
+         // earlier with a message that carries no attach path at all.
+         const expectRedacted = (errorMessage: string | undefined) => {
             expect(errorMessage).not.toContain(leakedPassword);
             if (
                typeof errorMessage === "string" &&
                errorMessage.includes("127.0.0.1")
             ) {
-               expect(errorMessage).toContain(marker);
+               expect(errorMessage).not.toContain("password=");
+               expect(errorMessage).not.toContain("alice");
             }
          };
 
@@ -2892,7 +2927,7 @@ describe("connection integration tests", () => {
                });
 
                expect(result.status).toBe("failed");
-               expectRedacted(result.errorMessage, ":***@");
+               expectRedacted(result.errorMessage);
             },
             { timeout: 30000 },
          );
@@ -2921,7 +2956,7 @@ describe("connection integration tests", () => {
                });
 
                expect(result.status).toBe("failed");
-               expectRedacted(result.errorMessage, "password=***");
+               expectRedacted(result.errorMessage);
             },
             { timeout: 30000 },
          );
@@ -2949,7 +2984,7 @@ describe("connection integration tests", () => {
                });
 
                expect(result.status).toBe("failed");
-               expectRedacted(result.errorMessage, ":***@");
+               expectRedacted(result.errorMessage);
             },
             { timeout: 30000 },
          );
@@ -3049,11 +3084,11 @@ describe("connection integration tests", () => {
          );
 
          // The DSN-leak fix itself, pinned without depending on any extension:
-         // `attachedDatabases[].name` has a `pattern` in api-doc.yaml but there
-         // is no request validator, so a hyphen reaches the ATTACH. Unquoted it
-         // fails to parse after the DSN literal, which is what truncates the
-         // redactor's anchor away.
-         it("quotes a hyphenated attached-database alias in the ATTACH", async () => {
+         // an attached-database alias unquoted after the DSN literal fails to
+         // parse, which is what truncates the redactor's anchor away. A name
+         // off `attachedDatabases[].name`'s pattern (a hyphen) is now refused
+         // before any ATTACH, and a valid one is still quoted.
+         it("refuses a hyphenated attached-database alias, and quotes a valid one, in the ATTACH", async () => {
             const sql: string[] = [];
             sinon
                .stub(DuckDBConnection.prototype, "runSQL")
@@ -3062,25 +3097,36 @@ describe("connection integration tests", () => {
                   return { rows: [], totalRows: 0, runStats: {} } as never;
                });
 
-            await testConnectionConfig({
-               name: "probe_duckdb",
-               type: "duckdb",
-               duckdbConnection: {
-                  attachedDatabases: [
-                     {
-                        name: "evil-db",
-                        type: "postgres",
-                        postgresConnection: {
-                           connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/db`,
+            const withAlias = (name: string) =>
+               testConnectionConfig({
+                  name: "probe_duckdb",
+                  type: "duckdb",
+                  duckdbConnection: {
+                     attachedDatabases: [
+                        {
+                           name,
+                           type: "postgres",
+                           postgresConnection: {
+                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/db`,
+                           },
                         },
-                     },
-                  ],
-               },
-            });
+                     ],
+                  },
+               });
+            const isPostgresAttach = (q: string) =>
+               q.startsWith("ATTACH") && q.includes("TYPE postgres");
 
-            const attach = sql.find((q) => q.includes("TYPE postgres"));
+            const refused = await withAlias("evil-db");
+            expect(refused.status).toBe("failed");
+            expect(refused.errorMessage).toContain("attachedDatabases[0].name");
+            expect(refused.errorMessage).not.toContain(leakedPassword);
+            expect(sql.some(isPostgresAttach)).toBe(false);
+
+            await withAlias("Evil_db");
+            const attach = sql.find(isPostgresAttach);
             expect(attach).toBeDefined();
-            expect(attach).toContain('AS "evil-db"');
+            expect(attach).toContain('AS "Evil_db"');
+            expect(attach).not.toContain(leakedPassword);
          });
 
          it("hands libpq require, not no-verify, in an attached database's raw connectionString", async () => {
@@ -3109,7 +3155,9 @@ describe("connection integration tests", () => {
                },
             });
 
-            const attach = sql.find((q) => q.includes("TYPE postgres"));
+            const attach = sql.find(
+               (q) => q.startsWith("ATTACH") && q.includes("TYPE postgres"),
+            );
             expect(attach).toContain("sslmode=require");
             expect(attach).not.toContain("no-verify");
          });
@@ -3619,9 +3667,19 @@ describe("buildCloudStorageSecretSQL", () => {
             endpoint: "https://minio.internal:9000",
          });
          expect(sql).toContain("PROVIDER credential_chain");
-         expect(sql).toContain("ENDPOINT 'https://minio.internal:9000'");
+         expect(sql).toContain("ENDPOINT 'minio.internal:9000'");
          expect(sql).toContain("URL_STYLE 'path'");
+         expect(sql).not.toContain("USE_SSL");
          expect(sql).not.toContain("KEY_ID");
+      });
+
+      it("refuses a plain http:// endpoint, which would send the host's credentials in cleartext", () => {
+         expect(() =>
+            chainSQL({
+               provider: "credential_chain",
+               endpoint: "http://minio.internal:9000",
+            }),
+         ).toThrow("must use https:// with provider credential_chain");
       });
 
       it("escapes a chain containing a quote", () => {
@@ -3653,7 +3711,7 @@ describe("buildCloudStorageSecretSQL", () => {
             chainSQL({
                ...keys,
                region: "us-west-2",
-               endpoint: "https://mi.no",
+               endpoint: "mi.no",
             }),
          ).toBe(`
             CREATE OR REPLACE SECRET s3_root (
@@ -3661,8 +3719,64 @@ describe("buildCloudStorageSecretSQL", () => {
                KEY_ID 'AKIA',
                SECRET 'shhh',
                REGION 'us-west-2',
-               ENDPOINT 'https://mi.no',
+               ENDPOINT 'mi.no',
                URL_STYLE 'path'
+            );
+         `);
+      });
+
+      // DuckDB's ENDPOINT takes no scheme: given one, it requested
+      // `https://https://mi.no/…`. An https:// endpoint now writes the same
+      // secret a bare one always did.
+      it("custom endpoint written with https:// gives the bare endpoint's secret", () => {
+         expect(
+            chainSQL({
+               ...keys,
+               region: "us-west-2",
+               endpoint: "https://mi.no/",
+            }),
+         ).toBe(chainSQL({ ...keys, region: "us-west-2", endpoint: "mi.no" }));
+      });
+
+      // The endpoint arm used to drop the token, so a temporary key pair behind
+      // an endpoint listed fine (the SDK sent it) and failed every DuckDB read.
+      it("custom endpoint with a session token keeps the token", () => {
+         expect(
+            chainSQL({
+               ...keys,
+               region: "us-west-2",
+               endpoint: "mi.no",
+               sessionToken: "tok",
+            }),
+         ).toBe(`
+            CREATE OR REPLACE SECRET s3_root (
+               TYPE s3,
+               KEY_ID 'AKIA',
+               SECRET 'shhh',
+               REGION 'us-west-2',
+               ENDPOINT 'mi.no',
+               URL_STYLE 'path',
+               SESSION_TOKEN 'tok'
+            );
+         `);
+      });
+
+      it("custom endpoint written with http:// turns TLS off", () => {
+         expect(
+            chainSQL({
+               ...keys,
+               region: "us-west-2",
+               endpoint: "http://minio:9000",
+            }),
+         ).toBe(`
+            CREATE OR REPLACE SECRET s3_root (
+               TYPE s3,
+               KEY_ID 'AKIA',
+               SECRET 'shhh',
+               REGION 'us-west-2',
+               ENDPOINT 'minio:9000',
+               URL_STYLE 'path',
+               USE_SSL false
             );
          `);
       });
@@ -3881,6 +3995,241 @@ describe("environment connection lookup for a connection the environment does no
    });
 });
 
+describe("environment connection lookup for a proxied Postgres connection", () => {
+   const proxied = (): ApiConnection => ({
+      name: "pg_tunneled",
+      type: "postgres",
+      postgresConnection: {
+         host: "db.internal",
+         port: 5432,
+         userName: "u",
+         password: "p",
+         databaseName: "d",
+      },
+      proxy: {
+         type: "ssh",
+         ssh: {
+            host: "bastion",
+            username: "u",
+            privateKey: "key",
+            hostKey: "AAAA",
+         },
+      },
+   });
+
+   // A scripted tunnel: `die()` is the tunnel dying on its own.
+   const tunnels = () => {
+      const opened: {
+         endpoint: ProxyEndpoint;
+         die: () => void;
+         close: ReturnType<typeof mock>;
+      }[] = [];
+      const open = async (): Promise<ProxyEndpoint> => {
+         const listeners: ((cause?: Error) => void)[] = [];
+         const close = mock(async () => {});
+         const endpoint: ProxyEndpoint = {
+            host: "127.0.0.1",
+            port: 40000 + opened.length,
+            close,
+            onClose: (listener) => listeners.push(listener),
+         };
+         opened.push({
+            endpoint,
+            close,
+            die: () => listeners.forEach((l) => l(new Error("ssh gone"))),
+         });
+         return endpoint;
+      };
+      return { opened, open };
+   };
+
+   let infoSpy: ReturnType<typeof spyOn<typeof logger, "info">>;
+   beforeEach(() => {
+      infoSpy = spyOn(logger, "info").mockImplementation(() => logger);
+   });
+   afterEach(() => infoSpy.mockRestore());
+
+   const build = (open: () => Promise<ProxyEndpoint>) =>
+      buildEnvironmentMalloyConfig([proxied()], "/tmp", false, {
+         openProxy: open,
+      });
+   const lookup = (config: ReturnType<typeof build>) =>
+      config.malloyConfig.connections.lookupConnection("pg_tunneled");
+
+   it("sizes the pool like a direct connection, without running a query", async () => {
+      const { open } = tunnels();
+      const config = build(open);
+      try {
+         const connection = (await lookup(
+            config,
+         )) as unknown as PooledPostgresConnection;
+         const { options } = await connection.getPool();
+         expect(options.max).toBe(5);
+         expect(options.maxUses).toBe(1);
+         expect(options.connectionTimeoutMillis).toBe(30_000);
+         expect(options.application_name).toBe("malloy-publisher");
+      } finally {
+         await config.releaseConnections();
+      }
+   });
+
+   it("rebuilds the tunnel on the next lookup after it dies", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      try {
+         const first = await lookup(config);
+         expect(await lookup(config)).toBe(first);
+         const closeFirst = spyOn(first, "close");
+         opened[0].die();
+         const second = await lookup(config);
+         expect(opened).toHaveLength(2);
+         expect(second).not.toBe(first);
+         expect(closeFirst).toHaveBeenCalledTimes(1);
+         expect(opened[0].close).toHaveBeenCalledTimes(1);
+      } finally {
+         await config.releaseConnections();
+      }
+   });
+
+   it("shares one rebuild between concurrent lookups after an eviction", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      try {
+         await lookup(config);
+         opened[0].die();
+         const [a, b] = await Promise.all([lookup(config), lookup(config)]);
+         expect(a).toBe(b);
+         expect(opened).toHaveLength(2);
+      } finally {
+         await config.releaseConnections();
+      }
+   });
+
+   it("ignores a close from a superseded tunnel", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      try {
+         await lookup(config);
+         opened[0].die();
+         const second = await lookup(config);
+         opened[0].die();
+         expect(await lookup(config)).toBe(second);
+         expect(opened).toHaveLength(2);
+         expect(opened[1].close).not.toHaveBeenCalled();
+      } finally {
+         await config.releaseConnections();
+      }
+   });
+
+   it("releases an evicted connection's replacement without closing anything twice", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      const first = await lookup(config);
+      const closeFirst = spyOn(first, "close");
+      opened[0].die();
+      await lookup(config);
+      await config.releaseConnections();
+      expect(closeFirst).toHaveBeenCalledTimes(1);
+      expect(opened[0].close).toHaveBeenCalledTimes(1);
+      expect(opened[1].close).toHaveBeenCalledTimes(1);
+   });
+
+   it("waits for an evicted connection's close before release resolves", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      const first = await lookup(config);
+      let finishClose!: () => void;
+      spyOn(first, "close").mockImplementation(
+         () => new Promise<void>((res) => (finishClose = res)),
+      );
+      opened[0].die();
+      let released = false;
+      const release = config.releaseConnections().then(() => {
+         released = true;
+      });
+      await new Promise((res) => setTimeout(res, 20));
+      expect(released).toBe(false);
+      finishClose();
+      await release;
+      expect(released).toBe(true);
+   });
+
+   it(
+      "recovers on the next query after the SSH tunnel to a real Postgres drops",
+      async () => {
+         if (!hasPostgresCredentials()) {
+            console.log("Skipping: PostgreSQL credentials not configured");
+            return;
+         }
+         const bastion = await startSshServer({});
+         const fields = {
+            host: process.env.POSTGRES_TEST_HOST,
+            port: parseInt(process.env.POSTGRES_TEST_PORT || "5432"),
+            userName: process.env.POSTGRES_TEST_USER!,
+            password: process.env.POSTGRES_TEST_PASSWORD!,
+            databaseName: process.env.POSTGRES_TEST_DATABASE,
+            // The test server has no TLS, and a proxied default demands it.
+            sslmode: "disable" as const,
+         };
+         const config = buildEnvironmentMalloyConfig(
+            [
+               {
+                  name: "pg_tunneled",
+                  type: "postgres",
+                  postgresConnection: fields,
+                  proxy: {
+                     type: "ssh",
+                     ssh: {
+                        host: "127.0.0.1",
+                        port: bastion.port,
+                        username: "testuser",
+                        privateKey: clientPrivatePem,
+                        hostKey: bastion.hostKeyBase64,
+                     },
+                  },
+               },
+            ],
+            "/tmp",
+         );
+         const sql = "SELECT row_to_json(t) AS row FROM (SELECT 1 AS ok) t";
+         try {
+            const first = await lookup(config);
+            expect((await first.runSQL(sql)).rows[0]).toEqual({ ok: 1 });
+
+            bastion.destroySockets();
+            // A dropped session is noticed on the client's next write (here a
+            // query; idle, the keepalive), so the query on it fails first.
+            const started = Date.now();
+            await expect(first.runSQL(sql)).rejects.toThrow();
+            expect(Date.now() - started).toBeLessThan(10_000);
+            let second = first;
+            expect(
+               await pollUntil(async () => {
+                  second = await lookup(config);
+                  return second !== first;
+               }, 5_000),
+            ).toBe(true);
+            expect((await second.runSQL(sql)).rows[0]).toEqual({ ok: 1 });
+         } finally {
+            await config.releaseConnections();
+            await closeQuietly(() => bastion.close());
+         }
+      },
+      { timeout: 30000 },
+   );
+
+   it("does not double-end a pool when release races an eviction", async () => {
+      const { opened, open } = tunnels();
+      const config = build(open);
+      const first = await lookup(config);
+      const closeFirst = spyOn(first, "close");
+      const release = config.releaseConnections();
+      opened[0].die();
+      await release;
+      expect(closeFirst).toHaveBeenCalledTimes(1);
+   });
+});
+
 describe("buildPgConnectionString", () => {
    const fields = {
       host: "db.example.com",
@@ -3899,31 +4248,74 @@ describe("buildPgConnectionString", () => {
       else process.env.PGSSLMODE = previousPgSslMode;
    });
 
-   it("builds a DuckLake catalog's string exactly as before, whatever the new fields say", () => {
-      const withFields = buildPgConnectionString(
-         {
-            ...fields,
-            sslmode: "verify-full",
-            statementTimeoutMilliseconds: 5000,
-         },
-         { name: "lake", applyConnectionOptions: false },
-      );
-      expect(withFields).toBe(
-         "host=db.example.com port=5432 dbname=lake user=u password=p",
-      );
-      process.env.PGSSLMODE = "require";
+   it("builds a DuckLake catalog's string without its statement timeout, and with no sslmode when neither it nor PGSSLMODE sets one", () => {
       expect(
          buildPgConnectionString(
-            {
-               ...fields,
-               sslmode: "disable",
-               statementTimeoutMilliseconds: 5000,
-            },
+            { ...fields, statementTimeoutMilliseconds: 5000 },
             { name: "lake", applyConnectionOptions: false },
          ),
-      ).toBe(
-         "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=require",
-      );
+      ).toBe("host=db.example.com port=5432 dbname=lake user=u password=p");
+   });
+
+   describe("a DuckLake catalog given as fields", () => {
+      // The worker's PGSSLMODE=allow makes libpq try plaintext first; a server
+      // that requires TLS refuses and logs each refusal.
+      beforeEach(() => {
+         process.env.PGSSLMODE = "allow";
+      });
+
+      it("takes its own sslmode over the deployment PGSSLMODE", () => {
+         expect(
+            buildPgConnectionString(
+               { ...fields, sslmode: "no-verify" },
+               { name: "lake", applyConnectionOptions: false },
+            ),
+         ).toBe(
+            "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=require",
+         );
+         const verifyFull = buildPgConnectionString(
+            { ...fields, sslmode: "verify-full" },
+            { name: "lake", applyConnectionOptions: false },
+         );
+         expect(verifyFull).toContain("sslmode=verify-full");
+         expect(verifyFull).toContain("sslrootcert=");
+         expect(verifyFull).not.toContain("sslmode=allow");
+      });
+
+      it("gets no statement timeout, whatever the connection sets", () => {
+         expect(
+            buildPgConnectionString(
+               {
+                  ...fields,
+                  sslmode: "no-verify",
+                  statementTimeoutMilliseconds: 5000,
+               },
+               { name: "lake", applyConnectionOptions: false },
+            ),
+         ).not.toContain("statement_timeout");
+      });
+
+      it("takes its own disable over the deployment PGSSLMODE", () => {
+         expect(
+            buildPgConnectionString(
+               { ...fields, sslmode: "disable" },
+               { name: "lake", applyConnectionOptions: false },
+            ),
+         ).toBe(
+            "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=disable",
+         );
+      });
+
+      it("falls back to the deployment PGSSLMODE when it sets no sslmode", () => {
+         expect(
+            buildPgConnectionString(fields, {
+               name: "lake",
+               applyConnectionOptions: false,
+            }),
+         ).toBe(
+            "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=allow",
+         );
+      });
    });
 
    it("gives an attached database its statement timeout and its own sslmode", () => {
@@ -4265,5 +4657,487 @@ describe("buildPgConnectionString", () => {
       } finally {
          warn.restore();
       }
+   });
+});
+
+describe("buildCloudStorageSecretSQL — scope", () => {
+   const base = { accessKeyId: "AK", secretAccessKey: "SK", region: "r" };
+
+   it("adds SCOPE as a list to the S3 chain, S3 key and GCS arms", () => {
+      const chain = buildCloudStorageSecretSQL("s", {
+         type: "s3",
+         ...base,
+         provider: "credential_chain",
+         scope: ["s3://b/p/main/", "s3://b/p/extra_a/"],
+      });
+      const key = buildCloudStorageSecretSQL("s", {
+         type: "s3",
+         ...base,
+         scope: ["s3://b/p/main/", "s3://b/p/extra_a/"],
+      });
+      const gcs = buildCloudStorageSecretSQL("s", {
+         type: "gcs",
+         ...base,
+         scope: ["gs://b/p/main/", "gs://b/p/extra_a/"],
+      });
+      expect(chain).toContain("PROVIDER credential_chain");
+      expect(chain).toContain("SCOPE ['s3://b/p/main/', 's3://b/p/extra_a/']");
+      expect(key).toContain("SCOPE ['s3://b/p/main/', 's3://b/p/extra_a/']");
+      expect(gcs).toContain("SCOPE ['gs://b/p/main/', 'gs://b/p/extra_a/']");
+   });
+
+   it("emits the list form for a single prefix", () => {
+      expect(
+         buildCloudStorageSecretSQL("s", {
+            type: "s3",
+            ...base,
+            scope: ["s3://b/p/"],
+         }),
+      ).toContain("SCOPE ['s3://b/p/']");
+   });
+
+   it("escapes each scope literal", () => {
+      expect(
+         buildCloudStorageSecretSQL("s", {
+            type: "s3",
+            ...base,
+            scope: ["s3://b/o'brien/", "s3://b/x/"],
+         }),
+      ).toContain("SCOPE ['s3://b/o''brien/', 's3://b/x/']");
+   });
+
+   it("emits no SCOPE when none is set, as the generic attach does", () => {
+      for (const type of ["s3", "gcs"] as const) {
+         expect(
+            buildCloudStorageSecretSQL("s", { type, ...base }),
+         ).not.toContain("SCOPE");
+      }
+   });
+});
+
+// The prefixes a DuckLake storage secret is held to. A configured data path wins;
+// a catalog whose config states none (an orchestrator's, which leaves the path to
+// the catalog so no attach can create one) is scoped to the path it recorded.
+describe("storageSecretScope", () => {
+   const main = { path: "main/", relative: true };
+   const scopeOf = (
+      input: Omit<Parameters<typeof storageSecretScope>[0], "catalog">,
+   ) => storageSecretScope({ catalog: "lake", ...input });
+   const schemas = (
+      entries: Record<string, { path: string; relative: boolean }>,
+   ) => new Map(Object.entries(entries));
+   const view = (
+      readable: string[],
+      recorded: Record<string, { path: string; relative: boolean }>,
+      root = "s3://bucket/org_a/db_b/",
+   ) =>
+      scopeOf({
+         recordedDataPath: root,
+         schemaPaths: schemas({ main, ...recorded }),
+         readableSchemas: readable,
+         readOnly: true,
+         managed: true,
+      });
+
+   it("takes the configured data path with exactly one trailing slash", () => {
+      for (const [url, scope] of [
+         ["s3://bucket", "s3://bucket/"],
+         ["s3://bucket/prefix", "s3://bucket/prefix/"],
+         ["s3://bucket/prefix/", "s3://bucket/prefix/"],
+         ["s3://bucket/prefix//", "s3://bucket/prefix/"],
+      ]) {
+         expect(
+            scopeOf({
+               configuredDataPath: url,
+               readOnly: false,
+               managed: false,
+            }),
+         ).toEqual([scope]);
+      }
+   });
+
+   it("falls back to the data path the catalog recorded", () => {
+      expect(
+         scopeOf({
+            recordedDataPath: "gs://bucket/org_a/db_b/",
+            schemaPaths: schemas({ main }),
+            readOnly: false,
+            managed: false,
+         }),
+      ).toEqual(["gs://bucket/org_a/db_b/"]);
+   });
+
+   it("prefers a configured path over the recorded one", () => {
+      expect(
+         scopeOf({
+            configuredDataPath: "s3://bucket/configured",
+            recordedDataPath: "s3://bucket/recorded/",
+            readOnly: false,
+            managed: false,
+         }),
+      ).toEqual(["s3://bucket/configured/"]);
+   });
+
+   it("narrows a managed read-only attach to the main schema's path", () => {
+      expect(
+         scopeOf({
+            recordedDataPath: "s3://bucket/org_a/db_b",
+            schemaPaths: schemas({ main }),
+            readOnly: true,
+            managed: true,
+         }),
+      ).toEqual(["s3://bucket/org_a/db_b/main/"]);
+      expect(view([], { main: { path: "/main", relative: true } })).toEqual([
+         "s3://bucket/org_a/db_b/main/",
+      ]);
+      expect(
+         view([], {
+            main: { path: "s3://elsewhere/main", relative: false },
+         }),
+      ).toEqual(["s3://elsewhere/main/"]);
+   });
+
+   it("does not narrow a managed read-write attach, which writes other schemas", () => {
+      expect(
+         scopeOf({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            schemaPaths: schemas({ main }),
+            readableSchemas: ["extra_a"],
+            readOnly: false,
+            managed: true,
+         }),
+      ).toEqual(["s3://bucket/org_a/db_b/"]);
+   });
+
+   it("fails closed: no path, or a managed view without its main path, scopes to nothing", () => {
+      expect(scopeOf({ readOnly: true, managed: false })).toBeUndefined();
+      expect(
+         scopeOf({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBeUndefined();
+      expect(
+         scopeOf({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            schemaPaths: schemas({
+               extra_a: { path: "extra_a/", relative: true },
+            }),
+            readableSchemas: ["extra_a"],
+            readOnly: true,
+            managed: true,
+         }),
+      ).toBeUndefined();
+   });
+
+   it("reads an empty main path as the data path itself, as a catalog migrated from DuckLake 0.2 records it", () => {
+      expect(
+         view(
+            [],
+            { main: { path: "", relative: true } },
+            "s3://bucket/org_a/db_b",
+         ),
+      ).toEqual(["s3://bucket/org_a/db_b/"]);
+   });
+
+   it("refuses a root that names no bucket, which DuckDB would match against every URL of the scheme", () => {
+      for (const root of ["s3://", "s3:///", "gs://"]) {
+         expect(
+            scopeOf({
+               configuredDataPath: root,
+               readOnly: false,
+               managed: false,
+            }),
+         ).toBeUndefined();
+      }
+      expect(
+         view([], { main: { path: "gs://", relative: false } }),
+      ).toBeUndefined();
+   });
+
+   it("leaves a local data path alone", () => {
+      expect(
+         scopeOf({
+            configuredDataPath: "/srv/lake//",
+            readOnly: false,
+            managed: false,
+         }),
+      ).toEqual(["/srv/lake/"]);
+   });
+
+   describe("readable schemas of a managed read-only view", () => {
+      let error: sinon.SinonStub;
+      beforeEach(() => {
+         error = sinon.stub(logger, "error");
+      });
+      afterEach(() => {
+         error.restore();
+      });
+
+      it("returns main and each listed schema, with one trailing slash apiece", () => {
+         expect(
+            view(["extra_a", "extra_b"], {
+               extra_a: { path: "extra_a/", relative: true },
+               extra_b: {
+                  path: "s3://bucket/org_a/db_b/extra_b//",
+                  relative: false,
+               },
+            }),
+         ).toEqual([
+            "s3://bucket/org_a/db_b/main/",
+            "s3://bucket/org_a/db_b/extra_a/",
+            "s3://bucket/org_a/db_b/extra_b/",
+         ]);
+         expect(error.called).toBe(false);
+      });
+
+      it("drops, and logs with catalog and schema, an entry that does not resolve strictly under the data path", () => {
+         const bad = {
+            outside: { path: "s3://other/extra/", relative: false },
+            sibling: {
+               path: "s3://bucket/org_a/db_bx/extra/",
+               relative: false,
+            },
+            parent: { path: "../x/", relative: true },
+            inner_parent: { path: "a/../x/", relative: true },
+            empty_segment: { path: "a//b/", relative: true },
+            leading_slash: { path: "/extra/", relative: true },
+            root_relative: { path: "", relative: true },
+            root_slashes: { path: "//", relative: true },
+            root_absolute: { path: "s3://bucket/org_a/db_b/", relative: false },
+            root_absolute_bare: {
+               path: "s3://bucket/org_a/db_b",
+               relative: false,
+            },
+            bucketless: { path: "s3://", relative: false },
+            dot: { path: "./x/", relative: true },
+         };
+         const names = Object.keys(bad);
+         expect(view(names, bad)).toEqual(["s3://bucket/org_a/db_b/main/"]);
+         expect(error.callCount).toBe(names.length);
+         expect(error.getCalls().map((call) => call.args[1])).toEqual(
+            names.map((schema) => ({ catalog: "lake", schema })),
+         );
+      });
+
+      it("skips, and logs, a listed schema the catalog does not record", () => {
+         expect(
+            view(["extra_a", "ghost"], {
+               extra_a: { path: "extra_a/", relative: true },
+            }),
+         ).toEqual([
+            "s3://bucket/org_a/db_b/main/",
+            "s3://bucket/org_a/db_b/extra_a/",
+         ]);
+         expect(error.callCount).toBe(1);
+         expect(error.firstCall.args[1]).toEqual({
+            catalog: "lake",
+            schema: "ghost",
+         });
+      });
+
+      it("keeps main's legacy handling whatever the listed schemas are", () => {
+         expect(
+            view(["extra_a"], {
+               main: { path: "s3://elsewhere/main", relative: false },
+               extra_a: { path: "extra_a/", relative: true },
+            }),
+         ).toEqual(["s3://elsewhere/main/", "s3://bucket/org_a/db_b/extra_a/"]);
+      });
+
+      it("lists a prefix once when two schemas share a path", () => {
+         expect(
+            view(["extra_a"], {
+               extra_a: { path: "main/", relative: true },
+            }),
+         ).toEqual(["s3://bucket/org_a/db_b/main/"]);
+      });
+
+      it("refuses, naming both schemas, a listed schema whose scope reaches an unlisted schema's files", () => {
+         expect(() =>
+            view(["extra_a"], {
+               extra_a: { path: "extra_a/", relative: true },
+               nested: { path: "extra_a/nested/", relative: true },
+            }),
+         ).toThrow(/'extra_a'.*'nested'/);
+         expect(() =>
+            view(["extra_a"], {
+               extra_a: { path: "extra_a/", relative: true },
+               nested: {
+                  path: "s3://bucket/org_a/db_b/extra_a/nested",
+                  relative: false,
+               },
+            }),
+         ).toThrow(/'extra_a'.*'nested'/);
+      });
+
+      it("refuses an unlisted schema under a main that is not the data root", () => {
+         for (const main of [
+            { path: "x/", relative: true },
+            { path: "s3://bucket/org_a/db_b/x/", relative: false },
+         ]) {
+            expect(() =>
+               view([], { main, other: { path: "x/y/", relative: true } }),
+            ).toThrow(/'main'.*'other'/);
+         }
+      });
+
+      it("keeps a catalog migrated from DuckLake 0.2 attachable: main's root-wide scope is warned about, not refused", () => {
+         const warn = sinon.stub(logger, "warn");
+         try {
+            for (const main of [
+               { path: "", relative: true },
+               { path: "s3://bucket/org_a/db_b/", relative: false },
+            ]) {
+               warn.resetHistory();
+               expect(
+                  view([], { main, other: { path: "other/", relative: true } }),
+               ).toEqual(["s3://bucket/org_a/db_b/"]);
+               expect(warn.callCount).toBe(1);
+               expect(String(warn.firstCall.args[0])).toContain("'lake'");
+               expect(String(warn.firstCall.args[0])).toContain("'other'");
+            }
+            // A listed non-main schema is still refused, whatever main is.
+            expect(() =>
+               view(["extra_a"], {
+                  main: { path: "", relative: true },
+                  extra_a: { path: "extra_a/", relative: true },
+                  nested: { path: "extra_a/nested/", relative: true },
+               }),
+            ).toThrow(/'extra_a'.*'nested'/);
+         } finally {
+            warn.restore();
+         }
+      });
+
+      it("lets an unlisted schema stand beside the listed ones, even by a shared name prefix", () => {
+         expect(
+            view(["extra_a"], {
+               extra_a: { path: "extra_a/", relative: true },
+               extra_ab: { path: "extra_ab/", relative: true },
+               elsewhere: { path: "s3://other/x/", relative: false },
+            }),
+         ).toEqual([
+            "s3://bucket/org_a/db_b/main/",
+            "s3://bucket/org_a/db_b/extra_a/",
+         ]);
+      });
+   });
+});
+
+describe("attached database ATTACH and SECRET SQL quotes the name", () => {
+   // Built as if validation had been bypassed: each statement must still read
+   // as exactly one statement to DuckDB's parser, with the name inside a quoted
+   // identifier or an escaped string literal.
+   const hostileNames = [
+      'evil"; SELECT 1 --',
+      "evil'; SELECT 1 --",
+      "evil AS x; DROP TABLE t; --",
+      "evil\nSELECT 1",
+   ];
+
+   it("keeps a valid name's BigQuery ATTACH as it was, but quoted", () => {
+      expect(bigQueryAttachSQL("sales_bq", "my-project")).toBe(
+         `ATTACH 'project=my-project' AS "sales_bq" (TYPE bigquery, READ_ONLY);`,
+      );
+   });
+
+   it("keeps a valid name's Snowflake statements as they were, but quoted", () => {
+      const statements = snowflakeAttachSQL("sales_sf", [
+         "      TYPE snowflake",
+      ]);
+      expect(statements.createSecret).toBe(
+         `CREATE OR REPLACE SECRET "sales_sf_secret" (\n      TYPE snowflake\n   );`,
+      );
+      expect(statements.test).toBe(
+         `SELECT * FROM snowflake_query('SELECT 1', 'sales_sf_secret');`,
+      );
+      expect(statements.attach).toBe(
+         `ATTACH 'sales_sf' AS "sales_sf" (TYPE snowflake, SECRET "sales_sf_secret", READ_ONLY);`,
+      );
+   });
+
+   for (const name of hostileNames) {
+      it(`quotes and escapes a hostile name (${JSON.stringify(name)})`, async () => {
+         const bigquery = bigQueryAttachSQL(name, "p'roj");
+         expect(bigquery).toContain(`AS "${name.replace(/"/g, '""')}"`);
+         expect(bigquery).toContain(`'project=p''roj'`);
+         expect(await countStatements(bigquery)).toBe(1);
+
+         const snowflake = snowflakeAttachSQL(name, ["      TYPE snowflake"]);
+         const quotedSecret = `"${`${name}_secret`.replace(/"/g, '""')}"`;
+         expect(snowflake.createSecret).toContain(
+            `CREATE OR REPLACE SECRET ${quotedSecret} (`,
+         );
+         expect(snowflake.test).toContain(
+            `'${`${name}_secret`.replace(/'/g, "''")}'`,
+         );
+         expect(snowflake.attach).toContain(
+            `ATTACH '${name.replace(/'/g, "''")}' AS "${name.replace(/"/g, '""')}"`,
+         );
+         expect(snowflake.attach).toContain(`SECRET ${quotedSecret},`);
+         for (const sql of [
+            snowflake.createSecret,
+            snowflake.test,
+            snowflake.attach,
+         ]) {
+            expect(await countStatements(sql)).toBe(1);
+         }
+      });
+   }
+
+   it("leaves a valid name's catalog reachable by its unquoted name", async () => {
+      // A model reads an attached catalog as `name.schema.table`, unquoted:
+      // quoting the alias at ATTACH must not change the name it answers to.
+      const connection = new DuckDBConnection({
+         name: "attach_quote_probe",
+         databasePath: ":memory:",
+      });
+      try {
+         const alias = bigQueryAttachSQL("Sales_Db", "x").match(
+            / AS ("[^"]+") /,
+         )?.[1];
+         expect(alias).toBe(`"Sales_Db"`);
+         await connection.runSQL(`ATTACH ':memory:' AS ${alias}`);
+         await connection.runSQL(
+            "CREATE TABLE Sales_Db.main.t AS SELECT 1 AS a",
+         );
+         const result = await connection.runSQL("SELECT a FROM sales_db.t");
+         expect(result.rows).toEqual([{ a: 1 }]);
+      } finally {
+         await connection.close();
+      }
+   });
+});
+
+describe("buildCloudStorageSecretSQL — region", () => {
+   // Built as if validation had been bypassed: a quote in the region must stay
+   // inside its string literal, on both S3 arms.
+   const hostile = "us-east-1'); SET threads=1; --";
+
+   for (const provider of ["config", "credential_chain"] as const) {
+      it(`escapes the region on the ${provider} arm`, async () => {
+         const sql = buildCloudStorageSecretSQL("secret_s3_x", {
+            type: "s3",
+            accessKeyId: "AK",
+            secretAccessKey: "SK",
+            region: hostile,
+            provider,
+         });
+         expect(sql).toContain(`REGION '${hostile.replace(/'/g, "''")}'`);
+         expect(await countStatements(sql)).toBe(1);
+      });
+   }
+
+   it("keeps a valid region as it was", () => {
+      expect(
+         buildCloudStorageSecretSQL("secret_s3_x", {
+            type: "s3",
+            accessKeyId: "AK",
+            secretAccessKey: "SK",
+            region: "eu-west-2",
+         }),
+      ).toContain("REGION 'eu-west-2'");
    });
 });

@@ -14,6 +14,8 @@ import {
    ConnectionFailedError,
    ConnectionPoolExhaustedError,
    InvalidArgumentError,
+   MaterializationEligibilityError,
+   TableOwnershipError,
    databaseAccessFailure,
    isConnectionFailure,
    isCredentialRejection,
@@ -24,6 +26,7 @@ import {
    ModelCompilationError,
    NotImplementedError,
    NotQueryableError,
+   PackageVersionError,
    PayloadTooLargeError,
    QueryCompileError,
    ResponseUnserializableError,
@@ -75,6 +78,55 @@ describe("internalErrorToHttpError", () => {
       expect(json).toEqual({
          code: 403,
          message: 'Access denied for source "gated".',
+         reason: "ACCESS_DENIED",
+      });
+   });
+
+   it("answers every gate 403 alike, a lock's and a row filter's", () => {
+      const lock = internalErrorToHttpError(
+         AccessDeniedError.forSource("gated", "lock"),
+      );
+      const filter = internalErrorToHttpError(
+         AccessDeniedError.forSource("gated", "row_filter"),
+      );
+      expect(lock).toEqual(filter);
+      expect(lock.json.reason).toBe("ACCESS_DENIED");
+   });
+
+   it("names a materialization refusal and its bounded reason on the 422", () => {
+      const { status, json } = internalErrorToHttpError(
+         new MaterializationEligibilityError({
+            message: "refused",
+            reason: "reads_given",
+         }),
+      );
+      expect(status).toBe(422);
+      expect(json).toEqual({
+         code: 422,
+         message: "refused",
+         reason: "MATERIALIZATION_REFUSED",
+         refusalReason: "reads_given",
+      });
+   });
+
+   it("names which table-ownership refusal a 400 is", () => {
+      expect(
+         internalErrorToHttpError(
+            new TableOwnershipError("table-owned-elsewhere", "held"),
+         ).json,
+      ).toEqual({
+         code: 400,
+         message: "held",
+         reason: "TABLE_OWNED_ELSEWHERE",
+      });
+      expect(
+         internalErrorToHttpError(
+            new TableOwnershipError("table-ownership-unverified", "unknown"),
+         ).json,
+      ).toEqual({
+         code: 400,
+         message: "unknown",
+         reason: "TABLE_OWNERSHIP_UNVERIFIED",
       });
    });
 
@@ -691,6 +743,35 @@ describe("isCredentialRejection", () => {
       });
       expect(isCredentialRejection(denied)).toBe(false);
       expect(databaseAccessFailure(denied)).toBeUndefined();
+   });
+});
+
+describe("PackageVersionError", () => {
+   it("answers each reason with its status and carries the reason", () => {
+      const expected = {
+         MANIFEST_VERSION_MISSING: 400,
+         MANIFEST_VERSION_INVALID: 400,
+         VERSION_ID_INVALID: 400,
+         VERSION_NOT_FOUND: 404,
+         VERSION_CONFLICT: 409,
+         PACKAGE_IS_VERSIONED: 409,
+         VERSION_IS_LATEST: 409,
+         VERSION_IS_LAST_ACTIVE: 409,
+         VERSION_BUILDING: 409,
+         VERSION_NOT_LATEST: 400,
+         VERSION_ARCHIVED: 410,
+      } as const;
+      for (const [name, status] of Object.entries(expected)) {
+         const reason = name as keyof typeof expected;
+         const answer = internalErrorToHttpError(
+            new PackageVersionError(reason, `refused: ${reason}`),
+            { log: false },
+         );
+         expect(answer).toEqual({
+            status,
+            json: { code: status, message: `refused: ${reason}`, reason },
+         });
+      }
    });
 });
 

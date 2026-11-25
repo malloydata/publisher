@@ -17,8 +17,8 @@ const PROJECT_NAME = "incremental-refresh-project";
 // publish test gets its own environment rather than tearing down the one the
 // load tests are reading.
 const PUBLISH_PROJECT_NAME = "incremental-publish-project";
-const REJECTED_PACKAGE = "persist-incremental-test";
-const ADVISORY_PACKAGE = "persist-advisory-test";
+const REFUSED_ALONE_PACKAGE = "persist-incremental-test";
+const INVALID_PACKAGE = "persist-advisory-test";
 
 // The incremental gate's SEVERITY over the real REST surface: a rejected
 // declaration fails the load and a publish of it, while an advisory rides the
@@ -53,12 +53,12 @@ describe("Incremental refresh over REST", () => {
             name: PROJECT_NAME,
             packages: [
                {
-                  name: REJECTED_PACKAGE,
-                  location: fixtureDir(REJECTED_PACKAGE),
+                  name: REFUSED_ALONE_PACKAGE,
+                  location: fixtureDir(REFUSED_ALONE_PACKAGE),
                },
                {
-                  name: ADVISORY_PACKAGE,
-                  location: fixtureDir(ADVISORY_PACKAGE),
+                  name: INVALID_PACKAGE,
+                  location: fixtureDir(INVALID_PACKAGE),
                },
             ],
             connections: [],
@@ -71,7 +71,7 @@ describe("Incremental refresh over REST", () => {
       }
 
       await waitUntilOk(
-         `${baseUrl}/api/v0/environments/${PROJECT_NAME}/packages/${ADVISORY_PACKAGE}`,
+         `${baseUrl}/api/v0/environments/${PROJECT_NAME}/packages/${REFUSED_ALONE_PACKAGE}`,
          "Test package",
       );
    });
@@ -90,18 +90,17 @@ describe("Incremental refresh over REST", () => {
       env = null;
    });
 
-   it("REFUSES to serve a package whose declaration the gate rejects", async () => {
-      // The change this fixture exists for: the package used to load, serve, and
-      // rebuild in full forever with the rejection in a worker log. A read now
-      // answers the gate's own text, as a 400 — an authoring error, not the 424 a
-      // dependency failure would map to.
+   it("REFUSES to serve a package with an invalid annotation, loaded as a control plane loads it", async () => {
+      // Added through environment creation, which never runs the publish
+      // checks: the load itself fails, with the mistake and its code, as a 400
+      // (an authoring error, not the 424 a dependency failure maps to).
       const res = await fetch(
-         `${baseUrl}/api/v0/environments/${PROJECT_NAME}/packages/${REJECTED_PACKAGE}`,
+         `${baseUrl}/api/v0/environments/${PROJECT_NAME}/packages/${INVALID_PACKAGE}`,
       );
       expect(res.status).toBe(400);
       const body = (await res.json()) as { message?: string };
-      expect(body.message).toContain('refresh="incremental"');
-      expect(body.message).toContain('dialect "duckdb"');
+      expect(body.message).toContain("mergekey=");
+      expect(body.message).toContain("[persist-unknown-key]");
    });
 
    it("names the failed package, and why, in /status loadErrors", async () => {
@@ -117,14 +116,20 @@ describe("Incremental refresh over REST", () => {
          }[];
       };
       const failure = (status.loadErrors ?? []).find(
-         (e) => e.package === REJECTED_PACKAGE,
+         (e) => e.package === INVALID_PACKAGE,
       );
       expect(failure).toBeDefined();
       expect(failure?.environment).toBe(PROJECT_NAME);
-      expect(failure?.message).toContain('dialect "duckdb"');
+      expect(failure?.message).toContain("[persist-unknown-key]");
+      // The valid declaration refused alone is not a load error.
+      expect(
+         (status.loadErrors ?? []).some(
+            (e) => e.package === REFUSED_ALONE_PACKAGE,
+         ),
+      ).toBe(false);
    });
 
-   it("REJECTS a publish of the same package, naming the dialect", async () => {
+   it("REJECTS a publish of the invalid package, naming the key", async () => {
       const createEnv = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "Content-Type": "application/json" },
@@ -142,40 +147,45 @@ describe("Incremental refresh over REST", () => {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-               name: REJECTED_PACKAGE,
-               location: fixtureDir(REJECTED_PACKAGE),
+               name: INVALID_PACKAGE,
+               location: fixtureDir(INVALID_PACKAGE),
             }),
          },
       );
       expect(res.status).toBe(400);
       const body = (await res.json()) as { message?: string };
-      expect(body.message).toContain('refresh="incremental"');
-      expect(body.message).toContain('dialect "duckdb"');
-      expect(body.message).toContain(
-         "postgres, snowflake, standardsql (BigQuery)",
-      );
+      expect(body.message).toContain("did you mean `merge_key=`?");
+      expect(body.message).toContain("[persist-unknown-key]");
    });
 
-   it("LOADS a package whose only finding is an advisory, and warns on it", async () => {
-      // The other side of the split, which a severity change is exactly what
-      // would break: an unrecognized #@ persist key is legal, so the package
-      // serves and the finding rides `warnings`.
+   it("LOADS a package whose incremental declaration DuckDB cannot honour, refusing that source alone", async () => {
+      // Valid but unbuildable here: the source is not built and answers live,
+      // and the package serves.
       const res = await fetch(
-         `${baseUrl}/api/v0/environments/${PROJECT_NAME}/packages/${ADVISORY_PACKAGE}`,
+         `${baseUrl}/api/v0/environments/${PROJECT_NAME}/packages/${REFUSED_ALONE_PACKAGE}`,
       );
       expect(res.status).toBe(200);
       const pkg = (await res.json()) as {
-         warnings?: { message: string; subject?: string }[];
+         warnings?: {
+            message: string;
+            subject?: string;
+            code?: string;
+            severity?: string;
+         }[];
          buildPlan?: { sources?: Record<string, { name?: string }> };
       };
-      const advisory = (pkg.warnings ?? []).find((w) =>
-         w.message.includes('"mergekey"'),
+      const refused = (pkg.warnings ?? []).find(
+         (w) => w.code === "persist-not-built",
       );
-      expect(advisory).toBeDefined();
-      expect(advisory?.subject).toBe("daily_orders");
-      // And the package really is serving: the source is on its build plan.
-      expect(
-         Object.values(pkg.buildPlan?.sources ?? {}).map((s) => s.name),
-      ).toEqual(["daily_orders"]);
+      expect(refused).toMatchObject({
+         severity: "warn",
+         subject: "daily_orders",
+      });
+      expect(refused?.message).toContain('dialect "duckdb"');
+      expect(refused?.message).toContain(
+         "postgres, snowflake, standardsql (BigQuery)",
+      );
+      // Not built: off the build plan.
+      expect(Object.values(pkg.buildPlan?.sources ?? {})).toEqual([]);
    });
 });

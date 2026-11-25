@@ -16,21 +16,26 @@ import {
    queryMetadataBudgetWarning,
    queryMetadataViolations,
 } from "./query_metadata";
+import { installSettings } from "../test_helpers/settings_env";
 
-const originalMode = process.env.PUBLISHER_QUERY_METADATA;
+/** Puts back the settings before this file's install, after each test. */
+let restoreSettings: (() => void) | undefined;
+
+/** Install settings of only `env`, replacing this test's earlier install. */
+function installEnv(env: Record<string, string>): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({ env }).restore;
+}
 
 // The feature ships dark, so every test of the resolution logic has to turn it
-// on. The one test that asserts what `off` does sets it back for itself.
+// on. The tests that assert the default and what `off` does install their own.
 beforeEach(() => {
-   process.env.PUBLISHER_QUERY_METADATA = "on";
+   installEnv({ PUBLISHER_QUERY_METADATA: "on" });
 });
 
 afterEach(() => {
-   if (originalMode === undefined) {
-      delete process.env.PUBLISHER_QUERY_METADATA;
-   } else {
-      process.env.PUBLISHER_QUERY_METADATA = originalMode;
-   }
+   restoreSettings?.();
+   restoreSettings = undefined;
 });
 
 describe("queryMetadataViolations", () => {
@@ -361,7 +366,7 @@ describe("mergeQueryMetadata", () => {
       // it until a deployment opts in, because this is the one feature that
       // touches all of them — and on the comment-carrying backends it changes
       // the statement text.
-      delete process.env.PUBLISHER_QUERY_METADATA;
+      installEnv({});
       expect(
          mergeQueryMetadata({
             request: { team: "finance" },
@@ -371,7 +376,7 @@ describe("mergeQueryMetadata", () => {
    });
 
    it("attaches nothing when PUBLISHER_QUERY_METADATA=off", () => {
-      process.env.PUBLISHER_QUERY_METADATA = "off";
+      installEnv({ PUBLISHER_QUERY_METADATA: "off" });
       expect(
          mergeQueryMetadata({
             request: { team: "finance" },

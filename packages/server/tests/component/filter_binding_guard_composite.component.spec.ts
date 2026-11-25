@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "../../src/service/access_record";
 import { describe, expect, it, spyOn } from "bun:test";
 import { AccessDeniedError } from "../../src/errors";
 import { logger } from "../../src/logger";
@@ -147,13 +148,10 @@ async function withModel(run: (model: Model) => Promise<void>): Promise<void> {
 }
 
 async function count(model: Model, queryText: string): Promise<unknown> {
-   const result = await model.getQueryResults(
-      undefined,
-      undefined,
-      queryText,
-      {},
-      true,
-      {},
+   const result = await model.runQuery(
+      unrecordedAudit(),
+      { query: queryText, filterParams: {}, givens: {} },
+      QueryPrivileges.of({ bypassFilters: true }),
    );
    const rows = result.compactResult as unknown as Record<string, unknown>[];
    return rows[0]?.n;
@@ -366,13 +364,14 @@ describe("filter binding: a composite of parameterized members", () => {
    it("is not served: Malloy drops a member's arguments when resolving it", async () => {
       await withModel(async (model) => {
          await expect(
-            model.getQueryResults(
-               undefined,
-               undefined,
-               "run: pc_high -> { aggregate: n }",
-               {},
-               true,
-               {},
+            model.runQuery(
+               unrecordedAudit(),
+               {
+                  query: "run: pc_high -> { aggregate: n }",
+                  filterParams: {},
+                  givens: {},
+               },
+               QueryPrivileges.of({ bypassFilters: true }),
             ),
          ).rejects.toThrow();
       });
@@ -478,6 +477,7 @@ source: monthly_public is orders_monthly_only extend { measure: total is amount.
 import "public.malloy"
 `,
 };
+import { QueryPrivileges } from "../../src/service/model_query_request";
 
 async function withPackage(
    run: (model: Model) => Promise<void>,

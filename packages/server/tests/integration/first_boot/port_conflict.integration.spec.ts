@@ -76,8 +76,7 @@ describe("boot with both ports free", () => {
       // test of the real boot-time call site (mcp_config.spec.ts covers the
       // function, not the wiring).
       const restPort = await getFreePort();
-      let mcpPort = await getFreePort();
-      while (mcpPort === restPort) mcpPort = await getFreePort();
+      const mcpPort = await getFreePort();
 
       const { server, mcpJson } = await boot(restPort, mcpPort);
       const written = await pollUntil(

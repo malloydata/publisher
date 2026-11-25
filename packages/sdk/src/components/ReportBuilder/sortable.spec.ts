@@ -54,10 +54,11 @@ describe("builderSensors", () => {
       ]);
    });
 
-   const card = document.createElement("div");
-   document.body.append(card);
-
+   // Each test builds its own card and leaves it detached: `closest()` needs no
+   // document, and a card attached to <body> outlives this file, so its button,
+   // input and textarea would answer `getByRole` in every spec that runs later.
    it("never starts a drag from the control that opens an editor", () => {
+      const card = document.createElement("div");
       // The display of an inline line is a button, the open editor a field.
       for (const tag of ["button", "input", "textarea"]) {
          const control = document.createElement(tag);
@@ -70,6 +71,7 @@ describe("builderSensors", () => {
    });
 
    it("still drags from the card itself", () => {
+      const card = document.createElement("div");
       expect(press(card, card)).toBe(false);
    });
 
@@ -80,6 +82,7 @@ describe("builderSensors", () => {
             source: unknown,
          ) => unknown[] | undefined;
       };
+      const card = document.createElement("div");
       const constraints = defaults.activationConstraints(
          { pointerType: "mouse", target: card } as unknown as PointerEvent,
          { handle: undefined },

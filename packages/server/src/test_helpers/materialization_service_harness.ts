@@ -5,8 +5,13 @@ import { afterEach, beforeEach } from "bun:test";
 import * as sinon from "sinon";
 import { ConnectionNotFoundError, DestinationNotFoundError } from "../errors";
 import type { ResourceRepository } from "../storage/DatabaseInterface";
+import type { Environment } from "../service/environment";
 import type { EnvironmentStore } from "../service/environment_store";
-import { MaterializationService } from "../service/materialization_service";
+import {
+   MaterializationService,
+   type RunCollaboratorOverrides,
+} from "../service/materialization/run/materialization_service";
+import { installSettings } from "./settings_env";
 
 /**
  * Shared harness for the MaterializationService unit specs: a sinon-faked
@@ -26,19 +31,23 @@ export interface ServiceMocks {
 }
 
 /**
- * Turn per-query metadata on for one test and put the environment back after.
+ * Turn per-query metadata on for one test and put the settings back after.
  * The feature ships dark, so a test that asserts what a statement carries has
  * to enable it — and saying so per test keeps the default honest here: a test
  * that forgets is testing the shipped default, which is "nothing attached".
+ * Installing settings replaces them all, so every other setting is at its
+ * default for these tests.
  */
 export function withQueryMetadataOn(): void {
-   const original = process.env.PUBLISHER_QUERY_METADATA;
+   let restore: (() => void) | undefined;
    beforeEach(() => {
-      process.env.PUBLISHER_QUERY_METADATA = "on";
+      restore = installSettings({
+         env: { PUBLISHER_QUERY_METADATA: "on" },
+      }).restore;
    });
    afterEach(() => {
-      if (original === undefined) delete process.env.PUBLISHER_QUERY_METADATA;
-      else process.env.PUBLISHER_QUERY_METADATA = original;
+      restore?.();
+      restore = undefined;
    });
 }
 
@@ -47,9 +56,13 @@ export function withQueryMetadataOn(): void {
  * environment resolves and yields a package whose build plan is empty (no
  * persist sources); individual tests override getBuildPlan via `setPackage`
  * to exercise the orchestrated path. getModelPaths()=>[] keeps the background
- * build from touching the Malloy runtime.
+ * build from touching the Malloy runtime. `collaborators` replaces the steps a
+ * run takes (see RunCollaborators); a spec that replaces one after the mocks
+ * exist constructs another service over `environmentStore` with them.
  */
-export function createMocks(): ServiceMocks {
+export function createMocks(
+   collaborators: RunCollaboratorOverrides = {},
+): ServiceMocks {
    const sandbox = sinon.createSandbox();
 
    const repository = {
@@ -59,8 +72,26 @@ export function createMocks(): ServiceMocks {
       getActiveMaterialization: sandbox.stub(),
       createMaterialization: sandbox.stub(),
       updateMaterialization: sandbox.stub(),
+      updateMaterializationFrom: sandbox.stub(),
       deleteMaterialization: sandbox.stub(),
    } as unknown as MockRepo;
+   // The conditional write, as the store makes it, over the status the read
+   // stub answers (null: the run is gone), through the write stub a spec
+   // configures. A read stub that answers nothing, or throws, lets it land.
+   repository.updateMaterializationFrom.callsFake(
+      async (id, updates, fromStatuses) => {
+         const current = await Promise.resolve(
+            repository.getMaterializationById(id),
+         ).catch(() => undefined);
+         if (
+            current === null ||
+            (current && !fromStatuses.includes(current.status))
+         ) {
+            return null;
+         }
+         return repository.updateMaterialization(id, updates);
+      },
+   );
 
    const storageManager = { getRepository: () => repository };
 
@@ -78,9 +109,39 @@ export function createMocks(): ServiceMocks {
    });
    setPackage(environmentStore, { getBuildPlan: () => null });
 
-   const service = new MaterializationService(environmentStore);
+   const service = new MaterializationService(environmentStore, collaborators);
 
    return { sandbox, repository, environmentStore, service };
+}
+
+/**
+ * Another service over `mocks`' faked store, with `collaborators` replacing
+ * the steps a run takes.
+ */
+export function serviceWith(
+   mocks: Pick<ServiceMocks, "environmentStore">,
+   collaborators: RunCollaboratorOverrides,
+): MaterializationService {
+   return new MaterializationService(mocks.environmentStore, collaborators);
+}
+
+/**
+ * A MaterializationService over a real repository and environment, the way the
+ * server wires one, with the store answering every environment name with that
+ * environment. Both are read through thunks, so a spec that reopens either
+ * keeps the one service.
+ */
+export function serviceOverEnvironment(
+   repository: () => ResourceRepository,
+   environment: () => Environment,
+   collaborators: RunCollaboratorOverrides = {},
+): MaterializationService {
+   const store = {
+      storageManager: { getRepository: () => repository() },
+      getEnvironment: async () => environment(),
+      getLoadedEnvironments: () => [environment()],
+   } as unknown as EnvironmentStore;
+   return new MaterializationService(store, collaborators);
 }
 
 /**
@@ -120,8 +181,31 @@ export function buildEnvironmentStub(opts: {
          return destination;
       }),
       getEnvironmentPath: () => opts.environmentPath ?? "/tmp/env",
+      getEnvironmentName: () => "env",
+      ...UNVERSIONED_ENVIRONMENT,
    };
 }
+
+/**
+ * The version surface of an environment whose packages have no published
+ * versions. Every fake environment the materialization specs build spreads it
+ * in.
+ */
+export const UNVERSIONED_ENVIRONMENT = {
+   getVersionService: () => null,
+   getLoadedVersionIds: () => [],
+   peekVersion: () => undefined,
+   isHostOwned: (pkg: {
+      getPackageMetadata(): { manifestLocation?: string | null };
+   }) => Boolean(pkg.getPackageMetadata().manifestLocation),
+   markVersionHostOwned: async () => undefined,
+   registerVersionBuild: () => () => undefined,
+   // Nothing configured is refused, and nothing is stale.
+   publishRefusedConfiguredPackage: async () => undefined,
+   getStaleCompileErrors: () => new Map<string, unknown>(),
+   // Every package a spec names is loaded.
+   hasLoadedPackage: () => true,
+};
 
 /** Point environmentStore.getEnvironment at a package with the given overrides. */
 export function setPackage(
@@ -136,9 +220,20 @@ export function setPackage(
       getMalloyConnection: async () => ({}),
       // No bound manifestLocation by default, so seedFromBoundManifest no-ops.
       getPackageMetadata: () => ({}),
+      getVersionId: () => undefined,
+      getMaterializationConfig: () => null,
+      whenBuildPlanCurrent: async () => undefined,
+      isBuildPlanUnavailable: () => false,
+      // No served copy, so a chained build recomputes its upstreams.
+      chainBuildText: () => ({
+         declined: "the test double has no served copy",
+      }),
+      // Binds no key check, so there is none to forget.
+      forgetKeyUniqueness: () => undefined,
       ...pkgOverrides,
    };
    (environmentStore.getEnvironment as sinon.SinonStub).resolves({
+      ...UNVERSIONED_ENVIRONMENT,
       getPackage: sinon.stub().resolves(pkg),
       withPackageLock: async (_name: string, fn: () => Promise<unknown>) =>
          fn(),

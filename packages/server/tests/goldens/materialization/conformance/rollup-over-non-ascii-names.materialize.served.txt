@@ -1,0 +1,35 @@
+// conformance: rollup over non-ASCII names [materialize]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { access_modifiers persistence virtual_source }
+
+type: bestellungen__rollup______278821ac__type is {
+   `地域`::string,
+   summe__partial::number,
+   `件数__partial`::number
+}
+source: bestellungen__rollup______278821ac__served is __served_copy_alias_of_lake.virtual('d670287e216cd08c509b60bdc2522c5aca3f578822c264f6556c51d147200323')::bestellungen__rollup______278821ac__type extend {
+  measure:
+    #(rollup) grain=["地域"] storage="lake"
+    summe is summe__partial.sum()
+    #(rollup) grain=["地域"] storage="lake"
+    `件数` is `件数__partial`.sum()
+}
+source: bestellungen is bestellungen__rollup______278821ac__served include { internal: summe__partial, `件数__partial` public: * }
+
+// ==== <pkg>/m.malloy.rollup-author.malloy
+##! experimental { persistence }
+import "raw.malloy"
+
+source: bestellungen is orders_raw extend {
+  dimension: 地域 is region
+  #(rollup) grain=["地域"] storage="lake"
+  measure: summe is amount.sum()
+  #(rollup) grain=["地域"] storage="lake"
+  measure: 件数 is count()
+}
+
+// ==== <pkg>/m.malloy.rollup.malloy
+##! experimental { access_modifiers persistence virtual_source }
+import { orders_raw, customers_raw, lines_raw } from "raw.malloy"
+import { bestellungen } from "m.malloy"

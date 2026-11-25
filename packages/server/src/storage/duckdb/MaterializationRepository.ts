@@ -4,11 +4,14 @@
 import {
    BuildManifestResult,
    Materialization,
+   MaterializationListOptions,
    MaterializationStatus,
    MaterializationUpdate,
 } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
-import { newId, Row, rowTimestamps, updateRow } from "./rows";
+import { logger } from "../../logger";
+import { newId, Row, rowTimestamps, updateRowSql } from "./rows";
+import { OWED_RECLAIM_RUN, RUNNING_VERSION_RUN } from "./VersionRepository";
 
 const TERMINAL_STATUSES: ReadonlySet<MaterializationStatus> = new Set([
    "MANIFEST_FILE_READY",
@@ -22,8 +25,20 @@ const ACTIVE_STATUSES: readonly MaterializationStatus[] = [
    "MANIFEST_ROWS_READY",
 ];
 
-function activeKeyFor(environmentId: string, packageName: string): string {
-   return `${environmentId}|${packageName}`;
+/**
+ * The slot a run holds while it is active. One run at a time per package by
+ * default; a run that writes only one version's own tables holds that
+ * version's slot instead (`lockVersion`), so versions build side by side.
+ * Package names cannot contain `@`, so the two shapes never collide.
+ */
+function activeKeyFor(
+   environmentId: string,
+   packageName: string,
+   lockVersion?: string,
+): string {
+   return lockVersion === undefined
+      ? `${environmentId}|${packageName}`
+      : `${environmentId}|${packageName}@${lockVersion}`;
 }
 
 /**
@@ -54,11 +69,18 @@ export class MaterializationRepository {
    async list(
       environmentId: string,
       packageName: string,
-      options?: { limit?: number; offset?: number },
+      options?: MaterializationListOptions,
    ): Promise<Materialization[]> {
       let sql =
-         "SELECT * FROM materializations WHERE environment_id = ? AND package_name = ? ORDER BY created_at DESC";
+         "SELECT * FROM materializations WHERE environment_id = ? AND package_name = ?";
       const params: unknown[] = [environmentId, packageName];
+      if (options?.version !== undefined) {
+         sql += options.includeUnversioned
+            ? " AND (version = ? OR version IS NULL)"
+            : " AND version = ?";
+         params.push(options.version);
+      }
+      sql += " ORDER BY created_at DESC";
       if (options?.limit !== undefined) {
          sql += " LIMIT ?";
          params.push(options.limit);
@@ -71,8 +93,17 @@ export class MaterializationRepository {
       return rows.map(mapRow);
    }
 
+   /** Every run of an environment, across its packages, newest first. */
+   async listByEnvironment(environmentId: string): Promise<Materialization[]> {
+      const rows = await this.db.all<Row>(
+         "SELECT * FROM materializations WHERE environment_id = ? ORDER BY created_at DESC",
+         [environmentId],
+      );
+      return rows.map(mapRow);
+   }
+
    /**
-    * `created_at` of the newest scheduler-fired (metadata.trigger=SCHEDULER)
+    * `created_at` of the newest scheduler-fired (metadata.trigger `scheduler`)
     * materialization for (env, package), or null if none. The standalone
     * scheduler re-anchors `nextFireAt` to `nextAfter(lastScheduledFire)` so a
     * restart fires exactly one catch-up instead of skipping the occurrence.
@@ -80,14 +111,19 @@ export class MaterializationRepository {
    async getLatestScheduledFireAt(
       environmentId: string,
       packageName: string,
+      // One published version's fires; undefined, the package's.
+      version?: string,
    ): Promise<Date | null> {
       const row = await this.db.get<{ created_at: unknown }>(
          `SELECT created_at FROM materializations
            WHERE environment_id = ? AND package_name = ?
-             AND json_extract_string(metadata, '$.trigger') = 'SCHEDULER'
+             AND json_extract_string(metadata, '$.trigger') = 'scheduler'
+             ${version !== undefined ? "AND version = ?" : ""}
            ORDER BY created_at DESC
            LIMIT 1`,
-         [environmentId, packageName],
+         version !== undefined
+            ? [environmentId, packageName, version]
+            : [environmentId, packageName],
       );
       return row?.created_at ? new Date(row.created_at as string) : null;
    }
@@ -100,14 +136,22 @@ export class MaterializationRepository {
       return row ? mapRow(row) : null;
    }
 
+   /**
+    * The active run holding the package's slot, or with `lockVersion` that
+    * version's slot (see activeKeyFor).
+    */
    async getActive(
       environmentId: string,
       packageName: string,
+      lockVersion?: string,
    ): Promise<Materialization | null> {
       const placeholders = ACTIVE_STATUSES.map(() => "?").join(", ");
       const row = await this.db.get<Row>(
-         `SELECT * FROM materializations WHERE environment_id = ? AND package_name = ? AND status IN (${placeholders})`,
-         [environmentId, packageName, ...ACTIVE_STATUSES],
+         `SELECT * FROM materializations WHERE active_key = ? AND status IN (${placeholders})`,
+         [
+            activeKeyFor(environmentId, packageName, lockVersion),
+            ...ACTIVE_STATUSES,
+         ],
       );
       return row ? mapRow(row) : null;
    }
@@ -117,6 +161,12 @@ export class MaterializationRepository {
       packageName: string,
       status: MaterializationStatus = "PENDING",
       metadata: Record<string, unknown> | null = null,
+      options: {
+         /** The package version the run builds; null when it has none. */
+         version?: string | null;
+         /** Hold this version's slot rather than the package's. */
+         lockVersion?: string;
+      } = {},
    ): Promise<Materialization> {
       const id = newId();
       const iso = new Date().toISOString();
@@ -125,13 +175,13 @@ export class MaterializationRepository {
       // rather than slip through a check-then-write window.
       const activeKey = TERMINAL_STATUSES.has(status)
          ? null
-         : activeKeyFor(environmentId, packageName);
+         : activeKeyFor(environmentId, packageName, options.lockVersion);
       const metadataJson = metadata ? JSON.stringify(metadata) : null;
 
       try {
          const rows = await this.db.all<Row>(
-            `INSERT INTO materializations (id, environment_id, package_name, status, active_key, metadata, manifest, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            `INSERT INTO materializations (id, environment_id, package_name, status, active_key, metadata, manifest, created_at, updated_at, version)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
             RETURNING *`,
             [
                id,
@@ -142,11 +192,12 @@ export class MaterializationRepository {
                metadataJson,
                iso,
                iso,
+               options.version ?? null,
             ],
          );
          return mapRow(rows[0]);
       } catch (err) {
-         if (isUniqueViolation(err, "idx_materializations_active_key")) {
+         if (isActiveSlotViolation(err)) {
             throw new DuplicateActiveMaterializationError(
                environmentId,
                packageName,
@@ -160,35 +211,63 @@ export class MaterializationRepository {
       id: string,
       updates: MaterializationUpdate,
    ): Promise<Materialization> {
-      // Keep active_key in step with status so the unique index never allows
-      // two active rows for one (environment, package).
-      const activeKey =
-         updates.status === undefined
-            ? []
-            : TERMINAL_STATUSES.has(updates.status)
-              ? ["active_key = NULL"]
-              : ["active_key = environment_id || '|' || package_name"];
-
-      await updateRow(
-         this.db,
+      const { sql, params } = updateRowSql(
          "materializations",
          id,
-         {
-            status: updates.status,
-            started_at: updates.startedAt?.toISOString(),
-            completed_at: updates.completedAt?.toISOString(),
-            error: updates.error,
-            metadata: jsonOrNull(updates.metadata),
-            manifest: jsonOrNull(updates.manifest),
-         },
-         activeKey,
+         ...updateColumns(updates),
       );
-
-      const updated = await this.getById(id);
-      if (!updated) {
+      const rows = await this.db.all<Row>(`${sql} RETURNING *`, params);
+      if (rows.length === 0) {
          throw new Error(`Materialization ${id} not found after update`);
       }
-      return updated;
+      return mapRow(rows[0]);
+   }
+
+   /**
+    * {@link update}, only while the run's status is one of `fromStatuses`:
+    * one statement, so no writer can change the status between the check and
+    * the write. Null when the status is another (or the run is gone), and
+    * nothing is written.
+    */
+   async updateFrom(
+      id: string,
+      updates: MaterializationUpdate,
+      fromStatuses: readonly MaterializationStatus[],
+   ): Promise<Materialization | null> {
+      if (fromStatuses.length === 0) return null;
+      const { sql, params } = updateRowSql(
+         "materializations",
+         id,
+         ...updateColumns(updates),
+         {
+            condition: `status IN (${fromStatuses.map(() => "?").join(", ")})`,
+            params: [...fromStatuses],
+         },
+      );
+      const rows = await this.db.all<Row>(`${sql} RETURNING *`, params);
+      return rows.length > 0 ? mapRow(rows[0]) : null;
+   }
+
+   /**
+    * Settle, as FAILED with `error`, every run a previous process left
+    * unsettled, freeing the slots they held (`active_key`). Called once when
+    * the store opens: one Publisher process owns its store and a run's abort
+    * controller lives only in that process's memory, so every non-terminal row
+    * found then belongs to a process that is gone and nothing will ever settle
+    * it. One statement, so no row is left half-settled. Returns the runs it
+    * settled.
+    */
+   async failInterrupted(error: string): Promise<Materialization[]> {
+      const placeholders = ACTIVE_STATUSES.map(() => "?").join(", ");
+      const iso = new Date().toISOString();
+      const rows = await this.db.all<Row>(
+         `UPDATE materializations
+             SET status = 'FAILED', active_key = NULL, error = ?, completed_at = ?, updated_at = ?
+           WHERE status IN (${placeholders})
+           RETURNING *`,
+         [error, iso, iso, ...ACTIVE_STATUSES],
+      );
+      return rows.map(mapRow);
    }
 
    async deleteById(id: string): Promise<void> {
@@ -196,7 +275,7 @@ export class MaterializationRepository {
    }
 
    // Cascade deletes remove records only and issue no DDL: dropping physical
-   // tables is opt-in (deleteMaterialization({ dropTables })), and a DROP here
+   // tables is the caller's, through the connection, and a DROP here
    // could fire against a connection the delete path already tore down.
    //
    // Limitation: standalone, with no control plane owning physical GC, nothing
@@ -209,31 +288,71 @@ export class MaterializationRepository {
       );
    }
 
+   /**
+    * Delete a package's runs, keeping those its deleted versions' reclaim
+    * still owes (their own `scope: version` auto-runs), which that reclaim
+    * drops and then deletes, and any run of a version still going
+    * (RUNNING_VERSION_RUN). An unversioned package has neither, so its runs
+    * all go, as they always have.
+    */
    async deleteByPackage(
       environmentId: string,
       packageName: string,
    ): Promise<void> {
       await this.db.run(
-         "DELETE FROM materializations WHERE environment_id = ? AND package_name = ?",
+         `DELETE FROM materializations WHERE environment_id = ? AND package_name = ? AND NOT (${OWED_RECLAIM_RUN}) AND NOT (${RUNNING_VERSION_RUN})`,
          [environmentId, packageName],
       );
    }
 }
 
+/**
+ * The columns an update writes. Clears active_key on any transition to a
+ * terminal state; leaves it on a transition between non-terminal states, so a
+ * run keeps the slot it was created holding (its package's or its version's).
+ * Every active row is created with its key, and a terminal state has no way
+ * out, so a key is never set here. The unique index guarantees no two active
+ * rows ever hold one slot.
+ */
+function updateColumns(
+   updates: MaterializationUpdate,
+): [values: Record<string, unknown>, rawAssignments: string[]] {
+   const activeKey =
+      updates.status !== undefined && TERMINAL_STATUSES.has(updates.status)
+         ? ["active_key = NULL"]
+         : [];
+   return [
+      {
+         status: updates.status,
+         started_at: updates.startedAt?.toISOString(),
+         completed_at: updates.completedAt?.toISOString(),
+         error: updates.error,
+         metadata: jsonOrNull(updates.metadata),
+         manifest: jsonOrNull(updates.manifest),
+      },
+      activeKey,
+   ];
+}
+
 function mapRow(row: Row): Materialization {
-   const metadata = parseJsonColumn<Row>(row.metadata);
+   const metadata = parseJsonColumn<Row>(row.metadata, "metadata", row.id);
    return {
       id: row.id as string,
       environmentId: row.environment_id as string,
       packageName: row.package_name as string,
       status: row.status as MaterializationStatus,
-      manifest: parseJsonColumn<BuildManifestResult>(row.manifest),
+      manifest: parseJsonColumn<BuildManifestResult>(
+         row.manifest,
+         "manifest",
+         row.id,
+      ),
       metadata,
       startedAt: row.started_at ? new Date(row.started_at as string) : null,
       completedAt: row.completed_at
          ? new Date(row.completed_at as string)
          : null,
       error: row.error != null ? (row.error as string) : null,
+      version: row.version != null ? (row.version as string) : null,
       ...rowTimestamps(row),
    };
 }
@@ -246,24 +365,39 @@ function jsonOrNull(
    return value ? JSON.stringify(value) : null;
 }
 
-/** Parse a nullable JSON text column, returning null on absence or parse error. */
-function parseJsonColumn<T>(value: unknown): T | null {
+/**
+ * Parse a nullable JSON column. The columns are JSON-typed, so the store
+ * refuses a write that is not JSON; one that cannot be parsed anyway reads as
+ * null, said in the log rather than silently.
+ */
+function parseJsonColumn<T>(
+   value: unknown,
+   column: string,
+   id: unknown,
+): T | null {
    if (value == null) return null;
    try {
       return JSON.parse(value as string) as T;
    } catch {
+      logger.warn(
+         "A run record's JSON column did not parse; reading it as empty",
+         {
+            runId: id,
+            column,
+         },
+      );
       return null;
    }
 }
 
 /**
- * DuckDB surfaces unique-constraint violations as plain Errors. Matches the
- * index name, or DuckDB's generic duplicate-key / unique-constraint wording.
+ * Whether `err` is DuckDB's unique-constraint violation on the active slot
+ * (`Duplicate key "active_key: ..."`). DuckDB does not name the index, so the
+ * key column identifies it; any other collision (an `id`) is not a lost race
+ * for the slot, and is rethrown.
  */
-function isUniqueViolation(err: unknown, indexName: string): boolean {
-   if (!(err instanceof Error)) return false;
-   const msg = err.message;
+function isActiveSlotViolation(err: unknown): boolean {
    return (
-      msg.includes(indexName) || /duplicate key|unique constraint/i.test(msg)
+      err instanceof Error && err.message.includes('Duplicate key "active_key:')
    );
 }

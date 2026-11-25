@@ -8,6 +8,7 @@ import * as path from "path";
 
 import { BadRequestError } from "../errors";
 import { Environment } from "./environment";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 /**
  * Regression tests for publish-validation ROLLBACK, guarding against the two
@@ -36,16 +37,19 @@ describe("publish-validation rollback (real Environment)", () => {
       manifest: Record<string, unknown>,
       model: string,
    ): Promise<void> {
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({
-            name: "pkg",
-            description: "rollback fixture",
-            ...manifest,
-         }),
+      writePackageFiles(
+         dir,
+         {
+            "model.malloy": model,
+         },
+         {
+            manifest: {
+               name: "pkg",
+               description: "rollback fixture",
+               ...manifest,
+            },
+         },
       );
-      await fs.writeFile(path.join(dir, "model.malloy"), model);
    }
 
    async function copyDir(src: string, dst: string): Promise<void> {

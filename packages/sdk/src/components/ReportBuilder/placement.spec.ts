@@ -126,6 +126,33 @@ describe("placeWhereDrawn", () => {
       // A row break means nothing once tiles are placed.
       expect(placeWhereDrawn(tiles, boxes, 12, track)[0].break).toBeUndefined();
    });
+
+   it("rounds a text tile's bottom edge up, so its prose keeps every line", () => {
+      const track = trackWidth(1200, 12);
+      // A heading and two lines: 124px, under a row and a half, which rounded to one row
+      // of 80px and left the last line under the tiles placed beneath.
+      const intro: DashboardTile = {
+         kind: "text",
+         name: "intro",
+         markdown: "# Hi\n\ntwo lines",
+         colspan: 12,
+      };
+      const tiles: DashboardTile[] = [intro, tile("trend", { colspan: 12 })];
+      const boxes = [
+         { top: 0, left: 0, width: 1200, height: 124 },
+         { top: 140, left: 0, width: 1200, height: 272 },
+      ];
+      const placed = where(placeWhereDrawn(tiles, boxes, 12, track));
+      expect(placed[0]).toEqual({
+         name: "intro",
+         row: 1,
+         col: 1,
+         colspan: 12,
+         rowspan: 2,
+      });
+      // The chart below starts where it was drawn; a text tile that grew a row is settled under it.
+      expect(placed[1].row).toBeGreaterThanOrEqual(3);
+   });
 });
 
 describe("inReadingOrder", () => {

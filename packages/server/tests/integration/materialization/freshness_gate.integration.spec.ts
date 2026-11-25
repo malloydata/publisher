@@ -3,8 +3,14 @@
 
 /// <reference types="bun-types" />
 
+import { contractFor } from "../../../src/test_helpers/contract_fixture";
+import {
+   type RecordedColumn,
+   runNativeSchema,
+} from "../../../src/test_helpers/host_manifest";
 import {
    afterAll,
+   afterEach,
    beforeAll,
    describe,
    expect,
@@ -15,7 +21,11 @@ import * as fsp from "fs/promises";
 import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   deleteLeftoverEnvironment,
+   RestE2EEnv,
+   startRestE2E,
+} from "../../harness/rest_e2e";
 import { pollFor, TERMINAL_STATUSES, waitUntilOk } from "./polling";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -55,6 +65,7 @@ describe("Per-query freshness gate (E2E)", () => {
    let baseUrl: string;
    let tmpDir: string;
    let sourceEntityId: string;
+   let builtTypes: RecordedColumn[] = [];
 
    beforeAll(async () => {
       env = await startRestE2E();
@@ -62,6 +73,7 @@ describe("Per-query freshness gate (E2E)", () => {
       tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "freshness-gate-"));
 
       const fixtureDir = path.resolve(__dirname, "../../fixtures/persist-test");
+      await deleteLeftoverEnvironment(baseUrl, PROJECT_NAME);
       const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "Content-Type": "application/json" },
@@ -100,6 +112,12 @@ describe("Per-query freshness gate (E2E)", () => {
    function url(p: string): string {
       return `${baseUrl}${API}${p}`;
    }
+
+   // A test that fails before its own revertToLive() must not leave its
+   // manifest bound for the next one (a bound package refuses a local run).
+   afterEach(async () => {
+      if (baseUrl) await revertToLive();
+   });
 
    const ROUTING_QUERY = "run: order_summary -> { aggregate: c is count() }";
 
@@ -153,6 +171,9 @@ describe("Per-query freshness gate (E2E)", () => {
       const { id } = (await createRes.json()) as { id: string };
       const built = await pollUntilTerminal(id);
       expect(built.status).toBe("MANIFEST_FILE_READY");
+      // What the build reported of its table, for each manifest a test binds,
+      // as a host copies it (host_manifest.ts).
+      builtTypes = runNativeSchema(built);
       await fetch(url("?reload=true"));
       await fetch(url(`/materializations/${id}`), { method: "DELETE" });
    }
@@ -178,6 +199,8 @@ describe("Per-query freshness gate (E2E)", () => {
                   sourceName: "order_summary",
                   physicalTableName: "order_summary",
                   connectionName: "duckdb",
+                  nativeSchema: builtTypes,
+                  contract: contractFor(builtTypes),
                   dataAsOf: opts.dataAsOf,
                   freshnessWindowSeconds: opts.freshnessWindowSeconds,
                   freshnessFallback: opts.freshnessFallback,

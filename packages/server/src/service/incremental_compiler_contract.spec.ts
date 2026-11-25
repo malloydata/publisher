@@ -10,7 +10,7 @@
 // changing what a delta writes into a serving table.
 //
 // Follows the real-compile pattern of materialization_eligibility.spec.ts:
-// in-memory DuckDB + Runtime + getBuildPlan(). DuckDB is only the compile
+// in-memory DuckDB + Runtime + getBuildTargets(). DuckDB is only the compile
 // target; the dialect allowlist for actually RUNNING a delta is bigquery +
 // postgres (see the publish gates).
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -29,8 +29,11 @@ import {
    TrinoDialect,
 } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
-import { deriveAnnotationFields, deriveColumns } from "./build_plan";
-import { renderSqlBound } from "./incremental_apply";
+import {
+   deriveAnnotationFields,
+   deriveColumns,
+} from "./materialization/plan/build_plan";
+import { renderSqlBound } from "./materialization/run/incremental_apply";
 import {
    compilePersistSources,
    duckdbTestConnections,

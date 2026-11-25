@@ -7,6 +7,7 @@ import os from "os";
 import path from "path";
 import { CompileRefusedError } from "../errors";
 import { Environment } from "./environment";
+import { writePackageFiles } from "../test_helpers/temp_package";
 
 /**
  * The fragment-checking advice in compile_model's tool description, pinned
@@ -19,10 +20,10 @@ import { Environment } from "./environment";
  * a hand-written checker would be worthless: only Malloy decides what compiles.
  */
 
-const PUBLISHER_JSON = JSON.stringify({
+const MANIFEST = {
    name: "pkg",
    description: "fragments",
-});
+};
 
 // `secret` is private on the base source, so nothing downstream may read it.
 const MODEL = `##! experimental.access_modifiers
@@ -47,14 +48,15 @@ describe("compile_model: checking part of a source", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
-         await fs.writeFile(
-            path.join(stagingPath, "publisher.json"),
-            PUBLISHER_JSON,
-         );
-         await fs.writeFile(path.join(stagingPath, "model.malloy"), MODEL);
-      });
+      await env.installPackage("pkg", async (stagingPath) =>
+         writePackageFiles(
+            stagingPath,
+            {
+               "model.malloy": MODEL,
+            },
+            { manifest: MANIFEST },
+         ),
+      );
    });
 
    afterEach(async () => {

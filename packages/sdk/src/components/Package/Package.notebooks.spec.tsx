@@ -9,6 +9,7 @@ import {
    mockServerProvider,
    pending,
    serverWrapper,
+   noVersions,
 } from "../../../test/serverProvider";
 
 let listed: { path: string; layout?: string; title?: string }[] = [];
@@ -23,6 +24,7 @@ const getReport = mock(
 );
 
 mockServerProvider({
+   versions: noVersions,
    packages: { getPackage: pending },
    reports: {
       listReports: () => Promise.resolve({ data: listed }),

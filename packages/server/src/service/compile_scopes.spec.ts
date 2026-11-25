@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { unrecordedAudit } from "./access_record";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
@@ -15,7 +16,16 @@ import { Environment } from "./environment";
 // first and learn from the reload. scope "file" validates the edit pre-save at
 // true coordinates; scope "package" is a dry-run with reload's reach (imports
 // across files) and none of its effects on the served model.
-import { listDashboards } from "./legacy_report_views";
+import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
+import type { Package } from "./package";
+
+/** The names of the grid reports a package lists. */
+const gridReportNames = (pkg: Package) =>
+   pkg
+      .listReports()
+      .filter((report) => report.layout === "grid")
+      .map((report) => report.name);
 
 const BASE_MODEL = `source: base_source is duckdb.sql("select 1 as id, 5 as n") extend {
   measure: c is count()
@@ -36,18 +46,12 @@ describe("compile scopes (compileSource)", () => {
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
       env = await Environment.create("testEnv", envPath, []);
-      await env.installPackage("pkg", async (stagingPath) => {
-         await fs.mkdir(stagingPath, { recursive: true });
-         await fs.writeFile(
-            path.join(stagingPath, "publisher.json"),
-            '{"name":"pkg"}',
-         );
-         await fs.writeFile(path.join(stagingPath, "base.malloy"), BASE_MODEL);
-         await fs.writeFile(
-            path.join(stagingPath, "tracks.malloy"),
-            TRACKS_MODEL,
-         );
-      });
+      await env.installPackage("pkg", async (stagingPath) =>
+         writePackageFiles(stagingPath, {
+            "base.malloy": BASE_MODEL,
+            "tracks.malloy": TRACKS_MODEL,
+         }),
+      );
    });
 
    afterEach(async () => {
@@ -82,6 +86,49 @@ describe("compile scopes (compileSource)", () => {
       expect(problems.filter((p) => p.severity === "error")).toEqual([]);
    });
 
+   it("file: warns on an annotation reaching for a Publisher route, at its line", async () => {
+      const edited = TRACKS_MODEL.replace(
+         "  measure: total is n.sum()",
+         '  #(clasification) "none"\n  measure: total is n.sum()',
+      );
+      const { problems } = await compile("tracks.malloy", edited, "file");
+      const nearMiss = problems.filter(
+         (p) => p.code === "annotation-near-miss",
+      );
+      expect(nearMiss).toHaveLength(1);
+      expect(nearMiss[0]).toMatchObject({ severity: "warn" });
+      expect(nearMiss[0]?.message).toContain("`#(classification)`");
+      expect(nearMiss[0]?.at?.range.start.line).toBe(2);
+      // Append text is not scanned: its positions are in the joined file.
+      const appended = await compile(
+         "tracks.malloy",
+         `#(clasification) "none"\nsource: t2 is tracks`,
+         "append",
+      );
+      expect(
+         appended.problems.filter((p) => p.code === "annotation-near-miss"),
+      ).toEqual([]);
+   });
+
+   it("file: reports a misspelled gate as an error, since the load refuses it", async () => {
+      const edited = TRACKS_MODEL.replace(
+         "source: tracks is",
+         "#(authorise) 'finance' = 'finance'\nsource: tracks is",
+      );
+      const { problems } = await compile("tracks.malloy", edited, "file");
+      const gate = problems.filter(
+         (p) => p.code === "annotation-gate-near-miss",
+      );
+      expect(gate).toHaveLength(1);
+      expect(gate[0]).toMatchObject({ severity: "error" });
+      expect(gate[0]?.message).toContain("never enforced");
+      expect(gate[0]?.message).toContain("(meant `#(authorize)`?)");
+      // Not also reported as an ordinary near-miss warning.
+      expect(problems.filter((p) => p.code === "annotation-near-miss")).toEqual(
+         [],
+      );
+   });
+
    it("file: diagnostics land at true coordinates in the submitted text", async () => {
       // Error deliberately on 0-based line 2 of the submitted text. Append
       // scope would offset this by the on-disk file's line count; file scope
@@ -109,6 +156,74 @@ source: tracks is base_source extend {
       expect(problems.filter((p) => p.severity === "error")).toEqual([]);
    });
 
+   // -- the load's materialization verdict (F-30) --------------------------
+
+   // A rollup of an `avg` measure: the load refuses it, so neither whole-file
+   // scope may pass it.
+   const AVG_ROLLUP = TRACKS_MODEL.replace(
+      "  measure: total is n.sum()",
+      '  measure: total is n.sum()\n  #(rollup) grain=["id"]\n  measure: average is n.avg()',
+   );
+
+   it("file: reports the refusal the load gives an unmergeable rollup", async () => {
+      const { problems } = await compile("tracks.malloy", AVG_ROLLUP, "file");
+      const refused = problems.filter((p) => p.code === "rollup-not-mergeable");
+      expect(refused).toHaveLength(1);
+      expect(refused[0]).toMatchObject({
+         severity: "error",
+         model: "tracks.malloy",
+      });
+      expect(refused[0]?.message).toContain("its partials cannot be merged");
+   });
+
+   it("package: reports the refusal the load gives an unmergeable rollup", async () => {
+      const { problems } = await compile(
+         "tracks.malloy",
+         AVG_ROLLUP,
+         "package",
+      );
+      const refused = problems.filter((p) => p.code === "rollup-not-mergeable");
+      expect(refused).toHaveLength(1);
+      expect(refused[0]).toMatchObject({
+         severity: "error",
+         model: "tracks.malloy",
+      });
+      // Saved, the reload refuses it with the same line.
+      await fs.writeFile(
+         path.join(rootDir, "env", "pkg", "tracks.malloy"),
+         AVG_ROLLUP,
+      );
+      await expect(
+         env.getPackage(parsePackageName("pkg"), true),
+      ).rejects.toThrow(refused[0]?.message as string);
+   });
+
+   it("file: says the load's checks did not run when another file does not compile", async () => {
+      await fs.writeFile(
+         path.join(rootDir, "env", "pkg", "broken.malloy"),
+         "source: broken is nope.table('x')",
+      );
+      const summed = AVG_ROLLUP.replace("n.avg()", "n.max()");
+      const { problems } = await compile("tracks.malloy", summed, "file");
+      expect(problems.filter((p) => p.severity === "error")).toEqual([]);
+      expect(
+         problems.filter(
+            (p) =>
+               p.severity === "warn" &&
+               p.message.includes("did not run") &&
+               p.message.includes(
+                  "another file of the package does not compile",
+               ),
+         ),
+      ).toHaveLength(1);
+   });
+
+   it("file: a mergeable rollup compiles clean", async () => {
+      const summed = AVG_ROLLUP.replace("n.avg()", "n.max()");
+      const { problems } = await compile("tracks.malloy", summed, "file");
+      expect(problems.filter((p) => p.severity === "error")).toEqual([]);
+   });
+
    // -- scope "package": the dry-run --------------------------------------
 
    it("package: catches cross-file breakage that file scope cannot see", async () => {
@@ -126,6 +241,41 @@ source: tracks is base_source extend {
       const errors = problems.filter((p) => p.severity === "error");
       expect(errors.length).toBeGreaterThan(0);
       expect(errors.some((p) => p.model === "tracks.malloy")).toBe(true);
+   });
+
+   it("package: reports a lookback= the load refuses, as the load words it", async () => {
+      // The incremental gate reads lookback= as it reads watermark= and
+      // merge_key=: a lookback with no merge key fails the load, so the
+      // dry-run says so before a reload finds out.
+      const persisted = `##! experimental.persistence
+${BASE_MODEL}
+source: ev is duckdb.sql("select 1 as id, TIMESTAMP '2026-01-01 00:00:00' as loaded_at")
+#@ persist name="evs" refresh="incremental" watermark="loaded_at" lookback="2 days"
+source: events is ev -> { select: id, loaded_at }
+`;
+      const { problems } = await compile("base.malloy", persisted, "package");
+      const lookback = problems.filter(
+         (p) =>
+            p.severity === "error" &&
+            p.message.includes("lookback= without merge_key="),
+      );
+      expect(lookback).toHaveLength(1);
+      expect(lookback[0]).toMatchObject({ code: "persist-invalid" });
+      // With the merge key it names, the declaration is valid (the dialect
+      // cannot refresh it incrementally, which refuses it alone: a warning).
+      const valid = await compile(
+         "base.malloy",
+         persisted.replace(
+            'lookback="2 days"',
+            'merge_key="id" lookback="2 days"',
+         ),
+         "package",
+      );
+      expect(
+         valid.problems.filter(
+            (p) => p.severity === "error" && p.message.includes("lookback"),
+         ),
+      ).toEqual([]);
    });
 
    it("package: with no source, validates the files as saved", async () => {
@@ -174,6 +324,7 @@ source: tracks is base_source extend {
          path.join(rootDir, "env", "pkg", "broken.malloynb"),
          `>>>malloy
 ##! experimental.givens
+#(secure)
 given:
   ROLE :: string is 'x'
 
@@ -206,7 +357,7 @@ source: broken is duckdb.sql("select 1 as id") extend {
       // The whole point vs. reload: after a dry-run over a broken what-if, the
       // served model still answers, and no reload happened (the package would
       // otherwise be marked stale by a failing one).
-      const pkg = await env.getPackage("pkg");
+      const pkg = await env.getPackage(parsePackageName("pkg"));
       const servedBefore = pkg.getModel("tracks.malloy");
       await compile(
          "base.malloy",
@@ -216,7 +367,7 @@ source: broken is duckdb.sql("select 1 as id") extend {
       expect(pkg.getModel("tracks.malloy")).toBe(servedBefore);
       const { result } = await pkg
          .getModel("tracks.malloy")!
-         .getQueryResults("tracks", "v");
+         .runQuery(unrecordedAudit(), { sourceName: "tracks", queryName: "v" });
       expect(result.data).toBeDefined();
       expect(env.getFailedPackages().size).toBe(0);
    });
@@ -305,7 +456,7 @@ query: x is sales -> by_n
    const expectSameAsReload = async (
       problems: { severity?: string; message: string }[],
    ) => {
-      const reloaded = await env.getPackage("pkg", true);
+      const reloaded = await env.getPackage(parsePackageName("pkg"), true);
       // A compile finding has no subject field, so it leads the message.
       const served = (reloaded.getPackageMetadata().warnings ?? []).map(
          (w) =>
@@ -387,7 +538,7 @@ query: x is sales -> by_n
       );
       const result = await compilePackage();
       expect(unparsedOf(result.problems).length).toBe(1);
-      const reloaded = await env.getPackage("pkg", true);
+      const reloaded = await env.getPackage(parsePackageName("pkg"), true);
       expect(
          (reloaded.getPackageMetadata().warnings ?? []).filter(
             (w) =>
@@ -442,10 +593,10 @@ query: x is sales -> by_n
 
    it("package: the dashboard lint leaves the served package untouched", async () => {
       await writeDashboard(CLEAN_DASHBOARD);
-      const pkg = await env.getPackage("pkg", true);
+      const pkg = await env.getPackage(parsePackageName("pkg"), true);
       const before = pkg.getPackageMetadata().warnings;
       const servedModel = pkg.getModel("dashboards/x.malloy");
-      expect(listDashboards(pkg, "env").map((d) => d.name)).toEqual(["x"]);
+      expect(gridReportNames(pkg)).toEqual(["x"]);
 
       // A what-if that breaks the dashboard: compile reports it, and the
       // served package keeps its models, dashboards and warnings as they were.
@@ -455,10 +606,10 @@ query: x is sales -> by_n
          "package",
       );
       expect(reloadFindings(problems).length).toBe(3);
-      expect(await env.getPackage("pkg")).toBe(pkg);
+      expect(await env.getPackage(parsePackageName("pkg"))).toBe(pkg);
       expect(pkg.getModel("dashboards/x.malloy")).toBe(servedModel);
       expect(pkg.getPackageMetadata().warnings).toEqual(before);
-      expect(listDashboards(pkg, "env").map((d) => d.name)).toEqual(["x"]);
+      expect(gridReportNames(pkg)).toEqual(["x"]);
       expect(env.getFailedPackages().size).toBe(0);
    });
 

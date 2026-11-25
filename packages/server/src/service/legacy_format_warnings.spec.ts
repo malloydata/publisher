@@ -23,15 +23,14 @@ import {
    it,
 } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import { Package } from "./package";
+import { writeTempPackage } from "../test_helpers/temp_package";
 
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 const ROWS = `duckdb.sql("select * from (values (1,'east'),(2,'west')) as t(id, region)")`;
 
 const FILTERED_MODEL = `#(filter) dimension=region type=in
@@ -54,24 +53,23 @@ describe("warnings for content on a deprecated format", () => {
    let duckdb: DuckDBConnection;
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
    });
 
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
    });
 
    beforeEach(() => {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-legacy-"));
+      tempDir = writeTempPackage(
+         {},
+         {
+            prefix: "publisher-legacy-",
+            manifest: { name: "pkg", description: "legacy formats" },
+         },
+      ).dir;
       duckdb = new DuckDBConnection("duckdb", ":memory:");
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "legacy formats" }),
-      );
    });
 
    afterEach(async () => {

@@ -14,6 +14,35 @@ import type { PackageWarningsInner } from "../../client";
 import { MONO_FONT_FAMILY } from "../styles";
 
 /**
+ * A renamed warning code's former name, which a server repeats beside the new
+ * one, same message, for one release: by former code, the code it repeats.
+ * `persist-source-refused` is 0.14.0's; the others are 0.15.0's.
+ */
+const RETAINED_ALIAS_OF: Readonly<Record<string, string>> = {
+   "persist-source-refused": "persist-not-built",
+   "preaggregate-not-built": "rollup-not-built",
+   "preaggregate-join-one-key-repeated": "rollup-join-one-key-repeated",
+   "stored-native-schema-missing": "database-native-type-missing",
+};
+
+/**
+ * `warnings` with each retained-alias repeat dropped when the warning it
+ * repeats is beside it, so each problem shows once. An older server's
+ * former code, with no new code beside it, is the only copy and still shows.
+ */
+export function withoutRetainedAliases(
+   warnings: readonly PackageWarningsInner[],
+): PackageWarningsInner[] {
+   const key = (code: string | undefined, w: PackageWarningsInner) =>
+      `${code}\u0000${w.subject ?? ""}\u0000${w.message ?? ""}`;
+   const present = new Set(warnings.map((w) => key(w.code, w)));
+   return warnings.filter((w) => {
+      const now = w.code !== undefined ? RETAINED_ALIAS_OF[w.code] : undefined;
+      return now === undefined || !present.has(key(now, w));
+   });
+}
+
+/**
  * What the server found wrong with a package when it loaded it, on the
  * package page.
  *
@@ -29,8 +58,9 @@ export function PackageProblems({
    warnings: PackageWarningsInner[] | undefined;
 }) {
    const [showNotes, setShowNotes] = useState(false);
-   const errors = (warnings ?? []).filter((w) => w.severity === "error");
-   const notes = (warnings ?? []).filter((w) => w.severity !== "error");
+   const shown = withoutRetainedAliases(warnings ?? []);
+   const errors = shown.filter((w) => w.severity === "error");
+   const notes = shown.filter((w) => w.severity !== "error");
    if (errors.length === 0 && notes.length === 0) return null;
    return (
       <Stack sx={{ gap: 1, mb: 4 }}>

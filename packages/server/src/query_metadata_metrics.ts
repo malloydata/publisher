@@ -11,7 +11,7 @@
  * meter (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
  */
 
-import { lazyCounter, resetInstrumentsForTesting } from "./telemetry";
+import { lazyCounter } from "./telemetry";
 
 const appliedCounter = lazyCounter(
    "publisher_query_metadata_applied_total",
@@ -30,9 +30,4 @@ export function recordQueryMetadataApplied(queryClass: string): void {
 /** One property did not survive resolution. */
 export function recordQueryMetadataDropped(reason: string): void {
    droppedCounter().add(1, { reason });
-}
-
-/** Drop memoized instruments so a test can install a fresh MeterProvider. */
-export function resetQueryMetadataMetricsForTest(): void {
-   resetInstrumentsForTesting();
 }

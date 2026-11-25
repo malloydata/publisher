@@ -18,6 +18,7 @@ import type {
    SourceDef,
 } from "@malloydata/malloy";
 import {
+   assertFilterConditionBindsToDeclaringSource,
    assertGraftedGateBindsToDeclaringSource,
    assertInheritedSourceFiltersBind,
    fieldPathIdentical,
@@ -86,6 +87,45 @@ describe("filter_binding_guard — assertInheritedSourceFiltersBind join-depth b
    });
 });
 
+describe("filter_binding_guard — composite nesting bound", () => {
+   /** `depth` composites, each the sole member of the next, over one leaf. */
+   function nestedComposite(depth: number): SourceDef {
+      let current = joinedLeaf("leaf");
+      for (let i = 0; i < depth; i++) {
+         current = {
+            type: "composite",
+            name: `c${i}`,
+            fields: [],
+            sources: [current],
+         } as unknown as SourceDef;
+      }
+      return current;
+   }
+   const condition = {
+      code: "true",
+      refSummary: { fieldUsage: [] },
+   } as unknown as FilterCondition;
+   const check = (composite: SourceDef) => () =>
+      assertFilterConditionBindsToDeclaringSource(
+         composite,
+         joinedLeaf("executed"),
+         condition,
+         composite,
+      );
+
+   it("throws when composites nest past MAX_JOIN_RECURSION_DEPTH (deny, not a truncated member list)", () => {
+      expect(check(nestedComposite(MAX_JOIN_RECURSION_DEPTH + 4))).toThrow(
+         /composite nesting exceeded the resolution bound/,
+      );
+   });
+
+   it("does not throw within the bound (negative control)", () => {
+      expect(
+         check(nestedComposite(MAX_JOIN_RECURSION_DEPTH - 2)),
+      ).not.toThrow();
+   });
+});
+
 describe("filter_binding_guard — assertGraftedGateBindsToDeclaringSource entry-point resolution", () => {
    it("throws when the entry point struct could not be resolved (deny, not a silent no-op)", () => {
       const executed = joinedLeaf("executed");
@@ -144,5 +184,100 @@ describe("filter_binding_guard — activeName alias resolution", () => {
          fields: [aliasedField("owner", "tenant")],
       } as SourceDef;
       expect(fieldPathIdentical(declaring, executed, ["tenant"])).toBe(false);
+   });
+});
+
+describe("filter_binding_guard — a condition the executed compile declares (P2-22)", () => {
+   const url = "file:///pkg/other.malloy";
+   const span = {
+      url,
+      range: {
+         start: { line: 2, character: 0 },
+         end: { line: 2, character: 60 },
+      },
+   };
+   const condition = {
+      code: "dur > 3600",
+      expressionType: "scalar",
+      e: { node: ">", kids: { left: { node: "field", path: ["dur"] } } },
+      refSummary: {
+         fieldUsage: [
+            {
+               path: ["dur"],
+               at: {
+                  url,
+                  range: {
+                     start: { line: 2, character: 40 },
+                     end: { line: 2, character: 43 },
+                  },
+               },
+            },
+         ],
+      },
+   };
+   const source = (dur: unknown): SourceDef =>
+      ({
+         type: "table",
+         name: "duckdb:trips.csv",
+         as: "long_other",
+         sourceID: `long_other@${url}`,
+         dialect: "duckdb",
+         connection: "duckdb",
+         tablePath: "trips.csv",
+         location: span,
+         fields: [dur],
+         filterList: [condition],
+      }) as unknown as SourceDef;
+   // The served copy reads the stored BIGINT through its native type: a
+   // redefinition of `dur`, unlike the author's warehouse column.
+   const nativeRead = {
+      name: "dur",
+      type: "number",
+      numberType: "bigint",
+      e: { node: "field", path: ["dur__stored"] },
+   };
+   const warehouseColumn = {
+      name: "dur",
+      type: "number",
+      numberType: "bigint",
+   };
+   const served = source(nativeRead);
+   const servedModel = { contents: { long_other: served } } as never;
+   // The author's compile of the same file, which the sibling resolver reads.
+   const authorModel = {
+      contents: { long_other: source(warehouseColumn) },
+   } as never;
+   const resolveSibling = () => authorModel;
+
+   it("admits the served source's own where:, checked against the served compile", () => {
+      expect(() =>
+         assertInheritedSourceFiltersBind(
+            served,
+            servedModel,
+            {},
+            resolveSibling,
+         ),
+      ).not.toThrow();
+   });
+
+   it("still denies a struct derived from it that rebinds the column", () => {
+      const rebound = {
+         ...(served as unknown as Record<string, unknown>),
+         fields: [
+            {
+               name: "dur",
+               type: "number",
+               e: { node: "field", path: ["amt"] },
+            },
+         ],
+      } as unknown as SourceDef;
+      expect(() =>
+         assertInheritedSourceFiltersBind(
+            rebound,
+            servedModel,
+            {},
+            resolveSibling,
+         ),
+      ).toThrow(/resolves to a different field/);
    });
 });

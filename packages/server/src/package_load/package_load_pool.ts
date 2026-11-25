@@ -21,9 +21,17 @@
  *   pruned; the next dispatch respawns.
  * - A job past its limit terminates its worker rather than leave a zombie
  *   compile burning CPU, and the worker is retired so no queued load goes to it
- *   while it exits.
+ *   while it exits. * - A served copy's pass (`compileServedCopy`) takes only a worker that is
+ *   ready and idle now, with nothing queued, and never queues or spawns: a
+ *   query may be waiting on it, and its caller compiles inline instead.
  */
+import {
+   upstreamTableKey,
+   type UpstreamSchemaReader,
+   type UpstreamSchemaReading,
+} from "../service/materialization/domain/upstream_schemas";
 import type {
+   Connection,
    FetchSchemaOptions,
    InfoConnection,
    LookupConnection,
@@ -38,88 +46,68 @@ import { dirname, join } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 
 import { logger } from "../logger";
+import { recordUnhandledRejection } from "../process_safety";
+import { ImportOutsidePackageError } from "../utils";
+import { Settings, settings } from "../settings";
 import type {
    PackageMaterializationConfig,
    PackageScope,
 } from "../service/package_manifest";
-import type { PackageRetrievalSettings } from "../service/package_retrieval";
+import type { PackageRetrievalSettings } from "../service/package_retrieval_settings";
 import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys";
 import type {
+   CompileServedCopyRequest,
+   CompileServedCopyResult,
    ConnectionMetadataRequest,
    ConnectionMetadataResponse,
    LoadPackageError,
    LoadPackageRequest,
    LoadPackageResult,
+   ForgetSchemasMessage,
    MainToWorkerMessage,
    ReadUrlRequest,
    ReadUrlResponse,
    RpcErrorResponse,
    SchemaForSqlRequest,
    SchemaForSqlResponse,
+   UpstreamSchemasRequest,
+   UpstreamSchemasResponse,
    SchemaForTablesRequest,
    SchemaForTablesResponse,
    SerializedModel,
    WorkerLogMessage,
    WorkerToMainMessage,
 } from "./protocol";
+import {
+   checkCompileServedCopyResult,
+   checkLoadPackageResult,
+} from "./protocol_decode";
+import { connectionTypeOf, managedSchemasOf } from "../service/connection_type";
+import { SchemaRefetches } from "./schema_refetch";
+import { sqlKey } from "@malloydata/malloy";
 
 // ──────────────────────────────────────────────────────────────────────
 // Configuration
 // ──────────────────────────────────────────────────────────────────────
 
 /**
- * The configured pool size (`PACKAGE_LOAD_WORKERS`, default 1). Throws on 0 or
- * a non-positive / non-numeric value: compiling on the main event loop is what
- * fails the liveness probe, so there is deliberately no way to disable the pool.
+ * The configured pool size (`packageLoad.workers`, `PACKAGE_LOAD_WORKERS`,
+ * default 1). There is deliberately no way to turn the pool off: compiling on
+ * the main event loop is what fails the liveness probe.
  */
 export function getPackageLoadWorkerCount(): number {
-   const raw = process.env.PACKAGE_LOAD_WORKERS;
-   if (raw === undefined) return 1;
-   const parsed = Number.parseInt(raw, 10);
-   if (!Number.isFinite(parsed) || parsed < 1) {
-      throw new Error(
-         `PACKAGE_LOAD_WORKERS must be a positive integer (got ${JSON.stringify(raw)}). ` +
-            `Refusing to start without a package-load worker pool.`,
-      );
-   }
-   return parsed;
+   return settings.get("packageLoad.workers");
 }
 
-/** Default for {@link getPackageLoadSchemaCacheBytes}. */
-export const DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES = 16 * 1024 * 1024;
+export { DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES } from "../constants";
 
 /**
  * Serialized bytes of schema each worker caches across loads
- * (`PACKAGE_LOAD_SCHEMA_CACHE_BYTES`; see `schema_cache.ts`). Unset or empty
- * takes the default and 0 disables it; any other non-integer refuses to start
- * rather than be silently ignored.
+ * (`packageLoad.schemaCacheBytes`; see `schema_cache.ts`); 0 disables it.
  */
 export function getPackageLoadSchemaCacheBytes(): number {
-   const raw = process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
-   if (raw === undefined || raw.trim() === "") {
-      return DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
-   }
-   const parsed = Number(raw.trim());
-   if (!Number.isInteger(parsed) || parsed < 0) {
-      throw new Error(
-         `PACKAGE_LOAD_SCHEMA_CACHE_BYTES must be a non-negative integer number of bytes (got ${JSON.stringify(raw)}).`,
-      );
-   }
-   return parsed;
+   return settings.get("packageLoad.schemaCacheBytes");
 }
-
-/**
- * Compile budget for one load-package job, so a hung worker cannot leak a
- * Promise forever. Generous enough for cold starts. Overridable via
- * `PACKAGE_LOAD_JOB_TIMEOUT_MS`.
- */
-const PACKAGE_LOAD_JOB_TIMEOUT_MS = (() => {
-   const raw = process.env.PACKAGE_LOAD_JOB_TIMEOUT_MS;
-   if (raw === undefined) return 120_000;
-   const parsed = Number.parseInt(raw, 10);
-   if (!Number.isFinite(parsed) || parsed <= 0) return 120_000;
-   return parsed;
-})();
 
 /**
  * The share of a job's timeout the worker spends on work for the main thread,
@@ -129,7 +117,7 @@ const PACKAGE_LOAD_JOB_TIMEOUT_MS = (() => {
 const MAIN_THREAD_WORK_BUDGET_SHARE = 0.75;
 
 /**
- * How many times `PACKAGE_LOAD_JOB_TIMEOUT_MS` the pool lets a job run. The
+ * How many times `packageLoad.jobTimeoutMs` the pool lets a job run. The
  * timeout bounds the compile; the main-thread work interleaved with it starts
  * no new piece past MAIN_THREAD_WORK_BUDGET_SHARE, so a job whose compile fits
  * the timeout finishes within twice it.
@@ -152,16 +140,68 @@ interface JobContext {
    pw: PoolWorker;
    connections: LookupConnection<InfoConnection>;
    urlReader: PackageLoadUrlReader;
-   resolve: (result: LoadPackageResult) => void;
+   /** Settles the job with its result message, checked by kind. */
+   resolve: (result: LoadPackageResult | CompileServedCopyResult) => void;
    reject: (err: Error) => void;
    timeout: ReturnType<typeof setTimeout>;
+   /**
+    * When a refreshing load was requested, on `performance.now()`: a refetch
+    * begun since answers it (see SchemaRefetches).
+    */
+   refreshRequestedAt?: number;
+   /** See {@link LoadPackageJob.upstreamSchemas}. */
+   upstreamSchemas?: UpstreamSchemaReader;
 }
 
-interface QueuedJob {
-   request: LoadPackageJob;
-   resolve: (result: LoadPackageOutcome) => void;
-   reject: (err: Error) => void;
+/**
+ * How long a background job may wait behind foreground jobs before a free
+ * worker takes it anyway, so sustained user load never starves a connection
+ * edit's re-derivation (whose readers would otherwise answer 503 forever).
+ */
+export const BACKGROUND_JOB_MAX_WAIT_MS = 30_000;
+
+/**
+ * Which queued job a free worker takes: the oldest background job once it has
+ * waited {@link BACKGROUND_JOB_MAX_WAIT_MS}, otherwise the oldest foreground
+ * job, or the oldest background job when no foreground job waits (see
+ * LoadPackageJob.background). A job without `enqueuedAt` never ages.
+ */
+export function nextQueuedJobIndex(
+   queue: readonly {
+      request: { background?: boolean };
+      enqueuedAt?: number;
+   }[],
+   now: number = Date.now(),
+   maxBackgroundWaitMs: number = BACKGROUND_JOB_MAX_WAIT_MS,
+): number {
+   const background = queue.findIndex((q) => q.request.background);
+   const waitedSince =
+      background >= 0 ? queue[background].enqueuedAt : undefined;
+   if (waitedSince !== undefined && now - waitedSince >= maxBackgroundWaitMs) {
+      return background;
+   }
+   const foreground = queue.findIndex((q) => !q.request.background);
+   return foreground >= 0 ? foreground : 0;
 }
+
+type QueuedJob =
+   | {
+        kind: "load";
+        request: LoadPackageJob;
+        /** See JobContext.refreshRequestedAt. */
+        refreshRequestedAt?: number;
+        /** When it was queued, for {@link nextQueuedJobIndex}'s aging. */
+        enqueuedAt?: number;
+        resolve: (result: LoadPackageOutcome) => void;
+        reject: (err: Error) => void;
+     }
+   | {
+        kind: "served-copy";
+        request: CompileServedCopyJob;
+        enqueuedAt?: number;
+        resolve: (result: CompileServedCopyResult) => void;
+        reject: (err: Error) => void;
+     };
 
 interface PoolWorker {
    id: number;
@@ -169,6 +209,8 @@ interface PoolWorker {
    ready: Promise<void>;
    inFlight: Set<string>; // job ids; at most one
    exited: boolean;
+   /** Its `ready` handshake arrived: a job dispatched to it starts now. */
+   isReady: boolean;
    /**
     * Stopping and not yet exited: terminated after a job timeout, or failed to
     * start or errored. It takes no new job, but holds its slot until it exits,
@@ -198,16 +240,57 @@ export interface LoadPackageJob {
    defaultConnectionName: string | null;
    /** Custom URLReader for non-file:// imports; falls back to fs in the worker. */
    urlReader?: PackageLoadUrlReader;
+   /**
+    * Reads the catalog types of the tables a build reads, for the address
+    * fingerprint (materialization's `readUpstreamSchemas`). Absent, every
+    * table reads as `unread: "no_catalog"`: a caller that compiles no
+    * materialization (a dry run, a test) need not pass it.
+    */
+   upstreamSchemas?: UpstreamSchemaReader;
    /** Optional buildManifest passed through to Malloy Runtime. */
    buildManifest?: unknown;
    /** Optional in-memory model replacement for a package compile dry-run. */
    replacement?: { modelPath: string; source: string };
+   /** More in-memory files for a package compile dry-run (a request's `files` overlay). */
+   overlay?: { modelPath: string; source: string }[];
    /** Return non-fatal compiler diagnostics for dry-run reporting. */
    collectProblems?: boolean;
    /** See {@link LoadPackageRequest.computeBuildPlan}. */
    computeBuildPlan?: boolean;
-   /** See {@link LoadPackageRequest.withPreaggregateCompanions}. */
-   withPreaggregateCompanions?: boolean;
+   /** See {@link LoadPackageRequest.publishedVersion}. */
+   publishedVersion?: boolean;
+   /** See {@link LoadPackageRequest.withEntities}. */
+   withEntities?: boolean;
+   /**
+    * Background work (a connection edit's build-plan re-derivation): stays on
+    * this thread's queue behind every foreground job, so a publish or reload
+    * waits for at most the background job already running, never a backlog.
+    */
+   background?: boolean;
+   /**
+    * An explicit refresh (a reload, a publish): refetch every schema the load
+    * reads, here and in every worker's cache (see
+    * {@link LoadPackageRequest.refreshTimestamp}).
+    */
+   refreshSchemas?: boolean;
+}
+
+/** One pass of a model's served copy to compile (see CompileServedCopyRequest). */
+export interface CompileServedCopyJob {
+   packagePath: string;
+   /** See {@link CompileServedCopyRequest.environmentName}. */
+   environmentName: string;
+   modelPath: string;
+   /**
+    * The served copy's connections. They stay on this thread, which answers
+    * the worker's proxy RPCs against them.
+    */
+   malloyConfig: MalloyConfig;
+   defaultConnectionName: string | null;
+   /** The re-rooted files, by overlay key. */
+   files: ReadonlyMap<string, string>;
+   /** Never background work: a query may be waiting on it. */
+   background?: undefined;
 }
 
 /**
@@ -286,6 +369,15 @@ export class PackageLoadPool {
    private readonly jobTimeoutMs: number;
    /** How long a job may run before it is terminated (see JOB_LIMIT_FACTOR). */
    private readonly jobLimitMs: number;
+   /** Refreshing loads' refetches, shared while they overlap. */
+   private readonly tableRefetches: SchemaRefetches<{
+      schema?: TableSourceDef;
+      error?: string;
+   }>;
+   private readonly sqlRefetches: SchemaRefetches<{
+      structDef?: SQLSourceDef;
+      error?: string;
+   }>;
 
    constructor(
       maxWorkers: number,
@@ -293,7 +385,7 @@ export class PackageLoadPool {
       options: {
          /** See LoadPackageRequest.mainThreadWorkBudgetMs. */
          mainThreadWorkBudgetMs?: number;
-         /** Overrides PACKAGE_LOAD_JOB_TIMEOUT_MS. */
+         /** Overrides `packageLoad.jobTimeoutMs`. */
          jobTimeoutMs?: number;
       } = {},
    ) {
@@ -307,8 +399,15 @@ export class PackageLoadPool {
       this.maxWorkers = maxWorkers;
       this.workerScript = workerScript ?? resolveWorkerScript();
       this.schemaCacheBytes = getPackageLoadSchemaCacheBytes();
-      this.jobTimeoutMs = options.jobTimeoutMs ?? PACKAGE_LOAD_JOB_TIMEOUT_MS;
+      // The compile budget of one job, so a hung worker cannot leak a Promise
+      // forever. Generous enough for cold starts.
+      this.jobTimeoutMs =
+         options.jobTimeoutMs ?? settings.get("packageLoad.jobTimeoutMs");
       this.jobLimitMs = JOB_LIMIT_FACTOR * this.jobTimeoutMs;
+      // A refreshing load can wait in the queue before its job runs.
+      const refetchWindowMs = this.jobLimitMs + this.jobTimeoutMs;
+      this.tableRefetches = new SchemaRefetches(refetchWindowMs);
+      this.sqlRefetches = new SchemaRefetches(refetchWindowMs);
       this.mainThreadWorkBudgetMs =
          options.mainThreadWorkBudgetMs ??
          MAIN_THREAD_WORK_BUDGET_SHARE * this.jobTimeoutMs;
@@ -316,6 +415,11 @@ export class PackageLoadPool {
 
    get size(): number {
       return this.workers.filter((w) => !w.exited).length;
+   }
+
+   /** Test-only: whether shutdown() has been called. */
+   get isShutDownForTests(): boolean {
+      return this.shuttingDown;
    }
 
    /**
@@ -328,8 +432,45 @@ export class PackageLoadPool {
          throw new Error("PackageLoadPool is shutting down");
       }
       return new Promise<LoadPackageOutcome>((resolve, reject) => {
-         this.queue.push({ request, resolve, reject });
+         this.queue.push({
+            kind: "load",
+            request,
+            resolve,
+            reject,
+            enqueuedAt: Date.now(),
+            // When it is asked for, not when a worker takes it, so loads
+            // queued behind one worker share each other's refetches.
+            ...(request.refreshSchemas
+               ? { refreshRequestedAt: performance.now() }
+               : {}),
+         });
          this.tryDispatch();
+      });
+   }
+
+   /**
+    * Compile one pass of a served copy on a worker that is ready and idle
+    * now, or undefined when none is (every worker busy or starting, or a job
+    * already queued): the caller then compiles it on this thread, so a query
+    * waiting on it never waits behind a package load or a worker's start.
+    * The compile's own failure comes back in-band; the Promise rejects only
+    * for a failure of the job (a timeout, a worker exit, a malformed result).
+    */
+   compileServedCopy(
+      request: CompileServedCopyJob,
+   ): Promise<CompileServedCopyResult> | undefined {
+      if (this.shuttingDown || this.queue.length > 0) return undefined;
+      const idle = this.workers.find(
+         (w) => w.isReady && !w.exited && !w.retiring && w.inFlight.size === 0,
+      );
+      if (!idle) return undefined;
+      return new Promise<CompileServedCopyResult>((resolve, reject) => {
+         void this.dispatchToWorker(idle, {
+            kind: "served-copy",
+            request,
+            resolve,
+            reject,
+         });
       });
    }
 
@@ -376,7 +517,7 @@ export class PackageLoadPool {
       while (this.queue.length > 0) {
          const worker = this.findIdleOrSpawnable();
          if (!worker) return; // saturated; wait for a job to finish
-         const qj = this.queue.shift();
+         const [qj] = this.queue.splice(nextQueuedJobIndex(this.queue), 1);
          if (!qj) return;
          void this.dispatchToWorker(worker, qj);
       }
@@ -421,20 +562,56 @@ export class PackageLoadPool {
          this.handleJobTimeout(pw, jobId, qj.request.packagePath);
       }, this.jobLimitMs);
 
+      if (qj.kind === "served-copy") {
+         this.jobs.set(jobId, {
+            jobId,
+            pw,
+            connections: qj.request.malloyConfig.connections,
+            urlReader: defaultUrlReader,
+            resolve: (result) => {
+               clearTimeout(timeout);
+               qj.resolve(checkCompileServedCopyResult(result));
+            },
+            reject: (err) => {
+               clearTimeout(timeout);
+               qj.reject(err);
+            },
+            timeout,
+         });
+         const message: CompileServedCopyRequest = {
+            type: "compile-served-copy",
+            requestId: jobId,
+            packagePath: qj.request.packagePath,
+            environmentName: qj.request.environmentName,
+            modelPath: qj.request.modelPath,
+            defaultConnectionName: qj.request.defaultConnectionName,
+            files: [...qj.request.files],
+         };
+         pw.worker.postMessage(message);
+         return;
+      }
       this.jobs.set(jobId, {
          jobId,
          pw,
          connections: qj.request.malloyConfig.connections,
          urlReader: qj.request.urlReader ?? defaultUrlReader,
+         ...(qj.request.upstreamSchemas
+            ? { upstreamSchemas: qj.request.upstreamSchemas }
+            : {}),
          resolve: (result) => {
             clearTimeout(timeout);
-            qj.resolve(adaptResult(result));
+            const checked = checkLoadPackageResult(result);
+            this.forgetElsewhere(pw, checked.refreshedSchemaKeys);
+            qj.resolve(adaptResult(checked));
          },
          reject: (err) => {
             clearTimeout(timeout);
             qj.reject(err);
          },
          timeout,
+         ...(qj.refreshRequestedAt !== undefined
+            ? { refreshRequestedAt: qj.refreshRequestedAt }
+            : {}),
       });
 
       const message: LoadPackageRequest = {
@@ -446,12 +623,35 @@ export class PackageLoadPool {
          defaultConnectionName: qj.request.defaultConnectionName,
          buildManifest: qj.request.buildManifest,
          replacement: qj.request.replacement,
+         overlay: qj.request.overlay,
          collectProblems: qj.request.collectProblems,
          computeBuildPlan: qj.request.computeBuildPlan,
-         withPreaggregateCompanions: qj.request.withPreaggregateCompanions,
+         ...(qj.request.publishedVersion ? { publishedVersion: true } : {}),
+         withEntities: qj.request.withEntities,
          mainThreadWorkBudgetMs: this.mainThreadWorkBudgetMs,
+         ...(qj.request.refreshSchemas
+            ? { refreshTimestamp: nextRefreshTimestamp() }
+            : {}),
       };
       pw.worker.postMessage(message);
+   }
+
+   /**
+    * Tell every worker but `refreshed`, the one that ran a refreshing load,
+    * to drop its entries for the schemas that load refetched, so none of them
+    * compiles the package (or another reading the same table) against the
+    * columns from before. A load under way in another worker may still use
+    * what it already read.
+    */
+   private forgetElsewhere(
+      refreshed: PoolWorker,
+      keys: string[] | undefined,
+   ): void {
+      if (!keys || keys.length === 0) return;
+      const message: ForgetSchemasMessage = { type: "forget-schemas", keys };
+      for (const pw of this.workers) {
+         if (pw !== refreshed) this.postToWorker(pw, message);
+      }
    }
 
    /**
@@ -487,7 +687,12 @@ export class PackageLoadPool {
       );
       const worker = new Worker(this.workerScript, {
          name: `malloy-package-load-worker-${id}`,
-         workerData: { schemaCacheBytes: this.schemaCacheBytes },
+         // The worker reads its settings (the logger's, today) from these
+         // rather than from its copy of the environment, which no flag reaches.
+         workerData: {
+            schemaCacheBytes: this.schemaCacheBytes,
+            settings: Settings.current().toWorkerData(),
+         },
       });
 
       let readyResolve!: () => void;
@@ -526,8 +731,15 @@ export class PackageLoadPool {
          ready,
          inFlight: new Set(),
          exited: false,
+         isReady: false,
          retiring: false,
       };
+      void ready.then(
+         () => {
+            pw.isReady = true;
+         },
+         () => {},
+      );
 
       worker.on("message", (msg: WorkerToMainMessage) => {
          this.handleWorkerMessage(pw, msg, readyResolve, spawnTimer);
@@ -588,6 +800,7 @@ export class PackageLoadPool {
             markReady();
             return;
          case "load-package-result":
+         case "compile-served-copy-result":
             this.completeJob(pw, msg);
             return;
          case "load-package-error":
@@ -602,11 +815,20 @@ export class PackageLoadPool {
          case "schema-for-sql":
             this.answerWorker(pw, msg, this.handleSchemaForSql(pw, msg));
             return;
+         case "upstream-schemas":
+            this.answerWorker(pw, msg, this.handleUpstreamSchemas(pw, msg));
+            return;
          case "read-url":
             this.answerWorker(pw, msg, this.handleReadUrl(pw, msg));
             return;
          case "log":
             handleWorkerLog(msg);
+            return;
+         case "unhandled-rejection":
+            recordUnhandledRejection(
+               { message: msg.message, stack: msg.stack },
+               { workerId: pw.id },
+            );
             return;
          default: {
             const exhaustive: never = msg;
@@ -616,12 +838,31 @@ export class PackageLoadPool {
       }
    }
 
-   private completeJob(pw: PoolWorker, msg: LoadPackageResult): void {
+   private completeJob(
+      pw: PoolWorker,
+      msg: LoadPackageResult | CompileServedCopyResult,
+   ): void {
       const ctx = this.jobs.get(msg.requestId);
       if (!ctx) return;
       this.jobs.delete(msg.requestId);
       pw.inFlight.delete(msg.requestId);
-      ctx.resolve(msg);
+      // The message is structured-clone data typed only by the union; the
+      // job's resolve checks its protocol version and envelope before
+      // anything casts into it.
+      try {
+         ctx.resolve(msg);
+      } catch (error) {
+         logger.error(
+            `PackageLoadPool: worker #${pw.id} sent a result this server cannot read`,
+            {
+               requestId: msg.requestId,
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
+         ctx.reject(error as Error);
+         this.tryDispatch();
+         return;
+      }
       this.tryDispatch();
    }
 
@@ -704,6 +945,7 @@ export class PackageLoadPool {
          const conn = await ctx.connections.lookupConnection(
             msg.connectionName,
          );
+         const schemas = managedSchemasOf(conn);
          reply({
             type: "connection-metadata-response",
             requestId: msg.requestId,
@@ -711,12 +953,73 @@ export class PackageLoadPool {
             metadata: {
                name: msg.connectionName,
                dialectName: conn.dialectName,
+               connectionType: connectionTypeOf(conn),
+               ...(schemas ? { managedSchemas: [...schemas] } : {}),
                digest:
                   typeof conn.getDigest === "function"
                      ? conn.getDigest()
                      : msg.connectionName,
                generation: connectionGeneration(conn),
             },
+         });
+      } catch (error) {
+         reply({
+            type: "rpc-error",
+            requestId: msg.requestId,
+            ok: false,
+            error: serializeError(error),
+         });
+      }
+   }
+
+   /**
+    * Read the native column types of a worker's plan's upstream tables
+    * through the job's connections; a refreshing load reads them again.
+    */
+   private async handleUpstreamSchemas(
+      pw: PoolWorker,
+      msg: UpstreamSchemasRequest,
+   ): Promise<void> {
+      const ctx = this.jobs.get(msg.jobId);
+      const reply = (
+         response: UpstreamSchemasResponse | RpcErrorResponse,
+      ): void => {
+         this.postToWorker(pw, response as MainToWorkerMessage);
+      };
+      if (!ctx) {
+         reply({
+            type: "rpc-error",
+            requestId: msg.requestId,
+            ok: false,
+            error: { name: "Error", message: `Unknown jobId ${msg.jobId}` },
+         });
+         return;
+      }
+      try {
+         const read: UpstreamSchemaReader =
+            ctx.upstreamSchemas ??
+            (async ({ tables }) =>
+               Object.fromEntries(
+                  tables.map((t) => [
+                     upstreamTableKey(t),
+                     { unread: "no_catalog" } as UpstreamSchemaReading,
+                  ]),
+               ));
+         const readings = await read({
+            tables: msg.tables,
+            // The job's own connections, on this thread: real ones, which
+            // run SQL (the lookup's type is the compile's narrower view).
+            connection: async (name) =>
+               (await ctx.connections.lookupConnection(
+                  name,
+               )) as unknown as Connection,
+            refresh: ctx.refreshRequestedAt !== undefined,
+         });
+         reply({
+            type: "upstream-schemas-response",
+            requestId: msg.requestId,
+            ok: true,
+            readings,
          });
       } catch (error) {
          reply({
@@ -751,10 +1054,17 @@ export class PackageLoadPool {
          const conn = await ctx.connections.lookupConnection(
             msg.connectionName,
          );
-         const result = await conn.fetchSchemaForTables(
-            msg.tables,
-            buildFetchOptions(msg.options),
-         );
+         const options = buildFetchOptions(msg.options);
+         const result =
+            options.refreshTimestamp !== undefined &&
+            ctx.refreshRequestedAt !== undefined
+               ? await this.refetchTables(
+                    conn,
+                    msg.tables,
+                    options,
+                    ctx.refreshRequestedAt,
+                 )
+               : await conn.fetchSchemaForTables(msg.tables, options);
          reply({
             type: "schema-for-tables-response",
             requestId: msg.requestId,
@@ -770,6 +1080,57 @@ export class PackageLoadPool {
             error: serializeError(error),
          });
       }
+   }
+
+   /**
+    * A refreshing load's table fetch: each table refetched once across the
+    * refreshing loads that overlap (see SchemaRefetches). Keyed by table
+    * path, as the connection caches it.
+    */
+   private async refetchTables(
+      conn: InfoConnection,
+      tables: Record<string, string>,
+      options: FetchSchemaOptions,
+      requestedAt: number,
+   ): Promise<{
+      schemas: Record<string, unknown>;
+      errors: Record<string, string>;
+   }> {
+      const answers = await this.tableRefetches.fetch(
+         conn,
+         Object.values(tables),
+         requestedAt,
+         async (paths) => {
+            const wanted = new Set(paths);
+            const asked = Object.entries(tables).filter(([, p]) =>
+               wanted.has(p),
+            );
+            const read = await conn.fetchSchemaForTables(
+               Object.fromEntries(asked),
+               options,
+            );
+            const byPath = new Map<
+               string,
+               { schema?: TableSourceDef; error?: string }
+            >();
+            for (const [key, p] of asked) {
+               if (byPath.has(p)) continue;
+               byPath.set(p, {
+                  schema: read.schemas[key] as TableSourceDef | undefined,
+                  error: read.errors[key],
+               });
+            }
+            return byPath;
+         },
+      );
+      const schemas: Record<string, unknown> = {};
+      const errors: Record<string, string> = {};
+      for (const [key, p] of Object.entries(tables)) {
+         const answer = answers.get(p);
+         if (answer?.schema) schemas[key] = answer.schema;
+         else errors[key] = answer?.error ?? "No schema returned for the table";
+      }
+      return { schemas, errors };
    }
 
    private async handleSchemaForSql(
@@ -795,12 +1156,41 @@ export class PackageLoadPool {
          const conn = await ctx.connections.lookupConnection(
             msg.connectionName,
          );
-         const result = await conn.fetchSchemaForSQLStruct(
-            msg.sentence as Parameters<
-               InfoConnection["fetchSchemaForSQLStruct"]
-            >[0],
-            buildFetchOptions(msg.options),
-         );
+         const sentence = msg.sentence as Parameters<
+            InfoConnection["fetchSchemaForSQLStruct"]
+         >[0];
+         const options = buildFetchOptions(msg.options);
+         const requestedAt = ctx.refreshRequestedAt;
+         let result: { structDef?: unknown; error?: string };
+         if (
+            options.refreshTimestamp !== undefined &&
+            requestedAt !== undefined
+         ) {
+            const key = sqlKey(sentence.connection, sentence.selectStr);
+            const answers = await this.sqlRefetches.fetch(
+               conn,
+               [key],
+               requestedAt,
+               async () =>
+                  new Map([
+                     [
+                        key,
+                        (await conn.fetchSchemaForSQLStruct(
+                           sentence,
+                           options,
+                        )) as {
+                           structDef?: SQLSourceDef;
+                           error?: string;
+                        },
+                     ],
+                  ]),
+            );
+            result = answers.get(key) ?? {
+               error: "No schema returned for the SQL",
+            };
+         } else {
+            result = await conn.fetchSchemaForSQLStruct(sentence, options);
+         }
          if (result.error !== undefined) {
             reply({
                type: "schema-for-sql-response",
@@ -863,6 +1253,20 @@ export class PackageLoadPool {
    }
 }
 
+let lastRefreshTimestamp = 0;
+
+/**
+ * A refreshing load's stamp, strictly increasing: a connection refetches an
+ * entry only when the stamp is greater than the entry's own. It is not what
+ * forces the refetch, since SchemaRefetches drops the entry first; it decides
+ * only for a connection with no cache to drop from, where an entry stored
+ * under a clock later stepped back could still be judged current.
+ */
+function nextRefreshTimestamp(): number {
+   lastRefreshTimestamp = Math.max(Date.now() + 1, lastRefreshTimestamp + 1);
+   return lastRefreshTimestamp;
+}
+
 function buildFetchOptions(options: {
    refreshTimestamp?: number;
 }): FetchSchemaOptions {
@@ -922,13 +1326,13 @@ function adaptResult(result: LoadPackageResult): LoadPackageOutcome {
 export { deserializeError, serializeError } from "./error_wire";
 import { deserializeError, serializeError } from "./error_wire";
 
+// The worker reads `file:` URLs itself, confined to the package, and asks
+// here only for any other scheme. A package's model reads nothing but its own
+// files, so every such read is refused (reading the URL as a path would
+// resolve it against the server's working directory).
 const defaultUrlReader = {
-   readURL: async (url: URL): Promise<string> => {
-      const { promises: fs } = await import("fs");
-      const { fileURLToPath } = await import("url");
-      const filePath =
-         url.protocol === "file:" ? fileURLToPath(url) : url.toString();
-      return fs.readFile(filePath, "utf8");
+   readURL: async (_url: URL): Promise<string> => {
+      throw new ImportOutsidePackageError();
    },
 };
 
@@ -938,7 +1342,21 @@ const defaultUrlReader = {
 
 let singleton: PackageLoadPool | null = null;
 
+/** Test-only: what makes the pool when there is none; see the setter below. */
+let poolFactoryForTests: (() => PackageLoadPool) | undefined;
+
+/**
+ * The pool, when one is running; never makes one. For work that uses a
+ * worker only when one is already free (a served copy's compile).
+ */
+export function currentPackageLoadPool(): PackageLoadPool | null {
+   return singleton;
+}
+
 export function getPackageLoadPool(): PackageLoadPool {
+   if (singleton === null && poolFactoryForTests) {
+      singleton = poolFactoryForTests();
+   }
    if (singleton === null) {
       const n = getPackageLoadWorkerCount();
       singleton = new PackageLoadPool(n);
@@ -950,12 +1368,27 @@ export function getPackageLoadPool(): PackageLoadPool {
    return singleton;
 }
 
-/** Test-only: replace the singleton (and shut down the previous one). */
+/**
+ * Test-only: replace the singleton, and shut down the previous one unless
+ * `keep` holds it (a test helper that reuses pools; see freshLoadPool).
+ */
 export async function __setPackageLoadPoolForTests(
    pool: PackageLoadPool | null,
+   keep?: ReadonlySet<PackageLoadPool>,
 ): Promise<void> {
-   if (singleton && singleton !== pool) {
+   if (singleton && singleton !== pool && !keep?.has(singleton)) {
       await singleton.shutdown();
    }
    singleton = pool;
+}
+
+/**
+ * Test-only: make the pool, when there is none, with `factory` rather than a
+ * new one. It runs at the first load after the pool was cleared, so it sees
+ * the settings that load runs under.
+ */
+export function __setPackageLoadPoolFactoryForTests(
+   factory: (() => PackageLoadPool) | undefined,
+): void {
+   poolFactoryForTests = factory;
 }

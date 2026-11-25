@@ -8,7 +8,7 @@ package: ipr
 
 `persist-without-flag-served-live` proves that a `#@ persist` in a model missing
 `##! experimental.persistence` is inert: `compilePackageBuildPlan` skips the model
-(it must — Malloy's `getBuildPlan()` throws without the flag), so nothing is built
+(it must — Malloy's `getBuildTargets()` throws without the flag), so nothing is built
 and the source is served live with no warning.
 
 That is only true while nothing else in the package carries the flag. Here

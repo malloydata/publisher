@@ -9,6 +9,7 @@
 //
 // The LIVE relation behind the fact is empty, so a wrapper answering with rows
 // is provably reading the stored table, and one answering with none fell back.
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -22,8 +23,29 @@ import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
-import type { ServeBinding } from "./materialization_serve_transform";
+import type { Binding } from "./materialization/domain/binding";
 import { Model } from "./model";
+import { installSettings } from "../test_helpers/settings_env";
+import { QueryPrivileges } from "./model_query_request";
+
+/** Puts back the settings the current test installed. */
+let restoreSettings: (() => void) | undefined;
+
+/**
+ * Install PERSIST_STORAGE_MODE=`mode` for this test, before its model is built;
+ * every other setting is at its default.
+ */
+function setStorageMode(mode: string): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({
+      env: { PERSIST_STORAGE_MODE: mode },
+   }).restore;
+}
+
+afterEach(() => {
+   restoreSettings?.();
+   restoreSettings = undefined;
+});
 
 /**
  * `good` reads only the fact. `bad` reads through `j`, the fact's own join to a
@@ -45,7 +67,9 @@ source: bad is fact -> { group_by: j.label; aggregate: n is count() }
 const STORED = `CREATE OR REPLACE TABLE mz_fact AS
    SELECT * FROM (VALUES (1, 10), (1, 20)) AS t(id, amount)`;
 
-const BINDING: ServeBinding = {
+const BINDING: Binding = {
+   kind: "persist",
+   tier: "storage",
    sourceName: "fact",
    destinationName: "duckdb",
    virtualHandle: "h_fact",
@@ -83,48 +107,37 @@ async function buildModel(): Promise<Model> {
    const compiled = await mm.getModel();
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
    const modelDef = (compiled as any)._modelDef;
-   const model = new Model(
-      "pkg",
-      "m.malloy",
-      {},
-      "model",
+   const model = new Model({
+      packageName: "pkg",
+      modelPath: "m.malloy",
+      dataStyles: {},
+      modelType: "model",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      mm as any,
+      modelMaterializer: mm as any,
       modelDef,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      [],
-      modelDefToModelInfo(modelDef),
-   );
+      givens: [],
+      modelInfo: modelDefToModelInfo(modelDef),
+   });
    const serveConfig = new MalloyConfig({ connections: {} });
    serveConfig.wrapConnections(() => new FixedConnectionMap(connMap, "duckdb"));
    model.setServeDestinationConfig(() => serveConfig);
+   model.setServedCopyContext(dir, connMap);
    model.setServeBindings([BINDING]);
    return model;
 }
 
 async function rows(model: Model, query: string): Promise<unknown[]> {
-   const res = await model.getQueryResults(
-      undefined,
-      undefined,
-      query,
-      {},
-      true,
+   const res = await model.runQuery(
+      unrecordedAudit(),
+      { query, filterParams: {} },
+      QueryPrivileges.of({ bypassFilters: true }),
    );
    return res.compactResult as unknown as unknown[];
 }
 
 describe("a lifted wrapper that does not compile costs only itself", () => {
-   afterEach(() => {
-      delete process.env.PERSIST_STORAGE_MODE;
-   });
-
    it("keeps serving the clean wrapper from storage beside a broken one", async () => {
-      process.env.PERSIST_STORAGE_MODE = "on";
+      setStorageMode("on");
       const model = await buildModel();
 
       // Two stored rows. Live is empty, so two rows means the wrapper was on

@@ -12,6 +12,8 @@ import {
    setEventLoopYieldBudgetMsForTesting,
 } from "./event_loop_yield";
 import type { Model } from "./model";
+import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 describe("createEventLoopYielder", () => {
    afterEach(() => {
@@ -78,15 +80,18 @@ ${views}
    async function loadModel(): Promise<Model> {
       const envPath = path.join(rootDir, "env");
       const dir = path.join(envPath, "pkg");
-      await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name: "pkg", description: "fixture" }),
+      writePackageFiles(
+         dir,
+         {
+            "m.malloy": bigModel(),
+         },
+         { manifest: { name: "pkg", description: "fixture" } },
       );
-      await fs.writeFile(path.join(dir, "m.malloy"), bigModel());
       const env = await Environment.create("testEnv", envPath, []);
       await env.addPackage("pkg");
-      return (await env.getPackage("pkg", false)).getModel("m.malloy")!;
+      return (await env.getPackage(parsePackageName("pkg"), false)).getModel(
+         "m.malloy",
+      )!;
    }
 
    beforeEach(async () => {

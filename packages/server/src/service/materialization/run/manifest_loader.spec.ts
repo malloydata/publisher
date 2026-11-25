@@ -1,0 +1,415 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/// <reference types="bun-types" />
+
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import * as fs from "fs/promises";
+import os from "os";
+import path from "path";
+import { pathToFileURL } from "url";
+import { logger } from "../../../logger";
+import { ManifestEntry } from "../domain/types";
+import {
+   fetchManifestEntries,
+   isManifestNotFound,
+   ManifestUnusableError,
+   splitManifestEntries,
+} from "./manifest_loader";
+
+describe("fetchManifestEntries", () => {
+   let dir: string;
+
+   beforeEach(async () => {
+      dir = await fs.mkdtemp(path.join(os.tmpdir(), "manifest-loader-"));
+   });
+
+   afterEach(async () => {
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+   });
+
+   async function writeManifest(contents: unknown): Promise<string> {
+      const file = path.join(dir, "manifest.json");
+      await fs.writeFile(file, JSON.stringify(contents), "utf8");
+      return file;
+   }
+
+   it("maps physicalTableName to the Malloy runtime tableName (database entries)", async () => {
+      const file = await writeManifest({
+         builtAt: new Date().toISOString(),
+         strict: false,
+         entries: {
+            b1: { sourceEntityId: "b1", physicalTableName: "schema.orders_mz" },
+            b2: {
+               sourceEntityId: "b2",
+               physicalTableName: "schema.daily_mz",
+               connectionName: "bq",
+            },
+         },
+      });
+
+      const { tableNameManifest, storageEntries } =
+         await fetchManifestEntries(file);
+
+      expect(tableNameManifest).toEqual({
+         b1: { tableName: "schema.orders_mz" },
+         // connectionName is carried through so the bind step can quote the
+         // table path for that connection's dialect (Package.quoteBoundTableNames).
+         b2: { tableName: "schema.daily_mz", connectionName: "bq" },
+      });
+      expect(storageEntries).toEqual({});
+   });
+
+   it("routes storage= entries (with storageDestinationName) to storageEntries, not the tableName manifest", async () => {
+      const schema = [
+         { name: "d", type: "DATE" },
+         { name: "n", type: "BIGINT" },
+      ];
+      const file = await writeManifest({
+         entries: {
+            // database: in-warehouse substitution
+            wh: {
+               sourceEntityId: "wh",
+               physicalTableName: "orders_v1",
+               connectionName: "bq",
+            },
+            // storage tier: cross-connection serve binding (full entry retained)
+            lake: {
+               sourceEntityId: "lake",
+               sourceName: "daily_orders",
+               physicalTableName: "daily_orders",
+               connectionName: "bq",
+               storageDestinationName: "lake",
+               schema,
+            },
+         },
+      });
+
+      const { tableNameManifest, storageEntries } =
+         await fetchManifestEntries(file);
+
+      // The storage entry must NOT enter the same-connection tableName manifest.
+      expect(tableNameManifest).toEqual({
+         wh: { tableName: "orders_v1", connectionName: "bq" },
+      });
+      // …and is preserved as a full entry (schema + sourceName + destination).
+      expect(storageEntries).toEqual({
+         lake: {
+            sourceEntityId: "lake",
+            sourceName: "daily_orders",
+            physicalTableName: "daily_orders",
+            connectionName: "bq",
+            storageDestinationName: "lake",
+            schema,
+         },
+      });
+   });
+
+   it("carries the host-supplied freshness fields verbatim (database)", async () => {
+      const dataAsOf = "2026-07-07T00:00:00.000Z";
+      const file = await writeManifest({
+         entries: {
+            gated: {
+               sourceEntityId: "gated",
+               physicalTableName: "schema.gated_mz",
+               dataAsOf,
+               freshnessWindowSeconds: 3600,
+               freshnessFallback: "stale_ok",
+            },
+            ungated: {
+               sourceEntityId: "ungated",
+               physicalTableName: "schema.ungated_mz",
+            },
+         },
+      });
+
+      const { tableNameManifest } = await fetchManifestEntries(file);
+
+      // Filter-free: freshness fields are retained for the serve-path gate; a
+      // window-less entry is left un-gated.
+      expect(tableNameManifest).toEqual({
+         gated: {
+            tableName: "schema.gated_mz",
+            dataAsOf,
+            freshnessWindowSeconds: 3600,
+            freshnessFallback: "stale_ok",
+         },
+         ungated: { tableName: "schema.ungated_mz" },
+      });
+   });
+
+   it("reads via a file:// URI", async () => {
+      const file = await writeManifest({
+         entries: { b1: { sourceEntityId: "b1", physicalTableName: "t1" } },
+      });
+
+      const { tableNameManifest } = await fetchManifestEntries(
+         pathToFileURL(file).href,
+      );
+
+      expect(tableNameManifest).toEqual({ b1: { tableName: "t1" } });
+   });
+
+   it("skips entries without a physicalTableName", async () => {
+      const file = await writeManifest({
+         entries: {
+            good: { sourceEntityId: "good", physicalTableName: "t1" },
+            bad: { sourceEntityId: "bad" },
+         },
+      });
+
+      const { tableNameManifest } = await fetchManifestEntries(file);
+
+      expect(tableNameManifest).toEqual({ good: { tableName: "t1" } });
+   });
+
+   it("returns empty maps when there are no entries", async () => {
+      const file = await writeManifest({ entries: {} });
+      expect(await fetchManifestEntries(file)).toEqual({
+         tableNameManifest: {},
+         storageEntries: {},
+      });
+
+      const file2 = await writeManifest({});
+      expect(await fetchManifestEntries(file2)).toEqual({
+         tableNameManifest: {},
+         storageEntries: {},
+      });
+   });
+
+   it("throws on malformed JSON", async () => {
+      const file = path.join(dir, "bad.json");
+      await fs.writeFile(file, "{ not json", "utf8");
+      await expect(fetchManifestEntries(file)).rejects.toThrow(
+         /Failed to parse build manifest/,
+      );
+   });
+
+   it("throws when the file does not exist", async () => {
+      const missing = await fetchManifestEntries(
+         path.join(dir, "missing.json"),
+      ).catch((error: unknown) => error);
+      expect(missing).toBeInstanceOf(ManifestUnusableError);
+      expect((missing as ManifestUnusableError).problem).toBe("not_found");
+   });
+
+   it("reads malformed JSON, a non-object, a non-object entries or a directory as invalid", async () => {
+      const bad = path.join(dir, "bad.json");
+      await fs.writeFile(bad, "{ not json", "utf8");
+      const refusals: unknown[] = [
+         await fetchManifestEntries(bad).catch((error: unknown) => error),
+         await fetchManifestEntries(dir).catch((error: unknown) => error),
+      ];
+      for (const contents of [
+         [],
+         "a string",
+         null,
+         { entries: "x" },
+         { entries: [] },
+      ]) {
+         const file = await writeManifest(contents);
+         refusals.push(
+            await fetchManifestEntries(file).catch((error: unknown) => error),
+         );
+      }
+      for (const refused of refusals) {
+         expect(refused).toBeInstanceOf(ManifestUnusableError);
+         expect((refused as ManifestUnusableError).problem).toBe("invalid");
+      }
+   });
+
+   it("reads an object store's 404 as not found, and a refusal as neither", () => {
+      // Classified on the error's shape, as each client throws it.
+      expect(isManifestNotFound({ code: 404 })).toBe(true);
+      expect(isManifestNotFound({ name: "NoSuchKey" })).toBe(true);
+      expect(isManifestNotFound({ name: "NoSuchBucket" })).toBe(true);
+      expect(isManifestNotFound({ $metadata: { httpStatusCode: 404 } })).toBe(
+         true,
+      );
+      expect(isManifestNotFound({ code: 403 })).toBe(false);
+      expect(isManifestNotFound({ name: "AccessDenied" })).toBe(false);
+      expect(isManifestNotFound({ code: "EACCES" })).toBe(false);
+      expect(isManifestNotFound(new Error("Timed out after 1ms"))).toBe(false);
+   });
+
+   it("rejects a malformed gs:// URI without a key", async () => {
+      await expect(fetchManifestEntries("gs://bucket-only")).rejects.toThrow(
+         /Malformed manifest URI/,
+      );
+   });
+});
+
+describe("splitManifestEntries", () => {
+   it("keeps a legacy failed entry out of both the serve manifest and the storage set", () => {
+      // A manifest written by 0.0.245-0.0.246 records a failed source among its
+      // entries, with the required `physicalTableName` naming a table the build
+      // never created. Those manifests are at rest in the store and in bound
+      // manifest files, so this read boundary sees them after an upgrade.
+      //
+      // The name is the danger: auto-run names are stable, so it resolves to the
+      // PRIOR generation's real table and a binding would serve it as fresh --
+      // worse than a miss, because nothing reports it. Delete this test with the
+      // field it tolerates.
+      const split = splitManifestEntries(
+         {
+            ok: {
+               sourceEntityId: "ok",
+               sourceName: "healthy",
+               physicalTableName: "healthy_v1",
+               connectionName: "wh",
+            },
+            legacyFailed: {
+               sourceEntityId: "legacyFailed",
+               sourceName: "broken",
+               physicalTableName: "broken_v1_prior_generation",
+               connectionName: "wh",
+               error: "Permission denied while writing to dataset analytics",
+            } as unknown as ManifestEntry,
+         },
+         "test",
+      );
+
+      expect(Object.keys(split.tableNameManifest)).toEqual(["ok"]);
+      expect(
+         split.storageEntries.legacyFailed,
+         "a legacy failed entry must not reach a serve binding either",
+      ).toBeUndefined();
+   });
+
+   it("skips an entry with no table name rather than serving it", () => {
+      // The split reads `physicalTableName` to decide an entry is servable, so a
+      // malformed entry that carries no name must be dropped rather than bound to
+      // an empty one.
+      const split = splitManifestEntries(
+         {
+            ok: {
+               sourceEntityId: "ok",
+               sourceName: "healthy",
+               physicalTableName: "healthy_v1",
+               connectionName: "wh",
+            },
+            nameless: {
+               sourceEntityId: "nameless",
+               sourceName: "malformed",
+            } as unknown as ManifestEntry,
+         },
+         "test",
+      );
+
+      expect(Object.keys(split.tableNameManifest)).toEqual(["ok"]);
+      expect(
+         split.storageEntries.nameless,
+         "an entry with no table name must not reach a serve binding either",
+      ).toBeUndefined();
+   });
+
+   it("logs a skipped entry, unless the split is quiet", () => {
+      const entries = {
+         legacyFailed: {
+            sourceEntityId: "legacyFailed",
+            physicalTableName: "broken_v1",
+            error: "failed",
+         } as unknown as ManifestEntry,
+         nameless: { sourceEntityId: "nameless" } as unknown as ManifestEntry,
+      };
+      const warn = spyOn(logger, "warn");
+      try {
+         const quiet = splitManifestEntries(entries, "test", {
+            quiet: true,
+         });
+         expect(warn.mock.calls.length).toBe(0);
+         const loud = splitManifestEntries(entries, "test");
+         expect(warn.mock.calls.map((c) => String(c[0]))).toEqual([
+            "Manifest entry records a failed source; skipping",
+            "Manifest entry has no physicalTableName; skipping",
+         ]);
+         expect(quiet).toEqual(loud);
+      } finally {
+         warn.mockRestore();
+      }
+   });
+});
+
+describe("splitManifestEntries: table names it cannot read safely", () => {
+   const entry = (physicalTableName: string, storage?: string) =>
+      ({
+         sourceEntityId: "x",
+         sourceName: "s",
+         physicalTableName,
+         connectionName: "duckdb",
+         ...(storage ? { storageDestinationName: storage } : {}),
+      }) as never;
+
+   it("refuses a backslash, quotes that do not parse, or an empty part, on either tier", () => {
+      const split = splitManifestEntries(
+         {
+            a: entry("t\\'; DROP TABLE x --"),
+            b: entry('"s.t'),
+            c: entry('s"x.t'),
+            d: entry("sch\\.t", "lake"),
+            e: entry("a..b"),
+            f: entry(".t"),
+            g: entry("s.", "lake"),
+         },
+         "test",
+      );
+      expect(split.tableNameManifest).toEqual({});
+      expect(split.storageEntries).toEqual({});
+   });
+
+   it("keeps every name a writer sends", () => {
+      const split = splitManifestEntries(
+         {
+            a: entry("analytics.orders__g001__0a1b2c3d"),
+            b: entry("s.t"),
+            c: entry("proj-1.ds.t"),
+            d: entry("it's.t"),
+            // An author's own manifestLocation manifest, or a legacy one.
+            e: entry('"My Schema"."T x"'),
+            f: entry("`proj.ds.t`"),
+         },
+         "test",
+      );
+      expect(Object.keys(split.tableNameManifest).sort()).toEqual([
+         "a",
+         "b",
+         "c",
+         "d",
+         "e",
+         "f",
+      ]);
+   });
+});
+
+describe("splitManifestEntries: an incremental entry's ledger", () => {
+   it("keeps every bound entry's ledger, not only an extension's", () => {
+      // A carried incremental parent that is no extension itself: an
+      // extension over it records which build of its table it read from
+      // this ledger (incremental_upstream.ts), so dropping it costs a reseed.
+      const ledger = {
+         connectionName: "wh",
+         physicalTableName: "ev_t",
+         coveredThrough: "2024-06-01 00:00:00",
+         coveredThroughType: "timestamp",
+         watermark: "ts",
+         strategy: "merge",
+         sourceEntityId: "ev",
+         advancedBy: "run-1",
+         seededBy: "run-1",
+         advances: [],
+      };
+      const split = splitManifestEntries(
+         {
+            ev: {
+               sourceEntityId: "ev",
+               physicalTableName: "ev_t",
+               connectionName: "wh",
+               builtAt: "2024-06-01T00:00:10.000Z",
+               ledger,
+            } as unknown as ManifestEntry,
+         },
+         "test",
+      );
+      expect(split.tableNameManifest.ev?.ledger).toEqual(ledger as never);
+   });
+});

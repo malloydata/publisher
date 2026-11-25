@@ -1,0 +1,1882 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * The `storage=` tier's adapter ({@link StorageBuildStrategy}): a source read
+ * from its warehouse and loaded into a DuckDB or DuckLake destination, or
+ * stacked on its stored parents' tables there, or advanced by a delta inside
+ * the destination session; a stored table's drop and key check in its
+ * destination. Also {@link missingPersistedTables}. Read by the source build,
+ * the service, the instructed build's key checks and the reclaimer.
+ *
+ * Effects: SQL in the source warehouse and the destination, through the build
+ * session; logs and counts each chained build and each stored type it could
+ * not keep. Never writes the source or serve connection.
+ */
+
+import type { ExtensionParent } from "./incremental_apply";
+import { splitSourceID, type StoredInDestination } from "../domain/table_plans";
+import {
+   plannedModelDefOf,
+   sourceDefOf,
+} from "../../governance/ir/compiled_model";
+import type {
+   Connection as MalloyConnection,
+   Manifest,
+   PersistSource,
+} from "@malloydata/malloy";
+import {
+   ChainedShapeNotCarriedError,
+   ChainedUpstreamMissingError,
+   ConnectionNotFoundError,
+   MaterializationEligibilityError,
+   SchemaIncompatibleError,
+} from "../../../errors";
+import { logger } from "../../../logger";
+import { errorCodeOf } from "../../../error_code";
+import {
+   recordStoredColumnTypeMismatch,
+   recordChainedStorageBuild,
+   recordStoredTypeFallback,
+   recordEligibilityRefused,
+} from "../../../materialization_metrics";
+import { errMessage } from "../../../utils";
+import type { ApiConnection } from "../../model";
+import type { QueryMetadata } from "../../query_metadata";
+import { usageCatalog, withStatementUsage } from "../../statement_usage";
+import {
+   bindingServesModelSource,
+   deriveServeBindings,
+   type Binding,
+} from "../domain/binding";
+import { authorModelLiftContext } from "../text/author_model";
+import {
+   declarableColumns,
+   duckdbTypeToMalloyType,
+   holdsDucklakeDouble,
+   sameStoredTypeClass,
+   type UndeclarableColumn,
+} from "../stored_column_types";
+import { quoteManifestTablePath, quoteTablePath } from "../../quoting";
+import { reachPersisted } from "../text/source_map";
+import { extensionOverStoredModel, storedColumnNames } from "./run_plan";
+import {
+   type MaterializeParent,
+   type MaterializePlan,
+   type StoredChain,
+} from "../domain/table_plans";
+import {
+   STORED_COLUMN_TYPE_MISMATCH_CODE,
+   storageBuildCasts,
+   storedColumnTypeMismatches,
+} from "../stored_column_types";
+import { BuildInstruction, ManifestEntry } from "../domain/types";
+import {
+   type StringReads,
+   stringReadsRefusal,
+   unstoredReadRefusal,
+} from "../domain/string_reads";
+import type {
+   DroppedTable,
+   KeyCheck,
+   KeyCheckRecord,
+   StorageSite,
+   TierAdapter,
+} from "./tier";
+import { runKeyCheck } from "./inline_uniqueness";
+import { storedKeyCheckSql } from "../text/key_check_text";
+import {
+   ledgerFields,
+   lateRowsFields,
+   refreshFields,
+   reportIncrementalStep,
+   resetLedger,
+   sourceIncrementalRefresh,
+   advancedByOf,
+   ledgerExtensionKeys,
+   stackedRefreshFor,
+   storageRefreshFor,
+   type IncrementalRunContext,
+} from "./incremental_build";
+import {
+   buildDownstreamIntoStorage,
+   buildProjectionIntoStorage,
+   buildSourceIntoStorage,
+   isCatalogDestination,
+   oneFileModel,
+   withDestinationSession,
+   type StorageBuildResult,
+   type StackedIncrementalRefresh,
+   type StorageIncrementalRefresh,
+} from "./materialization_build_session";
+import { BilledReadNotCapturedError } from "./passthrough/bigquery";
+import { dropStorageTable } from "./storage_admin";
+import { backupSuffix } from "./build_table_names";
+import {
+   BuildEnvironment,
+   builtFromAddresses,
+   builtFromOf,
+   ChainedPackageStaleError,
+   ChainedPlanFacts,
+   currentUpstreamEntries,
+   HostSuppliedWrongTierError,
+   NO_PLAN_FACTS,
+   upstreamEntryIsCurrent,
+   WRONG_TIER_MARKER,
+   wrongTierDetail,
+} from "./build_upstreams";
+import { redactConnectionSecrets } from "./connection_redaction";
+import { carriesAuthorSql, isSameCatalog } from "../domain/same_catalog_build";
+import { compiledTextReader } from "../../../utils";
+import {
+   destinationSchemaOf,
+   storageTablePath,
+} from "../domain/storage_table_path";
+import { STORAGE_DIALECT } from "../domain/dialect";
+import { type ColumnContract, parseContract } from "../domain/column_contract";
+import type { ChainBuildRequest } from "../domain/chain_build";
+import type { Collation } from "../domain/collation";
+import { storageContract } from "./column_contract_capture";
+import { ContractCaptureFailedError } from "../../../errors";
+import {
+   storageBuildReadsConnectionType,
+   unreadableSourceConnectionMessage,
+} from "../domain/source_connection_type";
+
+/**
+ * The source's connection, for a `storage=` build that can read it. The plan's
+ * gate refuses a source the build cannot read, but one that reaches here
+ * anyway (a host's instruction, a plan with no recorded connection types) is
+ * refused alone rather than failing the run: a connection the environment
+ * does not hold (the package's DuckDB sandbox), or one of a type the build
+ * does not pass through. Thrown as a refusal, which the run records against
+ * this source and goes on (instructed_build.ts).
+ */
+export function storageSourceConnection(
+   environment: { getApiConnection(name: string): ApiConnection },
+   persistSource: PersistSource,
+   destinationConnection: ApiConnection,
+): ApiConnection {
+   let connection: ApiConnection | undefined;
+   try {
+      connection = environment.getApiConnection(persistSource.connectionName);
+   } catch (err) {
+      if (!(err instanceof ConnectionNotFoundError)) throw err;
+   }
+   const type = connection?.type;
+   if (
+      connection &&
+      type &&
+      storageBuildReadsConnectionType(type) &&
+      // A catalog source (DuckLake's) builds only into its own catalog.
+      (!isCatalogDestination(connection) ||
+         isSameCatalog(connection, destinationConnection))
+   ) {
+      return connection;
+   }
+   recordEligibilityRefused("storage_source_unsupported");
+   throw new MaterializationEligibilityError({
+      reason: "storage_source_unsupported",
+      message: unreadableSourceConnectionMessage(
+         persistSource,
+         connection ? (type ?? "unknown") : undefined,
+      ),
+   });
+}
+
+/** What a `storage=` build of one source starts from. */
+export interface StorageBuildRequest {
+   /**
+    * The run's cancel signal: interrupts the build's DuckDB session on abort
+    * (`interruptOnAbort`).
+    */
+   signal?: AbortSignal;
+   persistSource: PersistSource;
+   instruction: BuildInstruction;
+   manifest: Manifest;
+   environment: BuildEnvironment;
+   /**
+    * The build SQL projected to the columns the table stores, which the CTAS
+    * reads: every column the source declares, hidden ones included
+    * (`projectToStoredColumns`).
+    */
+   storedBuildSQL: string;
+   /** The build SQL unprojected, which a delta wraps in its range predicate. */
+   buildSQL: string;
+   builtEntries: Record<string, ManifestEntry>;
+   dependsOnStorageUpstream: boolean;
+   /** Applied by the passthrough itself (see {@link buildSourceIntoStorage}). */
+   queryMetadata?: QueryMetadata;
+   /** The package being built, for the build's statement_usage record. */
+   packageName?: string;
+   /** Present when any source in the run declared an incremental refresh. */
+   incremental?: IncrementalRunContext;
+   /** The source's CONTENT address — see buildOneSource's parameter of the same name. */
+   contentSourceEntityId?: string;
+   /**
+    * For an incremental extension table: the parent its refresh follows
+    * (incremental_upstream.ts), as this run holds it.
+    */
+   extensionParent?: ExtensionParent;
+   /** The plan's stored-table facts — see buildOneSource's parameter of the same name. */
+   planFacts?: ChainedPlanFacts;
+   /** The author-model lift context `buildOneSource` built for this source. */
+   lift?: ReturnType<typeof authorModelLiftContext>;
+   /**
+    * The `upstreamReuse` fields for a build that does NOT stack on a parent
+    * ({@link upstreamReuseFromManifest}).
+    */
+   baseReuse?: Pick<ManifestEntry, "upstreamReuse">;
+   /**
+    * Statements that drop this package's own leftover `name=` view at the
+    * name, run first in the transaction that creates the table
+    * (leftover_name_views.ts), so a failed build leaves the view.
+    */
+   replacesView?: string[];
+   /** See SourceBuildOptions.storedBase. */
+   storedBase?: StoredRollupBase;
+   /** See SourceBuildOptions.storedInDestination. */
+   storedInDestination?: StoredInDestination;
+   /** See SourceBuildOptions.stringReads. */
+   stringReads?: StringReads;
+   /**
+    * How each of the given string columns compares where live reads this
+    * source, for the column contract of a table built from its source
+    * (column_contract_capture.ts). Absent: unknown (`compare` `none`).
+    */
+   liveCollations?: (columns: string[]) => Promise<Map<string, Collation>>;
+   /** See SourceBuildOptions.upstreamTypes. */
+   upstreamTypes?: ReadonlyMap<string, { dialect: string; nativeType: string }>;
+   /** See SourceBuildOptions.rollup. */
+   rollup?: boolean;
+}
+
+/**
+ * A `storage=` rollup's base, stored in the rollup's destination: the entry
+ * this run holds for its table, and what the rollup's build compiles there
+ * over it (rollup_compile.ts, `StoredBaseBuild`).
+ */
+export interface StoredRollupBase {
+   baseSourceID: string;
+   baseName: string;
+   /** The base table's content address, and its entry in this run. */
+   address: string;
+   entry: ManifestEntry;
+   companion: { url: string; text: string };
+   /** The rollup's grain and measures, by their names on the base. */
+   grain: readonly string[];
+   measures: readonly string[];
+   /** Called when the build grouped the base's stored table. */
+   onStacked?: () => void;
+}
+
+/** What every stage of one source's storage build reads. */
+interface StorageBuildContext {
+   params: StorageBuildRequest;
+   planFacts: ChainedPlanFacts;
+   lift: ReturnType<typeof authorModelLiftContext>;
+   physicalTableName: string;
+   destinationName: string;
+   sourceConnection: ApiConnection;
+   destinationConnection: ApiConnection;
+   declaredColumns: ReturnType<typeof storageBuildCasts>["declaredColumns"];
+   castOptions: ReturnType<typeof storageBuildCasts>["castOptions"];
+   /**
+    * An incremental extension stacked on its parent's table in this
+    * destination: its delta, run in the destination over that table.
+    */
+   stackedRefresh?: StackedIncrementalRefresh;
+}
+
+/**
+ * The build SQL run in the source warehouse and written into the
+ * destination, its failure redacted: for a source with no stored parent to
+ * build over.
+ */
+async function buildFromWarehouse(
+   ctx: StorageBuildContext,
+   refresh: StorageIncrementalRefresh | undefined,
+): Promise<StorageBuildResult> {
+   const {
+      params,
+      physicalTableName,
+      destinationName,
+      sourceConnection,
+      destinationConnection,
+      declaredColumns,
+      castOptions,
+   } = ctx;
+   const { persistSource, environment, queryMetadata } = params;
+   try {
+      const build = () =>
+         buildSourceIntoStorage({
+            destinationName,
+            destinationConnection,
+            sourceConnection,
+            buildSQL: params.storedBuildSQL,
+            sourceCarriesAuthorSql: carriesAuthorSql(
+               sourceDefOf(persistSource),
+            ),
+            physicalTableName,
+            declaredColumns,
+            castOptions,
+            environmentPath: environment.getEnvironmentPath(),
+            queryMetadata,
+            incremental: refresh,
+            ...(params.replacesView
+               ? { replacesView: params.replacesView }
+               : {}),
+            ...(params.signal ? { signal: params.signal } : {}),
+         });
+      // A same-catalog build reads and writes only the store, so its seconds
+      // are the store's; a passthrough build's are mostly the warehouse's.
+      return isSameCatalog(sourceConnection, destinationConnection)
+         ? await withStatementUsage(
+              {
+                 environment: environment.getEnvironmentName(),
+                 connection: destinationName,
+                 surface: "build",
+                 package: params.packageName ?? params.incremental?.packageName,
+                 catalog: usageCatalog(destinationConnection),
+              },
+              build,
+           )
+         : await build();
+   } catch (err) {
+      // Kept as it is, for its code: its message names only the table.
+      if (err instanceof ContractCaptureFailedError) throw err;
+      // Redact: a federation/passthrough/attach error can echo connection
+      // detail (connstrings, service-account JSON). Strip credential VALUES
+      // but keep the message legible, since the run `error` is user-visible.
+      const safeDetail = redactConnectionSecrets(
+         errMessage(err),
+         sourceConnection,
+         destinationConnection,
+      );
+      // Whether the warehouse read was already BILLED must survive the
+      // rewrap: a scheduled retry re-pays for it every occurrence, unlike a
+      // free-to-retry attach failure.
+      // The run counts and logs the failure once, by its class
+      // (`billed_read_lost` for this one; run_telemetry.ts).
+      const alreadyBilled = err instanceof BilledReadNotCapturedError;
+      const failure =
+         `Failed to materialize source '${persistSource.name}' into ` +
+         `storage destination '${destinationName}': ${safeDetail}`;
+      throw alreadyBilled
+         ? new BilledReadNotCapturedError(failure, { cause: err })
+         : new Error(failure, { cause: err });
+   }
+}
+
+/**
+ * Count and log the stored columns a served copy will leave out or not
+ * serve as their declared type; never a refusal.
+ */
+function reportStoredColumns(
+   ctx: StorageBuildContext,
+   schema: StorageBuildResult["schema"],
+): void {
+   const { params, declaredColumns, destinationName, physicalTableName } = ctx;
+   const { persistSource } = params;
+   // A column no `type:` declares faithfully is left out of its source's
+   // declaration at bind, so only a query reading it answers live, and a
+   // table with none left is declined there: counted and logged here,
+   // never refused.
+   reportLeftOutColumns(
+      persistSource.name,
+      declarableColumns(
+         schema.flatMap((c) =>
+            c.name && c.type ? [{ name: c.name, type: c.type }] : [],
+         ),
+      ).leftOut,
+   );
+
+   // What the cast could not make faithful (a number the warehouse returned
+   // as text), or a delta applied to a table an older build typed. Not a
+   // refusal: the served copy leaves such a column off, so only queries
+   // that read it are answered live, and the package reports it.
+   const mistyped = storedColumnTypeMismatches(
+      schema.flatMap((c) =>
+         c.name && c.type ? [{ name: c.name, type: c.type }] : [],
+      ),
+      declaredColumns,
+   );
+   if (mistyped.length > 0) {
+      for (const m of mistyped) {
+         recordStoredColumnTypeMismatch("build", m.declaredType);
+      }
+      logger.warn(
+         "Storage build stored columns whose type does not serve as the declared Malloy type; queries reading them are answered live",
+         {
+            code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+            sourceName: persistSource.name,
+            destinationName,
+            physicalTableName,
+            columns: mistyped,
+         },
+      );
+   }
+}
+
+/**
+ * What follows a failed build over the stored parents: an infrastructure
+ * failure thrown as one, or the refusal for a missing upstream or a shape
+ * the parents cannot carry. Never a build from raw in its place.
+ */
+function refuseAfterStackFailure(
+   err: unknown,
+   ctx: StorageBuildContext,
+): never {
+   const {
+      params,
+      planFacts,
+      destinationName,
+      sourceConnection,
+      destinationConnection,
+   } = ctx;
+   const { persistSource } = params;
+   // Redact: a failed read-write ATTACH or CTAS can echo the SQL,
+   // catalog `password=` included, into the run `error` or the log.
+   const safeDetail = redactConnectionSecrets(
+      errMessage(err),
+      sourceConnection,
+      destinationConnection,
+   );
+   // An INFRA failure (attach, CTAS, destination down) throws as one; a
+   // missing upstream or an uncarried shape is refused below as its type.
+   // Neither is ever answered by recomputing the upstreams from raw.
+   const refusedAsItsType =
+      err instanceof ChainedUpstreamMissingError ||
+      err instanceof ChainedShapeNotCarriedError;
+   if (!refusedAsItsType && !(err instanceof MaterializationEligibilityError)) {
+      recordChainedStorageBuild("infra_failure");
+      throw new Error(
+         `Failed to materialize chained source '${persistSource.name}' ` +
+            `into storage destination '${destinationName}': ${safeDetail}`,
+      );
+   }
+   // A host-instructed build refuses a host-supplied upstream entry
+   // at the wrong tier.
+   // Only the upstreams whose own entry is at the wrong tier are named,
+   // each with its own reason: one host-supplied wrong-tier entry is
+   // enough to refuse, whatever else is missing.
+   const wrongTierUpstreams =
+      planFacts.hostInstructed && err instanceof ChainedUpstreamMissingError
+         ? err.details
+            ? err.details.filter((d) => d.detail.includes(WRONG_TIER_MARKER))
+            : // A thrower that gives no per-name reasons: the whole
+              // message is the reason for each missing upstream.
+              safeDetail.includes(WRONG_TIER_MARKER)
+              ? err.missing.map((name) => ({
+                   name,
+                   detail: safeDetail,
+                }))
+              : []
+         : [];
+   if (wrongTierUpstreams.length > 0) {
+      recordChainedStorageBuild("strict_refused");
+      throw new HostSuppliedWrongTierError(
+         persistSource.name,
+         wrongTierUpstreams,
+      );
+   }
+   // Always strict: a chained build is built over its stored upstreams or
+   // not at all, never by recomputing them from raw, whatever the run.
+   recordChainedStorageBuild("strict_refused");
+   const message =
+      `Failed to materialize chained source '${persistSource.name}' ` +
+      `into storage destination '${destinationName}' by reading its ` +
+      `materialized upstreams, and a downstream is never built by ` +
+      `recomputing its upstreams from raw: ${safeDetail}`;
+   // Re-raised as its type, so the run can classify the failure
+   // (build_failure_class.ts): a missing upstream that failed earlier in
+   // the run, or a shape no retry carries (a source that reaches the
+   // warehouse through a non-persisted source has no build over its
+   // stored upstreams, and is refused, not retried).
+   if (err instanceof ChainedUpstreamMissingError) {
+      throw new ChainedUpstreamMissingError(err.missing, message, err.details);
+   }
+   throw err instanceof ChainedPackageStaleError
+      ? new ChainedPackageStaleError(message)
+      : new ChainedShapeNotCarriedError(message);
+}
+
+/**
+ * The stored upstreams a chained build can stack on in `destinationName`, and
+ * the entries they come from: each upstream under every name for its table,
+ * only at the destination its source is declared in now, and only where the
+ * downstream's model means that source.
+ */
+function storedUpstreamsIn(
+   destinationName: string,
+   builtEntries: Record<string, ManifestEntry>,
+   environment: BuildEnvironment,
+   planFacts: ChainedPlanFacts,
+   lift: ReturnType<typeof authorModelLiftContext>,
+): {
+   upstreams: Binding[];
+   currentEntries: ReturnType<typeof currentUpstreamEntries>;
+} {
+   // Every upstream in THIS destination, under every name for its table: a
+   // rename (`source: x is daily`) reads the same table, as on the serve
+   // path. An EXTENSION adds refinements the table lacks, so it stays as
+   // written over its base. A parent in another destination is reported
+   // missing below.
+   const aliasesForBinding: Record<string, string[]> = {};
+   for (const [name, aliases] of Object.entries(
+      planFacts.aliasesBySourceName,
+   )) {
+      aliasesForBinding[name] = aliases.filter(
+         (alias) => typeof lift.contents[alias]?.extends !== "string",
+      );
+   }
+   // Only an entry at the destination its source is declared in NOW: a
+   // stored table left from before the source moved is stale.
+   const currentEntries = currentUpstreamEntries(builtEntries, planFacts);
+   // A host's reference names no source: its address's planned source
+   // names it, as the serve bindings name every entry.
+   const named = Object.fromEntries(
+      Object.entries(currentEntries).map(([address, entry]) => {
+         const name = planFacts.namesByAddress?.[address]?.[0];
+         return [
+            address,
+            entry.sourceName || !name ? entry : { ...entry, sourceName: name },
+         ];
+      }),
+   );
+   const upstreams: Binding[] = deriveServeBindings(
+      named,
+      aliasesForBinding,
+      (name) => {
+         try {
+            return destinationSchemaOf(environment.getStorageDestination(name));
+         } catch {
+            return undefined;
+         }
+      },
+      planFacts.sourceIDsFor,
+   )
+      .filter((b) => b.destinationName === destinationName)
+      // A binding names the source by NAME, so an upstream materializing
+      // another model's same-named source would stand in for this model's
+      // own and be built into the table. Kept only where the downstream's
+      // model means that source.
+      .filter((b) => bindingServesModelSource(b, lift.contents))
+      // A rollup is never an upstream (its synthesized name is in no model
+      // file). Filtering it also keeps the legible "no materialized upstream"
+      // refusal for a destination holding only rollups.
+      .filter((b) => b.kind !== "rollup");
+   return { upstreams, currentEntries: named };
+}
+
+/**
+ * The stored tables `persistSource` reads, directly or transitively, and the
+ * stops among them that are its upstreams; throws naming any upstream absent
+ * from `present`, this destination's parents, before any compile, which would
+ * report only "undefined object".
+ */
+function storedParentsReached(
+   persistSource: PersistSource,
+   destinationName: string,
+   builtEntries: Record<string, ManifestEntry>,
+   planFacts: ChainedPlanFacts,
+   lift: ReturnType<typeof authorModelLiftContext>,
+   rootAddress: string,
+   present: ReadonlySet<string>,
+): {
+   reached: ReturnType<typeof reachPersisted>;
+   stops: ReturnType<typeof reachPersisted>["persisted"];
+} {
+   // Stored tables the downstream reads, directly or transitively. One absent
+   // from this destination's parents is named here, before any compile, which
+   // would report only "undefined object".
+   const reached = reachPersisted(lift, persistSource.name, (_name, sourceID) =>
+      planFacts.persistSourceIds.has(sourceID),
+   );
+   // The stops that are upstreams: one sharing the root's address is the
+   // table being built (a persisted extension and its base), not a parent.
+   const stops = reached.persisted.filter(
+      (p) => planFacts.addressBySourceId[p.sourceID] !== rootAddress,
+   );
+   const missing = missingPersistedTables(
+      stops.map((p) => p.name),
+      planFacts.aliasesBySourceName,
+      present,
+   );
+   if (missing.length > 0) {
+      // Say where the table is, not only where it is not.
+      const where = (name: string): string => {
+         const sourceID = reached.persisted.find(
+            (p) => p.name === name,
+         )?.sourceID;
+         const address =
+            sourceID === undefined
+               ? undefined
+               : planFacts.addressBySourceId[sourceID];
+         return upstreamPlacement(
+            name,
+            address,
+            address === undefined ? undefined : builtEntries[address],
+            destinationName,
+            planFacts,
+         );
+      };
+      const details = missing.map((name) => ({ name, detail: where(name) }));
+      throw new ChainedUpstreamMissingError(
+         missing,
+         `persisted upstream of '${persistSource.name}': ` +
+            `${details.map((d) => d.detail).join("; ")} — the build cannot ` +
+            `stack on it, and the recompute that remains would rebuild the ` +
+            `stored tables its SQL inlines`,
+         details,
+      );
+   }
+   return { reached, stops };
+}
+
+/**
+ * Why a build over stored upstreams must not be computed in the destination,
+ * or undefined when it may: the destination compares strings byte-exact, so
+ * each string the build compares (its plan's `stringReads`) must compare as
+ * live does by the contract each upstream's build recorded, which may be
+ * this run's own (string_reads.ts). Nothing is probed.
+ */
+function stackCollationRefusal(
+   stringReads: StringReads | undefined,
+   upstreams: readonly {
+      sourceIDs: readonly string[];
+      entry: ManifestEntry | undefined;
+   }[],
+): string | undefined {
+   const contracts = new Map<string, ColumnContract | undefined>();
+   for (const { sourceIDs, entry } of upstreams) {
+      const contract = parseContract(entry?.contract);
+      for (const id of sourceIDs) contracts.set(id, contract);
+   }
+   return stringReadsRefusal(stringReads, contracts);
+}
+
+/**
+ * The storage tier: materialize a source into a `storage=` destination
+ * (DuckDB/DuckLake), never the source or serve connection. A source that
+ * reads a stored upstream stacks on that parent's table when it can, and is
+ * refused otherwise; a delta of an incremental
+ * table applies inside the destination session. Whether a stored table can
+ * be read is decided at bind, per source, by the served copy's stored-type
+ * plan: a table whose columns no type declares faithfully is built and
+ * answers live.
+ */
+export class StorageBuildStrategy
+   implements TierAdapter<StorageBuildRequest, StorageSite>
+{
+   readonly tier = "storage" as const;
+
+   constructor(
+      private readonly seams: {
+         /**
+          * Stack a chained source on its parents. The service routes this
+          * through its collaborators, so a spec can hand it one; absent,
+          * this adapter's own.
+          */
+         buildDownstreamViaParents?: StorageBuildStrategy["buildDownstreamViaParents"];
+      } = {},
+   ) {}
+
+   /**
+    * Drop the table on an isolated read-write session on its destination
+    * (see {@link dropStorageTable}), and in the same session its backup
+    * name, which an earlier release's `name=` view replacement used.
+    */
+   async drop(site: StorageSite, table: DroppedTable): Promise<void> {
+      try {
+         await dropStorageTable({
+            destinationName: site.destinationName,
+            destinationConnection: site.destinationConnection,
+            physicalTableName: table.physicalTableName,
+            environmentPath: site.environmentPath,
+            ...(table.leftoversOf !== undefined
+               ? {
+                    alsoDrop: [
+                       `${table.physicalTableName}${backupSuffix(table.leftoversOf)}`,
+                    ],
+                 }
+               : {}),
+         });
+      } catch (err) {
+         if (!table.onDropFailed) throw err;
+         await table.onDropFailed(err);
+      }
+   }
+
+   /**
+    * On an isolated read-write session with the destination attached; a
+    * destination it cannot reach throws, which the caller reads as unknown.
+    */
+   checkKey(
+      site: StorageSite,
+      check: KeyCheck,
+   ): Promise<KeyCheckRecord | undefined> {
+      return withDestinationSession(site, { purpose: "view" }, (session) =>
+         runKeyCheck(check, session as unknown as MalloyConnection),
+      );
+   }
+
+   /**
+    * The SQL of a stored table's key check over `keyColumn`, reading the
+    * table where it lives in the destination.
+    */
+   keyCheckSql(
+      site: Pick<StorageSite, "destinationName" | "destinationConnection">,
+      physicalTableName: string,
+      keyColumn: string,
+   ): string {
+      const path = quoteTablePath(
+         storageTablePath(
+            site.destinationName,
+            physicalTableName,
+            destinationSchemaOf(site.destinationConnection),
+         ),
+         STORAGE_DIALECT,
+      );
+      return storedKeyCheckSql(path, keyColumn);
+   }
+
+   /**
+    * Materialize a source into a `storage=` destination (DuckDB/DuckLake) via a
+    * query-passthrough CTAS on a build-scoped session. The entry records the
+    * captured DuckDB schema for the serve transform; `connectionName` names the
+    * SOURCE warehouse, `storageDestinationName` where the table lives.
+    */
+   async build(params: StorageBuildRequest): Promise<ManifestEntry> {
+      const {
+         persistSource,
+         instruction,
+         manifest,
+         environment,
+         dependsOnStorageUpstream,
+         planFacts = NO_PLAN_FACTS,
+         baseReuse = {},
+         lift = authorModelLiftContext(
+            plannedModelDefOf(params.persistSource),
+            compiledTextReader(
+               plannedModelDefOf(params.persistSource),
+               params.environment.getPackagePath?.(),
+            ),
+         ),
+      } = params;
+      const sourceEntityId = instruction.sourceEntityId;
+      const physicalTableName = instruction.physicalTableName;
+      const destinationName = instruction.destination!;
+      // From the destination list, never the connection list: an unconfigured
+      // destination must fail (422) rather than resolve a same-named connection
+      // and write a tenant's own warehouse.
+      const destinationConnection =
+         environment.getStorageDestination(destinationName);
+      const sourceConnection = storageSourceConnection(
+         environment,
+         persistSource,
+         destinationConnection,
+      );
+
+      const { incrementalRefresh, refresh, stackedRefresh } =
+         await this.refreshOf(params, destinationConnection);
+
+      // Store each column as the type Malloy declares where one DuckDB type
+      // is faithful to it; checked again below.
+      const { declaredColumns, castOptions } = storageBuildCasts(persistSource);
+      const ctx: StorageBuildContext = {
+         params,
+         planFacts,
+         lift,
+         physicalTableName,
+         destinationName,
+         sourceConnection,
+         destinationConnection,
+         declaredColumns,
+         castOptions,
+         ...(stackedRefresh ? { stackedRefresh } : {}),
+      };
+
+      const startTime = performance.now();
+      let result: StorageBuildResult | undefined;
+
+      // Stack on the parent: read its STORED lake table, so the downstream is
+      // a pure function of the parent's rows. A build that cannot is refused,
+      // never recomputed from raw (refuseAfterStackFailure).
+      // A rollup over its base's stored table: grouped there when it can be.
+      let stackedOnBase = false;
+      if (params.storedInDestination) {
+         result = await this.buildInDestination(
+            ctx,
+            params.storedInDestination,
+         );
+      } else if (dependsOnStorageUpstream) {
+         result = await this.stackOnParents(ctx);
+      } else if (params.storedBase) {
+         result = await this.stackRollupOnStoredBase(ctx, params.storedBase);
+         stackedOnBase = true;
+         params.storedBase.onStacked?.();
+      }
+
+      // Nothing stored to build over: run the build SQL in the source
+      // warehouse and CTAS it into the destination.
+      if (!result) {
+         result = await buildFromWarehouse(ctx, refresh);
+      }
+
+      reportStoredColumns(ctx, result.schema);
+
+      // Make this table visible to downstream sources built later in this run,
+      // so a chained storage source can stack on it (above).
+      manifest.update(sourceEntityId, { tableName: physicalTableName });
+
+      const durationMs = Math.round(performance.now() - startTime);
+      const contract = await storageContract({
+         table: physicalTableName,
+         declared: declaredColumns,
+         ...(params.upstreamTypes
+            ? { upstreamTypes: params.upstreamTypes }
+            : {}),
+         schema: result.schema,
+         collations: result.collations,
+         ...(stackedOnBase && params.storedBase
+            ? { stackedOn: [params.storedBase.entry] }
+            : result.readFrom
+              ? {
+                   stackedOn: result.readFrom.map(
+                      (a) => params.builtEntries[a],
+                   ),
+                }
+              : params.liveCollations
+                ? { live: params.liveCollations }
+                : {}),
+      });
+      // The stored tables it read: in its destination when it stacked on
+      // them, else the warehouse tables its SQL read.
+      const builtFrom =
+         stackedOnBase && params.storedBase
+            ? builtFromAddresses(
+                 [params.storedBase.address],
+                 params.builtEntries,
+              )
+            : result.readFrom
+              ? builtFromAddresses(result.readFrom, params.builtEntries)
+              : builtFromOf(
+                   params.buildSQL,
+                   manifest.buildManifest,
+                   params.builtEntries,
+                   sourceEntityId,
+                );
+      return {
+         sourceEntityId,
+         sourceName: persistSource.name,
+         materializedTableId: instruction.materializedTableId,
+         physicalTableName,
+         connectionName: persistSource.connectionName,
+         storageDestinationName: result.storageDestinationName,
+         schema: result.schema,
+         realization: "COPY",
+         rowCount: result.rowCount,
+         // A refresh reports the APPLY's duration, not the session setup. A
+         // SKIP reports null rather than skewing the series as a fast build.
+         buildDurationMs: result.refresh
+            ? (result.refresh.durationMs ?? null)
+            : durationMs,
+         // Incremental coverage and what this run did, as for a database
+         // table. Absent for a non-incremental source.
+         ...ledgerFields(
+            incrementalRefresh?.lineage,
+            result.refresh?.coveredThrough ?? result.seededThrough,
+            ledgerExtensionKeys(
+               incrementalRefresh,
+               instruction.reseed,
+               incrementalRefresh &&
+                  advancedByOf(
+                     incrementalRefresh.context,
+                     incrementalRefresh.lineage,
+                     result.refresh?.refresh ?? "full",
+                  ),
+               incrementalRefresh
+                  ? (result.refresh?.refresh ?? "full")
+                  : undefined,
+            ),
+         ),
+         ...refreshFields(
+            result.refresh?.refresh ??
+               (incrementalRefresh ? "full" : undefined),
+         ),
+         ...lateRowsFields(result.refresh?.lateRows),
+         // How stored upstreams were read: a chained attempt answers for
+         // itself; otherwise the manifest's answer for the passthrough SQL.
+         ...(dependsOnStorageUpstream
+            ? { upstreamReuse: "reused" as const }
+            : stackedOnBase || params.storedInDestination
+              ? { upstreamReuse: "reused" as const }
+              : // A rollup that did not stack read the warehouse, whatever
+                // the classification of its author's text says.
+                params.rollup
+                ? {}
+                : baseReuse),
+         // SCANNED, not billed, matching the database path's runStats
+         // (totalBytesProcessed), so the field sums consistently across sources.
+         // Null when the read reported nothing: a build with an empty metadata
+         // bag, since the label is what makes BigQuery's read report.
+         queryCostBytes: result.readCost?.bytesScanned ?? null,
+         contract,
+         ...(builtFrom ? { builtFrom } : {}),
+      };
+   }
+
+   /**
+    * The incremental refresh a stored table's build takes: the delta the
+    * destination applies, or none. A chained source always rebuilds, its
+    * boundary cleared first.
+    */
+   private async refreshOf(
+      params: StorageBuildRequest,
+      destinationConnection: ApiConnection,
+   ): Promise<{
+      incrementalRefresh: ReturnType<typeof sourceIncrementalRefresh>;
+      refresh: StorageIncrementalRefresh | undefined;
+      stackedRefresh?: StackedIncrementalRefresh;
+   }> {
+      const {
+         persistSource,
+         instruction,
+         dependsOnStorageUpstream,
+         queryMetadata,
+         incremental,
+      } = params;
+      const physicalTableName = instruction.physicalTableName;
+      const destinationName = instruction.destination!;
+
+      // Incremental refresh of a STORED table: the warehouse computes the delta,
+      // the destination engine applies it; seed-vs-delta is the shared planner's.
+      const incrementalRefresh = sourceIncrementalRefresh(
+         incremental,
+         persistSource,
+         {
+            physicalTableName,
+            storageDestinationName: destinationName,
+            sourceEntityId: params.contentSourceEntityId,
+            ...(params.extensionParent
+               ? { parent: params.extensionParent }
+               : {}),
+         },
+      );
+      // An incremental extension stacked on its parent's table here: its
+      // delta runs over that table in the destination, following the
+      // parent's step (extension chains, case 2).
+      if (
+         incrementalRefresh !== undefined &&
+         dependsOnStorageUpstream &&
+         params.extensionParent !== undefined &&
+         storedExtensionOf(
+            params.planFacts?.materializePlans?.[persistSource.sourceID],
+         ) !== undefined
+      ) {
+         return {
+            incrementalRefresh,
+            refresh: undefined,
+            stackedRefresh: stackedRefreshFor({
+               ...incrementalRefresh,
+               persistSource,
+               instruction,
+               destinationName,
+               destinationSchema: destinationSchemaOf(destinationConnection),
+               physicalTableName,
+            }),
+         };
+      }
+      // A CHAINED stored source always rebuilds: an incremental parent's delta
+      // can restate rows BELOW this source's frontier, which a half-open range
+      // never revisits. Reported under its own reason code.
+      const chainedSeed =
+         incrementalRefresh !== undefined && dependsOnStorageUpstream;
+      if (chainedSeed) {
+         reportIncrementalStep({
+            step: {
+               mode: "seed",
+               reasonCode: "chained_storage",
+               reason:
+                  `the source reads a storage-materialized upstream, and a delta ` +
+                  `over a stored parent is not supported yet`,
+            },
+            sourceName: persistSource.name,
+            packageName: incrementalRefresh.context.packageName,
+            physicalTableName,
+         });
+         // Clear the boundary before the rebuild, as the delta path does. A
+         // source that becomes chained keeps its name and content address.
+         await resetLedger(
+            incrementalRefresh.context,
+            incrementalRefresh.lineage,
+         );
+      }
+      const refresh: StorageIncrementalRefresh | undefined =
+         incrementalRefresh && !chainedSeed
+            ? storageRefreshFor({
+                 ...incrementalRefresh,
+                 persistSource,
+                 instruction,
+                 destinationName,
+                 destinationSchema: destinationSchemaOf(destinationConnection),
+                 physicalTableName,
+                 buildSQL: params.buildSQL,
+                 queryMetadata,
+              })
+            : undefined;
+      return { incrementalRefresh, refresh };
+   }
+
+   /**
+    * Build over the stored parents, in the one destination. Refuses, or
+    * throws an infrastructure failure, where it cannot
+    * ({@link refuseAfterStackFailure}).
+    */
+   private async stackOnParents(
+      ctx: StorageBuildContext,
+   ): Promise<StorageBuildResult> {
+      const {
+         params,
+         planFacts,
+         lift,
+         physicalTableName,
+         destinationName,
+         destinationConnection,
+      } = ctx;
+      const { persistSource, instruction, environment, builtEntries } = params;
+      // An extension table builds over its parent's stored table from
+      // the chain its plan carries, never by lifting author text by name.
+      const extension = storedExtensionOf(
+         planFacts.materializePlans?.[persistSource.sourceID],
+      );
+      try {
+         // Reads stored parents and writes in the one destination, so its
+         // seconds are the store's, as a same-catalog build's are.
+         const result = await withStatementUsage(
+            {
+               environment: environment.getEnvironmentName(),
+               connection: destinationName,
+               surface: "build",
+               package: params.packageName ?? params.incremental?.packageName,
+               catalog: usageCatalog(destinationConnection),
+            },
+            () =>
+               extension
+                  ? this.buildExtensionOverStoredParent(
+                       persistSource,
+                       extension,
+                       destinationName,
+                       destinationConnection,
+                       builtEntries,
+                       environment,
+                       physicalTableName,
+                       planFacts,
+                       params.replacesView,
+                       ctx.stackedRefresh,
+                    )
+                  : (
+                       this.seams.buildDownstreamViaParents ??
+                       this.buildDownstreamViaParents.bind(this)
+                    )(
+                       persistSource,
+                       destinationName,
+                       destinationConnection,
+                       builtEntries,
+                       environment,
+                       physicalTableName,
+                       planFacts,
+                       params.contentSourceEntityId ??
+                          instruction.sourceEntityId,
+                       lift,
+                       {
+                          ...(params.replacesView
+                             ? { replacesView: params.replacesView }
+                             : {}),
+                          ...(params.stringReads
+                             ? { stringReads: params.stringReads }
+                             : {}),
+                       },
+                    ),
+         );
+         recordChainedStorageBuild("parent_reuse");
+         return result;
+      } catch (err) {
+         return refuseAfterStackFailure(err, ctx);
+      }
+   }
+
+   /**
+    * Build a `storage=` rollup over its base's stored table in the same
+    * destination: the base re-rooted on that table as the served copy
+    * re-roots it for a query (the host port's `chainBuildText`), and the
+    * rollup's own build file over it, compiled and run on the destination
+    * alone, so nothing reads the warehouse. Only a table with the columns,
+    * and the column types, the planned (warehouse) build writes is kept.
+    * A rollup that cannot be built that way is refused
+    * (ChainedShapeNotCarriedError), never built from the warehouse: the plan
+    * built it over its base's table.
+    *
+    * The plan has already refused a rollup whose text cannot be written
+    * over its base's table, and one whose compared strings a bound base's
+    * contract does not compare as live does. What is judged here needs the
+    * run: the base's table as this run holds it (its columns, which the
+    * re-root declares and the compile reads, and, for a base built in this
+    * run, the contract it just recorded).
+    */
+   async stackRollupOnStoredBase(
+      ctx: StorageBuildContext,
+      base: StoredRollupBase,
+   ): Promise<StorageBuildResult> {
+      const { params, destinationName, destinationConnection } = ctx;
+      const { persistSource, environment, physicalTableName } = {
+         ...params,
+         physicalTableName: ctx.physicalTableName,
+      };
+      const refusal = (why: string) =>
+         `'${persistSource.name}' was not built over its base ` +
+         `'${base.baseName}''s table in '${destinationName}': ${why}, ` +
+         `and a downstream is never built by recomputing its upstreams ` +
+         `from raw`;
+      const refused = (why: string) =>
+         new ChainedShapeNotCarriedError(refusal(why));
+      if (!environment.chainBuildText) {
+         throw refused("this host compiles no served copy to build it over");
+      }
+      const collation = stackCollationRefusal(params.stringReads, [
+         { sourceIDs: [base.baseSourceID], entry: base.entry },
+      ]);
+      if (collation !== undefined) {
+         throw refused(
+            unstoredReadRefusal(params.stringReads) ??
+               `it compares a string by a collation the destination cannot ` +
+                  `reproduce: ${collation}`,
+         );
+      }
+      const text = environment.chainBuildText(
+         chainRequest(
+            persistSource,
+            destinationName,
+            destinationConnection,
+            [
+               {
+                  // Bound under the base's own name, as the plan wrote its
+                  // text (`storedBaseDecline`): an `extend` that inherits its
+                  // parent's `#@ persist` and adds no query shares the
+                  // parent's table, whose entry names the parent.
+                  entry: { ...base.entry, sourceName: base.baseName },
+                  names: { [base.baseName]: [base.baseSourceID] },
+               },
+            ],
+            { baseSourceID: base.baseSourceID, companion: base.companion },
+         ),
+      );
+      if ("declined" in text) {
+         // A package serving a model older than its files is said to be
+         // that, as the stacking path says it, not a base that cannot be
+         // re-rooted.
+         throw text.code === "package_stale"
+            ? new ChainedPackageStaleError(refusal(text.declined))
+            : refused("its base cannot be re-rooted on that table");
+      }
+      try {
+         const result = await withStatementUsage(
+            {
+               environment: environment.getEnvironmentName(),
+               connection: destinationName,
+               surface: "build",
+               package: params.packageName ?? params.incremental?.packageName,
+               catalog: usageCatalog(destinationConnection),
+            },
+            () =>
+               buildDownstreamIntoStorage({
+                  destinationName,
+                  destinationConnection,
+                  model: {
+                     files: text.files,
+                     entry: text.entry,
+                     leaveOutWithin: text.rerootedSpans,
+                  },
+                  connectionName: text.connection,
+                  downstreamName: text.downstreamName,
+                  plannedSource: persistSource,
+                  sameDeclaredTypes: true,
+                  givenFree: true,
+                  virtualMap: text.virtualMap,
+                  physicalTableName,
+                  environmentPath: environment.getEnvironmentPath(),
+                  ...(params.replacesView
+                     ? { replacesView: params.replacesView }
+                     : {}),
+               }),
+         );
+         recordChainedStorageBuild("parent_reuse");
+         return result;
+      } catch (err) {
+         if (!(err instanceof MaterializationEligibilityError)) throw err;
+         throw refused(err.message);
+      }
+   }
+
+   /**
+    * Stack on the parent: build a chained storage source over its upstreams'
+    * tables in the SAME destination, from the text the host port's
+    * `chainBuildText` writes (the author's files, each upstream re-rooted on
+    * its table as the served copy re-roots it, compiled on the destination
+    * alone), through {@link buildDownstreamIntoStorage}.
+    *
+    * Throws (the caller then refuses) when an upstream it
+    * reads has no table in this destination, it reads the warehouse, the
+    * package writes no text, or the text does not compile.
+    */
+   async buildDownstreamViaParents(
+      persistSource: PersistSource,
+      destinationName: string,
+      destinationConnection: ApiConnection,
+      builtEntries: Record<string, ManifestEntry>,
+      environment: BuildEnvironment,
+      physicalTableName: string,
+      planFacts: ChainedPlanFacts,
+      /** The content address being built; a walk stop sharing it is this source's own table. */
+      rootAddress: string,
+      lift: ReturnType<typeof authorModelLiftContext>,
+      /** See StorageBuildRequest's fields of the same names. */
+      options: { replacesView?: string[]; stringReads?: StringReads } = {},
+   ): Promise<StorageBuildResult> {
+      const { replacesView } = options;
+      const { upstreams, currentEntries } = storedUpstreamsIn(
+         destinationName,
+         builtEntries,
+         environment,
+         planFacts,
+         lift,
+      );
+      const { reached, stops } = storedParentsReached(
+         persistSource,
+         destinationName,
+         builtEntries,
+         planFacts,
+         lift,
+         rootAddress,
+         new Set(upstreams.map((b) => b.sourceName)),
+      );
+      // A path to the source warehouse (a joined table, a SQL source) has no
+      // stored stand-in, so no build over the parents can say it. Decided
+      // from the model, not the compile, so "cannot express" is refused as
+      // ineligible rather than as a shape it could not carry.
+      if (reached.raw) {
+         throw new MaterializationEligibilityError({
+            message:
+               `'${persistSource.name}' reads the source warehouse ` +
+               `(${reached.rawLeaves.join(", ")}) through ` +
+               `${reached.rawVia.map((n) => `'${n}'`).join(", ")}, which no ` +
+               `stored table can stand in for`,
+         });
+      }
+      if (upstreams.length === 0) {
+         throw new ChainedShapeNotCarriedError(
+            "no materialized upstream is available in this destination to build on",
+         );
+      }
+      // An `extend` of a stored source that adds no query of its own runs
+      // that source's query: a build from its definition writes its rows. Over its table
+      // that is a projection, which no text written over the re-rooted
+      // upstream can say (the re-root is a table, and Malloy persists only a
+      // query-shaped source).
+      const sameBuild = sameBuildUpstream(
+         persistSource,
+         stops,
+         upstreams,
+         planFacts,
+      );
+      const readFrom = { readFrom: upstreams.map((b) => b.virtualHandle) };
+      if (sameBuild) {
+         return withReadFrom(
+            readFrom,
+            buildProjectionIntoStorage({
+               destinationName,
+               destinationConnection,
+               downstream: persistSource,
+               columns: sameBuild.columns,
+               upstreamTable: quoteManifestTablePath(
+                  sameBuild.upstream.tablePath,
+                  STORAGE_DIALECT,
+               ),
+               physicalTableName,
+               environmentPath: environment.getEnvironmentPath(),
+               ...(replacesView ? { replacesView } : {}),
+            }),
+         );
+      }
+      const notCarried = (detail: string) =>
+         new ChainedShapeNotCarriedError(
+            `'${persistSource.name}' reaches only stored upstreams ` +
+               `(${stops.map((p) => `'${p.name}'`).join(", ")}), but ` +
+               `the build could not express it over them — a refinement ` +
+               `declared on a stored upstream that the build does not ` +
+               `re-declare, or a construct the destination's dialect lacks: ` +
+               detail,
+         );
+      // The served copy writes the text: each upstream re-rooted on its table
+      // here as a query would read it, from this run's entries alone.
+      if (!environment.chainBuildText) {
+         throw notCarried("this package has no served copy to write it from");
+      }
+      // The upstreams it reads: their recorded contracts judge the strings
+      // it compares (this run's own when it built them).
+      const read = upstreams.filter((b) =>
+         (b.sourceIDs ?? []).some((id) => stops.some((p) => p.sourceID === id)),
+      );
+      const collation = stackCollationRefusal(
+         options.stringReads,
+         read.map((b) => ({
+            sourceIDs: b.sourceIDs ?? [],
+            entry: currentEntries[b.virtualHandle],
+         })),
+      );
+      // No build over the parents gives live's rows: refused, never
+      // recomputed from raw.
+      if (collation !== undefined) {
+         throw new MaterializationEligibilityError({
+            message:
+               `'${persistSource.name}' compares a string over its stored ` +
+               `upstreams (${stops.map((p) => `'${p.name}'`).join(", ")}) ` +
+               `that the destination, byte-exact, would compare otherwise ` +
+               `than its source does: ${collation}`,
+         });
+      }
+      const byAddress = new Map<string, Record<string, string[] | undefined>>();
+      for (const b of upstreams) {
+         const names = byAddress.get(b.virtualHandle) ?? {};
+         names[b.sourceName] = b.sourceIDs;
+         byAddress.set(b.virtualHandle, names);
+      }
+      const text = environment.chainBuildText(
+         chainRequest(
+            persistSource,
+            destinationName,
+            destinationConnection,
+            [...byAddress].map(([address, names]) => ({
+               entry: currentEntries[address],
+               names,
+            })),
+         ),
+      );
+      if ("declined" in text) {
+         throw text.code === "package_stale"
+            ? new ChainedPackageStaleError(
+                 `'${persistSource.name}' was not stacked on its stored ` +
+                    `upstreams: ${text.declined}`,
+              )
+            : notCarried(text.declined);
+      }
+      try {
+         return await withReadFrom(
+            readFrom,
+            buildDownstreamIntoStorage({
+               destinationName,
+               destinationConnection,
+               model: {
+                  files: text.files,
+                  entry: text.entry,
+                  leaveOutWithin: text.rerootedSpans,
+               },
+               connectionName: text.connection,
+               downstreamName: text.downstreamName,
+               // A build from the definition writes the planned source's stored columns, hidden
+               // ones included; a stacked table must hold each of them.
+               plannedSource: persistSource,
+               virtualMap: text.virtualMap,
+               physicalTableName,
+               environmentPath: environment.getEnvironmentPath(),
+               ...(replacesView ? { replacesView } : {}),
+            }),
+         );
+      } catch (err) {
+         // The model reached only stored parents (checked above), so a shape
+         // failure here is one the build could not carry, not one the
+         // destination cannot express. Infrastructure failures pass through.
+         if (err instanceof MaterializationEligibilityError) {
+            throw notCarried(err.message);
+         }
+         throw err;
+      }
+   }
+
+   /**
+    * Build a `storage=` view or query from the text its plan proved over
+    * its upstreams' stored tables in this destination
+    * ({@link StoredInDestination}), each stand-in read as that upstream's
+    * table in this run. An upstream with no current table here is
+    * {@link ChainedUpstreamMissingError}; one whose recorded columns are not
+    * the ones the plan stood in for it is {@link SchemaIncompatibleError},
+    * reported to the drift handler, which derives the plan again from the
+    * tables as they are. Never recomputed from raw.
+    */
+   async buildInDestination(
+      ctx: StorageBuildContext,
+      stored: StoredInDestination,
+   ): Promise<StorageBuildResult> {
+      const { params, destinationName, destinationConnection } = ctx;
+      const { persistSource, builtEntries, environment } = params;
+      const planFacts = params.planFacts ?? NO_PLAN_FACTS;
+      const handles = new Map<string, string>();
+      const addresses: string[] = [];
+      const judged: { sourceIDs: string[]; entry: ManifestEntry }[] = [];
+      for (const u of stored.upstreams) {
+         const address = planFacts.addressBySourceId[u.sourceID];
+         const entry =
+            address === undefined ? undefined : builtEntries[address];
+         const name =
+            (address && planFacts.namesByAddress?.[address]?.[0]) ??
+            splitSourceID(u.sourceID)?.name ??
+            u.sourceID;
+         if (
+            address === undefined ||
+            entry === undefined ||
+            !entry.physicalTableName ||
+            !upstreamEntryIsCurrent(address, entry, planFacts) ||
+            entry.storageDestinationName !== destinationName
+         ) {
+            const detail = upstreamPlacement(
+               name,
+               address,
+               entry,
+               destinationName,
+               planFacts,
+            );
+            throw new ChainedUpstreamMissingError(
+               [name],
+               `persisted upstream of '${persistSource.name}': ${detail} — ` +
+                  `it is built over that table or not at all, never by ` +
+                  `recomputing its upstreams from raw`,
+               [{ name, detail }],
+            );
+         }
+         const moved = standInMoved(entry, u.columns);
+         if (moved !== undefined) {
+            // The plan is stale, not the upstream (which may be just
+            // rebuilt, as it should be): derived again, flagging no table.
+            environment.reportIncompatible?.([]);
+            throw new SchemaIncompatibleError(
+               `'${persistSource.name}' was not built over its upstream ` +
+                  `'${name}''s table ${entry.physicalTableName} in ` +
+                  `'${destinationName}': ${moved}, not what its plan was ` +
+                  `proven over. The plan is derived again from the table as ` +
+                  `it is; a later build proves it or refuses it at plan.`,
+            );
+         }
+         handles.set(
+            u.handle,
+            quoteManifestTablePath(
+               storageTablePath(
+                  destinationName,
+                  entry.physicalTableName,
+                  destinationSchemaOf(destinationConnection),
+               ),
+               STORAGE_DIALECT,
+            ),
+         );
+         addresses.push(address);
+         judged.push({ sourceIDs: [u.sourceID], entry });
+      }
+      const collation = stackCollationRefusal(params.stringReads, judged);
+      if (collation !== undefined) {
+         const unstored = unstoredReadRefusal(params.stringReads);
+         throw new ChainedShapeNotCarriedError(
+            `'${persistSource.name}' was not built over its upstreams' ` +
+               `tables in '${destinationName}': ` +
+               (unstored ??
+                  `it compares a string by a collation the destination ` +
+                     `cannot reproduce (${collation})`) +
+               `, and a view or query is never built by recomputing its ` +
+               `upstreams from raw`,
+         );
+      }
+      return await withReadFrom(
+         { readFrom: addresses },
+         buildDownstreamIntoStorage({
+            destinationName,
+            destinationConnection,
+            model: {
+               files: new Map(stored.files),
+               entry: stored.entry,
+               leaveOutWithin: stored.rerootedSpans,
+            },
+            connectionName: stored.connection,
+            downstreamName: stored.downstreamName,
+            plannedSource: persistSource,
+            sameDeclaredTypes: true,
+            givenFree: true,
+            virtualMap: new Map([[stored.connection, handles]]),
+            physicalTableName: ctx.physicalTableName,
+            environmentPath: environment.getEnvironmentPath(),
+            ...(params.replacesView
+               ? { replacesView: params.replacesView }
+               : {}),
+         }),
+      );
+   }
+
+   /**
+    * Build a `storage=` extension table over its parent's stored table in the
+    * same destination: the parent's build source declared as the
+    * virtual source of that table, the extension's chain over it
+    * ({@link extensionOverStoredModel}), compiled and run on the destination
+    * alone, so nothing reads the warehouse. A parent with no current table in
+    * this destination is {@link ChainedUpstreamMissingError}, and a chain the
+    * destination cannot compile (the plan checked it can) is
+    * {@link ChainedShapeNotCarriedError}: the caller refuses, as for any
+    * chained build.
+    */
+   async buildExtensionOverStoredParent(
+      persistSource: PersistSource,
+      extension: StoredExtension,
+      destinationName: string,
+      destinationConnection: ApiConnection,
+      builtEntries: Record<string, ManifestEntry>,
+      environment: BuildEnvironment,
+      physicalTableName: string,
+      planFacts: ChainedPlanFacts,
+      /** See StorageBuildRequest.replacesView. */
+      replacesView?: string[],
+      /** An incremental extension's delta over the parent's table. */
+      incremental?: StackedIncrementalRefresh,
+   ): Promise<StorageBuildResult> {
+      const { plan, parent, chain } = extension;
+      const address = planFacts.addressBySourceId[parent.sourceID];
+      const entry = address === undefined ? undefined : builtEntries[address];
+      // The destination the parent's table is in: this build's own, or,
+      // for a parent in another destination, that one, attached read-only.
+      const parentDestination =
+         parent.mode.tier === "across_destinations"
+            ? parent.mode.parentDestination
+            : destinationName;
+      if (
+         address === undefined ||
+         entry === undefined ||
+         parentDestination === undefined ||
+         !upstreamEntryIsCurrent(address, entry, planFacts) ||
+         entry.storageDestinationName !== parentDestination ||
+         !entry.schema?.length
+      ) {
+         const detail = upstreamPlacement(
+            parent.sourceName,
+            address,
+            entry,
+            parentDestination ?? destinationName,
+            planFacts,
+         );
+         throw new ChainedUpstreamMissingError(
+            [parent.sourceName],
+            `persisted upstream of '${persistSource.name}': ${detail} — the ` +
+               `build cannot stack on it, and the recompute that remains ` +
+               `would rebuild the stored table its SQL inlines`,
+            [{ name: parent.sourceName, detail }],
+         );
+      }
+      const parentConnection =
+         parentDestination === destinationName
+            ? destinationConnection
+            : environment.getStorageDestination(parentDestination);
+      const binding: Binding = {
+         kind: "persist",
+         tier: "storage",
+         sourceName: chain.parentBuildSourceName,
+         destinationName: parentDestination,
+         virtualHandle: address,
+         tablePath: storageTablePath(
+            parentDestination,
+            entry.physicalTableName,
+            destinationSchemaOf(parentConnection),
+         ),
+         schema: entry.schema
+            .filter((c) => c.name && c.type)
+            .map((c) => ({ name: c.name as string, type: c.type as string })),
+      };
+      // A parent column no `type:` declares faithfully is left out: the
+      // extension's build selects its columns by name, so one reading it does
+      // not compile and is refused, as for any chain it cannot carry.
+      const { declared, leftOut } = declarableColumns(binding.schema);
+      reportLeftOutColumns(parent.sourceName, leftOut);
+      try {
+         return await withReadFrom(
+            { readFrom: [address] },
+            buildDownstreamIntoStorage({
+               destinationName,
+               destinationConnection,
+               model: oneFileModel(
+                  extensionOverStoredModel({
+                     plan,
+                     chain,
+                     connectionName: destinationName,
+                     virtualHandle: address,
+                     columns: declared.map((c) => ({
+                        name: c.name,
+                        type: c.malloyType,
+                     })),
+                  }),
+               ),
+               downstreamName: plan.buildSourceName,
+               plannedSource: persistSource,
+               virtualMap: new Map([
+                  [
+                     destinationName,
+                     new Map([
+                        [
+                           binding.virtualHandle,
+                           quoteManifestTablePath(
+                              binding.tablePath,
+                              STORAGE_DIALECT,
+                           ),
+                        ],
+                     ]),
+                  ],
+               ]),
+               physicalTableName,
+               environmentPath: environment.getEnvironmentPath(),
+               ...(replacesView ? { replacesView } : {}),
+               ...(parentDestination !== destinationName
+                  ? {
+                       readOnly: [
+                          {
+                             destinationName: parentDestination,
+                             destinationConnection: parentConnection,
+                          },
+                       ],
+                    }
+                  : {}),
+               ...(incremental ? { incremental } : {}),
+            }),
+         );
+      } catch (err) {
+         if (!(err instanceof MaterializationEligibilityError)) throw err;
+         // Its text names the generated sources; logged, never returned.
+         logger.warn(
+            "A storage= extension table did not build over its parent's stored table",
+            { sourceName: persistSource.name, code: errorCodeOf(err) },
+         );
+         throw new ChainedShapeNotCarriedError(
+            `'${persistSource.name}' could not be built over the stored table ` +
+               `of '${parent.sourceName}' in destination '${destinationName}'`,
+         );
+      }
+   }
+}
+
+/**
+ * The stored upstream whose build is `persistSource`'s own, and the columns
+ * `persistSource` stores, when its table can be written as a projection of
+ * that upstream's: one compiler key (the same SQL on the same connection, so
+ * a recompute writes the same rows), at another address (folded apart by a
+ * `name=` or a projection, so its own table), each stored column in the
+ * upstream's table, none of them one DuckLake holds rounded. Undefined
+ * otherwise, and the build is written over the re-rooted upstreams.
+ */
+function sameBuildUpstream(
+   persistSource: PersistSource,
+   stops: readonly { name: string; sourceID: string }[],
+   upstreams: readonly Binding[],
+   planFacts: ChainedPlanFacts,
+): { upstream: Binding; columns: string[] } | undefined {
+   const key = planFacts.compilerKeyBySourceId[persistSource.sourceID];
+   if (key === undefined) return undefined;
+   const ownAddress = planFacts.addressBySourceId[persistSource.sourceID];
+   let columns: string[];
+   try {
+      columns = storedColumnNames(persistSource);
+   } catch {
+      return undefined;
+   }
+   for (const stop of stops) {
+      const address = planFacts.addressBySourceId[stop.sourceID];
+      if (
+         planFacts.compilerKeyBySourceId[stop.sourceID] !== key ||
+         address === undefined ||
+         address === ownAddress
+      ) {
+         continue;
+      }
+      const upstream = upstreams.find(
+         (b) =>
+            b.virtualHandle === address &&
+            (b.sourceIDs?.includes(stop.sourceID) ??
+               b.sourceName === stop.name),
+      );
+      if (!upstream) continue;
+      const held = new Map(upstream.schema.map((c) => [c.name, c.type]));
+      if (
+         columns.every((c) => {
+            const type = held.get(c);
+            return type !== undefined && !holdsDucklakeDouble(type);
+         })
+      ) {
+         return { upstream, columns };
+      }
+   }
+   return undefined;
+}
+
+/** A `storage=` extension table and the parent it builds over. */
+interface StoredExtension {
+   plan: MaterializePlan;
+   parent: MaterializeParent;
+   chain: StoredChain;
+}
+
+/** `plan` as a {@link StoredExtension}, when its build reads a stored parent. */
+function storedExtensionOf(
+   plan: MaterializePlan | undefined,
+): StoredExtension | undefined {
+   const parent = plan?.buildsOver;
+   const chain = parent?.overStored;
+   return plan && parent && chain ? { plan, parent, chain } : undefined;
+}
+
+/**
+ * Where a persisted upstream's table is, for a chained build that cannot
+ * stack on it in `destinationName`: at the wrong tier, without a column list,
+ * in another destination, outside any destination, or nowhere this build has.
+ */
+function upstreamPlacement(
+   name: string,
+   address: string | undefined,
+   entry: ManifestEntry | undefined,
+   destinationName: string,
+   planFacts: ChainedPlanFacts,
+): string {
+   if (
+      entry !== undefined &&
+      address !== undefined &&
+      !upstreamEntryIsCurrent(address, entry, planFacts)
+   ) {
+      return wrongTierDetail(name, address, entry, planFacts);
+   }
+   if (
+      entry?.storageDestinationName === destinationName &&
+      !entry.schema?.length
+   ) {
+      return (
+         `'${name}' is materialized in destination '${destinationName}', ` +
+         `but by a reference that carries no column list, which this ` +
+         `build needs to read it`
+      );
+   }
+   if (entry?.storageDestinationName !== undefined) {
+      return (
+         `'${name}' is materialized in destination ` +
+         `'${entry.storageDestinationName}', not '${destinationName}'`
+      );
+   }
+   if (entry !== undefined) {
+      return (
+         `'${name}' is materialized outside destination ` +
+         `'${destinationName}' (a warehouse table, or a reference ` +
+         `that does not say where it lives), which this build cannot read`
+      );
+   }
+   return (
+      `'${name}' is not materialized in destination ` +
+      `'${destinationName}' for this build`
+   );
+}
+
+function reportLeftOutColumns(
+   sourceName: string,
+   leftOut: readonly UndeclarableColumn[],
+): void {
+   if (leftOut.length === 0) return;
+   for (const c of leftOut) {
+      const mapped = duckdbTypeToMalloyType(c.type);
+      recordStoredTypeFallback(
+         "unmapped" in mapped ? mapped.unmapped : "unrecognized",
+      );
+   }
+   logger.warn(
+      "Stored columns no Malloy type declaration reads faithfully are left out of their source's declaration; queries reading them answer live",
+      { sourceName, columns: leftOut.map((c) => `${c.name} ${c.type}`) },
+   );
+}
+
+/**
+ * Which stored tables a walk's `persisted` names stand for, and whether each is
+ * available to a build: the names sharing a table (`aliasesBySourceName`, from
+ * {@link groupAliasesByName} over the plan) are one table, present when ANY of
+ * them is among `bound`. Returns the names whose table is not.
+ */
+export function missingPersistedTables(
+   persisted: readonly string[],
+   aliasesBySourceName: Record<string, readonly string[]>,
+   bound: ReadonlySet<string>,
+): string[] {
+   return persisted.filter(
+      (name) =>
+         !(aliasesBySourceName[name] ?? [name]).some((alias) =>
+            bound.has(alias),
+         ),
+   );
+}
+
+/** A stacked build's result, with the stored tables it read. */
+async function withReadFrom(
+   readFrom: { readFrom: string[] },
+   built: Promise<StorageBuildResult>,
+): Promise<StorageBuildResult> {
+   return { ...(await built), ...readFrom };
+}
+
+/**
+ * How an upstream's recorded columns (its contract, else its schema) differ
+ * from the ones a plan stood in for it, or undefined when each stand-in
+ * column is recorded, of the same type.
+ */
+function standInMoved(
+   entry: ManifestEntry,
+   standIn: readonly { name: string; type: string }[],
+): string | undefined {
+   const contract = parseContract(entry.contract);
+   const recorded = new Map(
+      (contract
+         ? contract.columns.map((c) => [c.name, c.nativeType] as const)
+         : (entry.schema ?? []).flatMap((c) =>
+              c.name && c.type ? [[c.name, c.type] as const] : [],
+           )
+      ).map(([n, t]) => [n.toLowerCase(), t]),
+   );
+   const moved = standIn.flatMap((c) => {
+      const got = recorded.get(c.name.toLowerCase());
+      return got !== undefined && sameStoredTypeClass(got, c.type)
+         ? []
+         : [
+              `'${c.name}' is ${got ?? "not recorded"} (the plan stood in ${c.type})`,
+           ];
+   });
+   return moved.length > 0 ? moved.join(", ") : undefined;
+}
+
+/**
+ * What a chained `storage=` build asks the package's served copy for
+ * (`chainBuildText`): `persistSource`'s build text over `upstreams`' tables
+ * in `destinationName`, under the schema its connection reads by default.
+ */
+function chainRequest(
+   persistSource: { sourceID: string; name: string },
+   destinationName: string,
+   destinationConnection: ApiConnection,
+   upstreams: ChainBuildRequest["upstreams"],
+   rollup?: ChainBuildRequest["rollup"],
+): ChainBuildRequest {
+   return {
+      downstream: {
+         sourceID: persistSource.sourceID,
+         name: persistSource.name,
+      },
+      destination: {
+         name: destinationName,
+         schema: destinationSchemaOf(destinationConnection),
+      },
+      upstreams,
+      ...(rollup ? { rollup } : {}),
+   };
+}

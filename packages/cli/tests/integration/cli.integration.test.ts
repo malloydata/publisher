@@ -4,10 +4,15 @@
 /// <reference types="bun-types" />
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import fs from "fs";
+import os from "os";
+import path from "path";
 import {
   type TestServer,
+  PERSIST_FIXTURE,
   TEST_ENV,
   TEST_PKG,
+  TEST_WATCH_ENV,
   extractMaterializationId,
   runCli,
   startTestServer,
@@ -26,6 +31,8 @@ describe("CLI integration (real server)", () => {
   // they don't depend on "first id in the list" or a clean server.
   let createdId = "";
   const SCOPE = ["--environment", TEST_ENV, "--package", TEST_PKG];
+  // The same fixture, mounted in place with no versions (see TEST_WATCH_ENV).
+  const WATCH_SCOPE = ["--environment", TEST_WATCH_ENV, "--package", TEST_PKG];
 
   beforeAll(async () => {
     server = await startTestServer();
@@ -69,12 +76,6 @@ describe("CLI integration (real server)", () => {
     );
     expect(r.code).toBe(0);
     expect(r.output).toContain("persist_test.malloy");
-  });
-
-  it("reports no notebooks for a package without any", async () => {
-    const r = await runCli(["list", "notebook", ...SCOPE], baseUrl);
-    expect(r.code).toBe(0);
-    expect(r.output).toContain("No notebooks");
   });
 
   it("lists databases", async () => {
@@ -167,26 +168,34 @@ describe("CLI integration (real server)", () => {
   });
 
   // ── schedule set / view / clear ───────────────────────────────────
+  //
+  // Package versioning is on by default, so `it-env`'s package is a published
+  // version: immutable, its schedule declared in its publisher.json. A
+  // schedule PATCH applies only to a package with no versions, which here is
+  // the watched environment's in-place copy.
 
   it("sets, views, and clears a materialization schedule", async () => {
     const set = await runCli(
-      ["schedule", "set", "0 6 * * *", ...SCOPE],
+      ["schedule", "set", "0 6 * * *", ...WATCH_SCOPE],
       baseUrl,
     );
     expect(set.code).toBe(0);
     expect(set.output).toContain("Schedule set");
 
-    const view = await runCli(["schedule", "view", ...SCOPE], baseUrl);
+    const view = await runCli(["schedule", "view", ...WATCH_SCOPE], baseUrl);
     expect(view.code).toBe(0);
     expect(view.output).toContain("0 6 * * *");
     // A schedule forces version scope.
     expect(view.output).toContain("version");
 
-    const clear = await runCli(["schedule", "clear", ...SCOPE], baseUrl);
+    const clear = await runCli(["schedule", "clear", ...WATCH_SCOPE], baseUrl);
     expect(clear.code).toBe(0);
     expect(clear.output).toContain("Schedule cleared");
 
-    const viewAfter = await runCli(["schedule", "view", ...SCOPE], baseUrl);
+    const viewAfter = await runCli(
+      ["schedule", "view", ...WATCH_SCOPE],
+      baseUrl,
+    );
     expect(viewAfter.code).toBe(0);
     expect(viewAfter.output.toLowerCase()).toContain("none");
   });
@@ -197,18 +206,75 @@ describe("CLI integration (real server)", () => {
     // so with nothing to clear the command returns before it PATCHes rather than
     // sending a fresh `materialization` object (which would wipe a freshness
     // policy on a freshness-only package -- that survival case is unit-covered).
-    const clear = await runCli(["schedule", "clear", ...SCOPE], baseUrl);
+    const clear = await runCli(["schedule", "clear", ...WATCH_SCOPE], baseUrl);
     expect(clear.code).toBe(0);
     expect(clear.output.toLowerCase()).toContain("nothing to clear");
   });
 
   it("rejects an invalid cron via the server publish gate (exit 1)", async () => {
     const r = await runCli(
-      ["schedule", "set", "not-a-cron", ...SCOPE],
+      ["schedule", "set", "not-a-cron", ...WATCH_SCOPE],
       baseUrl,
     );
     expect(r.code).toBe(1);
     expect(r.output.toLowerCase()).toContain("cron");
+  });
+
+  it("refuses to set a schedule on a published version, naming publisher.json (exit 1)", async () => {
+    // The server answers this PATCH 409 PACKAGE_IS_VERSIONED; the CLI adds
+    // where a version's schedule is declared.
+    const r = await runCli(["schedule", "set", "0 6 * * *", ...SCOPE], baseUrl);
+    expect(r.code).toBe(1);
+    expect(r.output).toContain("409");
+    expect(r.output).toContain("published versions");
+    expect(r.output).toContain("publisher.json");
+    // The error is logged as JSON, so its quotes arrive escaped.
+    expect(r.output).toMatch(
+      /materialization\\*": \{ \\*"scope\\*": \\*"version/,
+    );
+
+    const view = await runCli(["schedule", "view", ...SCOPE], baseUrl);
+    expect(view.code).toBe(0);
+    expect(view.output).toContain("Version:   1.0.0");
+    expect(view.output.toLowerCase()).toContain("none");
+  });
+
+  it("a published version takes its schedule from its publisher.json", async () => {
+    // The versioned path: declare the schedule in publisher.json and publish.
+    const pkgName = "scheduled-test";
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-it-scheduled-"));
+    const scoped = ["--environment", TEST_ENV, "--package", pkgName];
+    try {
+      fs.cpSync(PERSIST_FIXTURE, dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, "publisher.json"),
+        JSON.stringify({
+          name: pkgName,
+          version: "1.0.0",
+          materialization: { scope: "version", schedule: "0 6 * * *" },
+        }),
+      );
+      const create = await runCli(
+        ["create", "package", ...scoped, "--location", dir],
+        baseUrl,
+      );
+      expect(create.code).toBe(0);
+
+      const view = await runCli(["schedule", "view", ...scoped], baseUrl);
+      expect(view.code).toBe(0);
+      expect(view.output).toContain("Version:   1.0.0");
+      expect(view.output).toContain("Scope:     version");
+      expect(view.output).toContain("Schedule:  0 6 * * *");
+
+      // Clearing it is a content change too: a new version, not a PATCH.
+      const clear = await runCli(["schedule", "clear", ...scoped], baseUrl);
+      expect(clear.code).toBe(1);
+      expect(clear.output).toContain("409");
+      expect(clear.output).toContain("publisher.json");
+    } finally {
+      await runCli(["delete", "package", ...scoped], baseUrl);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("rejects an empty cron client-side (exit 1)", async () => {

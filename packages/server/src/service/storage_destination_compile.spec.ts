@@ -20,6 +20,7 @@
  * IS in a namespace. The end-to-end pair — a real catalog, a real materialized
  * table, a real routed query — lives in the hammer scenarios.
  */
+import { unrecordedAudit } from "./access_record";
 import {
    afterAll,
    afterEach,
@@ -35,7 +36,6 @@ import * as os from "os";
 import * as path from "path";
 
 import { components } from "../api";
-import { ConnectionNotFoundError } from "../errors";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
@@ -44,14 +44,17 @@ import {
    startClosingListener,
    type ClosingListener,
 } from "../test_helpers/closing_listener";
-import {
-   buildEnvironmentMalloyConfig,
-   restrictMalloyConfigToConnections,
-} from "./connection";
+import { installSettings } from "../test_helpers/settings_env";
+import { buildEnvironmentMalloyConfig } from "./connection";
 import { Environment } from "./environment";
 import { Model } from "./model";
-import { StorageServeShape } from "./model_serve_shape";
+import { ServedCopyServe } from "./materialization/serve/served_copy_serve";
 import { Package } from "./package";
+import {
+   writeTempPackage,
+   writePackageFiles,
+} from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -91,15 +94,17 @@ function ducklakeDestination(name: string): ApiConnection {
    };
 }
 
-const ORIGINAL_WORKERS = process.env.PACKAGE_LOAD_WORKERS;
+/** The settings every case here runs under, installed before the pool. */
+const BASE_ENV = { PACKAGE_LOAD_WORKERS: "1" };
 
 describe("a storage destination is not in the namespace a tenant authors in", () => {
    let tempDir: string;
    let envDir: string;
    let pool: PackageLoadPool;
+   let restoreSettings: () => void;
 
    beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
+      restoreSettings = installSettings({ env: BASE_ENV }).restore;
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
       unreachableCatalog = await startClosingListener();
@@ -108,18 +113,12 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
    afterAll(async () => {
       await unreachableCatalog.close();
       await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_WORKERS === undefined)
-         delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_WORKERS;
+      restoreSettings();
    });
 
    beforeEach(() => {
       envDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-dest-env-"));
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-dest-pkg-"));
-      fs.writeFileSync(
-         path.join(tempDir, "publisher.json"),
-         JSON.stringify({ name: "pkg" }),
-      );
+      tempDir = writeTempPackage({}, { prefix: "publisher-dest-pkg-" }).dir;
    });
 
    afterEach(() => {
@@ -277,17 +276,13 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
       );
 
       await expect(
-         pkg
-            .getModel("plain.malloy")!
-            .getQueryResults(
-               undefined,
-               undefined,
-               `run: ${DESTINATION_NAME}.sql('SELECT 1 AS x') -> { select: x }`,
-            ),
+         pkg.getModel("plain.malloy")!.runQuery(unrecordedAudit(), {
+            query: `run: ${DESTINATION_NAME}.sql('SELECT 1 AS x') -> { select: x }`,
+         }),
       ).rejects.toThrow();
    });
 
-   it("compiles the serve shape against the destinations, not the package's own connections", async () => {
+   it("compiles the served copy against the destinations, not the package's own connections", async () => {
       // What the Environment EXPOSES being disjoint is not the same claim as the
       // serve path being wired to the right one of the two. Without this, handing
       // `getEnvironmentMalloyConfig()` to the serve path — the whole bug — passes
@@ -299,22 +294,16 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
       // there at all.
       const environment = makeEnvironment();
       const packageDir = path.join(envDir, "pkg");
-      fs.mkdirSync(packageDir, { recursive: true });
-      fs.writeFileSync(
-         path.join(packageDir, "publisher.json"),
-         JSON.stringify({ name: "pkg" }),
-      );
-      fs.writeFileSync(
-         path.join(packageDir, "plain.malloy"),
-         `source: nums is duckdb.sql("SELECT 1 AS a")`,
-      );
+      writePackageFiles(packageDir, {
+         "plain.malloy": `source: nums is duckdb.sql("SELECT 1 AS a")`,
+      });
 
       // Observed at the Model's public seams, so nothing reaches a private: the
       // provider the load hands `setServeDestinationConfig`, and the
-      // `StorageServeShape` collaborator a routed query compiles through.
+      // `ServedCopyServe` collaborator a routed query compiles through.
       const configured = spyOn(Model.prototype, "setServeDestinationConfig");
-      const shapes = spyOn(StorageServeShape.prototype, "loadServeShapeQuery");
-      const originalMode = process.env.PERSIST_STORAGE_MODE;
+      const shapes = spyOn(ServedCopyServe.prototype, "loadQuery");
+      let restoreMode: (() => void) | undefined;
       const providerOf = (target: Model) => {
          const call = configured.mock.contexts.lastIndexOf(target);
          return call < 0 ? undefined : configured.mock.calls[call][0];
@@ -322,10 +311,14 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
       try {
          // The real production wiring: the environment's own load path is what
          // attaches the serve config.
-         const pkg = await environment.getPackage("pkg");
+         const pkg = await environment.getPackage(parsePackageName("pkg"));
          const model = pkg.getModel("plain.malloy")!;
+         // The package's own files and connections, as its bind sets them.
+         model.setServedCopyContext(packageDir, pkg.getMalloyConfig());
          model.setServeBindings([
             {
+               kind: "persist",
+               tier: "storage",
                sourceName: "nums",
                destinationName: DESTINATION_NAME,
                virtualHandle: "h",
@@ -360,36 +353,39 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
             environment.getStorageDestinationMalloyConfig(),
          );
 
-         // Behaviourally, a routed query's shape does reach for the destination:
+         // Behaviourally, a routed query's served copy does reach for the destination:
          // it gets as far as needing that connection's dialect, which it can only
          // ask for after the name has resolved. The catalog is unreachable, so
          // the query itself falls back to live and still answers.
-         process.env.PERSIST_STORAGE_MODE = "on";
-         const answered = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: nums -> { select: a }",
-         );
+         restoreMode = installSettings({
+            env: { ...BASE_ENV, PERSIST_STORAGE_MODE: "on" },
+         }).restore;
+         const answered = await model.runQuery(unrecordedAudit(), {
+            query: "run: nums -> { select: a }",
+         });
          expect(answered.compactResult).toEqual([{ a: 1 }]);
          expect(shapes).toHaveBeenCalledTimes(1);
-         await expect(shapes.mock.results[0].value).rejects.toThrow(
-            `Cannot determine dialect for connection '${DESTINATION_NAME}'`,
+         await expect(shapes.mock.results[0].value).rejects.toThrow();
+         // The served copy reads a destination under its own alias, never a
+         // name a tenant could author.
+         expect(JSON.stringify(model.servedCopyProblems())).toContain(
+            "Cannot determine dialect for connection '__publisher_storage_",
          );
 
-         // A memoized serve shape holds the connections of the generation it
+         // A compiled served copy holds the connections of the generation it
          // compiled against. Replacing the destination list retires those, so
-         // the memo has to be dropped — its key is the BINDING set, which a
+         // the compile has to be dropped — its key is the BINDING set, which a
          // destination change does not touch, so nothing else would invalidate
          // it and every routed query for this package would fail over to live
          // until the package reloaded.
-         const shape = shapes.mock.contexts[0] as StorageServeShape;
-         expect(shape.serveShapeCache).toBeDefined();
+         const copy = shapes.mock.contexts[0] as ServedCopyServe;
+         expect(copy.problems().length).toBeGreaterThan(0);
          environment.setStorageDestinations([
             ducklakeDestination(DESTINATION_NAME),
             ducklakeDestination(SHARED_NAME),
             ducklakeDestination("added_later"),
          ]);
-         expect(shape.serveShapeCache).toBeUndefined();
+         expect(copy.problems()).toEqual([]);
 
          // A reload rebuilds every model, so it has to re-apply the wiring — or
          // serve routing would quietly stop at the first reload.
@@ -404,9 +400,7 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
       } finally {
          configured.mockRestore();
          shapes.mockRestore();
-         if (originalMode === undefined)
-            delete process.env.PERSIST_STORAGE_MODE;
-         else process.env.PERSIST_STORAGE_MODE = originalMode;
+         restoreMode?.();
       }
    });
 
@@ -445,33 +439,6 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
          serveSide = String((error as Error).message);
       }
       expect(serveSide).not.toContain(NOT_IN_CONFIG);
-   });
-
-   it("lets a serve shape reach only the destinations its own bindings name", async () => {
-      // The narrowing is derived from the binding set rather than handing over the
-      // whole destination list, so a shape cannot reach a sibling destination it
-      // has no binding for — including one belonging to another package.
-      const environment = makeEnvironment();
-      const destinations = environment.getStorageDestinationMalloyConfig();
-      const narrowed = restrictMalloyConfigToConnections(
-         destinations,
-         new Set([DESTINATION_NAME]),
-      );
-
-      let boundError = "";
-      try {
-         await narrowed.connections.lookupConnection(DESTINATION_NAME);
-      } catch (error) {
-         boundError = String((error as Error).message);
-      }
-      // Delegated: the failure is the unreachable catalog, not the narrowing.
-      expect(boundError).not.toContain("not available to a materialization");
-
-      // The sibling destination is configured on this environment and still out of
-      // reach, because no binding named it.
-      await expect(
-         narrowed.connections.lookupConnection(SHARED_NAME),
-      ).rejects.toThrow(ConnectionNotFoundError);
    });
 
    it("keeps a user connection resolvable under a name a destination also holds", async () => {

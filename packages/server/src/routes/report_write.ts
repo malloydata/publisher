@@ -4,7 +4,8 @@
 import type express from "express";
 import type { ReportController } from "../controller/report.controller";
 import { logger } from "../logger";
-import { sendRouteError, setVersionIdError, wildcardParam } from "./json_route";
+import { versionRefOf } from "../route_params";
+import { sendRouteError, wildcardParam } from "./json_route";
 
 /**
  * The report save route: `PUT …/models/<path>` with `{source, expectedHash?}`.
@@ -20,16 +21,13 @@ export function reportWriteRoute(
    controller: Pick<ReportController, "putReportSource">,
 ): express.RequestHandler {
    return async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
       try {
          const result = await controller.putReportSource(
             req.params.environmentName,
             req.params.packageName,
             wildcardParam(req),
             req.body,
+            versionRefOf(req),
          );
          res.status(result.created ? 201 : 200).json(result);
       } catch (error) {

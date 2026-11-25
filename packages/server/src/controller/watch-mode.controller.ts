@@ -4,17 +4,16 @@
 import { recordPackageReload } from "../package_state_metrics";
 import chokidar, { FSWatcher } from "chokidar";
 import { EventEmitter } from "events";
-import { RequestHandler } from "express";
 import path from "path";
 import { components } from "../api";
-import { internalErrorToHttpError } from "../errors";
+import { EnvironmentNotFoundError } from "../errors";
 import { logger } from "../logger";
 import { assertSafePackageName } from "../path_safety";
+import type { PackageLookup } from "../service/environment_ports";
 import { EnvironmentStore } from "../service/environment_store";
+import { parseEnvironmentName, parsePackageName } from "../service/identity";
 
-type StartWatchReq = components["schemas"]["StartWatchRequest"];
 type WatchStatusRes = components["schemas"]["WatchStatus"];
-type Handler<Req = object, Res = void> = RequestHandler<object, Res, Req>;
 
 // Package assets: they trigger a live-reload event but no recompile.
 const ASSET_EXTS = new Set([
@@ -49,7 +48,11 @@ export class WatchModeController {
     */
    public events = new EventEmitter();
 
-   constructor(private environmentStore: EnvironmentStore) {
+   constructor(
+      private environmentStore: PackageLookup & {
+         readonly serverRootPath: string;
+      },
+   ) {
       this.watchingPath = null;
       this.watchingEnvironmentName = null;
       // One live-reload listener per open browser tab.
@@ -78,7 +81,7 @@ export class WatchModeController {
                return;
             }
             const env = await this.environmentStore.getEnvironment(
-               environmentName,
+               parseEnvironmentName(environmentName),
                false,
             );
             const watchPath = env.getEnvironmentPath();
@@ -115,10 +118,10 @@ export class WatchModeController {
       const reloadPackage = async (pkgName: string): Promise<boolean> => {
          try {
             const environment = await this.environmentStore.getEnvironment(
-               watchName,
+               parseEnvironmentName(watchName),
                false,
             );
-            await environment.getPackage(pkgName, true);
+            await environment.getPackage(parsePackageName(pkgName), true);
             recordPackageReload("watch", "success");
             logger.info(
                `Watch: recompiled package "${pkgName}" in environment "${watchName}"`,
@@ -165,64 +168,49 @@ export class WatchModeController {
       this.watcher.on("unlink", onEvent("unlink"));
    }
 
-   public getWatchStatus: Handler<void, WatchStatusRes> = async (_req, res) => {
-      return res.json({
+   /** What is being watched: the admin API's `watch-mode` resource. */
+   public current(): WatchStatusRes {
+      return {
          enabled: !!this.watchingPath,
          watchingPath: this.watchingPath ?? "",
          environmentName: this.watchingEnvironmentName ?? "",
-      });
-   };
+      };
+   }
 
-   public startWatching: Handler<StartWatchReq, { error: string }> = async (
-      req,
-      res,
-   ) => {
-      const watchName = req.body.environmentName ?? "";
-      try {
-         assertSafePackageName(watchName);
-      } catch (error) {
-         logger.error(error);
-         const { status, json } = internalErrorToHttpError(error as Error);
-         res.status(status).json({ error: json.message });
-         return;
-      }
+   /**
+    * Watches `environmentName`, replacing any other watch. Throws a
+    * BadRequestError for an unsafe name and an EnvironmentNotFoundError for an
+    * environment that is not configured or has no packages.
+    */
+   public async watch(environmentName: string): Promise<WatchStatusRes> {
+      assertSafePackageName(environmentName);
       const environmentManifest =
          await EnvironmentStore.reloadEnvironmentManifest(
             this.environmentStore.serverRootPath,
          );
       const environment = environmentManifest.environments.find(
-         (e) => e.name === watchName,
+         (e) => e.name === environmentName,
       );
       if (
          !environment ||
          !environment.packages ||
          environment.packages.length === 0
       ) {
-         res.status(404).json({
-            error: `Environment ${watchName} not found or has no packages`,
-         });
-         return;
+         throw new EnvironmentNotFoundError(
+            `Environment ${environmentName} not found or has no packages`,
+         );
       }
-      try {
-         await this.ensureWatching(watchName);
-      } catch (error) {
-         logger.error(error);
-         // Take the mapper's message, not error.message: a watch-path
-         // EACCES/ENOSPC carries an internal filesystem path.
-         const { status, json } = internalErrorToHttpError(error as Error);
-         res.status(status).json({ error: json.message });
-         return;
-      }
-      res.json();
-   };
+      await this.ensureWatching(environmentName);
+      return this.current();
+   }
 
-   public stopWatchMode: Handler = async (_req, res) => {
+   /** Stops watching. Idempotent. */
+   public async unwatch(): Promise<void> {
       if (this.watcher) {
          await this.watcher.close();
          this.watcher = null;
       }
       this.watchingPath = null;
       this.watchingEnvironmentName = null;
-      res.json();
-   };
+   }
 }

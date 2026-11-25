@@ -15,7 +15,11 @@
  * meter (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
  */
 
-import { lazyHistogram, resetInstrumentsForTesting } from "./telemetry";
+import {
+   lazyCounter,
+   lazyHistogram,
+   resetInstrumentsForTesting,
+} from "./telemetry";
 
 /**
  * Load-duration buckets (ms), shared by every load-timing histogram. OTel's
@@ -98,6 +102,8 @@ export function recordPackageLoadPhases(
  * - `lint`: linting them.
  * - `build_plan`: applying the persist build plan the worker derived, or
  *   deriving it here when the worker left it at its soft deadline.
+ * - `entities`: extracting what each model declares for an indexer (served
+ *   at `GET …/entities`), its `#(index)` fingerprint queries included.
  * - `total`: the load end to end, as `Package.create` runs it.
  *
  * Each is wall-clock time. The main-thread stages yield to the event loop as
@@ -111,11 +117,12 @@ export type PackageLoadPhase =
    | "discovery"
    | "lint"
    | "build_plan"
+   | "entities"
    | "total";
 
 const phaseDuration = lazyHistogram(
    "publisher_package_load_phase_duration_ms",
-   "Per-load wall-clock time of each stage of a successful package load, main-thread stages included. Label: phase (worker, hydrate, render_validation, discovery, lint, build_plan, total).",
+   "Per-load wall-clock time of each stage of a successful package load, main-thread stages included. Label: phase (worker, hydrate, render_validation, discovery, lint, build_plan, entities, total).",
    { buckets: LOAD_DURATION_BUCKETS_MS },
 );
 
@@ -132,7 +139,93 @@ export function recordPackageLoadPhaseDurations(
    }
 }
 
+const entitiesFindings = lazyCounter(
+   "publisher_package_entities_findings_total",
+   "Annotations a package load warned about and left out of its entities because an index cannot honor them, one per declaration. Label: reason (multiple_required_filters, parameterized_source, not_a_dimension, schedule_not_allowed_on_dimension, sharing_not_allowed_on_dimension, required_filter_missing_dimension, required_filter_non_public_dimension).",
+);
+
+/** Count a load's annotations an index cannot honor, one per reason code. */
+export function recordEntitiesFindings(reasons: readonly string[]): void {
+   for (const reason of reasons) entitiesFindings().add(1, { reason });
+}
+
+/**
+ * What the extraction leaves out of a load's entities rather than failing it:
+ * a model file whose extraction threw (it reports an error instead), an
+ * `#(index)` dimension whose fingerprint query did not compile (it reports no
+ * fingerprint).
+ */
+export type EntitiesDegradation = "file_extract_failed" | "fingerprint_failed";
+
+const entitiesDegraded = lazyCounter(
+   "publisher_package_entities_degraded_total",
+   "Parts of a load's entities the extraction left out instead of failing the load. Label: kind (file_extract_failed, fingerprint_failed).",
+);
+
+export function recordEntitiesDegraded(kind: EntitiesDegradation): void {
+   entitiesDegraded().add(1, { kind });
+}
+
 /** Test-only: drop cached instruments so a fresh `MeterProvider` captures emissions. */
 export function resetPackageLoadMetricsForTesting(): void {
    resetInstrumentsForTesting();
+}
+
+/**
+ * How a dry-run publish ended: `loaded`, the package would publish; `refused`,
+ * the publish would answer 4xx; `backpressure`, memory pressure refused to load
+ * it (503), which says nothing about the package; `at_capacity`, the server was
+ * already running as many dry runs as it runs at once (503); `failed`, any other
+ * server-side failure.
+ */
+export type PackageDryRunOutcome =
+   | "loaded"
+   | "refused"
+   | "backpressure"
+   | "at_capacity"
+   | "failed";
+
+const dryRunDuration = lazyHistogram(
+   "publisher_package_dry_run_duration",
+   "One `POST …/packages?dryRun=true`: download, load and publish checks, with nothing installed. Label: outcome (loaded = the package would publish; refused = the publish would answer 4xx; backpressure = memory pressure refused the load; at_capacity = as many dry runs as the server runs at once already running; failed = any other server-side failure).",
+   { buckets: LOAD_DURATION_BUCKETS_MS },
+);
+
+/** Record one dry-run publish by how it ended. */
+export function recordPackageDryRun(
+   outcome: PackageDryRunOutcome,
+   durationMs: number,
+): void {
+   dryRunDuration().record(durationMs, { outcome });
+}
+
+const operationDuration = {
+   reload: lazyHistogram(
+      "publisher_package_reload_duration_ms",
+      "One in-place package reload: recompiling a package from the files on disk. Label: outcome ('success'|'failure'; a failed reload leaves the previous model serving).",
+      { buckets: LOAD_DURATION_BUCKETS_MS },
+   ),
+   install: lazyHistogram(
+      "publisher_package_install_duration_ms",
+      "One package install: download, load and swap, for an unversioned publish or the reinstall a reload does for a package with a location. Label: outcome ('success'|'failure').",
+      { buckets: LOAD_DURATION_BUCKETS_MS },
+   ),
+};
+
+/** Run a package reload or install, recording how long it took and whether it threw. */
+export async function measurePackageOperation<T>(
+   operation: keyof typeof operationDuration,
+   run: () => Promise<T>,
+): Promise<T> {
+   const started = performance.now();
+   let outcome: "success" | "failure" = "failure";
+   try {
+      const result = await run();
+      outcome = "success";
+      return result;
+   } finally {
+      operationDuration[operation]().record(performance.now() - started, {
+         outcome,
+      });
+   }
 }

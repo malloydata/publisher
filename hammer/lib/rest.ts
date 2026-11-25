@@ -149,6 +149,136 @@ export class Rest {
       return { ok: false, status: res.status, error: await res.text() };
    }
 
+   /**
+    * Publish a package from a directory on this host (POST /packages with a
+    * `location`): a versioned publish, of the version in the directory's
+    * publisher.json. Returns the
+    * outcome and the body either way, so a scenario can assert a publish or a
+    * refusal and its `reason`.
+    */
+   async publishFrom(
+      pkg: string,
+      location: string,
+   ): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
+      const res = await fetch(
+         `${this.baseUrl}/api/v0/environments/${this.env}/packages`,
+         {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: pkg, location }),
+         },
+      );
+      return {
+         ok: res.ok,
+         status: res.status,
+         body: (await res.json()) as Record<string, unknown>,
+      };
+   }
+
+   /**
+    * POST …/packages?dryRun=true with a `location`: what a publish of that tree
+    * would answer (the build plan and the serve verdicts it predicts), with
+    * nothing installed.
+    */
+   async dryRunFrom(
+      pkg: string,
+      location: string,
+   ): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
+      const res = await fetch(
+         `${this.baseUrl}/api/v0/environments/${this.env}/packages?dryRun=true`,
+         {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: pkg, location }),
+         },
+      );
+      return {
+         ok: res.ok,
+         status: res.status,
+         body: (await res.json()) as Record<string, unknown>,
+      };
+   }
+
+   /** PUT …/latest: point the package's latest at a version. */
+   async setLatestVersion(
+      pkg: string,
+      version: string,
+   ): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
+      const res = await fetch(this.pkgUrl(pkg, "/latest"), {
+         method: "PUT",
+         headers: { "content-type": "application/json" },
+         body: JSON.stringify({ version }),
+      });
+      return {
+         ok: res.ok,
+         status: res.status,
+         body: (await res.json()) as Record<string, unknown>,
+      };
+   }
+
+   /** PATCH …/versions/{v}: archive or unarchive one version. */
+   async setArchiveStatus(
+      pkg: string,
+      versionId: string,
+      archiveStatus: "archive" | "unarchive",
+   ): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
+      const res = await fetch(
+         this.pkgUrl(pkg, `/versions/${encodeURIComponent(versionId)}`),
+         {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ archiveStatus }),
+         },
+      );
+      return {
+         ok: res.ok,
+         status: res.status,
+         body: (await res.json()) as Record<string, unknown>,
+      };
+   }
+
+   /** GET …/versions: the package's published versions, highest first. */
+   async listVersions(
+      pkg: string,
+   ): Promise<{ id: string; latest: boolean; archiveStatus: string }[]> {
+      const res = await fetch(this.pkgUrl(pkg, "/versions"));
+      if (!res.ok)
+         throw new Error(
+            `listVersions ${pkg} ${res.status}: ${await res.text()}`,
+         );
+      return (await res.json()) as {
+         id: string;
+         latest: boolean;
+         archiveStatus: string;
+      }[];
+   }
+
+   /**
+    * This package's entries in /status: every version the server holds, each
+    * with whether it is loaded (`loaded: false` for one held but not in
+    * memory; absent on an unversioned package's entry).
+    */
+   async statusEntries(
+      pkg: string,
+   ): Promise<{ versionId?: string | null; loaded?: boolean }[]> {
+      const res = await fetch(`${this.baseUrl}/api/v0/status`);
+      const status = (await res.json()) as {
+         environments?: {
+            name: string;
+            packages?: {
+               name?: string;
+               versionId?: string | null;
+               loaded?: boolean;
+            }[];
+         }[];
+      };
+      return (
+         status.environments
+            ?.find((e) => e.name === this.env)
+            ?.packages?.filter((p) => p.name === pkg) ?? []
+      );
+   }
+
    async listConnections(): Promise<{ name: string }[]> {
       const res = await fetch(
          `${this.baseUrl}/api/v0/environments/${this.env}/connections`,
@@ -160,11 +290,13 @@ export class Rest {
 
    async getPackage(
       pkg: string,
-      opts: { reload?: boolean } = {},
+      opts: { reload?: boolean; versionId?: string } = {},
    ): Promise<Record<string, unknown>> {
-      const res = await fetch(
-         this.pkgUrl(pkg, opts.reload ? "?reload=true" : ""),
-      );
+      const params = new URLSearchParams();
+      if (opts.reload) params.set("reload", "true");
+      if (opts.versionId) params.set("versionId", opts.versionId);
+      const qs = params.toString();
+      const res = await fetch(this.pkgUrl(pkg, qs ? `?${qs}` : ""));
       if (!res.ok)
          throw new Error(
             `getPackage ${pkg} ${res.status}: ${await res.text()}`,
@@ -261,6 +393,38 @@ export class Rest {
    }
 
    /**
+    * Clear a package's manifest binding so it serves live. A package with
+    * published versions clears through its latest version's manifest route
+    * (`PUT …/versions/{version}/manifest` with null): its PATCH reads a null
+    * `manifestLocation` as unset, since a generated client sends a field it
+    * was never given as null. An unversioned package clears with the PATCH.
+    */
+   async clearManifest(pkg: string): Promise<Record<string, unknown>> {
+      const current = await this.getPackage(pkg);
+      const versionId = current.versionId;
+      if (typeof versionId !== "string" || versionId === "") {
+         return this.patchPackage(pkg, { manifestLocation: null });
+      }
+      const res = await fetch(
+         this.pkgUrl(
+            pkg,
+            `/versions/${encodeURIComponent(versionId)}/manifest`,
+         ),
+         {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ manifestLocation: null }),
+         },
+      );
+      const json = (await res.json()) as Record<string, unknown>;
+      if (!res.ok)
+         throw new Error(
+            `clearManifest ${pkg}@${versionId} ${res.status}: ${JSON.stringify(json)}`,
+         );
+      return json;
+   }
+
+   /**
     * The `entries` map of the package's most recent successful materialization
     * (MANIFEST_FILE_READY). This is the manifest the orchestrator would stamp
     * and distribute; the harness re-serves it via `writeManifest` + a
@@ -341,13 +505,11 @@ export class Rest {
       return rec;
    }
 
-   async deleteMaterialization(
-      pkg: string,
-      id: string,
-      opts: { dropTables?: boolean } = {},
-   ): Promise<void> {
-      const suffix = `/materializations/${id}${opts.dropTables ? "?dropTables=true" : ""}`;
-      const res = await fetch(this.pkgUrl(pkg, suffix), { method: "DELETE" });
+   /** Delete a materialization record (record-only: it drops no table). */
+   async deleteMaterialization(pkg: string, id: string): Promise<void> {
+      const res = await fetch(this.pkgUrl(pkg, `/materializations/${id}`), {
+         method: "DELETE",
+      });
       if (!res.ok)
          throw new Error(
             `deleteMaterialization ${pkg}/${id} ${res.status}: ${await res.text()}`,
@@ -355,19 +517,18 @@ export class Rest {
    }
 
    /**
-    * Reclaim the most recent successful materialization: DELETE it with
-    * `?dropTables=true`, which runs the destination-aware read-write drop of the
-    * physical table. Returns the id reclaimed (throws if there is none).
+    * Delete the most recent successful materialization's record. Record-only:
+    * its tables stay. Returns the id deleted (throws if there is none).
     */
-   async reclaimLatest(pkg: string): Promise<string> {
+   async forgetLatest(pkg: string): Promise<string> {
       const mats = await this.listMaterializations(pkg);
       const ready = mats
          .filter((m) => m.status === "MANIFEST_FILE_READY")
          .sort((a, b) => String(b.id).localeCompare(String(a.id)));
       const id = ready[0]?.id as string | undefined;
       if (!id)
-         throw new Error(`reclaimLatest ${pkg}: no successful materialization`);
-      await this.deleteMaterialization(pkg, id, { dropTables: true });
+         throw new Error(`forgetLatest ${pkg}: no successful materialization`);
+      await this.deleteMaterialization(pkg, id);
       return id;
    }
 
@@ -409,6 +570,8 @@ export class Rest {
          sourceName?: string;
          queryName?: string;
          givens?: Record<string, unknown>;
+         /** The published version to query; omitted, the package's latest. */
+         versionId?: string;
       },
    ): Promise<QueryOutcome> {
       const url = this.pkgUrl(pkg, `/models/${modelPath}/query`);
@@ -464,6 +627,7 @@ export class Rest {
          sourceName?: string;
          queryName?: string;
          givens?: Record<string, unknown>;
+         versionId?: string;
       },
    ): Promise<
       { ok: true; outcome: QueryOutcome } | { ok: false; error: string }

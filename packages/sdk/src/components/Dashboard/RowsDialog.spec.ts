@@ -5,26 +5,53 @@ import { describe, expect, it } from "bun:test";
 import { rowsQuery, sourceOf, stepsOf } from "./RowsDialog";
 
 describe("the rows query", () => {
-   it("drills through the tile's view to the value's rows", () => {
+   it("filters the source by the tile's filters and each dimension of the row", () => {
+      const target = {
+         source: "overview",
+         filters: ["region ~ $REGION", "is_online = true"],
+      };
       expect(
          rowsQuery({
-            source: "overview",
-            view: "best_sellers",
+            target,
+            field: "name",
+            rawValue: "x",
+            label: "x",
+            dimensions: [
+               {
+                  code: "products.name",
+                  value: { kind: "string_literal", string_value: "O'Brien" },
+               },
+               { code: "region", value: { kind: "null_literal" } },
+               {
+                  code: "sold_at.hour",
+                  value: {
+                     kind: "timestamp_literal",
+                     timestamp_value: "2026-02-03T23:00:00Z",
+                  },
+               },
+            ],
+            timezone: "Asia/Tokyo",
+         }),
+      ).toBe(
+         "run: overview -> { timezone: 'Asia/Tokyo'; where: region ~ $REGION, is_online = true, products.name = 'O\\'Brien', region is null, sold_at.hour = @2026-02-04 08:00:00; select: *; limit: 200 }",
+      );
+   });
+
+   it("writes a click with no row by its own value, and nothing it cannot spell", () => {
+      const target = { source: "overview", filters: [] };
+      expect(
+         rowsQuery({
+            target,
             field: "name",
             rawValue: "Loft Insulated Jacket",
             label: "Loft Insulated Jacket",
+            code: "products.name",
          }),
       ).toBe(
-         "run: overview -> { drill: best_sellers.name = 'Loft Insulated Jacket'; select: *; limit: 200 }",
+         "run: overview -> { where: products.name = 'Loft Insulated Jacket'; select: *; limit: 200 }",
       );
       expect(
-         rowsQuery({
-            source: "a",
-            view: "v",
-            field: "f",
-            rawValue: {},
-            label: "",
-         }),
+         rowsQuery({ target, field: "f", rawValue: {}, label: "", code: "f" }),
       ).toBeUndefined();
    });
 

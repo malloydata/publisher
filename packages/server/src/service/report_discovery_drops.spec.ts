@@ -18,7 +18,7 @@ import * as reportManifest from "./report_manifest";
 import { Environment } from "./environment";
 import { Model } from "./model";
 import { Package } from "./package";
-import { getDashboard } from "./legacy_report_views";
+import { parsePackageName } from "./identity";
 
 type ApiPackageWarning = NonNullable<
    components["schemas"]["Package"]["warnings"]
@@ -77,7 +77,7 @@ describe("report discovery: what it does with a report it cannot read", () => {
          for (const [name, text] of Object.entries(FILES))
             await fs.writeFile(path.join(stagingPath, name), text);
       });
-      return env.getPackage("drops", false);
+      return env.getPackage(parsePackageName("drops"), false);
    };
 
    const warningsOf = (pkg: Package): ApiPackageWarning[] =>
@@ -122,21 +122,16 @@ describe("report discovery: what it does with a report it cannot read", () => {
          editable: true,
       });
       expect(entry.error).toContain("nowhere");
-      // The stub manifest the deprecated route serves for it.
-      expect(await getDashboard(pkg, "env", "broken")).toMatchObject({
+      // The stub manifest the report route serves for it.
+      const report = await pkg.getReport("broken.malloy");
+      expect(report).toMatchObject({
          name: "broken",
          layout: "grid",
-         kind: "dashboard",
          title: "broken",
          autorun: true,
          path: "broken.malloy",
          givens: [],
-         tiles: undefined,
       });
-      expect((await getDashboard(pkg, "env", "broken"))?.error).toContain(
-         "nowhere",
-      );
-      const report = await pkg.getReport("broken.malloy");
       expect(report?.error).toContain("nowhere");
       expect(report?.tiles).toBeUndefined();
    });
@@ -227,8 +222,8 @@ describe("report discovery: what it does with a report it cannot read", () => {
          {
             message:
                "Report lint stopped early, so this list is incomplete: an " +
-               "unknown subset of the tile, report, drill, given and curation " +
-               "checks did not run. Treat a missing " +
+               "unknown subset of the tile, report, drill, given, curation " +
+               "and .malloynb cell checks did not run. Treat a missing " +
                "finding of any of those kinds as unknown rather than clean. " +
                "Reload the package to run the lint again. The reports " +
                "themselves are unaffected, because they are discovered " +

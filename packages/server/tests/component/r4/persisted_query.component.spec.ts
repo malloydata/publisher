@@ -1,0 +1,886 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * `#@ persist` on a top-level `query:`, through the real package path (load,
+ * build, bind, query). With PUBLISHER_MATERIALIZE on, a persisted query's
+ * table answers exactly the shapes that call it (REST and MCP `queryName`, a
+ * report naming it, `run: q`, `run: q -> { … }`), equal to live: its rows, and
+ * each column's name, kind and annotations, apart from Malloy's per-compile
+ * drill expressions. A refinement and any use of the query inside another
+ * definition are answered live, equal to live. A persisted query over a gated
+ * source is never built, and the leg is never tried past its gate (CONTRACT),
+ * whatever PUBLISHER_MATERIALIZE_GATED_SOURCES says. The route counter counts
+ * the leg as `query`, and a persisted view's as `view`. A text with a
+ * statement beside the call, or a later stage that extends or joins, is
+ * declined by both legs (the variant gives the run target's name to the
+ * stored result). Every query here orders its rows fully: rows that tie on
+ * `order_by:`, or have none, may come back in another order than live's. With PUBLISHER_MATERIALIZE off, a persisted query is
+ * warned and answered live.
+ */
+
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { unrecordedAudit } from "../../../src/service/access_record";
+import { QueryPrivileges } from "../../../src/service/model_query_request";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
+import { startMetricsHarness } from "../../../src/test_helpers/metrics_harness";
+import { resetMaterializationTelemetryForTesting } from "../../../src/materialization_metrics";
+import {
+   type Answer,
+   freshLoadPool,
+   LAKE,
+   type LoadedFixture,
+   loadFixture,
+   type Outcome,
+} from "../../../src/test_helpers/conformance/package_runner";
+import {
+   typeWithoutDrillExpression,
+   withoutDrillExpression,
+} from "./conformance/drill_expression";
+import { rowDifference } from "./harness";
+
+const TABLE = `duckdb.sql("""
+  select * from (values
+    (1, 'aa', 't1', 10.5, timestamp '2026-01-01 10:00:00'),
+    (2, 'aa', 't2', 20.0, timestamp '2026-02-02 11:00:00'),
+    (3, 'bb', 't1', 5.5, timestamp '2026-01-02 12:00:00'),
+    (4, 'bb', 't1', 11.0, timestamp '2026-03-03 13:00:00'),
+    (5, 'cc', 't2', 2.0, timestamp '2026-03-04 14:00:00'),
+    (6, 'aa', 't1', 7.0, timestamp '2026-03-05 15:00:00')
+  ) as t(id, carrier, tenant, d, ts)
+""")`;
+
+/** The same rows under other SQL, so the gated source shares no struct with the others. */
+const GATED_TABLE = TABLE.replace(
+   "as t(id, carrier, tenant, d, ts)",
+   "as g(id, carrier, tenant, d, ts)",
+);
+
+const MODEL = `##! experimental { givens }
+given: TENANT :: string
+
+source: fl is ${TABLE} extend {
+  # currency
+  #(doc) "Distance flown"
+  measure: dist is d.sum()
+  measure: n is count()
+}
+
+# bar_chart
+#@ persist storage="${LAKE}"
+query: by_carrier is fl -> { group_by: carrier; aggregate: n, dist; order_by: dist desc }
+
+#@ persist
+query: by_carrier_database is fl -> { group_by: carrier; aggregate: n, dist; order_by: dist desc, carrier }
+
+#@ persist
+query: top is fl -> { group_by: carrier; aggregate: n; order_by: n desc, carrier; limit: 2 }
+
+#@ persist
+query: by_month is fl -> { group_by: m is ts.month; aggregate: n; order_by: m }
+
+#@ persist storage="${LAKE}"
+query: by_month_stored is fl -> { group_by: m is ts.month; aggregate: n, dist; order_by: m }
+
+#@ persist
+query: listing is fl -> { select: id, carrier, tenant; order_by: id }
+
+#@ persist
+query: flagged is fl -> { group_by: carrier; aggregate: busy is n > 1; order_by: carrier }
+
+#@ persist
+query: two_stage is fl -> { group_by: carrier, tenant; aggregate: n } -> { group_by: carrier; aggregate: tenants is count(); order_by: carrier }
+
+#@ persist
+query: nested is fl -> {
+  group_by: carrier
+  aggregate: dist
+  nest: by_tenant is { group_by: tenant; aggregate: n; order_by: tenant }
+  order_by: carrier
+}
+
+#@ persist
+query: select_nest is fl -> { group_by: carrier; nest: rows is { select: tenant } }
+
+#@ persist
+query: with_dupes is fl -> { select: carrier, tenant; order_by: carrier, tenant }
+
+#@ persist
+query: having_only is fl -> { aggregate: n; having: n > 100 }
+
+#@ persist
+query: totals is fl -> { aggregate: n, dist }
+
+#@ persist
+query: null_flag is fl -> { group_by: carrier; aggregate: big is d.sum() { where: d > 1000 } > 1; order_by: carrier }
+
+query: over_by_carrier is by_carrier -> { aggregate: total is dist.sum() }
+
+source: carrier_counts is fl -> { group_by: carrier; aggregate: c is count() }
+
+query: fl_q is fl -> { group_by: carrier; aggregate: c is count() }
+
+#(access_filter) tenant = $TENANT
+source: ops is ${GATED_TABLE} extend { measure: n is count() }
+
+#@ persist
+query: ops_by_tenant is ops -> { group_by: tenant, carrier; aggregate: n; order_by: tenant, carrier }
+
+#@ persist
+query: ops_by_carrier is ops -> { group_by: carrier; aggregate: n }
+`;
+
+/** A grid report over the model: a tile naming a query, and a single-query report's name. */
+const REPORT = `## artifact layout=grid tiles=["by_carrier"]
+import "m.malloy"
+`;
+
+/** A query declared in another file than its (ungated) source, and one over a gated source. */
+const OTHER_FILE = `import "m.malloy"
+
+#@ persist
+query: elsewhere is fl -> { group_by: tenant; aggregate: n; order_by: tenant }
+
+#@ persist
+query: elsewhere_gated is ops -> { group_by: tenant; aggregate: n }
+`;
+
+/**
+ * A query over an inline run target, in a model with no gate (a governed
+ * model refuses a run target with no name, live or served).
+ */
+const INLINE = `#@ persist
+query: inline_target is ${TABLE} -> { group_by: tenant; aggregate: c is count(); order_by: tenant }
+
+source: vs is ${TABLE} extend {
+  measure: c is count()
+  #@ persist
+  view: by_tenant is { group_by: tenant; aggregate: c; order_by: tenant desc }
+}
+
+// Each result differs from the others, so no two share a table address.
+#@ persist
+query: vq is vs -> { group_by: tenant; aggregate: c; order_by: c desc, tenant }
+
+query: vs_q is vs -> { group_by: tenant; aggregate: c }
+
+source: tenants_src is ${TABLE} extend {}
+`;
+
+/** A model that imports the persisted view's file whole. */
+const VIEWER = `import "inline.malloy"
+
+source: vs_alias is vs extend {}
+source: cc2 is vs -> { group_by: tenant; aggregate: c is count() }
+`;
+
+const FILES = {
+   "inline.malloy": INLINE,
+   "viewer.malloy": VIEWER,
+   "m.malloy": MODEL,
+   "report.malloy": REPORT,
+   "other.malloy": OTHER_FILE,
+};
+
+/** A number's integer/decimal subtype, which a `storage=` read loses (a separate tolerance, as for views). */
+function stripSubtype(t: unknown): unknown {
+   if (Array.isArray(t)) return t.map(stripSubtype);
+   if (t && typeof t === "object") {
+      return Object.fromEntries(
+         Object.entries(t as Record<string, unknown>)
+            .filter(([k]) => k !== "subtype")
+            .map(([k, v]) => [k, stripSubtype(v)]),
+      );
+   }
+   return t;
+}
+
+/**
+ * Every column's name, kind (a measure stays a measure), type (a nest's
+ * fields included) and annotations, with only Malloy's drill expressions set
+ * aside, as the persisted-view metadata spec compares them.
+ */
+function metadata(answer: Answer): unknown {
+   return answer.fields.map((f) => ({
+      name: f.name,
+      kind: f.kind,
+      type: typeWithoutDrillExpression(stripSubtype(f.type)),
+      annotations: f.annotations.map(withoutDrillExpression),
+   }));
+}
+
+function answerOf(outcome: Outcome): Answer {
+   if ("error" in outcome) throw new Error(outcome.error);
+   return outcome.answer;
+}
+
+describe("R4: a persisted named query answers its exact call, equal to live", () => {
+   let loaded: Awaited<ReturnType<typeof loadFixture>>;
+   let fixture: LoadedFixture;
+   const live = new Map<string, Answer>();
+
+   /** Shapes queried live before the bind, served after it, by model. */
+   const served: [label: string, model: string, malloy: string][] = [
+      ["an exact call, storage=", "m.malloy", "run: by_carrier"],
+      ["a backticked call", "m.malloy", "run: `by_carrier`"],
+      ["an exact call, database", "m.malloy", "run: by_carrier_database"],
+      ["a limited query", "m.malloy", "run: top"],
+      ["a timeframe column, database", "m.malloy", "run: by_month"],
+      ["a timeframe column, storage=", "m.malloy", "run: by_month_stored"],
+      ["a query that selects", "m.malloy", "run: listing"],
+      ["a query that selects duplicate rows", "m.malloy", "run: with_dupes"],
+      ["an inline run target", "inline.malloy", "run: inline_target"],
+      ["a two-stage query", "m.malloy", "run: two_stage"],
+      ["a boolean measure", "m.malloy", "run: flagged"],
+      ["a NULL boolean measure", "m.malloy", "run: null_flag"],
+      [
+         "a query that goes on past the query",
+         "m.malloy",
+         "run: by_carrier -> { aggregate: total is dist.sum() }",
+      ],
+      [
+         "a query that goes on past it, database",
+         "m.malloy",
+         "run: top -> { select: carrier; where: n > 1; order_by: carrier }",
+      ],
+      ["a report tile naming it", "report.malloy", "run: by_carrier"],
+      [
+         "a query over an ungated source in another file",
+         "other.malloy",
+         "run: elsewhere",
+      ],
+   ];
+
+   /** Shapes answered live, before and after the bind; the second element is the leg's skip reason, if it applies. */
+   const answeredLive: [
+      label: string,
+      model: string,
+      malloy: string,
+      skip: string | undefined,
+      givens?: Record<string, string>,
+   ][] = [
+      [
+         "a refinement",
+         "m.malloy",
+         "run: by_carrier + { limit: 1 }",
+         "SHAPE_MISMATCH",
+      ],
+      [
+         "a refinement that filters a limited query",
+         "m.malloy",
+         "run: top + { where: carrier = 'cc' }",
+         "SHAPE_MISMATCH",
+      ],
+      [
+         "a use inside another definition of the model",
+         "m.malloy",
+         "run: over_by_carrier",
+         undefined,
+      ],
+      [
+         "a source over the query",
+         "m.malloy",
+         "source: s is by_carrier\nrun: s -> { select: carrier }",
+         undefined,
+      ],
+      [
+         "a query over the query in the caller's text",
+         "m.malloy",
+         "query: q2 is top -> { select: carrier }\nrun: q2",
+         undefined,
+      ],
+      [
+         "a nest of the query's source",
+         "m.malloy",
+         "run: fl -> { group_by: carrier; aggregate: n, dist }",
+         undefined,
+      ],
+      // Shapes a regroup does not reproduce row for row (the view leg's
+      // rule): refused at plan (a nest), or declined by the variant
+      // (MISSING_FIELD): no dimension to regroup by.
+      ["a nested result (refused)", "m.malloy", "run: nested", undefined],
+      ["a select: nest (refused)", "m.malloy", "run: select_nest", undefined],
+      [
+         "an aggregate-only query whose having: keeps nothing",
+         "m.malloy",
+         "run: having_only",
+         "MISSING_FIELD",
+      ],
+      ["an aggregate-only query", "m.malloy", "run: totals", "MISSING_FIELD"],
+      [
+         "a query over a gated source in another file (refused)",
+         "other.malloy",
+         "run: elsewhere_gated",
+         undefined,
+         { TENANT: "t1" },
+      ],
+   ];
+
+   useMaterializationOn();
+   beforeAll(async () => {
+      await freshLoadPool();
+      loaded = await loadFixture(FILES);
+      for (const [, model, malloy] of served) {
+         live.set(
+            `${model}\u0000${malloy}`,
+            answerOf(await loaded.run(model, malloy)),
+         );
+      }
+      for (const [, model, malloy, , givens] of answeredLive) {
+         live.set(
+            `${model}\u0000${malloy}`,
+            answerOf(await loaded.run(model, malloy, givens)),
+         );
+      }
+      fixture = await loaded.bind();
+   });
+   afterAll(async () => {
+      await loaded?.dispose();
+   });
+
+   it("builds every persisted query the planner admits, and warns about the rest", () => {
+      expect(fixture.buildErrors).toEqual({});
+      expect(fixture.built.map((b) => `${b.name}:${b.tier}`).sort()).toEqual(
+         [
+            "by_carrier__query:storage",
+            "by_carrier_database__query:database",
+            "by_month__query:database",
+            "by_month_stored__query:storage",
+            "elsewhere__query:database",
+            "flagged__query:database",
+            "inline_target__query:database",
+            "listing__query:database",
+            "with_dupes__query:database",
+            "having_only__query:database",
+            "totals__query:database",
+            "null_flag__query:database",
+            "top__query:database",
+            "two_stage__query:database",
+            "vq__query:database",
+            "vs__by_tenant__view:database",
+         ].sort(),
+      );
+      const notBuilt = fixture.warnings
+         .filter((w) => w.code === "persist-query-not-built")
+         .map((w) => w.subject)
+         .sort();
+      expect(notBuilt).toEqual([
+         "elsewhere_gated",
+         "nested",
+         "ops_by_carrier",
+         "ops_by_tenant",
+         "select_nest",
+      ]);
+      // Never the source warning a persisted query once raised.
+      expect(
+         fixture.warnings.some((w) => w.code === "persist-not-materializable"),
+      ).toBe(false);
+   });
+
+   it("gives each built query a serve verdict as a persisted query", () => {
+      expect(fixture.verdicts).toContain("by_carrier__query:serves");
+      expect(fixture.verdicts).toContain("inline_target__query:serves");
+      const verdict = fixture.pkg
+         .materialization()
+         .serveVerdicts()
+         .find((v) => v.sourceName === "by_carrier__query");
+      expect(verdict?.message).toContain("The persisted query `by_carrier`");
+   });
+
+   for (const [label, model, malloy] of served) {
+      it(`serves ${label} from the query's table, equal to live`, async () => {
+         const before = live.get(`${model}\u0000${malloy}`)!;
+         const after = answerOf(await fixture.run(model, malloy));
+         expect(before.servedBy).toBe("live");
+         expect(after.servedBy).toBe("query");
+         expect(rowDifference(before.rows, after.rows)).toBeUndefined();
+         // Ordered as live orders it, column for column.
+         expect(after.rows).toEqual(before.rows);
+         expect(Object.keys(after.rows[0] ?? {})).toEqual(
+            Object.keys(before.rows[0] ?? {}),
+         );
+         expect(metadata(after)).toEqual(metadata(before));
+      });
+   }
+
+   it("keeps measures measures: live's #(malloy) calculation on each aggregate", async () => {
+      const after = answerOf(await fixture.run("m.malloy", "run: by_carrier"));
+      const calc = (name: string) =>
+         after.fields
+            .find((f) => f.name === name)
+            ?.annotations.some((a) => a.includes("calculation"));
+      expect(calc("n")).toBe(true);
+      expect(calc("dist")).toBe(true);
+      expect(calc("carrier")).toBe(false);
+      expect(
+         after.fields.find((f) => f.name === "dist")?.annotations,
+      ).toContain("# currency");
+   });
+
+   it("keeps the query's own render tags on the result", async () => {
+      const model = fixture.pkg.getModel("m.malloy")!;
+      const run = (malloy: string) =>
+         model.runQuery(
+            unrecordedAudit(),
+            { query: malloy } as never,
+            QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+         );
+      const after = await run("run: by_carrier");
+      expect(after.path?.servedBy.kind).toBe("query");
+      const notes = (r: typeof after) =>
+         (
+            (r.result as { annotations?: { value: string }[] } | undefined)
+               ?.annotations ?? []
+         ).map((a) => a.value.trim());
+      expect(notes(after)).toContain("# bar_chart");
+   });
+
+   for (const [label, model] of [
+      ["the model (REST and MCP queryName)", "m.malloy"],
+      ["a single-query report", "report.malloy"],
+   ] as const) {
+      it(`serves queryName from ${label}, equal to live`, async () => {
+         const m = fixture.pkg.getModel(model)!;
+         const byName = await m.runQuery(
+            unrecordedAudit(),
+            { queryName: "by_carrier" } as never,
+            QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+         );
+         expect(byName.path?.servedBy.kind).toBe("query");
+         expect(byName.servedFrom).toBe("storage");
+         const before = live.get("m.malloy\u0000run: by_carrier")!;
+         expect(byName.compactResult as unknown).toEqual(before.rows);
+      });
+   }
+
+   it("reports the query's table as kind query, with its table id", async () => {
+      const m = fixture.pkg.getModel("m.malloy")!;
+      const result = await m.runQuery(
+         unrecordedAudit(),
+         { query: "run: top" } as never,
+         QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+      );
+      expect(result.path?.servedBy.kind).toBe("query");
+      expect(result.path?.servedBy.tableId).toBeDefined();
+      expect(result.path?.considered[0]).toMatchObject({
+         kind: "query",
+         outcome: "used",
+      });
+   });
+
+   for (const [label, model, malloy, skip, givens] of answeredLive) {
+      it(`answers ${label} live, equal to live`, async () => {
+         const before = live.get(`${model}\u0000${malloy}`)!;
+         const after = answerOf(await fixture.run(model, malloy, givens));
+         expect(after.servedBy).not.toBe("query");
+         expect(after.servedFrom).not.toBe("storage");
+         expect(rowDifference(before.rows, after.rows)).toBeUndefined();
+         const result = await fixture.pkg
+            .getModel(model)!
+            .runQuery(
+               unrecordedAudit(),
+               { query: malloy, ...(givens ? { givens } : {}) } as never,
+               QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+            );
+         const considered = result.path?.considered.find(
+            (c) => (c.kind as string) === "query",
+         );
+         // Ordered as live orders it, row for row.
+         expect(after.rows).toEqual(before.rows);
+         if (skip) {
+            expect(considered?.outcome).toBe("skipped");
+            expect(considered?.reason as string | undefined).toBe(skip);
+         } else {
+            expect(considered).toBeUndefined();
+         }
+      });
+   }
+
+   /**
+    * The variant gives the run target's name (and a named query's own) to the
+    * stored result, so a text that names one again outside the call is
+    * declined on either leg, and answered live (fails closed).
+    */
+   const namedAgain: [
+      label: string,
+      leg: "view" | "query",
+      model: string,
+      malloy: string,
+      /** A fragment of the skip's detail. */
+      detail: string,
+   ][] = [
+      [
+         "a later stage that joins the run target",
+         "query",
+         "m.malloy",
+         "run: by_carrier -> { extend: { join_many: f is fl on carrier = f.carrier }; group_by: carrier; aggregate: c is f.count(); order_by: carrier }",
+         "names `fl` beside",
+      ],
+      [
+         "a caller's source over the run target, joined after the call",
+         "query",
+         "m.malloy",
+         "source: mine is fl -> { group_by: carrier; aggregate: rows is count() }\nrun: by_carrier -> { extend: { join_one: m is mine on carrier = m.carrier }; select: carrier, m.rows; order_by: carrier }",
+         "names `fl` beside",
+      ],
+      [
+         "a later stage that joins the run target, from an importing model",
+         "query",
+         "viewer.malloy",
+         "run: vq -> { extend: { join_many: f is vs on tenant = f.tenant }; group_by: tenant; aggregate: c2 is f.count(); order_by: tenant }",
+         "names `vs` beside",
+      ],
+      [
+         "a later stage that joins the view's source",
+         "view",
+         "inline.malloy",
+         "run: vs -> by_tenant -> { extend: { join_many: f is vs on tenant = f.tenant }; group_by: tenant; aggregate: c2 is f.count(); order_by: tenant }",
+         "names `vs` beside",
+      ],
+      [
+         "a caller's source over the view's source, joined after the call",
+         "view",
+         "inline.malloy",
+         "source: mine is vs -> { group_by: tenant; aggregate: rows is count() }\nrun: vs -> by_tenant -> { extend: { join_one: m is mine on tenant = m.tenant }; select: tenant, m.rows; order_by: tenant }",
+         "names `vs` beside",
+      ],
+      [
+         "a join to a named query that reads the run target",
+         "query",
+         "m.malloy",
+         "run: by_carrier_database -> { extend: { join_one: f is fl_q on carrier = f.carrier }; select: carrier, f.c; order_by: carrier }",
+         "names the named query `fl_q` beside",
+      ],
+      [
+         "a join to a named query that reads the view's source",
+         "view",
+         "inline.malloy",
+         "run: vs -> by_tenant -> { extend: { join_one: f is vs_q on tenant = f.tenant }; select: tenant, f.c; order_by: tenant }",
+         "names the named query `vs_q` beside",
+      ],
+      [
+         "a join to a named query that reads the run target, from an importing model",
+         "query",
+         "viewer.malloy",
+         "run: vq -> { extend: { join_one: f is vs_q on tenant = f.tenant }; select: tenant, f.c; order_by: tenant }",
+         "names the named query `vs_q` beside",
+      ],
+      [
+         "a join to the importing model's extension of the run target",
+         "query",
+         "viewer.malloy",
+         "run: vq -> { extend: { join_many: f is vs_alias on tenant = f.tenant }; group_by: tenant; aggregate: c2 is f.count(); order_by: tenant }",
+         "names `vs_alias`, declared in another file",
+      ],
+      [
+         "a join to the importing model's source over the run target",
+         "query",
+         "viewer.malloy",
+         "run: vq -> { extend: { join_one: f is cc2 on tenant = f.tenant }; select: tenant, f.c; order_by: tenant }",
+         "names `cc2`, declared in another file",
+      ],
+   ];
+
+   const pathOf = (model: string, malloy: string) =>
+      fixture.pkg
+         .getModel(model)!
+         .runQuery(
+            unrecordedAudit(),
+            { query: malloy } as never,
+            QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+         );
+
+   for (const [label, leg, model, malloy, detail] of namedAgain) {
+      it(`declines ${label} on the ${leg} leg, equal to live`, async () => {
+         const before = answerOf(await loaded.run(model, malloy));
+         const result = await pathOf(model, malloy);
+         expect(result.path?.servedBy.kind).toBe("live");
+         expect(result.compactResult as unknown).toEqual(before.rows);
+         const considered = result.path?.considered.find(
+            (c) => (c.kind as string) === leg,
+         );
+         expect(considered?.outcome).toBe("skipped");
+         expect(considered?.reason).toBe("SHAPE_MISMATCH");
+         expect(considered?.detail).toContain(detail);
+      });
+   }
+
+   /** Texts beside the call that name nothing the variant redeclares: served. */
+   const servedBeside: [
+      label: string,
+      leg: "view" | "query",
+      model: string,
+      malloy: string,
+   ][] = [
+      [
+         "a report's preamble of unrelated definitions",
+         "view",
+         "inline.malloy",
+         "source: seen is tenants_src -> { group_by: tenant }\nquery: seen_q is seen -> { select: tenant }\nrun: vs -> by_tenant",
+      ],
+      [
+         "a dimension-only extend: after the view",
+         "view",
+         "inline.malloy",
+         "run: vs -> by_tenant -> { extend: { dimension: x is concat(tenant, '!') }; select: tenant, x, c; order_by: tenant }",
+      ],
+      [
+         "a report's preamble of unrelated definitions",
+         "query",
+         "m.malloy",
+         "source: other is carrier_counts extend {}\nrun: by_carrier",
+      ],
+      [
+         "a join to another model source after the query",
+         "query",
+         "m.malloy",
+         // A database table: a storage= one cannot join a warehouse source.
+         "run: by_carrier_database -> { extend: { join_one: cc is carrier_counts on carrier = cc.carrier }; select: carrier, n, cc.c; order_by: carrier }",
+      ],
+   ];
+
+   for (const [label, leg, model, malloy] of servedBeside) {
+      it(`serves ${label} from the ${leg} leg, equal to live`, async () => {
+         const before = answerOf(await loaded.run(model, malloy));
+         const result = await pathOf(model, malloy);
+         expect(result.path?.servedBy.kind).toBe(leg);
+         expect(result.compactResult as unknown).toEqual(before.rows);
+      });
+   }
+
+   for (const gatedSwitch of [true, false]) {
+      it(`answers a gated query live with gated sources ${gatedSwitch ? "on" : "off"}, per caller`, async () => {
+         const inner = installSettings({
+            env: {
+               PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: gatedSwitch
+                  ? "true"
+                  : "false",
+            },
+         }).restore;
+         try {
+            for (const tenant of ["t1", "t2"]) {
+               const malloy = "run: ops_by_tenant";
+               const givens = { TENANT: tenant };
+               const result = await fixture.pkg
+                  .getModel("m.malloy")!
+                  .runQuery(
+                     unrecordedAudit(),
+                     { query: malloy, givens } as never,
+                     QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+                  );
+               const before = answerOf(
+                  await loaded.run("m.malloy", malloy, givens),
+               );
+               const rows = result.compactResult as unknown as Record<
+                  string,
+                  unknown
+               >[];
+               expect(rows.length).toBeGreaterThan(0);
+               for (const row of rows) expect(row.tenant).toBe(tenant);
+               expect(rows).toEqual(before.rows);
+               expect(result.path?.servedBy.kind).toBe("live");
+               expect(result.servedFrom ?? null).toBeNull();
+               // Never planned, so the path report has no table to name;
+               // the route counter records the leg's CONTRACT skip (below).
+               expect(
+                  result.path?.considered.find(
+                     (c) => (c.kind as string) === "query",
+                  ),
+               ).toBeUndefined();
+            }
+         } finally {
+            inner();
+         }
+      });
+   }
+
+   describe("publisher_query_route_total", () => {
+      const counted = async (
+         malloy: string,
+         givens?: Record<string, string>,
+         model = "m.malloy",
+      ) => {
+         const harness = await startMetricsHarness();
+         resetMaterializationTelemetryForTesting();
+         try {
+            await fixture.run(model, malloy, givens);
+            const count = (leg: string, outcome: string, reason: string) =>
+               harness.collectCounter("publisher_query_route_total", {
+                  leg,
+                  outcome,
+                  reason,
+               });
+            return {
+               queryUsed: await count("query", "used", "NONE"),
+               queryShapeMismatch: await count(
+                  "query",
+                  "skipped",
+                  "SHAPE_MISMATCH",
+               ),
+               queryContract: await count("query", "skipped", "ROW_LEVEL_GATE"),
+               viewUsed: await count("view", "used", "NONE"),
+               liveUsed: await count("live", "used", "NONE"),
+            };
+         } finally {
+            resetMaterializationTelemetryForTesting();
+            await harness.shutdown();
+         }
+      };
+
+      const none = {
+         queryUsed: 0,
+         queryShapeMismatch: 0,
+         queryContract: 0,
+         viewUsed: 0,
+         liveUsed: 0,
+      };
+
+      it("counts a served exact call as the query leg, used", async () => {
+         expect(await counted("run: by_carrier")).toEqual({
+            ...none,
+            queryUsed: 1,
+         });
+      });
+
+      it("counts a refinement as the query leg skipped SHAPE_MISMATCH, then live", async () => {
+         expect(await counted("run: by_carrier + { limit: 1 }")).toEqual({
+            ...none,
+            queryShapeMismatch: 1,
+            liveUsed: 1,
+         });
+      });
+
+      it("counts a gated query as the query leg skipped CONTRACT, then live", async () => {
+         expect(await counted("run: ops_by_tenant", { TENANT: "t1" })).toEqual({
+            ...none,
+            queryContract: 1,
+            liveUsed: 1,
+         });
+      });
+
+      it("still counts a persisted view's exact call as the view leg", async () => {
+         expect(
+            await counted("run: vs -> by_tenant", undefined, "inline.malloy"),
+         ).toEqual({ ...none, viewUsed: 1 });
+      });
+   });
+
+   it("answers the refused gated query live, per caller", async () => {
+      for (const tenant of ["t1", "t2"]) {
+         const outcome = answerOf(
+            await fixture.run("m.malloy", "run: ops_by_carrier", {
+               TENANT: tenant,
+            }),
+         );
+         expect(outcome.servedBy).toBe("live");
+         const before = answerOf(
+            await loaded.run("m.malloy", "run: ops_by_carrier", {
+               TENANT: tenant,
+            }),
+         );
+         expect(rowDifference(before.rows, outcome.rows)).toBeUndefined();
+      }
+   });
+});
+
+describe("R4: a persisted named query with PUBLISHER_MATERIALIZE off", () => {
+   let restore: () => void;
+   let loaded: Awaited<ReturnType<typeof loadFixture>>;
+   let fixture: LoadedFixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "false" },
+      }).restore;
+      await freshLoadPool();
+      loaded = await loadFixture({ "m.malloy": MODEL });
+      fixture = await loaded.bind();
+   });
+   afterAll(async () => {
+      await loaded?.dispose();
+      restore();
+   });
+
+   it("builds nothing for it and warns persist-query-not-built", () => {
+      expect(fixture.built.filter((b) => b.name.endsWith("__query"))).toEqual(
+         [],
+      );
+      const warned = fixture.warnings.filter(
+         (w) => w.code === "persist-query-not-built",
+      );
+      expect(warned.map((w) => w.subject)).toContain("by_carrier");
+      expect(warned[0]?.message).toContain("answered live");
+   });
+
+   it("answers run: q and queryName live", async () => {
+      const outcome = answerOf(
+         await fixture.run("m.malloy", "run: by_carrier"),
+      );
+      expect(outcome.servedBy).toBe("live");
+      expect(outcome.rows.length).toBe(3);
+      const byName = await fixture.pkg
+         .getModel("m.malloy")!
+         .runQuery(
+            unrecordedAudit(),
+            { queryName: "by_carrier" } as never,
+            QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+         );
+      expect(byName.path?.servedBy.kind ?? "live").toBe("live");
+      expect(byName.compactResult as unknown).toEqual(outcome.rows);
+   });
+});
+
+describe("R4: a persisted view with PUBLISHER_MATERIALIZE off", () => {
+   /** One valid persisted view, and a model whose view's line is invalid. */
+   const VIEWS = `##! experimental.persistence
+source: fl is ${TABLE} extend {
+  measure: n is count()
+  #@ persist name="fl_by_carrier"
+  view: by_carrier is { group_by: carrier; aggregate: n }
+}
+`;
+   const INVALID = VIEWS.replace(
+      '#@ persist name="fl_by_carrier"',
+      '#@ persist name="fl_by_carrier" watermark=ts',
+   );
+   let restore: () => void;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "false" },
+      }).restore;
+      await freshLoadPool();
+   });
+   afterAll(() => restore());
+
+   it("a valid line loads, warns persist-view-not-built (materialization_off), and the view answers live", async () => {
+      const loaded = await loadFixture({ "m.malloy": VIEWS });
+      try {
+         const fixture = await loaded.bind();
+         const warned = fixture.warnings.filter(
+            (w) => w.code === "persist-view-not-built",
+         );
+         expect(warned.map((w) => w.subject)).toEqual(["fl -> by_carrier"]);
+         expect(warned[0]?.message).toContain("PUBLISHER_MATERIALIZE");
+         expect(fixture.built.filter((b) => b.name.endsWith("__view"))).toEqual(
+            [],
+         );
+         const outcome = answerOf(
+            await fixture.run("m.malloy", "run: fl -> by_carrier"),
+         );
+         expect(outcome.servedBy).toBe("live");
+         expect(outcome.rows.length).toBe(3);
+      } finally {
+         await loaded.dispose();
+      }
+   });
+
+   it("an invalid line fails the load, as with the switch on", async () => {
+      await expect(loadFixture({ "m.malloy": INVALID })).rejects.toThrow(
+         /persist-view-invalid|incremental key/,
+      );
+   });
+});

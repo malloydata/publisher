@@ -111,8 +111,8 @@ from an inventory rather than from measure one. It does the three things that do
 survive reading measures one at a time at a few thousand of them: the dependency graph,
 return-type inference from the model's own column types, and the relationship flags that
 never appear in a measure's DAX. It has a `--json` mode for the `.pbix` path, which has
-no TMDL. It runs where you have a shell (Claude Code, Cursor); the Credible app's agent
-has no shell tool and the MCP skills bundle ships markdown only, so the prose stands alone.
+no TMDL. It runs where you have a shell (Claude Code, Cursor); a regular chat in a client
+such as Credible has no shell tool (an agent's own computer does) and the MCP skills bundle ships markdown only, so the prose stands alone.
 
 **DAX is not only in `measure` declarations, and the rest is not a rounding error.**
 The script also reads calculation groups, `functions.tmdl`, calculated columns,

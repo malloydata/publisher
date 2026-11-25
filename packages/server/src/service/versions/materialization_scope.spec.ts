@@ -1,0 +1,384 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import { describe, expect, it } from "bun:test";
+import type { Materialization } from "../../storage/DatabaseInterface";
+import {
+   newestIncrementalEntries,
+   newestServingEntries,
+   ownedVersionOf,
+   storageBindingResolverFor,
+   SUPERSEDED_TABLES_KEY,
+   versionedTableName,
+   versionTableSuffix,
+} from "./materialization_scope";
+
+function run(
+   id: string,
+   overrides: Partial<Materialization> & { tables?: string[] } = {},
+): Materialization {
+   const { tables, ...rest } = overrides;
+   return {
+      id,
+      environmentId: "env",
+      packageName: "pkg",
+      status: "MANIFEST_FILE_READY",
+      manifest: {
+         strict: false,
+         entries: Object.fromEntries(
+            (tables ?? [`t_${id}`]).map((table) => [
+               `eid-${table}`,
+               { sourceEntityId: `eid-${table}`, physicalTableName: table },
+            ]),
+         ),
+      } as Materialization["manifest"],
+      startedAt: null,
+      completedAt: null,
+      error: null,
+      metadata: null,
+      version: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      ...rest,
+   };
+}
+
+const tablesOf = (entries: Record<string, { physicalTableName: string }>) =>
+   Object.values(entries).map((e) => e.physicalTableName);
+
+describe("versionTableSuffix", () => {
+   const suffix = (
+      version: string,
+      packageName = "sales",
+      environmentName = "env",
+   ) => versionTableSuffix({ environmentName, packageName, version });
+
+   it("names a release by its numbers, and the same owner the same way every time", () => {
+      expect(suffix("1.2.3")).toMatch(/^__v1_2_3_[0-9a-f]{8}$/);
+      expect(suffix("1.2.3")).toBe(suffix("1.2.3"));
+   });
+
+   it("keeps two packages, or two environments, at one version apart", () => {
+      // They may build on one shared connection: one table between them, and
+      // archiving one version would drop the table the other serves.
+      expect(suffix("0.1.0", "a")).not.toBe(suffix("0.1.0", "b"));
+      expect(suffix("0.1.0", "a", "dev")).not.toBe(
+         suffix("0.1.0", "a", "prod"),
+      );
+      // A name and an environment that join the same way stay apart.
+      expect(suffix("1.0.0", "b", "a/")).not.toBe(suffix("1.0.0", "/b", "a"));
+   });
+
+   it("keeps versions apart that differ only in punctuation", () => {
+      const a = suffix("1.0.0-rc.1");
+      const b = suffix("1.0.0-rc-1");
+      expect(a).toMatch(/^__v1_0_0_[0-9a-f]{8}$/);
+      expect(a).not.toBe(b);
+      expect(suffix("1.0.0+build.5")).not.toBe(suffix("1.0.0"));
+   });
+});
+
+describe("versionedTableName", () => {
+   it("suffixes the table segment of a qualified name", () => {
+      expect(versionedTableName("analytics.summary", "__v1_0_0")).toBe(
+         "analytics.summary__v1_0_0",
+      );
+      expect(versionedTableName("summary", "__v1_0_0")).toBe("summary__v1_0_0");
+   });
+
+   it("keeps a long segment within 50 characters, and distinct names distinct", () => {
+      const long = "x".repeat(60);
+      const a = versionedTableName(`s.${long}a`, "__v1_0_0");
+      const b = versionedTableName(`s.${long}b`, "__v1_0_0");
+      expect(a.split(".")[1].length).toBeLessThanOrEqual(50);
+      expect(a.endsWith("__v1_0_0")).toBe(true);
+      expect(a).not.toBe(b);
+   });
+});
+
+describe("ownedVersionOf", () => {
+   const pkg = (versionId: string | undefined, scope?: string) => ({
+      getVersionId: () => versionId,
+      getPackageMetadata: () => ({ scope }),
+   });
+
+   it("is the version under scope version, and nothing otherwise", () => {
+      expect(ownedVersionOf(pkg("1.0.0", "version"))).toBe("1.0.0");
+      expect(ownedVersionOf(pkg("1.0.0", "package"))).toBeUndefined();
+      expect(ownedVersionOf(pkg("1.0.0"))).toBeUndefined();
+      expect(ownedVersionOf(pkg(undefined, "version"))).toBeUndefined();
+   });
+
+   it("reads the scope alone when the package offers it, never the whole metadata", () => {
+      const scoped = (scope: string) => ({
+         getVersionId: () => "1.0.0",
+         getPackageMetadata: (): never => {
+            throw new Error("built the whole metadata");
+         },
+         getMaterializationScope: () => scope,
+      });
+      expect(ownedVersionOf(scoped("version"))).toBe("1.0.0");
+      expect(ownedVersionOf(scoped("package"))).toBeUndefined();
+   });
+});
+
+describe("newestServingEntries", () => {
+   const owned = (id: string, version: string) =>
+      run(id, { version, metadata: { scope: "version" } });
+   const at = (minute: number) => new Date(Date.UTC(2026, 0, 1, 0, minute));
+
+   it("serves no run that recorded its manifest but did not finish: loading, or interrupted and settled FAILED", () => {
+      const runs = [
+         run("loading", { status: "MANIFEST_ROWS_READY" }),
+         run("interrupted", { status: "FAILED" }),
+         run("done"),
+      ];
+      expect(tablesOf(newestServingEntries(runs, {}))).toEqual(["t_done"]);
+   });
+
+   it("F-17: never serves a FAILED run's failures-only manifest, even the newest", () => {
+      const failed = run("failed", {
+         status: "FAILED",
+         manifest: {
+            strict: false,
+            entries: {},
+            failures: {
+               "eid-t_done": {
+                  sourceEntityId: "eid-t_done",
+                  reason: "Binder Error",
+               },
+            },
+         } as Materialization["manifest"],
+      });
+      expect(tablesOf(newestServingEntries([failed, run("done")], {}))).toEqual(
+         ["t_done"],
+      );
+      expect(newestServingEntries([failed], {})).toEqual({});
+   });
+
+   it("reads a version's own runs only", () => {
+      const runs = [owned("b", "2.0.0"), owned("a", "1.0.0"), run("legacy")];
+      expect(
+         tablesOf(
+            newestServingEntries(runs, { versionId: "1.0.0", owned: "1.0.0" }),
+         ),
+      ).toEqual(["t_a"]);
+   });
+
+   it("never reads a version-owned run as one of the package's", () => {
+      const runs = [owned("b", "2.0.0"), run("shared", { version: "1.0.0" })];
+      expect(tablesOf(newestServingEntries(runs, {}))).toEqual(["t_shared"]);
+      expect(
+         tablesOf(newestServingEntries(runs, { versionId: "2.0.0" })),
+      ).toEqual(["t_shared"]);
+   });
+
+   it("skips the run asking, and runs that did not commit", () => {
+      const runs = [
+         run("self"),
+         run("failed", { status: "FAILED" }),
+         run("committed"),
+      ];
+      expect(tablesOf(newestServingEntries(runs, {}, "self"))).toEqual([
+         "t_committed",
+      ]);
+   });
+
+   it("takes the run that committed last, not the one created last", () => {
+      const runs = [
+         run("created-later", { createdAt: at(5), completedAt: at(6) }),
+         run("committed-later", { createdAt: at(1), completedAt: at(9) }),
+      ];
+      expect(tablesOf(newestServingEntries(runs, {}))).toEqual([
+         "t_committed-later",
+      ]);
+   });
+
+   it("leaves out the tables a later run superseded", () => {
+      const runs = [
+         run("committed", {
+            tables: ["orders", "items"],
+            metadata: { [SUPERSEDED_TABLES_KEY]: ["orders"] },
+         }),
+      ];
+      expect(tablesOf(newestServingEntries(runs, {}))).toEqual(["items"]);
+   });
+
+   it("never counts another version's run with instructions as one of the package's", () => {
+      const runs = [
+         run("instructed", {
+            version: "1.0.0",
+            metadata: { mode: "orchestrated", scope: "package" },
+            completedAt: at(9),
+         }),
+         run("auto", {
+            version: "2.0.0",
+            metadata: { mode: "auto", scope: "package" },
+            completedAt: at(5),
+         }),
+      ];
+      expect(
+         tablesOf(newestServingEntries(runs, { versionId: "2.0.0" })),
+      ).toEqual(["t_auto"]);
+      // Its own version reads it.
+      expect(
+         tablesOf(newestServingEntries(runs, { versionId: "1.0.0" })),
+      ).toEqual(["t_instructed"]);
+      // A package with no versions reads every run, as before.
+      expect(tablesOf(newestServingEntries(runs, {}))).toEqual([
+         "t_instructed",
+      ]);
+   });
+
+   it("answers nothing when no run committed", () => {
+      expect(
+         newestServingEntries([run("x", { status: "PENDING" })], {}),
+      ).toEqual({});
+   });
+});
+
+describe("storageBindingResolverFor", () => {
+   const keyed = {
+      v: 1,
+      dialect: "duckdb",
+      columns: [{ name: "id", nativeType: "INTEGER" }],
+      keys: { "rollup:id": { unique: true, level: "rollup" } },
+   };
+   const committed = (): Materialization => {
+      const r = run("a");
+      const entries = (
+         r.manifest as { entries: Record<string, Record<string, unknown>> }
+      ).entries;
+      entries["eid-t_a"]!.contract = keyed;
+      return r;
+   };
+   const resolve = (runs: Materialization[]) =>
+      storageBindingResolverFor(
+         { listMaterializations: async () => runs },
+         "env",
+      )("pkg", {});
+
+   it("binds each contract as stored when no run is active", async () => {
+      const entries = await resolve([committed()]);
+      expect(entries["eid-t_a"]?.contract).toEqual(keyed);
+   });
+
+   it("binds no passed key check while a run may be rewriting a table, and keeps the rest of the contract", async () => {
+      const entries = await resolve([
+         committed(),
+         run("b", { status: "PENDING", manifest: null, tables: [] }),
+      ]);
+      const { keys: _keys, ...rest } = keyed;
+      expect(entries["eid-t_a"]?.contract).toEqual(rest);
+   });
+
+   it("keeps a check that found its key repeated, or could not run, while a run is active: it only declines", async () => {
+      const repeated = { unique: false, level: "parent" };
+      const unverified = { unique: false, level: "leaf", unverified: true };
+      const r = committed();
+      (
+         r.manifest as { entries: Record<string, Record<string, unknown>> }
+      ).entries["eid-t_a"]!.contract = {
+         ...keyed,
+         keys: {
+            ...keyed.keys,
+            "parent:orders@m.malloy.id": repeated,
+            "leaf:items.item_id": unverified,
+         },
+      };
+      const entries = await resolve([
+         r,
+         run("b", { status: "PENDING", manifest: null, tables: [] }),
+      ]);
+      expect(
+         (entries["eid-t_a"]?.contract as { keys?: unknown } | undefined)?.keys,
+      ).toEqual({
+         "parent:orders@m.malloy.id": repeated,
+         "leaf:items.item_id": unverified,
+      });
+   });
+});
+
+describe("newestIncrementalEntries", () => {
+   const ledger = { coveredThrough: "2026-01-01" };
+   /** A committed run at `at` recording `entries` as [address, table, ledger?]. */
+   function committedRun(
+      id: string,
+      at: number,
+      entries: [string, string, boolean][],
+      metadata: Record<string, unknown> | null = null,
+   ): Materialization {
+      return run(id, {
+         completedAt: new Date(at),
+         metadata,
+         manifest: {
+            strict: false,
+            entries: Object.fromEntries(
+               entries.map(([address, table, incremental]) => [
+                  address,
+                  {
+                     sourceEntityId: address,
+                     physicalTableName: table,
+                     connectionName: "warehouse",
+                     ...(incremental ? { ledger } : {}),
+                  },
+               ]),
+            ),
+         } as Materialization["manifest"],
+      });
+   }
+
+   it("takes each incremental source's newest entry, from whichever run recorded it", () => {
+      const entries = newestIncrementalEntries(
+         [
+            committedRun("old", 1, [["x", "t_x", true]]),
+            committedRun("new", 2, [["b", "t_b", false]]),
+         ],
+         {},
+      );
+      expect(Object.keys(entries)).toEqual(["x"]);
+      expect(entries.x?.physicalTableName).toBe("t_x");
+   });
+
+   it("ignores an entry its run has marked superseded", () => {
+      const entries = newestIncrementalEntries(
+         [
+            committedRun("old", 1, [["x", "t_x", true]], {
+               [SUPERSEDED_TABLES_KEY]: ["t_x"],
+            }),
+            committedRun("new", 2, [["b", "t_b", false]]),
+         ],
+         {},
+      );
+      expect(entries).toEqual({});
+   });
+
+   it("ignores an entry for a table a later committed run recorded again, for another source or as no increment", () => {
+      for (const later of [
+         ["y", "T_X", true],
+         ["x", "t_x", false],
+      ] as [string, string, boolean][]) {
+         const entries = newestIncrementalEntries(
+            [
+               committedRun("old", 1, [["x", "t_x", true]]),
+               committedRun("new", 2, [later]),
+            ],
+            {},
+         );
+         expect(entries.x).toBeUndefined();
+      }
+   });
+
+   it("keeps an entry for the same name in another destination", () => {
+      const old = committedRun("old", 1, [["x", "t_x", true]]);
+      const newer = committedRun("new", 2, [["y", "t_x", true]]);
+      (
+         newer.manifest as {
+            entries: Record<string, Record<string, unknown>>;
+         }
+      ).entries.y!.storageDestinationName = "lake";
+      expect(
+         newestIncrementalEntries([old, newer], {}).x?.physicalTableName,
+      ).toBe("t_x");
+   });
+});

@@ -68,7 +68,9 @@ export function onlyParseFailures(problems: readonly LogMessage[]): boolean {
 }
 
 /** The restricted-construct rejections among `problems`, if any. */
-function restrictedRejections(problems: readonly LogMessage[]): LogMessage[] {
+export function restrictedRejections(
+   problems: readonly LogMessage[],
+): LogMessage[] {
    return problems.filter(
       (problem) => problem.code === RESTRICTED_CONSTRUCT_CODE,
    );

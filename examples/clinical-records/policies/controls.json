@@ -1,0 +1,303 @@
+{
+  "policy": "policies/phi-access-and-minimum-necessary.md",
+  "version": "2026-11-01",
+  "note": "The control register: Riverbend's PHI Access and Minimum Necessary Policy, as checks a machine runs. Drafted from the policy by skill:malloy-compliance-review, approved by the Privacy Officer, enforced on every change by compliance.py check.",
+  "classes": [
+    "phi.direct_identifier",
+    "phi.quasi_identifier",
+    "phi.clinical",
+    "phi.financial",
+    "none"
+  ],
+  "identifier_classes": {
+    "direct": [
+      "phi.direct_identifier"
+    ],
+    "quasi": [
+      "phi.quasi_identifier"
+    ]
+  },
+  "subjects": [
+    "patient"
+  ],
+  "personas": {
+    "clinician": {
+      "class": "Treating clinician",
+      "givens": {
+        "ROLES": [
+          "clinical"
+        ],
+        "ORGANIZATIONS": [
+          "e002090d-4e92-300e-b41e-7d1f21dee4c6"
+        ],
+        "ATTRIBUTES": []
+      }
+    },
+    "biller": {
+      "class": "Billing and claims",
+      "givens": {
+        "ROLES": [
+          "billing"
+        ],
+        "ORGANIZATIONS": [
+          "e002090d-4e92-300e-b41e-7d1f21dee4c6"
+        ],
+        "ATTRIBUTES": []
+      }
+    },
+    "analyst": {
+      "class": "Quality and population health analyst",
+      "givens": {
+        "ROLES": [
+          "quality"
+        ],
+        "ORGANIZATIONS": [],
+        "ATTRIBUTES": []
+      }
+    },
+    "researcher": {
+      "class": "IRB-approved researcher",
+      "givens": {
+        "ROLES": [
+          "researcher"
+        ],
+        "ORGANIZATIONS": [],
+        "ATTRIBUTES": []
+      }
+    },
+    "partner": {
+      "class": "External data partner, data use agreement executed",
+      "givens": {
+        "ROLES": [
+          "partner"
+        ],
+        "ORGANIZATIONS": [],
+        "ATTRIBUTES": [
+          "dua-signed"
+        ]
+      }
+    },
+    "partner-no-dua": {
+      "class": "External data partner, no agreement",
+      "givens": {
+        "ROLES": [
+          "partner"
+        ],
+        "ORGANIZATIONS": [],
+        "ATTRIBUTES": []
+      }
+    }
+  },
+  "access": {
+    "patient_chart": {
+      "clinician": "scoped"
+    },
+    "billing": {
+      "biller": "scoped"
+    },
+    "population_health": {
+      "analyst": "rows"
+    },
+    "partner_lds": {
+      "partner": "rows"
+    },
+    "research": {
+      "researcher": "rows"
+    }
+  },
+  "domains": {
+    "research": {
+      "deidentified": true,
+      "must_not_carry": [
+        "phi.direct_identifier"
+      ],
+      "caps": [
+        {
+          "field": "patient.age",
+          "max": 90
+        },
+        {
+          "field": "patient.birth_year",
+          "min": 1930
+        }
+      ]
+    },
+    "population_health": {
+      "must_not_carry": [
+        "phi.direct_identifier"
+      ]
+    },
+    "partner_lds": {
+      "must_not_carry": [
+        "phi.direct_identifier"
+      ]
+    }
+  },
+  "controls": [
+    {
+      "id": "CL-01",
+      "text": "Every field on every published surface carries a classification.",
+      "checks": [
+        "coverage"
+      ]
+    },
+    {
+      "id": "CL-02",
+      "text": "Classification is declared where a field is defined and travels with it.",
+      "checks": [
+        "values"
+      ]
+    },
+    {
+      "id": "AC-01",
+      "text": "Every published surface that serves PHI is gated by workforce class; a request without a verified class is refused.",
+      "checks": [
+        "gated",
+        "access"
+      ]
+    },
+    {
+      "id": "AC-02",
+      "text": "The base tables are not queryable by anyone.",
+      "checks": [
+        "locked_bases"
+      ]
+    },
+    {
+      "id": "AC-03",
+      "text": "A gate reads only attributes the identity provider sets.",
+      "checks": [
+        "secure_gates"
+      ]
+    },
+    {
+      "id": "AC-04",
+      "text": "A surface serves only the classes of data its workforce class needs, and declares them.",
+      "checks": [
+        "ceiling",
+        "values",
+        "loads:ceiling"
+      ]
+    },
+    {
+      "id": "AC-05",
+      "text": "A join from a published surface does not extend the surface's access.",
+      "checks": [
+        "loads:join"
+      ],
+      "why": "Publisher loads a package whose published source joins a gated source it does not scope, with a join-bypass warning; this review fails that warning, so a package that passes satisfies this."
+    },
+    {
+      "id": "MN-01",
+      "text": "A clinician reads full PHI only for patients with an encounter at their organizations.",
+      "checks": [
+        "access:patient_chart",
+        "loads:patient_chart"
+      ]
+    },
+    {
+      "id": "MN-02",
+      "text": "Billing reads identifiers, codes and financial data for the organizations it bills for.",
+      "checks": [
+        "access:billing",
+        "loads:billing"
+      ]
+    },
+    {
+      "id": "MN-03",
+      "text": "A quality analyst reads a limited data set and no direct identifier.",
+      "checks": [
+        "access:population_health",
+        "ceiling:population_health",
+        "values:population_health"
+      ]
+    },
+    {
+      "id": "MN-04",
+      "text": "A researcher reads de-identified data and nothing else.",
+      "checks": [
+        "access:research",
+        "ceiling:research",
+        "values:research"
+      ]
+    },
+    {
+      "id": "MN-05",
+      "text": "An external partner reads a limited data set only under an executed data use agreement.",
+      "checks": [
+        "access:partner_lds"
+      ]
+    },
+    {
+      "id": "DI-01",
+      "text": "De-identified dates are years; ages over 89 are reported as 90.",
+      "checks": [
+        "values:research"
+      ]
+    },
+    {
+      "id": "DI-02",
+      "text": "De-identified geography is the state or a three-digit ZIP.",
+      "checks": [
+        "values:research"
+      ]
+    },
+    {
+      "id": "DI-03",
+      "text": "A de-identified surface carries no direct identifier.",
+      "checks": [
+        "ceiling:research",
+        "values:research",
+        "loads:research"
+      ]
+    },
+    {
+      "id": "DI-04",
+      "text": "A de-identified surface carries no free-text field.",
+      "checks": [
+        "values:research"
+      ]
+    },
+    {
+      "id": "LDS-01",
+      "text": "A limited data set carries no direct identifier.",
+      "checks": [
+        "ceiling:population_health",
+        "ceiling:partner_lds",
+        "values:population_health",
+        "values:partner_lds",
+        "loads:population_health",
+        "loads:partner_lds"
+      ]
+    },
+    {
+      "id": "LDS-02",
+      "text": "A limited data set is gated on a DUA for partners and on role for analysts.",
+      "checks": [
+        "access:partner_lds",
+        "access:population_health"
+      ]
+    },
+    {
+      "id": "AU-01",
+      "text": "Every query produces a record of who asked, which surface, which fields and classes, the decision, and the result's size, retained six years.",
+      "status": "not_provable_here",
+      "why": "Publisher writes the record for every query (docs/access-record.md). Where it is shipped and that it is kept six years are the log store's to prove, not the model's."
+    },
+    {
+      "id": "AU-02",
+      "text": "An inventory of every published surface, gate, class and field, from the served model.",
+      "checks": [
+        "inventory"
+      ]
+    },
+    {
+      "id": "AU-03",
+      "text": "A change that would violate a control is refused, not deployed with a warning.",
+      "checks": [
+        "refusals"
+      ],
+      "why": "The load refuses a #(carries) leak; a join bypass is a load warning that this review, run in CI, fails, along with the rest."
+    }
+  ]
+}

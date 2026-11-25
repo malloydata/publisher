@@ -200,3 +200,62 @@ describe("layout and title", () => {
       expect(screen.getByRole("button", { name: "Reset" })).toBeDefined();
    });
 });
+
+describe("GivensPanel: Apply with autorun off", () => {
+   const TEXT: Given = { name: "REGION", type: "string" };
+
+   function ApplyHarness({ onApplied }: { onApplied: () => void }) {
+      const [params, setParams] = useState<Record<string, string>>({});
+      const { draft, setGiven, apply, pending } = useGivensState({
+         declaredTypes: new Map([["REGION", "string"]]),
+         params,
+         onParamsChange: setParams,
+         autorun: false,
+      });
+      return (
+         <GivensPanel
+            givens={[TEXT]}
+            values={draft}
+            onChange={setGiven}
+            onReset={() => {}}
+            apply={{
+               onApply: () => {
+                  onApplied();
+                  apply();
+               },
+               pending,
+            }}
+         />
+      );
+   }
+
+   it("applies a click that lands right after typing, before the draft settles", () => {
+      let applied = 0;
+      render(<ApplyHarness onApplied={() => applied++} />);
+      const field = screen.getByRole("textbox");
+      const button = screen.getByRole("button", { name: "Apply" });
+
+      field.focus();
+      fireEvent.change(field, { target: { value: "CA" } });
+      // The browser's order: mousedown on the button blurs the field, which
+      // flushes the draft, and only then does the click fire.
+      fireEvent.mouseDown(button);
+      fireEvent.blur(field);
+      fireEvent.mouseUp(button);
+      fireEvent.click(button);
+
+      expect(applied).toBe(1);
+      expect(button.getAttribute("aria-disabled")).toBe("true");
+   });
+
+   it("does nothing on a click while nothing is pending", () => {
+      let applied = 0;
+      render(<ApplyHarness onApplied={() => applied++} />);
+      const button = screen.getByRole("button", { name: "Apply" });
+
+      fireEvent.click(button);
+
+      expect(applied).toBe(0);
+      expect(button.getAttribute("aria-disabled")).toBe("true");
+   });
+});

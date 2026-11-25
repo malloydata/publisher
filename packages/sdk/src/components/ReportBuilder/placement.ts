@@ -244,10 +244,14 @@ export function placeWhereDrawn(
       // Its top and bottom are each taken to the nearest row line, rather
       // than its height rounded on its own: tiles that touched still touch,
       // so a whole page's rounding never adds up and pushes rows down. No
-      // edge moves more than half a row.
-      const lastRow = Math.round(
-         (box.top + box.height + GRID_GAP_PX) / ROW_STEP,
-      );
+      // edge moves more than half a row. Except a text tile's bottom, which
+      // only ever moves down: a chart redraws at whatever height it gets,
+      // but prose cannot shrink, and a bottom rounded up by half a row left
+      // its last line scrolling out of a one-row tile.
+      const bottom = (box.top + box.height + GRID_GAP_PX) / ROW_STEP;
+      const lastRow = isTextTile(tile)
+         ? Math.ceil(bottom - 0.02)
+         : Math.round(bottom);
       return {
          ...rest,
          ...cell,

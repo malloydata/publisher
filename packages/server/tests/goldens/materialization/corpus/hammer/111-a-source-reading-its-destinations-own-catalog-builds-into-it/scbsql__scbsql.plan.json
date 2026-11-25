@@ -1,0 +1,77 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "lake_probe",
+        "dependsOn": {
+          "by_kind_sql@<hammer>/scbsql/scbsql.malloy": []
+        },
+        "order": [
+          "by_kind_sql@<hammer>/scbsql/scbsql.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "by_kind_sql@<hammer>/scbsql/scbsql.malloy": "persist"
+    },
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "by_kind_sql@<hammer>/scbsql/scbsql.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "by_kind_sql@<hammer>/scbsql/scbsql.malloy": "scbsql.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "lake_probe",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "by_kind_sql@<hammer>/scbsql/scbsql.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "by_kind_sql@<hammer>/scbsql/scbsql.malloy": {
+        "annotationFields": {
+          "name": "scbsql_out",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "kind",
+            "type": "string"
+          }
+        ],
+        "connectionName": "lake_probe",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "scbsql.malloy",
+        "name": "by_kind_sql",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "4a0727e998edd72f86d3290aee2bd8f59aae3fbc842699b66bf9b1c839386a35",
+        "sourceID": "by_kind_sql@<hammer>/scbsql/scbsql.malloy",
+        "sql": "sha256:692719c44f8be283"
+      }
+    }
+  }
+}

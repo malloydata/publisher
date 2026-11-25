@@ -1,0 +1,23 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "customers_hidden",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "customers_hidden:serves",
+      "west_spend:live:refused"
+    ],
+    "warnings": [
+      {
+        "code": "persist-not-built",
+        "message": "#@ persist source \"west_spend\" is not built, so it is answered live: it is built over its upstreams' tables in its storage= destination, which compares strings byte-exact, and the base its strings are read on is not named; a downstream is never built by recomputing its upstreams from raw.",
+        "subject": "west_spend"
+      }
+    ]
+  },
+  "queries": []
+}

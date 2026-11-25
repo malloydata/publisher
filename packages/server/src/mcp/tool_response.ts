@@ -32,7 +32,7 @@ type ResourceBlock = {
 
 type TextBlock = { [x: string]: unknown; type: "text"; text: string };
 
-export type ToolContent = ResourceBlock | TextBlock;
+type ToolContent = ResourceBlock | TextBlock;
 
 export interface ToolResult {
    [x: string]: unknown;
@@ -113,6 +113,7 @@ export function jsonToolError(
       {
          error: details.message,
          suggestions: details.suggestions,
+         ...(details.reason ? { reason: details.reason } : {}),
          ...extraPayload,
       },
       { isError: true, text: formatErrorText(details) },

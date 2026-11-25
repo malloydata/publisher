@@ -1,0 +1,12 @@
+>>>markdown
+# Load shapes
+
+A notebook that imports models from other folders, and a file in a dot-folder through one of them.
+>>>malloy
+import "../diamond/top.malloy"
+import "../nested/index.malloy"
+import "../dotfile/second.malloy"
+>>>malloy
+run: check_diamond
+>>>malloy
+run: check_nested

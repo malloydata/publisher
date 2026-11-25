@@ -310,6 +310,6 @@ hand-check a sample: on `PBIASEngine`, a 25-measure hand-check agreed with the
 script on all 25.
 
 **It will not run on every surface.** Skills ship their scripts to npm and into
-Claude Code and Cursor, but the Credible app's agent has no shell tool, and the MCP
+Claude Code and Cursor, but a regular chat in a client such as Credible has no shell tool (an agent's own computer does), and the MCP
 skills bundle carries markdown only. The prose above has to stand on its own, and
 does.

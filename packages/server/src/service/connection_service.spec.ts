@@ -7,11 +7,16 @@ import * as os from "os";
 import * as path from "path";
 import sinon from "sinon";
 import { components } from "../api";
-import { ConnectionNotFoundError, FrozenConfigError } from "../errors";
+import {
+   BadRequestError,
+   ConnectionNotFoundError,
+   FrozenConfigError,
+} from "../errors";
 import { buildEnvironmentMalloyConfig } from "./connection";
 import { ConnectionService } from "./connection_service";
 import { Environment } from "./environment";
-import { EnvironmentStore } from "./environment_store";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { ConnectionAdmin } from "./environment_ports";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -39,7 +44,7 @@ describe("service/connection_service", () => {
       };
 
       connectionService = new ConnectionService(
-         mockEnvironmentStore as unknown as EnvironmentStore,
+         fakeOf<ConnectionAdmin>(mockEnvironmentStore),
       );
    });
 
@@ -145,6 +150,7 @@ describe("service/connection_service", () => {
 
          const mockProject = {
             listApiConnections: sinon.stub().returns([]),
+            listStorageDestinations: sinon.stub().returns([]),
             updateConnections: sinon.stub(),
             metadata: { location: "/test/path" },
          };
@@ -335,6 +341,7 @@ describe("service/connection_service", () => {
 
          const mockProject = {
             listApiConnections: sinon.stub().returns([existingConnection]),
+            listStorageDestinations: sinon.stub().returns([]),
             updateConnections: sinon.stub(),
             metadata: { location: "/test/path" },
          };
@@ -354,6 +361,131 @@ describe("service/connection_service", () => {
          );
 
          expect(mockProject.updateConnections.called).toBe(true);
+      });
+   });
+
+   describe("a readableSchemas entry a storage destination builds into", () => {
+      const lake = (
+         name: string,
+         ducklakeExtra: object = {},
+         extra: object = {},
+      ) =>
+         ({
+            name,
+            type: "ducklake",
+            ...extra,
+            ducklakeConnection: {
+               catalog: {
+                  postgresConnection: {
+                     host: "catalog.internal",
+                     port: 5432,
+                     databaseName: "ducklake",
+                     userName: "publisher",
+                     password: "catalog-secret",
+                  },
+                  metadataSchema: "lake",
+               },
+               storage: { bucketUrl: `gs://managed-tier/${name}` },
+               ...ducklakeExtra,
+            },
+         }) as ApiConnection;
+      let envPath: string;
+      let environment: Environment;
+      const plain = lake("models", {}, { managed: true });
+      const listing = lake(
+         "models",
+         { readableSchemas: ["materialized"] },
+         { managed: true },
+      );
+
+      beforeEach(() => {
+         envPath = fs.mkdtempSync(
+            path.join(os.tmpdir(), "publisher-conn-service-"),
+         );
+         const malloyConfig = buildEnvironmentMalloyConfig([plain], envPath);
+         environment = new Environment(
+            "test-project",
+            envPath,
+            malloyConfig,
+            malloyConfig.apiConnections,
+            [lake("managed", { destinationSchema: "materialized" })],
+         );
+         (mockRepository.getEnvironmentByName as sinon.SinonStub).resolves({
+            id: "project-123",
+            name: "test-project",
+         });
+         (mockEnvironmentStore.getEnvironment as sinon.SinonStub).resolves(
+            environment,
+         );
+      });
+
+      afterEach(() => {
+         fs.rmSync(envPath, { recursive: true, force: true });
+      });
+
+      it("is refused on add, before anything is persisted", async () => {
+         (mockRepository.getConnectionByName as sinon.SinonStub).resolves(null);
+         await expect(
+            connectionService.addConnection("test-project", "second", {
+               ...listing,
+               name: "second",
+            }),
+         ).rejects.toThrow(BadRequestError);
+         expect(
+            (mockEnvironmentStore.addConnection as sinon.SinonStub).called,
+         ).toBe(false);
+         expect(environment.listApiConnections().map((c) => c.name)).toEqual([
+            "models",
+         ]);
+      });
+
+      it("is refused on update, before anything is persisted", async () => {
+         (mockRepository.getConnectionByName as sinon.SinonStub).resolves({
+            id: "conn-1",
+            name: "models",
+            config: plain,
+         });
+         await expect(
+            connectionService.updateConnection("test-project", "models", {
+               ducklakeConnection: listing.ducklakeConnection,
+            }),
+         ).rejects.toThrow(BadRequestError);
+         expect(
+            (mockEnvironmentStore.updateConnection as sinon.SinonStub).called,
+         ).toBe(false);
+      });
+
+      it("checks a destinations-only update against a connection add that is still persisting", async () => {
+         await environment.update({
+            name: "test-project",
+            storageDestinations: [
+               lake("managed", { destinationSchema: "elsewhere" }),
+            ],
+         });
+         (mockRepository.getConnectionByName as sinon.SinonStub).resolves(null);
+         let persisted!: () => void;
+         (mockEnvironmentStore.addConnection as sinon.SinonStub).returns(
+            new Promise<void>((resolve) => (persisted = resolve)),
+         );
+         const add = connectionService.addConnection("test-project", "second", {
+            ...listing,
+            name: "second",
+         });
+         await new Promise((resolve) => setTimeout(resolve, 0));
+         const update = environment.update({
+            name: "test-project",
+            storageDestinations: [
+               lake("managed", { destinationSchema: "materialized" }),
+            ],
+         });
+         await new Promise((resolve) => setTimeout(resolve, 0));
+         persisted();
+         await add;
+         await expect(update).rejects.toThrow(BadRequestError);
+         expect(
+            environment.listStorageDestinations()[0].ducklakeConnection
+               ?.destinationSchema,
+         ).toBe("elsewhere");
       });
    });
 
@@ -378,6 +510,7 @@ describe("service/connection_service", () => {
          };
 
          const mockProject = {
+            listStorageDestinations: sinon.stub().returns([]),
             listApiConnections: sinon.stub().returns([
                mockDbConnection,
                {
@@ -496,6 +629,7 @@ describe("service/connection_service", () => {
          };
 
          const mockProject = {
+            listStorageDestinations: sinon.stub().returns([]),
             listApiConnections: sinon
                .stub()
                .returns([connection1, connection2]),
@@ -558,6 +692,7 @@ describe("service/connection_service", () => {
 
          const mockProject = {
             listApiConnections: sinon.stub().returns([existingConnection]),
+            listStorageDestinations: sinon.stub().returns([]),
             updateConnections: sinon.stub(),
             metadata: { location: "/test" },
          };
@@ -630,6 +765,7 @@ describe("service/connection_service", () => {
 
          const mockProject = {
             listApiConnections: sinon.stub().returns([dbConnection]),
+            listStorageDestinations: sinon.stub().returns([]),
             updateConnections: sinon.stub(),
             metadata: { location: "/test" },
          };

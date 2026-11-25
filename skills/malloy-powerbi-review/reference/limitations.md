@@ -129,8 +129,8 @@ model, with a count, and never appears in the per-measure recipe totals.
 
 ## Where it runs
 
-Claude Code and Cursor. The Credible app's agent has no shell tool, and the MCP
-skills bundle ships `SKILL.md` and `reference/*.md` only - it never opens a
+Claude Code and Cursor. A regular chat in a client such as Credible has no shell
+tool (an agent's own computer does), and the MCP skills bundle ships `SKILL.md` and `reference/*.md` only - it never opens a
 skill's `scripts/` directory. **So the prose has to be complete without the
 script**, and the script exists to do what an LLM reading measures one at a time
 cannot: the dependency graph, return-type inference from the model's own column

@@ -24,6 +24,8 @@ import * as path from "path";
 import { BadRequestError, internalErrorToHttpError } from "../errors";
 import { Environment } from "./environment";
 import type { Package } from "./package";
+import { writePackageFiles } from "../test_helpers/temp_package";
+import { parsePackageName } from "./identity";
 
 let rootDir: string;
 let envPath: string;
@@ -51,20 +53,27 @@ function model(body: string): string {
    return `${HEADER}${body}\n}\n`;
 }
 
+/** The package's `rollup-not-built` warnings: the rollups refused alone. */
+function rollupRefusals(pkg: Package) {
+   return (pkg.getPackageMetadata().warnings ?? []).filter(
+      (w) => w.code === "rollup-not-built",
+   );
+}
+
 async function loadPackage(
    text: string,
    file = "model.malloy",
 ): Promise<Package> {
    const dir = path.join(envPath, "pkg");
-   await fs.mkdir(dir, { recursive: true });
-   await fs.writeFile(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({ name: "pkg", description: "fixture" }),
+   writePackageFiles(
+      dir,
+      {},
+      { manifest: { name: "pkg", description: "fixture" } },
    );
    await fs.writeFile(path.join(dir, file), text);
    const env = await Environment.create("testEnv", envPath, []);
    await env.addPackage("pkg");
-   return env.getPackage("pkg", false);
+   return env.getPackage(parsePackageName("pkg"), false);
 }
 
 describe("a valid declaration does not disturb the load", () => {
@@ -75,8 +84,10 @@ describe("a valid declaration does not disturb the load", () => {
             model(`  #@ preaggregate grain="category"
   measure: total is amount.sum()`),
          );
-         expect(pkg.formatInvalidPreaggregatePolicy()).toBe("");
-         expect(pkg.preaggregateAccessWarnings()).toEqual([]);
+         expect(pkg.materialization().formatInvalidPreaggregatePolicy()).toBe(
+            "",
+         );
+         expect(rollupRefusals(pkg)).toEqual([]);
       },
       { timeout: 30000 },
    );
@@ -87,7 +98,9 @@ describe("a valid declaration does not disturb the load", () => {
          const pkg = await loadPackage(
             model(`  measure: total is amount.sum()`),
          );
-         expect(pkg.formatInvalidPreaggregatePolicy()).toBe("");
+         expect(pkg.materialization().formatInvalidPreaggregatePolicy()).toBe(
+            "",
+         );
       },
       { timeout: 30000 },
    );
@@ -204,9 +217,11 @@ source: orders is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""") extend 
 `,
          );
          // Neither gate refuses.
-         expect(pkg.formatInvalidPreaggregatePolicy()).toBe("");
+         expect(pkg.materialization().formatInvalidPreaggregatePolicy()).toBe(
+            "",
+         );
          // But it is SAID, on the surface an operator reads.
-         const warned = pkg.preaggregateAccessWarnings();
+         const warned = rollupRefusals(pkg);
          expect(warned).toHaveLength(1);
          expect(warned[0].subject).toBe("total");
          expect(warned[0].message).toContain("does not publicly expose");
@@ -234,10 +249,10 @@ source: orders_pub is orders extend {} include {
 }
 `,
          );
-         expect(pkg.formatInvalidPreaggregatePolicy()).toBe("");
-         expect(pkg.preaggregateAccessWarnings().map((w) => w.subject)).toEqual(
-            ["total"],
+         expect(pkg.materialization().formatInvalidPreaggregatePolicy()).toBe(
+            "",
          );
+         expect(rollupRefusals(pkg).map((w) => w.subject)).toEqual(["total"]);
       },
       { timeout: 30000 },
    );

@@ -19,9 +19,9 @@ rebound parent, and that text names `$REGION`; a model that does not declare
 carry — refused outright under `strictUpstreams` — for a source whose only
 sin is standing next to a given.
 
-So the chained build declares the author model's givens, as the serve shape
-does, and `rollup` is built from `daily`'s table: `reused`, and stale after
-the warehouse changes.
+So the chained build declares the author model's givens, as the served copy
+does by being the author's own model text, and `rollup` is built from `daily`'s
+table: `reused`, and stale after the warehouse changes.
 
 ## Publisher
 
@@ -84,7 +84,7 @@ Expect:
 | ------------ | --------------- | ----------- | ---------- |
 | 99           | 2026-01-03      | east        | 1000       |
 
-## Build (orchestrated, strict, pkg=cig)
+## Build (orchestrated, pkg=cig)
 
 Strict: `rollup` alone over the stored `daily`, through the intermediate that
 reads the given. Succeeds, from the table.

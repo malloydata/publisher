@@ -30,12 +30,52 @@ on:
         options:
           - patch
           - minor
+      # The escape hatch for the main-thread gate below, for a release that
+      # must ship while the check is known to be wrong. It still runs the job,
+      # which passes with a warning, so nothing downstream of it is skipped.
+      skip_main_thread_check:
+        description: "Skip the main-thread regression gate (only when the check
+          itself is known to be wrong; the run records that it was skipped)"
+        required: false
+        default: false
+        type: boolean
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # The main-thread regression gate: main against the anchor release
+  # (packages/server/tests/perf/main-thread/anchor.json), before anything is
+  # cut or published. It runs first so a failure leaves no release branch
+  # behind. See main-thread-regression.yml and CONTEXT.md.
+  main-thread-check:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/main-thread-regression.yml
+    with:
+      skip: ${{ inputs.skip_main_thread_check == true }}
+
+  # The whole test suite on macOS and Windows, against the commit being
+  # released, before anything is cut or published. Pull requests run the suite
+  # on Linux only (build.yml), so without this a release could ship a commit no
+  # macOS or Windows run has seen; the nightly cannot stand in for it, because
+  # main usually moves between the nightly and a dispatch. It runs alongside the
+  # main-thread gate, and `prepare` needs both, so a failure leaves no release
+  # branch behind. There is no skip input: a release that cannot pass it waits
+  # for the fix. Linux needs no repeat here, since every push to main ran it.
+  # No Actions cache is read (`restore_cache: false`): see CONTEXT.md.
+  cross-platform-tests:
+    name: Cross Platform Tests
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cross-platform-tests.yml
+    with:
+      linux: false
+      macos_windows: true
+      restore_cache: false
+
   prepare:
+    needs: [ main-thread-check, cross-platform-tests ]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -239,7 +279,7 @@ jobs:
           # would fail closed regardless, so this buys a readable message.
           # shellcheck disable=SC2086
           if git diff --quiet -- $PKGS; then
-            echo "::error title=Version::main already declares ${NEW_VERSION}, so there is nothing to commit for this release. Either it has already shipped (check npm and the tags) or those three package.json files were edited by hand. Pick the next free version instead."
+            echo "::error title=Version::main already declares ${NEW_VERSION}, so there is nothing to commit for this release. Either it has already shipped (check npm and the tags) or those three version files were edited by hand. Pick the next free version instead."
             exit 1
           fi
 
@@ -304,14 +344,13 @@ jobs:
       current_version: ${{ needs.prepare.outputs.new_version }}
       ref: ${{ needs.prepare.outputs.branch_name }}
 
-  # skills, create-malloy-package and python-client version on their own lines,
-  # so this job triggers them rather than versioning them. The first two publish
-  # to npm through publish_indep_pkg, which decides their version at release
-  # time (scripts/independent-version.mjs) rather than reading one committed to
-  # their package.json; python-client publishes to PyPI through the older
-  # publish_pkg, which still reads its version straight from pyproject.toml.
-  # Both share publish_resolved for the registry-agnostic tail: the watched-path
-  # guard, the "main moved" compare, the dispatch, and the poll loop.
+  # skills and create-malloy-package version on their own lines, so this job
+  # triggers them rather than versioning them. Both publish to npm through
+  # publish_indep_pkg, which decides their version at release time
+  # (scripts/independent-version.mjs) rather than reading one committed to
+  # their package.json, and shares publish_resolved for the tail: the
+  # watched-path guard, the "main moved" compare, the dispatch, and the poll
+  # loop.
   #
   # It triggers them but does NOT align their version numbers with sdk/app/
   # server, and that is not an omission to be tidied up later. malloydata/malloy
@@ -320,9 +359,8 @@ jobs:
   # versions are immutable, so there is no path back to a shared number. skills
   # is skipped when its published content is unchanged since npm latest's
   # gitHead; create-malloy-package publishes on every non-prerelease release
-  # and is skipped only on a re-run (its publisherServer already matches);
-  # python-client is paused. A computed version already on npm is an error for
-  # either, never a skip.
+  # and is skipped only on a re-run (its publisherServer already matches). A
+  # computed version already on npm is an error for either, never a skip.
   #
   # They are DISPATCHED through the Actions API rather than called with
   # workflow_call, deliberately. npm allows one trusted publisher per package
@@ -370,19 +408,19 @@ jobs:
     # (wait_for_server_latest).
     needs: [ prepare, publish-npm ]
     runs-on: ubuntu-latest
-    # THREE full poll budgets (25m each, below), plus the scaffolder's wait for
+    # TWO full poll budgets (25m each, below), plus the scaffolder's wait for
     # the server's `latest` (SERVER_LATEST_BUDGET_SECONDS, 15m), plus checkout
     # and setup, with margin. Keep this above the sum of those budgets, or the
     # LAST package timing out is killed by the job cap before it can print which
     # package failed — which is the one diagnostic that says whether a publish
-    # happened. A fourth package means raising this too.
-    timeout-minutes: 105
+    # happened. A third package means raising this too.
+    timeout-minutes: 80
     permissions:
       contents: read
       # For the workflow-dispatch API. Not id-token: this job never publishes,
       # it only asks the registry and triggers the children.
       #
-      # actions: write cannot be narrowed to "dispatch these three workflows"; it
+      # actions: write cannot be narrowed to "dispatch these two workflows"; it
       # also covers cancelling runs and deleting run logs repo-wide. Keep this
       # job dependency-free for that reason: checkout and setup-node only, no
       # bun install and no third-party actions, so there is nothing here for a
@@ -392,13 +430,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           # main, never needs.prepare.outputs.branch_name. prepare bumps only
-          # sdk/app/server, so the release branch's copies of these three
-          # packages are identical to main, and all three children guard on
+          # sdk/app/server, so the release branch's copies of these two
+          # packages are identical to main, and both children guard on
           # github.ref == 'refs/heads/main'. Dispatched on a release branch their
           # publish jobs SKIP, and a skipped job reports success, so the release
-          # would go green having published nothing. python-sdk.yml gained that
-          # guard when it joined this job; its old gate was an unreachable tag
-          # ref, which would have skipped here too, and just as silently.
+          # would go green having published nothing.
           ref: main
           # Nothing here authenticates to git: the only local git call is
           # rev-parse, and the live sha comes over the API. Without this,
@@ -415,14 +451,13 @@ jobs:
         with:
           node-version: "24"
 
-      # python-client's PyPI publish is paused (work in progress); see the end of
-      # scripts/publish-packages.sh.
       - name: Publish skills and create-malloy-package
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Through env, not interpolated into the script body.
           NEW_VERSION: ${{ needs.prepare.outputs.new_version }}
         run: scripts/publish-packages.sh
+
   gh-release:
     needs: [ prepare, publish-npm, publish-docker ]
     runs-on: ubuntu-latest
@@ -517,7 +552,6 @@ jobs:
             sed 's/^/[release-notes] /' "$EXTRACT_LOG"
           fi
           if [ -n "$NARRATIVE" ]; then
-            printf '\n%s\n' "$NARRATIVE" >> "$NOTES_FILE"
             echo "::notice title=Release notes::attached $(grep -c '^## ' <<< "$NARRATIVE") narrative section(s) from RELEASE_NOTES.md"
           elif [ "$EXTRACT_OK" = 1 ]; then
             # Only when the file was actually read. Saying "no sections" after a
@@ -549,19 +583,85 @@ jobs:
           PREV_TAG="$(git tag -l 'v[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | grep -vx "$TAG" | tail -1)"
 
           NOTES_START_ARGS=()
+          PREV_TAG_ARGS=()
           if [ -n "$PREV_TAG" ]; then
             echo "::notice title=Changelog::Generating notes from ${PREV_TAG} to ${TAG}"
             NOTES_START_ARGS=(--notes-start-tag "$PREV_TAG")
+            PREV_TAG_ARGS=(-f "previous_tag_name=${PREV_TAG}")
           else
             echo "::notice title=Changelog::No previous tag found; using default note generation"
+          fi
+
+          # Fit the body to the page. GitHub refuses a release body over
+          # 125,000 characters with a 422, here, after npm and Docker have
+          # published: 0.13.0's 75 sections came to 136k and its page was made
+          # by hand. So the generated PR list is fetched first, the same list
+          # --generate-notes would append, and `release-notes.mjs fit` composes
+          # the whole body under a budget: the narrative in full when it fits,
+          # otherwise an index of its section titles linking RELEASE_NOTES.md at
+          # the tag, then the PR list truncated, then only its compare link.
+          # It always produces something that fits, so length cannot fail this
+          # step again.
+          #
+          # Either half failing falls back rather than failing the step. No
+          # generated list: `fit` puts the compare link in its place. `fit`
+          # itself failing: the header goes up alone with --generate-notes, the
+          # earlier behaviour minus the narrative, which a PR list alone has
+          # never come near the limit with.
+          GENERATED_FILE="$(mktemp)"
+          GENERATED_ARGS=()
+          if gh api "repos/${{ github.repository }}/releases/generate-notes" \
+              -f "tag_name=${TAG}" -f "target_commitish=${BRANCH}" \
+              "${PREV_TAG_ARGS[@]}" --jq .body > "$GENERATED_FILE"; then
+            GENERATED_ARGS=(--generated "$GENERATED_FILE")
+          else
+            echo "::warning title=Release notes::could not fetch the generated PR list; the page links the compare view instead"
+          fi
+
+          FIT_ARGS=()
+          if [ -n "$PREV_TAG" ]; then
+            FIT_ARGS=(--prev-tag "$PREV_TAG")
+          fi
+          if [ "$EXTRACT_OK" = 0 ]; then
+            FIT_ARGS+=(--no-narrative)
+          fi
+          BODY_FILE="$(mktemp)"
+          FIT_LOG="$(mktemp)"
+          GENERATE_ARGS=()
+          if FIT="$(node scripts/release-notes.mjs fit "$VERSION" \
+              --header "$NOTES_FILE" --out "$BODY_FILE" \
+              --repo-url "${{ github.server_url }}/${{ github.repository }}" \
+              "${GENERATED_ARGS[@]}" "${FIT_ARGS[@]}" 2>"$FIT_LOG")"; then
+            echo "[release-notes] fit: ${FIT}"
+            case "$FIT" in
+              *narrative=index*)
+                echo "::notice title=Release notes::the narrative is too long for a GitHub release page; the page lists its section titles and links RELEASE_NOTES.md at ${TAG} (${FIT})"
+                echo "- release notes: narrative too long for the page — listed as an index of section titles linking \`RELEASE_NOTES.md\` at \`${TAG}\` (${FIT})" >> "$GITHUB_STEP_SUMMARY"
+                ;;
+            esac
+            case "$FIT" in
+              *generated=truncated* | *generated=cut*)
+                echo "::notice title=Release notes::the generated PR list was truncated to fit the page; the compare link carries the rest (${FIT})"
+                ;;
+              *generated=link*)
+                if [ "${#GENERATED_ARGS[@]}" -gt 0 ]; then
+                  echo "::notice title=Release notes::the generated PR list did not fit the page; it links the compare view instead (${FIT})"
+                fi
+                ;;
+            esac
+          else
+            sed 's/^/[release-notes] /' "$FIT_LOG"
+            echo "::warning title=Release notes::could not fit the release body (logged above); the page carries the header and the generated PR list only. Paste the narrative onto the release page by hand."
+            echo "- release notes: narrative NOT attached — \`release-notes.mjs fit ${VERSION}\` failed" >> "$GITHUB_STEP_SUMMARY"
+            cp "$NOTES_FILE" "$BODY_FILE"
+            GENERATE_ARGS=(--generate-notes "${NOTES_START_ARGS[@]}")
           fi
 
           gh release create "$TAG" \
             --target "$BRANCH" \
             --title "v${VERSION}" \
-            --notes-file "$NOTES_FILE" \
-            --generate-notes \
-            "${NOTES_START_ARGS[@]}"
+            --notes-file "$BODY_FILE" \
+            "${GENERATE_ARGS[@]}"
 
           echo "## 🏷️ GitHub Release" >> $GITHUB_STEP_SUMMARY
           echo "Created release [\`${TAG}\`](https://github.com/${{ github.repository }}/releases/tag/${TAG})" >> $GITHUB_STEP_SUMMARY

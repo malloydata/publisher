@@ -87,7 +87,7 @@ Expect:
 | ------------ | --------------- | ---------- |
 | 99           | 2026-01-03      | 1000       |
 
-## Build (orchestrated, strict, pkg=cti)
+## Build (orchestrated, pkg=cti)
 
 Rebuild `rollup` alone, reusing the `daily` already built, under strict. The
 entry must say the upstream was reused: a recompute would have read the

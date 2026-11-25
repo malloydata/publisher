@@ -1,0 +1,296 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * The compiler-internal slots of a compiled Malloy object, read in one
+ * place: a `Model`'s `ModelDef`, a persist source's own `SourceDef`, its
+ * explore and the model it was planned in, and the facts read off a compiled
+ * source that more than one reader needs (its declared primary key, the time
+ * zone it sets, a field's access modifier).
+ *
+ * Malloy keeps these slots internal (`_modelDef`, `_sourceDef`, `_explore`),
+ * so a Malloy upgrade that moves one breaks this module alone. Every reader
+ * outside `governance/ir` goes through it; materialization's IR ratchet
+ * (`layer_rules.spec.ts`) holds that.
+ *
+ * Pure: reads only what it is handed.
+ */
+
+/** The `ModelDef` a compiled `Model` (or anything carrying one) holds. */
+export function modelDefOf<T extends { _modelDef: unknown }>(
+   model: T,
+): T["_modelDef"] {
+   return model._modelDef;
+}
+
+/** {@link modelDefOf}, or undefined for no model, or one that holds none. */
+export function modelDefIfAny<T extends { _modelDef?: unknown }>(
+   model: T | undefined,
+): T["_modelDef"] | undefined {
+   return model?._modelDef;
+}
+
+/** A persist source's own compiled `SourceDef`. */
+export function sourceDefOf<T extends { _sourceDef: unknown }>(
+   source: T,
+): T["_sourceDef"] {
+   return source._sourceDef;
+}
+
+/** A persist source's compiled explore (its fields as Malloy presents them). */
+export function exploreOf<T extends { _explore: unknown }>(
+   source: T,
+): T["_explore"] {
+   return source._explore;
+}
+
+/**
+ * A persist source's output columns, by name (its `as` name when it has one),
+ * IR type and numeric subtype (`numberType`, for a number), in order: what
+ * its table holds.
+ */
+export function outputColumnsOf(source: {
+   _explore: { structDef: unknown };
+}): [string | undefined, string | undefined, string | undefined][] {
+   const fields =
+      (source._explore.structDef as { fields?: unknown[] }).fields ?? [];
+   return fields.map((f) => {
+      const field = f as {
+         name?: string;
+         as?: string;
+         type?: string;
+         numberType?: string;
+      };
+      return [field.as ?? field.name, field.type, field.numberType];
+   });
+}
+
+/** The `ModelDef` of the model a persist source was planned in, if it holds one. */
+export function plannedModelDefOf(source: {
+   _model?: { _modelDef?: unknown };
+}): unknown {
+   return source._model?._modelDef;
+}
+
+/**
+ * A compiled field's access modifier when it is not public, or undefined. Fails
+ * closed, as `isHidden` in preaggregation_synthesis.ts does: a modifier it does
+ * not know reads as private. The one reader of `accessModifier` for P3: the
+ * plan, the build copy's selectable set and the bind guard's access proof.
+ */
+export function hiddenAccess(field: {
+   accessModifier?: unknown;
+}): "private" | "internal" | undefined {
+   if (field.accessModifier == null || field.accessModifier === "public") {
+      return undefined;
+   }
+   return field.accessModifier === "internal" ? "internal" : "private";
+}
+
+/** A compiled source's declared `primary_key:`, if it has one. */
+export function primaryKeyOf(def: unknown): string | undefined {
+   const key = (def as { primaryKey?: unknown } | undefined)?.primaryKey;
+   return typeof key === "string" ? key : undefined;
+}
+
+/**
+ * The time zone a compiled source or query stage sets itself, exactly as it
+ * is recorded (`queryTimezone`): for a comparison of two that must agree
+ * whatever either holds.
+ */
+export function recordedTimezoneOf(def: unknown): unknown {
+   return (def as { queryTimezone?: unknown } | undefined)?.queryTimezone;
+}
+
+/** The time zone a compiled source or query stage sets, when it names one. */
+export function timezoneOf(def: unknown): string | undefined {
+   const zone = recordedTimezoneOf(def);
+   return typeof zone === "string" && zone !== "" ? zone : undefined;
+}
+
+/**
+ * The query time zone a compiled source's rows are computed in: its own,
+ * or, for a query-shaped source, the last stage of its pipeline that sets
+ * one, as Malloy applies them.
+ */
+export function queryTimezoneOf(structDef: unknown): string | undefined {
+   const def = structDef as
+      | {
+           queryTimezone?: unknown;
+           query?: { pipeline?: readonly { queryTimezone?: unknown }[] };
+        }
+      | undefined;
+   let tz: unknown = def?.queryTimezone;
+   for (const stage of def?.query?.pipeline ?? []) {
+      if (typeof stage?.queryTimezone === "string") tz = stage.queryTimezone;
+   }
+   return typeof tz === "string" && tz !== "" ? tz : undefined;
+}
+
+/**
+ * Whether two query time zones are one: unset is `'UTC'`, Malloy's default,
+ * which compiles to the same SQL. Only that spelling: an alias such as
+ * `'Etc/UTC'` is another zone, since a dialect may not know it (MySQL without
+ * its time zone tables converts it to NULL).
+ */
+export function sameZone(
+   a: string | undefined,
+   b: string | undefined,
+): boolean {
+   const utc = (z: string | undefined) => (z === "UTC" ? undefined : z);
+   return utc(a) === utc(b);
+}
+
+/**
+ * The one zone a query-shaped source's query computes every timestamp
+ * truncation it outputs in: each stage's own `timezone:`, and, for a stage
+ * that sets none, the zone of the base the query runs on, written inline (as
+ * Malloy compiles a query-shaped source, carrying the zone it inherits).
+ * Only over a base that is not itself query-shaped, so each truncation is
+ * computed by one of these stages: a base's query may pass through a
+ * truncation it computed in its own zone. Undefined when the base is
+ * query-shaped or not inline, or the zones are not all one.
+ */
+export function queryStageZone(
+   def: unknown,
+): { zone: string | undefined } | undefined {
+   const query = (
+      def as { query?: { structRef?: unknown; pipeline?: unknown } } | undefined
+   )?.query;
+   const stages = Array.isArray(query?.pipeline) ? query.pipeline : [];
+   if (stages.length === 0) return undefined;
+   const zoneOf = (x: unknown) => {
+      const z = (x as { queryTimezone?: unknown } | null)?.queryTimezone;
+      return typeof z === "string" && z !== "" ? z : undefined;
+   };
+   const base = query?.structRef as
+      | { query?: unknown; type?: unknown }
+      | null
+      | undefined;
+   if (
+      base === null ||
+      typeof base !== "object" ||
+      base.query !== undefined ||
+      base.type === "query_source"
+   ) {
+      return undefined;
+   }
+   const own = stages.map(zoneOf);
+   const zones = own.filter((z) => z !== undefined) as (string | undefined)[];
+   if (own.some((z) => z === undefined)) zones.push(zoneOf(base));
+   const [first, ...rest] = zones;
+   return rest.every((z) => sameZone(z, first)) ? { zone: first } : undefined;
+}
+
+/**
+ * The timestamp truncations a query-shaped source outputs that its query
+ * computed in a zone other than the default (a stage's own `timezone:`, or
+ * one the query inherits from the source it runs on), by name: each holds
+ * the value truncated there, which a truncation again in another zone
+ * changes. When {@link queryStageZone} cannot name the zone, every one is
+ * listed. Empty for a source that is not query-shaped, or whose query
+ * computes in the default zone.
+ */
+export function stageZonedTruncations(def: unknown): Set<string> {
+   const d = def as
+      | {
+           query?: unknown;
+           fields?: {
+              name?: unknown;
+              as?: unknown;
+              type?: unknown;
+              e?: unknown;
+              timeframe?: unknown;
+           }[];
+        }
+      | undefined;
+   if (d?.query === undefined) return new Set();
+   if (queryTimezoneOf(d) === undefined && !anyTimezone(d.query)) {
+      return new Set();
+   }
+   const stage = queryStageZone(d);
+   if (stage !== undefined && sameZone(stage.zone, undefined)) {
+      return new Set();
+   }
+   return new Set(
+      (d.fields ?? [])
+         .filter(
+            (f) =>
+               typeof f.timeframe === "string" &&
+               f.e === undefined &&
+               (f.type === "timestamp" || f.type === "timestamptz"),
+         )
+         .map((f) => String(f.as ?? f.name)),
+   );
+}
+
+/** Whether any part of a compiled query sets a `queryTimezone`. */
+function anyTimezone(node: unknown, depth = 0): boolean {
+   if (!node || typeof node !== "object" || depth > MAX_WALK_DEPTH) {
+      return depth > MAX_WALK_DEPTH;
+   }
+   return Object.entries(node).some(([k, v]) =>
+      k === "queryTimezone"
+         ? typeof v === "string" && v !== ""
+         : anyTimezone(v, depth + 1),
+   );
+}
+
+/** Max IR depth to walk; deep enough for real sources, a hang backstop. */
+const MAX_WALK_DEPTH = 200;
+
+/**
+ * Whether a slice of compiled IR reads a given, by EITHER a `{node:'given'}`
+ * reference or a non-empty `givenUsage` summary, so a compiler that prunes one
+ * of the two signals cannot make a given read clean. Throws past a depth
+ * bound, which every caller treats as a read.
+ */
+export function readsAGiven(
+   node: unknown,
+   seen: WeakSet<object> = new WeakSet(),
+   depth = 0,
+): boolean {
+   if (depth > MAX_WALK_DEPTH) {
+      throw new Error("given walk exceeded max depth");
+   }
+   if (node === null || typeof node !== "object") return false;
+   if (seen.has(node as object)) return false;
+   seen.add(node as object);
+
+   if (Array.isArray(node)) {
+      return node.some((item) => readsAGiven(item, seen, depth + 1));
+   }
+   const record = node as Record<string, unknown>;
+   if (record.node === "given" || record.node === "givenReference") return true;
+   if (record.givenRef !== undefined) return true;
+   const summary = record.refSummary as { givenUsage?: unknown[] } | undefined;
+   if (summary?.givenUsage && summary.givenUsage.length > 0) return true;
+   if (Array.isArray(record.givenUsage) && record.givenUsage.length > 0) {
+      return true;
+   }
+   return Object.values(record).some((v) => readsAGiven(v, seen, depth + 1));
+}
+
+/**
+ * The verbatim text of each of a compiled source's `where:` terms that reads
+ * a given ({@link readsAGiven}), sorted: what a routed compile that writes
+ * them again must carry, compared with live's by text. Undefined when the
+ * filter list, or a given-reading term's text, cannot be read (fail closed).
+ */
+export function givenWhereCodes(def: unknown): string[] | undefined {
+   const list = (def as { filterList?: unknown } | undefined)?.filterList;
+   if (list === undefined) return [];
+   if (!Array.isArray(list)) return undefined;
+   const codes: string[] = [];
+   try {
+      for (const term of list) {
+         if (!readsAGiven(term)) continue;
+         const code = (term as { code?: unknown } | null)?.code;
+         if (typeof code !== "string" || code === "") return undefined;
+         codes.push(code);
+      }
+   } catch {
+      return undefined;
+   }
+   return codes.sort();
+}

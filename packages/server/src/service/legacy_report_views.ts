@@ -2,211 +2,33 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * DEPRECATED: the report surface as the old `…/dashboards*` and
- * `…/notebooks*` routes served it, for clients that still read those shapes
- * (Credible among them). Every function here is a projection of the report
- * API (`Package.listReports`, `Package.getReport`) into the old shape; report
- * code imports nothing from this module. Removing the deprecated routes is
- * deleting this module, `controller/legacy_report.controller.ts` and
- * `routes/deprecated.ts`, and the one line in server.ts that registers them.
+ * DEPRECATED: the report vocabulary older clients still read. Report code
+ * imports nothing from this module. What imports it, and so what a removal has
+ * to touch: `controller/compile.controller.ts` (`kind` on a compiled
+ * document), `routes/spa.ts` (the Console's `dashboards/<name>` and
+ * `notebooks/<name>` alias) and `service/package.ts` (which implements
+ * {@link ReportViewPackage}).
  *
- * What only these routes have:
- * - `kind`, the layout in the old vocabulary (`dashboard` for grid,
- *   `notebook` for linear), synthesized here and nowhere else;
- * - addressing a grid report by its basename, which is not an identity: two
- *   reports sharing it are a 409 naming both ({@link AmbiguousReportNameError}),
- *   warned at load ({@link ambiguousDashboardNameWarnings}).
+ * What only these have: `kind`, the layout in the old vocabulary
+ * (`dashboard` for grid, `notebook` for linear), synthesized here and nowhere
+ * else.
  */
 
-import { components } from "../api";
-import { API_PREFIX } from "../constants";
 import { recordDeprecatedUsage } from "../deprecated_usage_metrics";
-import { ConflictError } from "../errors";
 import type { CompiledDocument } from "./compile_document";
-import type { Package } from "./package";
 import { reportName, type ReportLayout } from "./report";
 
-type ApiDashboard = components["schemas"]["Dashboard"];
-type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
-type ApiNotebook = components["schemas"]["Notebook"];
-type ApiRawNotebook = components["schemas"]["RawNotebook"];
-type ApiReport = components["schemas"]["Report"];
-type ApiPackageWarning = NonNullable<
-   components["schemas"]["Package"]["warnings"]
->[number];
+/** What the Console alias reads from a package. `Package` implements it. */
+export interface ReportViewPackage {
+   isServedReport(modelPath: string): boolean;
+   servedReportPaths(): IterableIterator<string>;
+}
 
 /** The old name of a layout. */
 export type LegacyKind = "dashboard" | "notebook";
 
 export function legacyKindOf(layout: ReportLayout): LegacyKind {
    return layout === "grid" ? "dashboard" : "notebook";
-}
-
-/**
- * A basename that more than one report in the package has. A report is
- * identified by its path; the deprecated `…/dashboards/{name}` route takes a
- * basename and resolves it only when it is unique. 409, naming every match.
- */
-export class AmbiguousReportNameError extends ConflictError {
-   constructor(message: string) {
-      super(message);
-      this.name = "AmbiguousReportNameError";
-   }
-}
-
-/**
- * The deprecated dashboard URL. The NAME is percent-encoded; the environment
- * and package names are not, because both are validated on the way in and
- * cannot carry a character that matters here. The name is a filename
- * basename, so it can carry anything a filesystem allows (`a#b`, `p%q`); raw,
- * a `#` or `?` would cut the URL.
- */
-function dashboardResource(
-   environmentName: string,
-   packageName: string,
-   name: string,
-): string {
-   return `${API_PREFIX}/environments/${environmentName}/packages/${packageName}/dashboards/${encodeURIComponent(name)}`;
-}
-
-/** The grid reports, in path order: what the dashboards routes serve. */
-function gridReports(pkg: Package): ApiReport[] {
-   return pkg.listReports().filter((report) => report.layout === "grid");
-}
-
-/** The grid reports, as list-dashboards lists them. */
-export function listDashboards(
-   pkg: Package,
-   environmentName: string,
-): ApiDashboard[] {
-   return gridReports(pkg).map((report) => ({
-      resource: dashboardResource(
-         environmentName,
-         pkg.getPackageName(),
-         report.name,
-      ),
-      packageName: pkg.getPackageName(),
-      name: report.name,
-      path: report.path,
-      title: report.title,
-      description: report.description,
-      error: report.error,
-   }));
-}
-
-/** `PackageWarning.code` of a basename two grid reports share. */
-const REPORT_NAME_AMBIGUOUS = "report-name-ambiguous";
-
-/**
- * One load-time warning per basename two or more grid reports share, naming
- * the paths: the deprecated `…/dashboards/{name}` route answers 409 for that
- * name ({@link getDashboard}), and nothing else would say so before a client
- * asks. The report routes address by path and are unaffected.
- */
-export function ambiguousDashboardNameWarnings(
-   pkg: Package,
-): ApiPackageWarning[] {
-   const pathsByName = new Map<string, string[]>();
-   for (const report of gridReports(pkg))
-      pathsByName.set(report.name, [
-         ...(pathsByName.get(report.name) ?? []),
-         report.path,
-      ]);
-   return Array.from(pathsByName)
-      .filter(([, paths]) => paths.length > 1)
-      .map(([name, paths]) => ({
-         model: paths[0],
-         subject: name,
-         code: REPORT_NAME_AMBIGUOUS,
-         severity: "warn" as const,
-         message:
-            `Reports ${paths.join(", ")} share the file name "${name}", so the ` +
-            `deprecated GET …/dashboards/${name} route answers 409 for it. ` +
-            `Fix: rename one of the files.`,
-      }));
-}
-
-/**
- * The grid report whose basename is `name`, or undefined when there is none.
- * A basename is not an identity, so two grid reports sharing it are
- * ambiguous, and that is a 409 naming both rather than a guess.
- */
-export async function getDashboard(
-   pkg: Package,
-   environmentName: string,
-   name: string,
-): Promise<ApiDashboardManifest | undefined> {
-   const matches = gridReports(pkg).filter((report) => report.name === name);
-   if (matches.length > 1) {
-      throw new AmbiguousReportNameError(
-         `More than one report in package ${pkg.getPackageName()} is named ` +
-            `"${name}": ${matches.map((m) => m.path).join(", ")}. Address ` +
-            `one by its path: GET …/reports/{path}.`,
-      );
-   }
-   const report = matches[0] && (await pkg.getReport(matches[0].path));
-   if (!report) return undefined;
-   return {
-      resource: dashboardResource(
-         environmentName,
-         pkg.getPackageName(),
-         report.name,
-      ),
-      packageName: report.packageName,
-      name: report.name,
-      path: report.path,
-      layout: report.layout,
-      kind: legacyKindOf(report.layout),
-      title: report.title,
-      description: report.description,
-      error: report.error,
-      tiles: report.tiles,
-      dashboardColumns: report.dashboardColumns,
-      startingGivens: report.startingGivens,
-      autorun: report.autorun,
-      givens: report.givens,
-   };
-}
-
-/**
- * The linear reports, as list-notebooks lists them: a title only when the
- * file resolves one (the report listing falls back to the name), and the
- * error a linear report that failed to compile or to read lists with.
- */
-export function listNotebooks(
-   pkg: Package,
-   environmentName: string,
-): ApiNotebook[] {
-   return pkg
-      .listReports()
-      .filter((report) => report.layout === "linear")
-      .map((report) => {
-         const model = pkg.getModel(report.path);
-         const listing = model?.getNotebookListing() ?? {};
-         return {
-            environmentName,
-            packageName: pkg.getPackageName(),
-            path: report.path,
-            title: listing.title,
-            description: listing.description,
-            error: model?.getNotebookError()?.message,
-         };
-      });
-}
-
-/** A linear report's cells, with its tile layout (when it is written as tiles) carrying `kind`. */
-export function withLegacyNotebookKind(
-   notebook: ApiRawNotebook,
-): ApiRawNotebook {
-   if (!notebook.dashboard) return notebook;
-   const { layout } = notebook.dashboard;
-   return {
-      ...notebook,
-      dashboard: {
-         ...notebook.dashboard,
-         ...(layout && { kind: legacyKindOf(layout) }),
-      },
-   };
 }
 
 /**
@@ -228,7 +50,7 @@ export function withLegacyDocumentKind(
  * report paths rather than the listing, which the fallback would otherwise
  * build on every candidate request.
  */
-function hasReportNamed(pkg: Package, name: string): boolean {
+function hasReportNamed(pkg: ReportViewPackage, name: string): boolean {
    for (const path of pkg.servedReportPaths()) {
       if (reportName(path) === name) return true;
    }
@@ -242,7 +64,10 @@ function hasReportNamed(pkg: Package, name: string): boolean {
  * reachable; and never when a report lives at `<routePath>.malloy`, since that
  * is the report's own route. Counts nothing: {@link recordConsoleAliasUse} does.
  */
-export function isLegacyReportAlias(pkg: Package, routePath: string): boolean {
+export function isLegacyReportAlias(
+   pkg: ReportViewPackage,
+   routePath: string,
+): boolean {
    const alias = /^(?:dashboards|notebooks)\/([^/]+)$/.exec(routePath);
    return (
       alias !== null &&
@@ -263,7 +88,7 @@ export function recordConsoleAliasUse(
    packageOf: (
       environmentName: string,
       packageName: string,
-   ) => Package | undefined,
+   ) => ReportViewPackage | undefined,
 ): void {
    const segments = requestPath.split("/").filter((s) => s.length > 0);
    if (segments.length !== 4) return;

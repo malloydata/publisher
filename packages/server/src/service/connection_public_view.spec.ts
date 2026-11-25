@@ -240,6 +240,31 @@ describe("connection public view: contract parity", () => {
 });
 
 describe("toPublicConnection", () => {
+   it("returns a managed DuckLake connection's managed and readOnly flags", () => {
+      const view = toPublicConnection({
+         name: "sales",
+         type: "ducklake",
+         managed: true,
+         ducklakeConnection: {
+            readOnly: true,
+            storage: { bucketUrl: "gs://b/ds_x" },
+            catalog: {
+               postgresConnection: {
+                  host: "catalog.internal",
+                  databaseName: "ducklake",
+                  userName: "ds_x_r",
+                  password: SENTINEL,
+               },
+               metadataSchema: "ds_x",
+            },
+         },
+      } as ApiConnection);
+
+      expect(view.managed).toBe(true);
+      expect(view.ducklakeConnection?.readOnly).toBe(true);
+      expect(JSON.stringify(view)).not.toContain(SENTINEL);
+   });
+
    it("keeps the public fields of a postgres connection", () => {
       const view = toPublicConnection({
          name: "pg",
@@ -266,6 +291,22 @@ describe("toPublicConnection", () => {
          },
          withheldFields: ["postgresConnection.password"],
       } as ApiConnection);
+   });
+
+   it("keeps a bigquery connection's dbmeta switch", () => {
+      const view = toPublicConnection({
+         name: "bq",
+         type: "bigquery",
+         bigqueryConnection: {
+            defaultProjectId: "data-project",
+            serviceAccountKeyJson: SENTINEL,
+            dbmeta: true,
+         },
+      } as ApiConnection);
+      expect(view.bigqueryConnection).toEqual({
+         defaultProjectId: "data-project",
+         dbmeta: true,
+      });
    });
 
    it("omits the credential rather than masking it", () => {
@@ -405,6 +446,22 @@ describe("toPublicConnection", () => {
       ).ducklakeConnection;
       expect(dl.storage.bucketUrl).toBe("s3://bucket/prefix");
       expect(dl.catalog.metadataSchema).toBe("ducklake_meta");
+   });
+
+   it("keeps the ducklake readableSchemas list, which a scalar slot would drop", () => {
+      const view = toPublicConnection({
+         name: "lake",
+         type: "ducklake",
+         ducklakeConnection: {
+            catalog: { postgresConnection: { host: "catalog.db" } },
+            readableSchemas: ["extra_a", "extra_b"],
+         },
+      } as unknown as ApiConnection);
+
+      expect(view.ducklakeConnection?.readableSchemas).toEqual([
+         "extra_a",
+         "extra_b",
+      ]);
    });
 
    it("returns no credential for a connection of every contract type", () => {
@@ -861,7 +918,7 @@ describe("mergeConnectionUpdate", () => {
    });
 
    it("does not resurrect a private key when the patch switches to a password", () => {
-      // hasSnowflakePrivateKey routes to key-pair auth on presence, so a stale
+      // A Snowflake connection uses key-pair auth on presence, so a stale
       // key would beat the new password and make rotating off a revoked key
       // impossible through the API.
       const storedKeyPair = {

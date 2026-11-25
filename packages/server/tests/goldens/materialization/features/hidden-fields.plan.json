@@ -1,0 +1,529 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "orders@<pkg>/m.malloy": [],
+          "wide@<pkg>/m.malloy": []
+        },
+        "order": [
+          "orders@<pkg>/m.malloy",
+          "wide@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "orders@<pkg>/m.malloy": "materialize",
+      "wide@<pkg>/m.malloy": "materialize"
+    },
+    "materializePlans": {
+      "orders@<pkg>/m.malloy": {
+        "buildSourceName": "orders__mat",
+        "columns": [
+          {
+            "access": "internal",
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          },
+          {
+            "access": "internal",
+            "column": "region_code",
+            "computed": true,
+            "dimension": "region_code",
+            "zoneFree": true
+          },
+          {
+            "access": "private",
+            "column": "secret",
+            "computed": true,
+            "dimension": "secret"
+          },
+          {
+            "column": "north",
+            "computed": true,
+            "dimension": "north",
+            "zoneFree": true
+          }
+        ],
+        "declaration": {
+          "range": {
+            "end": {
+              "character": 1,
+              "line": 16
+            },
+            "start": {
+              "character": 8,
+              "line": 9
+            }
+          },
+          "url": "<pkg>/m.malloy"
+        },
+        "nameDefaulted": true,
+        "persist": {
+          "name": "orders",
+          "storage": "lake"
+        },
+        "sourceID": "orders@<pkg>/m.malloy",
+        "sourceName": "orders",
+        "storedColumns": [
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region_code",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "secret",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "north",
+            "type": "BOOLEAN"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "wide@<pkg>/m.malloy": {
+        "buildSourceName": "wide__mat",
+        "columns": [
+          {
+            "column": "id",
+            "computed": false,
+            "dimension": "id"
+          },
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "status",
+            "computed": false,
+            "dimension": "status"
+          },
+          {
+            "access": "private",
+            "column": "amount",
+            "computed": false,
+            "dimension": "amount"
+          },
+          {
+            "column": "discount",
+            "computed": false,
+            "dimension": "discount"
+          },
+          {
+            "column": "order_date",
+            "computed": false,
+            "dimension": "order_date"
+          },
+          {
+            "column": "created_at",
+            "computed": false,
+            "dimension": "created_at"
+          },
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          }
+        ],
+        "declaration": {
+          "range": {
+            "end": {
+              "character": 1,
+              "line": 21
+            },
+            "start": {
+              "character": 8,
+              "line": 19
+            }
+          },
+          "url": "<pkg>/m.malloy"
+        },
+        "nameDefaulted": true,
+        "persist": {
+          "name": "wide",
+          "storage": "lake"
+        },
+        "sourceID": "wide@<pkg>/m.malloy",
+        "sourceName": "wide",
+        "storedColumns": [
+          {
+            "name": "id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "status",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "amount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "discount",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "order_date",
+            "type": "DATE"
+          },
+          {
+            "name": "created_at",
+            "type": "TIMESTAMP"
+          },
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "orders@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "wide@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders@<pkg>/m.malloy": "m.malloy",
+      "wide@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "wide@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "orders",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          },
+          {
+            "name": "region_code",
+            "type": "string"
+          },
+          {
+            "name": "secret",
+            "type": "number"
+          },
+          {
+            "name": "north",
+            "type": "boolean"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "orders",
+        "origin": "materialize",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "duckdb",
+            "table": "'data/orders.csv'"
+          }
+        ],
+        "refresh": null,
+        "sourceEntityId": "e3123e46ca09ab86ce28636d7ffe05042025dc5cda562c3786bcf0b9c4ad9ca6",
+        "sourceID": "orders@<pkg>/m.malloy",
+        "sql": "sha256:cc419a75aa319b9e",
+        "upstreamSchemas": [
+          {
+            "columns": [
+              {
+                "name": "id",
+                "nativeType": "BIGINT"
+              },
+              {
+                "name": "customer_id",
+                "nativeType": "BIGINT"
+              },
+              {
+                "name": "region",
+                "nativeType": "VARCHAR"
+              },
+              {
+                "name": "status",
+                "nativeType": "VARCHAR"
+              },
+              {
+                "name": "amount",
+                "nativeType": "DOUBLE"
+              },
+              {
+                "name": "discount",
+                "nativeType": "DOUBLE"
+              },
+              {
+                "name": "order_date",
+                "nativeType": "DATE"
+              },
+              {
+                "name": "created_at",
+                "nativeType": "TIMESTAMP"
+              },
+              {
+                "name": "order",
+                "nativeType": "BIGINT"
+              }
+            ],
+            "connectionName": "duckdb",
+            "dialect": "duckdb",
+            "table": "'data/orders.csv'"
+          }
+        ]
+      },
+      "wide@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "wide",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "wide",
+        "origin": "materialize",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "duckdb",
+            "table": "'data/orders.csv'"
+          }
+        ],
+        "refresh": null,
+        "sourceEntityId": "096ef4223a870d93cbadb8d536e5ec94269c97c6aef6b62e8b89622774d48605",
+        "sourceID": "wide@<pkg>/m.malloy",
+        "sql": "sha256:639f45767a268523",
+        "upstreamSchemas": [
+          {
+            "columns": [
+              {
+                "name": "id",
+                "nativeType": "BIGINT"
+              },
+              {
+                "name": "customer_id",
+                "nativeType": "BIGINT"
+              },
+              {
+                "name": "region",
+                "nativeType": "VARCHAR"
+              },
+              {
+                "name": "status",
+                "nativeType": "VARCHAR"
+              },
+              {
+                "name": "amount",
+                "nativeType": "DOUBLE"
+              },
+              {
+                "name": "discount",
+                "nativeType": "DOUBLE"
+              },
+              {
+                "name": "order_date",
+                "nativeType": "DATE"
+              },
+              {
+                "name": "created_at",
+                "nativeType": "TIMESTAMP"
+              },
+              {
+                "name": "order",
+                "nativeType": "BIGINT"
+              }
+            ],
+            "connectionName": "duckdb",
+            "dialect": "duckdb",
+            "table": "'data/orders.csv'"
+          }
+        ]
+      }
+    }
+  }
+}

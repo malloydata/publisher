@@ -22,8 +22,27 @@ const SERVER_DIR = path.resolve(
 );
 const SERVER_ENTRY = path.join(SERVER_DIR, "src", "server.ts");
 
-/** An OS-assigned free TCP port. */
+/** Every port {@link getFreePort} has handed out in this process. */
+const handedOut = new Set<number>();
+
+/**
+ * An OS-assigned free TCP port, never one already handed out in this process.
+ * The port is released before it is returned, so the OS can assign it again:
+ * a test that picks one port for itself (an MCP or admin port) and lets
+ * `spawnServer` pick the others would otherwise boot two listeners on one port.
+ */
 export async function getFreePort(): Promise<number> {
+   for (let attempt = 0; attempt < 100; attempt++) {
+      const port = await osAssignedPort();
+      if (!handedOut.has(port)) {
+         handedOut.add(port);
+         return port;
+      }
+   }
+   throw new Error("no free port this process has not already handed out");
+}
+
+function osAssignedPort(): Promise<number> {
    return new Promise<number>((resolve, reject) => {
       const srv = net.createServer();
       srv.on("error", reject);
@@ -37,18 +56,38 @@ export async function getFreePort(): Promise<number> {
    });
 }
 
+/**
+ * Remove `dir`, retrying while Windows reports it busy. A spawned server's cwd
+ * and root can stay locked for a moment after its exit event, so the first rm
+ * fails with EBUSY. A directory still busy after the retries is left behind: it
+ * is in the OS temp directory and says nothing about the test's result.
+ */
+function removeDir(dir: string): void {
+   for (let attempt = 1; ; attempt++) {
+      try {
+         fs.rmSync(dir, { recursive: true, force: true });
+         return;
+      } catch (error) {
+         if ((error as NodeJS.ErrnoException).code !== "EBUSY") throw error;
+         if (attempt === 10) return;
+         Bun.sleepSync(100 * attempt);
+      }
+   }
+}
+
 /** A fresh temp directory, removed by the returned `cleanup`. */
 export function tempDir(prefix: string): { dir: string; cleanup: () => void } {
    const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
    return {
       dir,
-      cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+      cleanup: () => removeDir(dir),
    };
 }
 
 /**
- * A package source directory: `publisher.json` naming `name`, plus `files`
- * (relative path → contents). Defaults to one DuckDB model, `first.malloy`.
+ * A package source directory: `publisher.json` naming `name` and version
+ * 1.0.0, plus `files` (relative path → contents). Defaults to one DuckDB
+ * model, `first.malloy`.
  */
 export function writeSourcePackage(
    name: string,
@@ -59,7 +98,7 @@ export function writeSourcePackage(
    const pkg = tempDir("spawned-src-");
    fs.writeFileSync(
       path.join(pkg.dir, "publisher.json"),
-      JSON.stringify({ name }),
+      JSON.stringify({ name, version: "1.0.0" }),
    );
    for (const [relative, contents] of Object.entries(files)) {
       fs.writeFileSync(path.join(pkg.dir, relative), contents);
@@ -101,37 +140,173 @@ export interface SpawnedServer {
    stop(): Promise<void>;
 }
 
+/** How many boots `spawnServer` tries before a lost port race fails the test. */
+const PORT_ATTEMPTS = 3;
+
+/** The line `main_server.ts` logs before exiting on EADDRINUSE. */
+const portInUseLine = (port: number, flag: string) =>
+   `Port ${port} in use; pass ${flag} <n>`;
+
+/**
+ * Both listening lines `main_server.ts` logs once its listeners bind. They are
+ * info-level, so a quieter LOG_LEVEL leaves them out; see `settled`.
+ */
+const bothListening = (log: string) =>
+   log.includes("Publisher server listening at") &&
+   log.includes("MCP server listening at");
+
+/**
+ * Whether an HTTP server answers on 127.0.0.1:`port`, with any status. A
+ * socket that only accepts (the spec's blocker, a port-picking probe) never
+ * answers, so a port that answers is held by an HTTP server, not merely bound.
+ *
+ * It asks for the liveness probe, which both listeners answer ahead of the
+ * rate limiter, so a spec that sets `PUBLISHER_RATE_LIMIT` keeps its whole
+ * budget. A probe of `/` counted against it: on a runner slow to log the
+ * listening lines, one landed before the spec's first request.
+ */
+async function answersHttp(port: number): Promise<boolean> {
+   try {
+      await fetch(`http://127.0.0.1:${port}/health/liveness`, {
+         signal: AbortSignal.timeout(1_000),
+         keepalive: false,
+      });
+      return true;
+   } catch {
+      return false;
+   }
+}
+
+/**
+ * Resolves once `server` has exited or holds both its ports. Each listening
+ * line is logged from its listener's bind callback, so both lines together
+ * prove both binds. A quieter LOG_LEVEL leaves them out; then both ports must
+ * answer HTTP on two polls in a row with the process still up.
+ *
+ * Neither signal may be a bare TCP connect or PUBLISHER_READY. A port lost to
+ * another process accepts a connection, and the server binds one port before
+ * its other listener's EADDRINUSE is handled; on a loaded runner that gap is
+ * long enough for two connect polls to pass against a server about to exit.
+ * PUBLISHER_READY marks the end of environment loading, which does not wait
+ * on either bind.
+ */
+async function settled(server: SpawnedServer): Promise<void> {
+   let answeredPolls = 0;
+   await pollUntil(
+      async () => {
+         if (server.exited()) return true;
+         if (bothListening(server.output())) return true;
+         const both =
+            (await answersHttp(server.restPort)) &&
+            (await answersHttp(server.mcpPort));
+         answeredPolls = both && !server.exited() ? answeredPolls + 1 : 0;
+         return answeredPolls >= 2;
+      },
+      90_000,
+      100,
+   );
+}
+
+interface SpawnServerOptions {
+   env?: Record<string, string | undefined>;
+   serverRoot?: string;
+   /** Written as JSON to the root's `publisher.config.json`. */
+   config?: unknown;
+   /** Written verbatim to the root's `publisher.config.json`, for a file that must not parse. */
+   configText?: string;
+   args?: string[];
+   /** The process cwd, where `.mcp.json` would land. Defaults to packages/server. */
+   cwd?: string;
+   restPort?: number;
+   mcpPort?: number;
+   /** Picks each unpinned port. Defaults to `getFreePort`; tests of the retry inject one. */
+   pickPort?: () => Promise<number>;
+   /** Called with each boot attempt, including ones retried away. For the harness's own spec. */
+   onAttempt?: (attempt: SpawnedServer) => void;
+}
+
 /**
  * `bun src/server.ts` as a real process on free ports (unless given), REST
  * bound to loopback, with an empty server root unless `serverRoot` is given.
- * `config` is written to the root's `publisher.config.json`. `env` is merged
- * over this process's; a key set to `undefined` is removed.
+ * `config` (as JSON) or `configText` (verbatim) is written to the root's
+ * `publisher.config.json`. `env` is merged over this process's; a key set to
+ * `undefined` is removed.
+ *
+ * A free port is picked by binding and releasing it, so another process can
+ * take it before the server binds. When a port this harness picked is lost
+ * that way, the server exits with its port-in-use line and the harness boots
+ * again on fresh ports and a fresh root, up to three times. It does not when
+ * the caller pinned the port, or passed `serverRoot` (the losing boot may
+ * have half-written storage there, so a second boot would not be a first
+ * one): the exited server is returned, for the caller to assert on. When it
+ * may retry, the call returns once the server holds both ports or has exited.
  */
 export async function spawnServer(
-   options: {
-      env?: Record<string, string | undefined>;
-      serverRoot?: string;
-      config?: unknown;
-      args?: string[];
-      /** The process cwd, where `.mcp.json` would land. Defaults to packages/server. */
-      cwd?: string;
-      restPort?: number;
-      mcpPort?: number;
-   } = {},
+   options: SpawnServerOptions = {},
 ): Promise<SpawnedServer> {
-   const restPort = options.restPort ?? (await getFreePort());
-   let mcpPort = options.mcpPort ?? (await getFreePort());
-   while (options.mcpPort === undefined && mcpPort === restPort) {
-      mcpPort = await getFreePort();
+   const pickPort = options.pickPort ?? getFreePort;
+   for (let attempt = 1; ; attempt++) {
+      const restPort = options.restPort ?? (await pickPort());
+      let mcpPort = options.mcpPort ?? (await pickPort());
+      while (options.mcpPort === undefined && mcpPort === restPort) {
+         mcpPort = await pickPort();
+      }
+      const { server, drained } = launch(options, restPort, mcpPort);
+      const retryable =
+         options.serverRoot === undefined
+            ? [
+                 options.restPort === undefined &&
+                    portInUseLine(restPort, "--port"),
+                 options.mcpPort === undefined &&
+                    portInUseLine(mcpPort, "--mcp_port"),
+              ].filter((line): line is string => line !== false)
+            : [];
+      try {
+         options.onAttempt?.(server);
+         if (retryable.length === 0) return server;
+         await settled(server);
+         // 'exit' can beat the last of the output, so read it once the pipes close.
+         if (server.exited()) await pollUntil(drained, 5_000, 20);
+      } catch (error) {
+         // A throw here must not leave the process or its root behind.
+         await server.stop();
+         throw error;
+      }
+      const lostRace =
+         server.exited() &&
+         retryable.some((line) => server.output().includes(line));
+      if (!lostRace) return server;
+      await server.stop();
+      if (attempt === PORT_ATTEMPTS) {
+         throw new Error(
+            `server lost a free port to another process on each of ${PORT_ATTEMPTS} boots\n--- last server log tail ---\n${server.output().slice(-4000)}`,
+         );
+      }
    }
+}
+
+/**
+ * One boot of `spawnServer` on the given ports. `drained` turns true once the
+ * process's output pipes have closed, so `output()` holds everything it wrote.
+ */
+function launch(
+   options: SpawnServerOptions,
+   restPort: number,
+   mcpPort: number,
+): { server: SpawnedServer; drained: () => boolean } {
    const ownRoot = options.serverRoot === undefined;
    const serverRoot =
       options.serverRoot ??
       fs.mkdtempSync(path.join(os.tmpdir(), "spawned-root-"));
-   if (options.config !== undefined) {
+   const configText =
+      options.configText ??
+      (options.config === undefined
+         ? undefined
+         : JSON.stringify(options.config));
+   if (configText !== undefined) {
       fs.writeFileSync(
          path.join(serverRoot, "publisher.config.json"),
-         JSON.stringify(options.config),
+         configText,
       );
    }
    const env: Record<string, string> = {};
@@ -160,11 +335,21 @@ export async function spawnServer(
       err += d.toString();
    });
    proc.on("exit", (code) => (exitCode = code));
+   let closed = false;
+   proc.on("close", () => (closed = true));
+   // A spawn that fails (ENOENT: no `bun` on PATH) emits only 'error'; it is
+   // the process's end, so record it as one rather than wait out a timeout.
+   proc.on("error", (error) => {
+      all += `spawn failed: ${error.message}\n`;
+      err += `spawn failed: ${error.message}\n`;
+      if (exitCode === undefined) exitCode = null;
+      closed = true;
+   });
    const exited = () => exitCode !== undefined;
    const baseUrl = `http://127.0.0.1:${restPort}`;
    const tail = () => `\n--- server log tail ---\n${all.slice(-4000)}`;
 
-   return {
+   const server: SpawnedServer = {
       proc,
       restPort,
       mcpPort,
@@ -177,7 +362,11 @@ export async function spawnServer(
          const serving = await pollUntil(async () => {
             if (exited()) return true;
             try {
-               const res = await fetch(`${baseUrl}/api/v0/status`);
+               // Bounded per request: a socket that accepts and never answers
+               // would otherwise hold this poll, and the test, past timeoutMs.
+               const res = await fetch(`${baseUrl}/api/v0/status`, {
+                  signal: AbortSignal.timeout(5_000),
+               });
                if (!res.ok) return false;
                const body = (await res.json()) as {
                   operationalState?: string;
@@ -210,7 +399,8 @@ export async function spawnServer(
             proc.kill("SIGKILL");
             await pollUntil(exited, 10_000, 50);
          }
-         if (ownRoot) fs.rmSync(serverRoot, { recursive: true, force: true });
+         if (ownRoot) removeDir(serverRoot);
       },
    };
+   return { server, drained: () => closed };
 }

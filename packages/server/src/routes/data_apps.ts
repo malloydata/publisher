@@ -14,9 +14,17 @@ import * as fsp from "fs/promises";
 import * as path from "path";
 import { internalErrorToHttpError } from "../errors";
 import { logger } from "../logger";
-import { safeJoinUnderRoot } from "../path_safety";
-import type { EnvironmentStore } from "../service/environment_store";
+import { safeJoinUnderRoot, stepsOutside } from "../path_safety";
+import { confinedPackagePath } from "../utils";
+import { pathToFileURL } from "url";
+import type { PackageLookup } from "../service/environment_ports";
+import { versionRefOf } from "../route_params";
 import { apiRoute } from "./json_route";
+import {
+   parseEnvironmentName,
+   parsePackageName,
+   VersionRef,
+} from "../service/identity";
 
 /** The data-app listing route, relative to the API prefix (api-doc.yaml pins it). */
 export const DATA_APPS_ROUTE =
@@ -45,17 +53,32 @@ relative to <code>public/</code> and does not include it.</p>
 this server has.</p>`;
 
 async function serveFromPackage(
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
    req: express.Request,
    res: express.Response,
 ): Promise<void> {
    const subPathRaw = (req.params as Record<string, string>)["0"] ?? "";
    try {
       const environment = await environmentStore.getEnvironment(
-         req.params.environmentName,
+         parseEnvironmentName(req.params.environmentName),
          false,
       );
-      const pkg = await environment.getPackage(req.params.packageName, false);
+      // A page is served from the version its URL names (`?versionId=`), and
+      // from `latest` when it names none. Only a version the package has pins
+      // the page: a proxy may forward a page's query string unchanged, with a
+      // `versionId` of its own that is no version here, and that page still
+      // opens (from `latest`) rather than 404ing. The version comes from the
+      // URL only.
+      const staticVersionId = await environment
+         .getVersionService()
+         ?.pinnableVersion(req.params.packageName, req.query.versionId);
+      const pkg = await environment.getPackage(
+         parsePackageName(req.params.packageName),
+         false,
+         {
+            versionId: VersionRef.parse(staticVersionId),
+         },
+      );
       // This directory boundary is the whole access control for static files.
       const publicRoot = path.join(pkg.getPackagePath(), "public");
 
@@ -68,22 +91,31 @@ async function serveFromPackage(
       // touching the disk.
       const fullPath = safeJoinUnderRoot(publicRoot, subPath);
 
-      // Then realpath containment: rejects symlinks inside public/ that point
-      // out (403), while tolerating a symlinked package root (watch mode's
-      // in-place mount). A missing directory or file 404s here.
-      let realPublicRoot: string;
-      let realFullPath: string;
-      try {
-         realPublicRoot = await fsp.realpath(publicRoot);
-         realFullPath = await fsp.realpath(fullPath);
-      } catch {
+      // Then containment by the package's own walk, which never looks
+      // outside the package. public/ itself is resolved against the package
+      // root, so a public/ that links out serves nothing (403), whatever it
+      // leads to; one that links inside the package (`public -> web`) serves.
+      // A file must then resolve inside the real public/: a link out of it
+      // answers 403 whatever it leads to. A symlinked package root (watch
+      // mode's in-place mount) is tolerated. A package with no public/
+      // directory answers 404 here, and a missing file 404s when it is sent.
+      const served = await servedPublic(publicRoot);
+      if (served.kind === "none") {
          if (!res.headersSent) {
             res.status(404).type("text/html").send(PACKAGE_FILE_NOT_FOUND_HTML);
          }
          return;
       }
-      const rel = path.relative(realPublicRoot, realFullPath);
-      if (rel.startsWith("..") || path.isAbsolute(rel)) {
+      if (served.kind === "outside") {
+         res.status(403).end();
+         return;
+      }
+      const realFullPath = await insidePublic(
+         publicRoot,
+         served.real,
+         fullPath,
+      );
+      if (realFullPath === undefined) {
          res.status(403).end();
          return;
       }
@@ -134,7 +166,7 @@ export function withRequestQuery(req: express.Request, target: string): string {
  */
 export function registerDataAppStaticRoutes(
    app: express.Express,
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
    runtimePath: string,
 ): void {
    app.get("/sdk/publisher.js", (_req, res) => {
@@ -178,23 +210,25 @@ export function registerDataAppStaticRoutes(
 export function registerDataAppListRoute(
    app: express.Express,
    apiPrefix: string,
-   environmentStore: EnvironmentStore,
+   environmentStore: PackageLookup,
 ): void {
    app.get(
       `${apiPrefix}${DATA_APPS_ROUTE}`,
       apiRoute(async (req) => {
          const environment = await environmentStore.getEnvironment(
-            req.params.environmentName,
+            parseEnvironmentName(req.params.environmentName),
             false,
          );
          const pkg = await environment.getPackage(
-            req.params.packageName,
+            parsePackageName(req.params.packageName),
             false,
+            { versionId: versionRefOf(req) },
          );
          return listPackageDataApps(
             req.params.environmentName,
             req.params.packageName,
             path.join(pkg.getPackagePath(), "public"),
+            pkg.getPackageMetadata().versionId,
          );
       }),
    );
@@ -205,6 +239,7 @@ const DATA_APPS_DEPTH_CAP = 3;
 type DataAppItem = {
    resource: string;
    packageName: string;
+   versionId?: string;
    path: string;
    title: string;
    fit?: "viewport";
@@ -228,28 +263,76 @@ function stripNonTagText(input: string): string {
    return current;
 }
 
+/**
+ * Where a package's public/ really is, resolved by the package's own walk
+ * against the package root (its parent): `outside` when public/ itself links
+ * out of the package, to anything or to nothing, so its target is never
+ * looked at; `none` when there is no public/ directory.
+ */
+async function servedPublic(
+   publicRoot: string,
+): Promise<
+   { kind: "inside"; real: string } | { kind: "outside" } | { kind: "none" }
+> {
+   let real: string;
+   try {
+      real = await confinedPackagePath(
+         path.dirname(publicRoot),
+         pathToFileURL(publicRoot),
+      );
+   } catch {
+      return { kind: "outside" };
+   }
+   const stat = await fsp.stat(real).catch(() => undefined);
+   return stat?.isDirectory() ? { kind: "inside", real } : { kind: "none" };
+}
+
+/**
+ * `file` resolved by the package's own walk, when it lands inside the real
+ * public/ (`realPublic`); undefined for a link out of public/, whatever it
+ * leads to.
+ */
+async function insidePublic(
+   publicRoot: string,
+   realPublic: string,
+   file: string,
+): Promise<string | undefined> {
+   let real: string;
+   try {
+      real = await confinedPackagePath(
+         path.dirname(publicRoot),
+         pathToFileURL(file),
+      );
+   } catch {
+      return undefined;
+   }
+   return stepsOutside(path.relative(realPublic, real)) ? undefined : real;
+}
+
 async function listPackageDataApps(
    environmentName: string,
    packageName: string,
    publicRoot: string,
+   /** The published version listed from; its pages are pinned to it. */
+   versionId?: string | null,
 ): Promise<DataAppItem[]> {
    const out: DataAppItem[] = [];
 
-   // Same realpath containment as serveFromPackage, applied before reading any
-   // file's head, so a symlink out of public/ is never opened. No public/
-   // directory yields an empty list.
-   let realPublicRoot: string;
-   try {
-      realPublicRoot = await fsp.realpath(publicRoot);
-   } catch {
-      return out;
-   }
+   // Same containment as serveFromPackage, applied before reading any file's
+   // head, so a symlink out of public/ (or a public/ that links out) is never
+   // opened, nor looked through. No public/ directory yields an empty list,
+   // and so does one that links out of the package.
+   const served = await servedPublic(publicRoot);
+   if (served.kind !== "inside") return out;
+   const realPublic = served.real;
 
-   async function walk(dir: string, depth: number) {
+   // `dir` is how a page is named; `readFrom` is where the walk resolved it,
+   // which is what is read, so no link is followed again by its spelling.
+   async function walk(dir: string, readFrom: string, depth: number) {
       if (depth > DATA_APPS_DEPTH_CAP) return;
       let entries: Dirent[];
       try {
-         entries = await fsp.readdir(dir, { withFileTypes: true });
+         entries = await fsp.readdir(readFrom, { withFileTypes: true });
       } catch {
          return;
       }
@@ -257,16 +340,12 @@ async function listPackageDataApps(
          if (entry.name.startsWith(".") || entry.name === "node_modules")
             continue;
          const full = path.join(dir, entry.name);
-         let realFull: string;
-         try {
-            realFull = await fsp.realpath(full);
-         } catch {
-            continue;
-         }
-         const contained = path.relative(realPublicRoot, realFull);
-         if (contained.startsWith("..") || path.isAbsolute(contained)) continue;
+         // Confined before anything is opened: a page outside public/ (or
+         // the package) is never read for its title.
+         const real = await insidePublic(publicRoot, realPublic, full);
+         if (real === undefined) continue;
          if (entry.isDirectory()) {
-            await walk(full, depth + 1);
+            await walk(full, real, depth + 1);
          } else if (
             entry.isFile() &&
             (entry.name.endsWith(".html") || entry.name.endsWith(".htm"))
@@ -276,7 +355,7 @@ async function listPackageDataApps(
             let title = rel;
             let fit: "viewport" | undefined;
             try {
-               const fh = await fsp.open(full, "r");
+               const fh = await fsp.open(real, "r");
                try {
                   const buf = Buffer.alloc(4096);
                   const { bytesRead } = await fh.read(buf, 0, 4096, 0);
@@ -309,8 +388,15 @@ async function listPackageDataApps(
                // The relative path stays the title.
             }
             out.push({
-               resource: `/environments/${environmentName}/packages/${packageName}/${rel}`,
+               // A published version's page keeps opening that version after
+               // `latest` moves: the static route reads the version from the URL.
+               resource:
+                  `/environments/${environmentName}/packages/${packageName}/${rel}` +
+                  (versionId
+                     ? `?versionId=${encodeURIComponent(versionId)}`
+                     : ""),
                packageName,
+               ...(versionId ? { versionId } : {}),
                path: rel,
                title,
                fit,
@@ -319,7 +405,7 @@ async function listPackageDataApps(
       }
    }
 
-   await walk(publicRoot, 0);
+   await walk(publicRoot, realPublic, 0);
    out.sort((a, b) => {
       if (a.path === "index.html") return -1;
       if (b.path === "index.html") return 1;

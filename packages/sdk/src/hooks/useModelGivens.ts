@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { useMemo } from "react";
-import { Given, RawNotebook } from "../client";
+import { Given, ReportCells } from "../client";
 
 /**
  * Extracts the deduplicated list of model-level `given:` declarations from
@@ -12,7 +12,7 @@ import { Given, RawNotebook } from "../client";
  *
  * Returns an empty array when no givens are declared on any source.
  */
-export function useModelGivens(notebook: RawNotebook | undefined): Given[] {
+export function useModelGivens(notebook: ReportCells | undefined): Given[] {
    return useMemo(() => {
       if (!notebook?.sources?.length) return [];
       const byName = new Map<string, Given>();

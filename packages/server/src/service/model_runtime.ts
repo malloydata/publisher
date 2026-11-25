@@ -7,25 +7,32 @@ import {
    type Connection,
    type ModelDef,
    type ModelMaterializer,
-   type NamedQueryDef,
    type QueryMaterializer,
    Runtime,
 } from "@malloydata/malloy";
+import { pathToFileURL } from "url";
 import * as Malloy from "@malloydata/malloy-interfaces";
-import { MalloySQLStatementType } from "@malloydata/malloy-sql";
 import { DataStyles } from "@malloydata/render";
 import * as fs from "fs/promises";
 import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../constants";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import { ModelNotFoundError } from "../errors";
 import { logger } from "../logger";
-import type { SerializedNotebookCell } from "../package_load/protocol";
+import type { SerializedNotebookCell } from "../package_load/notebook_cell_wire";
 import { safeJoinUnderRoot } from "../path_safety";
-import { BuildManifest } from "../storage/DatabaseInterface";
-import { URL_READER } from "../utils";
+import { BuildManifest } from "./materialization/domain/types";
+import {
+   confinedPackagePath,
+   ImportOutsidePackageError,
+   importOutsidePackageProblem,
+   packageURLReader,
+} from "../utils";
 import { parseMalloynb } from "./deprecated/malloynb";
-import { modelInfoOf } from "./model_info";
-import { type RunnableNotebookCell } from "./model_notebook_cell";
+import { overlayKey, overlayKeyOfPath } from "./overlay_key";
+import {
+   compileNotebookCells,
+   type RunnableNotebookCell,
+} from "./model_notebook_cell";
 
 export type ModelType = "model" | "notebook";
 
@@ -35,8 +42,9 @@ export type ModelConnectionInput = MalloyConfig | Map<string, Connection>;
  * `overlay` maps an absolute `file://` URL to text served INSTEAD of reading
  * that path from disk. It lets pre-aggregation's synthesized (never written)
  * model live at a URL inside the package directory, so its `import` of the
- * author's model resolves. `modelPath` must still exist: it anchors
- * `importBaseURL`.
+ * author's model resolves, and serves a request's `files` overlay
+ * (`request_overlay.ts`). `modelPath` must exist on disk unless the overlay
+ * holds it.
  */
 export async function createModelRuntime(
    packagePath: string,
@@ -65,12 +73,33 @@ export async function createModelRuntime(
    } catch {
       throw new ModelNotFoundError(`${modelPath} does not exist.`);
    }
-   try {
-      if (!(await fs.stat(fullModelPath)).isFile()) {
-         throw new ModelNotFoundError(`${modelPath} is not a file.`);
+   // A model the overlay holds is the overlay's, whether or not it is on disk.
+   const overlaidModel =
+      options?.overlay?.has(overlayKeyOfPath(fullModelPath)) === true;
+   if (!overlaidModel) {
+      // A model file that is a link out of the package is refused before it
+      // is looked at, the same whether or not its target exists.
+      // A package that is not there has no models, rather than a link out.
+      try {
+         await fs.realpath(packagePath);
+      } catch {
+         throw new ModelNotFoundError(`${modelPath} does not exist.`);
       }
-   } catch {
-      throw new ModelNotFoundError(`${modelPath} does not exist.`);
+      try {
+         await confinedPackagePath(packagePath, pathToFileURL(fullModelPath));
+      } catch (error) {
+         if (error instanceof ImportOutsidePackageError) {
+            throw importOutsidePackageProblem();
+         }
+         throw error;
+      }
+      try {
+         if (!(await fs.stat(fullModelPath)).isFile()) {
+            throw new ModelNotFoundError(`${modelPath} is not a file.`);
+         }
+      } catch {
+         throw new ModelNotFoundError(`${modelPath} does not exist.`);
+      }
    }
 
    let modelType: ModelType;
@@ -84,17 +113,23 @@ export async function createModelRuntime(
       );
    }
 
-   const modelURL = new URL(`file://${fullModelPath}`);
+   // `pathToFileURL`, as /compile's virtual file is: a hand-built `file://`
+   // differs for a path with `%`, `#` or `?`, and on Windows.
+   const modelURL = pathToFileURL(fullModelPath);
    const baseUrl = new URL(".", modelURL);
    const importBaseURL = baseUrl;
    const overlay = options?.overlay;
+   // Disk reads stay inside the package; the overlay's virtual files are
+   // served before the disk is asked.
+   const diskReader = packageURLReader(packagePath);
    const inner =
       overlay && overlay.size > 0
          ? {
               readURL: async (url: URL) =>
-                 overlay.get(url.href) ?? (await URL_READER.readURL(url)),
+                 overlay.get(overlayKey(url)) ??
+                 (await diskReader.readURL(url)),
            }
-         : URL_READER;
+         : diskReader;
    // Only the model's own text: the Runtime lives as long as the Model, and imports' text is never asked for.
    let modelText: string | undefined;
    const urlReader = new HackyDataStylesAccumulator({
@@ -132,7 +167,7 @@ export async function createModelRuntime(
    };
 }
 
-function toMalloyConfig(input: ModelConnectionInput): MalloyConfig {
+export function toMalloyConfig(input: ModelConnectionInput): MalloyConfig {
    if (input instanceof MalloyConfig) {
       return input;
    }
@@ -207,8 +242,13 @@ async function getNotebookModelMaterializer(
    let parse = undefined;
 
    try {
-      fileContents = await fs.readFile(modelURL, "utf8");
-   } catch {
+      // Through the runtime's reader: confined to the package, overlay first.
+      const read = await runtime.urlReader.readURL(modelURL);
+      fileContents = typeof read === "string" ? read : read.contents;
+   } catch (error) {
+      if (error instanceof ImportOutsidePackageError) {
+         throw importOutsidePackageProblem();
+      }
       throw new ModelNotFoundError("Model not found: " + modelPath);
    }
 
@@ -218,125 +258,26 @@ async function getNotebookModelMaterializer(
       throw new Error("Could not parse model: " + modelPath);
    }
 
-   let mm: ModelMaterializer | undefined = undefined;
-   const oldImports: string[] = [];
-   const oldSources: Record<string, Malloy.SourceInfo> = {};
-   // Build the materializer chain synchronously: mm.getModel() is async and
-   // may resolve out of order.
-   const mms = parse.statements.map((stmt) => {
-      if (stmt.type === MalloySQLStatementType.MALLOY) {
-         if (!mm) {
-            mm = runtime.loadModel(stmt.text, { importBaseURL });
-         } else {
-            mm = mm.extendModel(stmt.text, { importBaseURL });
-         }
-      }
-      return mm;
-   });
-   const runnableNotebookCells: RunnableNotebookCell[] = (
-      await Promise.all(
-         parse.statements.map(async (stmt, index) => {
-            if (stmt.type === MalloySQLStatementType.MALLOY) {
-               const localMM = mms[index];
-               if (!localMM) {
-                  // Unreachable: a MALLOY statement always set `mm` above.
-                  throw new Error("Model materializer is undefined");
-               }
-               // newSources: sources first visible at this cell.
-               const currentModelDef = (await localMM.getModel())._modelDef;
-               let newSources: Malloy.SourceInfo[] = [];
-               const newImports = currentModelDef.imports?.slice(
-                  oldImports.length,
-               );
-               if (newImports) {
-                  await Promise.all(
-                     newImports.map(async (importLocation) => {
-                        const modelString = await runtime.urlReader.readURL(
-                           new URL(importLocation.importURL),
-                        );
-                        const importModel = (
-                           await runtime
-                              .loadModel(modelString as string, {
-                                 importBaseURL,
-                              })
-                              .getModel()
-                        )._modelDef;
-                        const importModelInfo = modelInfoOf(importModel);
-                        newSources = importModelInfo.entries
-                           .filter((entry) => entry.kind === "source")
-                           .filter(
-                              (source) => !(source.name in oldSources),
-                           ) as Malloy.SourceInfo[];
-                        oldImports.push(importLocation.importURL.toString());
-                     }),
-                  );
-               }
-               const currentModelInfo = modelInfoOf(currentModelDef);
-               newSources = newSources.concat(
-                  currentModelInfo.entries
-                     .filter((entry) => entry.kind === "source")
-                     .filter(
-                        (source) => !(source.name in oldSources),
-                     ) as Malloy.SourceInfo[],
-               );
-
-               for (const source of newSources) {
-                  oldSources[source.name] = source;
-               }
-
-               const runnable = localMM.loadFinalQuery();
-
-               let queryInfo: Malloy.QueryInfo | undefined = undefined;
-               try {
-                  const preparedQuery = await runnable.getPreparedQuery();
-                  const query = preparedQuery._query as NamedQueryDef;
-                  const queryName = query.as || query.name;
-                  const anonymousQuery =
-                     currentModelInfo.anonymous_queries[
-                        currentModelInfo.anonymous_queries.length - 1
-                     ];
-
-                  if (anonymousQuery) {
-                     queryInfo = {
-                        name: queryName,
-                        schema: anonymousQuery.schema,
-                        annotations: anonymousQuery.annotations,
-                        definition: anonymousQuery.definition,
-                        code: anonymousQuery.code,
-                        location: anonymousQuery.location,
-                     } as Malloy.QueryInfo;
-                  }
-               } catch (error) {
-                  // A cell that only defines sources has no query to describe, so this is routine.
-                  logger.debug("No query info for a .malloynb cell", {
-                     error,
-                  });
-               }
-
-               return {
-                  type: "code",
-                  text: stmt.text,
-                  runnable: runnable,
-                  modelMaterializer: localMM,
-                  modelDef: currentModelDef,
-                  newSources,
-                  queryInfo,
-               } as RunnableNotebookCell;
-            } else if (stmt.type === MalloySQLStatementType.MARKDOWN) {
-               return {
-                  type: "markdown",
-                  text: stmt.text,
-               } as RunnableNotebookCell;
-            } else {
-               return undefined;
-            }
-         }),
-      )
-   ).filter((cell) => cell !== undefined);
-
+   const { materializer, cells } = await compileNotebookCells(
+      runtime,
+      importBaseURL,
+      parse.statements,
+   );
    return {
-      modelMaterializer: mm,
-      runnableNotebookCells: runnableNotebookCells,
+      modelMaterializer: materializer,
+      runnableNotebookCells: cells.map(
+         (cell): RunnableNotebookCell =>
+            cell.type === "markdown"
+               ? cell
+               : {
+                    type: "code",
+                    text: cell.text,
+                    runnable: cell.query?.runnable,
+                    modelDef: cell.modelDef,
+                    newSources: cell.newSources,
+                    queryInfo: cell.queryInfo,
+                 },
+      ),
    };
 }
 
@@ -356,10 +297,13 @@ export type HydrationMaterializer = ModelMaterializer & {
 };
 
 export function makeHydrationRuntime(
+   packagePath: string,
    malloyConfig: ModelConnectionInput,
    buildManifest?: BuildManifest["entries"],
 ): HydrationRuntime {
-   const urlReader = new HackyDataStylesAccumulator(URL_READER);
+   const urlReader = new HackyDataStylesAccumulator(
+      packageURLReader(packagePath),
+   );
    const config = toMalloyConfig(malloyConfig);
    // Malloy substitutes a persisted source for its materialized table at
    // getSQL time only when the runtime carries the manifest; without it the
@@ -407,7 +351,6 @@ export function hydrateNotebookCells(
          type: "code",
          text: sc.text,
          runnable,
-         modelMaterializer,
          modelDef: cellModelDef,
          newSources: sc.newSources as Malloy.SourceInfo[] | undefined,
          queryInfo: sc.queryInfo as Malloy.QueryInfo | undefined,

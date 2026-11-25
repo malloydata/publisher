@@ -1,0 +1,30 @@
+// conformance: reserved-word names [storage]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: month__served is {
+   `month`::number,
+   group::string,
+   total::number
+}
+type: order__served is {
+   order::number,
+   `select`::string,
+   `count`::number,
+   amt::number
+}
+
+import "raw.malloy"
+
+#@ persist name="order" storage="lake"
+source: `order` is __served_copy_alias_of_lake.virtual('ddeab0253bd9657798b023c29fabb35badff349b5ffe3f3fd2e14f144ba0e635')::order__served extend {
+  private rename:
+    order__stored is order
+  dimension:
+    order is order__stored::"HUGEINT"
+  measure: `group` is amt.sum()
+}
+
+#@ persist name="month" storage="lake"
+source: `month` is __served_copy_alias_of_lake.virtual('b1c24636d6f3b6c816d73f62633897d22a6daddc3b0713245fb2a83c0861cb48')::month__served

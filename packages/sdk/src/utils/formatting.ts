@@ -57,7 +57,8 @@ export const encodeResourceUri = (resource: ParsedResource) => {
       uri += `/models/${resource.modelPath}`;
    }
    if (resource.packageName && resource.versionId) {
-      uri += `?versionId=${resource.versionId}`;
+      // Encoded, so build metadata survives: a bare `+` reads back as a space.
+      uri += `?versionId=${encodeURIComponent(resource.versionId)}`;
    }
    return uri;
 };

@@ -20,7 +20,10 @@
 // `BuildTarget.buildId` is documented as "a hash of the connection digest and
 // `sql`" over a fully-inlined, substitution-free `sql`; `computeSourceEntityId`
 // is `source.makeBuildId(digest, source.getSQL())` under the same no-options
-// invariant. This asserts they are in fact the same number.
+// invariant. This asserts they are in fact the same number. A `storage=`
+// destination folded into the address (PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION)
+// moves the address alone, so for such a source it is `compilerBuildId` that
+// equals the target's, and the builder addresses each source itself.
 //
 // Kept permanently rather than run once and deleted. It is cheap, and a later
 // compiler bump is exactly the event that could move an address without anything
@@ -35,7 +38,14 @@
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { FixedConnectionMap } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
-import { computeSourceEntityId } from "./build_plan";
+import { makeDigest } from "@malloydata/malloy";
+import {
+   addressSQL,
+   buildTargetOf,
+   compilerBuildId,
+   computeSourceEntityId,
+   plannedSources,
+} from "./materialization/plan/build_plan";
 import {
    duckdbTestConnections,
    loadTestRuntime,
@@ -92,7 +102,10 @@ const MODEL_NO_FLAG = `source: base is duckdb.sql("""${BASE_ROWS}""")
 
 async function buildTargets(model = MODEL) {
    const { runtime, materializer } = loadTestRuntime(connections, model);
-   return runtime.getBuildTargets(await materializer.getModel());
+   const targets = await runtime.getBuildTargets(await materializer.getModel());
+   // As a plan does: record each source's target, which addressing reads.
+   plannedSources(targets);
+   return targets;
 }
 
 describe("address equality: getBuildTargets vs computeSourceEntityId", () => {
@@ -113,6 +126,37 @@ describe("address equality: getBuildTargets vs computeSourceEntityId", () => {
       // exactly what a compiler change that stopped reporting targets would look
       // like. Pin that something was actually examined.
       expect(checked.sort()).toEqual(["rollup", "rollup_extended", "stacked"]);
+   });
+
+   it("compilerBuildId is the target's buildId, equal to Publisher's digest over its SQL", async () => {
+      // compilerBuildId reads the target's buildId rather than re-hashing; the
+      // two are the same number only because Publisher and the runtime digest
+      // the same connections. Pinned so a divergence is loud.
+      const { connections: builds } = await buildTargets();
+      for (const build of builds) {
+         for (const target of build.targets) {
+            for (const source of target.sources) {
+               expect(compilerBuildId(source)).toBe(target.buildId);
+               expect(target.buildId).toBe(
+                  makeDigest(
+                     connectionDigests[source.connectionName],
+                     addressSQL(source),
+                  ),
+               );
+            }
+         }
+      }
+   });
+
+   it("names why a source has no target: unkeyable, or never planned", async () => {
+      const { connections: builds } = await buildTargets();
+      const [source] = builds.flatMap((b) => b.targets)[0].sources;
+      // A source object no plan ever paired: a bug in the caller, said so.
+      const stranger = Object.create(source) as typeof source;
+      expect(() => buildTargetOf(stranger)).toThrow(/never planned/);
+      // An explicit target addresses it anyway.
+      const [target] = builds.flatMap((b) => b.targets);
+      expect(buildTargetOf(stranger, target)).toBe(target);
    });
 
    it("several sources map onto ONE target when extend leaves the SQL alone", async () => {
@@ -146,9 +190,11 @@ describe("address equality: getBuildTargets vs computeSourceEntityId", () => {
       // disagree, work keyed on these addresses has to wait for the port.
       const { runtime, materializer } = loadTestRuntime(connections, MODEL);
       const model = await materializer.getModel();
+      // The deprecated API's address, spelled out: getBuildPlan's sources have
+      // no build target to read.
       const fromPlan = new Set(
          Object.values(model.getBuildPlan().sources).map((s) =>
-            computeSourceEntityId(s, connectionDigests),
+            s.makeBuildId(connectionDigests[s.connectionName], s.getSQL()),
          ),
       );
       const fromTargets = new Set(

@@ -3,6 +3,7 @@
 // with nothing in flight, and answers every load with its own thread id as
 // the package name, so a test can tell which worker served a job.
 import { parentPort, threadId } from "node:worker_threads";
+import { PACKAGE_LOAD_PROTOCOL_VERSION } from "../protocol";
 
 const port = parentPort;
 if (!port) throw new Error("slow_ready_worker must run as a worker thread");
@@ -17,6 +18,7 @@ port.on("message", (message: { type: string; requestId?: string }) => {
       port.postMessage({
          type: "load-package-result",
          requestId: message.requestId,
+         protocolVersion: PACKAGE_LOAD_PROTOCOL_VERSION,
          packageMetadata: { name: `thread-${threadId}` },
          models: [],
          loadDurationMs: 1,

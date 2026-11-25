@@ -3,8 +3,6 @@
 
 import { Delete } from "@mui/icons-material";
 import Button from "@mui/material/Button";
-import Checkbox from "@mui/material/Checkbox";
-import FormControlLabel from "@mui/material/FormControlLabel";
 import ListItemIcon from "@mui/material/ListItemIcon";
 import ListItemText from "@mui/material/ListItemText";
 import MenuItem from "@mui/material/MenuItem";
@@ -22,15 +20,13 @@ export default function DeleteMaterializationDialog({
    materialization: Materialization;
    onCloseDialog: () => void;
    isMutating: boolean;
-   onDelete: (dropTables: boolean) => void;
+   onDelete: () => void;
 }) {
    const [open, setOpen] = useState(false);
-   const [dropTables, setDropTables] = useState(false);
 
    const handleClickOpen = () => setOpen(true);
    const handleClose = () => {
       setOpen(false);
-      setDropTables(false);
       onCloseDialog();
    };
 
@@ -61,7 +57,7 @@ export default function DeleteMaterializationDialog({
                      variant="contained"
                      color="error"
                      autoFocus
-                     onClick={() => onDelete(dropTables)}
+                     onClick={() => onDelete()}
                      loading={isMutating}
                   >
                      Delete run
@@ -70,17 +66,10 @@ export default function DeleteMaterializationDialog({
             }
          >
             <Typography variant="body2">
-               Delete this run&apos;s record? This cannot be undone.
+               Delete this run&apos;s record? This cannot be undone. The tables
+               it built stay in place: drop any you no longer need through their
+               connection.
             </Typography>
-            <FormControlLabel
-               control={
-                  <Checkbox
-                     checked={dropTables}
-                     onChange={(event) => setDropTables(event.target.checked)}
-                  />
-               }
-               label="Also drop the materialized tables this run produced"
-            />
          </AppDialog>
       </React.Fragment>
    );

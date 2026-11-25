@@ -7,10 +7,8 @@ source: orders is duckdb.table('data/orders.csv') extend {
    # drill { to=["dashboards/overview"] }
    dimension: brand_name is brand
 
-   // Points at `dashboards/v1.2.malloy`, whose name is outside the documented
-   // pattern but which IS served, so this drill resolves and must NOT be
-   // reported. It is here to pin that the advisory naming warning does not
-   // leak into the drill lint.
+   // Points at `dashboards/v1.2.malloy`, whose name carries a dot but which IS
+   // served, so this drill resolves and must NOT be reported.
    # drill { to=["dashboards/v1.2"] }
    dimension: unconventional_target is brand
 

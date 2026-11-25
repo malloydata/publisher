@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import { setSearchParams } from "../client/common";
 import { encodeResourceUri, parseResourceUri } from "./formatting";
 
 describe("parseResourceUri", () => {
@@ -135,5 +136,29 @@ describe("encodeResourceUri", () => {
             versionId: undefined,
          }),
       ).toThrow(/Failed to encode resource URI, missing environment name/);
+   });
+});
+
+describe("a versionId with build metadata", () => {
+   const versionId = "1.2.0+build.5";
+
+   it("round-trips through a resource URI", () => {
+      const uri = encodeResourceUri({
+         environmentName: "malloy-samples",
+         packageName: "names",
+         versionId,
+      });
+      expect(uri).toBe(
+         "publisher://environments/malloy-samples/packages/names?versionId=1.2.0%2Bbuild.5",
+      );
+      expect(parseResourceUri(uri).versionId).toBe(versionId);
+   });
+
+   it("reaches the server intact from a generated client's query string", () => {
+      const url = new URL("http://localhost/api/v0/environments/e/packages/p");
+      setSearchParams(url, { versionId });
+      // What the server reads back from the query string.
+      expect(url.search).toBe("?versionId=1.2.0%2Bbuild.5");
+      expect(url.searchParams.get("versionId")).toBe(versionId);
    });
 });

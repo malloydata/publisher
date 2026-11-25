@@ -1,0 +1,639 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * Publish-time validation of `#@ preaggregate` declarations.
+ *
+ * Pre-aggregation is invisible when it works, so a declaration that quietly
+ * does nothing is the worst outcome: the author sees correct numbers, assumes
+ * the rollup serves them, and finds out from a bill. Every `#@ preaggregate`
+ * must take effect or be refused with a message naming the fix. That is why
+ * this scans places the synthesizer never reads: on a dimension, join, view or
+ * source the annotation compiles silently.
+ *
+ * Strict at publish/PATCH and at load, so a package refused at publish cannot
+ * serve by having been published earlier. Callers turn a non-empty result
+ * into a 400 or a load failure.
+ *
+ * Pure: takes compiled IR, returns findings, throws nothing, touches no I/O.
+ */
+
+import {
+   expressionIsAggregate,
+   expressionIsAnalytic,
+   isJoined,
+} from "@malloydata/malloy";
+import {
+   readPreaggregateAnnotation,
+   type AnnotatableMeasure,
+} from "./preaggregation_annotation";
+import { classifyMeasureAdditivity } from "./preaggregation_classifier";
+import type { DeclaredFreshness } from "../domain/freshness";
+import { mergeRollupFreshness } from "./freshness_declaration";
+
+/**
+ * Why a declaration is refused. Stable identifiers so callers can count and
+ * group them; the paired `message` is what a human acts on.
+ */
+export type PreaggregateViolationCode =
+   // The annotation is somewhere it can never take effect.
+   | "misplaced_on_source"
+   | "misplaced_on_dimension"
+   | "misplaced_on_join"
+   | "misplaced_on_view"
+   // The declaration itself is unusable.
+   | "missing_grain"
+   | "empty_grain"
+   | "invalid_namespace"
+   | "empty_storage"
+   | "invalid_storage"
+   | "unknown_key"
+   | "unparseable"
+   | "env_reference"
+   | "invalid_freshness"
+   | "conflicting_namespace"
+   | "conflicting_storage"
+   | "conflicting_freshness"
+   | "namespace_with_storage"
+   | "non_additive_measure"
+   | "non_public_measure"
+   // The grain does not resolve against the base source.
+   | "unknown_grain_dimension"
+   | "grain_dimension_is_measure"
+   | "grain_dimension_is_view"
+   | "grain_dimension_is_join"
+   | "grain_path_through_join"
+   | "grain_truncation_expression"
+   | "truncation_on_non_temporal"
+   // Scope restrictions: a valid declaration Publisher refuses alone.
+   | "base_source_has_fanout_join";
+
+export interface PreaggregateViolation {
+   code: PreaggregateViolationCode;
+   /** The source the declaration was found on. */
+   sourceName: string;
+   /** The field the annotation sits on, absent for a source-level annotation. */
+   fieldName?: string;
+   /** The source's `sourceID`, when the compiled source carries one. */
+   sourceID?: string;
+   /**
+    * The tables a refused measure's declarations would have built (each
+    * grain and its `storage=`), so each refusal names its own tier; absent
+    * on a violation that refuses no particular table.
+    */
+   tables?: { grain: string[]; storage?: string }[];
+   /** Names the offending object and the fix; becomes user-facing error text. */
+   message: string;
+}
+
+/** The shape of a compiled field this module reads. */
+interface FieldLike {
+   name: string;
+   as?: string;
+   type?: string;
+   join?: string;
+   expressionType?: string;
+   annotations?: unknown;
+   accessModifier?: unknown;
+}
+
+/**
+ * A field the source does not publicly expose — `include { private: … }` or
+ * `internal:`.
+ *
+ * Refused to prevent an access-control leak: a rollup STORES the grain's
+ * dimensions and each measure's partial, and the serve path rebinds that table
+ * under the base's name without consulting the author's model, so a field
+ * hidden on the source would be answered from the table. (The database tier
+ * happens to fail compiling such a reference; the storage tier plans from
+ * compiled contents and would not, so the rule lives here for both.)
+ *
+ * Mirrors `isAccessRestricted` in serve/bindings.ts, which drops hidden
+ * columns from a binding's schema for the same reason.
+ */
+function isAccessRestricted(f: FieldLike): boolean {
+   return f.accessModifier != null && f.accessModifier !== "public";
+}
+
+/** The shape of a compiled source this module reads. */
+export interface ValidatableSource {
+   type?: string;
+   annotations?: unknown;
+   fields?: FieldLike[];
+}
+
+const fieldName = (f: FieldLike): string => f.as ?? f.name;
+
+/**
+ * The temporal field types, which are the only ones a `.unit` truncation can
+ * apply to. Written out rather than imported: Malloy declares `isTemporalType`
+ * in its types but does not re-export it at runtime, and importing it fails at
+ * load rather than at compile.
+ */
+function isTemporalType(type: string): boolean {
+   return type === "date" || type === "timestamp" || type === "timestamptz";
+}
+
+/** A view (turtle): never a grain dimension, and never a `#@ preaggregate` target. */
+function isView(f: FieldLike): boolean {
+   return f.type === "turtle";
+}
+
+/**
+ * A join that can multiply rows: `join_many`, `join_cross`, and a repeated record,
+ * which the IR also spells `join: "many"`. A `join_one` is excluded because it
+ * cannot duplicate a row, which is the whole basis of the restriction.
+ *
+ * Malloy does not *enforce* the declared cardinality — a `join_one` on a
+ * non-unique key really does fan out at the warehouse — so this trusts the model
+ * exactly as far as Malloy's own symmetric-aggregate machinery already does.
+ */
+function isFanoutJoin(f: FieldLike): boolean {
+   return isJoined(f as never) && f.join !== "one";
+}
+
+/**
+ * Whether a source joins anything with a fan-out join, the case in which its
+ * `#@ preaggregate` rollups are refused alone (`base_source_has_fanout_join`):
+ * the planners skip them, so nothing is built and the measures answer live.
+ */
+export function hasFanoutJoin(source: { fields?: unknown[] }): boolean {
+   return (source.fields ?? []).some((f) => isFanoutJoin(f as FieldLike));
+}
+
+/**
+ * A measure — the only valid target. Analytic expressions are excluded here as
+ * well as by the classifier: they are not measures in the sense that matters,
+ * and calling them "not a measure" is a clearer message than "non-additive".
+ */
+function isMeasure(f: FieldLike): boolean {
+   return (
+      expressionIsAggregate(f.expressionType as never) &&
+      !expressionIsAnalytic(f.expressionType as never)
+   );
+}
+
+/**
+ * A groupable dimension: a declared scalar or a raw column off the source. Raw
+ * columns carry no `expressionType` at all, which is why absence is accepted
+ * rather than treated as unknown.
+ */
+function isGroupableDimension(f: FieldLike): boolean {
+   if (isJoined(f as never) || isView(f)) return false;
+   if (f.expressionType === undefined) return true;
+   return f.expressionType === "scalar";
+}
+
+/**
+ * Resolve one grain dimension against the base source.
+ *
+ * A grain may name only a dimension the source itself declares. Every dotted
+ * form is therefore refused — but `a.b` is ambiguous in the annotation text,
+ * being either a path through a join (`customer.region`) or a time truncation
+ * (`order_time.day`), so they are told apart by what `a` resolves to and each
+ * gets its own fix rather than a shared "no such field".
+ */
+function validateGrainDimension(
+   sourceName: string,
+   measure: string,
+   source: ValidatableSource,
+   grainDimension: string,
+): PreaggregateViolation | undefined {
+   const violation = (
+      code: PreaggregateViolationCode,
+      message: string,
+   ): PreaggregateViolation => ({
+      code,
+      sourceName,
+      fieldName: measure,
+      message,
+   });
+
+   const parts = grainDimension.split(".");
+   const head = parts[0];
+   const fields = source.fields ?? [];
+   const field = fields.find((f) => fieldName(f) === head);
+
+   if (!field) {
+      return violation(
+         "unknown_grain_dimension",
+         `Measure \`${measure}\` declares \`#@ preaggregate\` at a grain naming \`${grainDimension}\`, but \`${head}\` is not a field of \`${sourceName}\`. Use a dimension that exists on the source; a rollup can only group by the source's own dimensions.`,
+      );
+   }
+
+   if (isJoined(field as never)) {
+      return violation(
+         "grain_path_through_join",
+         `Measure \`${measure}\` declares a grain of \`${grainDimension}\`, which reaches through the join \`${head}\`. Pre-aggregating across a join is not supported in this version; copy the value into a dimension on \`${sourceName}\` and group by that instead.`,
+      );
+   }
+
+   // `a.b` where `a` is not a join: an inline time truncation, refused (see
+   // preaggregation_grain_semantics.spec.ts). Under the base's column name the
+   // rollup would answer an UNTRUNCATED query from truncated rows; under any
+   // other name nothing would ever reference it. A declared dimension has
+   // neither problem, and coarser truncations of it still route.
+   if (parts.length > 1) {
+      const type = field.type ?? "";
+      if (!isTemporalType(type)) {
+         return violation(
+            "truncation_on_non_temporal",
+            `Measure \`${measure}\` declares a grain of \`${grainDimension}\`, but \`${head}\` is a \`${type || "non-temporal"}\` field of \`${sourceName}\`, so \`.${parts.slice(1).join(".")}\` reads as neither a join path nor a time truncation. Name a dimension of \`${sourceName}\` instead.`,
+         );
+      }
+      const unit = parts[parts.length - 1];
+      const suggested = `${head}_${unit}`;
+      return violation(
+         "grain_truncation_expression",
+         `Measure \`${measure}\` declares a grain of \`${grainDimension}\`. A grain may name only dimensions \`${sourceName}\` already declares, not a truncation written inline: a rollup built this way either answers untruncated queries from truncated rows, or is never used at all. Add \`dimension: ${suggested} is ${grainDimension}\` to \`${sourceName}\` and write \`grain="${suggested}"\`. Queries that group by \`${suggested}\`, or by a coarser truncation of it, will then be served by the rollup.`,
+      );
+   }
+
+   if (isView(field)) {
+      return violation(
+         "grain_dimension_is_view",
+         `Measure \`${measure}\` declares a grain naming \`${grainDimension}\`, which is a view, not a dimension. A grain must list dimensions to group by.`,
+      );
+   }
+   if (isMeasure(field)) {
+      return violation(
+         "grain_dimension_is_measure",
+         `Measure \`${measure}\` declares a grain naming \`${grainDimension}\`, which is itself a measure. A grain lists the dimensions the rollup groups by, not the values it aggregates.`,
+      );
+   }
+   if (!isGroupableDimension(field)) {
+      return violation(
+         "unknown_grain_dimension",
+         `Measure \`${measure}\` declares a grain naming \`${grainDimension}\`, which is not a dimension that can be grouped by. Use a scalar dimension or a column of \`${sourceName}\`.`,
+      );
+   }
+   return undefined;
+}
+
+/**
+ * Whether `field`'s own annotation, not one it inherits, declares
+ * `#@ preaggregate`.
+ */
+function declaresOwnPreaggregate(field: FieldLike): boolean {
+   const own = field as AnnotatableMeasure;
+   const annotations = own.annotations as
+      | (Record<string, unknown> & { inherits?: unknown })
+      | undefined;
+   if (!annotations) return false;
+   const { inherits: _inherited, ...ownLevel } = annotations;
+   return readPreaggregateAnnotation({
+      ...own,
+      annotations: ownLevel as AnnotatableMeasure["annotations"],
+   }).declared;
+}
+
+/**
+ * Validate every `#@ preaggregate` declaration on one compiled source.
+ *
+ * Returns every violation found rather than the first, so an author fixing a
+ * model sees the whole list instead of peeling them off one publish at a time.
+ */
+export function validateSourcePreaggregation(
+   sourceName: string,
+   source: ValidatableSource,
+): PreaggregateViolation[] {
+   const violations: PreaggregateViolation[] = [];
+   const fields = source.fields ?? [];
+
+   // A source-level annotation: the grain would have no measure to apply to.
+   if (
+      readPreaggregateAnnotation({
+         name: sourceName,
+         annotations: source.annotations,
+      }).declared
+   ) {
+      violations.push({
+         code: "misplaced_on_source",
+         sourceName,
+         message: `Source \`${sourceName}\` carries \`#@ preaggregate\`, which applies to measures, not to sources. Move it onto each measure that should be pre-aggregated.`,
+      });
+   }
+
+   const declaredFields: FieldLike[] = [];
+   const grains: GrainPlacements = {
+      namespaces: new Map(),
+      storages: new Map(),
+      freshness: new Map(),
+      text: new Map(),
+   };
+   for (const field of fields) {
+      const declaration = readPreaggregateAnnotation(
+         field as AnnotatableMeasure,
+      );
+      if (!declaration.declared) continue;
+      declaredFields.push(field);
+      fieldViolations(
+         sourceName,
+         source,
+         field,
+         declaration,
+         grains,
+         violations,
+      );
+   }
+   violations.push(...grainPlacementViolations(sourceName, grains));
+
+   // A scope restriction, reported once per source and only when something
+   // declared `#@ preaggregate`. Scoped to FAN-OUT joins: a rollup over
+   // duplicated rows returns a wrong total, but a `join_one` cannot duplicate
+   // rows, and the rollup computes the base's measure by name so the base
+   // reproduces whatever joins it reaches through.
+   const fanout = declaredFields.length > 0 ? fields.filter(isFanoutJoin) : [];
+   if (fanout.length > 0) {
+      // malloy-text: markdown code formatting in a violation message, not Malloy
+      const joins = fanout.map((f) => `\`${fieldName(f)}\``).join(", ");
+      violations.push({
+         code: "base_source_has_fanout_join",
+         sourceName,
+         message: `Source \`${sourceName}\` declares \`#@ preaggregate\` but joins ${joins} with a fan-out join. A rollup over a fan-out join can return a wrong total, because every measure was computed against duplicated rows, so its rollups are not built and its measures are answered live. Pre-aggregate a source whose joins are all \`join_one\`, or remove the annotations.`,
+      });
+   }
+
+   return violations;
+}
+
+/**
+ * Where each grain a source's measures declare is placed. Canonical grain ->
+ * each namespace named at it -> first measure naming it, keyed with the same
+ * NUL separator as `planSourcePreaggregation`'s `byGrain`, so "one grain"
+ * means the same thing in both modules; the same for `storage=`; and each
+ * grain's text, for a message.
+ */
+interface GrainPlacements {
+   namespaces: Map<string, Map<string, string>>;
+   storages: Map<string, Map<string, string>>;
+   /** Each measure's freshness group at a grain, in field order. */
+   freshness: Map<string, { measure: string; freshness: DeclaredFreshness }[]>;
+   text: Map<string, string>;
+}
+
+/**
+ * The violations of one field's `#@ preaggregate` declaration, pushed onto
+ * `violations`, and each grain it places recorded in `grains`.
+ */
+function fieldViolations(
+   sourceName: string,
+   source: ValidatableSource,
+   field: FieldLike,
+   declaration: ReturnType<typeof readPreaggregateAnnotation>,
+   grains: GrainPlacements,
+   violations: PreaggregateViolation[],
+): void {
+   const name = fieldName(field);
+   // Misplacement first: telling someone their dimension is "non-additive"
+   // would be true and useless.
+   if (isJoined(field as never)) {
+      violations.push({
+         code: "misplaced_on_join",
+         sourceName,
+         fieldName: name,
+         message: `The join \`${name}\` on \`${sourceName}\` carries \`#@ preaggregate\`, which applies to measures, not to joins. Move it onto the measures that should be pre-aggregated.`,
+      });
+      return;
+   }
+   if (isView(field)) {
+      violations.push({
+         code: "misplaced_on_view",
+         sourceName,
+         fieldName: name,
+         message: `The view \`${name}\` on \`${sourceName}\` carries \`#@ preaggregate\`, which applies to measures, not to views. Annotate the measures the view aggregates instead; a rollup serves a view through its measures.`,
+      });
+      return;
+   }
+   if (!isMeasure(field)) {
+      // A query's output column inherits the annotations of the field it
+      // was computed from (`orders -> { aggregate: total }` carries
+      // `total`'s `#@ preaggregate`), and in the query's output it is a
+      // dimension. Only a declaration written on this field is misplaced;
+      // an inherited one belongs to the measure it came from.
+      if (!declaresOwnPreaggregate(field)) return;
+      violations.push({
+         code: "misplaced_on_dimension",
+         sourceName,
+         fieldName: name,
+         message: `\`${name}\` on \`${sourceName}\` carries \`#@ preaggregate\`, but it is a dimension, not a measure. Dimensions are named in a measure's \`grain=\`; annotate the measure you want pre-aggregated and list \`${name}\` in its grain.`,
+      });
+      return;
+   }
+
+   // A private measure's stored partial would be readable through its rollup
+   // while the live path refuses it (see isAccessRestricted).
+   if (isAccessRestricted(field)) {
+      violations.push({
+         code: "non_public_measure",
+         sourceName,
+         fieldName: name,
+         tables: declaration.grains.map((g) => ({
+            grain: g.dimensions,
+            storage: g.storage,
+         })),
+         message: `Measure \`${name}\` on \`${sourceName}\` carries \`#@ preaggregate\`, but the source does not publicly expose it. A rollup stores the measure's partial aggregate and serves it back under the measure's name, without the source's field visibility applying to the stored table — so no rollup is built for it here. If it should be pre-aggregated on \`${sourceName}\`, expose it publicly; if this source deliberately hides a measure it inherited the annotation with, nothing is wrong and the rollup on the source that exposes it is unaffected.`,
+      });
+      return;
+   }
+
+   // The declaration is on a measure. Is it usable? One entry per unusable
+   // `#@ preaggregate` line, since a measure may carry several.
+   if (declaration.errors.length > 0) {
+      for (const error of declaration.errors) {
+         violations.push({
+            code: error.kind,
+            sourceName,
+            fieldName: name,
+            message: error.message,
+         });
+      }
+      return;
+   }
+
+   const additivity = classifyMeasureAdditivity(field as never);
+   if (!additivity.additive) {
+      violations.push({
+         code: "non_additive_measure",
+         sourceName,
+         fieldName: name,
+         message: additivity.detail,
+      });
+      // Still validate the grain: an author who fixes the measure should not
+      // then discover a second problem in the same annotation.
+   }
+
+   // Every grain the measure declares, each independently: a measure rolled up
+   // at two grains can have one good and one broken, and an author fixing the
+   // model should see both.
+   for (const grain of declaration.grains) {
+      for (const grainDimension of grain.dimensions) {
+         const violation = validateGrainDimension(
+            sourceName,
+            name,
+            source,
+            grainDimension,
+         );
+         if (violation) violations.push(violation);
+      }
+      // Only an additive measure reaches a rollup; mirrors the same skip in
+      // `planSourcePreaggregation` so the two agree on which grains exist.
+      if (grain.namespace !== undefined && additivity.additive) {
+         const key = grain.dimensions.join("\u0000");
+         const named = grains.namespaces.get(key) ?? new Map();
+         if (!named.has(grain.namespace)) named.set(grain.namespace, name);
+         grains.namespaces.set(key, named);
+         grains.text.set(key, grain.text);
+      }
+      if (grain.storage !== undefined && additivity.additive) {
+         const key = grain.dimensions.join("\u0000");
+         const placed = grains.storages.get(key) ?? new Map();
+         if (!placed.has(grain.storage)) placed.set(grain.storage, name);
+         grains.storages.set(key, placed);
+         grains.text.set(key, grain.text);
+      }
+      if (grain.freshness !== undefined && additivity.additive) {
+         const key = grain.dimensions.join("\u0000");
+         const declared = grains.freshness.get(key) ?? [];
+         declared.push({ measure: name, freshness: grain.freshness });
+         grains.freshness.set(key, declared);
+         grains.text.set(key, grain.text);
+      }
+   }
+}
+
+/**
+ * One grain is one table, created in exactly one place: different namespaces
+ * or destinations at one grain, or a namespace beside a destination, are
+ * refused.
+ */
+function grainPlacementViolations(
+   sourceName: string,
+   grains: GrainPlacements,
+): PreaggregateViolation[] {
+   const violations: PreaggregateViolation[] = [];
+   // One grain is one table, created in exactly one place. Different namespaces
+   // at one grain are refused rather than resolved by field order, which would
+   // silently place a rollup where its author never chose.
+   for (const [key, named] of grains.namespaces) {
+      if (named.size < 2) continue;
+      const choices = [...named.entries()]
+         .map(([ns, measure]) => `\`${ns}\` (on \`${measure}\`)`)
+         .join(", ");
+      violations.push({
+         code: "conflicting_namespace",
+         sourceName,
+         message: `Measures on \`${sourceName}\` declare \`#@ preaggregate\` at the grain \`${grains.text.get(key)}\` with different containers (\`name=\` or \`namespace=\`): ${choices}. One grain is one rollup table, so it can only be created in one of them. Give every measure at this grain the same \`name=\` container, or move one to a different grain.`,
+      });
+   }
+
+   // Same for storage destinations.
+   for (const [key, placed] of grains.storages) {
+      if (placed.size < 2) continue;
+      const choices = [...placed.entries()]
+         .map(([dest, measure]) => `\`${dest}\` (on \`${measure}\`)`)
+         .join(", ");
+      violations.push({
+         code: "conflicting_storage",
+         sourceName,
+         message: `Measures on \`${sourceName}\` declare \`#@ preaggregate\` at the grain \`${grains.text.get(key)}\` with different storage destinations: ${choices}. One grain is one rollup table, so it can only be built into one of them. Give every measure at this grain the same \`storage=\`, or move one to a different grain.`,
+      });
+   }
+
+   // And for freshness: one table has one window and one fallback.
+   for (const [key, declared] of grains.freshness) {
+      const merged = mergeRollupFreshness(declared.map((d) => d.freshness));
+      if (!("conflict" in merged)) continue;
+      const field = merged.conflict;
+      const choices = declared
+         .filter((d) => d.freshness[field] !== undefined)
+         .map((d) => `\`${d.freshness[field]}\` (on \`${d.measure}\`)`)
+         .join(", ");
+      violations.push({
+         code: "conflicting_freshness",
+         sourceName,
+         message: `Measures on \`${sourceName}\` declare \`#@ preaggregate\` at the grain \`${grains.text.get(key)}\` with different \`freshness.${field}=\`: ${choices}. One grain is one rollup table, so it has one freshness. Give every measure at this grain the same \`freshness.${field}=\`, or move one to a different grain.`,
+      });
+   }
+
+   // `namespace=` with `storage=` is refused. Placement inside a destination is
+   // derived: the resolver refuses a dotted `name=` because a fresh catalog has
+   // no schema and the build emits no `CREATE SCHEMA`. Honouring the namespace
+   // would target a schema that may not exist; ignoring it would silently move
+   // the rollup. Refusing keeps the option of giving it a meaning later.
+   //
+   // A destination is never inherited from the base's `#@ persist storage=`,
+   // so both keys were typed by the author, and a `namespace=` beside a
+   // `storage=` base is not a conflict.
+   for (const [key, named] of grains.namespaces) {
+      const ownStorage = grains.storages.get(key);
+      const [namespace, namespaceMeasure] = [...named.entries()][0];
+      const grainText = grains.text.get(key);
+      if (ownStorage && ownStorage.size > 0) {
+         const [destination, storageMeasure] = [...ownStorage.entries()][0];
+         violations.push({
+            code: "namespace_with_storage",
+            sourceName,
+            message: `The grain \`${grainText}\` on \`${sourceName}\` declares both the container \`${namespace}\` (\`name=\` or \`namespace=\`, on \`${namespaceMeasure}\`) and \`storage=${destination}\` (on \`${storageMeasure}\`). A rollup built into a storage destination is placed by the destination, not by a container, so the two cannot both apply. Remove the \`name=\`, or remove the \`storage=\` to build this rollup alongside its base.`,
+         });
+         continue;
+      }
+   }
+   return violations;
+}
+
+/**
+ * Validate every source in a compiled model's contents.
+ *
+ * `contents` is the same map the discovery surface reads, so a `#@ preaggregate`
+ * anywhere in the model is reached — including on sources nothing else
+ * references.
+ */
+/**
+ * The file URL a `<name>@<URL>` sourceID names: the '@' before the URL's
+ * scheme, since a backticked name may itself contain '@'.
+ */
+function declaringFileOf(sourceID: unknown): string | undefined {
+   if (typeof sourceID !== "string") return undefined;
+   return /^(.+)@([a-z][a-z0-9+.-]*:.*)$/i.exec(sourceID)?.[2];
+}
+
+export function validateModelPreaggregation(
+   contents: Record<string, unknown>,
+   /**
+    * The model file's own URL. When given, a source another file declares is
+    * left to that file: every `.malloy` file is a model, so an `index.malloy`
+    * that imports a source would otherwise report its declarations again,
+    * under its own name.
+    */
+   modelURL?: string,
+): PreaggregateViolation[] {
+   const violations: PreaggregateViolation[] = [];
+   for (const [name, object] of Object.entries(contents)) {
+      const source = object as ValidatableSource;
+      if (!source || typeof source !== "object") continue;
+      if (modelURL !== undefined) {
+         const declaredIn = declaringFileOf(
+            (source as { sourceID?: unknown }).sourceID,
+         );
+         // A notebook's cells compile as `internal://` documents, so a source
+         // a cell declares is this model's own (as `authoredNotes` reads it).
+         if (
+            declaredIn !== undefined &&
+            declaredIn !== modelURL &&
+            !declaredIn.startsWith("internal://")
+         ) {
+            continue;
+         }
+      }
+      // Anything with a field list is worth scanning; a non-source object cannot
+      // carry a measure, and scanning it costs one annotation parse.
+      const sourceID = (source as { sourceID?: unknown }).sourceID;
+      violations.push(
+         ...validateSourcePreaggregation(name, source).map((v) =>
+            typeof sourceID === "string" ? { ...v, sourceID } : v,
+         ),
+      );
+   }
+   return violations;
+}

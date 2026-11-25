@@ -14,6 +14,7 @@ import {
 import { buildEnvironmentMalloyConfig } from "./connection";
 import { Environment, resetAdmissionTelemetryForTesting } from "./environment";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
+import { parsePackageName } from "./identity";
 
 /**
  * Minimal subset of {@link PackageMemoryGovernor} that
@@ -71,9 +72,9 @@ describe("Environment admission gate (memory governor choke point)", () => {
       // No package by this name has ever been loaded, so this is the
       // exact "lazy-load on cache miss" path Monty flagged. The gate
       // must throw before Package.create touches the disk.
-      await expect(env.getPackage("ghost", false)).rejects.toBeInstanceOf(
-         ServiceUnavailableError,
-      );
+      await expect(
+         env.getPackage(parsePackageName("ghost"), false),
+      ).rejects.toBeInstanceOf(ServiceUnavailableError);
    });
 
    it("rejects getPackage reload=true with 503 when back-pressured", async () => {
@@ -82,9 +83,9 @@ describe("Environment admission gate (memory governor choke point)", () => {
       env.setMemoryGovernor(governor as unknown as PackageMemoryGovernor);
       governor.backpressured = true;
 
-      await expect(env.getPackage("ghost", true)).rejects.toBeInstanceOf(
-         ServiceUnavailableError,
-      );
+      await expect(
+         env.getPackage(parsePackageName("ghost"), true),
+      ).rejects.toBeInstanceOf(ServiceUnavailableError);
    });
 
    it("rejects addPackage with 503 when back-pressured (after the 404 check passes)", async () => {
@@ -136,7 +137,9 @@ describe("Environment admission gate (memory governor choke point)", () => {
       // a non-existent directory). The assertion is "not 503".
       let caught: unknown;
       try {
-         await env.getPackage("ghost", false, { allowAdmission: true });
+         await env.getPackage(parsePackageName("ghost"), false, {
+            allowAdmission: true,
+         });
       } catch (err) {
          caught = err;
       }
@@ -150,16 +153,16 @@ describe("Environment admission gate (memory governor choke point)", () => {
       env.setMemoryGovernor(governor as unknown as PackageMemoryGovernor);
 
       governor.backpressured = true;
-      await expect(env.getPackage("ghost", false)).rejects.toBeInstanceOf(
-         ServiceUnavailableError,
-      );
+      await expect(
+         env.getPackage(parsePackageName("ghost"), false),
+      ).rejects.toBeInstanceOf(ServiceUnavailableError);
 
       // Flip the flag (simulating the periodic poller crossing the
       // low-water mark) and verify the next call no longer 503s.
       governor.backpressured = false;
       let caught: unknown;
       try {
-         await env.getPackage("ghost", false);
+         await env.getPackage(parsePackageName("ghost"), false);
       } catch (err) {
          caught = err;
       }
@@ -177,7 +180,7 @@ describe("Environment admission gate (memory governor choke point)", () => {
 
       let caught: unknown;
       try {
-         await env.getPackage("ghost", false);
+         await env.getPackage(parsePackageName("ghost"), false);
       } catch (err) {
          caught = err;
       }

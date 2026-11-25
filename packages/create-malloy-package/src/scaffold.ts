@@ -69,8 +69,8 @@ export interface DeclinedScript {
    host?: string;
    /**
     * The value written as `--host=<value>`, which Publisher's own argument
-    * parser does not accept (cli_args.ts matches `arg === "--host"` and takes the
-    * next argv entry), so the flag is dropped in silence and the bind falls back
+    * parser does not accept (it matches the whole argv entry `--host` and takes
+    * the next one), so the flag is dropped in silence and the bind falls back
     * to 0.0.0.0. Carried alongside `reason: "no-host-flag"`, which is what such a
     * script really is as far as the server is concerned, so a caller can say
     * which of the two shapes it saw without guessing.
@@ -589,9 +589,11 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
    assertWithinWorkspace(dataDir, options.cwd, `${name}/data`);
    fs.mkdirSync(dataDir, { recursive: true });
 
+   // A version, because a server outside watch mode publishes the package
+   // as the version its publisher.json declares, and refuses one with none.
    writeFile(
       path.join(packageDir, "publisher.json"),
-      JSON.stringify({ name }, null, 2) + "\n",
+      JSON.stringify({ name, version: "0.1.0" }, null, 2) + "\n",
       options.cwd,
    );
 
@@ -1568,34 +1570,111 @@ function isSingleServerInvocation(script: string): boolean {
 /**
  * The value of the last `--host <value>` in a command line, if it carries one.
  *
- * Whitespace only, because that is the whole of what Publisher accepts:
- * `packages/server/src/cli_args.ts` walks argv with
- * `} else if (arg === "--host" && args[i + 1]) {`, a strict equality against a
- * separate argv entry. `--host=127.0.0.1` matches no branch in that chain, and
- * the chain has no unknown-flag error, so the flag is dropped in silence and
- * PUBLISHER_HOST falls back to "0.0.0.0" for the REST listener. The MCP listener
- * reads MCP_HOST first and defaults to loopback on its own, so a dropped --host
- * exposes REST and leaves MCP where it was.
+ * Whitespace only, because that is the whole of what Publisher accepts: the
+ * flag reader in `packages/server/src/settings/settings.ts` looks each argv
+ * entry up by its exact name and takes the next entry as its value.
+ * `--host=127.0.0.1` is the name of no flag, and an unknown flag is only warned
+ * about, so the flag is dropped and PUBLISHER_HOST falls back to "0.0.0.0" for
+ * the REST listener. The MCP listener reads MCP_HOST first and defaults to
+ * loopback on its own, so a dropped --host exposes REST and leaves MCP where it
+ * was.
  *
  * Accepting the `=` form here was worse than useless: it made the one shape that
  * looks private and is not the one shape this tool called safest, suppressing the
  * exposure warning that a script with no --host at all correctly gets.
  */
 /**
- * The server flags that consume the following argv entry, mirroring the
- * `arg === "--x" && args[i + 1]` chain in `packages/server/src/cli_args.ts`.
- * `--init` and `--help` take no value and so are deliberately absent.
+ * The server flags that consume the following argv entry, mirroring
+ * `flagsTakingAValue()` in `packages/server/src/settings/settings.ts`: every
+ * setting's flag but a boolean's. `--init` and `--help` take no value and so
+ * are deliberately absent.
+ *
+ * This is the in-tree server's list, so it also holds the derived names
+ * (`--mcp-port`) that a SERVER_VERSION from before them does not read. That
+ * direction is the safe one: a flag listed here that the pinned server skips
+ * can only hide a --host it would bind, which warns about an exposure there is
+ * not, while a flag missing here could take the --host it swallows for a bind.
  */
 export const SERVER_VALUE_FLAGS = new Set([
    "--port",
    "--host",
+   "--rate-limit",
+   "--frame-ancestors",
+   "--caller-header",
+   "--version-promotion",
+   "--root",
    "--server_root",
    "--config",
-   "--mcp_port",
-   "--mcp_host",
-   "--shutdown_drain_duration_seconds",
-   "--shutdown_graceful_close_timeout_seconds",
+   "--watch-environments",
    "--watch-env",
+   "--mcp-port",
+   "--mcp_port",
+   "--mcp-host",
+   "--mcp_host",
+   "--mcp-cors-origins",
+   "--mcp-trace",
+   "--admin-port",
+   "--admin_port",
+   "--admin-host",
+   "--admin_host",
+   "--admin-request-timeout-ms",
+   "--admin-memory-limit",
+   "--admin-max-temp-directory-size",
+   "--admin-storage-provider",
+   "--admin-storage-key-id",
+   "--admin-storage-region",
+   "--admin-storage-endpoint",
+   "--query-max-rows",
+   "--query-max-response-bytes",
+   "--query-default-row-limit",
+   "--query-timeout-ms",
+   "--query-max-concurrent",
+   "--postgres-pool-max",
+   "--memory-max-bytes",
+   "--memory-high-water-fraction",
+   "--memory-low-water-fraction",
+   "--memory-check-interval-ms",
+   "--package-load-workers",
+   "--package-load-job-timeout-ms",
+   "--package-load-schema-cache-bytes",
+   "--duckdb-extension-fetch-policy",
+   "--duckdb-memory-limit",
+   "--duckdb-temp-directory",
+   "--ducklake-row-group-size-bytes",
+   "--ducklake-target-file-size-bytes",
+   "--persist-storage-mode",
+   "--materialization-scheduler-interval-ms",
+   "--materialization-scheduler-max-fires-per-tick",
+   "--allow-s3-credential-chain",
+   "--logging-level",
+   "--shutdown-drain-duration-seconds",
+   "--shutdown_drain_duration_seconds",
+   "--shutdown-graceful-close-timeout-seconds",
+   "--shutdown_graceful_close_timeout_seconds",
+   "--retrieval-embedding-model",
+   "--retrieval-embedding-base-url",
+   "--retrieval-embedding-dimensions",
+   "--retrieval-embedding-min-similarity",
+   "--retrieval-llm-provider",
+   "--retrieval-llm-model",
+   "--retrieval-llm-base-url",
+   "--retrieval-llm-project-id",
+   "--retrieval-llm-location",
+   "--retrieval-llm-timeout-ms",
+   "--retrieval-llm-concurrency",
+   "--retrieval-llm-max-calls-per-sync",
+   "--retrieval-llm-max-calls-per-request",
+   "--retrieval-embedding-provider",
+   "--retrieval-embedding-project-id",
+   "--retrieval-embedding-location",
+   "--retrieval-embedding-query-prefix",
+   "--retrieval-embedding-document-prefix",
+   "--retrieval-egress-preset",
+   "--mcp-app-origin",
+   "--duckdb-threads",
+   "--workload-log-store",
+   "--workload-log-retention-days",
+   "--workload-log-max-rows",
 ]);
 
 /** True when a quote is left open, which sh refuses to run at all. */
@@ -1677,9 +1756,9 @@ function hostFlagOf(script: string): string | undefined {
    for (let i = spec + 1; i < tokens.length; i++) {
       const token = tokens[i];
       const next = tokens[i + 1];
-      // Mirrors `arg === "--x" && args[i + 1]`: a value flag followed by
-      // nothing, or by the one falsy argv entry there is, matches no branch and
-      // so consumes nothing.
+      // Mirrors the server's flag reader, which takes the next entry only when
+      // it is not empty: a value flag followed by nothing, or by the one falsy
+      // argv entry there is, consumes nothing.
       if (!SERVER_VALUE_FLAGS.has(token) || !next) {
          continue;
       }
@@ -2173,6 +2252,9 @@ function workspaceGitignoreEntries(): string[] {
       // machine, which reads as every table failing to resolve rather than as a
       // missing file.
       "malloy-config.json",
+      // docs/configuration.md tells users to keep API keys and passwords here.
+      ".env",
+      "*.env",
    ];
 }
 

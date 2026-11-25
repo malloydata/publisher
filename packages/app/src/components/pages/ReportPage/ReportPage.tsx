@@ -3,23 +3,25 @@
 
 import {
    encodeResourceUri,
-   Notebook,
    reportClasses,
    Report,
    useGivenUrlParams,
    useNarrowScreen,
-   useRouterClickHandler,
 } from "@malloy-publisher/sdk";
 import { Box } from "@mui/material";
 import { useEffect, useMemo, useRef } from "react";
 import { logReportEvent } from "../../../utils/consoleTelemetry";
 import { useDrillNavigate } from "../../common/useDrillNavigate";
+import { usePackageLinkNavigate } from "../../common/usePackageLinkNavigate";
+import { usePackageRoute } from "../../common/usePackageRoute";
 import { TITLED_PAGE_FRAME_SX } from "../pageFrame";
 import { useDrawn } from "../useDrawn";
 
 interface ReportPageProps {
    environmentName: string;
    packageName: string;
+   /** The version to read, for a pinned version; absent means `latest`. */
+   versionId?: string;
    /** The report's package path, `sales/q3.malloy` (or a legacy `.malloynb`). */
    path: string;
    /** Whether the builder opens it, so its chunk is worth warming. Default true for a `.malloy`. */
@@ -40,6 +42,7 @@ interface ReportPageProps {
 export default function ReportPage({
    environmentName,
    packageName,
+   versionId,
    path,
    editable = path.endsWith(".malloy"),
    onReady,
@@ -51,8 +54,20 @@ export default function ReportPage({
    // Control values ride in the query string, so a link reproduces the view;
    // a drill pushes a route.
    const { params: givens, onGivensChange } = useGivenUrlParams();
-   const onNavigate = useDrillNavigate(environmentName, packageName);
-   const onLinkNavigate = useRouterClickHandler();
+   // A drill stays on the version on screen, `latest` included.
+   const { versionSegment } = usePackageRoute();
+   const onNavigate = useDrillNavigate(
+      environmentName,
+      packageName,
+      versionSegment,
+   );
+   // A link in the report's prose to a file of the package stays on the
+   // version on screen too.
+   const onLinkNavigate = usePackageLinkNavigate(
+      environmentName,
+      packageName,
+      versionSegment,
+   );
    // The event names the report by path; the sink adds where it is.
    const onEvent = useMemo(
       () => logReportEvent({ environmentName, packageName }),
@@ -78,32 +93,20 @@ export default function ReportPage({
 
    return (
       <Box ref={page} sx={TITLED_PAGE_FRAME_SX}>
-         {/* A legacy `.malloynb` runs only through the deprecated notebook routes, which `Notebook` reads. */}
-         {path.endsWith(".malloynb") ? (
-            <Notebook
-               resourceUri={encodeResourceUri({
-                  environmentName,
-                  packageName,
-                  modelPath: path,
-               })}
-               givens={givens}
-               onGivensChange={onGivensChange}
-               onNavigate={onLinkNavigate}
-               onDrillNavigate={onNavigate}
-               maxResultSize={1024 * 1024}
-            />
-         ) : (
-            <Report
-               resourceUri={encodeResourceUri({ environmentName, packageName })}
-               path={path}
-               givens={givens}
-               onGivensChange={onGivensChange}
-               onNavigate={onNavigate}
-               onLinkNavigate={onLinkNavigate}
-               onEvent={onEvent}
-               maxResultSize={1024 * 1024}
-            />
-         )}
+         <Report
+            resourceUri={encodeResourceUri({
+               environmentName,
+               packageName,
+               versionId,
+            })}
+            path={path}
+            givens={givens}
+            onGivensChange={onGivensChange}
+            onNavigate={onNavigate}
+            onLinkNavigate={onLinkNavigate}
+            onEvent={onEvent}
+            maxResultSize={1024 * 1024}
+         />
       </Box>
    );
 }

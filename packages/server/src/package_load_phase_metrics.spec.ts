@@ -16,6 +16,7 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "./test_helpers/metrics_harness";
+import { writePackageFiles } from "./test_helpers/temp_package";
 
 const METRIC = "publisher_package_load_phase_duration_ms";
 const PHASES: PackageLoadPhase[] = [
@@ -72,19 +73,17 @@ describe("publisher_package_load_phase_duration_ms", () => {
       async () => {
          const envPath = path.join(rootDir, "env");
          const dir = path.join(envPath, "pkg");
-         await fs.mkdir(dir, { recursive: true });
-         await fs.writeFile(
-            path.join(dir, "publisher.json"),
-            JSON.stringify({ name: "pkg", description: "fixture" }),
-         );
-         await fs.writeFile(
-            path.join(dir, "m.malloy"),
-            `source: nums is duckdb.sql("SELECT 1 as one") extend {
+         writePackageFiles(
+            dir,
+            {
+               "m.malloy": `source: nums is duckdb.sql("SELECT 1 as one") extend {
   measure: n is count()
   # bar_chart
   view: by_one is { group_by: one; aggregate: n }
 }
 `,
+            },
+            { manifest: { name: "pkg", description: "fixture" } },
          );
          const env = await Environment.create("testEnv", envPath, []);
          await env.addPackage("pkg");

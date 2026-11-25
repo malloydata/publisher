@@ -20,6 +20,10 @@
 
 import { isSourceDef, type ModelDef } from "@malloydata/malloy";
 import {
+   preparedQueryView,
+   resolveStructRefSource,
+} from "./governance/ir/prepared_query";
+import {
    buildDerivationBaseMap,
    buildIsEdgeMap,
    buildJoinBaseMap,
@@ -183,9 +187,11 @@ function contentsStruct(
 
 /** The run target the walk starts from: `structRef`, name or object. */
 function runTargetStruct(prepared: PreparedQueryIr): IrStruct | undefined {
-   const ref = prepared._query?.structRef;
-   if (typeof ref === "string") return contentsStruct(prepared._modelDef, ref);
-   return ref && typeof ref === "object" ? ref : undefined;
+   // A name must be a source in `contents`; an inline struct is taken as is.
+   return resolveStructRefSource<IrStruct>(
+      preparedQueryView(prepared).structRef,
+      prepared._modelDef,
+   );
 }
 
 /**

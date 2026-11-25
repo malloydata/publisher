@@ -53,7 +53,9 @@ but looks plausible — and the same question returns the same numbers tomorrow.
   dragging tiles if you like, and no-build HTML data apps, all shipped inside the package, plus the
   Console for browsing it all.
 - **Govern** — givens, `#(authorize)` and `#(access_filter)` decide who may query and who sees what; discovery curation
-  decides what is even visible.
+  decides what is even visible. Publisher is a microservice: run it locally with your own
+  permissions, or inside your cloud behind the gateway that authenticates your users and sets those
+  givens. The controls rely on that gateway (see [operating model](docs/security-posture.md#operating-model-a-microservice-behind-your-gateway)).
 - **Optimize** — one `#@ persist` annotation materializes an expensive source into a table and
   `#@ preaggregate` rolls it up, rebuilt on demand or on a schedule.
 - **Run anywhere** — DuckDB built in for CSV, Parquet, JSON, and Excel; BigQuery, Snowflake, Postgres,
@@ -62,7 +64,7 @@ but looks plausible — and the same question returns the same numbers tomorrow.
 ## Requirements
 
 Node.js 20 or newer (the server refuses to start on anything older and says so). Building from a clone
-also needs [Bun](https://bun.sh/) 1.3.13+. The Docker image carries its own runtime and needs neither.
+also needs [Bun](https://bun.sh/) 1.4.4+. The Docker image carries its own runtime and needs neither.
 
 ## Quick start
 
@@ -166,9 +168,16 @@ curl -s -X POST \
 
 The running server serves its full OpenAPI spec at `http://localhost:4000/api-doc.yaml`.
 
-> **Security.** The server — MCP and REST alike — is stateless and unauthenticated, and it can read any
-> data your models connect to. Bind it to loopback (`--host 127.0.0.1`) for local use, and put an
-> authenticating gateway in front before exposing it more widely.
+> **Operating model: a microservice behind your gateway.** Publisher runs either locally with your
+> own permissions, or inside your existing cloud behind the gateway or application that
+> authenticates your users. The server, MCP and REST alike, is stateless and unauthenticated, and it
+> can read any data your models connect to. Its access controls (`#(authorize)`, `#(access_filter)`,
+> `#(secure)` givens, `#(carries)`, the access record) are evaluated against what each request
+> carries. They enforce your policy only when that gateway authenticates the user, sets the givens
+> from the verified identity, and is the only way to reach Publisher. Bind it to loopback
+> (`--host 127.0.0.1`) for local use. See
+> [docs/security-posture.md](docs/security-posture.md#operating-model-a-microservice-behind-your-gateway)
+> for exactly what the gateway has to do.
 
 ## What you can do
 
@@ -193,7 +202,10 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
   `linear` for a story read top to bottom, `grid` for a view scanned at a glance —
   [docs/choosing-a-surface.md](docs/choosing-a-surface.md).
 - **Explore, no code.** Build and drill into queries visually with [Malloy Explorer](docs/explorer.md);
-  every action generates valid Malloy, so metrics stay correct across joins.
+  every action generates Malloy, so metrics stay correct across joins. Or, on a server started
+  with `PUBLISHER_MODEL_PAGE=viewer`, **browse a model** instead: open a `.malloy` file in the
+  [Console](docs/console.md) to read each source it exposes, field by field with its Malloy, and run
+  its views and named queries.
 
 ### Surface
 
@@ -207,8 +219,7 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
   your own [colors, fonts, and dark mode](docs/theming.md) — [docs/console.md](docs/console.md).
 - **Your own applications.** The REST API serves any language, and the running server publishes its
   OpenAPI spec. From Python, the standard library is enough: [AGENTS.md section 7](AGENTS.md#7-working-unattended-the-rest-api)
-  has a copyable example. A generated client lives in [`packages/python-client`](packages/python-client),
-  but it is not published to PyPI.
+  has a copyable example. There is no supported Python client package.
 
 ### Govern
 

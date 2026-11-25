@@ -17,6 +17,7 @@
  * transport is encrypted either way.
  */
 
+import { settings } from "../settings";
 import net from "net";
 import { Client as SshClient } from "ssh2";
 import type { ConnectConfig, SyncHostVerifier } from "ssh2";
@@ -34,22 +35,19 @@ export const ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV =
  * Whether this deployment accepts an unverified bastion host key. Accepts the
  * same spellings as every other boolean flag (`1`, `true`, `yes`, `on`).
  *
- * Not `parseBoolEnv`, which throws on an unrecognised value: one caller is
+ * Never throws, though the setting does on an unrecognised value: one caller is
  * ssh2's synchronous `hostVerifier`, where a throw escapes past `fail()` and
  * loses the descriptive refusal. An unrecognised value falls back to the
  * secure default here; validateConnectionShape rejects it loudly at config
  * load.
  */
 export function allowUnverifiedHostKey(): boolean {
-   return TRUTHY_ENV_VALUES.has(
-      (process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV] ?? "")
-         .trim()
-         .toLowerCase(),
-   );
+   try {
+      return settings.get("allow.unverifiedSshHostKey");
+   } catch {
+      return false;
+   }
 }
-
-// Mirrors the accepted set in config.ts's parseBoolEnv.
-const TRUTHY_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
 
 function unpinnedRefusal(host: string): Error {
    return new Error(
@@ -64,6 +62,8 @@ export interface ProxyEndpoint {
    host: string;
    port: number;
    close(): Promise<void>;
+   /** Fires once if the tunnel dies on its own; never after `close()`. */
+   onClose(listener: (cause?: Error) => void): void;
 }
 
 const SSH_CONNECT_TIMEOUT_MS = 15_000;
@@ -130,9 +130,24 @@ function openSshProxy(
       let localPort = 0;
       let server: net.Server | undefined;
       let settled = false;
+      let opened = false;
+      let dead = false;
+      let closing = false;
+      let lastError: Error | undefined;
+      let deathCause: Error | undefined;
+      const closeListeners: ((cause?: Error) => void)[] = [];
+      let closePromise: Promise<void> | undefined;
       // Tracked so close() can force them down; server.close() alone waits for
       // sockets to drain and can hang teardown indefinitely.
       const sockets = new Set<net.Socket>();
+
+      function notifyClose(listener: (cause?: Error) => void): void {
+         try {
+            listener(deathCause);
+         } catch (err) {
+            logger.warn("SSH tunnel onClose listener threw", { error: err });
+         }
+      }
 
       function fail(err: Error): void {
          if (settled) return;
@@ -187,51 +202,92 @@ function openSshProxy(
          }) as SyncHostVerifier,
       };
 
-      client.on("error", (err) => fail(err));
+      client.on("error", (err) => {
+         lastError = err;
+         fail(err);
+      });
+
+      // Bun can leave a dropped session unwritable with no "close", so "end"
+      // and a synchronous forwardOut throw count as the same death.
+      function onSessionGone(err?: Error): void {
+         if (err) lastError ??= err;
+         if (!opened) {
+            fail(
+               lastError ??
+                  new Error(
+                     `SSH connection to ${ssh.host} closed before the tunnel was ready`,
+                  ),
+            );
+            return;
+         }
+         if (closing || dead) return;
+         dead = true;
+         deathCause = lastError;
+         logger.warn(
+            `SSH tunnel via bastion ${ssh.host} to ${target.host}:${target.port} closed` +
+               (lastError ? `: ${lastError.message}` : "."),
+         );
+         for (const listener of closeListeners.splice(0)) notifyClose(listener);
+      }
+      client.on("close", () => onSessionGone());
+      client.on("end", () => onSessionGone());
 
       client.on("ready", () => {
          server = net.createServer((socket) => {
+            // The listener stays bound after death so the port is not freed to
+            // another tunnel while a stale dialer can still reach it; only close() frees it.
+            if (dead) {
+               socket.destroy();
+               return;
+            }
             sockets.add(socket);
             socket.on("close", () => sockets.delete(socket));
+            // Before forwardOut: its failure paths destroy(err), which is uncaught without a listener.
+            socket.on("error", () => {});
             // Buffer incoming data immediately so we don't lose bytes that
             // arrive before the forwardOut channel is open (relevant in Bun
             // where resume() doesn't re-emit already-buffered data).
             const earlyData: Buffer[] = [];
             socket.on("data", (chunk: Buffer) => earlyData.push(chunk));
 
-            client.forwardOut(
-               "127.0.0.1",
-               localPort,
-               target.host,
-               target.port,
-               (err, channel) => {
-                  if (err) {
-                     socket.destroy(err);
-                     return;
-                  }
-                  // The socket may have closed while the channel opened; attaching
-                  // to it would leak the remote connection. The rest of this
-                  // callback is synchronous, so no close can slip in after this.
-                  if (socket.destroyed) {
-                     channel.destroy();
-                     return;
-                  }
-                  for (const chunk of earlyData) {
-                     channel.write(chunk);
-                  }
-                  earlyData.length = 0;
-                  socket.removeAllListeners("data");
-                  // pipe() honors backpressure; on('data') => write() would
-                  // buffer unbounded on a slow peer.
-                  socket.pipe(channel);
-                  channel.pipe(socket);
-                  socket.on("error", () => channel.destroy());
-                  channel.on("error", () => socket.destroy());
-                  // Propagate teardown both ways so neither side is left half-open.
-                  socket.on("close", () => channel.destroy());
-                  channel.on("close", () => socket.destroy());
-               },
-            );
+            try {
+               client.forwardOut(
+                  "127.0.0.1",
+                  localPort,
+                  target.host,
+                  target.port,
+                  (err, channel) => {
+                     if (err) {
+                        socket.destroy(err);
+                        return;
+                     }
+                     // The socket may have closed while the channel opened; attaching
+                     // to it would leak the remote connection. The rest of this
+                     // callback is synchronous, so no close can slip in after this.
+                     if (socket.destroyed) {
+                        channel.destroy();
+                        return;
+                     }
+                     for (const chunk of earlyData) {
+                        channel.write(chunk);
+                     }
+                     earlyData.length = 0;
+                     socket.removeAllListeners("data");
+                     // pipe() honors backpressure; on('data') => write() would
+                     // buffer unbounded on a slow peer.
+                     socket.pipe(channel);
+                     channel.pipe(socket);
+                     socket.on("error", () => channel.destroy());
+                     channel.on("error", () => socket.destroy());
+                     // Propagate teardown both ways so neither side is left half-open.
+                     socket.on("close", () => channel.destroy());
+                     channel.on("close", () => socket.destroy());
+                  },
+               );
+            } catch (err) {
+               socket.destroy(err as Error);
+               onSessionGone(err as Error);
+            }
          });
 
          server.listen(0, "127.0.0.1", () => {
@@ -246,14 +302,20 @@ function openSshProxy(
             }
             localPort = addr.port;
 
-            if (settled) return;
+            // fail() during listen() ran server.close() before it was bound.
+            if (settled) {
+               server!.close();
+               return;
+            }
             settled = true;
+            opened = true;
 
             resolve({
                host: "127.0.0.1",
                port: localPort,
                close(): Promise<void> {
-                  return new Promise((res) => {
+                  closing = true;
+                  closePromise ??= new Promise((res) => {
                      // Destroy live sockets first or server.close() waits on them.
                      for (const s of sockets) s.destroy();
                      server!.close(() => {
@@ -261,6 +323,17 @@ function openSshProxy(
                         res();
                      });
                   });
+                  return closePromise;
+               },
+               onClose(listener): void {
+                  if (closing) return;
+                  if (dead) {
+                     process.nextTick(() => {
+                        if (!closing) notifyClose(listener);
+                     });
+                     return;
+                  }
+                  closeListeners.push(listener);
                },
             });
          });

@@ -4,9 +4,9 @@
 import { describe, expect, it } from "bun:test";
 import express from "express";
 import request from "supertest";
-import { parseRateLimit, rateLimitMiddleware } from "./rate_limit";
+import { rateLimitMiddleware } from "./rate_limit";
 
-function appWith(perMinute: number | undefined) {
+function appWith(perMinute: number) {
    const app = express();
    app.use(rateLimitMiddleware(perMinute));
    app.get("/health", (_req, res) => res.send("ok"));
@@ -15,28 +15,9 @@ function appWith(perMinute: number | undefined) {
    return app;
 }
 
-describe("parseRateLimit", () => {
-   it("treats unset, empty, and 0 as off", () => {
-      expect(parseRateLimit(undefined)).toBeUndefined();
-      expect(parseRateLimit("")).toBeUndefined();
-      expect(parseRateLimit("  ")).toBeUndefined();
-      expect(parseRateLimit("0")).toBeUndefined();
-   });
-
-   it("accepts a positive integer", () => {
-      expect(parseRateLimit("600")).toBe(600);
-   });
-
-   it("rejects anything that is not a non-negative integer", () => {
-      for (const bad of ["-1", "1.5", "abc", "'5'", "1e3x"]) {
-         expect(() => parseRateLimit(bad)).toThrow("PUBLISHER_RATE_LIMIT");
-      }
-   });
-});
-
 describe("rateLimitMiddleware", () => {
    it("passes everything through when off", async () => {
-      const app = appWith(undefined);
+      const app = appWith(0);
       for (let i = 0; i < 5; i++) {
          expect((await request(app).get("/thing")).status).toBe(200);
       }

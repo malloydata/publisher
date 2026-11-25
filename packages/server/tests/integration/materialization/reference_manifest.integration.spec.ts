@@ -18,19 +18,18 @@ const API = `/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`;
 
 /**
  * WI-1 (Phase D): the orchestrated build seeds its build Manifest from
- * `referenceManifest` and honors `strictUpstreams`. Proven end-to-end over a
+ * `referenceManifest`, and every build is strict. Proven end-to-end over a
  * two-level persist DAG (`orders_base` -> `orders_rollup`):
  *
  *  - Build the downstream `orders_rollup` ALONE with a `referenceManifest`
- *    pointing at the already-materialized `orders_base` table and
- *    `strictUpstreams=true` -> the build SUCCEEDS, which under strict mode is
- *    only possible if the upstream reference resolved to the physical table
- *    (a strict miss would throw).
- *  - Build `orders_rollup` ALONE under `strictUpstreams=true` with NO
- *    `referenceManifest` -> the build FAILS loudly (runtime-manifest-strict-miss)
- *    instead of silently recomputing the upstream live.
+ *    pointing at the already-materialized `orders_base` table -> the build
+ *    SUCCEEDS, which is only possible if the upstream reference resolved to
+ *    the physical table (a strict miss would throw).
+ *  - Build `orders_rollup` ALONE with NO `referenceManifest` -> the build
+ *    FAILS loudly (runtime-manifest-strict-miss) instead of silently
+ *    recomputing the upstream live.
  */
-describe("Materialization reference manifest + strictUpstreams (E2E)", () => {
+describe("Materialization reference manifest, always strict (E2E)", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
 
@@ -105,12 +104,9 @@ describe("Materialization reference manifest + strictUpstreams (E2E)", () => {
       );
    }
 
-   /** Delete a terminal materialization record (optionally dropping its tables). */
-   async function deleteRun(id: string, dropTables = false): Promise<void> {
-      await fetch(
-         url(`/materializations/${id}${dropTables ? "?dropTables=true" : ""}`),
-         { method: "DELETE" },
-      );
+   /** Delete a terminal materialization record (record-only). */
+   async function deleteRun(id: string): Promise<void> {
+      await fetch(url(`/materializations/${id}`), { method: "DELETE" });
    }
 
    /** Build one source alone and drive it to a terminal state. */
@@ -167,10 +163,10 @@ describe("Materialization reference manifest + strictUpstreams (E2E)", () => {
             },
          });
          expect(baseRun.status).toBe("MANIFEST_FILE_READY");
-         await deleteRun(baseRun.id as string); // keep the physical table
+         await deleteRun(baseRun.id as string); // the physical table stays
 
          // 2) Build the downstream `orders_rollup` ALONE, referencing the
-         // upstream's physical table under strictUpstreams. Success is only
+         // upstream's physical table. Success is only
          // possible if the reference resolved (strict forbids the live fallback).
          const rollupRun = await buildOneAlone({
             buildInstructions: {
@@ -189,16 +185,13 @@ describe("Materialization reference manifest + strictUpstreams (E2E)", () => {
                      physicalTableName: UPSTREAM_TABLE,
                   },
                ],
-               strictUpstreams: true,
             },
          });
          expect(rollupRun.status).toBe("MANIFEST_FILE_READY");
 
-         // Cleanup both physical tables and records.
-         await deleteRun(rollupRun.id as string, true);
-         // Drop the upstream table via a fresh no-op build+drop is overkill;
-         // the environment teardown removes the project. Best-effort direct drop
-         // is unnecessary for correctness here.
+         // Cleanup the record; the environment teardown removes the project
+         // and the tables with it.
+         await deleteRun(rollupRun.id as string);
       },
       { timeout: 120_000 },
    );
@@ -210,7 +203,7 @@ describe("Materialization reference manifest + strictUpstreams (E2E)", () => {
          const rollup = sources["orders_rollup"];
          expect(rollup).toBeDefined();
 
-         // Build `orders_rollup` ALONE under strictUpstreams with NO
+         // Build `orders_rollup` ALONE with NO
          // referenceManifest for its upstream -> the compile throws
          // runtime-manifest-strict-miss and the run FAILS.
          const run = await buildOneAlone({
@@ -224,14 +217,13 @@ describe("Materialization reference manifest + strictUpstreams (E2E)", () => {
                      realization: "COPY",
                   },
                ],
-               strictUpstreams: true,
             },
          });
 
          expect(run.status).toBe("FAILED");
          expect(String(run.error ?? "")).toContain("manifest");
 
-         await deleteRun(run.id as string, true);
+         await deleteRun(run.id as string);
       },
       { timeout: 120_000 },
    );

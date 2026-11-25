@@ -15,9 +15,6 @@
 // "main moved" fast-forward compare never triggers here — that guard has no
 // registry or git dependency of its own and is exercised by reading the
 // script, not by this harness.
-//
-// python-client's publish is paused in the script; the fake python3 and curl
-// keep it skipping (already on PyPI) if that line is restored.
 
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import {
@@ -165,18 +162,6 @@ console.error("fake gh: unsupported command " + args.join(" "));
 process.exit(1);
 `;
 
-// Always reports HTTP 200 (published), so registry_has's pypi branch treats
-// python-client as already published and publish_pkg skips it.
-const FAKE_CURL = `#!/usr/bin/env node
-process.stdout.write("200");
-process.exit(0);
-`;
-
-const FAKE_PYTHON3 = `#!/bin/sh
-case "$*" in *"tomllib.load"*) echo "malloy-publisher-sdk 0.1.0 malloy-publisher-sdk" ;; esac
-exit 0
-`;
-
 function makeFakeBin(): string {
   const dir = mkdtempSync(path.join(tmpdir(), "publish-packages-bin-"));
   dirs.push(dir);
@@ -187,8 +172,6 @@ function makeFakeBin(): string {
   };
   write("npm", FAKE_NPM);
   write("gh", FAKE_GH);
-  write("curl", FAKE_CURL);
-  write("python3", FAKE_PYTHON3);
   return dir;
 }
 

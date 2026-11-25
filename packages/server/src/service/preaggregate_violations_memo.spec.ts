@@ -68,23 +68,15 @@ function modelWith(
          return contents;
       },
    };
-   return new Model(
-      "test-pkg",
-      "synthetic.malloy",
-      {},
-      "model",
-      undefined,
-      modelDef as unknown as ModelDef,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+   return new Model({
+      packageName: "test-pkg",
+      modelPath: "synthetic.malloy",
+      dataStyles: {},
+      modelType: "model",
+      modelDef: modelDef as unknown as ModelDef,
       // Supplied so the constructor does not derive it from this partial def.
-      {} as never,
-   );
+      modelInfo: {} as never,
+   });
 }
 
 describe("Model.preaggregateViolations memoization", () => {

@@ -3,14 +3,12 @@
 
 import {
    MalloyTranslator,
-   payloadOf,
-   routeOf,
    type LogMessage,
    type ModelDef,
 } from "@malloydata/malloy";
-import { ownModelNoteObjects, type AnnotationNote } from "./annotations";
+import { payloadOfNote, routeOfNote } from "./annotation_reader";
+import { type AnnotationNote } from "./annotations";
 import { docCommentText } from "./motly";
-import { isReportEligiblePath, readReportTag } from "./report";
 
 /**
  * A `##` note or `##|` block that sets `artifact` as a top-level property,
@@ -75,10 +73,8 @@ const ARTIFACT_NOTE = {
 /** The note route whose payload is markdown: a floating cell at `##`, a cell's own prose at `#`. */
 export const MARKDOWN_ROUTE = "markdown";
 
-/** Malloy's own routing for one note: its route, empty for a plain tag, `undefined` when the prefix is malformed. */
-export function routeOfNote(text: string): string | undefined {
-   return routeOf({ value: text.trimStart() } as Parameters<typeof routeOf>[0]);
-}
+/** Malloy's own routing for one note (see annotation_reader.ts). */
+export { routeOfNote };
 
 /** Whether a note is on the `(markdown)` route, at either level and in either form. */
 export function isMarkdownNote(text: string): boolean {
@@ -199,7 +195,7 @@ export function artifactNoteOfText(text: string): string | undefined {
 
 export type NotebookCellKind = "markdown" | "query" | "definition";
 
-/** One cell of a served notebook, as the reader sliced it from the file. */
+/** One cell of a linear `.malloy` report, as the reader sliced it from the file. */
 export interface NotebookCellSpan {
    kind: NotebookCellKind;
    type: "markdown" | "code";
@@ -216,8 +212,6 @@ export interface NotebookCellSpan {
    /** 1-based and inclusive. */
    startLine: number;
    endLine: number;
-   /** A query cell's index into `modelDef.queryList` and `modelInfo.anonymous_queries`. */
-   queryIndex?: number;
 }
 
 /**
@@ -414,9 +408,7 @@ type ReaderItem =
 
 /** A `(markdown)` block's body: text on its opener line is prose too, except a lone bare word, which names it. */
 function markdownBlockBody(opener: string, bodyLines: string[]): string {
-   const rest = payloadOf({ value: opener } as Parameters<
-      typeof payloadOf
-   >[0]).trim();
+   const rest = payloadOfNote(opener).trim();
    // Only a `(markdown)` or `(text)` opener names its block; a `"` opener's text is always prose.
    const onOpener =
       routeOfNote(opener) !== '"' && TEXT_BLOCK_NAME.test(rest) ? "" : rest;
@@ -427,16 +419,13 @@ function markdownBlockBody(opener: string, bodyLines: string[]): string {
 
 /** A `(markdown)` line note's prose: what follows the route and its one separator. */
 function markdownLineBody(noteText: string): string {
-   return normalizeNewlines(
-      payloadOf({ value: noteText } as Parameters<typeof payloadOf>[0]),
-   ).replace(/\n$/, "");
+   return normalizeNewlines(payloadOfNote(noteText)).replace(/\n$/, "");
 }
 
 /**
- * A served notebook's cells, read off Malloy's parse tree and token stream.
+ * A linear report's cells, read off Malloy's parse tree and token stream.
  * Pure over its inputs. `modelDef` is the compile of the same `text`, used only
- * to check that every `run:` the reader found is one Malloy compiled, so the
- * k-th query cell is `queryList[k]`.
+ * to check that every `run:` the reader found is one Malloy compiled.
  *
  * All-or-nothing: a top-level construct the reader cannot classify, or a
  * default-channel token outside every recognized statement and note, refuses
@@ -774,7 +763,7 @@ export function readNotebookCells(
    if (modelDef && runCount !== modelDef.queryList.length) {
       return refuse({
          line: 1,
-         message: `Line 1: the notebook reader found ${runCount} run: statements where Malloy compiled ${modelDef.queryList.length}, so its query cells cannot be matched to their results. Fix: none in the file; report it, since the reader and the compiler disagree.`,
+         message: `Line 1: the notebook reader and the Malloy compiler disagree on the number of run: statements. The reader found ${runCount} and the compiler ${modelDef.queryList.length}. Fix: none in the file; report it.`,
       });
    }
 
@@ -782,13 +771,11 @@ export function readNotebookCells(
    const annotations: string[] = [];
    // The markdown cell a contiguous `##(markdown)` run is building, which the next adjacent line joins.
    let lineRun: NotebookCellSpan | undefined;
-   let runsSeen = 0;
    items.forEach((item, index) => {
       const belowTag = index > artifactAt;
       if (item.kind === "statement") {
          lineRun = undefined;
-         const queryIndex = item.run ? runsSeen++ : undefined;
-         // A `run:` above the tag is header, so a definition cell, but it still holds its queryList slot.
+         // A `run:` above the tag is header, so a definition cell.
          const pushed: NotebookCellSpan =
             item.run && belowTag
                ? {
@@ -805,7 +792,6 @@ export function readNotebookCells(
                     }),
                     startLine: item.startLine,
                     endLine: item.endLine,
-                    queryIndex,
                  }
                : {
                     kind: "definition",
@@ -869,9 +855,7 @@ export function parseMarkdownOpener(
    const route = routeOfNote(line);
    if (route !== MARKDOWN_ROUTE && !(sigil[1] === "##" && route === "text"))
       return undefined;
-   const rest = payloadOf({ value: line } as Parameters<
-      typeof payloadOf
-   >[0]).trim();
+   const rest = payloadOfNote(line).trim();
    return {
       level: sigil[1].length as 1 | 2,
       route,
@@ -961,28 +945,4 @@ export function cellsUnreadableProblem(
          },
       },
    };
-}
-
-/**
- * The compile problem for a linear report the reader would refuse, so a
- * compile check (an agent's, or the builder's save gate) fails on a report
- * that would not open. Undefined for anything that is not a linear report
- * (`report.ts`), wherever the file lives.
- */
-export function notebookReaderProblem(
-   modelPath: string,
-   text: string,
-   modelDef: ModelDef,
-   url: string,
-): LogMessage | undefined {
-   if (!isReportEligiblePath(modelPath)) return undefined;
-   const tag = readReportTag(
-      ownModelNoteObjects(modelDef).map((note) => note.text),
-   );
-   if (tag.status !== "report" || tag.layout !== "linear") return undefined;
-   const parse = parseNotebookText(text);
-   const error = isNotebookReaderError(parse)
-      ? parse
-      : readNotebookCells(parse, modelDef, text).error;
-   return error && cellsUnreadableProblem(error, url);
 }

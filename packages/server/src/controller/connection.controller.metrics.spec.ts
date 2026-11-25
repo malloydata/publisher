@@ -49,16 +49,23 @@ describe("connection operation metrics", () => {
       ).toBe(1);
    });
 
-   it("counts a refused create under its type", async () => {
+   it("counts and times a refused create under its type", async () => {
       await expect(
          controller.addConnection("env", "c", { type: "postgres" } as never),
       ).rejects.toThrow();
+      const labels = {
+         operation: "create",
+         type: "postgres",
+         outcome: "refused",
+      };
+      expect(await count(labels)).toBe(1);
       expect(
-         await count({
-            operation: "create",
-            type: "postgres",
-            outcome: "refused",
-         }),
+         (
+            await harness.collectHistogram(
+               "publisher_connection_operation_duration_ms",
+               labels,
+            )
+         ).count,
       ).toBe(1);
    });
 });

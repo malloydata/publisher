@@ -15,13 +15,15 @@ import { join } from "path";
 import * as sinon from "sinon";
 import tls from "tls";
 import type { components } from "../api";
+import { attachDuckLakeReadWrite } from "./connection";
+import { federateSourceForPassthrough } from "./dialects";
 import {
    ambientTrustBundlePath,
-   attachDuckLakeReadWrite,
-   federateSourceForPassthrough,
    buildProxiedPgAttachString,
+   pgAttachSecretName,
    pgConninfoPair,
-} from "./connection";
+} from "./postgres_conninfo";
+import { installSettings } from "../test_helpers/settings_env";
 
 /** A real in-memory DuckDB connection with runSQL stubbed to capture SQL. */
 function stubbedConnection(): { conn: DuckDBConnection; sql: string[] } {
@@ -234,7 +236,15 @@ describe("federateSourceForPassthrough", () => {
       expect(attach).toStartWith("ATTACH OR REPLACE ");
       // The ATTACH alias is dialect-quoted; the handle stays the raw name (it
       // becomes the postgres_query string literal, which matches the catalog).
-      expect(attach).toContain('AS "src_pg" (TYPE postgres, READ_ONLY)');
+      expect(attach).toContain(
+         `AS "src_pg" (TYPE postgres, READ_ONLY, SECRET ${pgAttachSecretName("src_pg")})`,
+      );
+      // The credential is in the secret, not in the attach path.
+      expect(attach).not.toContain("pw");
+      expect(attach).not.toContain("user=");
+      expect(sql).toContain(
+         `CREATE OR REPLACE TEMPORARY SECRET ${pgAttachSecretName("src_pg")} (TYPE postgres, USER 'u', PASSWORD 'pw');`,
+      );
    });
 
    it("postgres: re-federating the same source on one session is idempotent (no 'already exists')", async () => {
@@ -274,7 +284,9 @@ describe("federateSourceForPassthrough", () => {
       });
       expect(result.handle).toBe("my-pg");
       const attach = sql.find((s) => s.startsWith("ATTACH"));
-      expect(attach).toContain('AS "my-pg" (TYPE postgres, READ_ONLY)');
+      expect(attach).toContain(
+         `AS "my-pg" (TYPE postgres, READ_ONLY, SECRET ${pgAttachSecretName("my-pg")})`,
+      );
    });
 
    it("postgres: a proxied source is federated through its tunnel, not at its own host", async () => {
@@ -292,6 +304,7 @@ describe("federateSourceForPassthrough", () => {
             close: async () => {
                closed += 1;
             },
+            onClose: () => {},
          };
       };
       const result = await federateSourceForPassthrough(
@@ -322,11 +335,14 @@ describe("federateSourceForPassthrough", () => {
          "host=db.internal.example hostaddr=127.0.0.1 port=54321",
       );
       expect(attach).not.toContain("host=127.0.0.1");
-      expect(attach).toContain("dbname=d user=u password=pw");
+      expect(attach).toContain("dbname=d");
+      expect(attach).not.toContain("password=");
       // Encrypt without verifying by default (a force-SSL target must not be
       // refused for plaintext; the query path defaults the same way).
       expect(attach).toContain("sslmode=require");
-      expect(attach).toContain('AS "src_pg" (TYPE postgres, READ_ONLY)');
+      expect(attach).toContain(
+         `AS "src_pg" (TYPE postgres, READ_ONLY, SECRET ${pgAttachSecretName("src_pg")})`,
+      );
       expect(result.handle).toBe("src_pg");
       // The handle carries the tunnel's close for the build session's finally.
       expect(result.close).toBeDefined();
@@ -348,6 +364,7 @@ describe("federateSourceForPassthrough", () => {
          close: async () => {
             closed += 1;
          },
+         onClose: () => {},
       });
       await expect(
          federateSourceForPassthrough(
@@ -379,6 +396,7 @@ describe("federateSourceForPassthrough", () => {
          close: async () => {
             closed += 1;
          },
+         onClose: () => {},
       });
       // verify-ca with no trusted bundle is refused AFTER the tunnel is open and
       // BEFORE any ATTACH: the tunnel must not be stranded by that refusal.
@@ -480,14 +498,19 @@ describe("attachDuckLakeReadWrite", () => {
    // module-private and reachable only through the connection factory; the gate
    // itself is one `if (!options.readOnly)` that both calls sit inside.
    describe("write bounds reach the attach", () => {
+      let restoreSettings: (() => void) | undefined;
       afterEach(() => {
-         delete process.env.PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES;
-         delete process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES;
+         restoreSettings?.();
+         restoreSettings = undefined;
       });
 
       it("read-write issues both configured catalog options", async () => {
-         process.env.PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES = "32MB";
-         process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES = "256MB";
+         restoreSettings = installSettings({
+            env: {
+               PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES: "32MB",
+               PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES: "256MB",
+            },
+         }).restore;
          const { conn, sql } = stubbedConnection();
          await attachDuckLakeReadWrite(conn, "lake", ducklakeConfig);
          expect(
@@ -509,7 +532,12 @@ describe("attachDuckLakeReadWrite", () => {
 });
 
 describe("buildProxiedPgAttachString", () => {
-   const endpoint = { host: "127.0.0.1", port: 6000, close: async () => {} };
+   const endpoint = {
+      host: "127.0.0.1",
+      port: 6000,
+      close: async () => {},
+      onClose: () => {},
+   };
    const pg = (sslmode?: string) =>
       ({
          host: "real.example",

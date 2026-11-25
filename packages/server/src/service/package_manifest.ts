@@ -317,6 +317,18 @@ export function queryMetadataParseWarnings(
 // ──────────────────────────────────────────────────────────────────────
 
 /**
+ * Whether a package's query boundary restricts anything: a surface (a
+ * non-empty resolved `explores`) AND `queryableSources` not `"all"`.
+ */
+export function queryBoundaryActive(metadata: {
+   explores?: readonly string[];
+   queryableSources?: "declared" | "all";
+}): boolean {
+   if (metadata.queryableSources === "all") return false;
+   return !!(metadata.explores && metadata.explores.length > 0);
+}
+
+/**
  * Resolve a package's discovery surface from an explicit `explores` in
  * publisher.json or, where the manifest is silent, the `index.malloy`
  * convention. The convention only defaults that one field: nothing downstream

@@ -4,13 +4,17 @@
 import { describe, expect, it } from "bun:test";
 import { derivationTerminals } from "./caller_joins";
 import {
+   extractRunQueryCall,
+   extractRunViewCall,
    buildDerivationBaseMap,
    buildIsEdgeMap,
    buildJoinBaseMap,
    buildSourceAliasMap,
    collectIdentifierNames,
+   definitionTextAt,
    extractRunTargetSourceName,
    extractRunTargetSourceNames,
+   lastRunStatementText,
    locateProblemsInCallerText,
    scanIdentifiers,
    stripMalloyCommentsAndLiterals,
@@ -18,6 +22,166 @@ import {
 } from "./query_text";
 
 describe("service/query_text", () => {
+   describe("lastRunStatementText", () => {
+      it("reads the last top-level run: up to the next statement", () => {
+         const cell = [
+            'import "../models/orders.malloy"',
+            "source: mine is orders extend { where: id > 2 }",
+            "# bar_chart",
+            "run: orders -> { join_one: h is hidden on h.id = id; aggregate: n is count() }",
+            "type: Foo is { a :: string }",
+         ].join("\n");
+         expect(lastRunStatementText(cell)).toBe(
+            "# bar_chart\nrun: orders -> { join_one: h is hidden on h.id = id; aggregate: n is count() }",
+         );
+      });
+
+      it("keeps a block annotation's chart config above the run:", () => {
+         const cell = "#| bar_chart {\n  size: lg\n|#\nrun: s -> v";
+         expect(lastRunStatementText(cell)).toBe(cell);
+      });
+
+      it("reads a run: under a markdown block annotation with an open bracket in it", () => {
+         const cell = "#|(markdown)\nRevenue (USD, by region\n|#\nrun: s -> v";
+         expect(lastRunStatementText(cell)).toBe(cell);
+      });
+
+      it("reads no run: inside a block annotation after the statement", () => {
+         expect(
+            lastRunStatementText(
+               "run: a -> v\n#|(markdown)\nthen run: b -> v\n|#",
+            ),
+         ).toBe("run: a -> v");
+      });
+
+      it("reads a multi-line triple-quoted filter string as one string", () => {
+         const cell = [
+            "run: s -> {",
+            "  where: label ~ f'''",
+            "    \\} source: x",
+            "  '''",
+            "  aggregate: n",
+            "}",
+         ].join("\n");
+         expect(lastRunStatementText(cell)).toBe(cell);
+      });
+
+      it("reads a name that starts with a keyword and goes on past ASCII as a name", () => {
+         expect(lastRunStatementText("run: importé -> by_region")).toBe(
+            "run: importé -> by_region",
+         );
+      });
+
+      it("keeps a comment among the tags, and stops at the notebook's own ## tags", () => {
+         expect(
+            lastRunStatementText(
+               '## title="T"\n# bar_chart\n-- why\n# size=lg\nrun: s -> v',
+            ),
+         ).toBe("# bar_chart\n-- why\n# size=lg\nrun: s -> v");
+         expect(lastRunStatementText("# a\n##| x\n|##\n# b\nrun: s -> v")).toBe(
+            "# b\nrun: s -> v",
+         );
+      });
+
+      it("leaves a tag on an earlier statement with that statement", () => {
+         expect(
+            lastRunStatementText("# bar_chart\nsource: x is s\nrun: x -> v"),
+         ).toBe("run: x -> v");
+      });
+
+      it("keeps the closing backtick of a quoted name at the end", () => {
+         expect(lastRunStatementText("run: s -> `by region`")).toBe(
+            "run: s -> `by region`",
+         );
+      });
+
+      it("reads every cell shape the SDK's own reader used to read", () => {
+         const cases: [string, string | undefined][] = [
+            [
+               "##! experimental.givens\nimport \"a.malloy\"\ngiven: R :: string is 'x'\nsource: s is t extend {}\nrun: s -> {\n  aggregate: n is count()\n}",
+               "run: s -> {\n  aggregate: n is count()\n}",
+            ],
+            [
+               '## title="T"\n# bar_chart\n# label="By month"\nrun: s -> v',
+               '# bar_chart\n# label="By month"\nrun: s -> v',
+            ],
+            ["run: a -> v\nrun: b -> v", "run: b -> v"],
+            ["# bar_chart\n\nrun: s -> v", "# bar_chart\n\nrun: s -> v"],
+            [
+               "# bar_chart\n// by month\nrun: s -> v",
+               "# bar_chart\n// by month\nrun: s -> v",
+            ],
+            [
+               "source: s is t extend {}\n\n# bar_chart\n\nrun: s -> v",
+               "# bar_chart\n\nrun: s -> v",
+            ],
+            ['## title="T"\n\nrun: s -> v', "run: s -> v"],
+            [
+               "run: orders -> by_region\nsource: later is orders extend {}",
+               "run: orders -> by_region",
+            ],
+            [
+               "run: s -> {\n  group_by: a\n}\n# doc\nquery: q is s -> v",
+               "run: s -> {\n  group_by: a\n}",
+            ],
+            ["run: s -> v; source: t is s extend {}", "run: s -> v"],
+            [
+               "run: orders -> by_region\ntype: Foo is { a :: string }",
+               "run: orders -> by_region",
+            ],
+            [
+               "source: s is orders extend {}; run: s -> { aggregate: n is count() }",
+               "run: s -> { aggregate: n is count() }",
+            ],
+            ["run: a -> v\n/*\nrun: b -> v\n*/", "run: a -> v"],
+            ["run: a -> v\n// run: b -> v\n-- run: c -> v", "run: a -> v"],
+            [
+               "run: a -> { where: note = 'run: b'; select: * }",
+               "run: a -> { where: note = 'run: b'; select: * }",
+            ],
+            ["/* run: a -> v */ source: s is t extend {}", undefined],
+            ['import "a.malloy"', undefined],
+            [
+               "source: s is t extend { view: run_me is { group_by: x } }",
+               undefined,
+            ],
+            ["", undefined],
+            [
+               'run: a -> { where: note = """run: b -> v"""; select: * }',
+               'run: a -> { where: note = """run: b -> v"""; select: * }',
+            ],
+            [
+               "run: `my source` -> { aggregate: n is count() }",
+               "run: `my source` -> { aggregate: n is count() }",
+            ],
+            [
+               "# bar_chart\n# size=large\nrun: s -> v\n",
+               "# bar_chart\n# size=large\nrun: s -> v",
+            ],
+         ];
+         for (const [cell, query] of cases) {
+            expect(lastRunStatementText(cell)).toBe(query);
+         }
+      });
+
+      it("takes the last of two runs, and stops at a top-level ;", () => {
+         expect(
+            lastRunStatementText(
+               "run: a -> x\nrun: b -> { limit: 1 }; query: q is a -> x",
+            ),
+         ).toBe("run: b -> { limit: 1 }");
+      });
+
+      it("ignores a run: in a comment or a string, and a cell with none", () => {
+         expect(
+            lastRunStatementText("// run: hidden -> x\nsource: s is orders"),
+         ).toBe(undefined);
+         expect(
+            lastRunStatementText("run: orders -> { where: note = 'run: x' }"),
+         ).toBe("run: orders -> { where: note = 'run: x' }");
+      });
+   });
+
    describe("extractRunTargetSourceName", () => {
       it("returns undefined for empty/absent text", () => {
          expect(extractRunTargetSourceName(undefined)).toBeUndefined();
@@ -622,12 +786,14 @@ describe("service/query_text", () => {
       });
 
       it("does not backtrack exponentially on crafted trivia", () => {
-         const text =
-            "join_one: e " + "# a -- b // c -- d\n".repeat(64) + "isnt";
-         const start = performance.now();
-         buildIsEdgeMap(text);
-         buildJoinBaseMap(text);
-         expect(performance.now() - start).toBeLessThan(1000);
+         // 32 lines of trivia against 128: backtracking over them would take
+         // 2^96 times as long on the larger text, not 4.
+         const text = (scale: number) =>
+            "join_one: e " + "# a -- b // c -- d\n".repeat(64 * scale) + "isnt";
+         expectLinear(text, (t) => {
+            buildIsEdgeMap(t);
+            buildJoinBaseMap(t);
+         });
       });
    });
 
@@ -686,59 +852,50 @@ describe("service/query_text", () => {
       });
 
       it("is linear on a 1MB adversarial body", () => {
-         const dashes = "a -- ".repeat(100_000);
-         const hashes = "a # ".repeat(125_000);
-         const text = `run: plain extend { join_one: e is plain extend {} on id = e.id } -> { where: name = '${dashes}'; group_by: e.id }\n# ${hashes}\n`;
-         expect(text.length).toBeGreaterThan(1_000_000);
-         expect(
-            fastestMs(() => {
-               stripMalloyCommentsAndLiterals(text);
-               buildDerivationBaseMap(text);
-               buildJoinBaseMap(text);
-               buildIsEdgeMap(text);
-            }),
-         ).toBeLessThan(500);
+         const body = (scale: number) =>
+            `run: plain extend { join_one: e is plain extend {} on id = e.id } -> { where: name = '${"a -- ".repeat(50_000 * scale)}'; group_by: e.id }\n# ${"a # ".repeat(62_500 * scale)}\n`;
+         expect(body(2).length).toBeGreaterThan(1_000_000);
+         expectLinear(body, (text) => {
+            stripMalloyCommentsAndLiterals(text);
+            buildDerivationBaseMap(text);
+            buildJoinBaseMap(text);
+            buildIsEdgeMap(text);
+         });
       });
 
       it("is linear on one 1MB statement", () => {
-         const items = Array.from(
-            { length: 70_000 },
-            (_, i) => `a${i} is plain`,
-         ).join(", ");
-         const joins = `run: plain extend { join_one: ${items} } -> { group_by: a1.id }`;
-         const chain = Array.from({ length: 125_000 }, (_, i) => `x${i}`).join(
-            " is ",
-         );
-         expect(joins.length).toBeGreaterThan(1_000_000);
-         expect(chain.length).toBeGreaterThan(1_000_000);
-         for (const [text, read] of [
-            [joins, buildJoinBaseMap],
-            [chain, buildIsEdgeMap],
-         ] as const) {
-            expect(fastestMs(() => read(text))).toBeLessThan(1000);
-         }
+         const joins = (scale: number) =>
+            `run: plain extend { join_one: ${Array.from(
+               { length: 35_000 * scale },
+               (_, i) => `a${i} is plain`,
+            ).join(", ")} } -> { group_by: a1.id }`;
+         const chain = (scale: number) =>
+            Array.from({ length: 62_500 * scale }, (_, i) => `x${i}`).join(
+               " is ",
+            );
+         expect(joins(2).length).toBeGreaterThan(1_000_000);
+         expect(chain(2).length).toBeGreaterThan(1_000_000);
+         expectLinear(joins, (text) => buildJoinBaseMap(text));
+         expectLinear(chain, (text) => buildIsEdgeMap(text));
       });
 
       it("is linear on 1MB of block annotations, SQL blocks and unterminated literals", () => {
-         for (const text of [
-            "#| a\n".repeat(250_000),
-            "  #| a\n |#\n".repeat(100_000),
-            'x """ y %{ z } '.repeat(70_000),
-            "f''' ".repeat(250_000),
-            "s = 'a\n".repeat(150_000),
-            "`a\n".repeat(400_000),
-            "\n".repeat(1_000_000) + "x -> y",
-         ]) {
-            expect(text.length).toBeGreaterThan(1_000_000);
-            expect(
-               fastestMs(() => {
-                  stripMalloyCommentsAndLiterals(text);
-                  buildDerivationBaseMap(text);
-                  collectIdentifierNames(text);
-                  extractRunTargetSourceName(text);
-               }),
-            ).toBeLessThan(1000);
+         for (const [unit, count] of [
+            ["#| a\n", 250_000],
+            ["  #| a\n |#\n", 100_000],
+            ['x """ y %{ z } ', 70_000],
+            ["f''' ", 250_000],
+            ["s = 'a\n", 150_000],
+            ["`a\n", 400_000],
+         ] as const) {
+            const text = (scale: number) => unit.repeat((count / 2) * scale);
+            expect(text(2).length).toBeGreaterThan(1_000_000);
+            expectLinear(text, readAll);
          }
+         const blankLines = (scale: number) =>
+            "\n".repeat(500_000 * scale) + "x -> y";
+         expect(blankLines(2).length).toBeGreaterThan(1_000_000);
+         expectLinear(blankLines, readAll);
       });
    });
 
@@ -873,14 +1030,259 @@ describe("service/query_text", () => {
    });
 });
 
-/** The best of a few runs, each after a full GC, so the suite's leftover heap and a busy machine do not read as super-linearity. */
-function fastestMs(run: () => void, runs = 5): number {
-   let best = Infinity;
-   for (let i = 0; i < runs; i++) {
-      Bun.gc(true);
-      const start = performance.now();
-      run();
-      best = Math.min(best, performance.now() - start);
-   }
-   return best;
+/** Every text reader the 1MB cases feed. */
+function readAll(text: string): void {
+   stripMalloyCommentsAndLiterals(text);
+   buildDerivationBaseMap(text);
+   collectIdentifierNames(text);
+   extractRunTargetSourceName(text);
 }
+
+/**
+ * Asserts that `read` scales linearly in the size of the text `build` makes,
+ * without any fixed millisecond budget, which fails on a loaded machine.
+ *
+ * It compares the input at a quarter of the full scale against the full scale:
+ * a linear reader takes about 4 times as long on the larger text, a quadratic
+ * one about 16 times, and an exponential one never finishes. The bound sits at
+ * 8, the geometric middle, so either side has a factor of 2 to absorb noise.
+ * The two sizes are timed alternately, and each keeps its fastest run, so a
+ * burst of load on the machine slows both rather than one; the smaller time
+ * is floored so that two very fast runs are not read as a ratio of noise; and
+ * a ratio that still misses is measured again, up to three times, because a
+ * quadratic reader misses on every attempt.
+ */
+function expectLinear(
+   build: (scale: number) => string,
+   read: (text: string) => void,
+): void {
+   const small = build(0.5);
+   const full = build(2);
+   let ratio = Infinity;
+   for (let attempt = 0; attempt < 3 && ratio >= 8; attempt++) {
+      const [smallMs, fullMs] = fastestAlternating(
+         () => read(small),
+         () => read(full),
+      );
+      ratio = Math.min(ratio, fullMs / Math.max(smallMs, 2));
+   }
+   expect(ratio).toBeLessThan(8);
+}
+
+/** The fastest of a few runs of each, alternated and each after a full GC. */
+function fastestAlternating(
+   a: () => void,
+   b: () => void,
+   runs = 4,
+): [number, number] {
+   let bestA = Infinity;
+   let bestB = Infinity;
+   for (let i = 0; i < runs; i++) {
+      bestA = Math.min(bestA, timedMs(a));
+      bestB = Math.min(bestB, timedMs(b));
+   }
+   return [bestA, bestB];
+}
+
+function timedMs(run: () => void): number {
+   Bun.gc(true);
+   const start = performance.now();
+   run();
+   return performance.now() - start;
+}
+
+describe("extractRunViewCall", () => {
+   it("reads an exact call of a view", () => {
+      expect(extractRunViewCall("run: ops -> by_carrier")).toMatchObject({
+         source: "ops",
+         view: "by_carrier",
+         refined: false,
+         laterStages: 0,
+      });
+   });
+
+   it("reads a query that starts from a view, with later stages", () => {
+      expect(
+         extractRunViewCall(
+            "run: ops -> by_carrier -> { select: * } -> top_one",
+         ),
+      ).toMatchObject({
+         source: "ops",
+         view: "by_carrier",
+         refined: false,
+         laterStages: 2,
+      });
+   });
+
+   it("reads a refinement of the view", () => {
+      expect(
+         extractRunViewCall(
+            "run: ops -> by_carrier + { limit: 3 } -> { select: * }",
+         ),
+      ).toMatchObject({
+         source: "ops",
+         view: "by_carrier",
+         refined: true,
+         laterStages: 1,
+      });
+   });
+
+   it("reads the bare form, backticked names, and the last run statement", () => {
+      expect(extractRunViewCall("`my ops` -> `by carrier`")).toMatchObject({
+         source: "my ops",
+         view: "by carrier",
+      });
+      expect(
+         extractRunViewCall("run: a -> v1\nrun: b -> v2 -> { select: * }"),
+      ).toMatchObject({ source: "b", view: "v2", laterStages: 1 });
+   });
+
+   it("ignores comments and strings", () => {
+      expect(
+         extractRunViewCall(
+            "// run: x -> y\nrun: ops -> by_carrier -> { where: name = 'a -> b' }",
+         ),
+      ).toMatchObject({ source: "ops", view: "by_carrier", laterStages: 1 });
+   });
+
+   it("reads nothing from a query whose first stage is not a view name", () => {
+      for (const text of [
+         "run: ops -> { group_by: carrier }",
+         "run: ops extend { dimension: x is 1 } -> by_carrier",
+         "run: ops(p is 1) -> by_carrier",
+         "run: ops -> by_carrier extend { dimension: x is 1 }",
+         "run: ops -> by_carrier + 3",
+         "run: ops",
+         "",
+      ]) {
+         expect(extractRunViewCall(text)).toBeUndefined();
+      }
+   });
+});
+
+describe("extractRunQueryCall", () => {
+   it("reads an exact call of a named query, as queryName sends it too", () => {
+      expect(extractRunQueryCall("run: top_carriers")).toMatchObject({
+         query: "top_carriers",
+         refined: false,
+         laterStages: 0,
+      });
+      // REST and MCP `queryName` send a backticked name on a line of its own.
+      expect(extractRunQueryCall("\nrun: `top carriers`")).toMatchObject({
+         query: "top carriers",
+         refined: false,
+         laterStages: 0,
+      });
+   });
+
+   it("reads a query that goes on past the named query", () => {
+      expect(
+         extractRunQueryCall(
+            "run: q -> { select: * } -> { aggregate: n is count() }",
+         ),
+      ).toMatchObject({ query: "q", refined: false, laterStages: 2 });
+   });
+
+   it("reads a refinement, which the leg declines", () => {
+      expect(extractRunQueryCall("run: q + { limit: 3 }")).toMatchObject({
+         query: "q",
+         refined: true,
+         laterStages: 0,
+      });
+      expect(
+         extractRunQueryCall("run: q + { where: a = 1 } -> { select: * }"),
+      ).toMatchObject({ query: "q", refined: true, laterStages: 1 });
+   });
+
+   it("reads the last run statement, past other statements, comments and strings", () => {
+      expect(
+         extractRunQueryCall(
+            "// run: x\nquery: q2 is q -> { select: * }\nrun: q2 -> { where: s = 'run: q' }",
+         ),
+      ).toMatchObject({ query: "q2", refined: false, laterStages: 1 });
+      expect(extractRunQueryCall("run: a\nrun: b")).toMatchObject({
+         query: "b",
+      });
+   });
+
+   it("reads nothing from a shape it does not follow", () => {
+      for (const text of [
+         "run: (q)",
+         "run: q + other",
+         "run: q extend { dimension: x is 1 }",
+         "run: q -> { select: * } + { limit: 1 }",
+         "source: s is q",
+         "",
+      ]) {
+         expect(extractRunQueryCall(text)).toBeUndefined();
+      }
+   });
+
+   it("lists the names the text spells outside the call's head", () => {
+      const names = (text: string) => [
+         ...(extractRunQueryCall(text)?.otherNames ?? []),
+      ];
+      expect(names("run: q")).toEqual(["run"]);
+      expect(names("\nrun: `q`")).toEqual(["run"]);
+      expect(
+         names(
+            "source: `my src` is fl -> { select: a }\nrun: q -> { select: b }",
+         ),
+      ).toEqual(["source", "my src", "is", "fl", "select", "a", "run", "b"]);
+      // Strings and comments name nothing.
+      expect(names("run: q -> { where: s = 'fl' } // fl")).toEqual([
+         "run",
+         "where",
+         "s",
+      ]);
+      expect([
+         ...(extractRunViewCall(
+            "run: vs -> v -> { extend: { join_many: f is vs on t = f.t } }",
+         )?.otherNames ?? []),
+      ]).toContain("vs");
+      expect([
+         ...(extractRunViewCall("run: vs -> v")?.otherNames ?? []),
+      ]).toEqual(["run"]);
+   });
+});
+
+describe("definitionTextAt", () => {
+   const file = `source: s is t extend {
+  view: by_c is {
+    group_by: c  // a comment with a } in it
+    where: c != '{'
+  }
+  view: \`odd name\` is { group_by: c }
+}`;
+   const range = (sl: number, sc: number, el: number, ec: number) => ({
+      start: { line: sl, character: sc },
+      end: { line: el, character: ec },
+   });
+
+   it("reads a definition as written, comments and literals included", () => {
+      expect(definitionTextAt(file, range(1, 8, 4, 3), "by_c")).toBe(`by_c is {
+    group_by: c  // a comment with a } in it
+    where: c != '{'
+  }`);
+   });
+
+   it("reads a backticked name", () => {
+      expect(definitionTextAt(file, range(5, 8, 5, 37), "odd name")).toBe(
+         "`odd name` is { group_by: c }",
+      );
+   });
+
+   it("refuses a span that is not that definition", () => {
+      // Another name, a span that cuts the body short, one past the file.
+      expect(
+         definitionTextAt(file, range(1, 8, 4, 3), "other"),
+      ).toBeUndefined();
+      expect(definitionTextAt(file, range(1, 8, 3, 5), "by_c")).toBeUndefined();
+      expect(definitionTextAt(file, range(1, 8, 9, 0), "by_c")).toBeUndefined();
+      // A rename's location: `v2 is v` reads, but has no body to pair.
+      expect(
+         definitionTextAt("rename: v2 is v", range(0, 8, 0, 15), "v2"),
+      ).toBe("v2 is v");
+      expect(definitionTextAt("x is", range(0, 0, 0, 4), "x")).toBeUndefined();
+   });
+});

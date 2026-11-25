@@ -1,0 +1,193 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * Database persisted views and persisted queries, of both kinds together,
+ * that compile to one build but name different tables (`name=`), through the real package path (load,
+ * build, bind, query). Each names its own table, so each has its own address
+ * (foldDistinctTableNames) and its own table; Malloy files all four under one
+ * key (the build's `buildId`), so the view and query legs substitute each
+ * leg's own table under that key (readStoredVariant's `compilerKey`). Each
+ * is answered by its leg from its own table, equal to live.
+ */
+
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { unrecordedAudit } from "../../../src/service/access_record";
+import { QueryPrivileges } from "../../../src/service/model_query_request";
+import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   freshLoadPool,
+   type LoadedFixture,
+   loadFixture,
+} from "../../../src/test_helpers/conformance/package_runner";
+import { rowDifference } from "./harness";
+
+const MODEL = `##! experimental { persistence }
+source: orders is duckdb.sql("""
+  select * from (values (1, 'east', 10.0), (2, 'west', 20.0), (3, 'east', 5.0))
+  as t(id, region, amount)
+""") extend {
+  measure: total is amount.sum()
+  #@ persist name="by_region_a"
+  view: by_region_a is { group_by: region; aggregate: total; order_by: region }
+  #@ persist name="by_region_b"
+  view: by_region_b is { group_by: region; aggregate: total; order_by: region }
+}
+
+#@ persist name="q_region_a"
+query: q_region_a is orders -> { group_by: region; aggregate: total; order_by: region }
+
+#@ persist name="q_region_b"
+query: q_region_b is orders -> { group_by: region; aggregate: total; order_by: region }
+
+source: lines is duckdb.sql("""
+  select * from (values (1, 'a', 2), (2, 'b', 3), (3, 'a', 4)) as t(id, sku, qty)
+""") extend {
+  measure: units is qty.sum()
+  #@ persist name="pv_t"
+  view: by_sku is { group_by: sku; aggregate: units; order_by: sku }
+  #@ persist name="shared_t"
+  view: by_sku_shared is { where: id > 0; group_by: sku; aggregate: units; order_by: sku }
+}
+
+#@ persist name="pq_t"
+query: q_by_sku is lines -> { group_by: sku; aggregate: units; order_by: sku }
+
+#@ persist name="shared_t"
+query: q_by_sku_shared is lines -> { where: id > 0; group_by: sku; aggregate: units; order_by: sku }
+`;
+
+/** Each call, the leg that answers it, and its build source's plan name. */
+const CALLS: [string, "view" | "query", string][] = [
+   ["run: orders -> by_region_a", "view", "orders__by_region_a__view"],
+   ["run: orders -> by_region_b", "view", "orders__by_region_b__view"],
+   ["run: q_region_a", "query", "q_region_a__query"],
+   ["run: q_region_b", "query", "q_region_b__query"],
+];
+
+/**
+ * A persisted view and a persisted query of one build: under different
+ * `name=`s a table each, under one `name=` one table between them.
+ */
+const PAIRS: {
+   label: string;
+   calls: [string, "view" | "query", string][];
+   tables: number;
+}[] = [
+   {
+      label: "different name=s (pv_t, pq_t)",
+      calls: [
+         ["run: lines -> by_sku", "view", "lines__by_sku__view"],
+         ["run: q_by_sku", "query", "q_by_sku__query"],
+      ],
+      tables: 2,
+   },
+   {
+      label: "one name= (shared_t)",
+      calls: [
+         ["run: lines -> by_sku_shared", "view", "lines__by_sku_shared__view"],
+         ["run: q_by_sku_shared", "query", "q_by_sku_shared__query"],
+      ],
+      tables: 1,
+   },
+];
+
+describe("database persisted views and queries of one build, each under its own name=", () => {
+   let restore: () => void = () => {};
+   let loader: Awaited<ReturnType<typeof loadFixture>>;
+   let fixture: LoadedFixture;
+   const live = new Map<string, Record<string, unknown>[]>();
+
+   async function ask(malloy: string) {
+      const result = await fixture.pkg
+         .getModel("m.malloy")!
+         .runQuery(
+            unrecordedAudit(),
+            { query: malloy } as never,
+            QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+         );
+      return {
+         rows: result.compactResult as Record<string, unknown>[],
+         servedBy: result.path?.servedBy as
+            | { kind?: string; tableId?: string }
+            | undefined,
+      };
+   }
+
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      await freshLoadPool();
+      loader = await loadFixture({ "m.malloy": MODEL });
+      for (const [malloy] of [...CALLS, ...PAIRS.flatMap((p) => p.calls)]) {
+         const out = await loader.run("m.malloy", malloy);
+         if ("error" in out) throw new Error(`${malloy}: ${out.error}`);
+         live.set(malloy, out.answer.rows);
+      }
+      fixture = await loader.bind();
+   }, 120_000);
+
+   const planSources = () => {
+      const plan = fixture.pkg.getBuildPlan()?.sources ?? {};
+      return Object.values(plan);
+   };
+
+   afterAll(async () => {
+      restore();
+      await loader?.dispose();
+      await freshLoadPool();
+   });
+
+   it("plans a table at its own address for each name=", () => {
+      const sources = planSources();
+      const addresses = CALLS.map(
+         ([, , name]) => sources.find((s) => s.name === name)?.sourceEntityId,
+      );
+      expect(addresses.every((a) => a !== undefined)).toBe(true);
+      expect(new Set(addresses).size).toBe(CALLS.length);
+      // One build: the views and the queries, across kinds, compile to the
+      // same SQL, which alone would be one address.
+      const sql = CALLS.map(
+         ([, , name]) => sources.find((s) => s.name === name)?.sql,
+      );
+      expect(sql[0]).toBeDefined();
+      expect(new Set(sql).size).toBe(1);
+      expect(fixture.buildErrors).toEqual({});
+   });
+
+   for (const [malloy, leg, name] of CALLS) {
+      it(`answers ${malloy} by the ${leg} leg from its own table, equal to live`, async () => {
+         const plan = planSources();
+         const own = plan.find((s) => s.name === name)?.sourceEntityId;
+         const served = await ask(malloy);
+         expect(served.servedBy?.kind).toBe(leg);
+         expect(served.servedBy?.tableId).toBe(own);
+         expect(rowDifference(live.get(malloy)!, served.rows)).toBeUndefined();
+      });
+   }
+
+   for (const { label, calls, tables } of PAIRS) {
+      it(`a persisted view and query of one build, ${label}: ${tables} table(s), each answered by its own leg, equal to live`, async () => {
+         const plan = planSources();
+         const planned = calls.map(([, , name]) =>
+            plan.find((s) => s.name === name),
+         );
+         expect(planned.every((s) => s !== undefined)).toBe(true);
+         // One build: alone, the same SQL would be one address.
+         expect(new Set(planned.map((s) => s!.sql)).size).toBe(1);
+         expect(new Set(planned.map((s) => s!.sourceEntityId)).size).toBe(
+            tables,
+         );
+         for (const [malloy, leg, name] of calls) {
+            const own = plan.find((s) => s.name === name)?.sourceEntityId;
+            const served = await ask(malloy);
+            expect(served.servedBy?.kind).toBe(leg);
+            expect(served.servedBy?.tableId).toBe(own);
+            expect(
+               rowDifference(live.get(malloy)!, served.rows),
+            ).toBeUndefined();
+         }
+      });
+   }
+});

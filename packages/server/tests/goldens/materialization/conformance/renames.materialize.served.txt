@@ -1,0 +1,27 @@
+// conformance: renames [materialize]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: daily_r__served is {
+   area::string,
+   total::number,
+   order_day::date
+}
+
+import "raw.malloy"
+
+#(materialize) storage="lake"
+source: daily_r is __served_copy_alias_of_lake.virtual('795f45fa66eea903bdfe67664522fbeb875ef94ed68b499f85d7e46fc9c8557f')::daily_r__served extend { rename: order_date is order_day } extend {
+  rename: order_day is order_date
+  measure: grand is total.sum()
+}
+
+source: daily_r2 is daily_r extend {
+  rename: zone is area
+}
+
+source: daily_r3 is daily_r2 extend {
+  rename: territory is zone
+  dimension: day_month is order_day.month
+}

@@ -11,6 +11,8 @@
  * based on the provided filter values and the declared filter definitions.
  */
 
+import { escapeString, quotedIdentifier } from "./malloy_text";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -120,6 +122,28 @@ export function parseFilterAnnotation(
    };
 }
 
+/** The annotation chain a source's `#(filter)` notes are read from. */
+export interface FilterNoteSource {
+   blockNotes?: { text: string }[];
+   inherits?: FilterNoteSource;
+}
+
+/**
+ * A source's `blockNotes` texts across its `extend` chain, the inherited base's
+ * first, so {@link parseFilters} lets an extending source override its base by
+ * name. The query path reads filters from here and nowhere else.
+ */
+export function sourceFilterNotes(
+   annotations: FilterNoteSource | undefined,
+): string[] {
+   const collected: string[][] = [];
+   for (let cur = annotations; cur; cur = cur.inherits) {
+      if (cur.blockNotes)
+         collected.push(cur.blockNotes.map((note) => note.text));
+   }
+   return collected.reverse().flat();
+}
+
 /** Extract all `#(filter)` definitions from a source's `blockNotes`. */
 export function parseFilters(annotations: string[]): FilterDefinition[] {
    // Keyed by name so an extending source's annotations, which come after
@@ -137,10 +161,6 @@ export function parseFilters(annotations: string[]): FilterDefinition[] {
 // ---------------------------------------------------------------------------
 // Filter Clause Generation
 // ---------------------------------------------------------------------------
-
-function escapeMalloyString(value: string): string {
-   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-}
 
 function isBooleanLiteral(v: string): boolean {
    const lower = v.toLowerCase();
@@ -162,14 +182,14 @@ function malloyLiteral(v: string): string {
    if (isDateLiteral(v)) {
       return `@${v.slice(0, 10)}`;
    }
-   return `'${escapeMalloyString(v)}'`;
+   return `'${escapeString(v)}'`;
 }
 
 function buildPredicate(
    filter: FilterDefinition,
    value: string | string[],
 ): string {
-   const dim = `\`${filter.dimension}\``;
+   const dim = quotedIdentifier(filter.dimension);
 
    switch (filter.type) {
       case "equal": {
@@ -186,7 +206,7 @@ function buildPredicate(
       }
       case "like": {
          const v = Array.isArray(value) ? value[0] : value;
-         const escaped = escapeMalloyString(v.toLowerCase());
+         const escaped = escapeString(v.toLowerCase());
          const pattern =
             escaped.startsWith("%") || escaped.endsWith("%")
                ? escaped
@@ -241,7 +261,9 @@ export function buildFilterClause(
          continue;
       }
 
-      predicates.push(buildPredicate(filter, params[filter.name]));
+      predicates.push(
+         buildPredicate(filter, validatedValue(filter, params[filter.name])),
+      );
    }
 
    if (predicates.length === 0) {
@@ -252,12 +274,52 @@ export function buildFilterClause(
 }
 
 /**
+ * `value` as {@link FilterParams} types it, or a {@link FilterValidationError}
+ * naming the filter. A request body is JSON, so a value may arrive as a number,
+ * a boolean or an object, none of which a predicate is built from.
+ */
+function validatedValue(
+   filter: FilterDefinition,
+   value: unknown,
+): string | string[] {
+   if (typeof value === "string") return value;
+   if (Array.isArray(value)) {
+      const other = value.find((v) => typeof v !== "string");
+      if (other === undefined) return value as string[];
+      throw new FilterValidationError(
+         `Filter "${filter.name}" takes a string or an array of strings, not an array holding ${jsonTypeOf(other)}`,
+      );
+   }
+   throw new FilterValidationError(
+      `Filter "${filter.name}" takes a string or an array of strings, not ${jsonTypeOf(value)}`,
+   );
+}
+
+/** The JSON type of `value`, with its article. */
+function jsonTypeOf(value: unknown): string {
+   if (value === null) return "null";
+   if (Array.isArray(value)) return "an array";
+   switch (typeof value) {
+      case "number":
+         return "a number";
+      case "boolean":
+         return "a boolean";
+      case "object":
+         return "an object";
+      default:
+         return `a ${typeof value}`;
+   }
+}
+
+/**
  * Append `+ {where: ...}` to a query; an empty clause leaves it unchanged.
  * The refinement goes on its own line so a trailing `//` or `--` comment in
  * the caller's query cannot swallow it and neutralize the filter.
  */
 export function injectFilterRefinement(
+   // malloy-text: the caller's own query, refined as written
    query: string,
+   // malloy-text: a filter clause the caller's request carries, Malloy as written
    filterClause: string,
 ): string {
    if (!filterClause) {

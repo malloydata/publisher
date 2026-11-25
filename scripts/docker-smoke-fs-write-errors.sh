@@ -30,7 +30,7 @@
 #   S2   A publisher_data volume left root-owned by a 0.8.x: names EACCES.
 #   S6   A read-only root filesystem (Kubernetes readOnlyRootFilesystem): the
 #        server cannot open publisher.db, and /status must say so.
-#   S7   An unreadable publisher.config.json: /status must say so.
+#   S7   An unreadable publisher.config.json: startup fails, naming EACCES.
 # Credentials
 #   C1   GOOGLE_APPLICATION_CREDENTIALS names a file uid 1000 cannot read
 #        (a 0600 file owned by someone else): a gs:// package add must name
@@ -107,15 +107,17 @@ as_root() {
    docker run --rm --user 0 "$@"
 }
 
-# start <name> [docker run args...]: start a server in the background. The
-# port it publishes is $port afterwards (not a subshell, so the container is
-# recorded for cleanup).
+# start <name> [docker run args...]: start a server in the background, with
+# package versioning on (every server this script starts). The port it
+# publishes is $port afterwards (not a subshell, so the container is recorded
+# for cleanup).
 start() {
    local name=$1
    shift
    port=$next_port
    next_port=$((next_port + 1))
-   docker run -d --name "$PREFIX-$name" -p "$port:4000" "$@" "$IMAGE" >/dev/null
+   docker run -d --name "$PREFIX-$name" -p "$port:4000" \
+      -e PUBLISHER_PACKAGE_VERSIONING=on "$@" "$IMAGE" >/dev/null
    containers+=("$PREFIX-$name")
 }
 
@@ -225,7 +227,7 @@ write_config() {
 mkdir -p "$work/src"
 for name in seed "$PKG"; do
    mkdir -p "$work/src/$name"
-   printf '{"name":"%s","description":"one-model DuckDB package"}' "$name" \
+   printf '{"name":"%s","version":"1.0.0","description":"one-model DuckDB package"}' "$name" \
       >"$work/src/$name/publisher.json"
    printf 'source: s is duckdb.sql("SELECT 1 AS x")\n' >"$work/src/$name/model.malloy"
 done
@@ -317,8 +319,9 @@ as_root -v "$DATA_VOLUME:/publisher/publisher_data" "$IMAGE" \
 start s2 -v "$DATA_VOLUME:/publisher/publisher_data" -v "$PACKAGES_MOUNT" \
    -v "$work/seed.json:/publisher/publisher.config.json:ro"
 wait_serving s2
-assert_names "S2 GET /environments/$ENV_NAME/packages/seed/models" 'EACCES|permission denied' \
-   "$(curl -s "http://localhost:${port}/api/v0/environments/${ENV_NAME}/packages/seed/models")"
+# The package is published at boot, into a folder of the environment's that
+# the server cannot make: it fails to load, and /status says why.
+assert_in_load_errors S2 seed 'EACCES|permission denied'
 
 echo "S6: a read-only root filesystem"
 start s6 --read-only --tmpfs /tmp
@@ -331,9 +334,22 @@ docker volume create "$CONFIG_VOLUME" >/dev/null
 as_root -v "$CONFIG_VOLUME:/cfg" "$IMAGE" sh -c \
    'printf "{\"environments\":[]}" >/cfg/publisher.config.json && chown 0:0 /cfg/publisher.config.json && chmod 600 /cfg/publisher.config.json'
 start s7 -v "$CONFIG_VOLUME:/cfg" -e PUBLISHER_CONFIG_PATH=/cfg/publisher.config.json
-wait_state s7 serving initializing >/dev/null
-sleep 3
-assert_status_names S7 'EACCES|permission denied'
+# The server refuses to start rather than run with the file's settings at
+# their defaults, so the cause is in its log, not on /status.
+for _ in $(seq 1 60); do
+   docker ps -q -f "name=^$PREFIX-s7$" | grep -q . || break
+   sleep 1
+done
+s7_exit=$(docker inspect -f '{{.State.ExitCode}}' "$PREFIX-s7" 2>/dev/null || echo running)
+s7_log=$(docker logs "$PREFIX-s7" 2>&1 || true)
+if [ "$s7_exit" != "0" ] && [ "$s7_exit" != "running" ] &&
+   echo "$s7_log" | grep -q PUBLISHER_INIT_FAILED &&
+   echo "$s7_log" | grep -Eqi 'EACCES|permission denied'; then
+   pass "S7: startup fails and the log names the cause"
+else
+   fail "S7: expected a failed startup naming EACCES (exit $s7_exit)"
+   echo "$s7_log" | tail -20
+fi
 
 echo "== Credentials"
 echo "C1: GOOGLE_APPLICATION_CREDENTIALS names a file uid 1000 cannot read"

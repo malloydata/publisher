@@ -17,6 +17,7 @@
  * this file exists: the suites that were green throughout that migration could
  * not see either one.
  */
+import { unrecordedAudit } from "../../../src/service/access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { type Connection } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
@@ -26,6 +27,7 @@ import * as path from "path";
 import { AccessDeniedError } from "../../../src/errors";
 import { Model } from "../../../src/service/model";
 import { compilationErrorOf } from "../../../src/test_helpers/authorize_fixture";
+import { QueryPrivileges } from "../../../src/service/model_query_request";
 
 /** The tracked example package, not the gitignored `publisher_data/` copy. */
 const GOVERNED_ANALYTICS = path.resolve(
@@ -39,13 +41,14 @@ describe("examples/governed-analytics ships a working gate", () => {
       model: Model,
       givens: Record<string, string[]>,
    ): Promise<number> {
-      const result = await model.getQueryResults(
-         undefined,
-         undefined,
-         "run: orders_secured -> { aggregate: n is count() group_by: tenant }",
-         {},
-         true,
-         givens,
+      const result = await model.runQuery(
+         unrecordedAudit(),
+         {
+            query: "run: orders_secured -> { aggregate: n is count() group_by: tenant }",
+            filterParams: {},
+            givens,
+         },
+         QueryPrivileges.of({ bypassFilters: true }),
       );
       return (result.compactResult as unknown as unknown[]).length;
    }
@@ -95,6 +98,7 @@ describe("examples/governed-analytics ships a working gate", () => {
  */
 const PLAYWRIGHT_FIXTURE = `##! experimental.givens
 
+#(secure)
 given: role :: string
 
 #(authorize) 'analyst' = $role
@@ -127,13 +131,14 @@ describe("the Playwright notebook-authorize fixture model", () => {
          expect(compilationErrorOf(model)).toBeUndefined();
 
          const run = (givens: Record<string, string>) =>
-            model.getQueryResults(
-               undefined,
-               undefined,
-               "run: gated_products -> spotlight",
-               {},
-               true,
-               givens,
+            model.runQuery(
+               unrecordedAudit(),
+               {
+                  query: "run: gated_products -> spotlight",
+                  filterParams: {},
+                  givens,
+               },
+               QueryPrivileges.of({ bypassFilters: true }),
             );
 
          // `role` has no default, so an unsupplied given cannot resolve and the

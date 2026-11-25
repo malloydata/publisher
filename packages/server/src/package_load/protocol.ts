@@ -21,9 +21,10 @@
  * `LoadPackageError`, which `Package.loadViaWorker` rewraps as a 503 (there
  * is no in-process fallback).
  *
- *   main  ──▶ worker:  LoadPackageRequest, ShutdownRequest,
- *                      *Response (correlated by requestId)
- *   worker ──▶ main:   LoadPackageResult | LoadPackageError, ReadyMessage,
+ *   main  ──▶ worker:  LoadPackageRequest, CompileServedCopyRequest,
+ *                      ShutdownRequest, *Response (correlated by requestId)
+ *   worker ──▶ main:   LoadPackageResult | LoadPackageError,
+ *                      CompileServedCopyResult, ReadyMessage,
  *                      WorkerLogMessage, and the proxy requests
  *                      (connection metadata, schema fetches, non-file URLs)
  *
@@ -34,15 +35,54 @@
  * fail-closed deny.
  */
 
-import type { EligibilityRefusalReason } from "../materialization_metrics";
-import type { BuildPlanOutcome } from "../service/build_plan";
+import type { SerializedNotebookCell } from "./notebook_cell_wire";
+import type { PackageAnnotationFinding } from "../service/annotation_reader";
+import type {
+   EligibilityRefusals,
+   PackagePlan,
+} from "../service/materialization/domain/package_plan";
 import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
 import type {
    PackageMaterializationConfig,
    PackageScope,
 } from "../service/package_manifest";
-import type { PackageRetrievalSettings } from "../service/package_retrieval";
+import type { PackageRetrievalSettings } from "../service/package_retrieval_settings";
 import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys";
+import type { ModelEntitiesPlan } from "../service/entities/plan";
+import type {
+   UpstreamSchemaReadings,
+   UpstreamTable,
+} from "../service/materialization/domain/upstream_schemas";
+
+/**
+ * Version of this wire protocol. The worker stamps it on every
+ * {@link LoadPackageResult}, and the pool refuses a result carrying any other
+ * value (see `checkLoadPackageResult`), so a worker bundle built from another
+ * revision fails its load loudly instead of being hydrated through a blind
+ * cast. Bump it whenever a change to these shapes would make an older or newer
+ * peer misread a message.
+ *
+ * 2: `SerializedModel.entities`, the model's entities plan
+ * (`LoadPackageRequest.withEntities`).
+ *
+ * 3: `SerializedModel.governsAccess`.
+ *
+ * 4: every field of a build plan's outcome is sent, so
+ * the pool reads none as missing.
+ *
+ * 5: the served-copy compile job ({@link CompileServedCopyRequest}).
+ *
+ * 6: the build plan is sent as its `PackagePlan` (its tables, builds and
+ * addresses as data), and the pre-aggregation companion fields are gone.
+ *
+ * 7: a refreshing load (`LoadPackageRequest.refreshTimestamp`), the schema
+ * keys it refetched (`LoadPackageResult.refreshedSchemaKeys`), and
+ * {@link ForgetSchemasMessage}.
+ *
+ * 8: the upstream-schema read ({@link UpstreamSchemasRequest}), and a build
+ * plan's `upstreamSchemas`.
+ */
+export const PACKAGE_LOAD_PROTOCOL_VERSION = 8;
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -56,6 +96,14 @@ import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys"
 export interface ConnectionMetadata {
    name: string;
    dialectName: string;
+   /**
+    * The connection's configured type (`postgres`, `duckdb`, `ducklake`, ...),
+    * which the build plan's `storage=` eligibility reads; absent when the main
+    * thread recorded none.
+    */
+   connectionType?: string;
+   /** The schemas SQL on the connection may name; present only when it is configured `managed`. */
+   managedSchemas?: string[];
    digest: string;
    /**
     * Identifies the main thread's connection instance, so the worker's schema
@@ -87,6 +135,11 @@ export interface LoadPackageRequest {
     * touching disk.
     */
    replacement?: { modelPath: string; source: string };
+   /**
+    * More in-memory files for a package compile dry-run (a request's `files`
+    * overlay), read the same way as `replacement`.
+    */
+   overlay?: { modelPath: string; source: string }[];
    /** Include non-fatal compiler diagnostics in SerializedModel results. */
    collectProblems?: boolean;
    /**
@@ -98,18 +151,32 @@ export interface LoadPackageRequest {
    computeBuildPlan?: boolean;
    /**
     * How long into the job the worker keeps doing optional work for the main
-    * thread (render-tag results, pre-aggregation companions, build plan).
-    * Checked before each render-tag target and each companion; past it, the
+    * thread (render-tag results, entities, build plan). Checked before each
+    * render-tag target and each model's plan parts; past it, the
     * remaining work (and the plan, once any model's parts are missing) is left
     * to the main thread. The pool's jobLimitMs adds room for it.
     */
    mainThreadWorkBudgetMs: number;
    /**
-    * Compile each model's pre-aggregation companion for the main thread to
-    * hydrate (see SerializedModel.preaggregateCompanion). Set by the loads
-    * that serve the package; a compile preview does not serve it.
+    * The package is a published version (its version owns its runs' tables
+    * when its scope is `"version"`), so its tables take readable names whose
+    * hash covers the version, which decides which sources share a table.
+    * Absent: unversioned, whose `name=`s are written as given.
     */
-   withPreaggregateCompanions?: boolean;
+   publishedVersion?: boolean;
+   /**
+    * Plan each `.malloy` model's entities for the main thread to resolve (see
+    * SerializedModel.entities). Set by the loads that compute the package's
+    * entities: a load that serves it, and the package-scope compile.
+    */
+   withEntities?: boolean;
+   /**
+    * Set by an explicit refresh (a reload, a publish): every table and SQL
+    * schema the load reads is fetched again, once, with this stamp as its
+    * `refreshTimestamp`, replacing the worker's cached entry and the main
+    * thread connection's. Absent, the load reads cached schemas.
+    */
+   refreshTimestamp?: number;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -151,12 +218,14 @@ export interface SerializedModel {
    /** Set when the model failed to compile. */
    compilationError?: SerializedError;
    /**
-    * Non-fatal `#(authorize)` load-time findings, logged by the main thread:
-    * a gate inherited (judged by shared note object, not by text) at an entry
-    * point where it cannot be expressed. The model still serves; that entry
-    * point denies every request (`Model.resolveGateShape`).
+    * Non-fatal gate findings at load (`GateLoadWarning`), logged by the main
+    * thread and carried on the package's warnings: a gate inherited (judged
+    * by shared note object, not by text) at an entry point where it cannot be
+    * expressed, so that entry point denies every request
+    * (`Model.resolveGateShape`), or a source-line gate that reads no given or
+    * negates a membership test. The model still serves.
     */
-   authorizeWarnings?: string[];
+   gateWarnings?: { sourceName: string; code: string; message: string }[];
    /**
     * Prepared `Malloy.Result`s for the model's render-tag targets, for the
     * main thread's tag validation (the renderer cannot load in the worker,
@@ -166,32 +235,38 @@ export interface SerializedModel {
     */
    renderTagResults?: { label: string; result?: unknown }[];
    /**
-    * The model's pre-aggregation companion, for the main thread to hydrate
-    * rather than compile (see Model.buildPreaggregateServeModel). `{}` when
-    * there is none or it failed; absent when not attempted, and the main
-    * thread compiles it.
+    * SHA-256 of `renderTagResults` as JSON, set only when they cover every
+    * render-tag target. The results are the whole input of the tag check, so
+    * the main thread keys its findings cache on this digest and skips the
+    * check for a model it has already judged (ms2data/service#7795). It
+    * covers what model text alone would miss: a table whose schema changed
+    * under the same text prepares different results.
     */
-   preaggregateCompanion?: { modelDef?: unknown };
+   renderTagResultsDigest?: string;
+   /**
+    * The model's entities, planned before its sources' queryability is known
+    * (`service/entities/plan.ts`); the main thread resolves it against the
+    * query route. Absent when not asked for (`withEntities`), when the model
+    * did not compile, or when the work budget ran out first: the main thread
+    * then plans it itself.
+    */
+   entities?: ModelEntitiesPlan;
+   /**
+    * Whether `modelDef` governs access (`governsAccess` in
+    * governance/ir/array_query.ts), answered here so the main thread never
+    * walks a model that governs nothing; it notes this on the hydrated
+    * `modelDef`. Absent when the model did not compile.
+    */
+   governsAccess?: boolean;
 }
 
-export interface SerializedNotebookCell {
-   type: "code" | "markdown";
-   /** Raw cell text. */
-   text: string;
-   /**
-    * The cell's ModelDef at its point in the `extendModel` chain, hydrated by
-    * the main thread so cell-level queries compile in the right scope.
-    */
-   cellModelDef?: unknown;
-   /** The cell's final QueryDef, hydrated by the main thread without recompiling. */
-   cellQueryDef?: unknown;
-   newSources?: unknown[];
-   queryInfo?: unknown;
-}
+export type { SerializedNotebookCell } from "./notebook_cell_wire";
 
 export interface LoadPackageResult {
    type: "load-package-result";
    requestId: string;
+   /** The sender's {@link PACKAGE_LOAD_PROTOCOL_VERSION}. */
+   protocolVersion: number;
    packageMetadata: {
       name?: string;
       description?: string;
@@ -213,6 +288,11 @@ export interface LoadPackageResult {
    models: SerializedModel[];
    /** Whether the replacement path exactly matched an enumerated package file. */
    replacementMatchedExisting?: boolean;
+   /**
+    * A refreshing load's refetched schema-cache keys, which the pool tells
+    * the other workers to forget (see {@link ForgetSchemasMessage}).
+    */
+   refreshedSchemaKeys?: string[];
    /** Wall-clock ms inside the worker for the full package load. */
    loadDurationMs: number;
    /**
@@ -233,6 +313,10 @@ export interface LoadPackageResult {
       schemaFetchCount: number;
       /** Schema requests answered from the worker's own cache. */
       schemaCacheHits?: number;
+      /** Translations the load stored for its models' imports (#1566). */
+      translationsStored?: number;
+      /** Imports answered from a translation the load had stored. */
+      translationsReused?: number;
    };
    /**
     * Present when `computeBuildPlan` was set and every model compiled and
@@ -259,6 +343,19 @@ export interface WorkerLogMessage {
 }
 
 /**
+ * An unhandled promise rejection caught in the worker, reported so the main
+ * thread logs it and counts it in `publisher_unhandled_rejection_total`. The
+ * worker's own logger has no job context in a rejection listener (Bun's
+ * AsyncLocalStorage is empty there), so a log written in place would carry no
+ * job and reach only the worker's stdout.
+ */
+export interface WorkerUnhandledRejectionMessage {
+   type: "unhandled-rejection";
+   message: string;
+   stack?: string;
+}
+
+/**
  * The package build plan derived from this compile, so the main thread need
  * not compile again. `durationMs` is a ceiling (other compiles interleave). A
  * failure fails the plan, not the load.
@@ -266,12 +363,11 @@ export interface WorkerLogMessage {
 export type WorkerBuildPlan =
    | {
         ok: true;
-        outcome: BuildPlanOutcome;
+        /** Its eligibility refusals are counted on it (`eligibilityRefused`). */
+        packagePlan: PackagePlan<PackageAnnotationFinding>;
         durationMs: number;
         /** Connections whose digest could not be read (see resolveConnectionDigests). */
         digestSkipped: string[];
-        /** Eligibility refusals counted while deriving it, by reason. */
-        eligibilityRefused: Partial<Record<EligibilityRefusalReason, number>>;
      }
    | {
         ok: false;
@@ -280,7 +376,7 @@ export type WorkerBuildPlan =
         /** Connections whose digest could not be read before it failed. */
         digestSkipped: string[];
         /** Refusals counted before the derivation failed. */
-        eligibilityRefused: Partial<Record<EligibilityRefusalReason, number>>;
+        eligibilityRefused: EligibilityRefusals;
      };
 
 export interface LoadPackageError {
@@ -311,6 +407,52 @@ export interface SerializedErrno {
    code: string;
    syscall?: string;
    path?: string;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// The served-copy compile job (main ──▶ worker ──▶ main)
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Compile one pass of a model's served copy (served_copy_serve.ts): the
+ * package's model over the re-rooted files, read in place of the package's
+ * own. The main thread writes the files and hydrates the `modelDef` that
+ * comes back; connections are proxied, as for a package load, against the
+ * served copy's own connections (the package's, and its storage
+ * destinations under their aliases).
+ */
+export interface CompileServedCopyRequest {
+   type: "compile-served-copy";
+   requestId: string;
+   /** Absolute path to the package directory on disk. */
+   packagePath: string;
+   /** Scopes the worker's schema cache, as {@link LoadPackageRequest.environmentName}. */
+   environmentName: string;
+   /** The model the copy is of, relative to the package. */
+   modelPath: string;
+   /** The connection an unnamed lookup resolves to. */
+   defaultConnectionName: string | null;
+   /** The re-rooted files, each keyed by its overlay key (`overlay_key.ts`). */
+   files: [string, string][];
+}
+
+/**
+ * A served-copy compile's outcome: the compiled `modelDef`, or the compile
+ * failure, in-band so the main thread reads it as the inline compile's
+ * failure (a `MalloyError` keeps its problems). A failure of the job itself
+ * (a timeout, a crash) rejects instead.
+ */
+export interface CompileServedCopyResult {
+   type: "compile-served-copy-result";
+   requestId: string;
+   /** The sender's {@link PACKAGE_LOAD_PROTOCOL_VERSION}. */
+   protocolVersion: number;
+   /** Set when the copy compiled. A `ModelDef`, wire-typed `unknown`. */
+   modelDef?: unknown;
+   /** Set when it did not. */
+   error?: SerializedError;
+   /** Wall-clock ms the compile took in the worker. */
+   compileDurationMs: number;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -374,6 +516,29 @@ export interface SchemaForSqlResponse {
    error?: string;
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Direction: worker ──▶ main (the build plan's upstream column types)
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Read the native column types of the tables a build plan's sources read,
+ * through the main thread's connections (a worker runs no SQL), refetched
+ * under a refreshing load.
+ */
+export interface UpstreamSchemasRequest {
+   type: "upstream-schemas";
+   requestId: string;
+   jobId: string;
+   tables: UpstreamTable[];
+}
+
+export interface UpstreamSchemasResponse {
+   type: "upstream-schemas-response";
+   requestId: string;
+   ok: true;
+   readings: UpstreamSchemaReadings;
+}
+
 export interface RpcErrorResponse {
    type: "rpc-error";
    requestId: string;
@@ -412,6 +577,15 @@ export interface ShutdownRequest {
    type: "shutdown";
 }
 
+/**
+ * Drop these schema-cache entries: another worker refetched them for a
+ * refreshing load, so this worker's copies may be stale.
+ */
+export interface ForgetSchemasMessage {
+   type: "forget-schemas";
+   keys: string[];
+}
+
 export interface ReadyMessage {
    type: "ready";
 }
@@ -422,19 +596,25 @@ export interface ReadyMessage {
 
 export type MainToWorkerMessage =
    | LoadPackageRequest
+   | CompileServedCopyRequest
    | ConnectionMetadataResponse
    | SchemaForTablesResponse
    | SchemaForSqlResponse
+   | UpstreamSchemasResponse
    | ReadUrlResponse
    | RpcErrorResponse
-   | ShutdownRequest;
+   | ShutdownRequest
+   | ForgetSchemasMessage;
 
 export type WorkerToMainMessage =
    | LoadPackageResult
+   | CompileServedCopyResult
    | LoadPackageError
    | ConnectionMetadataRequest
    | SchemaForTablesRequest
    | SchemaForSqlRequest
+   | UpstreamSchemasRequest
    | ReadUrlRequest
    | WorkerLogMessage
+   | WorkerUnhandledRejectionMessage
    | ReadyMessage;

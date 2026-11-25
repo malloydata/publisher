@@ -1,0 +1,773 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "line_totals",
+        "tier": "storage"
+      },
+      {
+        "name": "segment_totals",
+        "tier": "storage"
+      },
+      {
+        "name": "with_lines",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "line_totals:serves",
+      "segment_totals:serves",
+      "with_lines:serves"
+    ],
+    "warnings": [
+      {
+        "code": "served-copy-not-served",
+        "message": "This source is stored in a destination its join `l` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or build this source in its own database (drop `storage=`).",
+        "subject": "with_lines"
+      }
+    ]
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "avg_qty"
+          },
+          {
+            "classifications": [],
+            "path": "lines"
+          },
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "b1c95f9d47594c81",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:max(avg_qty)",
+            "aggregate:sum(lines)",
+            "aggregate:sum(n)"
+          ],
+          "source": "line_totals",
+          "stages": 1
+        },
+        "source": "line_totals"
+      },
+      "equalToLive": true,
+      "malloy": "run: line_totals -> { group_by: region; aggregate: c is lines.sum(), a is avg_qty.max(), nn is n.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "d80436e5dfcec1ac42a1775608b5cd4afb50af3bcbb9c7c6b66105b86943a782"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "segment_totals",
+            "tableId": "a1e3ce7de9baaf4db09512ed00697f879397c2e2aa1922d40466c642862cb2bd"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "with_lines",
+            "tableId": "056030f5bb7dcb6787ded4b651210a5f820a27afad3664d22caa8daab7b02aa3"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "lines",
+            "avg_qty",
+            "n"
+          ],
+          "sourceName": "line_totals"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "d80436e5dfcec1ac42a1775608b5cd4afb50af3bcbb9c7c6b66105b86943a782",
+          "tier": "storage",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a persisted query through a join_many",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "segment"
+          },
+          {
+            "classifications": [],
+            "path": "t"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3f34d1854d64759e",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(t)"
+          ],
+          "source": "segment_totals",
+          "stages": 1
+        },
+        "source": "segment_totals"
+      },
+      "equalToLive": true,
+      "malloy": "run: segment_totals -> { group_by: segment; aggregate: tt is t.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "a1e3ce7de9baaf4db09512ed00697f879397c2e2aa1922d40466c642862cb2bd"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "line_totals",
+            "tableId": "d80436e5dfcec1ac42a1775608b5cd4afb50af3bcbb9c7c6b66105b86943a782"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "with_lines",
+            "tableId": "056030f5bb7dcb6787ded4b651210a5f820a27afad3664d22caa8daab7b02aa3"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [
+            "t"
+          ],
+          "sourceName": "segment_totals"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "a1e3ce7de9baaf4db09512ed00697f879397c2e2aa1922d40466c642862cb2bd",
+          "tier": "storage",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a persisted query through a join_cross",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "693999997ef9c624",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "with_lines",
+          "stages": 1
+        },
+        "source": "with_lines"
+      },
+      "equalToLive": true,
+      "malloy": "run: with_lines -> { group_by: region; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "056030f5bb7dcb6787ded4b651210a5f820a27afad3664d22caa8daab7b02aa3"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "line_totals",
+            "tableId": "d80436e5dfcec1ac42a1775608b5cd4afb50af3bcbb9c7c6b66105b86943a782"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "segment_totals",
+            "tableId": "a1e3ce7de9baaf4db09512ed00697f879397c2e2aa1922d40466c642862cb2bd"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "with_lines"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "056030f5bb7dcb6787ded4b651210a5f820a27afad3664d22caa8daab7b02aa3",
+          "tier": "storage",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "the declared join_many, unread",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "deaf93cc1cbcab4d",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()",
+            "total"
+          ],
+          "source": "with_lines",
+          "stages": 1
+        },
+        "source": "with_lines"
+      },
+      "equalToLive": true,
+      "malloy": "run: with_lines -> { group_by: region; aggregate: total, lines is l.count() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "skipped",
+            "reason": "MISSING_FIELD",
+            "tableId": "056030f5bb7dcb6787ded4b651210a5f820a27afad3664d22caa8daab7b02aa3"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "line_totals",
+            "tableId": "d80436e5dfcec1ac42a1775608b5cd4afb50af3bcbb9c7c6b66105b86943a782"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "segment_totals",
+            "tableId": "a1e3ce7de9baaf4db09512ed00697f879397c2e2aa1922d40466c642862cb2bd"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "with_lines"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "the declared join_many, read",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "avg_qty"
+          },
+          {
+            "classifications": [],
+            "path": "lines"
+          },
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "b1c95f9d47594c81",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:max(avg_qty)",
+            "aggregate:sum(lines)",
+            "aggregate:sum(n)"
+          ],
+          "source": "line_totals",
+          "stages": 1
+        },
+        "source": "line_totals"
+      },
+      "equalToLive": true,
+      "malloy": "run: line_totals -> { group_by: region; aggregate: c is lines.sum(), a is avg_qty.max(), nn is n.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "d80436e5dfcec1ac42a1775608b5cd4afb50af3bcbb9c7c6b66105b86943a782"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "segment_totals",
+            "tableId": "a1e3ce7de9baaf4db09512ed00697f879397c2e2aa1922d40466c642862cb2bd"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "with_lines",
+            "tableId": "056030f5bb7dcb6787ded4b651210a5f820a27afad3664d22caa8daab7b02aa3"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "lines",
+            "avg_qty",
+            "n"
+          ],
+          "sourceName": "line_totals"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "d80436e5dfcec1ac42a1775608b5cd4afb50af3bcbb9c7c6b66105b86943a782",
+          "tier": "storage",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a persisted query through a join_many",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "segment"
+          },
+          {
+            "classifications": [],
+            "path": "t"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3f34d1854d64759e",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:sum(t)"
+          ],
+          "source": "segment_totals",
+          "stages": 1
+        },
+        "source": "segment_totals"
+      },
+      "equalToLive": true,
+      "malloy": "run: segment_totals -> { group_by: segment; aggregate: tt is t.sum() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "a1e3ce7de9baaf4db09512ed00697f879397c2e2aa1922d40466c642862cb2bd"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "line_totals",
+            "tableId": "d80436e5dfcec1ac42a1775608b5cd4afb50af3bcbb9c7c6b66105b86943a782"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "with_lines",
+            "tableId": "056030f5bb7dcb6787ded4b651210a5f820a27afad3664d22caa8daab7b02aa3"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [
+            "t"
+          ],
+          "sourceName": "segment_totals"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "a1e3ce7de9baaf4db09512ed00697f879397c2e2aa1922d40466c642862cb2bd",
+          "tier": "storage",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a persisted query through a join_cross",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "693999997ef9c624",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "with_lines",
+          "stages": 1
+        },
+        "source": "with_lines"
+      },
+      "equalToLive": true,
+      "malloy": "run: with_lines -> { group_by: region; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "056030f5bb7dcb6787ded4b651210a5f820a27afad3664d22caa8daab7b02aa3"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "line_totals",
+            "tableId": "d80436e5dfcec1ac42a1775608b5cd4afb50af3bcbb9c7c6b66105b86943a782"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "segment_totals",
+            "tableId": "a1e3ce7de9baaf4db09512ed00697f879397c2e2aa1922d40466c642862cb2bd"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "with_lines"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "056030f5bb7dcb6787ded4b651210a5f820a27afad3664d22caa8daab7b02aa3",
+          "tier": "storage",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "the declared join_many, unread",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "deaf93cc1cbcab4d",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()",
+            "total"
+          ],
+          "source": "with_lines",
+          "stages": 1
+        },
+        "source": "with_lines"
+      },
+      "equalToLive": true,
+      "malloy": "run: with_lines -> { group_by: region; aggregate: total, lines is l.count() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "skipped",
+            "reason": "MISSING_FIELD",
+            "tableId": "056030f5bb7dcb6787ded4b651210a5f820a27afad3664d22caa8daab7b02aa3"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "line_totals",
+            "tableId": "d80436e5dfcec1ac42a1775608b5cd4afb50af3bcbb9c7c6b66105b86943a782"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "segment_totals",
+            "tableId": "a1e3ce7de9baaf4db09512ed00697f879397c2e2aa1922d40466c642862cb2bd"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "with_lines"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "the declared join_many, read",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

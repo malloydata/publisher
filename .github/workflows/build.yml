@@ -9,7 +9,7 @@ on:
   pull_request:
 
 env:
-  BUN_VERSION: 1.3.13
+  BUN_VERSION: 1.4.4
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 # self contained tests
@@ -18,10 +18,22 @@ env:
 permissions:
   contents: read
 
+# One run per pull request: a new push to a PR cancels that PR's run still in
+# flight, since only its newest commit can merge. Every other event (a push to
+# main, workflow_run, schedule, workflow_dispatch) gets a group of its own
+# keyed on the run id, so it is never cancelled and never replaced while it
+# waits: every merged commit is tested. (Keying those on github.ref with
+# cancel-in-progress off would still drop runs, because a group holds only one
+# pending run and a newer one cancels it.)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     name: Typecheck
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Setup Bun
@@ -29,8 +41,11 @@ jobs:
         # Building the SDK is necessary to generate the .d.ts files used for type checking.
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      # GitHub's runners only: on Credible's, `bun install` reads the npm mirror
+      # (see .github/actions/setup-workspace).
       - name: Cache Bun dependencies
         id: bun-cache
+        if: runner.environment == 'github-hosted'
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
@@ -41,23 +56,27 @@ jobs:
         run: |
           if [ "${{ steps.bun-cache.outputs.cache-hit }}" == "true" ]; then
             echo "Cache hit! Using cached dependencies..."
-            bun install --frozen-lockfile --no-summary
+            scripts/ci-install-with-retry.sh bun install --frozen-lockfile --no-summary
           else
             echo "Cache miss! Installing dependencies..."
-            bun install --frozen-lockfile
+            scripts/ci-install-with-retry.sh bun install --frozen-lockfile
           fi
           bun run generate-api-types
           bun run build:sdk
           bun run typecheck
   lint_format:
     name: Lint and check formatting
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
+      # GitHub's runners only: on Credible's, `bun install` reads the npm mirror
+      # (see .github/actions/setup-workspace).
       - name: Cache Bun dependencies
         id: bun-cache
+        if: runner.environment == 'github-hosted'
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
@@ -67,7 +86,7 @@ jobs:
       - name: Install dependencies
         run: |
           echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
-          bun install --frozen-lockfile
+          scripts/ci-install-with-retry.sh bun install --frozen-lockfile
       - name: Check formatting
         run: bunx prettier './packages/**/*.{ts,tsx}' --check
       - name: Lint
@@ -136,7 +155,8 @@ jobs:
   # Bun bin entry).
   runtime_test:
     name: ${{ matrix.runtime }} test
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -162,8 +182,11 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      # GitHub's runners only: on Credible's, `bun install` reads the npm mirror
+      # (see .github/actions/setup-workspace).
       - name: Cache Bun dependencies
         id: bun-cache
+        if: runner.environment == 'github-hosted'
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
@@ -173,7 +196,7 @@ jobs:
       - name: build server
         run: |
           echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
-          bun install --frozen-lockfile
+          scripts/ci-install-with-retry.sh bun install --frozen-lockfile
           bun run build
         env:
           BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
@@ -207,11 +230,11 @@ jobs:
             # on the bundled entry file. This validates direct Bun execution of
             # the built server artifact without depending on Node.
             echo "→ bun run ./dist/server.mjs"
-            bun run ./dist/server.mjs --port ${{ matrix.port }} --server_root ./ \
+            bun run ./dist/server.mjs --port ${{ matrix.port }} --root ./ \
               > /tmp/server.log 2>&1 &
           else
             echo "→ npx malloy-publisher (uses #!/usr/bin/env node shebang)"
-            npx malloy-publisher --port ${{ matrix.port }} --server_root ./ \
+            npx malloy-publisher --port ${{ matrix.port }} --root ./ \
               > /tmp/server.log 2>&1 &
           fi
           echo $! > /tmp/server.pid
@@ -259,13 +282,28 @@ jobs:
   # that the bundled .mjs executes under Bun (which runtime_test covers).
   docker_smoke_test:
     name: Docker smoke test
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    # id-token is used only on main, to write the donated runners' layer cache;
+    # a pull request's token cannot impersonate the writer (it is bound to the
+    # main branch's OIDC subject), so a PR run only reads the cache.
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      LAYER_CACHE: us-central1-docker.pkg.dev/credibledata-oss-ci/layer-cache/publisher/smoke:buildcache
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: "true"
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+      - name: Authenticate as the layer-cache writer
+        if: vars.CREDIBLE_RUNNERS == 'true' && github.ref == 'refs/heads/main'
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/160497775026/locations/global/workloadIdentityPools/oss-github/providers/github
+          service_account: layer-cache-writer@credibledata-oss-ci.iam.gserviceaccount.com
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -284,7 +322,11 @@ jobs:
       # always match the runtime, regardless of the Dockerfile ARG default.
       - name: Resolve DuckDB version from Malloy
         id: duckdb
-        run: echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
+        # And the runner's DuckDB extension mirror, which the Dockerfile's bake reads:
+        # set on Credible's runners, empty elsewhere.
+        run: |
+          echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
+          echo "extension_mirror=${CI_DUCKDB_EXTENSION_MIRROR:-}" >> "$GITHUB_OUTPUT"
         shell: bash
       # The UTC date, passed as APT_REFRESH so the Dockerfile's `apt-get upgrade`
       # layer rebuilds daily instead of being served from the build cache forever.
@@ -303,9 +345,16 @@ jobs:
           build-args: |
             DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
             APT_REFRESH=${{ steps.day.outputs.value }}
+            CI_DUCKDB_EXTENSION_MIRROR=${{ steps.duckdb.outputs.extension_mirror }}
           tags: malloy-publisher:smoke-test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # The donated runners' registry cache when on them (GitHub's runners
+          # cannot reach it), GitHub's cache otherwise. Only main writes.
+          cache-from: ${{ vars.CREDIBLE_RUNNERS == 'true' && format('type=registry,ref={0}', env.LAYER_CACHE) || 'type=gha' }}
+          # main first: `x && '' || y` yields y, since '' is falsy, so '' can only be the last alternative.
+          cache-to: >-
+            ${{ github.ref == 'refs/heads/main'
+                && (vars.CREDIBLE_RUNNERS == 'true' && format('type=registry,ref={0},mode=max', env.LAYER_CACHE) || 'type=gha,mode=max')
+                || '' }}
       - name: Inspect image metadata
         run: |
           # Lock in the Dockerfile claims made for audit findings #7 and #8:
@@ -342,8 +391,8 @@ jobs:
           # nothing, so a release built from an unchecked ref is not covered.
           env_json=$(docker inspect malloy-publisher:smoke-test \
             --format='{{json .Config.Env}}')
-          echo "$env_json" | jq -e 'index("PUBLISHER_NO_MCP_CONFIG=1")' >/dev/null \
-            || { echo "✗ Image does not set PUBLISHER_NO_MCP_CONFIG=1"; exit 1; }
+          echo "$env_json" | jq -e 'index("PUBLISHER_MCP_CONFIG_FILE_ENABLED=false")' >/dev/null \
+            || { echo "✗ Image does not set PUBLISHER_MCP_CONFIG_FILE_ENABLED=false"; exit 1; }
           echo "✓ .mcp.json creation suppressed in the image"
           # The server runs as uid 1000, and the USER must stay numeric:
           # Kubernetes' runAsNonRoot cannot verify a named user. A new final
@@ -601,6 +650,13 @@ jobs:
           docker rm -f malloy-publisher-smoke || true
           docker volume rm malloy-publisher-smoke-data || true
 
+  # The test suites, on Linux only, split into parallel groups behind one
+  # required check, `Cross Platform Tests / Platform: (ubuntu-latest)`. macOS
+  # and Windows run nightly, on a PR labelled `cross-platform`, and before a
+  # release (cross-platform-nightly.yml, release.yml).
   cross_platform_test:
     name: Cross Platform Tests
     uses: ./.github/workflows/cross-platform-tests.yml
+    with:
+      linux: true
+      macos_windows: false

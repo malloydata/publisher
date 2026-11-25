@@ -1,0 +1,92 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * The generated build companion for v1 `#@ persist`.
+ *
+ * Malloy plans persisted sources only in a file that carries
+ * `##! experimental.persistence`, and refuses a non-empty build manifest on
+ * one that does not. An author's file needs the flag only for that: a
+ * query reads every stored table through the served copy, and its live
+ * compile takes no compiler manifest. So for a model file that declares `#@ persist` without the
+ * flag, the planner compiles a build copy of the file with the flag as its
+ * first line, served over the file's own URL (an overlay, like the
+ * `#(materialize)` build copy's), and asks it for build targets: every
+ * `sourceID` is the author's, so the plan keys as for the author's file, and
+ * a file that has the flag is planned from itself, unchanged. A v1 source's address must not move
+ * between the two (`v1_build_companion_corpus.spec.ts`).
+ */
+
+import * as path from "path";
+import { pathToFileURL } from "url";
+import type { Model as MalloyModel, Runtime } from "@malloydata/malloy";
+import {
+   GeneratedFiles,
+   type SynthesizedRuntimeFactory,
+} from "../text/generated_files";
+
+/** The flag line the build copy opens with. */
+const PERSISTENCE_FLAG_LINE = "##! experimental.persistence";
+
+/**
+ * Whether `text` may declare a v1 `#@ persist`: a `#@` line naming `persist`
+ * anywhere on it, as Malloy reads the key (`#@ name=t persist` is one). A
+ * false positive costs one compile that plans nothing; a false negative
+ * would plan the file's sources nowhere and report them nowhere.
+ */
+function declaresV1Persist(text: string): boolean {
+   return /^\s*#@.*\bpersist\b/m.test(text);
+}
+
+/**
+ * The build copy's text: the author's file with the flag as its first line.
+ * Every declaration moves down one line; nothing an address reads does.
+ */
+export function v1BuildCompanionText(text: string): string {
+   return `${PERSISTENCE_FLAG_LINE}\n${text}`;
+}
+
+/**
+ * The model and runtime to ask for build targets for a model file that lacks
+ * the flag: its build copy, compiled over the file's own URL. Undefined when
+ * the file declares no `#@ persist`, cannot be read, or its copy does not
+ * compile (the file then plans no persisted source).
+ *
+ * The copy is made from the text the author's model compiled from, read
+ * through `getRuntime`'s reader: a worker's file map or an overlay, not
+ * necessarily the file on disk, so the copy indexes the same text the
+ * compiled locations do.
+ */
+export async function compileV1BuildCompanion(args: {
+   packagePath: string;
+   modelPath: string;
+   getRuntime: SynthesizedRuntimeFactory;
+   /**
+    * Called when the file's text cannot be read, or it declares `#@ persist`
+    * but its build copy does not compile: the undefineds that may leave
+    * declared sources out of the plan.
+    */
+   onCompileFailed?: (error: unknown) => void;
+}): Promise<{ model: MalloyModel; runtime: Runtime } | undefined> {
+   const file = path.resolve(args.packagePath, args.modelPath);
+   const url = pathToFileURL(file);
+   const files = GeneratedFiles.over(args.getRuntime);
+   let text: string;
+   try {
+      text = await files.read(url);
+   } catch (error) {
+      args.onCompileFailed?.(error);
+      return undefined;
+   }
+   if (!declaresV1Persist(text)) return undefined;
+   try {
+      const { model, runtime } = await files.compile(
+         url,
+         new Map([[url.href, v1BuildCompanionText(text)]]),
+      );
+      return { model, runtime };
+   } catch (error) {
+      args.onCompileFailed?.(error);
+      return undefined;
+   }
+}

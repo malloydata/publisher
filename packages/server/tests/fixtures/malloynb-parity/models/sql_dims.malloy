@@ -1,0 +1,6 @@
+##! experimental.sql_functions
+import "orders.malloy"
+
+source: orders_sql is orders extend {
+   dimension: one is sql_number("1")
+}

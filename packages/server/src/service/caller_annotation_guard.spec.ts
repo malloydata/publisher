@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { routeOf } from "@malloydata/malloy";
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { createRequire } from "module";
 import { BadRequestError } from "../errors";
+import { logger } from "../logger";
+import { linesMentioning } from "../test_helpers/log_lines";
 import {
    AUTHORIZE_TAG_LIKE,
    assertNoAuthorizeTagLike,
@@ -255,19 +257,18 @@ describe("hasCallerAuthorizeAnnotation: everything outside a prose body is refus
 
       it("warns once, without caller text, and still refuses", () => {
          setMalloyParserLoaderForTest(() => null);
-         const warned: unknown[][] = [];
-         const original = console.warn;
-         console.warn = (...args: unknown[]) => void warned.push(args);
+         const warnSpy = spyOn(logger, "warn");
+         let warned: unknown[][];
          try {
             expect(refuses("#|(markdown)\n#(authorize) SECRET\n")).toBe(true);
             expect(refuses(`#(authorize) true\n${RUN}\n`)).toBe(true);
             expect(refuses(`${RUN}\n`)).toBe(false);
+            warned = linesMentioning(warnSpy, "guard disabled");
          } finally {
-            console.warn = original;
+            warnSpy.mockRestore();
          }
          expect(warned).toHaveLength(1);
-         expect(String(warned[0][0])).toContain("guard disabled");
-         expect(String(warned[0][0])).not.toContain("SECRET");
+         expect(JSON.stringify(warned[0])).not.toContain("SECRET");
          expect(lastCallerGuardRefusalKind()).toBe("no_lexer");
       });
    });
@@ -295,15 +296,17 @@ describe("hasCallerAuthorizeAnnotation: everything outside a prose body is refus
          return performance.now() - started;
       };
       time(prose(1000));
-      const small = Math.min(time(prose(16250)), time(prose(16250)));
-      const large = Math.min(time(prose(65000)), time(prose(65000)));
+      const fastest = (lines: number) =>
+         Math.min(time(prose(lines)), time(prose(lines)), time(prose(lines)));
+      const small = fastest(16250);
+      const large = fastest(65000);
       console.log(
          `caller-annotation guard, three asks: ${Math.round(small)}ms at ~245KB, ${Math.round(large)}ms at ~975KB`,
       );
-      // Four times the text: linear takes about 4x, quadratic 16x. 8x keeps
-      // that apart with room for a shared runner's noise, which a 2x step
-      // (2x against 4x) did not: Windows CI measured 3.5x on linear code.
-      expect(large).toBeLessThan(8 * small + 50);
+      // Four times the text: linear takes about 4x, quadratic 16x. Shared
+      // runners have measured up to 8.9x on linear code, so the bound sits at
+      // 12x, still well short of quadratic, on the fastest of three runs.
+      expect(large).toBeLessThan(12 * small + 50);
       expect(
          hasCallerAuthorizeAnnotation(`${prose(65000)}\n#(authorize) y\n`),
       ).toBe(true);
@@ -336,11 +339,15 @@ describe("hasCallerAuthorizeAnnotation: everything outside a prose body is refus
          newMalformed.source.lastIndexOf("(?:") + 3,
          -1,
       );
+      const spaceAfterOpener = (tag: string) => {
+         const at = tag.search(/[([{<]/);
+         return at < 0 ? tag : `${tag.slice(0, at + 1)}\t ${tag.slice(at + 1)}`;
+      };
       const samples = [...EVERY_SPELLING, ...NEAR_MISSES].flatMap((tag) => [
          tag,
          ` ${tag}`,
          tag.replace(/^(##?\|?)/, "$1 \t "),
-         tag.replace(/([([{<])/, "$1\t "),
+         spaceAfterOpener(tag),
          `${tag}x`,
          `${tag})`,
          `prose ${tag} true`,

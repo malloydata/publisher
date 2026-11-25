@@ -30,7 +30,7 @@ test.describe("package-models", () => {
       await modelRow(page, "storefront.malloy").click();
       await expect(page).toHaveURL(
          new RegExp(
-            `/${DEFAULT_ENV}/${PACKAGES.storefront}/storefront\\.malloy$`,
+            `/${DEFAULT_ENV}/${PACKAGES.storefront}/latest/storefront\\.malloy$`,
          ),
       );
       await expect(

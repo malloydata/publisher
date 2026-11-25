@@ -3,15 +3,42 @@
 
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { generateKeyPairSync } from "crypto";
+import fs from "fs";
+import os from "os";
+import path from "path";
 import { components } from "../api";
+import { getProcessedPublisherConfig } from "../config";
+import { PUBLISHER_CONFIG_NAME } from "../constants";
 import { logger } from "../logger";
 import {
    assembleEnvironmentConnections,
-   normalizeSnowflakePrivateKey,
+   validateConnectionSqlFields,
+   validateDuckdbApiSurface,
+   storageDestinationFile,
+   destinationFileNameRefusal,
+   storageDestinationRoot,
    validateStorageDestinations,
 } from "./connection_config";
+import { BadRequestError } from "../errors";
+import { normalizeSnowflakePrivateKey } from "./dialects/snowflake";
+import { normalizeReadableSchemas } from "./connection_type";
+import { installSettings } from "../test_helpers/settings_env";
+import { toPublicConnection } from "./connection_public_view";
 
 type ApiConnection = components["schemas"]["Connection"];
+
+let restoreSettings: (() => void) | undefined;
+
+/** Make `env` the only variables the settings were loaded from. */
+function installEnv(env: Record<string, string>): void {
+   restoreSettings?.();
+   restoreSettings = installSettings({ env }).restore;
+}
+
+afterEach(() => {
+   restoreSettings?.();
+   restoreSettings = undefined;
+});
 
 describe("assembleEnvironmentConnections — sqlserver", () => {
    it("passes the connector's own field names through and reports it read-only", () => {
@@ -340,16 +367,8 @@ describe("assembleEnvironmentConnections — publisher", () => {
 
    // publisher connections are default-deny (SSRF gate); these assembly tests
    // exercise the enabled path, so opt in for the block and restore after.
-   const priorFlag = process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
    beforeEach(() => {
-      process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "true";
-   });
-   afterEach(() => {
-      if (priorFlag === undefined) {
-         delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
-      } else {
-         process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = priorFlag;
-      }
+      installEnv({ PUBLISHER_ALLOW_PROXY_CONNECTIONS: "true" });
    });
 
    it("emits a publisher core entry proxying to the remote dataplane", () => {
@@ -469,21 +488,21 @@ describe("assembleEnvironmentConnections — publisher", () => {
 
    describe("SSRF gate (PUBLISHER_ALLOW_PROXY_CONNECTIONS)", () => {
       it("denies a valid publisher connection when the flag is unset (default-deny)", () => {
-         delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+         installEnv({});
          expect(() => assembleEnvironmentConnections([validBase])).toThrow(
             "Publisher proxy connection 'analytics' is disabled in this deployment",
          );
       });
 
       it("error names the env var to flip", () => {
-         delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+         installEnv({});
          expect(() => assembleEnvironmentConnections([validBase])).toThrow(
             "Fix: set the environment variable PUBLISHER_ALLOW_PROXY_CONNECTIONS=true",
          );
       });
 
       it("denies for any non-'true' value (fail-closed)", () => {
-         process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "1";
+         installEnv({ PUBLISHER_ALLOW_PROXY_CONNECTIONS: "1" });
          expect(() => assembleEnvironmentConnections([validBase])).toThrow(
             "is disabled in this deployment",
          );
@@ -493,7 +512,7 @@ describe("assembleEnvironmentConnections — publisher", () => {
          // A publisher connection missing connectionUri still surfaces the
          // disabled error first when the gate is closed — the type is refused
          // outright, not validated.
-         delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
+         installEnv({});
          const conn: ApiConnection = { name: "analytics", type: "publisher" };
          expect(() => assembleEnvironmentConnections([conn])).toThrow(
             "is disabled in this deployment",
@@ -501,7 +520,7 @@ describe("assembleEnvironmentConnections — publisher", () => {
       });
 
       it("allows a valid publisher connection when the flag is 'true'", () => {
-         process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = "true";
+         installEnv({ PUBLISHER_ALLOW_PROXY_CONNECTIONS: "true" });
          const { pojo } = assembleEnvironmentConnections([validBase]);
          expect(pojo.connections["analytics"].is).toBe("publisher");
       });
@@ -534,18 +553,9 @@ describe("SSH proxy validation", () => {
       // The SSH proxy is a normal connection capability — deliberately NOT gated
       // by PUBLISHER_ALLOW_PROXY_CONNECTIONS (that flag is for the `publisher`
       // HTTP multi-hop type). Prove it assembles with the flag unset.
-      const priorFlag = process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
-      delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
-      try {
-         const { pojo } = assembleEnvironmentConnections([validSshProxy]);
-         expect(pojo.connections["pg-via-bastion"].is).toBe("postgres");
-      } finally {
-         if (priorFlag === undefined) {
-            delete process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS;
-         } else {
-            process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS = priorFlag;
-         }
-      }
+      installEnv({});
+      const { pojo } = assembleEnvironmentConnections([validSshProxy]);
+      expect(pojo.connections["pg-via-bastion"].is).toBe("postgres");
    });
 
    it("rejects a non-postgres (bigquery) connection with a proxy", () => {
@@ -984,14 +994,14 @@ describe("ducklake shape validation", () => {
       );
    });
 
-   it("rejects a missing bucketUrl at load", () => {
+   it("accepts a missing bucketUrl at load: the catalog's recorded data path is used", () => {
       const c = {
          ...valid,
          ducklakeConnection: { catalog: valid.ducklakeConnection!.catalog },
       } as ApiConnection;
-      expect(() => assembleEnvironmentConnections([c], "/tmp/env")).toThrow(
-         /Storage bucketUrl is required for DuckLake/i,
-      );
+      expect(() =>
+         assembleEnvironmentConnections([c], "/tmp/env"),
+      ).not.toThrow();
    });
 
    // metadataSchema reaches TWO grammars: a quoted string literal in the ATTACH,
@@ -1053,6 +1063,282 @@ describe("ducklake shape validation", () => {
          ).toThrow(/metadataSchema must be a plain identifier/i);
       }
    });
+
+   it("answers every DuckLake shape error as a BadRequestError, a 400 and not an unhandled 500", () => {
+      const lake = valid.ducklakeConnection!;
+      const shapes: ApiConnection[] = [
+         { name: "lake", type: "ducklake" },
+         {
+            ...valid,
+            ducklakeConnection: { storage: lake.storage },
+         } as ApiConnection,
+         withSchema("not a plain identifier"),
+         {
+            ...valid,
+            ducklakeConnection: { ...lake, destinationSchema: "has space" },
+         },
+         {
+            ...valid,
+            ducklakeConnection: { ...lake, readableSchemas: ["stripe"] },
+         },
+         {
+            ...valid,
+            managed: true,
+            ducklakeConnection: { ...lake, readableSchemas: ["Stripe"] },
+         },
+         {
+            ...valid,
+            managed: true,
+            ducklakeConnection: {
+               ...lake,
+               readableSchemas: ["information_schema"],
+            },
+         },
+      ];
+      for (const shape of shapes) {
+         expect(() =>
+            assembleEnvironmentConnections([shape], "/tmp/env"),
+         ).toThrow(BadRequestError);
+      }
+   });
+
+   describe("readableSchemas", () => {
+      const withReadable = (
+         readableSchemas: unknown,
+         extra: Partial<ApiConnection> = { managed: true },
+         readOnly?: boolean,
+      ): ApiConnection =>
+         ({
+            ...valid,
+            ...extra,
+            ducklakeConnection: {
+               ...valid.ducklakeConnection,
+               ...(readOnly === undefined ? {} : { readOnly }),
+               readableSchemas,
+            },
+         }) as ApiConnection;
+      const assemble = (connection: ApiConnection) =>
+         assembleEnvironmentConnections([connection], "/tmp/env");
+
+      it("accepts lowercase schema names on a managed read-only connection", () => {
+         expect(() =>
+            assemble(withReadable(["extra_a", "_b2", "main", "extra_a"])),
+         ).not.toThrow();
+         expect(() => assemble(withReadable([]))).not.toThrow();
+         expect(() =>
+            assemble(withReadable(["extra_a"], { managed: true }, true)),
+         ).not.toThrow();
+      });
+
+      it("rejects a name that is not a plain lowercase identifier", () => {
+         for (const bad of [
+            "Extra_A",
+            "extra-a",
+            "1extra",
+            "",
+            "a.b",
+            "x'; --",
+            "a b",
+            1,
+            null,
+         ]) {
+            expect(() => assemble(withReadable([bad]))).toThrow(
+               /readableSchemas must be a list of lowercase schema names/,
+            );
+         }
+         expect(() => assemble(withReadable("extra_a"))).toThrow(
+            /readableSchemas must be a list/,
+         );
+      });
+
+      it("rejects the names a schema create refuses, and the metadata catalog's prefix", () => {
+         for (const name of [
+            "memory",
+            "information_schema",
+            "pg_catalog",
+            "temp",
+            "system",
+            "__ducklake_metadata_",
+            "__ducklake_metadata_lake",
+         ]) {
+            expect(() => assemble(withReadable(["extra_a", name]))).toThrow(
+               new RegExp(`readableSchemas names '${name}', a reserved schema`),
+            );
+         }
+         // Only the whole name is reserved.
+         expect(() =>
+            assemble(
+               withReadable(["memory_x", "system_a", "_ducklake_metadata"]),
+            ),
+         ).not.toThrow();
+      });
+
+      it("rejects the field on a connection that is not managed", () => {
+         for (const extra of [{}, { managed: false }]) {
+            expect(() => assemble(withReadable(["extra_a"], extra))).toThrow(
+               /readableSchemas requires a managed, read-only connection/,
+            );
+         }
+      });
+
+      it("rejects the field on a read-write connection", () => {
+         expect(() =>
+            assemble(withReadable(["extra_a"], { managed: true }, false)),
+         ).toThrow(/readableSchemas requires a managed, read-only connection/);
+      });
+
+      it("rejects the field on a storage destination, even a managed one", () => {
+         const { accepted, rejected } = validateStorageDestinations([
+            withReadable(["extra_a"]),
+            valid,
+         ]);
+         expect(accepted).toHaveLength(1);
+         expect(rejected).toHaveLength(1);
+         expect(rejected[0].reason).toMatch(
+            /readableSchemas applies to a managed connection view, not a storage destination/,
+         );
+      });
+
+      it("accepts an absent or empty field without a managed connection", () => {
+         expect(() => assemble(valid)).not.toThrow();
+         expect(() => assemble(withReadable(undefined, {}))).not.toThrow();
+         expect(() => assemble(withReadable([], {}))).not.toThrow();
+         expect(() =>
+            assemble(withReadable([], { managed: true }, false)),
+         ).not.toThrow();
+         expect(
+            validateStorageDestinations([withReadable([])]).rejected,
+         ).toEqual([]);
+      });
+   });
+
+   describe("setup identity of a managed view", () => {
+      const tempDirectory = (readableSchemas?: string[]): unknown => {
+         const { pojo } = assembleEnvironmentConnections(
+            [
+               {
+                  ...valid,
+                  managed: true,
+                  ducklakeConnection: {
+                     ...valid.ducklakeConnection,
+                     readableSchemas,
+                  },
+               } as ApiConnection,
+            ],
+            "/tmp/env",
+         );
+         return (pojo.connections.lake as { tempDirectory?: string })
+            .tempDirectory;
+      };
+
+      it("is the same for absent, empty, main-only and reordered or duplicated lists", () => {
+         const same = tempDirectory(["extra_a", "extra_b"]);
+         expect(same).toBeDefined();
+         expect(tempDirectory(["extra_b", "extra_a", "extra_b"])).toBe(same);
+         expect(tempDirectory(["main", "extra_b", "extra_a"])).toBe(same);
+         const none = tempDirectory(undefined);
+         expect(tempDirectory([])).toBe(none);
+         expect(tempDirectory(["main"])).toBe(none);
+      });
+
+      it("differs when the readable set changes", () => {
+         const base = tempDirectory(["extra_a"]);
+         expect(tempDirectory(["extra_a", "extra_b"])).not.toBe(base);
+         expect(tempDirectory(undefined)).not.toBe(base);
+      });
+   });
+
+   describe("normalizeReadableSchemas", () => {
+      it("sorts, dedupes, drops main, and returns undefined for nothing", () => {
+         expect(normalizeReadableSchemas(["b", "a", "b", "main"])).toEqual([
+            "a",
+            "b",
+         ]);
+         expect(normalizeReadableSchemas([])).toBeUndefined();
+         expect(normalizeReadableSchemas(["main"])).toBeUndefined();
+         expect(normalizeReadableSchemas(undefined)).toBeUndefined();
+      });
+   });
+
+   // The attach applies a catalog's own sslmode and throws on one it cannot
+   // honor, so a bad value is caught here instead of at every query or build.
+   const withCatalogPg = (pg: Record<string, unknown>): ApiConnection =>
+      ({
+         ...valid,
+         ducklakeConnection: {
+            ...valid.ducklakeConnection,
+            catalog: {
+               postgresConnection: {
+                  ...valid.ducklakeConnection!.catalog!.postgresConnection,
+                  ...pg,
+               },
+            },
+         },
+      }) as ApiConnection;
+
+   it("accepts a catalog sslmode the attach can apply", () => {
+      for (const ok of ["disable", "no-verify", "verify-full"]) {
+         expect(() =>
+            assembleEnvironmentConnections(
+               [withCatalogPg({ sslmode: ok })],
+               "/tmp/env",
+            ),
+         ).not.toThrow();
+      }
+   });
+
+   it("rejects a catalog sslmode the attach would refuse", () => {
+      for (const bad of ["require", "prefer", "allow", ""]) {
+         expect(() =>
+            assembleEnvironmentConnections(
+               [withCatalogPg({ sslmode: bad })],
+               "/tmp/env",
+            ),
+         ).toThrow(
+            /DuckLake catalog of connection 'lake' has unsupported sslmode/,
+         );
+      }
+   });
+
+   it("rejects a catalog verify-ca with no CA bundle", () => {
+      const saved = process.env.NODE_EXTRA_CA_CERTS;
+      delete process.env.NODE_EXTRA_CA_CERTS;
+      try {
+         expect(() =>
+            assembleEnvironmentConnections(
+               [withCatalogPg({ sslmode: "verify-ca" })],
+               "/tmp/env",
+            ),
+         ).toThrow(/uses sslmode 'verify-ca' but no readable CA bundle/);
+      } finally {
+         if (saved === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+         else process.env.NODE_EXTRA_CA_CERTS = saved;
+      }
+   });
+
+   it("ignores a catalog sslmode beside a connectionString, which the attach ignores too", () => {
+      expect(() =>
+         assembleEnvironmentConnections(
+            [
+               withCatalogPg({
+                  connectionString: "host=h dbname=d sslmode=require",
+                  sslmode: "require",
+               }),
+            ],
+            "/tmp/env",
+         ),
+      ).not.toThrow();
+   });
+
+   it("rejects a destination whose catalog sslmode the attach would refuse, alone", () => {
+      const { accepted, rejected } = validateStorageDestinations([
+         withCatalogPg({ sslmode: "require" }),
+         valid,
+      ]);
+      expect(rejected.map((r) => r.name)).toEqual(["lake"]);
+      expect(rejected[0].reason).toMatch(/unsupported sslmode 'require'/);
+      expect(accepted).toHaveLength(1);
+   });
 });
 
 // Malloy qualifies every `dataset.table` path with the connection's projectId.
@@ -1105,6 +1391,109 @@ describe("assembleEnvironmentConnections — bigquery projectId", () => {
          },
       ]);
       expect(pojo.connections["bq"].projectId).toBe("data-project");
+   });
+});
+
+describe("assembleEnvironmentConnections — bigquery dbmeta", () => {
+   const bigquery = (dbmeta?: unknown): ApiConnection => ({
+      name: "bq",
+      type: "bigquery",
+      bigqueryConnection: {
+         defaultProjectId: "data-project",
+         dbmeta: dbmeta as boolean | undefined,
+      },
+   });
+
+   it("forwards dbmeta to the core entry", () => {
+      const { pojo } = assembleEnvironmentConnections([bigquery(true)]);
+      expect(pojo.connections["bq"].dbmeta).toBe(true);
+   });
+
+   it("leaves dbmeta off when the connection does not set it", () => {
+      const { pojo } = assembleEnvironmentConnections([bigquery()]);
+      expect(pojo.connections["bq"].dbmeta).toBeUndefined();
+   });
+
+   it("forwards an explicit false", () => {
+      const { pojo } = assembleEnvironmentConnections([bigquery(false)]);
+      expect(pojo.connections["bq"].dbmeta).toBe(false);
+   });
+
+   it.each([
+      ["true", true],
+      ["On", true],
+      ["false", false],
+      ["0", false],
+      ["", undefined],
+   ])(
+      "reads the string %p, as ${VAR} substitution delivers it",
+      (raw, want) => {
+         const { pojo } = assembleEnvironmentConnections([bigquery(raw)]);
+         expect(pojo.connections["bq"].dbmeta).toBe(want);
+      },
+   );
+
+   it.each([
+      ["true", true],
+      ["false", false],
+   ])(
+      "stores the string %p as a boolean, and the API returns it so",
+      (raw, want) => {
+         const { apiConnections } = assembleEnvironmentConnections([
+            bigquery(raw),
+         ]);
+         expect(apiConnections[0].bigqueryConnection?.dbmeta).toBe(want);
+         expect(
+            toPublicConnection(apiConnections[0]).bigqueryConnection?.dbmeta,
+         ).toBe(want);
+      },
+   );
+
+   it("returns a ${VAR} value from publisher.config.json as a boolean", () => {
+      const serverRoot = fs.mkdtempSync(path.join(os.tmpdir(), "dbmeta-"));
+      process.env.BQ_DBMETA = "true";
+      try {
+         fs.writeFileSync(
+            path.join(serverRoot, PUBLISHER_CONFIG_NAME),
+            JSON.stringify({
+               frozenConfig: true,
+               environments: [
+                  {
+                     name: "env",
+                     packages: [{ name: "pkg", location: "./pkg" }],
+                     connections: [
+                        {
+                           name: "bq",
+                           type: "bigquery",
+                           bigqueryConnection: {
+                              defaultProjectId: "data-project",
+                              dbmeta: "${BQ_DBMETA}",
+                           },
+                        },
+                     ],
+                  },
+               ],
+            }),
+         );
+         const [environment] =
+            getProcessedPublisherConfig(serverRoot).environments;
+         const { apiConnections, pojo } = assembleEnvironmentConnections(
+            environment.connections,
+         );
+         expect(pojo.connections["bq"].dbmeta).toBe(true);
+         expect(
+            toPublicConnection(apiConnections[0]).bigqueryConnection?.dbmeta,
+         ).toBe(true);
+      } finally {
+         delete process.env.BQ_DBMETA;
+         fs.rmSync(serverRoot, { recursive: true, force: true });
+      }
+   });
+
+   it.each(["ture", 1])("refuses %p", (raw) => {
+      expect(() => assembleEnvironmentConnections([bigquery(raw)])).toThrow(
+         /Invalid value for dbmeta on BigQuery connection "bq"/,
+      );
    });
 });
 
@@ -1400,25 +1789,39 @@ describe("validateStorageDestinations — S3 credential, checked in full", () =>
       expect(accepted.map((d) => d.name)).toEqual(["good"]);
       expect(rejected.map((r) => r.name)).toEqual(["bad"]);
    });
+
+   describe("under S3_CREDENTIAL_CHAIN_POLICY=destinations-only", () => {
+      let restoreSettings: () => void;
+      beforeEach(() => {
+         restoreSettings = installSettings({
+            env: { S3_CREDENTIAL_CHAIN_POLICY: "destinations-only" },
+         }).restore;
+      });
+      afterEach(() => restoreSettings());
+
+      // The policy exists to refuse chain auth on author-supplied connections; a
+      // destination is the operator's own, and its shape check runs the same gate.
+      it("accepts a chain-auth destination", () => {
+         const { accepted, rejected } = validateStorageDestinations([
+            destination({ provider: "credential_chain" }),
+         ]);
+         expect(rejected).toEqual([]);
+         expect(accepted).toHaveLength(1);
+      });
+
+      it("assembles a chain-auth destination only when told its origin", () => {
+         const chain = destination({ provider: "credential_chain" });
+         expect(() => assembleEnvironmentConnections([chain])).toThrow(
+            /not permitted/,
+         );
+         expect(() =>
+            assembleEnvironmentConnections([chain], "", "storage-destination"),
+         ).not.toThrow();
+      });
+   });
 });
 
 describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
-   const originalPolicy = process.env.EXTENSION_FETCH_POLICY;
-   const originalAllow = process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
-
-   const restore = (name: string, value: string | undefined) => {
-      if (value === undefined) {
-         delete process.env[name];
-      } else {
-         process.env[name] = value;
-      }
-   };
-
-   afterEach(() => {
-      restore("EXTENSION_FETCH_POLICY", originalPolicy);
-      restore("PUBLISHER_ALLOW_DUCKDB_SETUP_SQL", originalAllow);
-   });
-
    const withSetupSQL = (): ApiConnection => ({
       name: "my_duckdb",
       type: "duckdb",
@@ -1428,8 +1831,7 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
    });
 
    it("refuses setupSQL unless PUBLISHER_ALLOW_DUCKDB_SETUP_SQL is set", () => {
-      delete process.env.EXTENSION_FETCH_POLICY;
-      delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+      installEnv({});
 
       expect(() =>
          assembleEnvironmentConnections([withSetupSQL()], "/tmp/env"),
@@ -1439,8 +1841,7 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
    });
 
    it("refuses setupSQL when PUBLISHER_ALLOW_DUCKDB_SETUP_SQL is false", () => {
-      delete process.env.EXTENSION_FETCH_POLICY;
-      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "false";
+      installEnv({ PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "false" });
 
       expect(() =>
          assembleEnvironmentConnections([withSetupSQL()], "/tmp/env"),
@@ -1448,17 +1849,17 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
    });
 
    it("rejects a misspelled PUBLISHER_ALLOW_DUCKDB_SETUP_SQL rather than reading it as off", () => {
-      delete process.env.EXTENSION_FETCH_POLICY;
-      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "ture";
+      installEnv({ PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "ture" });
 
       expect(() =>
          assembleEnvironmentConnections([withSetupSQL()], "/tmp/env"),
-      ).toThrow(/Invalid value for PUBLISHER_ALLOW_DUCKDB_SETUP_SQL/);
+      ).toThrow(
+         'allow.duckdbSetupSql from PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: expected a boolean (true/false, 1/0, yes/no or on/off), got "ture"',
+      );
    });
 
    it("accepts a DuckDB connection with setupSQL, sets metadata, and passes setupSQL to POJO", () => {
-      delete process.env.EXTENSION_FETCH_POLICY;
-      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "true";
+      installEnv({ PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" });
       const conn: ApiConnection = {
          name: "my_duckdb",
          type: "duckdb",
@@ -1481,8 +1882,10 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
    });
 
    it("refuses setupSQL when EXTENSION_FETCH_POLICY is local-only, even when allowed", () => {
-      process.env.EXTENSION_FETCH_POLICY = "local-only";
-      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "true";
+      installEnv({
+         EXTENSION_FETCH_POLICY: "local-only",
+         PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
+      });
 
       expect(() =>
          assembleEnvironmentConnections([withSetupSQL()], "/tmp/env"),
@@ -1492,7 +1895,7 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
    });
 
    it("rejects a DuckDB connection with whitespace-only setupSQL", () => {
-      delete process.env.EXTENSION_FETCH_POLICY;
+      installEnv({});
       const conn: ApiConnection = {
          name: "empty_duckdb",
          type: "duckdb",
@@ -1507,7 +1910,7 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
    });
 
    it("rejects a DuckDB connection with neither attachedDatabases nor setupSQL", () => {
-      delete process.env.EXTENSION_FETCH_POLICY;
+      installEnv({});
       const conn: ApiConnection = {
          name: "empty_duckdb",
          type: "duckdb",
@@ -1517,5 +1920,282 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
       expect(() => assembleEnvironmentConnections([conn], "/tmp/env")).toThrow(
          /must provide either attachedDatabases or non-empty setupSQL/i,
       );
+   });
+});
+
+describe("attachedDatabases[].name is held to its documented pattern", () => {
+   const withAttached = (name: unknown): ApiConnection =>
+      ({
+         name: "lake",
+         type: "duckdb",
+         duckdbConnection: {
+            attachedDatabases: [
+               { name: "first_ok", type: "s3" },
+               { name, type: "bigquery" },
+            ],
+         },
+      }) as ApiConnection;
+
+   it.each([
+      'evil"; SELECT 1 --',
+      "evil'",
+      "has space",
+      "1starts_with_digit",
+      "dash-ed",
+      "",
+      "semi;colon",
+   ])("refuses %p, naming the entry by position, not by its text", (name) => {
+      const refuse = () => validateConnectionSqlFields(withAttached(name));
+      expect(refuse).toThrow(
+         /attachedDatabases\[1\]\.name on connection "lake" is invalid/,
+      );
+      expect(refuse).toThrow("^[a-zA-Z_][a-zA-Z0-9_]*$");
+      // The rejected text is not echoed back.
+      if (name.length > 3) expect(refuse).not.toThrow(name);
+   });
+
+   it("refuses a name that is not a string", () => {
+      expect(() => validateConnectionSqlFields(withAttached(42))).toThrow(
+         /is invalid/,
+      );
+   });
+
+   it.each(["sales", "_sales", "Sales_DB_1", "a"])("accepts %p", (name) => {
+      expect(() =>
+         validateConnectionSqlFields(withAttached(name)),
+      ).not.toThrow();
+   });
+
+   it("leaves an absent name to the attach that reads it", () => {
+      expect(() =>
+         validateConnectionSqlFields(withAttached(undefined)),
+      ).not.toThrow();
+   });
+
+   it("is part of the DuckDB surface check, even with no type (a PATCH)", () => {
+      const patch = withAttached("bad name");
+      delete (patch as { type?: string }).type;
+      expect(() => validateDuckdbApiSurface(patch)).toThrow(/is invalid/);
+   });
+
+   it("refuses the name at config load, before any connection is built", () => {
+      expect(() =>
+         assembleEnvironmentConnections(
+            [withAttached('evil"; SELECT 1 --')],
+            "/tmp/env",
+         ),
+      ).toThrow(/attachedDatabases\[1\]\.name/);
+   });
+});
+
+describe("attachedDatabases[].type is never an Object.prototype member", () => {
+   const withType = (type: string): ApiConnection =>
+      ({
+         name: "lake",
+         type: "duckdb",
+         duckdbConnection: {
+            attachedDatabases: [
+               { name: "first_ok", type: "s3" },
+               { name: "second", type },
+            ],
+         },
+      }) as unknown as ApiConnection;
+
+   it.each([
+      "constructor",
+      "toString",
+      "valueOf",
+      "hasOwnProperty",
+      "__proto__",
+      "isPrototypeOf",
+   ])("refuses %p, naming the entry by position", (type) => {
+      const refuse = () => validateConnectionSqlFields(withType(type));
+      expect(refuse).toThrow(
+         /attachedDatabases\[1\]\.type on connection "lake" is invalid/,
+      );
+   });
+
+   it.each(["bigquery", "snowflake", "postgres", "gcs", "s3", "azure"])(
+      "accepts %p",
+      (type) => {
+         expect(() =>
+            validateConnectionSqlFields(withType(type)),
+         ).not.toThrow();
+      },
+   );
+
+   it("leaves a type no attach supports to the attach, which refuses it", () => {
+      expect(() =>
+         validateConnectionSqlFields(withType("trino")),
+      ).not.toThrow();
+   });
+
+   it("refuses the type at config load, before any connection is built", () => {
+      expect(() =>
+         assembleEnvironmentConnections([withType("constructor")], "/tmp/env"),
+      ).toThrow(/attachedDatabases\[1\]\.type/);
+   });
+});
+
+describe("attachedDatabases[].s3Connection.region is held to a region's shape", () => {
+   const withRegion = (region: unknown): ApiConnection =>
+      ({
+         name: "lake",
+         type: "duckdb",
+         duckdbConnection: {
+            attachedDatabases: [
+               {
+                  name: "bucket",
+                  type: "s3",
+                  s3Connection: {
+                     accessKeyId: "AK",
+                     secretAccessKey: "SK",
+                     region,
+                  },
+               },
+            ],
+         },
+      }) as ApiConnection;
+
+   it.each([
+      "us-east-1'); SET threads=1; --",
+      "us east 1",
+      "us-east-1;",
+      "eu/west",
+   ])("refuses %p without echoing it", (region) => {
+      const refuse = () => validateConnectionSqlFields(withRegion(region));
+      expect(refuse).toThrow(
+         /attachedDatabases\[0\]\.s3Connection\.region on connection "lake" is invalid/,
+      );
+      expect(refuse).not.toThrow(region);
+   });
+
+   it("refuses a region that is not a string", () => {
+      expect(() => validateConnectionSqlFields(withRegion(7))).toThrow(
+         /region .* is invalid/,
+      );
+   });
+
+   it.each(["us-east-1", "eu-west-2", "auto", "garage_1", undefined, ""])(
+      "accepts %p",
+      (region) => {
+         expect(() =>
+            validateConnectionSqlFields(withRegion(region)),
+         ).not.toThrow();
+      },
+   );
+
+   it("is refused by the surface check without a type (a PATCH), and at config load", () => {
+      const patch = withRegion("x'y");
+      delete (patch as { type?: string }).type;
+      expect(() => validateDuckdbApiSurface(patch)).toThrow(/region/);
+      expect(() =>
+         assembleEnvironmentConnections([withRegion("x'y")], "/tmp/env"),
+      ).toThrow(/s3Connection\.region/);
+   });
+});
+
+describe("ducklakeConnection.storage.s3Connection.region is held to a region's shape", () => {
+   const withRegion = (region: unknown): ApiConnection =>
+      ({
+         name: "lake",
+         type: "ducklake",
+         ducklakeConnection: {
+            catalog: {
+               postgresConnection: {
+                  host: "127.0.0.1",
+                  port: 5432,
+                  databaseName: "catalog",
+                  userName: "u",
+                  password: "p",
+               },
+            },
+            storage: {
+               bucketUrl: "s3://bucket/lake",
+               s3Connection: {
+                  accessKeyId: "AK",
+                  secretAccessKey: "SK",
+                  region,
+               },
+            },
+         },
+      }) as ApiConnection;
+   const hostile = "us-east-1'); SET threads=1; --";
+
+   it("refuses a bad region by path, without echoing it", () => {
+      const refuse = () => validateConnectionSqlFields(withRegion(hostile));
+      expect(refuse).toThrow(
+         /ducklakeConnection\.storage\.s3Connection\.region on connection "lake" is invalid/,
+      );
+      expect(refuse).not.toThrow(hostile);
+      expect(() => validateConnectionSqlFields(withRegion(7))).toThrow(
+         /is invalid/,
+      );
+   });
+
+   it("refuses it in the surface check without a type (a PATCH), and at config load", () => {
+      const patch = withRegion("x'y");
+      delete (patch as { type?: string }).type;
+      expect(() => validateDuckdbApiSurface(patch)).toThrow(/region/);
+      expect(() =>
+         assembleEnvironmentConnections([withRegion("x'y")], "/tmp/env"),
+      ).toThrow(/ducklakeConnection\.storage\.s3Connection\.region/);
+   });
+
+   it.each(["us-east-1", "auto", undefined, ""])("accepts %p", (region) => {
+      expect(() =>
+         validateConnectionSqlFields(withRegion(region)),
+      ).not.toThrow();
+   });
+});
+
+describe("storageDestinationFile", () => {
+   it("puts a destination's file under the destinations root", () => {
+      expect(storageDestinationFile("/env", "lake")).toBe(
+         // Resolved, so Windows adds the current drive (`D:\env\…`).
+         path.resolve(storageDestinationRoot("/env"), "lake.duckdb"),
+      );
+   });
+
+   it("refuses a traversal-shaped or separator-bearing name", () => {
+      for (const name of ["../escape", "..", "a/b", "a\\b", "x/../../y", ""]) {
+         expect(() => storageDestinationFile("/env", name)).toThrow(
+            BadRequestError,
+         );
+      }
+   });
+
+   it("names the allowed pattern for a name it refuses, as a config load reports it", () => {
+      for (const name of ["my lake", "lakè", "../escape", "a/b", ""]) {
+         expect(destinationFileNameRefusal(name)).toContain(
+            "only ASCII letters, digits, '_', '-' and '.'",
+         );
+      }
+      for (const name of ["lake", "Lake_2", "lake-prod.v1"]) {
+         expect(destinationFileNameRefusal(name)).toBeUndefined();
+      }
+   });
+
+   it("leaves a DuckLake destination's name alone: no file is named from it", () => {
+      const { accepted, rejected } = validateStorageDestinations([
+         {
+            name: "my lake",
+            type: "ducklake",
+            ducklakeConnection: {
+               catalog: {
+                  postgresConnection: {
+                     host: "h",
+                     port: 5432,
+                     userName: "u",
+                     password: "p",
+                     databaseName: "d",
+                  },
+               },
+               storage: { bucketUrl: "/tmp/lake" },
+            },
+         } as unknown as ApiConnection,
+      ]);
+      expect(rejected).toEqual([]);
+      expect(accepted.map((d) => d.name)).toEqual(["my lake"]);
    });
 });

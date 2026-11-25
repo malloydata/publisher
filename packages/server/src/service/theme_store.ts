@@ -5,7 +5,12 @@ import { Mutex } from "async-mutex";
 import { getInstanceTheme, sanitizeTheme, Theme } from "../config";
 import { logger } from "../logger";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
-import { StorageManager } from "../storage/StorageManager";
+import type { CatalogDatabase } from "./environment_ports";
+
+/** Where the theme row lives: the catalog database, and whether it is open yet. */
+export interface ThemeStorage extends CatalogDatabase {
+   isInitialized(): boolean;
+}
 
 const THEME_ROW_ID = "default";
 
@@ -23,12 +28,17 @@ export class ThemeStore {
    private cacheLoaded = false;
 
    constructor(
-      private storageManager: StorageManager,
+      private storage: ThemeStorage,
       private serverRoot: string,
    ) {}
 
    private get db(): DuckDBConnection {
-      return this.storageManager.getDuckDbConnection();
+      return this.storage.getDuckDbConnection();
+   }
+
+   /** Whether the theme's storage is open; before then get() and set() throw. */
+   isReady(): boolean {
+      return this.storage.isInitialized();
    }
 
    /** Idempotent. Loads the persisted theme, seeding an empty table from config. */

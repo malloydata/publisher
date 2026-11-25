@@ -1,0 +1,1023 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "orders__by_region__view",
+        "tier": "storage"
+      },
+      {
+        "name": "orders__by_status__view",
+        "tier": "database"
+      },
+      {
+        "name": "orders__two_stage__view",
+        "tier": "storage"
+      },
+      {
+        "name": "orders__recent__view",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "orders__by_region__view:serves",
+      "orders__by_status__view:serves",
+      "orders__two_stage__view:serves",
+      "orders__recent__view:serves"
+    ],
+    "warnings": [
+      {
+        "code": "persist-reads-current-time",
+        "message": "#@ persist on view \"recent\" of source \"orders\" stores a relation that reads the current time (`where: created_at > now - 30 days`), so its answers are as of its last build rather than of each query, and it is rebuilt on every run. To answer as of each query instead, move the window into the persisted source's own extend block (a `where:`, dimension or measure there is applied at every read), read a given there, or persist a finer source that keeps the time column and filter it at query time.",
+        "subject": "orders -> recent"
+      }
+    ]
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "5dada763268304be",
+          "kind": "reduce",
+          "measures": [
+            "n",
+            "total"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> by_region",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n",
+            "total"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a storage= view",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "2418e879b4d0a25e",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> by_status",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a database view",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "50669a66cc4bc33b",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "orders",
+          "stages": 2
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> two_stage",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a two-stage view",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "created_at"
+          },
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [
+            "created_at"
+          ],
+          "filters": [
+            ">(created_at,delta:day(now(),?,?))"
+          ],
+          "key": "29585a453b609f02",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> recent",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [
+            "created_at"
+          ],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a rolling-window view",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "86409dfb25cb2e9e",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> plain",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an unpersisted view",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [
+            "region"
+          ],
+          "filters": [
+            "=(region,?)"
+          ],
+          "key": "825ebb60b937b4f2",
+          "kind": "reduce",
+          "measures": [
+            "n",
+            "total"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> by_region + { where: region = 'north' }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [
+            "region"
+          ],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n",
+            "total"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a persisted view refined",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3a977400df774c60",
+          "kind": "reduce",
+          "measures": [
+            "n",
+            "total"
+          ],
+          "source": "north_orders",
+          "stages": 1
+        },
+        "source": "north_orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: north_orders -> by_region",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n",
+            "total"
+          ],
+          "sourceName": "north_orders"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a persisted view through an extension",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "5dada763268304be",
+          "kind": "reduce",
+          "measures": [
+            "n",
+            "total"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> by_region",
+      "path": {
+        "considered": [
+          {
+            "kind": "view",
+            "origin": "view",
+            "outcome": "used",
+            "tableId": "2fbc1e225d9431d76c336dc2997792c7d30e8ee6ca6c0a0aa793502eb420db5a"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n",
+            "total"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "view",
+          "origin": "view",
+          "tableId": "2fbc1e225d9431d76c336dc2997792c7d30e8ee6ca6c0a0aa793502eb420db5a",
+          "tier": "storage"
+        },
+        "warnings": []
+      },
+      "query": "a storage= view",
+      "servedBy": "view",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "status"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "2418e879b4d0a25e",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> by_status",
+      "path": {
+        "considered": [
+          {
+            "kind": "view",
+            "origin": "view",
+            "outcome": "used",
+            "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "view",
+          "origin": "view",
+          "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4",
+          "tier": "database"
+        },
+        "warnings": []
+      },
+      "query": "a database view",
+      "servedBy": "view",
+      "servedFrom": "database",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "50669a66cc4bc33b",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "orders",
+          "stages": 2
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> two_stage",
+      "path": {
+        "considered": [
+          {
+            "kind": "view",
+            "origin": "view",
+            "outcome": "used",
+            "tableId": "b3fc9bd92fd43c859fd061bf8bd1333035de41bb7a77730d0fc9aa70cba70d88"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "view",
+          "origin": "view",
+          "tableId": "b3fc9bd92fd43c859fd061bf8bd1333035de41bb7a77730d0fc9aa70cba70d88",
+          "tier": "storage"
+        },
+        "warnings": []
+      },
+      "query": "a two-stage view",
+      "servedBy": "view",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "created_at"
+          },
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [
+            "created_at"
+          ],
+          "filters": [
+            ">(created_at,delta:day(now(),?,?))"
+          ],
+          "key": "29585a453b609f02",
+          "kind": "reduce",
+          "measures": [
+            "n"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> recent",
+      "path": {
+        "considered": [
+          {
+            "kind": "view",
+            "origin": "view",
+            "outcome": "used",
+            "tableId": "00eaeafe019005432a365f1f947144998fe8a0f11656a6fd56c848514a06b7c1"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [
+            "created_at"
+          ],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "view",
+          "origin": "view",
+          "tableId": "00eaeafe019005432a365f1f947144998fe8a0f11656a6fd56c848514a06b7c1",
+          "tier": "storage"
+        },
+        "warnings": []
+      },
+      "query": "a rolling-window view",
+      "servedBy": "view",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "status"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "status"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "86409dfb25cb2e9e",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> plain",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "status"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "an unpersisted view",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [
+            "region"
+          ],
+          "filters": [
+            "=(region,?)"
+          ],
+          "key": "825ebb60b937b4f2",
+          "kind": "reduce",
+          "measures": [
+            "n",
+            "total"
+          ],
+          "source": "orders",
+          "stages": 1
+        },
+        "source": "orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders -> by_region + { where: region = 'north' }",
+      "path": {
+        "considered": [
+          {
+            "detail": "the query refines `by_region` (`+ { … }`), and the stored result holds only the view as written",
+            "kind": "view",
+            "origin": "view",
+            "outcome": "skipped",
+            "reason": "SHAPE_MISMATCH",
+            "tableId": "2fbc1e225d9431d76c336dc2997792c7d30e8ee6ca6c0a0aa793502eb420db5a"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [
+            "region"
+          ],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n",
+            "total"
+          ],
+          "sourceName": "orders"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a persisted view refined",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "n"
+          },
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "3a977400df774c60",
+          "kind": "reduce",
+          "measures": [
+            "n",
+            "total"
+          ],
+          "source": "north_orders",
+          "stages": 1
+        },
+        "source": "north_orders"
+      },
+      "equalToLive": true,
+      "malloy": "run: north_orders -> by_region",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "n",
+            "total"
+          ],
+          "sourceName": "north_orders"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a persisted view through an extension",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

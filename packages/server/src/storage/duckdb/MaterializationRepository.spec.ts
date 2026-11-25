@@ -3,7 +3,10 @@
 
 import { afterEach, describe, expect, it } from "bun:test";
 import { DuckDBConnection } from "./DuckDBConnection";
-import { MaterializationRepository } from "./MaterializationRepository";
+import {
+   DuplicateActiveMaterializationError,
+   MaterializationRepository,
+} from "./MaterializationRepository";
 import { initializeSchema } from "./schema";
 
 // Capture the SQL + params of reads (all) and writes (run) without touching a
@@ -105,16 +108,24 @@ describe("MaterializationRepository.getLatestScheduledFireAt (real DuckDB)", () 
 
    it("returns the created_at of the newest SCHEDULER run", async () => {
       const { db, repo } = await freshRepo();
-      await insertRun(db, "s1", day("01-15"), "SCHEDULER");
-      await insertRun(db, "s2", day("03-15"), "SCHEDULER");
+      await insertRun(db, "s1", day("01-15"), "scheduler");
+      await insertRun(db, "s2", day("03-15"), "scheduler");
       const at = await repo.getLatestScheduledFireAt(ENV_ID, PKG);
       expect(at).not.toBeNull();
       expect(at!.toISOString().slice(0, 10)).toBe("2026-03-15");
    });
 
+   it("reads only today's `scheduler` spelling, not an older server's `SCHEDULER`", async () => {
+      const { db, repo } = await freshRepo();
+      await insertRun(db, "s1", day("04-15"), "scheduler");
+      await insertRun(db, "s2", day("05-15"), "SCHEDULER");
+      const at = await repo.getLatestScheduledFireAt(ENV_ID, PKG);
+      expect(at!.toISOString().slice(0, 10)).toBe("2026-04-15");
+   });
+
    it("ignores ON_DEMAND and trigger-less runs even when they are newer", async () => {
       const { db, repo } = await freshRepo();
-      await insertRun(db, "s1", day("02-01"), "SCHEDULER"); // the only match
+      await insertRun(db, "s1", day("02-01"), "scheduler"); // the only match
       await insertRun(db, "d1", day("06-01"), "ON_DEMAND"); // newer, wrong trigger
       await insertRun(db, "n1", day("07-01"), null); // newer, no trigger key
       await insertRun(db, "m1", day("08-01"), undefined); // newer, metadata NULL
@@ -149,8 +160,7 @@ describe("MaterializationRepository.getLatestScheduledFireAt (real DuckDB)", () 
 });
 
 // The publisher tracks materialization *records*; dropping the physical tables
-// is opt-in (deleteMaterialization({ dropTables })) and otherwise the caller's
-// responsibility. These cascade deletes therefore remove records only — they
+// is the caller's responsibility, through the connection. These cascade deletes therefore remove records only — they
 // must never issue DDL — so a materialized table intentionally outlives the
 // record when an environment or package is deleted. Locking that in guards the
 // contract against a future refactor that "helpfully" adds a DROP here (which
@@ -177,5 +187,210 @@ describe("MaterializationRepository cascade deletes are records-only", () => {
       expect(runCalls[0].sql).toContain("DELETE FROM materializations");
       expect(runCalls[0].sql).not.toContain("DROP");
       expect(runCalls[0].params).toEqual(["env-1", "pkg-a"]);
+   });
+});
+
+// The version a run built, and the slot it holds while active: one run per
+// package by default, one per version for a run that writes only its own
+// version's tables.
+describe("MaterializationRepository versions (real DuckDB)", () => {
+   const ENV_ID = "env-v";
+   const PKG = "pkg-v";
+   const dbs: DuckDBConnection[] = [];
+
+   afterEach(async () => {
+      while (dbs.length) await dbs.pop()!.close();
+   });
+
+   async function freshRepo(): Promise<MaterializationRepository> {
+      const db = new DuckDBConnection(":memory:");
+      dbs.push(db);
+      await db.initialize();
+      await initializeSchema(db);
+      await db.run(
+         `INSERT INTO environments (id, name, path, created_at, updated_at)
+          VALUES (?, 'v-env', '/tmp/v-env', now(), now())`,
+         [ENV_ID],
+      );
+      return new MaterializationRepository(db);
+   }
+
+   it("records the version a run built, and null for a package with none", async () => {
+      const repo = await freshRepo();
+      const versioned = await repo.create(ENV_ID, PKG, "PENDING", null, {
+         version: "1.2.0",
+      });
+      expect(versioned.version).toBe("1.2.0");
+      expect((await repo.getById(versioned.id))?.version).toBe("1.2.0");
+      const plain = await repo.create(ENV_ID, "other", "PENDING");
+      expect(plain.version).toBeNull();
+   });
+
+   it("lets each version hold its own slot, but never two runs one slot", async () => {
+      const repo = await freshRepo();
+      const v1 = await repo.create(ENV_ID, PKG, "PENDING", null, {
+         version: "1.0.0",
+         lockVersion: "1.0.0",
+      });
+      const v2 = await repo.create(ENV_ID, PKG, "PENDING", null, {
+         version: "2.0.0",
+         lockVersion: "2.0.0",
+      });
+      // The package's own slot is a third, separate one.
+      const shared = await repo.create(ENV_ID, PKG, "PENDING", null, {
+         version: "2.0.0",
+      });
+      await expect(
+         repo.create(ENV_ID, PKG, "PENDING", null, {
+            version: "1.0.0",
+            lockVersion: "1.0.0",
+         }),
+      ).rejects.toBeInstanceOf(DuplicateActiveMaterializationError);
+      await expect(repo.create(ENV_ID, PKG, "PENDING")).rejects.toBeInstanceOf(
+         DuplicateActiveMaterializationError,
+      );
+
+      expect((await repo.getActive(ENV_ID, PKG, "1.0.0"))?.id).toBe(v1.id);
+      expect((await repo.getActive(ENV_ID, PKG, "2.0.0"))?.id).toBe(v2.id);
+      expect((await repo.getActive(ENV_ID, PKG))?.id).toBe(shared.id);
+   });
+
+   it("keeps a run's slot while it moves between active states, and frees it at the end", async () => {
+      const repo = await freshRepo();
+      const run = await repo.create(ENV_ID, PKG, "PENDING", null, {
+         version: "1.0.0",
+         lockVersion: "1.0.0",
+      });
+      await repo.update(run.id, { status: "MANIFEST_ROWS_READY" });
+      expect((await repo.getActive(ENV_ID, PKG, "1.0.0"))?.id).toBe(run.id);
+      // Still not the package's slot: an auto-run of the package can start.
+      expect(await repo.getActive(ENV_ID, PKG)).toBeNull();
+
+      await repo.update(run.id, { status: "MANIFEST_FILE_READY" });
+      expect(await repo.getActive(ENV_ID, PKG, "1.0.0")).toBeNull();
+      const next = await repo.create(ENV_ID, PKG, "PENDING", null, {
+         version: "1.0.0",
+         lockVersion: "1.0.0",
+      });
+      expect((await repo.getActive(ENV_ID, PKG, "1.0.0"))?.id).toBe(next.id);
+   });
+
+   it("lists one version's runs, with or without those from before any version", async () => {
+      const repo = await freshRepo();
+      const legacy = await repo.create(ENV_ID, PKG, "CANCELLED");
+      const v1 = await repo.create(ENV_ID, PKG, "CANCELLED", null, {
+         version: "1.0.0",
+      });
+      const v2 = await repo.create(ENV_ID, PKG, "CANCELLED", null, {
+         version: "2.0.0",
+      });
+      const ids = async (
+         options?: Parameters<MaterializationRepository["list"]>[2],
+      ) => (await repo.list(ENV_ID, PKG, options)).map((m) => m.id).sort();
+
+      expect(await ids({ version: "1.0.0" })).toEqual([v1.id]);
+      expect(await ids({ version: "1.0.0", includeUnversioned: true })).toEqual(
+         [legacy.id, v1.id].sort(),
+      );
+      expect(await ids()).toEqual([legacy.id, v1.id, v2.id].sort());
+   });
+});
+
+// The store's edges a run reads through: what a write returns, what a
+// collision on anything but the active slot raises, and what a corrupt JSON
+// column reads as.
+describe("MaterializationRepository edges (real DuckDB)", () => {
+   const ENV_ID = "env-e";
+   const PKG = "pkg-e";
+   const dbs: DuckDBConnection[] = [];
+
+   afterEach(async () => {
+      while (dbs.length) await dbs.pop()!.close();
+   });
+
+   async function freshDb(): Promise<{
+      db: DuckDBConnection;
+      repo: MaterializationRepository;
+   }> {
+      const db = new DuckDBConnection(":memory:");
+      dbs.push(db);
+      await db.initialize();
+      await initializeSchema(db);
+      await db.run(
+         `INSERT INTO environments (id, name, path, created_at, updated_at)
+          VALUES (?, 'e-env', '/tmp/e-env', now(), now())`,
+         [ENV_ID],
+      );
+      return { db, repo: new MaterializationRepository(db) };
+   }
+
+   it("update returns the row as written", async () => {
+      const { repo } = await freshDb();
+      const run = await repo.create(ENV_ID, PKG, "PENDING");
+      const updated = await repo.update(run.id, {
+         status: "MANIFEST_ROWS_READY",
+         metadata: { a: 1 },
+      });
+      expect(updated.id).toBe(run.id);
+      expect(updated.status).toBe("MANIFEST_ROWS_READY");
+      expect(updated.metadata).toEqual({ a: 1 });
+   });
+
+   it("update of a run that is gone throws", async () => {
+      const { repo } = await freshDb();
+      await expect(
+         repo.update("no-such-run", { status: "FAILED" }),
+      ).rejects.toThrow("not found");
+   });
+
+   it("leaves an active row's slot key as it was created on an active move", async () => {
+      const { db, repo } = await freshDb();
+      await db.run(
+         `INSERT INTO materializations (id, environment_id, package_name, status, active_key, created_at, updated_at)
+          VALUES ('keyless', ?, ?, 'PENDING', NULL, now(), now())`,
+         [ENV_ID, PKG],
+      );
+      await repo.update("keyless", { status: "MANIFEST_ROWS_READY" });
+      // Every active row is created with its key; none is invented later.
+      expect(await repo.getActive(ENV_ID, PKG)).toBeNull();
+   });
+
+   it("refuses a metadata or manifest that is not JSON at the write: the columns are JSON-typed", async () => {
+      const { db, repo } = await freshDb();
+      const run = await repo.create(ENV_ID, PKG, "CANCELLED");
+      await expect(
+         db.run(
+            "UPDATE materializations SET metadata = '{not json' WHERE id = ?",
+            [run.id],
+         ),
+      ).rejects.toThrow();
+      expect((await repo.getById(run.id))?.metadata).toBeNull();
+   });
+
+   it("rethrows a collision that is not on the active slot", async () => {
+      const { db } = await freshDb();
+      await db.run(
+         `INSERT INTO materializations (id, environment_id, package_name, status, created_at, updated_at)
+          VALUES ('dup', ?, ?, 'FAILED', now(), now())`,
+         [ENV_ID, PKG],
+      );
+      const repo = new MaterializationRepository({
+         all: async () => {
+            throw new Error(
+               'Constraint Error: Duplicate key "id: dup" violates primary key constraint.',
+            );
+         },
+      } as unknown as DuckDBConnection);
+      const err = await repo.create(ENV_ID, PKG, "PENDING").catch((e) => e);
+      expect(err).not.toBeInstanceOf(DuplicateActiveMaterializationError);
+      expect(String(err)).toContain("primary key");
+   });
+
+   it("raises the active-slot conflict for a second active run of one package", async () => {
+      const { repo } = await freshDb();
+      await repo.create(ENV_ID, PKG, "PENDING");
+      await expect(repo.create(ENV_ID, PKG, "PENDING")).rejects.toBeInstanceOf(
+         DuplicateActiveMaterializationError,
+      );
    });
 });

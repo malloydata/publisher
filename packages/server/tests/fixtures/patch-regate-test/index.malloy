@@ -1,0 +1,3 @@
+source: open is duckdb.sql("select 1 as id, 'org-a' as org") extend {
+   dimension: key is id
+}

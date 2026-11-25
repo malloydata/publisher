@@ -28,7 +28,9 @@ const executeQueryModel = mock(
    ) => pending(),
 );
 
-mockServerProvider({ models: { executeQueryModel } });
+// What `/status` said: a test sets the model page and clears it again.
+const serverContext: { modelPage?: string } = {};
+mockServerProvider({ models: { executeQueryModel } }, serverContext);
 
 const { buildSuggestQuery, SUGGEST_OPTION_LIMIT, useSuggestOptions } =
    await import("./useSuggestOptions");
@@ -90,6 +92,7 @@ const renderGated = (applied = APPLIED) =>
 beforeEach(() => {
    clearCache();
    executeQueryModel.mockClear();
+   delete serverContext.modelPage;
 });
 
 it("sends the version with the suggest query and keys on it", async () => {
@@ -185,6 +188,56 @@ it("runs a suggest as the document's definitions plus one run:, by name or by di
       `source: a is orders\n\n${buildSuggestQuery("a", "region")}`,
       "source: a is orders\n\nrun: brands",
    ]);
+});
+
+// A server whose PUBLISHER_MODEL_PAGE is viewer writes every name quoted; the
+// default writes them as the suggest gave them (every other test here).
+it("quotes the suggest's names on a server whose model page is the viewer", async () => {
+   serverContext.modelPage = "viewer";
+   renderHook(
+      () =>
+         useSuggestOptions("env", "pkg", "README.malloy", [
+            {
+               name: "MAKER",
+               control: "select",
+               suggest: { source: "recalls", dimension: "maker.name" },
+            },
+         ]),
+      { wrapper: serverWrapper },
+   );
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
+   expect((executeQueryModel.mock.calls[0][3] as { query: string }).query).toBe(
+      buildSuggestQuery("recalls", "maker.name", undefined, {
+         quoteNames: true,
+      }),
+   );
+});
+
+// A list fetched before /status answered went unquoted; once it says viewer
+// the list is a different query, so it is asked again, quoted.
+it("asks again, quoted, when the server's model page turns out to be the viewer", async () => {
+   const specs: Given[] = [
+      {
+         name: "YEAR",
+         control: "select",
+         suggest: { source: "sales", dimension: "year" },
+      },
+   ];
+   const { rerender } = renderHook(
+      () => useSuggestOptions("env", "pkg", "README.malloy", specs),
+      { wrapper: serverWrapper },
+   );
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalledTimes(1));
+   expect((executeQueryModel.mock.calls[0][3] as { query: string }).query).toBe(
+      buildSuggestQuery("sales", "year"),
+   );
+
+   serverContext.modelPage = "viewer";
+   rerender();
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalledTimes(2));
+   expect((executeQueryModel.mock.calls[1][3] as { query: string }).query).toBe(
+      buildSuggestQuery("sales", "year", undefined, { quoteNames: true }),
+   );
 });
 
 describe("a list cut off at the limit", () => {

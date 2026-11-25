@@ -7,6 +7,8 @@ import Breadcrumbs from "@mui/material/Breadcrumbs";
 import Chip from "@mui/material/Chip";
 import { MouseEvent } from "react";
 import { useParams } from "react-router-dom";
+import { packagePath } from "../../common/packageRoute";
+import { usePackageRoute } from "../../common/usePackageRoute";
 
 interface BreadcrumbChipProps {
    label: string;
@@ -65,9 +67,20 @@ function BreadcrumbChip({
 
 export default function BreadcrumbNav() {
    const params = useParams();
+   // A version is state, never a crumb: the package crumb keeps a pinned
+   // version, so going up from a report of 1.0.0 lands on 1.0.0, not latest.
+   const route = usePackageRoute();
+   const packageHref =
+      params.environmentName && params.packageName
+         ? packagePath(
+              params.environmentName,
+              params.packageName,
+              route.versionSegment,
+           )
+         : "";
    // The builder is `?edit`, a mode, not a place: the path names the document
    // in either mode, and a report may be named `edit`.
-   const modelPath = params["*"] ? params["*"].replace(/\/$/, "") : undefined;
+   const modelPath = route.path ? route.path.replace(/\/$/, "") : undefined;
    const navigate = useRouterClickHandler();
 
    if (!params.environmentName && !params.packageName && !modelPath) {
@@ -102,12 +115,7 @@ export default function BreadcrumbNav() {
                <BreadcrumbChip
                   label={params.packageName}
                   current={!modelPath}
-                  onClick={(event) =>
-                     navigate(
-                        `/${params.environmentName}/${params.packageName}/`,
-                        event,
-                     )
-                  }
+                  onClick={(event) => navigate(`${packageHref}/`, event)}
                />
             )}
 
@@ -116,10 +124,7 @@ export default function BreadcrumbNav() {
                   label={modelPath}
                   current
                   onClick={(event) =>
-                     navigate(
-                        `/${params.environmentName}/${params.packageName}/${modelPath}`,
-                        event,
-                     )
+                     navigate(`${packageHref}/${modelPath}`, event)
                   }
                />
             )}

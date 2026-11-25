@@ -11,9 +11,15 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "./test_helpers/metrics_harness";
+import { installSettings } from "./test_helpers/settings_env";
 
 describe("query_cap_metrics", () => {
    let harness: MetricsHarness;
+   /** Puts back a case's settings; the gauges read them per scrape. */
+   let restoreSettings: (() => void) | undefined;
+   const installEnv = (env: Record<string, string>): void => {
+      restoreSettings = installSettings({ env }).restore;
+   };
 
    beforeEach(async () => {
       harness = await startMetricsHarness();
@@ -24,8 +30,8 @@ describe("query_cap_metrics", () => {
    });
 
    afterEach(async () => {
-      delete process.env.PUBLISHER_MAX_QUERY_ROWS;
-      delete process.env.PUBLISHER_MAX_RESPONSE_BYTES;
+      restoreSettings?.();
+      restoreSettings = undefined;
       resetQueryCapTelemetryForTesting();
       await harness.shutdown();
    });
@@ -34,7 +40,7 @@ describe("query_cap_metrics", () => {
       recordQueryCapExceeded("rows", "connection_sql");
       recordQueryCapExceeded("rows", "connection_sql");
       recordQueryCapExceeded("bytes", "model_query");
-      recordQueryCapExceeded("rows", "notebook_cell");
+      recordQueryCapExceeded("rows", "model_query");
 
       expect(
          await harness.collectCounter("publisher_query_cap_exceeded_total", {
@@ -51,7 +57,7 @@ describe("query_cap_metrics", () => {
       expect(
          await harness.collectCounter("publisher_query_cap_exceeded_total", {
             cap_type: "rows",
-            source: "notebook_cell",
+            source: "model_query",
          }),
       ).toBe(1);
    });
@@ -64,18 +70,11 @@ describe("query_cap_metrics", () => {
       // stringifyQueryResponse; not emitted with source connection_sql, which has
       // no such guard on its own path.
       recordQueryCapExceeded("unserializable", "model_query");
-      recordQueryCapExceeded("unserializable", "notebook_cell");
 
       expect(
          await harness.collectCounter("publisher_query_cap_exceeded_total", {
             cap_type: "unserializable",
             source: "model_query",
-         }),
-      ).toBe(1);
-      expect(
-         await harness.collectCounter("publisher_query_cap_exceeded_total", {
-            cap_type: "unserializable",
-            source: "notebook_cell",
          }),
       ).toBe(1);
       // And it must not have landed in the bytes series.
@@ -87,8 +86,8 @@ describe("query_cap_metrics", () => {
       ).toBe(0);
    });
 
-   it("publisher_max_query_rows gauge reports the live env-var value", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "12345";
+   it("publisher_max_query_rows gauge reports the configured value", async () => {
+      installEnv({ PUBLISHER_MAX_QUERY_ROWS: "12345" });
       // Prime telemetry — the gauges install on the first
       // counter-emitting call (`recordQueryCapExceeded`); in
       // production that's the first 413, in tests we trigger it
@@ -99,8 +98,8 @@ describe("query_cap_metrics", () => {
       );
    });
 
-   it("publisher_max_response_bytes gauge reports the live env-var value", async () => {
-      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "9876543";
+   it("publisher_max_response_bytes gauge reports the configured value", async () => {
+      installEnv({ PUBLISHER_MAX_RESPONSE_BYTES: "9876543" });
       recordQueryCapExceeded("bytes", "connection_sql");
       expect(await harness.collectGauge("publisher_max_response_bytes")).toBe(
          9876543,
@@ -108,13 +107,13 @@ describe("query_cap_metrics", () => {
    });
 
    it("publisher_max_query_rows gauge reports 0 when the cap is opted out", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "0";
+      installEnv({ PUBLISHER_MAX_QUERY_ROWS: "0" });
       recordQueryCapExceeded("rows", "connection_sql");
       expect(await harness.collectGauge("publisher_max_query_rows")).toBe(0);
    });
 
    it("publisher_max_query_rows gauge reports -1 on misconfig so dashboards reveal the bad value", async () => {
-      process.env.PUBLISHER_MAX_QUERY_ROWS = "not-a-number";
+      installEnv({ PUBLISHER_MAX_QUERY_ROWS: "not-a-number" });
       // Misconfig must not crash the scrape; -1 is the agreed
       // signal mirroring `publisher_query_timeout_ms`.
       recordQueryCapExceeded("rows", "connection_sql");

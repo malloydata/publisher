@@ -1,0 +1,304 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import { describe, expect, it } from "bun:test";
+import fs from "fs";
+import path from "path";
+import { getRetrievalConfig } from "../config";
+import { withSettings } from "../test_helpers/settings_env";
+import { REGISTRY, Settings, type SettingKey } from ".";
+import {
+   exampleConfigText,
+   helpText,
+   validatedBlockOf,
+   REFERENCE_END,
+   REFERENCE_START,
+   settingsLine,
+   settingsReferenceTable,
+   withReferenceTable,
+} from "./reference";
+import { derivedEnvName } from "./setting";
+
+const DOC = path.resolve(import.meta.dir, "../../../../docs/configuration.md");
+
+/** The doc as the generator writes it: a Windows checkout has CRLF line endings. */
+const readDoc = () => fs.readFileSync(DOC, "utf8").replaceAll("\r\n", "\n");
+
+describe("the generated settings reference", () => {
+   it("is what docs/configuration.md holds (run `bun run generate-settings-reference` after a registry change)", () => {
+      const doc = readDoc();
+      expect(doc).toContain(REFERENCE_START);
+      expect(doc).toContain(REFERENCE_END);
+      expect(withReferenceTable(doc)).toBe(doc);
+   });
+
+   it("names every variable and flag a setting is read from", () => {
+      const doc = readDoc();
+      const table = doc.slice(
+         doc.indexOf(REFERENCE_START),
+         doc.indexOf(REFERENCE_END),
+      );
+      for (const entry of REGISTRY) {
+         for (const name of [
+            ...(entry.aliases.env ?? []),
+            ...(entry.aliases.flags ?? []),
+         ]) {
+            expect(table, name).toContain(`\`${name}`);
+         }
+      }
+   });
+
+   it("says in words what a default that depends on other settings is", () => {
+      for (const entry of REGISTRY) {
+         if (typeof entry.default === "function") {
+            expect(entry.defaultText, entry.key).toBeDefined();
+         }
+      }
+   });
+
+   it("gives a setting with negated old names the key's default, which its derived names read the right way round", () => {
+      const doc = readDoc();
+      const negated = REGISTRY.filter((entry) => entry.aliases.negated);
+      expect(negated.map((entry) => entry.key)).toContain(
+         "mcp.configFileEnabled",
+      );
+      for (const entry of negated) {
+         const row = doc
+            .split("\n")
+            .find((line) => line.startsWith(`| \`${entry.key}\` |`));
+         expect(row, entry.key).toBeDefined();
+         // Setting | Env var | CLI flag | Deprecated names | Default | Meaning
+         const cells = row!.split(" | ");
+         expect(cells[1], entry.key).toBe(`\`${derivedEnvName(entry.key)}\``);
+         for (const name of entry.aliases.env ?? []) {
+            expect(cells[3], entry.key).toContain(`\`${name}\``);
+         }
+         expect(cells[4], entry.key).toBe(`\`${String(entry.default)}\``);
+      }
+   });
+
+   it("names another setting by its key, with no {key} reference left", () => {
+      const table = settingsReferenceTable();
+      expect(table).toContain("| `host` when given, else `127.0.0.1` |");
+      expect(table).not.toMatch(/\{(host|mcp\.host|root|config)\}/);
+   });
+});
+
+describe("publisher.config.json.example", () => {
+   const EXAMPLE = path.resolve(
+      import.meta.dir,
+      "../../../../publisher.config.json.example",
+   );
+   const readExample = () =>
+      fs.readFileSync(EXAMPLE, "utf8").replaceAll("\r\n", "\n");
+
+   it("is what the registry generates (run `bun run generate-settings-reference` after a registry change)", () => {
+      expect(readExample()).toBe(exampleConfigText());
+   });
+
+   it("holds every setting the file can hold, at its key", () => {
+      const example = JSON.parse(readExample()) as Record<string, unknown>;
+      const at = (key: string) =>
+         key
+            .split(".")
+            .reduce<unknown>(
+               (node, part) =>
+                  node !== null && typeof node === "object"
+                     ? (node as Record<string, unknown>)[part]
+                     : undefined,
+               example,
+            );
+      for (const entry of REGISTRY) {
+         // A launch setting decides which file is read, so it is not there;
+         // a temporary one is left out, so nothing copied comes to need it.
+         if (entry.kind === "launch" || entry.temporary) {
+            expect(at(entry.key), entry.key).toBeUndefined();
+            continue;
+         }
+         expect(at(entry.key), entry.key).not.toBeUndefined();
+         // A leaf of a block validated as one is unset (see exampleConfig).
+         if (validatedBlockOf(entry.key) !== undefined) {
+            expect(at(entry.key), entry.key).toSatisfy(
+               (value) =>
+                  value === null ||
+                  (entry.key === "retrieval" && typeof value === "object"),
+            );
+         }
+      }
+      expect(validatedBlockOf("retrieval.llm.provider")).toBe("retrieval");
+      expect(validatedBlockOf("retrieval")).toBe("retrieval");
+      expect(validatedBlockOf("mcp.port")).toBeUndefined();
+   });
+
+   it("changes nothing when copied in as the config, and warns about nothing", () => {
+      const read = (file?: Record<string, unknown>) =>
+         withSettings(file === undefined ? {} : { file }, ({ serverRoot }) => {
+            const settings = Settings.current();
+            return {
+               warnings: settings.warnings.map((warning) => warning.message),
+               // `retrieval` itself is the file's block as written; what the
+               // server uses is the block assembled from it.
+               values: Object.fromEntries(
+                  REGISTRY.filter((entry) => entry.key !== "retrieval").map(
+                     (entry) => [
+                        entry.key,
+                        settings.get(entry.key as SettingKey) as unknown,
+                     ],
+                  ),
+               ),
+               retrieval: getRetrievalConfig(serverRoot),
+            };
+         });
+      const copied = read(JSON.parse(readExample()));
+      expect(copied.warnings).toEqual([]);
+      expect(copied.retrieval).toBeUndefined();
+      // `mcp.host` follows `host` when it is given, so `host` is `null`
+      // there: given its own default, it would move MCP onto every interface.
+      expect(copied.values["mcp.host"]).toBe("127.0.0.1");
+      expect(copied.values).toEqual(read().values);
+   });
+});
+
+describe("--help", () => {
+   it("lists every flag the server reads, with its default", () => {
+      const help = helpText();
+      for (const entry of REGISTRY) {
+         for (const flag of entry.aliases.flags ?? []) {
+            expect(help, flag).toContain(flag);
+         }
+      }
+      // The API switches were missing before the text was generated.
+      expect(help).toContain("--serving-api-enabled, --no-serving-api-enabled");
+      expect(help).toContain("--admin-api-enabled, --no-admin-api-enabled");
+      expect(help).toMatch(
+         /--port <n> +Port of the REST API and the web app\. \(default: 4000\)/,
+      );
+      expect(help).toContain("--help, -h");
+   });
+
+   it("names other settings by the derived flags that set them", () => {
+      const help = helpText();
+      expect(help).toContain("and MCP too unless --mcp-host is given.");
+      expect(help).toContain("(default: --host when given, else 127.0.0.1)");
+      expect(help).toContain("--host does not move it.");
+      expect(help).not.toMatch(/\{[a-zA-Z.]+\}|unless mcp\.host|--mcp_host is/);
+   });
+
+   it("gives a setting with a negated old flag its derived switches and the key's default", () => {
+      const help = helpText();
+      expect(help).toContain(
+         "--mcp-config-file-enabled, --no-mcp-config-file-enabled",
+      );
+      const text = help
+         .split("\n")
+         .find((line) =>
+            line.includes("Write .mcp.json into the working directory"),
+         );
+      expect(text).toBeDefined();
+      expect(text).toContain("is inside a git working tree");
+      expect(text).toContain("(default: on)");
+      expect(text).toContain("(was --no-mcp-config)");
+   });
+});
+
+describe("the startup settings line", () => {
+   it("names each setting given, its value and where it came from, and hides secrets", () => {
+      const line = withSettings(
+         {
+            env: {
+               PUBLISHER_PORT: "4100",
+               PUBLISHER_ADMIN_CATALOG_DATABASE: "postgresql://u:pw@h/db",
+            },
+            argv: ["--mcp_port", "4141"],
+            file: { frozenConfig: true, environments: [] },
+         },
+         ({ serverRoot }) =>
+            settingsLine(Settings.current()).replaceAll(
+               path.join(serverRoot, "publisher.config.json"),
+               "<file>",
+            ),
+      );
+      expect(line).toBe(
+         "Settings given: frozenConfig=true from <file>, port=4100 from PUBLISHER_PORT, environments from <file>, mcp.port=4141 from --mcp_port, admin.catalogDatabase=(set) from PUBLISHER_ADMIN_CATALOG_DATABASE",
+      );
+      expect(line).not.toContain("pw");
+   });
+
+   it("names a setting given its default value too", () => {
+      expect(
+         withSettings({ argv: ["--port", "4000"] }, () =>
+            settingsLine(Settings.current()),
+         ),
+      ).toBe("Settings given: port=4000 from --port");
+   });
+
+   it("keeps an access key id and a URL's user and password out of the log", () => {
+      const line = withSettings(
+         {
+            env: {
+               PUBLISHER_ADMIN_STORAGE_KEY_ID: "AKIAIOSFODNN7EXAMPLE",
+               PUBLISHER_ADMIN_STORAGE_ENDPOINT: "https://k:s@minio:9000",
+               EMBEDDING_API_BASE: "https://user:hunter2@proxy.example/v1",
+            },
+         },
+         () => settingsLine(Settings.current()),
+      );
+      expect(line).toContain(
+         "admin.storage.keyId=(set) from PUBLISHER_ADMIN_STORAGE_KEY_ID",
+      );
+      expect(line).toContain(
+         'admin.storage.endpoint="https://***@minio:9000" from PUBLISHER_ADMIN_STORAGE_ENDPOINT',
+      );
+      expect(line).toContain(
+         'retrieval.embedding.baseUrl="https://***@proxy.example/v1" from EMBEDDING_API_BASE',
+      );
+      for (const leak of ["AKIAIOSFODNN7EXAMPLE", "k:s", "hunter2", "user:"]) {
+         expect(line).not.toContain(leak);
+      }
+   });
+
+   it("hides a URL's password that holds a slash or an @", () => {
+      const line = withSettings(
+         {
+            env: {
+               EMBEDDING_API_BASE: "https://user:pa/ss@llm.example.com/v1",
+               PUBLISHER_ADMIN_STORAGE_ENDPOINT: "https://user:p@ss@minio:9000",
+            },
+         },
+         () => settingsLine(Settings.current()),
+      );
+      expect(line).toContain(
+         'retrieval.embedding.baseUrl="https://***@llm.example.com/v1" from EMBEDDING_API_BASE',
+      );
+      expect(line).toContain(
+         'admin.storage.endpoint="https://***@minio:9000" from PUBLISHER_ADMIN_STORAGE_ENDPOINT',
+      );
+      for (const leak of ["pa/ss", "p@ss", "ss@", "user"]) {
+         expect(line).not.toContain(leak);
+      }
+   });
+
+   it("says so when every setting is at its default", () => {
+      expect(withSettings({}, () => settingsLine(Settings.current()))).toBe(
+         "Settings: every setting is at its default.",
+      );
+   });
+});
+
+describe("the generated reference, when it is out of date", () => {
+   it("is caught: a stale table is not what the registry generates", () => {
+      const stale = `# Configuration\n\n${REFERENCE_START}\n\n| old |\n\n${REFERENCE_END}\n`;
+      expect(withReferenceTable(stale)).not.toBe(stale);
+      expect(withReferenceTable(stale)).toContain("| `mcp.port` |");
+   });
+});
+
+describe("the startup settings line, for a value that did not parse", () => {
+   it("names the setting without the value", () => {
+      const line = withSettings({ env: { MCP_PORT: "40a0" } }, () =>
+         settingsLine(Settings.current()),
+      );
+      expect(line).toContain("mcp.port=(invalid) from MCP_PORT");
+      expect(line).not.toContain("40a0");
+   });
+});

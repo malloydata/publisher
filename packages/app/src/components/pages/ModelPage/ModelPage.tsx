@@ -15,6 +15,7 @@ import Typography from "@mui/material/Typography";
 import { useLocation, useParams } from "react-router-dom";
 import { MONO_FONT_FAMILY } from "../../../theme/colors";
 import { isEditSearch } from "../../common/documentRoutes";
+import { usePackageRoute } from "../../common/usePackageRoute";
 import ReportPage from "../ReportPage/ReportPage";
 import RoutedDocument from "./RoutedDocument";
 import { PAGE_FRAME_SX } from "../pageFrame";
@@ -22,13 +23,21 @@ import { PAGE_FRAME_SX } from "../pageFrame";
 function ModelPage() {
    const params = useParams();
    const { search } = useLocation();
-   const modelPath = params["*"];
+   // The path under the package, after the version segment a versioned
+   // package's route carries (`/<env>/<pkg>/<version>/<path>`). The listing
+   // is asked for on every route (the splat route does too, so it is shared).
+   const {
+      path: modelPath,
+      versionId,
+      versionSegment,
+      writable,
+   } = usePackageRoute({ always: true });
    const { server } = useServer();
-   // Every branch below has the same parent, the package, so the way up is
-   // built once here.
-   // Parameter values ride in the query string, so a Model's Run is a
-   // shareable link, the same as a report's.
-   const { params: givens, onGivensChange } = useGivenUrlParams();
+   // Given values ride in the query string, beside `?source=`, so a link to a
+   // model (and its Copy link) opens with the values the page was running with.
+   // The source is written by the same hook, so neither write drops the other
+   // or the fragment.
+   const { params: query, onGivensChange, setParam } = useGivenUrlParams();
    if (!params.environmentName) {
       return (
          <div>
@@ -82,6 +91,7 @@ function ModelPage() {
                environmentName: params.environmentName,
                packageName: params.packageName,
                modelPath: routePath.slice("data-apps/".length),
+               versionId,
             })}
          />
       ) : (
@@ -94,6 +104,7 @@ function ModelPage() {
                environmentName: params.environmentName,
                packageName: params.packageName,
                path: modelPath,
+               ...(versionId !== undefined ? { versionId } : {}),
             })}
          />
       );
@@ -101,6 +112,11 @@ function ModelPage() {
          <RoutedDocument
             environmentName={params.environmentName}
             packageName={params.packageName}
+            {...(versionId !== undefined ? { versionId } : {})}
+            {...(versionSegment !== undefined ? { versionSegment } : {})}
+            // Nothing is edited until the listing has said there are no
+            // versions: not while it loads, and not when it failed.
+            readOnly={!writable}
             routePath={routePath}
             edit={isEditSearch(search)}
             notFound={notFound}
@@ -115,6 +131,7 @@ function ModelPage() {
       environmentName: params.environmentName,
       packageName: params.packageName,
       modelPath,
+      versionId,
    });
 
    if (modelPath?.endsWith(".malloy")) {
@@ -122,10 +139,17 @@ function ModelPage() {
          <Box sx={PAGE_FRAME_SX}>
             <Model
                resourceUri={resourceUri}
+               // The Explorer page's named queries wait for their Run; the model
+               // viewer's run only when opened anyway.
                runOnDemand={true}
-               maxResultSize={512 * 1024}
-               givens={givens}
+               // The model viewer's source on screen is in the address, so a
+               // link to one opens on it. Replaced, not pushed: picking a source
+               // is a choice within this page, and Back should leave the model.
+               sourceName={query.source}
+               onSourceChange={(source) => setParam("source", source)}
+               givens={query}
                onGivensChange={onGivensChange}
+               maxResultSize={512 * 1024}
             />
          </Box>
       );
@@ -136,6 +160,7 @@ function ModelPage() {
          <ReportPage
             environmentName={params.environmentName}
             packageName={params.packageName}
+            {...(versionId !== undefined ? { versionId } : {})}
             path={modelPath}
             editable={false}
          />
@@ -151,6 +176,7 @@ function ModelPage() {
             environmentName: params.environmentName,
             packageName: params.packageName,
             path: modelPath ?? "",
+            ...(versionId !== undefined ? { versionId } : {}),
          })}
       />
    );

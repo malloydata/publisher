@@ -1,27 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
-
-// Stub the missing optional dependency so db_utils.ts can be imported
-mock.module("@azure/identity", () => ({
-   ClientSecretCredential: class {},
-}));
-mock.module("@azure/storage-blob", () => ({
-   ContainerClient: class {},
-}));
-// Records bigquery.dataset() calls so tests can assert how a (possibly
-// project-qualified) schema name is split into datasetId + projectId.
-const bqDatasetCalls: Array<{ id: string; options?: unknown }> = [];
-mock.module("@google-cloud/bigquery", () => ({
-   BigQuery: class {
-      dataset(id: string, options?: unknown) {
-         bqDatasetCalls.push({ id, options });
-         return { getTables: async () => [[]] };
-      }
-   },
-}));
-
+import { BigQuery } from "@google-cloud/bigquery";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { Connection } from "@malloydata/malloy";
 import { BadRequestError } from "../errors";
 import { logger } from "../logger";
@@ -31,6 +12,7 @@ import {
    getSchemasForConnection,
    listTablesForSchema,
    sqlInFilter,
+   validateAzureUrl,
 } from "./db_utils";
 import { components } from "../api";
 
@@ -1380,9 +1362,23 @@ describe("listTablesForSchema bigquery", () => {
       },
    } as unknown as ApiConnection;
    const malloyConn = {} as unknown as Connection;
+   // Records bigquery.dataset() calls so tests can assert how a (possibly
+   // project-qualified) schema name is split into datasetId + projectId.
+   const bqDatasetCalls: Array<{ id: string; options?: unknown }> = [];
+   let datasetSpy: ReturnType<typeof spyOn>;
+   beforeEach(() => {
+      bqDatasetCalls.length = 0;
+      datasetSpy = spyOn(BigQuery.prototype, "dataset").mockImplementation(((
+         id: string,
+         options?: unknown,
+      ) => {
+         bqDatasetCalls.push({ id, options });
+         return { getTables: async () => [[]] };
+      }) as never);
+   });
+   afterEach(() => datasetSpy.mockRestore());
 
    it("splits a project-qualified schema into a bare dataset id + projectId", async () => {
-      bqDatasetCalls.length = 0;
       await listTablesForSchema(bqConnection, "myproj.myds", malloyConn);
       expect(bqDatasetCalls).toHaveLength(1);
       expect(bqDatasetCalls[0]?.id).toBe("myds");
@@ -1390,7 +1386,6 @@ describe("listTablesForSchema bigquery", () => {
    });
 
    it("splits on the last dot so domain-scoped project ids survive", async () => {
-      bqDatasetCalls.length = 0;
       await listTablesForSchema(
          bqConnection,
          "domain.com:proj.myds",
@@ -1403,7 +1398,6 @@ describe("listTablesForSchema bigquery", () => {
    });
 
    it("passes a bare dataset name through unqualified", async () => {
-      bqDatasetCalls.length = 0;
       await listTablesForSchema(bqConnection, "myds", malloyConn);
       expect(bqDatasetCalls).toHaveLength(1);
       expect(bqDatasetCalls[0]?.id).toBe("myds");
@@ -1751,4 +1745,30 @@ describe("listTablesForSchema: Azure file URLs", () => {
          "acct.blob.core.windows.net/data/sub/x.parquet",
       );
    });
+});
+
+describe("validateAzureUrl", () => {
+   const ok = [
+      "https://acct.blob.core.windows.net/data/x.parquet",
+      "abfss://data@acct.dfs.core.windows.net/sub/x.CSV?sas=1",
+      "az://data/sub/*.parquet",
+      "https://acct.blob.core.windows.net/data/**",
+   ];
+   for (const url of ok) {
+      it(`accepts ${url}`, () => {
+         expect(() => validateAzureUrl(url, "url")).not.toThrow();
+      });
+   }
+
+   const bad = [
+      "ftp://acct/data/x.parquet",
+      "https://acct.blob.core.windows.net/data/x.txt",
+      "https://acct.blob.core.windows.net/data/sub/*/*.parquet",
+      "https://acct.blob.core.windows.net/data/a*b/x.parquet",
+   ];
+   for (const url of bad) {
+      it(`rejects ${url}`, () => {
+         expect(() => validateAzureUrl(url, "url")).toThrow(BadRequestError);
+      });
+   }
 });

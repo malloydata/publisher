@@ -74,10 +74,35 @@ const executeQueryModel = mock(
    ) => pending<{ data: { result: string } }>(),
 );
 
-mockServerProvider({ models: { executeQueryModel } });
+const getModel = mock(() =>
+   Promise.resolve({
+      data: {
+         sourceInfos: [
+            JSON.stringify({
+               name: "orders",
+               schema: {
+                  fields: [
+                     {
+                        kind: "dimension",
+                        name: "status",
+                        type: { kind: "string_type" },
+                     },
+                  ],
+               },
+            }),
+         ],
+      } as CompiledModel,
+   }),
+);
+
+// What `/status` said: the model page `Model` shows, and whether it is still
+// loading. A test sets either and clears it again.
+const serverContext: { modelPage?: string; isLoadingStatus?: boolean } = {};
+mockServerProvider({ models: { executeQueryModel, getModel } }, serverContext);
 
 // Imported after the stubs above: a static import would hoist above them.
 const { ModelExplorer } = await import("./ModelExplorer");
+const { default: Model } = await import("./Model");
 
 const URI = "publisher://environments/env/packages/pkg/models/orders.malloy";
 
@@ -97,6 +122,9 @@ const run = () => fireEvent.click(screen.getByRole("button", { name: "Run" }));
 
 beforeEach(() => {
    clearCache();
+   delete serverContext.modelPage;
+   delete serverContext.isLoadingStatus;
+   getModel.mockClear();
    executeQueryModel.mockReset();
    executeQueryModel.mockImplementation(() => pending());
 });
@@ -400,5 +428,40 @@ describe("startingGivens", () => {
       expect(executeQueryModel.mock.calls[0][3].givens).toEqual({
          TENANT: "acme",
       });
+   });
+});
+
+// The server's PUBLISHER_MODEL_PAGE picks the page: the Explorer unless it says
+// viewer, and nothing until /status has answered.
+describe("Model's page", () => {
+   it("is the Explorer on a server that names no model page", async () => {
+      render(<Model resourceUri={URI} />, { wrapper: serverWrapper });
+
+      expect(await screen.findByRole("button", { name: "Run" })).toBeTruthy();
+      expect(screen.getByLabelText("Expand results")).toBeTruthy();
+   });
+
+   it("is the model viewer on a server whose model page is the viewer", async () => {
+      serverContext.modelPage = "viewer";
+      render(<Model resourceUri={URI} />, { wrapper: serverWrapper });
+
+      expect(
+         await screen.findByRole("heading", { name: "orders", level: 1 }),
+      ).toBeTruthy();
+      expect(screen.getByText("status")).toBeTruthy();
+      expect(screen.getByLabelText("Copy link")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Run" })).toBeNull();
+      expect(screen.queryByLabelText("Expand results")).toBeNull();
+   });
+
+   it("shows neither page while /status loads", async () => {
+      serverContext.modelPage = "viewer";
+      serverContext.isLoadingStatus = true;
+      render(<Model resourceUri={URI} />, { wrapper: serverWrapper });
+
+      expect(await screen.findByText(/Fetching Model/)).toBeTruthy();
+      expect(getModel).not.toHaveBeenCalled();
+      expect(screen.queryByRole("heading", { name: "orders" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Run" })).toBeNull();
    });
 });

@@ -6,11 +6,14 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import path from "path";
 import { fileURLToPath } from "url";
-import { MaterializationScheduler } from "../../../src/service/materialization_scheduler";
-import { MaterializationService } from "../../../src/service/materialization_service";
-import { environmentStore } from "../../../src/server";
+import { MaterializationScheduler } from "../../../src/service/materialization/run/materialization_scheduler";
+import { MaterializationService } from "../../../src/service/materialization/run/materialization_service";
+import { bootMainServer } from "../../harness/main_server";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 import { allTerminal, pollFor, waitUntilOk } from "./polling";
+
+// The one main server this process boots (tests/harness/main_server.ts).
+const { environmentStore } = await bootMainServer();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -149,7 +152,7 @@ describe("MaterializationScheduler transitions (integration, real store)", () =>
 
    async function scheduledFireCount(env: string): Promise<number> {
       return (await envMaterializations(env)).filter(
-         (m) => triggerOf(m) === "SCHEDULER",
+         (m) => triggerOf(m) === "scheduler",
       ).length;
    }
 

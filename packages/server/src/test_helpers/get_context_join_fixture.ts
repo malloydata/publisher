@@ -20,6 +20,8 @@
  * region_r.c.origin, the last one three joins deep.
  */
 
+import * as path from "path";
+import { fileURLToPath, pathToFileURL } from "url";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -28,11 +30,16 @@ import {
    Runtime,
    type Connection,
    type ModelDef,
+   type SQLSourceDef,
+   type SQLSourceRequest,
 } from "@malloydata/malloy";
+import { dbmetaAnnotations } from "@malloydata/malloy/connection";
 
 export const JOIN_FIXTURE_MODEL_PATH = "m.malloy";
 
-const ROOT = "file:///join-fixture/";
+// An absolute file URL on every platform: a drive-less file:/// URL has no
+// path on Windows, so getPackagePath's fileURLToPath would throw there.
+const ROOT = `${pathToFileURL(path.resolve("/join-fixture")).href}/`;
 
 const MODEL_TEXT = `
 source: country is duckdb.sql("select 1 as id, 'US' as code") extend {
@@ -71,6 +78,57 @@ source: inv is duckdb.sql("select 1 as id, 1 as cust_id, 'i' as rf") extend {
 }
 `;
 
+export interface DbmetaStub {
+   table?: string;
+   columns?: Record<string, string>;
+}
+
+/**
+ * A DuckDB connection that annotates each `duckdb.sql` schema the way a
+ * BigQuery connection with `dbmeta` on does, keyed by the SQL text.
+ */
+class DescribedDuckDBConnection extends DuckDBConnection {
+   constructor(private readonly dbmeta: Record<string, DbmetaStub>) {
+      super("duckdb", ":memory:");
+   }
+
+   override async fetchSelectSchema(
+      request: SQLSourceRequest,
+   ): Promise<SQLSourceDef | string> {
+      const def = await super.fetchSelectSchema(request);
+      const stub = this.dbmeta[request.selectStr];
+      if (typeof def === "string" || !stub) return def;
+      return {
+         ...def,
+         ...dbmetaAnnotations({ description: stub.table }),
+         fields: describeFields(def.fields, stub.columns ?? {}, ""),
+      };
+   }
+}
+
+/**
+ * Annotate each column with its description, and each member of a record
+ * column (a STRUCT, or an array of them) by its dotted path (`delivery.city`),
+ * as BigQuery does for the fields nested in a RECORD.
+ */
+function describeFields<F extends { name: string }>(
+   fields: F[],
+   columns: Record<string, string>,
+   prefix: string,
+): F[] {
+   return fields.map((field) => {
+      const path = `${prefix}${field.name}`;
+      const nested = (field as { fields?: Array<{ name: string }> }).fields;
+      return {
+         ...field,
+         ...dbmetaAnnotations({ description: columns[path] }),
+         ...(nested
+            ? { fields: describeFields(nested, columns, `${path}.`) }
+            : {}),
+      };
+   });
+}
+
 /** Compile the fixture and return a Package-shaped stand-in over it. */
 export async function compileJoinFixture(
    modelPath: string = JOIN_FIXTURE_MODEL_PATH,
@@ -85,9 +143,16 @@ export async function compileJoinFixture(
        * index.
        */
       hiddenSources?: string[];
+      /**
+       * Database descriptions for `duckdb.sql` sources, by their SQL text;
+       * a record member's column is named by its dotted path.
+       */
+      dbmeta?: Record<string, DbmetaStub>;
    } = {},
 ): Promise<{ pkg: unknown; modelDef: ModelDef }> {
-   const duckdb = new DuckDBConnection("duckdb", ":memory:");
+   const duckdb = options.dbmeta
+      ? new DescribedDuckDBConnection(options.dbmeta)
+      : new DuckDBConnection("duckdb", ":memory:");
    const runtime = new Runtime({
       urlReader: new InMemoryURLReader(
          new Map([[`${ROOT}${modelPath}`, options.modelText ?? MODEL_TEXT]]),
@@ -155,6 +220,7 @@ export async function compileModelFiles(
          getSourceInfos: () => unknown[];
          getQueries: () => never[];
          getModelDef: () => ModelDef;
+         getCompiledSourceText: () => string;
       }
    >();
    const modelDefs: Record<string, ModelDef> = {};
@@ -174,11 +240,13 @@ export async function compileModelFiles(
          getSourceInfos: () => sourceInfos,
          getQueries: () => [],
          getModelDef: () => modelDef,
+         getCompiledSourceText: () => files[path]!,
       });
    }
    await duckdb.close();
    return {
       pkg: {
+         getPackagePath: () => fileURLToPath(ROOT),
          listSkills: () => [],
          listModels: async () => Object.keys(files).map((path) => ({ path })),
          getModel: (path: string) => models.get(path),
@@ -196,6 +264,7 @@ export function storeServing(
       getEnvironment: async () => ({
          getPackage: async () => pkg,
          getStaleCompileErrors: () => new Map(),
+         listApiConnections: () => [],
       }),
       ...extra,
    } as never;

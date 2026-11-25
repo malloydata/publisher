@@ -531,16 +531,52 @@ class IndexWait(unittest.TestCase):
 
 class EmbeddingIndexRead(unittest.TestCase):
     def read(self, payload):
+        """Read the index from a server holding `payload` as its package
+        resource. A payload carrying `embeddingIndex` is a current server,
+        which serves the object from `GET …/embedding-index`; one without it
+        is an older server, whose `/embedding-index` 404s."""
         import json as _json
+
+        class Resp:
+            def __init__(self, body): self.body = body
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return _json.dumps(self.body).encode()
+
+        def urlopen(url, timeout=None):
+            if url.endswith("/embedding-index"):
+                if "embeddingIndex" in payload:
+                    return Resp(payload["embeddingIndex"])
+                raise check_findable.urllib.error.HTTPError(
+                    url, 404, "Not Found", None, None)
+            return Resp(payload)
+
+        with mock.patch.object(check_findable.urllib.request, "urlopen",
+                               urlopen):
+            return check_findable.embedding_index("http://x", "e", "p")
+
+    def test_an_older_server_is_read_from_the_package_resource(self):
+        idx = {"status": "ready"}
+        import json as _json
+        calls = []
 
         class Resp:
             def __enter__(self): return self
             def __exit__(self, *a): return False
-            def read(self): return _json.dumps(payload).encode()
+            def read(self): return _json.dumps({"embeddingIndex": idx}).encode()
+
+        def urlopen(url, timeout=None):
+            calls.append(url)
+            if url.endswith("/embedding-index"):
+                raise check_findable.urllib.error.HTTPError(
+                    url, 404, "Not Found", None, None)
+            return Resp()
 
         with mock.patch.object(check_findable.urllib.request, "urlopen",
-                               lambda *a, **k: Resp()):
-            return check_findable.embedding_index("http://x", "e", "p")
+                               urlopen):
+            self.assertEqual(
+                check_findable.embedding_index("http://x", "e", "p"), idx)
+        self.assertEqual(len(calls), 2)
 
     def test_the_whole_object_comes_back_so_reason_is_not_lost(self):
         idx = {"status": "error", "reason": "cooldown",

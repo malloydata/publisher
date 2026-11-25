@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { runInternalSQL } from "./duckdb_lockdown";
+import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import "@malloydata/db-duckdb/native";
 import { MalloyConfig } from "@malloydata/malloy";
@@ -10,6 +12,7 @@ import fs from "fs/promises";
 import { join, resolve } from "path";
 import sinon from "sinon";
 import { PackageNotFoundError } from "../errors";
+import { installSettings } from "../test_helpers/settings_env";
 import { Model } from "./model";
 import { Package } from "./package";
 
@@ -81,18 +84,16 @@ describe("service/package", () => {
                "model1.malloy",
                {
                   getPath: () => "model1.malloy",
-                  setDiscoveryCuration: () => {},
-                  setQueryBoundary: () => {},
-                  setSiblingModelDefResolver: () => {},
+                  getGivens: () => [],
+                  getCompilationError: () => undefined,
                } as unknown as Model,
             ],
             [
                "model2.malloynb",
                {
                   getPath: () => "model2.malloynb",
-                  setDiscoveryCuration: () => {},
-                  setQueryBoundary: () => {},
-                  setSiblingModelDefResolver: () => {},
+                  getGivens: () => [],
+                  getCompilationError: () => undefined,
                } as unknown as Model,
             ],
          ]),
@@ -102,13 +103,10 @@ describe("service/package", () => {
    });
 
    describe("per-package sandbox extension pinning", () => {
-      const originalPolicy = process.env.EXTENSION_FETCH_POLICY;
+      let restoreSettings: (() => void) | undefined;
       afterEach(() => {
-         if (originalPolicy === undefined) {
-            delete process.env.EXTENSION_FETCH_POLICY;
-         } else {
-            process.env.EXTENSION_FETCH_POLICY = originalPolicy;
-         }
+         restoreSettings?.();
+         restoreSettings = undefined;
       });
 
       it(
@@ -116,24 +114,31 @@ describe("service/package", () => {
          async () => {
             // Regression guard for the sandbox bypass: the per-package sandbox
             // has no attached databases, so the environment attach paths never
-            // touch it. Under local-only its session must still be pinned
-            // against DuckDB's implicit auto-install, or a sandbox query
-            // referencing an unbaked extension could silently fetch from the
-            // CDN. Uses a spy (not a stub) so real DuckDB runs the pragma.
-            process.env.EXTENSION_FETCH_POLICY = "local-only";
-            const spy = sinon.spy(DuckDBConnection.prototype, "runSQL");
-            await Package.create(
+            // touch it. Under local-only it must still never auto-install an
+            // extension, or a sandbox query referencing an unbaked extension
+            // could silently fetch from the CDN. Its sandboxed policy turns
+            // auto-install off as an option (duckdb_lockdown.ts).
+            restoreSettings = installSettings({
+               env: { EXTENSION_FETCH_POLICY: "local-only" },
+            }).restore;
+            const pkg = await Package.create(
                "testProject",
                "testPackage",
                testPackageDirectory,
                new Map(),
             );
-            const issued = spy.getCalls().map((c) => String(c.args[0]));
-            expect(
-               issued.some((s) =>
-                  /autoinstall_known_extensions\s*=\s*false/i.test(s),
-               ),
-            ).toBe(true);
+            try {
+               const sandbox = (await pkg
+                  .getMalloyConfig()
+                  .connections.lookupConnection("duckdb")) as DuckDBConnection;
+               const result = await runInternalSQL(
+                  sandbox,
+                  "SELECT current_setting('autoinstall_known_extensions') AS v",
+               );
+               expect(result.rows).toEqual([{ v: false }]);
+            } finally {
+               await pkg.getMalloyConfig().releaseConnections();
+            }
          },
          { timeout: 30000 },
       );
@@ -239,9 +244,9 @@ describe("service/package", () => {
                      "models/root_read.malloy",
                   );
                   expect(rootModel).toBeDefined();
-                  const rootResults = await rootModel!.getQueryResults(
-                     undefined,
-                     "row_count",
+                  const rootResults = await rootModel!.runQuery(
+                     unrecordedAudit(),
+                     { queryName: "row_count" },
                   );
                   expect(
                      (rootResults.compactResult as { c: number }[])[0]?.c,
@@ -284,7 +289,7 @@ describe("service/package", () => {
          );
 
          it(
-            "does not treat package-root paths as filesystem isolation",
+            "confines the sandbox to the package root",
             async () => {
                const outsidePath = resolve(
                   testPackageDirectory,
@@ -303,27 +308,19 @@ describe("service/package", () => {
                   ].join("\n"),
                );
 
-               let packageInstance: Package | undefined;
                try {
-                  packageInstance = await Package.create(
-                     "testProject",
-                     "testPackage",
-                     resolve(testPackageDirectory),
-                     new Map(),
-                  );
-                  const outsideModel = packageInstance.getModel(
-                     "models/outside_read.malloy",
-                  );
-                  expect(outsideModel).toBeDefined();
-                  const outsideResults = await outsideModel!.getQueryResults(
-                     undefined,
-                     "row_count",
-                  );
-                  expect(
-                     (outsideResults.compactResult as { c: number }[])[0]?.c,
-                  ).toBe(1);
+                  // A read outside the package is refused by the sandbox's
+                  // DuckDB lockdown (duckdb_lockdown.ts), so the model fails
+                  // to compile and the package to load.
+                  await expect(
+                     Package.create(
+                        "testProject",
+                        "testPackage",
+                        resolve(testPackageDirectory),
+                        new Map(),
+                     ),
+                  ).rejects.toThrow(/Permission Error/);
                } finally {
-                  await packageInstance?.getMalloyConfig().releaseConnections();
                   await fs.rm(outsidePath, { force: true });
                }
             },
@@ -345,17 +342,16 @@ describe("service/package", () => {
                      "model1.malloy",
                      {
                         getPath: () => "model1.malloy",
+                        getType: () => "model",
                         getModel: () => "foo",
-                        setDiscoveryCuration: () => {},
-                        setQueryBoundary: () => {},
-                        setSiblingModelDefResolver: () => {},
+                        getGivens: () => [],
+                        getCompilationError: () => undefined,
                      } as unknown as Model,
                   ],
                   [
                      "model2.malloynb",
                      {
                         getPath: () => "model2.malloynb",
-                        setDiscoveryCuration: () => {},
                         getNotebookError: () => {
                            return {
                               message: "This is the error",
@@ -365,8 +361,8 @@ describe("service/package", () => {
                         // and no cells, so it resolves no title or description
                         // and lists as its path.
                         getNotebookListing: () => ({}),
-                        setQueryBoundary: () => {},
-                        setSiblingModelDefResolver: () => {},
+                        getGivens: () => [],
+                        getCompilationError: () => undefined,
                      } as unknown as Model,
                   ],
                ]),
@@ -413,6 +409,90 @@ describe("service/package", () => {
                ],
                rowCount: 3,
             });
+         });
+
+         it("should probe a data file whose name is outside the bare-path set", async () => {
+            // DuckDB's table-path check takes a bare path only when every
+            // character is in a short safe set, so these files used to list
+            // with `error` and no `info`. A double quote can't appear in a
+            // Windows file name.
+            const names = [
+               "Revenue by month.csv",
+               "Bob's sales.csv",
+               "orders (1).csv",
+               "données.csv",
+               ...(process.platform === "win32" ? [] : ['say "hi".csv']),
+            ];
+            await fs.mkdir(join(testPackageDirectory, "data"), {
+               recursive: true,
+            });
+            const csv = "Name,Value\nJohn,10\nJane,20\nJim,30";
+            const conn = new DuckDBConnection("duckdb");
+
+            for (const file of names) {
+               await fs.writeFile(
+                  join(testPackageDirectory, "data", file),
+                  csv,
+               );
+               const name = `data/${file}`;
+               // @ts-expect-error Accessing private static method for testing
+               const info = await Package.getDatabaseInfo(
+                  testPackageDirectory,
+                  name,
+                  conn,
+               );
+               expect(info).toEqual({
+                  name,
+                  columns: [
+                     { name: "Name", type: "string" },
+                     { name: "Value", type: "number" },
+                  ],
+                  rowCount: 3,
+               });
+            }
+         });
+
+         it("refuses a data file whose path holds `;`, `--` or a glob character", async () => {
+            // Malloy refuses `;` and `--` anywhere in a table path, even
+            // quoted, and DuckDB reads `[`, `?` and `*` as a glob. Each file
+            // lists with `error` and no `info`. `a-b.csv` is the control: it
+            // must read, so a checkout path that itself holds `--` can't make
+            // the refusals pass for the wrong reason.
+            await fs.mkdir(join(testPackageDirectory, "data"), {
+               recursive: true,
+            });
+            const conn = new DuckDBConnection("duckdb");
+            const probe = async (file: string, csv: string) => {
+               await fs.writeFile(
+                  join(testPackageDirectory, "data", file),
+                  csv,
+               );
+               // @ts-expect-error Accessing private static method for testing
+               return Package.getDatabaseInfo(
+                  testPackageDirectory,
+                  `data/${file}`,
+                  conn,
+               );
+            };
+            expect(
+               (await probe("a-b.csv", "Name,Value\nJohn,10")).rowCount,
+            ).toBe(1);
+            for (const file of ["a;b.csv", "a--b.csv"]) {
+               await expect(probe(file, "Name,Value\nJohn,10")).rejects.toThrow(
+                  "forbidden character `;` or `--`",
+               );
+            }
+            // The refusal throws before DuckDB reads anything, so the message
+            // is the proof. `?` and `*` can't appear in a Windows file name.
+            const globNames = [
+               "[x].csv",
+               ...(process.platform === "win32" ? [] : ["x?.csv", "x*.csv"]),
+            ];
+            for (const file of globNames) {
+               await expect(probe(file, "Name,Value\nJohn,10")).rejects.toThrow(
+                  "pattern matching other files",
+               );
+            }
          });
 
          it("should probe an xlsx database file", async () => {
@@ -533,9 +613,10 @@ describe("service/package", () => {
    // WHETHER the source may be served frozen — that is decided by compiling the
    // model. These assert the gate that enforces it, because the failure is silent:
    // an admitted binding for a `given`-filtered source serves one caller's rows to
-   // everyone, and no error is raised. Scenarios
-   // `host-binding-honors-row-level-access` and `host-binding-of-unplanned-source`
-   // prove it end to end; these keep it from being refactored away.
+   // everyone, and no error is raised. Scenario
+   // `host-binding-honors-row-level-access` proves it end to end: its forged
+   // binding names a source absent from `plan.sources`. These keep the gate from
+   // being refactored away.
    describe("bindStorageServeBindings eligibility gate", () => {
       /** A structurally complete manifest entry — the shape a host sends. */
       const entry = (sourceName: string, table: string) => ({
@@ -560,10 +641,31 @@ describe("service/package", () => {
             new Map(),
          );
          // Private by design: its only writer is the load path, which needs a
-         // compiled package. Set directly to isolate the filter.
+         // compiled package. Set directly to isolate the filter. Eligibility is
+         // keyed by sourceID, and a binding names the plan sources it
+         // materializes, so the plan holds every source the case names.
+         const id = (name: string) => `${name}@m.malloy`;
          (
             pkg as unknown as { sourceEligibility: typeof eligibility }
-         ).sourceEligibility = eligibility;
+         ).sourceEligibility = eligibility && {
+            eligible: eligibility.eligible.map(id),
+            refused: Object.fromEntries(
+               Object.entries(eligibility.refused).map(([n, r]) => [id(n), r]),
+            ),
+         };
+         const planned = [
+            ...(eligibility?.eligible ?? []),
+            ...Object.keys(eligibility?.refused ?? {}),
+         ];
+         (pkg as unknown as { buildPlan: unknown }).buildPlan = {
+            graphs: [],
+            sources: Object.fromEntries(
+               planned.map((name) => [
+                  id(name),
+                  { name, sourceEntityId: `eid-${name}`, sourceID: id(name) },
+               ]),
+            ),
+         };
          return pkg;
       };
 
@@ -578,12 +680,73 @@ describe("service/package", () => {
             refused: { scoped_rollup: "references a given" },
          });
 
-         pkg.bindStorageServeBindings({
-            a: entry("all_rollup", "t_all"),
-            b: entry("scoped_rollup", "t_all"),
+         pkg.materialization().bind({
+            storage: {
+               a: entry("all_rollup", "t_all"),
+               b: entry("scoped_rollup", "t_all"),
+            },
          });
 
          expect(boundSources(pkg)).toEqual(["all_rollup"]);
+      });
+
+      it("keeps a binding only for its eligible source when two models' same-named sources share a table", () => {
+         // Two models declare `orders` with identical SQL (one address); one
+         // carries a gate the eligibility check refuses. The binding names both
+         // plan sources, and only the eligible one may keep it: admitting the
+         // binding whole would serve the refused model's source from the table.
+         const pkg = new Package(
+            "testProject",
+            "testPackage",
+            testPackageDirectory,
+            { name: "testPackage" },
+            [],
+            new Map(),
+         );
+         const open = "orders@file:///open.malloy";
+         const gated = "orders@file:///gated.malloy";
+         (
+            pkg as unknown as {
+               sourceEligibility: {
+                  eligible: string[];
+                  refused: Record<string, string>;
+               };
+            }
+         ).sourceEligibility = {
+            eligible: [open],
+            refused: { [gated]: "protected by a gate" },
+         };
+         (pkg as unknown as { buildPlan: unknown }).buildPlan = {
+            graphs: [],
+            sources: {
+               [open]: {
+                  name: "orders",
+                  sourceEntityId: "eid-orders",
+                  sourceID: open,
+               },
+               [gated]: {
+                  name: "orders",
+                  sourceEntityId: "eid-orders",
+                  sourceID: gated,
+               },
+            },
+         };
+
+         pkg.materialization().bind({
+            storage: { a: entry("orders", "t_orders") },
+         });
+
+         // The wire projection drops sourceIDs; read the bound set itself.
+         const bound = (
+            pkg.materialization() as unknown as {
+               storageBindings: {
+                  sourceName: string;
+                  sourceIDs?: string[];
+               }[];
+            }
+         ).storageBindings;
+         expect(bound.map((b) => b.sourceName)).toEqual(["orders"]);
+         expect(bound[0].sourceIDs).toEqual([open]);
       });
 
       it("refuses every binding when the build plan could not be computed", () => {
@@ -592,31 +755,107 @@ describe("service/package", () => {
          // unexamined binding must not read as an eligible one.
          const pkg = packageWith(undefined);
 
-         pkg.bindStorageServeBindings({ a: entry("all_rollup", "t_all") });
+         pkg.materialization().bind({
+            storage: { a: entry("all_rollup", "t_all") },
+         });
 
          expect(boundSources(pkg)).toEqual([]);
       });
 
       it("refuses a source the plan never contained", () => {
-         // Malloy admits only query-shaped sources as build roots, so `#@ persist`
-         // on a filtered pass-through produces no plan entry — neither eligible nor
-         // refused. Absence is not eligibility.
+         // A source with no `#@ persist` annotation produces no plan entry —
+         // neither eligible nor refused. Absence is not eligibility.
          const pkg = packageWith({ eligible: ["all_rows"], refused: {} });
 
-         pkg.bindStorageServeBindings({
-            a: entry("all_rows", "t_all"),
-            b: entry("scoped", "t_all"),
+         pkg.materialization().bind({
+            storage: {
+               a: entry("all_rows", "t_all"),
+               b: entry("scoped", "t_all"),
+            },
          });
 
          expect(boundSources(pkg)).toEqual(["all_rows"]);
       });
+
+      describe("a published version binds only what its own definition built", () => {
+         /** A package whose plan defines each source at the given address. */
+         const definedAs = (
+            versionId: string | undefined,
+            sources: Record<string, string>,
+         ) => {
+            const pkg = packageWith({
+               eligible: Object.keys(sources),
+               refused: {},
+            });
+            pkg.setPackageMetadata({ ...pkg.getPackageMetadata(), versionId });
+            (pkg as unknown as { buildPlan: unknown }).buildPlan = {
+               graphs: [],
+               sources: Object.fromEntries(
+                  Object.entries(sources).map(([name, sourceEntityId]) => [
+                     `${name}@m.malloy`,
+                     { name, sourceEntityId, sourceID: `${name}@m.malloy` },
+                  ]),
+               ),
+            };
+            return pkg;
+         };
+         // What a run stamps: the source's name and its definition's address.
+         const built = (sourceName: string, sourceEntityId: string) => ({
+            ...entry(sourceName, `t_${sourceName}`),
+            sourceEntityId,
+         });
+
+         it("serves live a source whose stored table another definition built", () => {
+            // Another version rebuilt `orders` from a changed definition, under
+            // the name every version of a `scope: package` package shares.
+            const pkg = definedAs("1.0.0", {
+               orders: "v1-orders",
+               items: "items",
+            });
+
+            pkg.materialization().bind({
+               storage: {
+                  a: built("orders", "v2-orders"),
+                  b: built("items", "items"),
+               },
+            });
+
+            expect(boundSources(pkg)).toEqual(["items"]);
+         });
+
+         it("binds a table its own definition built", () => {
+            const pkg = definedAs("2.0.0", { orders: "v2-orders" });
+            pkg.materialization().bind({
+               storage: { a: built("orders", "v2-orders") },
+            });
+            expect(boundSources(pkg)).toEqual(["orders"]);
+         });
+
+         it("serves live, in a package with no versions too, a table another definition built", () => {
+            // The author edited `orders` in place, and the store (or a host)
+            // still holds the table the old definition built under its name.
+            const pkg = definedAs(undefined, { orders: "v1-orders" });
+            pkg.materialization().bind({
+               storage: { a: built("orders", "v2-orders") },
+            });
+            expect(boundSources(pkg)).toEqual([]);
+         });
+
+         it("binds, in a package with no versions, a table its own definition built", () => {
+            const pkg = definedAs(undefined, { orders: "v1-orders" });
+            pkg.materialization().bind({
+               storage: { a: built("orders", "v1-orders") },
+            });
+            expect(boundSources(pkg)).toEqual(["orders"]);
+         });
+      });
    });
 
-   // The colocated-tier analogue of the storage gate above — a positive
-   // eligibility check on `bindColocatedServeManifest`, keyed by
-   // sourceEntityId (what a colocated binding actually carries; see
-   // `ColocatedSourceEligibility`'s doc in build_plan.ts).
-   describe("bindColocatedServeManifest eligibility gate", () => {
+   // The database-tier analogue of the storage gate above — a positive
+   // eligibility check on `bindDatabaseServeManifest`, keyed by
+   // sourceEntityId (what a database binding actually carries; see
+   // `DatabaseSourceEligibility`'s doc in build_plan.ts).
+   describe("bindDatabaseServeManifest eligibility gate", () => {
       const packageWith = (
          eligibility:
             | {
@@ -637,9 +876,20 @@ describe("service/package", () => {
          // compiled package. Set directly to isolate the filter.
          (
             pkg as unknown as {
-               colocatedSourceEligibility: typeof eligibility;
+               databaseSourceEligibility: typeof eligibility;
             }
-         ).colocatedSourceEligibility = eligibility;
+         ).databaseSourceEligibility = eligibility;
+         // Each examined source's dialect, as a real plan carries it: an
+         // entry with none is never bound as given.
+         (pkg as unknown as { buildPlan: unknown }).buildPlan = {
+            graphs: [],
+            sources: Object.fromEntries(
+               ["eid-eligible", "eid-refused", "eid-known"].map((id) => [
+                  `${id}@m.malloy`,
+                  { sourceEntityId: id, dialect: "duckdb" },
+               ]),
+            ),
+         };
          return pkg;
       };
 
@@ -649,24 +899,30 @@ describe("service/package", () => {
             refused: { "eid-refused": "row_level but not attributed" },
          });
 
-         pkg.bindColocatedServeManifest({
-            "eid-eligible": { tableName: "t_eligible" },
-            "eid-refused": { tableName: "t_refused" },
+         pkg.materialization().bind({
+            database: {
+               "eid-eligible": { tableName: "t_eligible" },
+               "eid-refused": { tableName: "t_refused" },
+            },
          });
 
-         expect(pkg.getBuildManifestEntries()).toEqual({
-            "eid-eligible": { tableName: "t_eligible" },
+         expect(pkg.materialization().getBuildManifestEntries()).toEqual({
+            "eid-eligible": { tableName: '"t_eligible"' },
          });
       });
 
       it("refuses every entry when the build plan could not be computed", () => {
          const pkg = packageWith(undefined);
 
-         pkg.bindColocatedServeManifest({
-            "eid-eligible": { tableName: "t_eligible" },
+         pkg.materialization().bind({
+            database: {
+               "eid-eligible": { tableName: "t_eligible" },
+            },
          });
 
-         expect(pkg.getBuildManifestEntries()).toBeUndefined();
+         expect(
+            pkg.materialization().getBuildManifestEntries(),
+         ).toBeUndefined();
       });
 
       it("refuses an entry naming a source never examined (absence is not eligibility)", () => {
@@ -675,14 +931,110 @@ describe("service/package", () => {
             refused: {},
          });
 
-         pkg.bindColocatedServeManifest({
-            "eid-known": { tableName: "t_known" },
-            "eid-unknown": { tableName: "t_unknown" },
+         pkg.materialization().bind({
+            database: {
+               "eid-known": { tableName: "t_known" },
+               "eid-unknown": { tableName: "t_unknown" },
+            },
          });
 
-         expect(pkg.getBuildManifestEntries()).toEqual({
-            "eid-known": { tableName: "t_known" },
+         expect(pkg.materialization().getBuildManifestEntries()).toEqual({
+            "eid-known": { tableName: '"t_known"' },
          });
+      });
+   });
+
+   describe("secureGivens", () => {
+      const stubModel = (
+         modelPath: string,
+         givens: { name: string; type: string; secure?: boolean }[],
+         compilationError?: Error,
+      ) =>
+         ({
+            getPath: () => modelPath,
+            getGivens: () => givens,
+            getCompilationError: () => compilationError,
+            isNotebook: () => modelPath.endsWith(".malloynb"),
+            getNotebookListing: () => ({}),
+            hasEmptyDiscoverySurface: () => false,
+            getDeclaredQueryMetadata: () => [],
+            getDeclaredSourceQueryMetadata: () => [],
+            preaggregateViolations: () => [],
+            declaredFilterSourceNames: () => [],
+            declaredDeprecatedPersistAnnotations: () => [],
+            persistedViewBuilds: () => [],
+            servedCopyProblems: () => [],
+            gateLoadWarnings: () => [],
+            storedColumnTypeMismatches: () => [],
+            getModelDef: () => undefined,
+         }) as unknown as Model;
+      const roles = { name: "ROLES", type: "string[]", secure: true };
+      const pkgWith = (models: Map<string, Model>) =>
+         new Package(
+            "testProject",
+            "testPackage",
+            testPackageDirectory,
+            { name: "testPackage" },
+            [],
+            models,
+         );
+      /** Stands in for any path that installs a new models map (reload, rebuild). */
+      const replaceModels = (pkg: Package, models: Map<string, Model>) => {
+         (pkg as unknown as { models: Map<string, Model> }).models = models;
+      };
+
+      it("is returned by reference, frozen, until the models are replaced", () => {
+         const pkg = pkgWith(
+            new Map([["a.malloy", stubModel("a.malloy", [roles])]]),
+         );
+         const first = pkg.getPackageMetadata().secureGivens;
+         expect(first).toEqual([
+            { name: "ROLES", type: "string[]", modelPaths: ["a.malloy"] },
+         ]);
+         expect(Object.isFrozen(first)).toBe(true);
+         expect(pkg.getPackageMetadata().secureGivens).toBe(first!);
+
+         replaceModels(pkg, new Map([["a.malloy", stubModel("a.malloy", [])]]));
+         expect(pkg.getPackageMetadata().secureGivens).toEqual([]);
+      });
+
+      it("is absent when any model or notebook failed to compile", () => {
+         const pkg = pkgWith(
+            new Map([
+               ["a.malloy", stubModel("a.malloy", [roles])],
+               [
+                  "nb.malloynb",
+                  stubModel("nb.malloynb", [], new Error("does not compile")),
+               ],
+            ]),
+         );
+         const metadata = pkg.getPackageMetadata();
+         expect("secureGivens" in metadata).toBe(false);
+      });
+
+      it("is never stored from a setPackageMetadata round trip", () => {
+         const pkg = pkgWith(
+            new Map([["a.malloy", stubModel("a.malloy", [roles])]]),
+         );
+         pkg.setPackageMetadata({
+            ...pkg.getPackageMetadata(),
+            description: "edited",
+         });
+         replaceModels(pkg, new Map([["b.malloy", stubModel("b.malloy", [])]]));
+         expect(pkg.getPackageMetadata().secureGivens).toEqual([]);
+
+         // A stale or forged value is dropped even when the models are unknown.
+         replaceModels(
+            pkg,
+            new Map([
+               ["b.malloy", stubModel("b.malloy", [], new Error("broken"))],
+            ]),
+         );
+         pkg.setPackageMetadata({
+            name: "testPackage",
+            secureGivens: [{ name: "X", type: "string", modelPaths: [] }],
+         });
+         expect("secureGivens" in pkg.getPackageMetadata()).toBe(false);
       });
    });
 

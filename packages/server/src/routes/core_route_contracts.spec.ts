@@ -11,18 +11,21 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import request from "supertest";
 import { ConnectionController } from "../controller/connection.controller";
 import { ReportController } from "../controller/report.controller";
-import type { EnvironmentStore } from "../service/environment_store";
 import {
    startClosingListener,
    type ClosingListener,
 } from "../test_helpers/closing_listener";
 import { API_PREFIX, buildRouteApp } from "../test_helpers/route_app";
+import { installSettings } from "../test_helpers/settings_env";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { ConnectionAdmin } from "../service/environment_ports";
 
 describe("PUT …/models/{path} (report write)", () => {
    it("answers 403 under frozenConfig", async () => {
       const reportController = new ReportController({
          publisherConfigIsFrozen: true,
-      } as unknown as EnvironmentStore);
+         getEnvironment: () => Promise.reject(new Error("not looked up")),
+      });
       const res = await request(buildRouteApp({ reportController }))
          .put(`${API_PREFIX}/environments/env/packages/pkg/models/r.malloy`)
          .send({ source: "## artifact { layout=grid }\n" });
@@ -34,24 +37,24 @@ describe("PUT …/models/{path} (report write)", () => {
 describe("POST /connections/test", () => {
    const SECRET = "hunter2-route-secret";
    let unreachable: ClosingListener;
-   const allowSetupSql = process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+   let restoreSettings: () => void;
    beforeAll(async () => {
       unreachable = await startClosingListener();
       // A DuckDB connection needs setupSQL or an attachment to be valid at all.
-      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "true";
+      restoreSettings = installSettings({
+         env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
+      }).restore;
    });
    afterAll(async () => {
       await unreachable.close();
-      if (allowSetupSql === undefined)
-         delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
-      else process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = allowSetupSql;
+      restoreSettings();
    });
 
    const test = (body: unknown) =>
       request(
          buildRouteApp({
             connectionController: new ConnectionController(
-               {} as unknown as EnvironmentStore,
+               fakeOf<ConnectionAdmin>({}),
             ),
          }),
       )
@@ -111,11 +114,13 @@ describe("GET /status", () => {
          environmentStore: {
             getStatus: async (options: unknown) => {
                calls.push(options);
-               return STATUS;
+               return STATUS as never;
             },
-            storageManager: { isInitialized: () => storageReady },
-         } as unknown as EnvironmentStore,
-         themeStore: { get: async () => ({ defaultMode: "dark" }) },
+         },
+         themeStore: {
+            get: async () => ({ defaultMode: "dark" }),
+            isReady: () => storageReady,
+         },
       });
 
    it.each([
@@ -137,5 +142,55 @@ describe("GET /status", () => {
          { includeLoading: true },
          { includeLoading: false },
       ]);
+   });
+});
+
+describe("POST /environments with a connection that lists a destination's schema", () => {
+   const catalog = {
+      host: "catalog.internal",
+      databaseName: "ducklake",
+      userName: "publisher",
+      password: "catalog-secret",
+   };
+   const lake = (name: string, ducklake: object, extra: object = {}) => ({
+      name,
+      type: "ducklake",
+      ...extra,
+      ducklakeConnection: {
+         catalog: { postgresConnection: catalog },
+         storage: { bucketUrl: `gs://managed-tier/${name}` },
+         ...ducklake,
+      },
+   });
+
+   it("is refused 400 before the environment store is touched", async () => {
+      let added = 0;
+      const res = await request(
+         buildRouteApp({
+            environmentStore: {
+               addEnvironment: () => {
+                  added++;
+                  return Promise.reject(new Error("reached the store"));
+               },
+            } as never,
+         }),
+      )
+         .post(`${API_PREFIX}/environments`)
+         .send({
+            name: "overlap",
+            connections: [
+               lake(
+                  "models",
+                  { readableSchemas: ["materialized"] },
+                  { managed: true },
+               ),
+            ],
+            storageDestinations: [
+               lake("lake", { destinationSchema: "materialized" }),
+            ],
+         });
+      expect(res.status).toBe(400);
+      expect(res.body.message).toContain("readableSchemas");
+      expect(added).toBe(0);
    });
 });

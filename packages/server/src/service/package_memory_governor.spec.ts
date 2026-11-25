@@ -1,9 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 
 import type { MemoryGovernorConfig } from "../config";
+import { resetInstrumentsForTesting } from "../telemetry";
+import { startMetricsHarness } from "../test_helpers/metrics_harness";
 import { PackageMemoryGovernor } from "./package_memory_governor";
 
 const ONE_GB = 1024 * 1024 * 1024;
@@ -172,5 +174,48 @@ describe("PackageMemoryGovernor", () => {
       expect(status.rssBytes).toBe(0.4 * ONE_GB);
       expect(status.backpressured).toBe(false);
       expect(typeof status.lastSampledAt).toBe("number");
+   });
+
+   it("reports RSS, back-pressure and activations on a provider registered after import", async () => {
+      const harness = await startMetricsHarness();
+      resetInstrumentsForTesting();
+      try {
+         const rss = new FakeRssSampler(0.9 * ONE_GB);
+         const gov = new PackageMemoryGovernor(makeConfig(), rss.sampler);
+         gov.tick();
+         expect(await harness.collectGauge("publisher_process_rss_bytes")).toBe(
+            0.9 * ONE_GB,
+         );
+         expect(
+            await harness.collectGauge("publisher_memory_backpressure_active"),
+         ).toBe(1);
+         expect(
+            await harness.collectCounter(
+               "publisher_memory_backpressure_activations_total",
+            ),
+         ).toBe(1);
+      } finally {
+         await harness.shutdown();
+         resetInstrumentsForTesting();
+      }
+   });
+
+   it("samples RSS alone by default, through process.memoryUsage.rss()", () => {
+      // Bun computes heap statistics in memoryUsage(), a main-thread cost
+      // that grows with live objects (ms2data/service#7795).
+      const rssOnly = spyOn(process.memoryUsage, "rss");
+      try {
+         const gov = new PackageMemoryGovernor(makeConfig());
+         gov.tick();
+         expect(rssOnly).toHaveBeenCalledTimes(1);
+         const sampled = gov.getStatus().rssBytes;
+         expect(sampled).toBe(rssOnly.mock.results[0].value as number);
+         // The same quantity: resident bytes, as the full call reports them.
+         const reported = process.memoryUsage().rss;
+         expect(sampled).toBeGreaterThan(0);
+         expect(Math.abs(sampled - reported) / reported).toBeLessThan(0.25);
+      } finally {
+         rssOnly.mockRestore();
+      }
    });
 });

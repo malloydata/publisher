@@ -5,6 +5,7 @@ import { type ModelDef, type SourceDef } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 
 import { Model } from "./model";
+import { governorOf } from "../test_helpers/governor";
 
 /**
  * Fail-closed branches of the entry-point gate walk, driven from synthetic
@@ -59,24 +60,16 @@ function tableSource(name: string, extra: object = {}): SourceDef {
 
 /** A Model wrapping `modelDef`, with the private gate walk reachable. */
 function walkerFor(modelDef: ModelDef): GateWalker {
-   const model = new Model(
-      "test-pkg",
-      "synthetic.malloy",
-      {},
-      "model",
-      undefined,
+   const model = new Model({
+      packageName: "test-pkg",
+      modelPath: "synthetic.malloy",
+      dataStyles: {},
+      modelType: "model",
       modelDef,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
       // Supplied so the constructor does not derive it from this partial def.
-      {} as never,
-   );
-   return model as unknown as GateWalker;
+      modelInfo: {} as never,
+   });
+   return governorOf(model) as unknown as GateWalker;
 }
 
 describe("gate walk fail-closed branches", () => {

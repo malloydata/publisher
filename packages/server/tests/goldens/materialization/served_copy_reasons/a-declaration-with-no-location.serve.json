@@ -1,0 +1,9 @@
+{
+  "problems": [
+    {
+      "reason": "no_declaration",
+      "sourceName": "p"
+    }
+  ],
+  "query": null
+}

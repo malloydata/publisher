@@ -9,17 +9,20 @@ import {
    mockServerProvider,
    pending,
    serverWrapper,
+   noVersions,
 } from "../../../test/serverProvider";
 
 let agents: unknown[] | undefined;
 
 mockServerProvider(
    {
+      versions: noVersions,
       packages: {
-         getPackage: () =>
-            Promise.resolve({
-               data: { name: "pkg", ...(agents ? { agents } : {}) },
-            }),
+         getPackage: () => Promise.resolve({ data: { name: "pkg" } }),
+      },
+      // The section reads the package's agents from their own route.
+      agents: {
+         listAgents: () => Promise.resolve({ data: agents ?? [] }),
       },
       reports: { listReports: () => Promise.resolve({ data: [] }) },
       models: { listModels: () => Promise.resolve({ data: [] }) },

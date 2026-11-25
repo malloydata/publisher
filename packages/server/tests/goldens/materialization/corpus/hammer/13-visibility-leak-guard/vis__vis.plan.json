@@ -1,0 +1,4 @@
+{
+  "compileError": "Error(s) compiling model:",
+  "firstDiagnostic": "line 4: Invalid SQL, Catalog Error: Table with name vis_orders does not exist!"
+}

@@ -1,9 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// Exported because Dashboard, DashboardTile and Notebook all present request
-// failures through it; a host composing those needs the same presentation for
-// its own.
+// Exported because Report and DashboardTile both present request failures
+// through it; a host composing those needs the same presentation for its own.
 export { ApiErrorDisplay, type ApiErrorDisplayProps } from "./ApiErrorDisplay";
 // The Console's button roles; see `buttons.tsx`. Exported so a host — the
 // Publisher app included — builds its own screens out of the same four.
@@ -36,6 +35,7 @@ export * from "./Home";
 export * from "./Loading";
 export * from "./Materializations";
 export * from "./Model";
+export * from "./ModelViewer";
 export * from "./Package";
 export {
    Prose,
@@ -48,5 +48,9 @@ export * from "./RenderedResult";
 export * from "./Report";
 export * from "./legacy";
 export { ServerProvider, useServer } from "./ServerProvider";
-export type { ServerContextValue, ServerProviderProps } from "./ServerProvider";
+export type {
+   ModelPage,
+   ServerContextValue,
+   ServerProviderProps,
+} from "./ServerProvider";
 export * from "./DocumentStorage";

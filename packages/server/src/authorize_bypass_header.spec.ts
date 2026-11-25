@@ -7,6 +7,7 @@ import {
    BYPASS_AUTHORIZE_SECRET_ENV,
    readBypassAuthorize,
 } from "./authorize_bypass_header";
+import { installSettings, withSettings } from "./test_helpers/settings_env";
 
 const withHeaders = (
    headers: Record<string, string | string[] | undefined>,
@@ -17,20 +18,16 @@ const withHeaders = (
 const SECRET = "s3cret-bypass-value";
 
 describe("readBypassAuthorize", () => {
-   const saved = process.env[BYPASS_AUTHORIZE_SECRET_ENV];
-
-   afterEach(() => {
-      if (saved === undefined) {
-         delete process.env[BYPASS_AUTHORIZE_SECRET_ENV];
-      } else {
-         process.env[BYPASS_AUTHORIZE_SECRET_ENV] = saved;
-      }
-   });
-
    describe("with a secret configured", () => {
+      let restore: () => void;
+
       beforeEach(() => {
-         process.env[BYPASS_AUTHORIZE_SECRET_ENV] = SECRET;
+         restore = installSettings({
+            env: { [BYPASS_AUTHORIZE_SECRET_ENV]: SECRET },
+         }).restore;
       });
+
+      afterEach(() => restore());
 
       it("grants the bypass when the header presents the secret", () => {
          expect(
@@ -120,21 +117,26 @@ describe("readBypassAuthorize", () => {
       it.each([undefined, "", "   "])(
          "refuses the bypass when the secret env is %p",
          (configured) => {
-            if (configured === undefined) {
-               delete process.env[BYPASS_AUTHORIZE_SECRET_ENV];
-            } else {
-               process.env[BYPASS_AUTHORIZE_SECRET_ENV] = configured;
-            }
-            expect(
-               readBypassAuthorize(
-                  withHeaders({ [BYPASS_AUTHORIZE_HEADER]: "true" }),
-               ),
-            ).toBeUndefined();
-            expect(
-               readBypassAuthorize(
-                  withHeaders({ [BYPASS_AUTHORIZE_HEADER]: SECRET }),
-               ),
-            ).toBeUndefined();
+            withSettings(
+               {
+                  env:
+                     configured === undefined
+                        ? {}
+                        : { [BYPASS_AUTHORIZE_SECRET_ENV]: configured },
+               },
+               () => {
+                  expect(
+                     readBypassAuthorize(
+                        withHeaders({ [BYPASS_AUTHORIZE_HEADER]: "true" }),
+                     ),
+                  ).toBeUndefined();
+                  expect(
+                     readBypassAuthorize(
+                        withHeaders({ [BYPASS_AUTHORIZE_HEADER]: SECRET }),
+                     ),
+                  ).toBeUndefined();
+               },
+            );
          },
       );
    });

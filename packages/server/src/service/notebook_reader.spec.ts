@@ -3,15 +3,18 @@
 
 /**
  * The served-notebook cell reader over every fixture in
- * `tests/fixtures/notebooks-malloyyo/notebooks/`, each compiled through
- * `Model.create` so the reader sees the text and IR a real load does.
+ * `tests/fixtures/notebooks-malloyyo/notebooks/`, each loaded through the
+ * package-load worker so the reader sees the text and IR a real load does.
  */
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import type { Connection, ModelDef } from "@malloydata/malloy";
+import type { ModelDef } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
-import { Model } from "./model";
+import {
+   loadPackageCopy,
+   usePackageLoadPool,
+   type LoadedTempPackage,
+} from "../test_helpers/temp_package";
 import { motlyTag } from "./motly";
 import {
    isNotebookReaderError,
@@ -60,7 +63,6 @@ const query = (
    startLine: number,
    endLine: number,
    text: string,
-   queryIndex: number,
    extra: {
       markdown?: string;
       proseLines?: [number, number][];
@@ -76,7 +78,6 @@ const query = (
    ...extra,
    startLine,
    endLine,
-   queryIndex,
 });
 
 /**
@@ -124,7 +125,6 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
             15,
             18,
             '#" Caption: a doc string on the run, shown above its result.\n# bar_chart\n# label="Revenue by month"\nrun: orders -> by_month + { where: region ~ $REGION }',
-            0,
             {
                caption:
                   "Caption: a doc string on the run, shown above its result.",
@@ -181,7 +181,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
             "## A heading\nThe first block's body starts with a markdown heading.",
          ),
          md(10, 12, "The second block follows with no statement between them."),
-         query(14, 14, "run: orders -> kpis", 0),
+         query(14, 14, "run: orders -> kpis"),
       ],
       annotations: [
          "##! experimental.givens\n",
@@ -192,7 +192,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
       cells: [
          def(4, 4, IMPORT),
          md(6, 6, "The only prose cell in this notebook."),
-         query(8, 8, "run: orders -> kpis", 0),
+         query(8, 8, "run: orders -> kpis"),
       ],
       annotations: [
          "##! experimental.givens\n",
@@ -205,7 +205,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
          def(3, 3, IMPORT),
          md(5, 6, "Two contiguous lines of prose\nare one markdown cell."),
          md(8, 8, "A blank line above starts a second cell."),
-         query(10, 10, "run: orders -> kpis", 0),
+         query(10, 10, "run: orders -> kpis"),
       ],
       annotations: [
          "##! experimental.givens\n",
@@ -219,10 +219,9 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
             5,
             8,
             '#" Revenue for each month.\n# bar_chart\n# label="Revenue by month"\nrun: orders -> by_month',
-            0,
             { caption: "Revenue for each month.", codeLine: 3 },
          ),
-         query(10, 10, "run: orders -> kpis", 1),
+         query(10, 10, "run: orders -> kpis"),
          md(12, 12, "Trailing prose is a model note, so it may end the file."),
       ],
       annotations: [
@@ -257,7 +256,6 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
             11,
             17,
             '# bar_chart\n#|(markdown)\n### Orders by region\nExcludes refunds.\n|#\n# label="Orders"\nrun: us_orders -> { aggregate: order_count }',
-            0,
             {
                markdown: "### Orders by region\nExcludes refunds.",
                proseLines: [[1, 4]],
@@ -274,11 +272,11 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
       cells: [
          def(3, 3, IMPORT),
          def(5, 5, "query: q is orders -> kpis"),
-         query(7, 7, "run: q", 0),
-         query(9, 10, "# bar_chart\nrun: q -> { select: order_count }", 1, {
+         query(7, 7, "run: q"),
+         query(9, 10, "# bar_chart\nrun: q -> { select: order_count }", {
             codeLine: 1,
          }),
-         query(12, 12, "run: q + { limit: 1 }", 2),
+         query(12, 12, "run: q + { limit: 1 }"),
       ],
       annotations: [
          "##! experimental.givens\n",
@@ -299,7 +297,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
             "source: us_orders is orders extend { where: region = 'US' }",
          ),
          def(17, 17, "export { us_orders }"),
-         query(19, 19, "run: us_orders -> kpis", 0),
+         query(19, 19, "run: us_orders -> kpis"),
       ],
       annotations: [
          "##! experimental.givens\n",
@@ -311,7 +309,8 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
 };
 
 describe("readNotebookCells over the fixture notebooks", () => {
-   let duckdb: DuckDBConnection;
+   usePackageLoadPool();
+   let loaded: LoadedTempPackage;
    const compiled = new Map<string, { modelDef: ModelDef; text: string }>();
 
    const read = (modelPath: string): NotebookReadResult => {
@@ -323,17 +322,15 @@ describe("readNotebookCells over the fixture notebooks", () => {
    };
 
    beforeAll(async () => {
-      duckdb = new DuckDBConnection("duckdb", ":memory:", FIXTURE_DIR);
+      loaded = await loadPackageCopy(FIXTURE_DIR, {
+         name: "notebooks-malloyyo",
+      });
       const paths = fs
          .readdirSync(path.join(FIXTURE_DIR, "notebooks"))
          .map((file) => `notebooks/${file}`);
       for (const modelPath of paths) {
-         const model = await Model.create(
-            "notebooks-malloyyo",
-            FIXTURE_DIR,
-            modelPath,
-            new Map<string, Connection>([["duckdb", duckdb]]),
-         );
+         const model = loaded.pkg.getModel(modelPath);
+         if (!model) throw new Error(`${modelPath} did not load`);
          const modelDef = model.getModelDef();
          const text = model.getCompiledSourceText();
          if (!modelDef || text === undefined) {
@@ -348,7 +345,7 @@ describe("readNotebookCells over the fixture notebooks", () => {
    });
 
    afterAll(async () => {
-      await duckdb.close();
+      await loaded.cleanup();
    });
 
    it("has an expectation for every fixture notebook but the refused one", () => {
@@ -387,16 +384,6 @@ describe("readNotebookCells over the fixture notebooks", () => {
          }
       }
       expect(checked).toBeGreaterThan(0);
-   });
-
-   it("maps every query cell to its own compiled run, in order", () => {
-      for (const modelPath of Object.keys(EXPECTED)) {
-         const { modelDef } = compiled.get(modelPath)!;
-         const indexes = read(modelPath)
-            .cells.filter((cell) => cell.kind === "query")
-            .map((cell) => cell.queryIndex);
-         expect(indexes).toEqual(modelDef.queryList.map((_, k) => k));
-      }
    });
 
    it("refuses a notebook with a statement no cell can hold, naming its line, and returns no cells", () => {
@@ -535,7 +522,6 @@ describe("readNotebookCells on inline text", () => {
                codeLine: 6,
                startLine: 2,
                endLine: 8,
-               queryIndex: 0,
             },
          ]);
          expect(result.annotations).toEqual(["## artifact {}\n"]);
@@ -868,7 +854,7 @@ describe("readNotebookCells on inline text", () => {
          const result = readText(`## artifact {}\n${note}run: a -> b\n`, 1);
          expect(result.cells).toEqual([
             cell,
-            query(2 + lines, 2 + lines, "run: a -> b", 0),
+            query(2 + lines, 2 + lines, "run: a -> b"),
          ] as NotebookCellSpan[]);
          expect(result.annotations).toEqual(["## artifact {}\n"]);
       });
@@ -977,7 +963,7 @@ describe("readNotebookCells on inline text", () => {
       const result = readText("run: a -> b\n## artifact {}\nrun: c -> d\n", 2);
       expect(result.cells).toEqual([
          def(1, 1, "run: a -> b"),
-         query(3, 3, "run: c -> d", 1),
+         query(3, 3, "run: c -> d"),
       ] as NotebookCellSpan[]);
    });
 
@@ -988,7 +974,9 @@ describe("readNotebookCells on inline text", () => {
    it("refuses when the compile holds a different number of runs than the file", () => {
       const result = readText("## artifact {}\nrun: a -> b\n", 2);
       expect(result.cells).toEqual([]);
-      expect(result.error?.message).toContain("found 1 run:");
+      expect(result.error?.message).toContain(
+         "disagree on the number of run: statements. The reader found 1 and the compiler 2.",
+      );
    });
 
    it("keeps an emoji-bearing line whole, slicing by code point", () => {

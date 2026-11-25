@@ -1,0 +1,149 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "listed__rollup__g__ab53ae01",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "g"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "g"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "b101d151024358ab",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "listed",
+          "stages": 1
+        },
+        "source": "listed"
+      },
+      "equalToLive": true,
+      "malloy": "run: listed -> { group_by: g; aggregate: total; order_by: g }",
+      "path": {
+        "considered": [],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "g"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "listed"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "a sum by the grain",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "g"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "g"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "b101d151024358ab",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "listed",
+          "stages": 1
+        },
+        "source": "listed"
+      },
+      "equalToLive": true,
+      "malloy": "run: listed -> { group_by: g; aggregate: total; order_by: g }",
+      "path": {
+        "considered": [
+          {
+            "kind": "rollup",
+            "origin": "rollup",
+            "outcome": "used",
+            "tableId": "b906e0e0262575336fd7818bd022af2ec363e5c343e122a47563845a657351bd"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "g"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "listed"
+        },
+        "servedBy": {
+          "kind": "rollup",
+          "origin": "rollup",
+          "tableId": "b906e0e0262575336fd7818bd022af2ec363e5c343e122a47563845a657351bd",
+          "tier": "storage"
+        },
+        "warnings": []
+      },
+      "query": "a sum by the grain",
+      "servedBy": "rollup",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

@@ -49,6 +49,8 @@ export function useRawQueryData({
                versionId: versionId,
             },
             undefined,
+            // versionId: carried in the body.
+            undefined,
             { signal },
          ),
       enabled,

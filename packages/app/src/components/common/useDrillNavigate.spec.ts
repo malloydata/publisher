@@ -8,20 +8,32 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 let reports: { path: string; layout: string }[] = [];
 let settled = true;
 let isError = false;
+let listingVersionId: string | undefined;
 const navigate = mock((_to: string, _event?: MouseEvent) => {});
 
 const sdk = await import("@malloy-publisher/sdk");
 mock.module("@malloy-publisher/sdk", () => ({
    ...sdk,
-   useReportListing: () => ({ reports, settled, isError }),
+   useReportListing: (_env: string, _pkg: string, versionId?: string) => {
+      listingVersionId = versionId;
+      return { reports, settled, isError };
+   },
    useRouterClickHandler: () => navigate,
 }));
 
 const { useDrillNavigate } = await import("./useDrillNavigate");
 
 let outcome: string | undefined;
-const drill = (env: string, pkg: string, to: string, givens = {}) => {
-   const { result } = renderHook(() => useDrillNavigate(env, pkg));
+const drill = (
+   env: string,
+   pkg: string,
+   to: string,
+   givens = {},
+   versionSegment?: string,
+) => {
+   const { result } = renderHook(() =>
+      useDrillNavigate(env, pkg, versionSegment),
+   );
    outcome = result.current({ path: to, dashboard: to, givens });
    return navigate.mock.calls.at(-1)?.[0];
 };
@@ -31,10 +43,28 @@ beforeEach(() => {
    reports = [];
    settled = true;
    isError = false;
+   listingVersionId = undefined;
    navigate.mockClear();
 });
 
 describe("useDrillNavigate", () => {
+   it("stays on a pinned version: its listing, and its segment in the route", () => {
+      reports = [{ path: "sales/q3.malloy", layout: "grid" }];
+      expect(drill("env", "pkg", "sales/q3", { region: "west" }, "1.0.0")).toBe(
+         "/env/pkg/1.0.0/sales/q3?region=west",
+      );
+      expect(listingVersionId).toBe("1.0.0");
+      expect(outcome).toBe("resolved");
+   });
+
+   it("keeps latest spelled out, and reads latest's listing", () => {
+      reports = [{ path: "sales/q3.malloy", layout: "grid" }];
+      expect(drill("env", "pkg", "sales/q3", {}, "latest")).toBe(
+         "/env/pkg/latest/sales/q3",
+      );
+      expect(listingVersionId).toBeUndefined();
+   });
+
    it("lands on the resolved report's path route, with the seeded givens", () => {
       reports = [{ path: "sales/q3.malloy", layout: "grid" }];
       expect(drill("env", "pkg", "sales/q3", { region: "west" })).toBe(

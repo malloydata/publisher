@@ -371,6 +371,7 @@ describe("the roster this file checks", () => {
       "packages/create-malloy-package test",
       "packages/create-malloy-package test:e2e",
       "packages/sdk test",
+      "packages/sdk test:isolated",
       "packages/sdk test:tz",
       "packages/server test:component",
       "packages/server test:integration",
@@ -383,6 +384,7 @@ describe("the roster this file checks", () => {
     const files = [...new Set(WORKFLOW_INVOCATIONS.map((i) => i.pkg))].sort();
     expect(files).toEqual([
       ".github/workflows/connection-integration-tests.yml",
+      ".github/workflows/main-thread-regression.yml",
     ]);
   });
 });

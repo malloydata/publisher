@@ -13,6 +13,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs";
+import path from "path";
 import { writeTempPackage } from "../../../src/test_helpers/temp_package";
 import { startPackageEnv, type PackageEnv } from "../../harness/reports";
 
@@ -29,6 +30,7 @@ interface Status {
       package?: string;
       stale?: boolean;
       failedAt?: string;
+      message?: string;
    }[];
 }
 
@@ -71,6 +73,12 @@ describe("GET /status (E2E)", () => {
       fs.writeFileSync(env.served("m.malloy"), "source: s is duckdb.sql(\n");
       const reload = await fetch(env.api("?reload=true"));
       expect(reload.ok).toBe(false);
+      // The compile error names the file package-relative, never where the
+      // server keeps it.
+      const where = path.dirname(env.served("m.malloy"));
+      const answer = (await reload.json()) as { message: string };
+      expect(answer.message).toContain("FILE: m.malloy");
+      expect(answer.message).not.toContain(where);
 
       const s = await status();
       expect(listed(s)).toBe(true);
@@ -81,5 +89,7 @@ describe("GET /status (E2E)", () => {
             failedAt: expect.any(String),
          }),
       ]);
+      expect(ownErrors(s)[0].message).toContain("FILE: m.malloy");
+      expect(ownErrors(s)[0].message).not.toContain(where);
    });
 });

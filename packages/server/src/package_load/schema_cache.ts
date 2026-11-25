@@ -12,8 +12,10 @@
  * Bounded by serialized bytes rather than entry count, so a few very wide
  * tables cannot take an unbounded share of the heap. Keys must name everything
  * the schema depends on (environment, connection instance, table path or
- * SQL). Entries never go stale on their own; a `refreshTimestamp` request
- * bypasses the cache and overwrites the entry.
+ * SQL). Entries never go stale on their own: an explicit refresh (a reload
+ * or a publish) refetches each schema its package reads and replaces the
+ * entry, and the other workers {@link forget} theirs; a `refreshTimestamp`
+ * request bypasses the cache and overwrites the entry.
  */
 export class SchemaCache<T> {
    private readonly entries = new Map<string, { value: T; bytes: number }>();
@@ -54,6 +56,11 @@ export class SchemaCache<T> {
          if (oldest === undefined) break;
          this.delete(oldest);
       }
+   }
+
+   /** Drop `key`'s entry, if any; a fetch under way for it is left alone. */
+   forget(key: string): void {
+      this.delete(key);
    }
 
    private delete(key: string): void {
@@ -106,6 +113,42 @@ export class SchemaCache<T> {
       void settled.finally(() => {
          if (this.inFlight.get(key) === settled) this.inFlight.delete(key);
       });
+   }
+}
+
+/**
+ * The keys a worker is told to forget (see ForgetSchemasMessage), held while
+ * a job runs and applied when none does, so no load compiles one model
+ * against a table's old columns and the next against its new ones.
+ */
+export class DeferredForgets {
+   private readonly pending = new Set<string>();
+   private readonly running = new Set<string>();
+
+   constructor(private readonly cache: { forget(key: string): void }) {}
+
+   /** Forget `keys` now when no job runs, else once the last one ends. */
+   forget(keys: Iterable<string>): void {
+      for (const key of keys) {
+         if (this.running.size === 0) this.cache.forget(key);
+         else this.pending.add(key);
+      }
+   }
+
+   jobStarted(jobId: string): void {
+      this.running.add(jobId);
+   }
+
+   jobEnded(jobId: string): void {
+      this.running.delete(jobId);
+      if (this.running.size > 0) return;
+      for (const key of this.pending) this.cache.forget(key);
+      this.pending.clear();
+   }
+
+   /** Keys held until the running jobs end. */
+   get held(): number {
+      return this.pending.size;
    }
 }
 

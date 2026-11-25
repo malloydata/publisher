@@ -5,6 +5,7 @@
 // `filterParams` and `bypassFilters` (see RELEASE_NOTES deprecations).
 // Every test in this file is about that deprecated feature.
 
+import { unrecordedAudit } from "../../src/service/access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Connection } from "@malloydata/malloy";
 import {
@@ -30,7 +31,7 @@ let removePkgDir: () => void;
 let duckdbConnection: DuckDBConnection;
 
 const SEED_SQL = `
-CREATE TABLE IF NOT EXISTS orders (
+CREATE OR REPLACE TABLE orders (
    order_id INTEGER,
    region VARCHAR,
    status VARCHAR,
@@ -129,17 +130,6 @@ import "base_orders.malloy"
 source: child_orders is base_orders extend {}
 `;
 
-// Notebook against the extended source
-const NOTEBOOK_EXTEND = `>>>markdown
-# Extend Test
-
->>>malloy
-import "child_orders.malloy"
-
->>>malloy
-run: child_orders -> summary
-`;
-
 // Model with a given: declaration — view filters rows by the given value
 const MODEL_WITH_GIVENS = `##! experimental.givens
 
@@ -188,6 +178,7 @@ import "orders_givens.malloy"
 >>>malloy
 run: orders -> by_given_region
 `;
+import { QueryPrivileges } from "../../src/service/model_query_request";
 
 beforeAll(async () => {
    duckdbConnection = await seededDuckdb(SEED_SQL);
@@ -217,42 +208,6 @@ type Row = Record<string, unknown>;
  */
 function asRows(compactResult: unknown): Row[] {
    return compactResult as Row[];
-}
-
-/**
- * Parse a notebook cell result (JSON-stringified Malloy result).
- * The shape is: { schema, data: { kind, array_value: [{ record_value: { field_name: {kind, ...value} } }, ...] }, ... }
- * We extract column values from the record structure.
- */
-function parseNotebookResult(resultJson: string): Row[] {
-   const parsed = JSON.parse(resultJson);
-   const arrayValue = parsed?.data?.array_value;
-   if (!Array.isArray(arrayValue)) {
-      throw new Error(
-         `Cannot extract rows from notebook result: ${JSON.stringify(Object.keys(parsed?.data ?? {}))}`,
-      );
-   }
-
-   const schema = parsed.schema?.fields ?? [];
-   const fieldNames = schema.map((f: { name: string }) => f.name);
-
-   return arrayValue.map(
-      (record: { record_value?: Array<Record<string, unknown>> }) => {
-         const row: Row = {};
-         const cells = record.record_value ?? [];
-         for (let i = 0; i < fieldNames.length; i++) {
-            const cell = cells[i];
-            if (!cell) continue;
-            row[fieldNames[i]] =
-               cell.number_value ??
-               cell.string_value ??
-               cell.boolean_value ??
-               cell.timestamp_value ??
-               null;
-         }
-         return row;
-      },
-   );
 }
 
 describe("filter integration", () => {
@@ -346,10 +301,10 @@ describe("filter integration", () => {
             getConnections(),
          );
 
-         const { compactResult } = await model.getQueryResults(
-            "orders",
-            "summary",
-         );
+         const { compactResult } = await model.runQuery(unrecordedAudit(), {
+            sourceName: "orders",
+            queryName: "summary",
+         });
 
          const r = asRows(compactResult);
          expect(r.length).toBe(1);
@@ -365,12 +320,11 @@ describe("filter integration", () => {
             getConnections(),
          );
 
-         const { compactResult } = await model.getQueryResults(
-            "orders",
-            "summary",
-            undefined,
-            { region: ["US"] },
-         );
+         const { compactResult } = await model.runQuery(unrecordedAudit(), {
+            sourceName: "orders",
+            queryName: "summary",
+            filterParams: { region: ["US"] },
+         });
 
          const r = asRows(compactResult);
          expect(r.length).toBe(1);
@@ -386,12 +340,11 @@ describe("filter integration", () => {
             getConnections(),
          );
 
-         const { compactResult } = await model.getQueryResults(
-            "orders",
-            "summary",
-            undefined,
-            { region: ["US", "EU"] },
-         );
+         const { compactResult } = await model.runQuery(unrecordedAudit(), {
+            sourceName: "orders",
+            queryName: "summary",
+            filterParams: { region: ["US", "EU"] },
+         });
 
          const r = asRows(compactResult);
          expect(r.length).toBe(1);
@@ -407,12 +360,11 @@ describe("filter integration", () => {
             getConnections(),
          );
 
-         const { compactResult } = await model.getQueryResults(
-            "orders",
-            "summary",
-            undefined,
-            { status: "active" },
-         );
+         const { compactResult } = await model.runQuery(unrecordedAudit(), {
+            sourceName: "orders",
+            queryName: "summary",
+            filterParams: { status: "active" },
+         });
 
          const r = asRows(compactResult);
          expect(r.length).toBe(1);
@@ -428,12 +380,11 @@ describe("filter integration", () => {
             getConnections(),
          );
 
-         const { compactResult } = await model.getQueryResults(
-            "orders",
-            "summary",
-            undefined,
-            { region: ["EU"], status: "cancelled" },
-         );
+         const { compactResult } = await model.runQuery(unrecordedAudit(), {
+            sourceName: "orders",
+            queryName: "summary",
+            filterParams: { region: ["EU"], status: "cancelled" },
+         });
 
          const r = asRows(compactResult);
          expect(r.length).toBe(1);
@@ -449,12 +400,11 @@ describe("filter integration", () => {
             getConnections(),
          );
 
-         const { compactResult } = await model.getQueryResults(
-            "orders",
-            "by_region",
-            undefined,
-            { status: "cancelled" },
-         );
+         const { compactResult } = await model.runQuery(unrecordedAudit(), {
+            sourceName: "orders",
+            queryName: "by_region",
+            filterParams: { status: "cancelled" },
+         });
 
          const r = asRows(compactResult);
          expect(r.length).toBe(2);
@@ -471,12 +421,10 @@ describe("filter integration", () => {
             getConnections(),
          );
 
-         const { compactResult } = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: orders -> { aggregate: order_count is count() }",
-            { region: ["APAC"] },
-         );
+         const { compactResult } = await model.runQuery(unrecordedAudit(), {
+            query: "run: orders -> { aggregate: order_count is count() }",
+            filterParams: { region: ["APAC"] },
+         });
 
          const r = asRows(compactResult);
          expect(r.length).toBe(1);
@@ -489,12 +437,12 @@ describe("filter integration", () => {
    //
    // PR 5/6 of the givens migration deprecates `#(filter)` but keeps both
    // injection paths working independently and in combination. These tests
-   // assert that `model.getQueryResults` (the path behind POST /…/query)
+   // assert that `model.runQuery` (the path behind POST /…/query)
    // composes a `given:` substitution with a `filterParams` WHERE-injection
    // — same model, same call, both effects apply.
    // -----------------------------------------------------------------------
    describe("givens + filterParams composition", () => {
-      it("composes a given override with filterParams on getQueryResults", async () => {
+      it("composes a given override with filterParams on runQuery", async () => {
          await writeFile(
             "orders_givens_filter.malloy",
             MODEL_WITH_GIVENS_AND_FILTER,
@@ -508,14 +456,12 @@ describe("filter integration", () => {
 
          // given restricts to APAC; filterParam restricts to active.
          // APAC + active: only (5,'APAC','active',300) → order_count=1, total_amount=300.
-         const { compactResult } = await model.getQueryResults(
-            "orders",
-            "by_given_region",
-            undefined,
-            { status: "active" },
-            undefined,
-            { target_region: "APAC" },
-         );
+         const { compactResult } = await model.runQuery(unrecordedAudit(), {
+            sourceName: "orders",
+            queryName: "by_given_region",
+            filterParams: { status: "active" },
+            givens: { target_region: "APAC" },
+         });
 
          const r = asRows(compactResult);
          expect(r.length).toBe(1);
@@ -537,14 +483,11 @@ describe("filter integration", () => {
 
          // Default given target_region='US'; filterParam restricts to active.
          // US + active: (1,'US','active',100) and (2,'US','active',200) → order_count=2, total_amount=300.
-         const { compactResult } = await model.getQueryResults(
-            "orders",
-            "by_given_region",
-            undefined,
-            { status: "active" },
-            undefined,
-            undefined,
-         );
+         const { compactResult } = await model.runQuery(unrecordedAudit(), {
+            sourceName: "orders",
+            queryName: "by_given_region",
+            filterParams: { status: "active" },
+         });
 
          const r = asRows(compactResult);
          expect(r.length).toBe(1);
@@ -566,8 +509,12 @@ describe("filter integration", () => {
          );
 
          await expect(
-            model.getQueryResults("orders", "summary", undefined, {
-               region: ["US"],
+            model.runQuery(unrecordedAudit(), {
+               sourceName: "orders",
+               queryName: "summary",
+               filterParams: {
+                  region: ["US"],
+               },
             }),
          ).rejects.toThrow(BadRequestError);
       });
@@ -581,7 +528,11 @@ describe("filter integration", () => {
          );
 
          try {
-            await model.getQueryResults("orders", "summary", undefined, {});
+            await model.runQuery(unrecordedAudit(), {
+               sourceName: "orders",
+               queryName: "summary",
+               filterParams: {},
+            });
             throw new Error("Should have thrown");
          } catch (error) {
             expect(error).toBeInstanceOf(BadRequestError);
@@ -597,12 +548,11 @@ describe("filter integration", () => {
             getConnections(),
          );
 
-         const { compactResult } = await model.getQueryResults(
-            "orders",
-            "summary",
-            undefined,
-            { tenant: "cust_a", region: ["US"] },
-         );
+         const { compactResult } = await model.runQuery(unrecordedAudit(), {
+            sourceName: "orders",
+            queryName: "summary",
+            filterParams: { tenant: "cust_a", region: ["US"] },
+         });
 
          const r = asRows(compactResult);
          expect(r.length).toBe(1);
@@ -618,12 +568,11 @@ describe("filter integration", () => {
             getConnections(),
          );
 
-         const { compactResult } = await model.getQueryResults(
-            "orders",
-            "summary",
-            undefined,
-            { tenant: "cust_b", status: "cancelled" },
-         );
+         const { compactResult } = await model.runQuery(unrecordedAudit(), {
+            sourceName: "orders",
+            queryName: "summary",
+            filterParams: { tenant: "cust_b", status: "cancelled" },
+         });
 
          const r = asRows(compactResult);
          expect(r.length).toBe(1);
@@ -644,12 +593,10 @@ describe("filter integration", () => {
             getConnections(),
          );
 
-         const { compactResult } = await model.getQueryResults(
-            "orders",
-            "summary",
-            undefined,
-            {},
-            true,
+         const { compactResult } = await model.runQuery(
+            unrecordedAudit(),
+            { sourceName: "orders", queryName: "summary", filterParams: {} },
+            QueryPrivileges.of({ bypassFilters: true }),
          );
 
          const r = asRows(compactResult);
@@ -666,12 +613,14 @@ describe("filter integration", () => {
             getConnections(),
          );
 
-         const { compactResult } = await model.getQueryResults(
-            "orders",
-            "summary",
-            undefined,
-            { region: ["US"] },
-            true,
+         const { compactResult } = await model.runQuery(
+            unrecordedAudit(),
+            {
+               sourceName: "orders",
+               queryName: "summary",
+               filterParams: { region: ["US"] },
+            },
+            QueryPrivileges.of({ bypassFilters: true }),
          );
 
          const r = asRows(compactResult);
@@ -680,7 +629,7 @@ describe("filter integration", () => {
    });
 
    // -----------------------------------------------------------------------
-   // Notebook cell execution with filters
+   // A notebook's queries, run on the notebook's own path
    // -----------------------------------------------------------------------
    describe("notebook cell execution", () => {
       it("executes notebook code cell without filters", async () => {
@@ -691,88 +640,14 @@ describe("filter integration", () => {
             getConnections(),
          );
 
-         // Cell 0 = markdown ("# Test Notebook")
-         // Cell 1 = code (model definition — no query, just source)
-         // Cell 2 = code (run: orders -> summary)
-         const codeCell = await model.executeNotebookCell(2);
-         expect(codeCell.type).toBe("code");
-         expect(codeCell.result).toBeDefined();
-
-         const notebookRows = parseNotebookResult(codeCell.result!);
+         // Cell 2 is `run: orders -> summary`.
+         const { compactResult } = await model.runQuery(unrecordedAudit(), {
+            query: "run: orders -> summary",
+         });
+         const notebookRows = asRows(compactResult);
          expect(notebookRows.length).toBe(1);
          expect(Number(notebookRows[0].order_count)).toBe(6);
          expect(Number(notebookRows[0].total_amount)).toBe(875);
-      });
-
-      it("applies filterParams to notebook cell execution", async () => {
-         const model = await Model.create(
-            "test-pkg",
-            TEST_PKG_DIR,
-            "test_notebook.malloynb",
-            getConnections(),
-         );
-
-         const codeCell = await model.executeNotebookCell(2, {
-            region: ["US"],
-         });
-         expect(codeCell.result).toBeDefined();
-
-         const notebookRows = parseNotebookResult(codeCell.result!);
-         expect(notebookRows.length).toBe(1);
-         expect(Number(notebookRows[0].order_count)).toBe(2);
-         expect(Number(notebookRows[0].total_amount)).toBe(300);
-      });
-
-      it("applies status filter to notebook cell execution", async () => {
-         const model = await Model.create(
-            "test-pkg",
-            TEST_PKG_DIR,
-            "test_notebook.malloynb",
-            getConnections(),
-         );
-
-         const codeCell = await model.executeNotebookCell(2, {
-            status: "cancelled",
-         });
-         expect(codeCell.result).toBeDefined();
-
-         const notebookRows = parseNotebookResult(codeCell.result!);
-         expect(notebookRows.length).toBe(1);
-         expect(Number(notebookRows[0].order_count)).toBe(2);
-         expect(Number(notebookRows[0].total_amount)).toBe(125);
-      });
-
-      it("bypassFilters skips filter injection on notebook cells", async () => {
-         const model = await Model.create(
-            "test-pkg",
-            TEST_PKG_DIR,
-            "test_notebook.malloynb",
-            getConnections(),
-         );
-
-         const codeCell = await model.executeNotebookCell(
-            2,
-            { region: ["US"] },
-            true,
-         );
-         expect(codeCell.result).toBeDefined();
-
-         const notebookRows = parseNotebookResult(codeCell.result!);
-         expect(notebookRows.length).toBe(1);
-         expect(Number(notebookRows[0].order_count)).toBe(6);
-      });
-
-      it("returns markdown cells unchanged", async () => {
-         const model = await Model.create(
-            "test-pkg",
-            TEST_PKG_DIR,
-            "test_notebook.malloynb",
-            getConnections(),
-         );
-
-         const markdownCell = await model.executeNotebookCell(0);
-         expect(markdownCell.type).toBe("markdown");
-         expect(markdownCell.text).toContain("Test Notebook");
       });
 
       it("applies givens to notebook cell execution", async () => {
@@ -787,53 +662,14 @@ describe("filter integration", () => {
 
          // Cell 2: run: orders -> by_given_region with target_region overridden to 'EU'
          // EU rows: (3,'EU','active',150) and (4,'EU','cancelled',75) → order_count=2, total_amount=225
-         const codeCell = await model.executeNotebookCell(
-            2,
-            undefined,
-            undefined,
-            { target_region: "EU" },
-         );
-         expect(codeCell.result).toBeDefined();
-
-         const notebookRows = parseNotebookResult(codeCell.result!);
+         const { compactResult } = await model.runQuery(unrecordedAudit(), {
+            query: "run: orders -> by_given_region",
+            givens: { target_region: "EU" },
+         });
+         const notebookRows = asRows(compactResult);
          expect(notebookRows.length).toBe(1);
          expect(Number(notebookRows[0].order_count)).toBe(2);
          expect(Number(notebookRows[0].total_amount)).toBe(225);
-      });
-
-      it("composes givens and filterParams in notebook cell execution", async () => {
-         await writeFile(
-            "orders_givens_filter.malloy",
-            MODEL_WITH_GIVENS_AND_FILTER,
-         );
-         await writeFile(
-            "givens_filter_notebook.malloynb",
-            NOTEBOOK_GIVENS.replace(
-               "orders_givens.malloy",
-               "orders_givens_filter.malloy",
-            ),
-         );
-         const model = await Model.create(
-            "test-pkg",
-            TEST_PKG_DIR,
-            "givens_filter_notebook.malloynb",
-            getConnections(),
-         );
-
-         // given restricts to APAC; filterParam restricts to active
-         // APAC + active: only (5,'APAC','active',300) → order_count=1, total_amount=300
-         const codeCell = await model.executeNotebookCell(
-            2,
-            { status: "active" },
-            undefined,
-            { target_region: "APAC" },
-         );
-         expect(codeCell.result).toBeDefined();
-
-         const notebookRows = parseNotebookResult(codeCell.result!);
-         expect(notebookRows.length).toBe(1);
-         expect(Number(notebookRows[0].order_count)).toBe(1);
-         expect(Number(notebookRows[0].total_amount)).toBe(300);
       });
    });
 
@@ -844,7 +680,6 @@ describe("filter integration", () => {
       beforeEach(async () => {
          await writeFile("base_orders.malloy", MODEL_BASE_FOR_EXTEND);
          await writeFile("child_orders.malloy", MODEL_CHILD_EXTEND);
-         await writeFile("extend_notebook.malloynb", NOTEBOOK_EXTEND);
       });
 
       it("inherits base-only filters on extended source", async () => {
@@ -928,12 +763,11 @@ describe("filter integration", () => {
          );
 
          // status=active is inherited from the base; should work on child
-         const { compactResult } = await model.getQueryResults(
-            "child_orders",
-            "summary",
-            undefined,
-            { status: "active" },
-         );
+         const { compactResult } = await model.runQuery(unrecordedAudit(), {
+            sourceName: "child_orders",
+            queryName: "summary",
+            filterParams: { status: "active" },
+         });
          const rows = asRows(compactResult);
          expect(rows.length).toBe(1);
          // 4 active rows: US(2), EU(1), APAC(1)
@@ -949,12 +783,11 @@ describe("filter integration", () => {
          );
 
          // region is overridden to type=equal on the child
-         const { compactResult } = await model.getQueryResults(
-            "child_orders",
-            "summary",
-            undefined,
-            { region: "US" },
-         );
+         const { compactResult } = await model.runQuery(unrecordedAudit(), {
+            sourceName: "child_orders",
+            queryName: "summary",
+            filterParams: { region: "US" },
+         });
          const rows = asRows(compactResult);
          expect(rows.length).toBe(1);
          // 2 US rows
@@ -971,33 +804,13 @@ describe("filter integration", () => {
 
          // On the base, tenant is required. On the child, it's not.
          // Running without tenant should NOT throw.
-         const { compactResult } = await model.getQueryResults(
-            "child_orders",
-            "summary",
-         );
+         const { compactResult } = await model.runQuery(unrecordedAudit(), {
+            sourceName: "child_orders",
+            queryName: "summary",
+         });
          const rows = asRows(compactResult);
          expect(rows.length).toBe(1);
          expect(Number(rows[0].order_count)).toBe(6);
-      });
-
-      it("applies inherited filters to notebook cells", async () => {
-         const model = await Model.create(
-            "test-pkg",
-            TEST_PKG_DIR,
-            "extend_notebook.malloynb",
-            getConnections(),
-         );
-
-         // Apply status=cancelled (inherited from base) via notebook cell
-         const codeCell = await model.executeNotebookCell(2, {
-            status: "cancelled",
-         });
-         expect(codeCell.result).toBeDefined();
-
-         const rows = parseNotebookResult(codeCell.result!);
-         expect(rows.length).toBe(1);
-         // 2 cancelled rows: EU(1), APAC(1)
-         expect(Number(rows[0].order_count)).toBe(2);
       });
    });
 });

@@ -1,0 +1,191 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import fs from "fs";
+import os from "os";
+import { setting } from "../setting";
+import { boolean, integer, oneOf, string } from "../types";
+
+/**
+ * The whole CPUs a cgroup CPU quota allows, from a quota and period in
+ * microseconds; undefined for no quota (v2 `max`, v1 `-1`) or text that is not
+ * one. A fractional quota rounds up: half a CPU still runs one thread.
+ */
+export function cgroupCpuLimit(
+   quota: string | undefined,
+   period: string | undefined,
+): number | undefined {
+   const limit = Math.ceil(Number(quota) / Number(period));
+   return Number.isFinite(limit) && limit >= 1 ? limit : undefined;
+}
+
+/** The CPUs the cgroup CPU quota allows (v2, else v1); undefined for none. */
+function cgroupQuota(): number | undefined {
+   const reads: (() => [string | undefined, string | undefined])[] = [
+      // cgroup v2: "<quota> <period>", or "max <period>" for none.
+      () => {
+         const [quota, period] = fs
+            .readFileSync("/sys/fs/cgroup/cpu.max", "utf8")
+            .trim()
+            .split(/\s+/);
+         return [quota, period];
+      },
+      // cgroup v1: the quota is -1 for none.
+      () => [
+         fs.readFileSync("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "utf8").trim(),
+         fs.readFileSync("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "utf8").trim(),
+      ],
+   ];
+   for (const read of reads) {
+      try {
+         return cgroupCpuLimit(...read());
+      } catch {
+         // Not this cgroup version, or not Linux.
+      }
+   }
+   return undefined;
+}
+
+/**
+ * The CPUs this process may run on: the host's (its CPU affinity), bounded by
+ * a cgroup CPU quota when the container sets one, as DuckDB bounds its own
+ * default. `os.availableParallelism()` reports the node's cores inside a
+ * CPU-limited container.
+ */
+export function availableCpus(): number {
+   const cpus = os.availableParallelism();
+   const quota = cgroupQuota();
+   return quota === undefined ? cpus : Math.min(cpus, quota);
+}
+
+/** The configuration design's `duckdb`, `ducklake`, `persist`, `materialization` table. */
+export const storage = [
+   setting({
+      key: "duckdb.extensionFetchPolicy",
+      type: oneOf(["on-demand", "local-only"]),
+      default: "on-demand",
+      description:
+         "on-demand installs a missing DuckDB extension on first use; local-only never reaches the network.",
+      notes: "Whether the server may fetch DuckDB extensions from the network at runtime. `on-demand`: a missing extension is installed on first use (unchanged prior behavior). `local-only`: never install, and disable DuckDB's implicit auto-install \u2014 a locally-present (e.g. image-baked) extension still loads, but a missing one fails with an actionable error naming the extension. Use `local-only` for air-gapped / pinned-image deployments. See [ducklake.md](ducklake.md#duckdb-extension-provisioning).",
+      aliases: { env: ["EXTENSION_FETCH_POLICY"] },
+   }),
+   // The sizes below are strings because DuckDB parses them (`1GB`);
+   // assertDuckDBResourceConfig checks them at boot.
+   setting({
+      key: "duckdb.memoryLimit",
+      type: string(),
+      description:
+         "memory_limit of every DuckDB session, as a DuckDB size (1GB), or off; unset warns at boot.",
+      notes: "DuckDB `memory_limit` applied to **every** DuckDB session and instance Publisher owns, as a flat value (`1GB`, `512MB`) passed to DuckDB verbatim. `off` or unset leaves DuckDB's own default, which is roughly 80% of the container's memory computed **per instance** \u2014 so N instances in one process commit N times that share, and the kernel kills the process while each of them still believes it is inside its budget. Measured in a 3 GiB container: three instances each reported a 2.3 GiB limit, 6.9 GiB of committed budget against 3 GiB of real memory. **Sizing:** the divisor is not a number of builds. Count 1 metadata store + 1 serve-shape gate session + 1 environment lookup funnel + one sandbox per loaded package \u00d7 `PACKAGE_LOAD_WORKERS` (package loads run in `worker_threads`, so same address space and same cgroup) + one per in-flight materialization build, and nothing bounds concurrent builds. Budget roughly (container memory \u2212 resident baseline) \u00f7 that count. DuckDB does not reserve the limit up front, so an idle instance costs far less than its budget \u2014 the limit caps what it may reach, and it is the sum of the caps that has to fit. Too low fails a query with a DuckDB out-of-memory error and leaves the process up, which is the intended trade against losing the pod and every package on it. Validated at startup.",
+      aliases: { env: ["PUBLISHER_DUCKDB_MEMORY_LIMIT"] },
+   }),
+   setting({
+      key: "duckdb.threads",
+      // A thread count or `off`.
+      type: string(),
+      // Never more than DuckDB's own default would start: on a host or
+      // container with fewer than four CPUs, a flat 4 would raise each pool.
+      default: () => String(Math.min(4, availableCpus())),
+      defaultText: "`4`, or the CPUs available when fewer",
+      description:
+         "Threads each DuckDB instance starts with, unless its connection sets threads, or off.",
+      notes: "The size of the thread pool each DuckDB instance Publisher opens starts with, unless the connection sets its own `threads`. DuckDB's own default is one thread per core **per instance**, and Publisher opens many instances in one process: one sandbox per loaded package (and per version), one per file-backed DuckDB, DuckLake or Azure connection, one per in-flight materialization build, plus the metadata store. Measured on an 18-core host: about 15 threads per loaded package. The pools are fixed when each instance opens, so they add up, and the process fails when they reach the thread limit (`kern.num_taskthreads`, 12,288 per process on macOS; on Linux the cgroup `pids.max`, which Kubernetes and `docker run --pids-limit` often set to a few thousand): DuckDB reports `thread constructor failed: Resource temporarily unavailable`, and under Bun the process aborts with `panic: A C++ exception occurred`, taking every package with it. **Sizing:** count the instances as for `PUBLISHER_DUCKDB_MEMORY_LIMIT` and keep (instances × this) well under the limit. A higher value buys parallelism within one large local query (a scan of package-local Parquet or CSV); a dashboard's small queries rarely use more than a few threads. The default is `4`, or the CPUs the process may use when fewer (the host's, bounded by a cgroup v1 or v2 CPU quota), so it never starts a larger pool than DuckDB itself would. `off` restores DuckDB's one-per-core default, the behaviour before this setting existed. Applies at instance open, so a change takes effect for instances opened after a restart. Validated at startup.",
+      aliases: { env: ["PUBLISHER_DUCKDB_THREADS"] },
+   }),
+   setting({
+      key: "duckdb.tempDirectory",
+      type: string(),
+      description: "Directory DuckDB spills to.",
+      notes: "Where DuckDB spills. A materialization build overrides this with its own disposable working directory (unique per build, removed with the build); every other session and instance uses this. Unset leaves DuckDB's default of `.tmp` relative to the process working directory, whose default `max_temp_directory_size` is 90% of whatever filesystem that lands on \u2014 on a container with no ephemeral-storage limit, the node's shared disk. Created at startup if missing, since `SET temp_directory` accepts a path that does not exist and only fails at the first spill. Unlike the memory limit there is no `off` sentinel, because a directory named `off` is a legal path. A `storage=` build pushes its SQL to the source warehouse and streams the result into the destination with nothing to spill. Local compute, and so spill, is the chained-build and serve paths.",
+      aliases: { env: ["PUBLISHER_DUCKDB_TEMP_DIRECTORY"] },
+   }),
+   setting({
+      key: "ducklake.rowGroupSizeBytes",
+      type: string(),
+      description:
+         "Bytes DuckLake buffers per column before flushing a Parquet row group (16MB).",
+      notes: "Bytes DuckLake buffers per Parquet row group before flushing, applied as a **catalog** option on each writable lake at attach. Unset issues nothing and leaves DuckLake's default of 122,880 ROWS. A DuckLake write buffers a whole row group per COLUMN, so its memory is driven by the table's width rather than its row count, and `PUBLISHER_DUCKDB_MEMORY_LIMIT` does not bound it \u2014 those buffers sit outside the buffer manager, so a low limit and a large row group OOM together. Measured on a 72-column, 5M-row write, sampling cgroup `memory.stat` anon: 2772 MiB at the default, 1530 MiB at `64MB`, 1006 MiB at `16MB`. Bytes rather than a row count because one row count cannot suit a 9-column and a 110-column table at once; the byte form derives rows-per-group from the data actually buffered, so it tracks width with nobody estimating it. Smaller is not free: more row groups cost Parquet metadata and read-side pruning quality, and the read cost has not been measured here. Requires `preserve_insertion_order=false`, which Publisher sets on the attaching session \u2014 DuckLake plans its copy parallel unconditionally and does not honour insertion order regardless (measured: 15 adjacent inversions per 1.5M rows with it on, 10 with it off), so the guarantee being waived is not one that was being provided. Written to `ducklake_metadata`, so it outlives the connection and is seen by every writer of that lake; skipped on a read-only attach. A catalog that refuses the option is logged and attaches anyway. Validated at startup.",
+      aliases: { env: ["PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES"] },
+   }),
+   setting({
+      key: "ducklake.targetFileSizeBytes",
+      type: string(),
+      description:
+         "Size a DuckLake Parquet file grows to before rotating (256MB).",
+      notes: "Bytes DuckLake writes into one Parquet file before rotating to the next, applied as a **catalog** option on each writable lake at attach. Unset issues nothing and leaves DuckLake's own default of roughly 512MB. A separate term from `PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES`, not a replacement: that bounds the per-column buffer _within_ a file, this bounds how much of the file stays resident. Writing to object storage, DuckDB copies each multipart part into a buffer it allocates itself and holds it until the file completes, so a file's bytes are resident however they are grouped inside it \u2014 and `PUBLISHER_DUCKDB_MEMORY_LIMIT` bounds neither, since both sit outside the buffer manager. The same write to a local path streams and shows none of this, so the cost is invisible to testing that does not target a cloud destination. Measured on a 72-column, 20M-row DuckLake write to GCS, all cells in one batch: 650 MiB at DuckLake's default, 550 MiB at `512MB`, 373 MiB at `256MB`, 262 MiB at `128MB`, 255 MiB at `64MB`. **Pick the largest value that clears your memory ceiling, not the smallest** \u2014 memory is the only axis where smaller wins and it stops improving below ~`128MB`, while write throughput, full-scan time and catalog size all get worse (a full scan measured 13.0s at `512MB` against 21.6s at `64MB`; the catalog holds one row per file per column, in a database every writer of that lake shares). Where sources carry a required equality filter, scan time is the least binding of the three: a selective lookup ran in 17\u201363 ms at every size tested. Unlike the row-group bound it does **not** require `preserve_insertion_order=false`, and the order the two are applied in does not matter. Written to `ducklake_metadata`, so it outlives the connection and is seen by every writer of that lake; skipped on a read-only attach. **Unsetting this variable does not revert it** \u2014 the last value written stays in the catalog; to change it back, run `CALL <lake>.set_option('target_file_size', '<value>')` against the catalog. A catalog that refuses the option is logged and attaches anyway. Validated at startup.",
+      aliases: { env: ["PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES"] },
+   }),
+   setting({
+      key: "persist.storageMode",
+      type: oneOf(["off", "write-only", "on"]),
+      default: "off",
+      description:
+         "How #@ persist storage= is honored: off, write-only (build only) or on (build and serve).",
+      notes: "Controls the `#@ persist storage=<name>` materialization tier (materialize a source into a registered [storage destination](connections.md#storage-destinations) and serve it from there \u2014 a destination is declared alongside `connections`, not in it, and is not nameable from a model). `off`: a `storage=` source is skipped by the build and served live, with no error; it is never built in its own warehouse instead. `write-only`: materialize into the storage destination but still serve live (the measurement rung). `on`: build **and** serve from the storage table via the virtual-source transform. Read at startup. A kill switch: moving it **down** never fails a loaded package \u2014 a `storage=` source just reverts to serving live and surfaces as a package warning. See [persist-storage-tutorial.md](persist-storage-tutorial.md).",
+      aliases: { env: ["PERSIST_STORAGE_MODE"] },
+   }),
+   setting({
+      key: "persist.addressIncludesDestination",
+      type: boolean(),
+      default: false,
+      description:
+         "Fold a storage= source's destination into its content address (re-addresses every storage= table once).",
+      notes: "Materialization v2's P12: a `storage=` source's content address (its `sourceEntityId`) also covers the storage destination it builds into, so moving a source between database and `storage=`, or between destinations, gives it a new table instead of reusing or resolving the old one (#7087). The destination is folded in only when the source declares `storage=` and `PERSIST_STORAGE_MODE` is not `off`, so database addresses never move. With it off, only twins have the destination folded in: a `storage=` source whose SQL another source of the package also builds in another place (its own warehouse, or another destination) is addressed with its destination, so the two are two tables and a database chain over the database twin finds its own table; the database twin keeps its address, whatever `name=` the two declare, and only the stored twin rebuilds once, when it first meets the rule. **Turning it on re-addresses every `storage=` table once**: reuse misses, an incremental source re-seeds, each table rebuilds under its new address on its next run, and a `storage=` source serves live until it has. A table Publisher names itself (a `name=`, or its readable default name) is rebuilt in place; a table a host instructed under a generational name is the host's to reclaim. Read once at startup: set it the same on every worker serving an environment and restart them together, or workers compute different addresses for the same source. Off by default; turn it on per deployment as a scheduled rollout, after checking the rebuild cost, and make the first run after it a full one so chained sources find their parents under the new address.",
+      aliases: { env: ["PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION"] },
+   }),
+   setting({
+      key: "materialize.enabled",
+      type: boolean(),
+      default: true,
+      description:
+         "Read #(materialize) and #(rollup), and build and serve their tables (materialization v2). On by default; to be removed one release after that default ships.",
+      notes: "Materialization v2, on by default. On, a source annotated `#(materialize)` gets a generated build source, a query-shaped `#@ persist` over the source in a companion model the package never shows, and the build plan builds it under the author's source name: the plan, a name-scoped run (`sourceNames` takes the author's name), the manifest, warnings and the path report never name the generated source. A measure annotated `#(rollup)` is planned as a rollup at its grain, built, and served by the rollup leg, and `#@ persist` on a view is planned and served by the persisted-view leg. A built source is served from its **served copy**: the author's own files, held in memory, with the source re-rooted on its stored table and each computed dimension read as the stored column of its own name (its `#(doc)` and other annotations kept on the field), so extensions, views, joins and importing files are the author's text unchanged; a query the served copy cannot answer answers live. A database `#(materialize)` source is served this way with this switch alone; a `storage=` one also needs `PERSIST_STORAGE_MODE=on`. A served copy that does not compile is a `served-copy-not-served` package warning. A reader that opts out with `#@ -persist` (Malloy core's opt-out, still supported) recomputes live, and the served copy declines it. On, a measure that declares v1's `#@ preaggregate` gets a `deprecated-preaggregate-annotation` warning naming its v2 spelling, `#(rollup)` ([materialization-migration.md](materialization-migration.md)); it still works as before. Set `false` to opt out: `#(materialize)` and `#(rollup)` are then ignored, and the build plan is what it was without materialization v2. Treat the setting as one-way: once an environment runs with it on, leave it on rather than switching it off and back on, as development and staging deployments do. Read at startup. To be removed one release after this default ships, together with the off position.",
+      aliases: { env: ["PUBLISHER_MATERIALIZE"] },
+   }),
+   setting({
+      key: "materialize.gatedSources",
+      type: boolean(),
+      default: false,
+      description:
+         "Let the served copy, persisted views and rollups answer a query through any row-level gate proven on them, with the gate grafted on them (off until a security review).",
+      notes: "Off by default until a security review of gated tables at rest. Off, a query whose entry point carries a row-level gate (`#(authorize)`, `#(access_filter)`) is answered from a stored table only when every table the answer reads is a database table, a `storage=` table that every source stored in it is proven to fill with ungated rows only, or a table kept under its source's own gate: a v1 `#@ persist` or `#(materialize)`, database or `storage=`, whose gate is proven to be its entry point's own row filter or lock (not a row filter it inherits, not one reached through a join, not one whose build substitutes a given) is built, and the served copy grafts and proves that gate on it, so each caller gets live's rows; database and `storage=` behave the same, ahead of that review. A `storage=` table built this way holds every row of the gated source, ungated, at rest in the destination, readable by anyone with direct access to it. Off, such a query is never answered from a `storage=` table proven neither way (one a gated source shares, say) or a persisted view, and from a rollup, in the database or `storage=`, only from one whose base's gates are all its own, each reading grain dimensions only, or are locks reading no row field (inherited at any depth), or, through a join, from an ungated joined source's rollup when the gate reads only the querying source's own plain columns (in a `storage=` destination, beside the querying source's own table there, admitted past its own gate or holding only ungated rows). On, the served copy may answer it from any stored table: the served copy is the author's own text, gates included, so the row filter is grafted and proven on the served compile exactly as on live. A persisted view and a `#(rollup)` rollup, in the database or `storage=`, are let through the same way, each redeclaring the queried source with its gates; a rollup only when every gate reads its grain dimensions. A v1 `#@ preaggregate` rollup is the rollup leg's and is let through as a `#(rollup)` one is. A gate that cannot be grafted on the served copy denies, as it does live. It also decides whether a `#(rollup)` rollup or a database persisted view over a gated source is built: on, it is; off, a view is not, and a rollup only when its base's gates are its own, or locks, as above (a `storage=` view over one is refused either way). A `storage=` table or rollup is read past a gate only when every column the gate reads is stored exactly and compared as its source compares it (no binary float, unless its column contract records it `gateExact`: a destination `DOUBLE` copying a warehouse 8-byte double unchanged; no 128-bit integer; no zone; a known collation). Never configure a destination's catalog, schema or data path as a connection models can name: its stored tables hold gated sources' rows with no gate. Read at startup.",
+      aliases: { env: ["PUBLISHER_MATERIALIZE_GATED_SOURCES"] },
+   }),
+   setting({
+      key: "persist.collisionEnforcementEnabled",
+      type: boolean(),
+      default: true,
+      description:
+         "Fail the publish and the load where two persist sources resolve to the same table.",
+      notes: "On by default: a package in which two different persist sources resolve to the same table in the same destination (an author's `name=`; a source without one takes a readable name of its own) fails to publish and to load (`materialization-table-collision`), on every load path, as does a build of such a package, before anything is written. Give each source a distinct `name=` to fix it. Set to `false` to opt out, which relaxes both the publish and the load: the colliding sources are refused alone (`persist-not-built`, `materialize-not-built`), are never built over or served from the shared table, and answer live until each has its own `name=`, while the package loads.",
+      aliases: { env: ["PERSIST_COLLISION_ENFORCE"] },
+   }),
+   setting({
+      key: "materialization.schedulerEnabled",
+      type: boolean(),
+      default: false,
+      description:
+         "Fire packages' materialization schedules from this process; never on an orchestrated worker.",
+      notes: "Opt-in: enable the standalone materialization scheduler, which fires each loaded package's `materialization.schedule` cron, and each published package version's (see [package-versions.md](package-versions.md#materializations)), so a self-hosted Publisher rebuilds on a cadence with no control plane. **Never set this on a control-plane-driven (orchestrated) worker** \u2014 it is the primary guard against double-driving refresh. See [materialization.md](materialization.md).",
+      aliases: { env: ["PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER"] },
+   }),
+   setting({
+      key: "materialization.schedulerIntervalMs",
+      type: integer({ min: 1000 }),
+      default: 60_000,
+      description: "How often the scheduler looks for due schedules, in ms.",
+      notes: "How often the scheduler sweeps for due schedules, in ms. Minimum `1000`. Only read when the scheduler is enabled.",
+      defaultText: "`60000` (1 min)",
+      aliases: { env: ["PUBLISHER_MATERIALIZATION_SCHEDULER_INTERVAL_MS"] },
+   }),
+   setting({
+      key: "materialization.schedulerMaxFiresPerTick",
+      type: integer({ min: 1 }),
+      default: 10,
+      description: "Packages the scheduler fires per look.",
+      notes: "Stampede guard: max packages fired per sweep. A capped package fires on a later tick. Must be a positive integer.",
+      aliases: {
+         env: ["PUBLISHER_MATERIALIZATION_SCHEDULER_MAX_FIRES_PER_TICK"],
+      },
+   }),
+];

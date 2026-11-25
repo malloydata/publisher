@@ -1,0 +1,43 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+// The upgrade test's fixture (hammer/upgrade/run.ts). Each annotated source is
+// one materialization route a release builds and the next must keep serving:
+// a v1 `#@ persist` and a v2 `#(materialize)` into the `lake` storage
+// destination, a `#(rollup)` stored there too, and a `#(materialize)` and a
+// `#@ persist` in the source's own DuckDB database (the database tier).
+
+##! experimental { persistence composite_sources }
+
+// Unannotated: what a live recompute says, for telling a stored answer apart.
+source: live_orders is orders_pg.table('public.up_orders')
+
+source: orders is orders_pg.table('public.up_orders') extend {
+  measure:
+    #(rollup) grain=["category"] storage="lake"
+    total is amount.sum()
+}
+
+#@ persist name="up_daily" storage=lake
+source: daily_persist is orders_pg.table('public.up_orders') -> {
+  group_by: order_date
+  aggregate: total_amount is amount.sum()
+}
+
+#(materialize) storage="lake"
+source: by_region is orders_pg.table('public.up_orders') -> {
+  group_by: region
+  aggregate: total_amount is amount.sum()
+}
+
+#(materialize)
+source: duck_by_category is duck.table('pgsrc.public.up_orders') -> {
+  group_by: category
+  aggregate: total_amount is amount.sum()
+}
+
+#@ persist name="up_duck_daily"
+source: duck_daily is duck.table('pgsrc.public.up_orders') -> {
+  group_by: order_date
+  aggregate: total_amount is amount.sum()
+}

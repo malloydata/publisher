@@ -11,6 +11,7 @@ import {
    type DrillOutcome,
 } from "@malloy-publisher/sdk";
 import { useCallback } from "react";
+import { versionIdOf, withVersionSegment } from "./packageRoute";
 
 /**
  * Route a `# drill` to another report, for the Console's URL scheme.
@@ -35,15 +36,24 @@ import { useCallback } from "react";
  * Back returns to the report the reader drilled from. `useRouterClickHandler`
  * also honours cmd/ctrl-click by opening the destination in a new tab.
  *
+ * A drill from a published version stays on it: `versionSegment` is the
+ * route's (`latest` or a version), the target is resolved against that
+ * version's listing, and the route it lands on keeps the segment.
+ *
  * Lives in the app rather than the SDK because the route shape is the
  * Console's; a host with its own routes writes its own.
  */
-export function useDrillNavigate(environmentName: string, packageName: string) {
+export function useDrillNavigate(
+   environmentName: string,
+   packageName: string,
+   versionSegment?: string,
+) {
    const navigate = useRouterClickHandler();
    // Shared with every other reader of the listing, so this is usually already cached.
    const { reports, settled, isError } = useReportListing(
       environmentName,
       packageName,
+      versionIdOf(versionSegment),
    );
    const listed = settled && !isError;
    return useCallback(
@@ -51,16 +61,21 @@ export function useDrillNavigate(environmentName: string, packageName: string) {
          const written = target.path;
          if (!isDrillTargetPath(written)) return "malformed";
          const resolved = resolveDrillTarget(written, reports);
-         const route = reportRoute(
+         const route = withVersionSegment(
+            reportRoute(
+               environmentName,
+               packageName,
+               resolved.kind === "path" ? resolved.report.path : written,
+            ),
             environmentName,
             packageName,
-            resolved.kind === "path" ? resolved.report.path : written,
+            versionSegment,
          );
          const query = new URLSearchParams(target.givens).toString();
          navigate(route + (query ? `?${query}` : ""), event);
          if (resolved.kind === "path") return "resolved";
          return listed ? "unresolved" : "unverified";
       },
-      [navigate, environmentName, packageName, reports, listed],
+      [navigate, environmentName, packageName, versionSegment, reports, listed],
    );
 }

@@ -1,0 +1,780 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+// End-to-end serving behaviour the per-surface tests missed, each found by
+// walking a real package through publish, build, bind and query: a rollup on a
+// source an `index.malloy` re-exports, an inherited `#@ preaggregate`, serving
+// after a connection edit, and the verdicts, path report, preview and package
+// warnings agreeing about one package.
+import { contractFor } from "../../src/test_helpers/contract_fixture";
+import {
+   castToDeclaredTypes,
+   wideIntegerColumns,
+} from "../../src/service/materialization/stored_column_types";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import * as fs from "fs/promises";
+import * as os from "os";
+import * as path from "path";
+import { unrecordedAudit } from "../../src/service/access_record";
+import { Environment } from "../../src/service/environment";
+import { parsePackageName } from "../../src/service/identity";
+import { QueryPrivileges } from "../../src/service/model_query_request";
+import type { Package } from "../../src/service/package";
+import { installSettings } from "../../src/test_helpers/settings_env";
+import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import { recordConnectionsAsForTests } from "../../src/service/connection_type";
+
+let rootDir: string;
+let envPath: string;
+let restoreSettings: () => void;
+
+beforeEach(async () => {
+   restoreSettings = installSettings({
+      env: {
+         PERSIST_STORAGE_MODE: "on",
+         PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
+      },
+   }).restore;
+   rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-agreement-"));
+   envPath = path.join(rootDir, "env");
+   await fs.mkdir(envPath, { recursive: true });
+});
+
+afterEach(async () => {
+   restoreSettings();
+   await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
+});
+
+async function loadPackage(
+   files: Record<string, string>,
+   connections: unknown[] = [],
+): Promise<{ env: Environment; pkg: Package }> {
+   writePackageFiles(path.join(envPath, "pkg"), files, {
+      manifest: { name: "pkg", description: "fixture" },
+   });
+   const env = await Environment.create(
+      "testEnv",
+      envPath,
+      connections as never,
+   );
+   await env.addPackage("pkg");
+   return { env, pkg: await env.getPackage(parsePackageName("pkg"), false) };
+}
+
+function planEntry(pkg: Package, name: string, modelPath?: string) {
+   const found = Object.values(pkg.getBuildPlan()?.sources ?? {}).find(
+      (s) =>
+         s.name === name &&
+         (modelPath === undefined || s.modelPath === modelPath),
+   );
+   if (!found) throw new Error(`${name} is not in the build plan`);
+   return found;
+}
+
+async function run(
+   pkg: Package,
+   modelPath: string,
+   query: string,
+   options: { includeHidden?: boolean; givens?: Record<string, unknown> } = {},
+) {
+   const model = pkg.getModel(modelPath);
+   if (!model) throw new Error(`${modelPath} did not load`);
+   return model.runQuery(
+      unrecordedAudit(),
+      { query, ...(options.givens ? { givens: options.givens } : {}) } as never,
+      QueryPrivileges.of({
+         includeHiddenFilesAndSources: options.includeHidden === true,
+      }),
+   );
+}
+
+const ROLLUP_MODEL = `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES (10, 'A'), (20, 'A'), (30, 'B')) AS t(amount, category)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`;
+
+/** Build every planned rollup (one table per address) and bind it database. */
+async function buildRollups(pkg: Package): Promise<string> {
+   const ids = [...pkg.materialization().getPreaggregateEntityIds()];
+   expect(ids).toHaveLength(1);
+   const rollup = Object.values(pkg.getBuildPlan()?.sources ?? {}).find(
+      (s) => s.sourceEntityId === ids[0],
+   );
+   if (!rollup) throw new Error("no rollup in the plan");
+   const connection = (await pkg.getMalloyConnection(
+      "duckdb",
+   )) as DuckDBConnection;
+   await connection.runSQL(
+      `CREATE OR REPLACE TABLE built_rollup AS ${rollup.sql}`,
+   );
+   // As every server bind commits, with what read admission looks up.
+   await pkg.materialization().bindCompiled({
+      database: {
+         [ids[0]]: {
+            tableName: "built_rollup",
+            connectionName: "duckdb",
+            contract: contractFor(),
+         },
+      } as never,
+   });
+   return ids[0];
+}
+
+describe("a rollup on a source an index.malloy re-exports", () => {
+   it("is reported as the table that answered, through the published file and the declaring one", async () => {
+      const { pkg } = await loadPackage({
+         "model.malloy": ROLLUP_MODEL,
+         "index.malloy": 'import "model.malloy"\nexport { orders }\n',
+      });
+      const rollupId = await buildRollups(pkg);
+      for (const [modelPath, includeHidden] of [
+         ["index.malloy", false],
+         ["model.malloy", true],
+      ] as const) {
+         const result = await run(
+            pkg,
+            modelPath,
+            "run: orders -> { group_by: category; aggregate: total }",
+            { includeHidden },
+         );
+         // The rollup answered, and the report says so.
+         expect(JSON.stringify(result)).toContain("built_rollup");
+         expect(result.path?.servedBy).toEqual({
+            kind: "rollup",
+            origin: "rollup",
+            tier: "database",
+            tableId: rollupId,
+         });
+         expect(result.path?.considered).toEqual([
+            {
+               tableId: rollupId,
+               kind: "rollup",
+               origin: "rollup",
+               outcome: "used",
+            },
+         ]);
+      }
+      // The verdict agrees with the path report.
+      const verdicts = pkg
+         .materialization()
+         .serveVerdicts()
+         .filter((v) => v.origin === "rollup");
+      expect(verdicts.length).toBeGreaterThan(0);
+      expect(verdicts.every((v) => v.verdict === "serves")).toBe(true);
+   });
+});
+
+const INHERITED_MODEL = `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES (10, 'A'), (20, 'A'), (30, 'B')) AS t(amount, category)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+
+#@ persist name="daily"
+source: daily is orders -> { group_by: category; aggregate: total }
+`;
+
+describe("a #@ preaggregate measure reused in a persisted query", () => {
+   it("loads: the query's output column inherits the annotation and is not validated as misplaced", async () => {
+      const { pkg } = await loadPackage({
+         "model.malloy": INHERITED_MODEL,
+         "index.malloy": 'import "model.malloy"\nexport { orders, daily }\n',
+      });
+      expect(pkg.getModel("model.malloy")?.preaggregateViolations()).toEqual(
+         [],
+      );
+      expect(pkg.getModel("index.malloy")?.preaggregateViolations()).toEqual(
+         [],
+      );
+      expect(pkg.materialization().formatInvalidPreaggregatePolicy()).toBe("");
+      expect(planEntry(pkg, "daily").origin).not.toBe("rollup");
+   });
+
+   it("still refuses an annotation written on a dimension, named once, by the file that declares it", async () => {
+      const refusal = await loadPackage({
+         "model.malloy": `${INHERITED_MODEL}
+source: misplaced is orders extend {
+  #@ preaggregate grain="category"
+  dimension: big is amount > 15
+}
+`,
+         "index.malloy": 'import "model.malloy"\nexport { orders }\n',
+      }).then(
+         () => undefined,
+         (error: unknown) =>
+            error instanceof Error ? error.message : String(error),
+      );
+      expect(refusal).toContain("model.malloy: `big` on `misplaced`");
+      expect(refusal).not.toContain("index.malloy:");
+      expect(refusal?.match(/carries `#@ preaggregate`/g)).toHaveLength(1);
+   });
+});
+
+/** An environment DuckDB connection; its setupSQL is part of its digest. */
+function duck(setupSQL: string) {
+   return { name: "duck", type: "duckdb", duckdbConnection: { setupSQL } };
+}
+
+const DUCK_MODEL = `##! experimental.persistence
+#@ persist name="daily"
+source: daily is duck.sql("SELECT 1 AS id, 2 AS amount") -> { select: id, amount }
+`;
+
+/** Build `daily`'s table under the plan's current address and bind it. */
+async function buildDaily(pkg: Package, table: string): Promise<string> {
+   const entry = planEntry(pkg, "daily");
+   const connection = (await pkg.getMalloyConnection(
+      "duck",
+   )) as DuckDBConnection;
+   await connection.runSQL(`CREATE OR REPLACE TABLE ${table} AS ${entry.sql}`);
+   pkg.materialization().bind({
+      database: {
+         [entry.sourceEntityId]: {
+            tableName: table,
+            connectionName: "duck",
+            contract: contractFor(),
+         },
+      } as never,
+   });
+   return entry.sourceEntityId;
+}
+
+describe("serving after a connection edit and a rebuild", () => {
+   it("serves from the table built under the new address", async () => {
+      const { env, pkg } = await loadPackage({ "model.malloy": DUCK_MODEL }, [
+         duck("SELECT 1"),
+      ]);
+      const before = await buildDaily(pkg, "built_before");
+      const first = await run(
+         pkg,
+         "model.malloy",
+         "run: daily -> { select: * }",
+         {
+            includeHidden: true,
+         },
+      );
+      expect(JSON.stringify(first)).toContain("built_before");
+
+      // The edit moves the address: setupSQL is part of the connection digest.
+      await env.update({
+         name: "testEnv",
+         connections: [duck("SELECT 2")],
+      } as never);
+      await pkg.whenBuildPlanCurrent();
+      const after = await buildDaily(pkg, "built_after");
+      expect(after).not.toBe(before);
+
+      const second = await run(
+         pkg,
+         "model.malloy",
+         "run: daily -> { select: * }",
+         { includeHidden: true },
+      );
+      expect(JSON.stringify(second)).toContain("built_after");
+      expect(second.path?.servedBy).toEqual({
+         kind: "materialized",
+         origin: "persist",
+         tier: "database",
+         tableId: after,
+         via: "served_copy",
+      });
+      expect(
+         pkg
+            .materialization()
+            .serveVerdicts()
+            .find((v) => v.sourceName === "daily"),
+      ).toMatchObject({ verdict: "serves" });
+   });
+});
+
+const AGREEMENT_MODEL = `##! experimental { persistence composite_sources sql_functions givens }
+given:
+  ROLES :: string[]
+
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES
+    (1, 'east', 10, '10'), (2, 'west', 20, '20'), (3, 'east', 5, '5')
+  ) AS t(id, region, amount, amount_txt)
+""") extend {
+  primary_key: id
+  #@ preaggregate grain="region"
+  measure: total is amount.sum()
+}
+
+#@ persist name="daily_c"
+source: daily_c is orders -> { group_by: region; aggregate: t is amount.sum() }
+
+#@ persist name="daily_s" storage="lake"
+source: daily_s is orders -> {
+  group_by: region
+  aggregate: t is amount.sum(), n is count()
+} extend {
+  view: by_region is { group_by: region; aggregate: tt is t.sum() }
+}
+
+// Its own lock: read past it from the shared table (G3, as database).
+#(authorize) 'admin' in $ROLES
+source: daily_s_locked is daily_s extend { dimension: r2 is region }
+
+#(access_filter) region in $ROLES
+source: gated_orders is orders extend {}
+
+// A row filter it inherits: refused on every tier.
+#@ persist name="daily_s_secure" storage="lake"
+source: daily_s_secure is gated_orders -> {
+  group_by: region
+  aggregate: t is amount.sum(), m is amount.max()
+} extend {
+  dimension: r2 is region
+}
+
+#@ persist name="txt_s" storage="lake"
+source: txt_s is orders -> {
+  select: id, region, amount_num is sql_number("\${amount_txt}")
+}
+`;
+
+const AGREEMENT_INDEX = `import "model.malloy"
+export { orders, daily_c, daily_s, daily_s_locked, daily_s_secure, txt_s }
+`;
+
+/**
+ * A destination DuckDB whose catalog is named `lake`, as a storage binding's
+ * table path (`lake.main.<table>`) addresses it.
+ */
+function lakeDestination(dir: string): {
+   lake: DuckDBConnection;
+   config: MalloyConfig;
+} {
+   const lake = new DuckDBConnection("lake", path.join(dir, "lake.duckdb"));
+   const config = new MalloyConfig({ connections: {} });
+   config.wrapConnections(
+      () => new FixedConnectionMap(new Map([["lake", lake]]), "lake"),
+   );
+   return { lake, config };
+}
+
+/** Build every planned table: database in `duckdb`, `storage=` in `lake`. */
+async function buildAll(pkg: Package, lake: DuckDBConnection): Promise<void> {
+   const warehouse = (await pkg.getMalloyConnection(
+      "duckdb",
+   )) as DuckDBConnection;
+   const database: Record<string, Record<string, unknown>> = {};
+   const stored: Record<string, Record<string, unknown>> = {};
+   const seen = new Set<string>();
+   // One table per address, recorded under the source that declares it (an
+   // extension inherits `#@ persist` and shares its base's table), as a build
+   // records it.
+   const entries = Object.values(pkg.getBuildPlan()?.sources ?? {}).sort(
+      (a, b) =>
+         Number(b.annotationFields?.name === b.name) -
+         Number(a.annotationFields?.name === a.name),
+   );
+   for (const entry of entries) {
+      if (seen.has(entry.sourceEntityId)) continue;
+      seen.add(entry.sourceEntityId);
+      const table = `t_${entry.sourceEntityId.slice(0, 12)}`;
+      const storage = entry.annotationFields?.storage;
+      if (storage) {
+         // As a real build stores a sum: a warehouse's numeric arrives as a
+         // DECIMAL, and a DuckDB-computed 128-bit integer is cast to
+         // DECIMAL(38,0), which a lake keeps exactly (P4-01).
+         const computed = await lake.runSQL(`DESCRIBE (${entry.sql})`);
+         const select = castToDeclaredTypes(entry.sql, [], {
+            exactIntegers: wideIntegerColumns(
+               (
+                  computed.rows as {
+                     column_name: string;
+                     column_type: string;
+                  }[]
+               ).map((r) => ({ name: r.column_name, type: r.column_type })),
+            ),
+         });
+         await lake.runSQL(`CREATE OR REPLACE TABLE ${table} AS ${select}`);
+         const described = await lake.runSQL(`DESCRIBE ${table}`);
+         stored[entry.sourceEntityId] = {
+            sourceEntityId: entry.sourceEntityId,
+            sourceName: entry.name,
+            physicalTableName: table,
+            contract: contractFor(),
+            storageDestinationName: storage,
+            ...(entry.origin === "rollup" ? { origin: "rollup" } : {}),
+            schema: (
+               described.rows as { column_name: string; column_type: string }[]
+            ).map((r) => ({ name: r.column_name, type: r.column_type })),
+         };
+      } else {
+         await warehouse.runSQL(
+            `CREATE OR REPLACE TABLE ${table} AS ${entry.sql}`,
+         );
+         database[entry.sourceEntityId] = {
+            tableName: table,
+            contract: contractFor(),
+            connectionName: "duckdb",
+         };
+      }
+   }
+   pkg.materialization().bind({ database: database as never });
+   pkg.materialization().bind({ storage: stored as never });
+}
+
+describe("the verdicts, path report, preview and warnings agree on one package", () => {
+   // `buildAll` builds the `storage=` tables from the sandbox by hand, which
+   // no real build can, so the sandbox stands in for a warehouse here.
+   let restoreTypes: () => void;
+   beforeEach(() => {
+      restoreTypes = recordConnectionsAsForTests({ duckdb: "postgres" });
+   });
+   afterEach(() => restoreTypes());
+
+   it("says the same thing about every materialized source on every surface", async () => {
+      const { pkg } = await loadPackage({
+         "model.malloy": AGREEMENT_MODEL,
+         "index.malloy": AGREEMENT_INDEX,
+      });
+      const { lake, config } = lakeDestination(rootDir);
+      pkg.materialization().setServeDestinationConfig(() => config);
+      const preview = await pkg.previewServeVerdicts();
+      await buildAll(pkg, lake);
+
+      const verdicts = pkg.materialization().serveVerdicts();
+      const verdictOf = (name: string) => {
+         const found = verdicts.filter(
+            (v) => v.sourceName === name && v.origin === "persist",
+         );
+         expect(found).toHaveLength(1);
+         return found[0];
+      };
+      const query = (text: string, givens?: Record<string, unknown>) =>
+         run(pkg, "index.malloy", text, { givens });
+
+      // Database: serves, and the path report names its table.
+      expect(verdictOf("daily_c").verdict).toBe("serves");
+      const c = await query(
+         "run: daily_c -> { group_by: region; aggregate: x is t.sum() }",
+      );
+      expect(c.path?.servedBy.kind).toBe("materialized");
+
+      // storage=: serves, from storage, with its view too; the dry-run
+      // preview said so before anything was built.
+      expect(verdictOf("daily_s")).toMatchObject({
+         verdict: "serves",
+         tier: "storage",
+      });
+      const s = await query("run: daily_s -> by_region");
+      expect(s.servedFrom).toBe("storage");
+      expect(s.path?.servedBy.kind).toBe("materialized");
+      expect(preview.find((v) => v.sourceName === "daily_s")?.views).toEqual([
+         { view: "by_region", verdict: "serves" },
+      ]);
+
+      // The rollup on the re-exported base: serves, and the path report
+      // names the rollup.
+      const rollups = verdicts.filter((v) => v.origin === "rollup");
+      expect(rollups.length).toBeGreaterThan(0);
+      expect(rollups.every((v) => v.verdict === "serves")).toBe(true);
+      const r = await query(
+         "run: orders -> { group_by: region; aggregate: total }",
+      );
+      expect(r.path?.servedBy.kind).toBe("rollup");
+
+      // The locked extension shares its base's table and is read past its
+      // own lock, from storage, as a database one is (G3).
+      expect(verdictOf("daily_s_locked")).toMatchObject({
+         verdict: "serves",
+         tier: "storage",
+      });
+      const locked = await query(
+         "run: daily_s_locked -> { group_by: r2; aggregate: x is t.sum() }",
+         { ROLES: ["admin"] },
+      );
+      expect(locked.servedFrom).toBe("storage");
+
+      // A source that inherits a row filter is refused on every tier. Its
+      // verdict says live because the gate refused it, and no table of it
+      // is built, so the query is answered live and the path report names
+      // no table it used.
+      const secure = verdictOf("daily_s_secure");
+      expect(secure).toMatchObject({ verdict: "live", reason: "refused" });
+      expect(secure.message).toContain("row-level gate");
+      const g = await query(
+         "run: daily_s_secure -> { group_by: r2; aggregate: x is t.sum() }",
+         { ROLES: ["east"] },
+      );
+      expect(g.path?.servedBy.kind).toBe("live");
+      expect(g.servedFrom).not.toBe("storage");
+
+      // A mistyped column: the package warns about it, the source still
+      // serves, and a query reading that column is answered live.
+      const warnings = pkg.getPackageMetadata().warnings ?? [];
+      expect(
+         warnings.filter((w) => w.code === "storage-column-type-mismatch"),
+      ).toMatchObject([{ subject: "txt_s" }]);
+      expect(verdictOf("txt_s").verdict).toBe("serves");
+      const tOk = await query("run: txt_s -> { group_by: region }");
+      expect(tOk.servedFrom).toBe("storage");
+      const tLive = await query("run: txt_s -> { group_by: amount_num }");
+      expect(tLive.servedFrom).not.toBe("storage");
+   });
+});
+
+const HOST_PLACED_MODEL = `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES (1, 'east', 10), (2, 'west', 20), (3, 'east', 5))
+    AS t(id, region, amount)
+""")
+
+#@ persist name="daily_h"
+source: daily_h is orders -> { group_by: region; aggregate: t is amount.sum() }
+`;
+
+// F-45: a source with no `storage=` that a host's build instructions placed in
+// a storage destination is bound as a storage table, and queries read it from
+// there (`storageLookupOf`). The verdict judged it by its annotation and said
+// `awaiting_build` while queries were served from storage.
+describe("a database-origin source a host placed in a storage destination", () => {
+   let restoreTypes: () => void;
+   beforeEach(() => {
+      restoreTypes = recordConnectionsAsForTests({ duckdb: "postgres" });
+   });
+   afterEach(() => restoreTypes());
+
+   it("reads serves, from storage, as the path report says it was served", async () => {
+      const { pkg } = await loadPackage({
+         "model.malloy": HOST_PLACED_MODEL,
+         "index.malloy": 'import "model.malloy"\nexport { daily_h }\n',
+      });
+      const { lake, config } = lakeDestination(rootDir);
+      pkg.materialization().setServeDestinationConfig(() => config);
+      const entry = planEntry(pkg, "daily_h");
+      expect(entry.annotationFields?.storage).toBeUndefined();
+
+      // The host's run wrote the table into `lake` (its sum as an exact
+      // integer, as a real build stores one), and its manifest binds it as a
+      // storage table.
+      await lake.runSQL(
+         `CREATE OR REPLACE TABLE host_daily_h AS ` +
+            `SELECT region, CAST(t AS BIGINT) AS t FROM (${entry.sql})`,
+      );
+      const described = await lake.runSQL("DESCRIBE host_daily_h");
+      pkg.materialization().bind({
+         storage: {
+            [entry.sourceEntityId]: {
+               sourceEntityId: entry.sourceEntityId,
+               sourceName: entry.name,
+               physicalTableName: "host_daily_h",
+               contract: contractFor(),
+               storageDestinationName: "lake",
+               schema: (
+                  described.rows as {
+                     column_name: string;
+                     column_type: string;
+                  }[]
+               ).map((r) => ({ name: r.column_name, type: r.column_type })),
+            },
+         } as never,
+      });
+
+      const verdicts = pkg
+         .materialization()
+         .serveVerdicts()
+         .filter((v) => v.sourceName === "daily_h");
+      expect(verdicts).toHaveLength(1);
+      expect(verdicts[0]).toMatchObject({
+         tier: "storage",
+         verdict: "serves",
+      });
+
+      const result = await run(
+         pkg,
+         "index.malloy",
+         "run: daily_h -> { group_by: region; aggregate: x is t.sum() }",
+      );
+      expect(result.servedFrom).toBe("storage");
+      expect(result.path?.servedBy.kind).toBe("materialized");
+   });
+});
+
+/** Store a plan entry's table in `lake` as a build does, and its binding entry. */
+async function storeInLake(
+   lake: DuckDBConnection,
+   entry: {
+      sourceEntityId: string;
+      name: string;
+      sql: string;
+      origin?: string | null;
+   },
+   extra: Record<string, unknown> = {},
+): Promise<Record<string, unknown>> {
+   const table = `t_${entry.sourceEntityId.slice(0, 12)}`;
+   const computed = await lake.runSQL(`DESCRIBE (${entry.sql})`);
+   const select = castToDeclaredTypes(entry.sql, [], {
+      exactIntegers: wideIntegerColumns(
+         (computed.rows as { column_name: string; column_type: string }[]).map(
+            (r) => ({ name: r.column_name, type: r.column_type }),
+         ),
+      ),
+   });
+   await lake.runSQL(`CREATE OR REPLACE TABLE ${table} AS ${select}`);
+   const described = await lake.runSQL(`DESCRIBE ${table}`);
+   return {
+      sourceEntityId: entry.sourceEntityId,
+      sourceName: entry.name,
+      physicalTableName: table,
+      contract: contractFor(),
+      storageDestinationName: "lake",
+      ...(entry.origin === "rollup" ? { origin: "rollup" } : {}),
+      schema: (
+         described.rows as { column_name: string; column_type: string }[]
+      ).map((r) => ({ name: r.column_name, type: r.column_type })),
+      ...extra,
+   };
+}
+
+const INEXACT_GATE_MODEL = `##! experimental { persistence composite_sources givens }
+given:
+  W :: number
+
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES (1, 10, 0.5::DOUBLE), (2, 20, 0.25::DOUBLE), (3, 5, 0.5::DOUBLE))
+    AS t(id, amount, w)
+""") extend {
+  primary_key: id
+}
+
+#(access_filter) w = $W
+source: wbase is orders extend {
+  #@ preaggregate grain="w"
+  measure: wtotal is amount.sum()
+}
+
+#(access_filter) w = $W
+source: wbase_s is orders extend {
+  #@ preaggregate grain="w" storage="lake"
+  measure: wstotal is amount.sum()
+}
+`;
+
+// A rollup's verdict asks the gate policy of the rollup's own table, as the
+// router does: a gate column (`w`) stored as a DOUBLE keeps no gate, on a
+// `storage=` rollup and on one a host placed in storage alike.
+describe("a gated storage rollup whose gate column is stored inexactly", () => {
+   let restoreTypes: () => void;
+   beforeEach(() => {
+      restoreTypes = recordConnectionsAsForTests({ duckdb: "postgres" });
+   });
+   afterEach(() => restoreTypes());
+
+   it("reads live (row_level_gate), as its query is answered live", async () => {
+      const { pkg } = await loadPackage({
+         "model.malloy": INEXACT_GATE_MODEL,
+         "index.malloy": 'import "model.malloy"\nexport { wbase, wbase_s }\n',
+      });
+      const { lake, config } = lakeDestination(rootDir);
+      pkg.materialization().setServeDestinationConfig(() => config);
+      const rollups = Object.values(pkg.getBuildPlan()?.sources ?? {}).filter(
+         (s) => s.origin === "rollup",
+      );
+      expect(rollups).toHaveLength(2);
+      const stored: Record<string, unknown> = {};
+      for (const entry of rollups) {
+         // The one with no storage= is placed in `lake` by the host.
+         stored[entry.sourceEntityId] = await storeInLake(lake, entry);
+      }
+      pkg.materialization().bind({ storage: stored as never });
+
+      const verdicts = pkg.materialization().serveVerdicts();
+      for (const [base, measure] of [
+         ["wbase", "wtotal"],
+         ["wbase_s", "wstotal"],
+      ]) {
+         const verdict = verdicts.find(
+            (v) =>
+               v.origin === "rollup" &&
+               rollups.find((r) => r.sourceID === v.sourceID)?.preaggregate
+                  ?.baseSourceName === base,
+         );
+         expect(verdict).toMatchObject({
+            tier: "storage",
+            verdict: "live",
+            reason: "row_level_gate",
+         });
+         const result = await run(
+            pkg,
+            "index.malloy",
+            `run: ${base} -> { group_by: w; aggregate: ${measure} }`,
+            { givens: { W: 0.5 } },
+         );
+         expect(result.path?.servedBy.kind).toBe("live");
+         expect(result.servedFrom).not.toBe("storage");
+      }
+   });
+});
+
+// A source bound in both tiers, its storage table stale and its database
+// table fresh: the served copy reads the fresh one, and so does the verdict.
+describe("a host-placed source whose storage table is stale and database table fresh", () => {
+   let restoreTypes: () => void;
+   beforeEach(() => {
+      restoreTypes = recordConnectionsAsForTests({ duckdb: "postgres" });
+   });
+   afterEach(() => restoreTypes());
+
+   it("reads serves on the database tier, as its query is served there", async () => {
+      const { pkg } = await loadPackage({
+         "model.malloy": HOST_PLACED_MODEL,
+         "index.malloy": 'import "model.malloy"\nexport { daily_h }\n',
+      });
+      const { lake, config } = lakeDestination(rootDir);
+      pkg.materialization().setServeDestinationConfig(() => config);
+      const entry = planEntry(pkg, "daily_h");
+      const warehouse = (await pkg.getMalloyConnection(
+         "duckdb",
+      )) as DuckDBConnection;
+      await warehouse.runSQL(
+         `CREATE OR REPLACE TABLE db_daily_h AS ${entry.sql}`,
+      );
+      pkg.materialization().bind({
+         database: {
+            [entry.sourceEntityId]: {
+               tableName: "db_daily_h",
+               contract: contractFor(),
+               connectionName: "duckdb",
+            },
+         } as never,
+      });
+      pkg.materialization().bind({
+         storage: {
+            [entry.sourceEntityId]: await storeInLake(lake, entry, {
+               dataAsOf: "2020-01-01T00:00:00Z",
+               freshnessWindowSeconds: 60,
+               freshnessFallback: "live",
+            }),
+         } as never,
+      });
+
+      const [verdict] = pkg
+         .materialization()
+         .serveVerdicts()
+         .filter((v) => v.sourceName === "daily_h");
+      expect(verdict).toMatchObject({ tier: "database", verdict: "serves" });
+      const result = await run(
+         pkg,
+         "index.malloy",
+         "run: daily_h -> { group_by: region; aggregate: x is t.sum() }",
+      );
+      expect(result.servedFrom).toBe("database");
+      expect(result.path?.servedBy).toMatchObject({
+         kind: "materialized",
+         tier: "database",
+      });
+   });
+});

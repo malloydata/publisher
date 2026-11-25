@@ -1,0 +1,524 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * `#@ persist` on a view (materialization v2, phase 4, P14): which views are
+ * planned, the generated companion's text, and what the package's build plan
+ * holds, warns about and leaves alone with PUBLISHER_MATERIALIZE on and off.
+ */
+
+import { sourcesIn } from "../../../test_helpers/materialization_test_fixtures";
+import { describe, expect, it } from "bun:test";
+import { derivePackagePlan } from "./build_plan";
+import { planPackages } from "../../../test_helpers/materialization_fixture";
+import {
+   FixedConnectionMap,
+   InMemoryURLReader,
+   Runtime,
+} from "@malloydata/malloy";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { generatePersistedViewFile, viewNoteTexts } from "../text/read_text";
+import { PERSIST_VIEW_NOT_BUILT } from "./persisted_view";
+import type { PersistedViewPlan } from "../domain/table_plans";
+
+const TABLE = `duckdb.sql("""
+  select * from (values
+    (1, 'aa', 't1', 10.5, timestamp '2026-01-01 10:00:00'),
+    (2, 'bb', 't2', 20.0, timestamp '2026-01-02 10:00:00')
+  ) as t(id, carrier, tenant, d, ts)
+""")`;
+
+const packages = planPackages({
+   PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+});
+
+function enable(on: boolean, gated = false) {
+   packages.settings({
+      PUBLISHER_MATERIALIZE: on ? "true" : "false",
+      PUBLISHER_MATERIALIZE_GATED_SOURCES: gated ? "true" : "false",
+   });
+}
+
+const compiled = async (text: string) =>
+   (await packages.plan({ "m.malloy": text })).c;
+const compiledFiles = async (files: Record<string, string>) =>
+   (await packages.plan(files)).c;
+
+function viewSources(c: Awaited<ReturnType<typeof compiled>>): string[] {
+   return Object.values(sourcesIn(c))
+      .map((s) => s.name)
+      .filter((n) => n.endsWith("__view"))
+      .sort();
+}
+
+function viewFindings(c: Awaited<ReturnType<typeof compiled>>): string[] {
+   return (c.annotationFindings ?? [])
+      .filter((f) => f.code === PERSIST_VIEW_NOT_BUILT)
+      .map((f) => f.message);
+}
+
+/** The findings that fail the load, as `[code, message]`. */
+function invalidFindings(
+   c: Awaited<ReturnType<typeof compiled>>,
+): [string, string][] {
+   return (c.annotationFindings ?? [])
+      .filter((f) => f.tier === "malformed")
+      .map((f) => [f.code, f.message]);
+}
+
+describe("generatePersistedViewFile", () => {
+   const plan = (o: Partial<PersistedViewPlan>): PersistedViewPlan => ({
+      sourceID: "ops@file:///pkg/m.malloy",
+      sourceName: "ops",
+      viewName: "by_carrier",
+      buildSourceName: "ops__by_carrier__view",
+      buildSourceID:
+         "ops__by_carrier__view@file:///pkg/m.malloy.persist-view.malloy",
+      persistLines: ['#@ persist name="ops_by_carrier"'],
+      declaringURL: "file:///pkg/m.malloy",
+      ...o,
+   });
+
+   it("writes one query-shaped persist source per view, the author's line verbatim", () => {
+      expect(generatePersistedViewFile([plan({})], "m.malloy")).toBe(
+         `##! experimental.persistence
+import { ops__pv_base is ops } from "m.malloy"
+
+#@ persist name="ops_by_carrier"
+source: ops__by_carrier__view is ops__pv_base -> by_carrier
+`,
+      );
+   });
+
+   it("quotes names Malloy would not read bare", () => {
+      const text = generatePersistedViewFile(
+         [
+            plan({
+               sourceName: "source",
+               viewName: "by carrier",
+               buildSourceName: "source__by carrier__view",
+            }),
+         ],
+         "m.malloy",
+      );
+      expect(text).toContain("import { source__pv_base is `source` }");
+      expect(text).toContain(
+         "source: `source__by carrier__view` is source__pv_base -> `by carrier`",
+      );
+   });
+
+   it("writes nothing for no views", () => {
+      expect(generatePersistedViewFile([], "m.malloy")).toBeUndefined();
+   });
+});
+
+describe("the build plan for #@ persist views", () => {
+   const model = `##! experimental.persistence
+source: ops is ${TABLE} extend {
+  measure: n is count()
+  #@ persist name="ops_by_carrier"
+  view: by_carrier is { group_by: carrier; aggregate: n }
+  view: plain is { group_by: carrier }
+}
+
+source: ops_ext is ops extend { where: carrier = 'aa' }
+`;
+
+   it("plans one build source per persisted view, on the source that writes it", async () => {
+      const c = await compiled(model);
+      // The extension inherits the view, but does not declare it.
+      expect(viewSources(c)).toEqual(["ops__by_carrier__view"]);
+      expect(viewFindings(c)).toEqual([]);
+   });
+
+   it("plans nothing with PUBLISHER_MATERIALIZE off, and warns that the view is not built", async () => {
+      enable(false);
+      const c = await compiled(model);
+      expect(viewSources(c)).toEqual([]);
+      expect(viewFindings(c)).toEqual([
+         '#@ persist on view "by_carrier" of source "ops" is not built, so the view is served live: persisted views are built only with PUBLISHER_MATERIALIZE on.',
+      ]);
+      const [finding] = (c.annotationFindings ?? []).filter(
+         (f) => f.code === PERSIST_VIEW_NOT_BUILT,
+      );
+      expect(finding?.refused?.reason).toBe("materialization_off");
+      expect(invalidFindings(c)).toEqual([]);
+   });
+
+   it("with PUBLISHER_MATERIALIZE off, an invalid line still fails the load", async () => {
+      enable(false);
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  measure: n is count()
+  #@ persist name="by_carrier" watermark=dep
+  view: by_carrier is { group_by: carrier; aggregate: n }
+  #@ persist nmae="typo"
+  view: by_two is { group_by: carrier; aggregate: n }
+}
+`);
+      expect(
+         invalidFindings(c)
+            .map(([code]) => code)
+            .sort(),
+      ).toEqual(["persist-unknown-key", "persist-view-invalid"]);
+      expect(viewFindings(c)).toEqual([]);
+   });
+
+   it("warns about and leaves out a caller-dependent view, and plans one that reads now as of its build", async () => {
+      const c = await compiled(`##! experimental { persistence givens }
+given: CARRIER :: string is "aa"
+source: ops is ${TABLE} extend {
+  measure: n is count()
+  #@ persist name="by_given"
+  view: by_given is { where: carrier = $CARRIER; group_by: carrier; aggregate: n }
+  #@ persist name="recent"
+  view: recent is { where: ts > now - 1 day; group_by: carrier; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual(["ops__recent__view"]);
+      const findings = viewFindings(c);
+      expect(findings.some((m) => m.includes("reads a given"))).toBe(true);
+      expect(findings.some((m) => m.includes("current time"))).toBe(false);
+      expect(Object.keys(derivePackagePlan(c, null).asOfBuild ?? {})).toEqual([
+         expect.stringContaining("ops__recent__view"),
+      ]);
+   });
+
+   it("plans a view whose select: * reads a current-time dimension as of its build, beside its twin", async () => {
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  dimension: past is ts < now
+  #@ persist name="star"
+  view: star is { select: * }
+}
+source: ops2 is ${TABLE} extend {
+  dimension: plain is carrier
+  #@ persist name="star2"
+  view: star2 is { select: * }
+}
+`);
+      expect(viewSources(c).sort()).toEqual([
+         "ops2__star2__view",
+         "ops__star__view",
+      ]);
+      expect(viewFindings(c)).toEqual([]);
+      expect(Object.keys(derivePackagePlan(c, null).asOfBuild ?? {})).toEqual([
+         expect.stringContaining("ops__star__view"),
+      ]);
+   });
+
+   it("plans a view whose later stage names a field like a current-time dimension", async () => {
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  dimension: past is ts < now
+  #@ persist name="later"
+  view: later is { group_by: carrier, past is ts > @2000-01-01 } -> { select: carrier, past }
+}
+`);
+      expect(viewSources(c)).toEqual(["ops__later__view"]);
+      expect(viewFindings(c)).toEqual([]);
+   });
+
+   it("plans a view on a query-shaped source whose query reads now, as of its build", async () => {
+      const c = await compiled(`##! experimental.persistence
+source: qb is ${TABLE} -> { where: ts < now; select: * }
+source: ops is qb extend {
+  measure: n is count()
+  #@ persist name="by_carrier"
+  view: by_carrier is { group_by: carrier; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual(["ops__by_carrier__view"]);
+      expect(viewFindings(c)).toEqual([]);
+   });
+
+   it("leaves out a view that reads now over a gated source, as current_time", async () => {
+      const c = await compiled(`##! experimental { persistence givens }
+given: CARRIER :: string is "aa"
+#(access_filter) carrier = $CARRIER
+source: ops is ${TABLE} extend {
+  measure: n is count()
+  #@ persist name="recent"
+  view: recent is { where: ts > now - 1 day; group_by: carrier; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual([]);
+      expect(viewFindings(c).some((m) => m.includes("current time"))).toBe(
+         true,
+      );
+   });
+
+   it("finds an incremental key and an @env. reference invalid", async () => {
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  measure: n is count()
+  #@ persist name="w" watermark="ts"
+  view: w is { group_by: carrier; aggregate: n }
+  #@ persist name=@env.TABLE_NAME
+  view: e is { group_by: carrier; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual([]);
+      expect(viewFindings(c)).toEqual([]);
+      const findings = invalidFindings(c);
+      expect(findings.map(([code]) => code)).toEqual([
+         "persist-view-invalid",
+         "persist-view-invalid",
+      ]);
+      expect(findings.some(([, m]) => m.includes("incremental"))).toBe(true);
+      expect(findings.some(([, m]) => m.includes("@env."))).toBe(true);
+   });
+
+   it("finds the retired partition= invalid, saying to remove it", async () => {
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  measure: n is count()
+  #@ persist name="p" partition="carrier"
+  view: p is { group_by: carrier; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual([]);
+      expect(invalidFindings(c)).toEqual([
+         [
+            "persist-retired-key",
+            expect.stringContaining("partition= is not supported"),
+         ],
+      ]);
+   });
+
+   it.each([
+      ["an unknown key", '#@ persist nmae="x"', "persist-unknown-key"],
+      ["an empty storage=", '#@ persist storage=""', "persist-view-invalid"],
+      [
+         "a line that does not parse",
+         '#@ persist name="x',
+         "persist-view-unparseable",
+      ],
+   ])("finds %s invalid", async (_case, line, code) => {
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  measure: n is count()
+  ${line}
+  view: v is { group_by: carrier; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual([]);
+      expect(invalidFindings(c).map(([c]) => c)).toEqual([code]);
+   });
+
+   it("refuses a nested view on either tier: no read could use its table", async () => {
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  measure: n is count()
+  #@ persist storage="lake"
+  view: stored is { group_by: carrier; nest: t is { group_by: tenant; aggregate: n } }
+  #@ persist name="database_nest"
+  view: database is { group_by: carrier; nest: t is { group_by: tenant; aggregate: n } }
+}
+`);
+      expect(viewSources(c)).toEqual([]);
+      const nested = (c.annotationFindings ?? []).filter(
+         (f) => f.code === PERSIST_VIEW_NOT_BUILT,
+      );
+      expect(nested.map((f) => f.subject).sort()).toEqual([
+         "ops -> database",
+         "ops -> stored",
+      ]);
+      for (const f of nested) {
+         expect(f.refused?.reason).toBe("nested_result");
+         expect(f.message).toContain("nests");
+      }
+   });
+
+   describe("a gated source (question 3)", () => {
+      const gated = `##! experimental { persistence givens }
+given: TENANT :: string is ""
+#(access_filter) tenant = $TENANT
+source: ops is ${TABLE} extend {
+  measure: n is count()
+  #@ persist name="by_tenant"
+  view: by_tenant is { group_by: tenant, carrier; aggregate: n }
+  #@ persist name="by_carrier"
+  view: by_carrier is { group_by: carrier; aggregate: n }
+  #@ persist name="top"
+  view: top is { group_by: tenant, carrier; aggregate: n; limit: 1 }
+  #@ persist name="share"
+  view: share is { group_by: tenant; aggregate: n, all_n is all(n) }
+}
+`;
+      it("builds only a view that groups by the access filter's field, and warns about the rest", async () => {
+         const c = await compiled(gated);
+         expect(viewSources(c)).toEqual(["ops__by_tenant__view"]);
+         const findings = viewFindings(c);
+         expect(findings.some((m) => m.includes("`tenant`"))).toBe(true);
+         expect(findings.some((m) => m.includes("limit:"))).toBe(true);
+         expect(findings.some((m) => m.includes("all()"))).toBe(true);
+      });
+   });
+});
+
+describe("which source declares a persisted view", () => {
+   // Malloy copies a view, with its notes, onto every extension, rename and
+   // import of its source. Only the statement that annotates the view
+   // declares it (governance/ir/declared_notes.ts, declaredFieldNotes).
+   const persisted = `#@ persist
+  view: v is { group_by: carrier; aggregate: n }`;
+   const base = (name: string) =>
+      `source: ${name} is ${TABLE} extend {
+  measure: n is count()
+  ${persisted}
+}`;
+
+   it("plans same-named views on two sources in one file, one each", async () => {
+      const c = await compiled(`##! experimental.persistence
+${base("a")}
+${base("b")}
+`);
+      expect(viewSources(c)).toEqual(["a__v__view", "b__v__view"]);
+   });
+
+   it("plans a view an extension redefines, on the extension too", async () => {
+      const c = await compiled(`##! experimental.persistence
+${base("a")}
+source: b is a extend {
+  except: v
+  #@ persist
+  view: v is { group_by: tenant; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual(["a__v__view", "b__v__view"]);
+   });
+
+   it("plans an imported source's view only in its own file", async () => {
+      const c = await compiledFiles({
+         "f.malloy": `##! experimental.persistence
+${base("a")}
+source: c is a extend { where: carrier = 'aa' }
+`,
+         "m.malloy": `##! experimental.persistence
+import { c } from "f.malloy"
+source: b is c extend { dimension: x is 1 }
+`,
+      });
+      expect(viewSources(c)).toEqual(["a__v__view"]);
+   });
+
+   it("plans a view declared in an extend of a rename on that extension alone", async () => {
+      const c = await compiled(`##! experimental.persistence
+${base("a")}
+source: r is a
+source: re is r extend {
+  #@ persist
+  view: w is { group_by: tenant; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual(["a__v__view", "re__w__view"]);
+   });
+
+   it("plans a view once for a multi-definition statement", async () => {
+      const c = await compiled(`##! experimental.persistence
+${base("a")}, b is a extend { dimension: x is 1 }
+`);
+      expect(viewSources(c)).toEqual(["a__v__view"]);
+   });
+
+   it("does not plan a view an extension renames (its notes are the base's)", async () => {
+      const c = await compiled(`##! experimental.persistence
+${base("a")}
+source: b is a extend { rename: v2 is v }
+`);
+      expect(viewSources(c)).toEqual(["a__v__view"]);
+   });
+
+   it("plans an alias that carries its own #@ persist", async () => {
+      const c = await compiled(`##! experimental.persistence
+${base("a")}
+source: b is a extend {
+  #@ persist
+  view: v2 is v
+}
+`);
+      expect(viewSources(c)).toEqual(["a__v__view", "b__v2__view"]);
+   });
+
+   it("plans a view an include: re-annotates with #@ persist, on the including source", async () => {
+      const c =
+         await compiled(`##! experimental { persistence access_modifiers }
+source: a is ${TABLE} extend {
+  measure: n is count()
+  view: v is { group_by: carrier; aggregate: n }
+}
+source: b is a include {
+  #@ persist
+  public: v
+  public: *
+}
+`);
+      expect(viewSources(c)).toEqual(["b__v__view"]);
+   });
+});
+
+describe("viewNoteTexts", () => {
+   it("carries the render tags an alias or an include inherits, never a #@ line", async () => {
+      const duckdb = new DuckDBConnection("duckdb", ":memory:");
+      try {
+         const url = "file:///pkg/m.malloy";
+         const runtime = new Runtime({
+            urlReader: new InMemoryURLReader(
+               new Map([
+                  [
+                     url,
+                     `##! experimental.access_modifiers
+source: a is ${TABLE} extend {
+  measure: n is count()
+  # bar_chart
+  view: v is { group_by: carrier; aggregate: n }
+}
+source: b is a extend {
+  #@ persist
+  view: v2 is v
+}
+source: c is a include {
+  #@ persist
+  public: v
+  public: *
+}
+`,
+                  ],
+               ]),
+            ),
+            connections: new FixedConnectionMap(
+               new Map([["duckdb", duckdb]]),
+               "duckdb",
+            ),
+         });
+         const model = await runtime.loadModel(new URL(url)).getModel();
+         const contents = (
+            model as unknown as {
+               _modelDef: {
+                  contents: Record<
+                     string,
+                     {
+                        fields: {
+                           name: string;
+                           as?: string;
+                           annotations?: never;
+                        }[];
+                     }
+                  >;
+               };
+            }
+         )._modelDef.contents;
+         const notesOf = (source: string, view: string) =>
+            viewNoteTexts(
+               contents[source].fields.find((f) => (f.as ?? f.name) === view)
+                  ?.annotations,
+            );
+         expect(notesOf("a", "v")).toEqual(["# bar_chart"]);
+         expect(notesOf("b", "v2")).toEqual(["# bar_chart"]);
+         expect(notesOf("c", "v")).toEqual(["# bar_chart"]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+});

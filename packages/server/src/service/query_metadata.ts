@@ -37,6 +37,8 @@ import {
    recordQueryMetadataDropped,
 } from "../query_metadata_metrics";
 
+import { usageCatalog, type UsageCatalogSource } from "./statement_usage";
+
 export type { QueryMetadata };
 
 /**
@@ -208,11 +210,8 @@ export interface QueryContext {
    environment?: string;
    package?: string;
    /**
-    * Published version id, when the query runs against a versioned package.
-    *
-    * Not yet reachable: the only supplier is a query request's `versionId`,
-    * which the route rejects with 501. It keeps its slot in
-    * {@link CONTEXT_SHED_ORDER}.
+    * Published version id, when the query runs against a versioned package:
+    * the version of the package that ran it (see QueryController).
     */
    version?: string;
    /** Package-relative model path, for query paths. */
@@ -534,6 +533,17 @@ export interface ModelQueryMetadataInput {
       enforced?: QueryMetadata | null;
    } | null;
    /**
+    * Whether a statement on this connection is metered: a storage destination,
+    * or a connection an orchestrator marked `managed`. Supplied by the
+    * controller with the layers above; absent means nothing is metered.
+    */
+   meteredConnection?: (connectionName: string) => boolean;
+   /**
+    * The DuckLake catalog a metered connection attaches, for its usage record;
+    * undefined when it is not a DuckLake one. Supplied with `meteredConnection`.
+    */
+   meteredCatalog?: (connectionName: string) => string | undefined;
+   /**
     * The package's declared bag — the least specific author-declared layer.
     * Supplied by the controller, which owns the package; the model knows only
     * its own file and its package's NAME.
@@ -552,10 +562,13 @@ export interface ModelQueryMetadataInput {
 export function buildQueryMetadataInput(args: {
    environmentName: string;
    environment: {
-      getApiConnection(connectionName: string): {
+      getApiConnection(connectionName: string): UsageCatalogSource & {
          queryMetadata?: QueryMetadata;
          queryMetadataEnforced?: QueryMetadata;
+         managed?: boolean;
       };
+      /** Throws for a name that is not a configured storage destination. */
+      getStorageDestination?(destinationName: string): UsageCatalogSource;
    };
    pkg: { getDeclaredQueryMetadata(): QueryMetadata | null };
    request?: QueryMetadata;
@@ -584,6 +597,61 @@ export function buildQueryMetadataInput(args: {
             // has no metric and loses the ENFORCED layer.
             logger.debug(args.noLayersLogMessage, { connectionName, error });
             return null;
+         }
+      },
+      ...meteringReaders(environment),
+   };
+}
+
+/** The environment a {@link meteringReaders} reads connections and destinations from. */
+export interface MeteringEnvironment {
+   getApiConnection(connectionName: string): UsageCatalogSource & {
+      managed?: boolean;
+   };
+   /** Throws for a name that is not a configured storage destination. */
+   getStorageDestination?(destinationName: string): UsageCatalogSource;
+}
+
+/**
+ * Which connections a statement is metered on, and the catalog each names: a
+ * connection marked `managed`, or a storage destination a stored source runs
+ * on. Every route that runs a model's statements passes these in its
+ * {@link ModelQueryMetadataInput}; a route that leaves them out meters nothing.
+ */
+export function meteringReaders(
+   environment: MeteringEnvironment,
+): Pick<ModelQueryMetadataInput, "meteredConnection" | "meteredCatalog"> {
+   return {
+      meteredConnection: (connectionName) => {
+         try {
+            if (environment.getApiConnection(connectionName).managed === true) {
+               return true;
+            }
+         } catch {
+            // Not a connection; a served stored source runs on its destination.
+         }
+         try {
+            environment.getStorageDestination?.(connectionName);
+            return environment.getStorageDestination !== undefined;
+         } catch {
+            return false;
+         }
+      },
+      meteredCatalog: (connectionName) => {
+         // The same order as `meteredConnection`: the managed connection of
+         // that name, else the storage destination a stored source runs on.
+         try {
+            const connection = environment.getApiConnection(connectionName);
+            if (connection.managed === true) return usageCatalog(connection);
+         } catch {
+            // Not a connection.
+         }
+         try {
+            return usageCatalog(
+               environment.getStorageDestination?.(connectionName),
+            );
+         } catch {
+            return undefined;
          }
       },
    };

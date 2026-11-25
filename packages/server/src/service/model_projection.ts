@@ -1,69 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { type ModelDef } from "@malloydata/malloy";
-import { components } from "../api";
-import { logger } from "../logger";
-import {
-   type AuthorizeMap,
-   type AuthorizeOwnNotesMap,
-   type MisplacedAuthorizeAnnotation,
-} from "./authorize";
-import { type FilterDefinition } from "./filter";
-import {
-   extractQueriesFromModelDef,
-   extractSourcesFromModelDef,
-} from "./source_extraction";
-
-type ApiSource = components["schemas"]["Source"];
-type ApiGiven = components["schemas"]["Given"];
-type ApiQuery = components["schemas"]["Query"];
-
-export function extractApiQueries(modelDef: ModelDef): {
-   queries: ApiQuery[];
-   misplacedAuthorize: MisplacedAuthorizeAnnotation[];
-} {
-   // Shared with the package-load worker — see service/source_extraction.ts.
-   const { queries, misplacedAuthorize } = extractQueriesFromModelDef(modelDef);
-   return { queries: queries as unknown as ApiQuery[], misplacedAuthorize };
-}
-
-export function extractApiSources(
-   modelDef: ModelDef,
-   givens?: ApiGiven[],
-): {
-   sources: ApiSource[];
-   filterMap: Map<string, FilterDefinition[]>;
-   authorizeMap: AuthorizeMap;
-   misplacedAuthorize: MisplacedAuthorizeAnnotation[];
-   authorizeOwnNotes: AuthorizeOwnNotesMap;
-   attributedAuthorizeOwnNotes: AuthorizeOwnNotesMap;
-} {
-   // Shared with the package-load worker — see service/source_extraction.ts.
-   // The service path logs filter parse failures; the worker stays silent.
-   const {
-      sources,
-      filterMap,
-      authorizeMap,
-      misplacedAuthorize,
-      authorizeOwnNotes,
-      attributedAuthorizeOwnNotes,
-   } = extractSourcesFromModelDef(modelDef, givens, (sourceName, err) =>
-      logger.warn(
-         `Failed to parse filter annotations on source "${sourceName}"`,
-         { error: err },
-      ),
-   );
-   return {
-      sources: sources as unknown as ApiSource[],
-      filterMap,
-      authorizeMap,
-      misplacedAuthorize,
-      authorizeOwnNotes,
-      attributedAuthorizeOwnNotes,
-   };
-}
-
 /** Whether a top-level `run:` reads a source named in `published`. */
 export function runReadsPublished(
    query: unknown,

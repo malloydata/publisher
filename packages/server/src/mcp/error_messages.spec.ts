@@ -10,7 +10,7 @@ describe("getMalloyErrorDetails — access-denied branch", () => {
       const details = getMalloyErrorDetails(
          "executeQuery",
          "env/pkg/model.malloy",
-         new AccessDeniedError('Access denied for source "gated".'),
+         AccessDeniedError.forSource("gated"),
       );
 
       // Message carries the source name, never the gate expression.

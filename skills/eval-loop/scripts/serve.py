@@ -24,7 +24,7 @@ WHY THIS EXISTS
 
 The doctrine has always said "serve the model persistently, not `&` from a
 shell that exits", and gave no recipe. A server launched from a shell wrapper
-is SIGTERM'd with the wrapper's session when it exits; both VideoAmp servers
+is SIGTERM'd with the wrapper's session when it exits; both servers of a past run
 were lost that way once, and the answerer read the dead server's empty body as
 a bad answer. This starts the server in its OWN session (setsid semantics via
 start_new_session), redirects its output to a log in the server root, writes a
@@ -53,8 +53,9 @@ run that starts the moment the REST root replies would record those empty
 answers as retrieval misses.
 
 It drives one ranking call (older servers only started the sync on the first
-one), then polls the package resource until `embeddingIndex.status` reaches a
-terminal value and prints it. The values are `lexical` (no provider: a mode),
+one), then polls `GET …/packages/{package}/embedding-index` (the package
+resource's `embeddingIndex` on a server from before that route) until its
+`status` reaches a terminal value and prints it. The values are `lexical` (no provider: a mode),
 `indexing` (the only non-terminal one), `ready`, and `error`, which carries a
 `reason` and `lastError.message` that are printed. Only `ready` licenses
 reading a run's discoverability findings. A package resource with no
@@ -95,6 +96,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
@@ -174,6 +176,22 @@ def init_decision(root: pathlib.Path, reinit: bool,
                    f"publisher.config.json")
 
 
+def watch_note(watch_env: str | None, seed: bool) -> str | None:
+    """The warning for --watch-env on a start that does not seed, or None.
+
+    An environment is mounted in place only when it is first loaded from the
+    config, so on a preserved root a package already published stays a
+    version: the flag sets PUBLISHER_WATCH and changes nothing an edit
+    reaches.
+    """
+    if not watch_env or seed:
+        return None
+    return (f"  ! --watch-env {watch_env} on a preserved server root: a package "
+            f"this root already published stays an immutable version, so an "
+            f"edit never reaches it. Pass --reinit too, unless the root was "
+            f"first served with --watch-env")
+
+
 # One ranking call, unscoped, is what kicks the embedding sync.
 #
 # RANKING, because the marker and the sync both hang off the ranking path: a
@@ -201,6 +219,27 @@ def warm_arguments(environment: str, package: str) -> dict:
                             "search_text": WARM_SEARCH_TEXT}],
         "scopes": [{"environment": environment, "package": package}],
     }
+
+
+def read_index(port: int, environment: str, package: str) -> dict | None:
+    """The package's embedding-index object, or None when the server has none.
+
+    Read from `GET …/embedding-index`; a server from before that route carries
+    the object on the package resource as `embeddingIndex`, so a 404 there
+    falls back to it. A transport failure raises, for the caller's retry.
+    """
+    package_url = (f"http://localhost:{port}/api/v0/environments/"
+                   f"{environment}/packages/{package}")
+    try:
+        with urllib.request.urlopen(f"{package_url}/embedding-index",
+                                    timeout=10) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            raise
+    with urllib.request.urlopen(package_url, timeout=10) as r:
+        index = json.loads(r.read().decode()).get("embeddingIndex")
+    return index if isinstance(index, dict) else None
 
 
 def index_status(package_payload: dict) -> str | None:
@@ -235,13 +274,12 @@ def warm_retrieval(port: int, mcp_port: int, environment: str, package: str,
         return None, f"warm-up call failed: {e}"
 
     url = (f"http://localhost:{port}/api/v0/environments/{environment}"
-           f"/packages/{package}")
+           f"/packages/{package}/embedding-index")
     deadline = time.time() + wait
     status, last_error, read_one, index = None, None, False, {}
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=10) as r:
-                payload = json.loads(r.read().decode())
+            read = read_index(port, environment, package)
         except Exception as e:  # noqa: BLE001
             # A transport failure is not a capability verdict. Collapsing it
             # into `status = None` handed None a second meaning `index_status`
@@ -255,13 +293,13 @@ def warm_retrieval(port: int, mcp_port: int, environment: str, package: str,
             time.sleep(2)
             continue
         read_one = True
-        status = index_status(payload)
+        status = index_status({"embeddingIndex": read})
         if status is None:
             return None, ("no embeddingIndex on the package resource; this "
                           "server has no embedding provider or predates the "
                           "status field, so every run against it is LEXICAL "
                           "-- do not report discoverability findings from it")
-        index = payload["embeddingIndex"]
+        index = read
         if status in TERMINAL_INDEX_STATES:
             break
         time.sleep(2)
@@ -436,6 +474,14 @@ def main(argv: list[str] | None = None) -> int:
                     "With --role, the role's mcp_port in eval.toml, as --port")
     ap.add_argument("--allow-proxy", action="store_true")
     ap.add_argument("--trace-retrieval", action="store_true")
+    ap.add_argument("--watch-env", metavar="ENV",
+                    help="serve ENV in watch mode (PUBLISHER_WATCH): its local "
+                         "packages are mounted in place, so an edit is read on "
+                         "reload, which eval-improve needs. Without it each "
+                         "package is a published version, which no edit "
+                         "reaches. The mount is decided when the environment "
+                         "is first loaded, so add --reinit to switch a server "
+                         "root that is already serving")
     ap.add_argument("--reinit", action="store_true",
                     help="drop the store and re-read publisher.config.json. "
                          "Needed after a config edit -- a new environment or a "
@@ -543,8 +589,13 @@ def main(argv: list[str] | None = None) -> int:
         env["PUBLISHER_ALLOW_PROXY_CONNECTIONS"] = "true"
     if a.trace_retrieval:
         env["PUBLISHER_MCP_TRACE"] = "retrieval"
+    if a.watch_env:
+        env["PUBLISHER_WATCH"] = a.watch_env
     seed, why = init_decision(root, a.reinit, changed)
     print(why)
+    stale_watch = watch_note(a.watch_env, seed)
+    if stale_watch:
+        print(stale_watch)
     note = retrieval_note(env) if a.role != "truth" else None
     if note:
         print(note)

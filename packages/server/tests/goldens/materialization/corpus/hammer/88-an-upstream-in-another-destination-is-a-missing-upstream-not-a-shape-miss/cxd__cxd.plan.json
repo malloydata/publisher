@@ -1,0 +1,112 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [
+      {
+        "code": "persist-not-built",
+        "message": "#@ persist source \"rollup\" is not built, so it is answered live: its upstream 'daily' is stored in the storage= destination 'lake', and it is built into the storage= destination 'far', which cannot read that table; a downstream is never built by recomputing its upstream from raw, so it is answered live, over 'daily''s table.",
+        "model": "cxd.malloy",
+        "refused": {
+          "name": "rollup",
+          "reason": "upstream_table_unusable",
+          "sourceID": "rollup@<hammer>/cxd/cxd.malloy",
+          "tier": "storage"
+        },
+        "route": "@",
+        "subject": "rollup",
+        "tier": "unservable"
+      }
+    ],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/cxd/cxd.malloy": []
+        },
+        "order": [
+          "daily@<hammer>/cxd/cxd.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "daily@<hammer>/cxd/cxd.malloy": "persist"
+    },
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/cxd/cxd.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/cxd/cxd.malloy": "cxd.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/cxd/cxd.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {
+      "rollup@<hammer>/cxd/cxd.malloy": {
+        "message": "#@ persist source \"rollup\" is not built, so it is answered live: its upstream 'daily' is stored in the storage= destination 'lake', and it is built into the storage= destination 'far', which cannot read that table; a downstream is never built by recomputing its upstream from raw, so it is answered live, over 'daily''s table.",
+        "modelPath": "cxd.malloy",
+        "name": "rollup",
+        "origin": "persist",
+        "reason": "upstream_table_unusable",
+        "sourceID": "rollup@<hammer>/cxd/cxd.malloy",
+        "tier": "storage"
+      }
+    },
+    "sources": {
+      "daily@<hammer>/cxd/cxd.malloy": {
+        "annotationFields": {
+          "name": "cxd_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "cxd.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cxd_orders"
+          }
+        ],
+        "refresh": null,
+        "sourceEntityId": "b40cd8b36d53ed352c7c14a83f7d636b2b4e9a811891d765f1233163d38cf20c",
+        "sourceID": "daily@<hammer>/cxd/cxd.malloy",
+        "sql": "sha256:5e17f11a6e740cb0"
+      }
+    }
+  }
+}

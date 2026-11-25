@@ -15,7 +15,7 @@ The doctrine mandates raw-table goldens: every golden is computed in a
 semantics-free package over the same raw tables, never through the model under
 test, so a model bug cannot certify its own golden. `set.json` has had a
 `truthPackage` field for that since the schema was written -- and nothing built
-one. The VideoAmp author wrote `truth.malloy`, a `publisher.json`, a second
+one. One set's author wrote `truth.malloy`, a `publisher.json`, a second
 server config and an MCP client by hand before authoring case one: an hour of
 plumbing for a structure that is entirely derivable from the package.
 

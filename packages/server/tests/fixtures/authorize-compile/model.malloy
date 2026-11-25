@@ -1,7 +1,7 @@
 ##! experimental.givens
 
-given:
-  ROLE :: string
+#(secure)
+given: ROLE :: string
 
 // Deliberately the deprecated `#(authorize)` spelling: this fixture is the
 // live canary that the alias still loads and still gates.

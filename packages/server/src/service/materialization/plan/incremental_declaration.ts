@@ -1,0 +1,296 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * Resolves a persist source's INCREMENTAL declaration — the `refresh=`,
+ * `watermark=`, `merge_key=` and `lookback=` keys of its `#@ persist` tag —
+ * into a structure the publish gates and the build path both read: which
+ * names are real output columns, the watermark's type, the implied strategy,
+ * the lookback's duration, and every malformation.
+ * The strategy it implies is the one the ledger records.
+ *
+ * Surface: `resolveIncrementalDeclaration`, read by the build plan's
+ * `collectIncrementalDeclarations`, which feeds the incremental gate
+ * (`incremental_policy.ts`) and the run's incremental build.
+ *
+ * Three compiler facts shape the module (pinned in
+ * incremental_compiler_contract.spec.ts):
+ *
+ *  1. Rules read the EFFECTIVE MERGED tag. A source that `extend`s a persisted
+ *     parent inherits its persist tag; checking only local declarations would let
+ *     an inherited `refresh="incremental"` through ungated.
+ *  2. An array-valued key (`watermark=["a","b"]`) is ABSENT from the scalar map,
+ *     so the raw tag is read too — otherwise it is misreported as undeclared.
+ *  3. On the compiled OUTPUT schema an `aggregate:` column is indistinguishable
+ *     from a dimension, so the aggregate check reads the QUERY DEFINITION.
+ */
+
+import { sourceDefOf } from "../../governance/ir/compiled_model";
+import type { PersistSource } from "@malloydata/malloy";
+import { RECOGNIZED_PERSIST_KEYS } from "../../annotation_reader";
+import { readRoute } from "./declaration";
+import type { Tag } from "@malloydata/malloy-tag";
+
+import type {
+   IncrementalDeclaration,
+   MalformedValue,
+   ResolvedName,
+} from "../domain/incremental";
+import type { IncrementalStrategy } from "../domain/types";
+import { durationSeconds } from "../domain/freshness";
+import { deriveColumns } from "./persist_source_fields";
+import { readTimeDynamicTerms } from "./persist_dynamic_terms";
+
+/** The `refresh=` values the publisher recognizes; unset means "full". */
+const REFRESH_MODES = ["full", "incremental"] as const;
+
+/**
+ * Malloy types a `<`/`>=` range can be built over. Struct/array columns never
+ * reach the output schema, so they fail name resolution instead.
+ */
+const ORDERABLE_TYPES: ReadonlySet<string> = new Set([
+   "number",
+   "string",
+   "date",
+   "timestamp",
+]);
+
+/** The source's `#@` tag, or undefined when it does not parse. */
+function safeTag(source: PersistSource): Tag | undefined {
+   try {
+      return readRoute(source.annotations, "@").tag;
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * Field kinds read from the QUERY DEFINITION (contract fact 3). `aggregates`
+ * covers the FINAL segment — the output columns. `analytics` covers EVERY
+ * segment: an earlier `calculate:` still feeds the rows a delta rewrites. A
+ * table-backed source has no query definition, so both are empty.
+ */
+function queryDefinitionFieldKinds(source: PersistSource): {
+   aggregates: Set<string>;
+   analytics: string[];
+} {
+   const aggregates = new Set<string>();
+   const analytics: string[] = [];
+   try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const def = sourceDefOf(source) as any;
+      const pipeline: unknown[] = def?.query?.pipeline ?? [];
+      pipeline.forEach((rawSegment, index) => {
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         const segment = rawSegment as any;
+         const isFinalSegment = index === pipeline.length - 1;
+         for (const field of segment?.queryFields ?? []) {
+            const expressionType = String(field?.expressionType ?? "");
+            const name =
+               field?.type === "fieldref"
+                  ? // A path's output column takes the LAST segment's name
+                    // (`group_by: joined.region` outputs `region`).
+                    field.path?.[field.path.length - 1]
+                  : field?.name;
+            if (typeof name !== "string" || name.length === 0) continue;
+            if (expressionType.includes("analytic")) {
+               analytics.push(name);
+            } else if (expressionType === "aggregate" && isFinalSegment) {
+               aggregates.add(name);
+            }
+         }
+      });
+   } catch {
+      // Fail open on an unrecognized IR shape: only the aggregate and window
+      // gates are lost. The gates that protect the TABLE (name resolution,
+      // dialect allowlist, shape check) do not depend on this read.
+   }
+   return { aggregates, analytics };
+}
+
+/**
+ * Output columns as name -> Malloy type: the list the seed CTAS materializes, so
+ * a name absent here is absent from the physical table.
+ */
+function outputColumnTypes(source: PersistSource): Map<string, string> {
+   const columns = new Map<string, string>();
+   for (const column of deriveColumns(source)) {
+      if (column.name && column.type) columns.set(column.name, column.type);
+   }
+   return columns;
+}
+
+/** Resolve one declared name against the compiled output schema. */
+function resolveName(
+   name: string,
+   columns: Map<string, string>,
+   aggregates: Set<string>,
+): ResolvedName {
+   const malloyType = columns.get(name);
+   if (malloyType === undefined) return { name, kind: "unresolved" };
+   return {
+      name,
+      kind: aggregates.has(name) ? "aggregate" : "dimension",
+      malloyType,
+   };
+}
+
+/** Read one persist-tag key: its scalar text, or why there is none. */
+function readKey(
+   tag: Tag | undefined,
+   key: "refresh" | "watermark" | "merge_key" | "lookback",
+): { declared: boolean; text?: string; malformed?: MalformedValue } {
+   if (!tag || !tag.has(key)) return { declared: false };
+   // The array form vanishes from the scalar read; name it or it looks absent.
+   if (tag.array(key) !== undefined) {
+      return { declared: true, malformed: { key, problem: "array" } };
+   }
+   const text = tag.text(key);
+   if (text === undefined) {
+      return { declared: true, malformed: { key, problem: "empty" } };
+   }
+   if (text.trim().length === 0) {
+      return { declared: true, malformed: { key, problem: "empty" } };
+   }
+   return { declared: true, text: text.trim() };
+}
+
+/**
+ * Turn a source's persist-tag strings into a gate-ready declaration. Pure: runs
+ * no query and decides nothing — the gate composes every rejection from the
+ * result (see `incrementalPolicyRejections`).
+ */
+export function resolveIncrementalDeclaration(
+   source: PersistSource,
+   annotationFields: Record<string, string>,
+): IncrementalDeclaration {
+   const tag = safeTag(source);
+   const columns = outputColumnTypes(source);
+   // Read off the source's own filters, not the positional classification: a
+   // classifier refusal yields no terms, which would be indistinguishable from
+   // "not caller-scoped" and emit an unscoped merge.
+   const dynamicTerms = readTimeDynamicTerms(source);
+   // Resolved against the STORED schema: a term may name a read-time
+   // `dimension:` the build never materializes, and an unresolved name in the
+   // merge's `ON` would fail every refresh.
+   const scopeColumns = [
+      ...new Set(dynamicTerms.flatMap((term) => term.columns)),
+   ].filter((name) => columns.has(name));
+   const scopeIncomplete =
+      dynamicTerms.some((term) => term.columns.length === 0) ||
+      dynamicTerms.some((term) =>
+         term.columns.some((name) => !columns.has(name)),
+      );
+   const { aggregates, analytics } = queryDefinitionFieldKinds(source);
+   const malformed: MalformedValue[] = [];
+
+   // The scalar map is authoritative; the raw read reports an array value as
+   // malformed rather than as an unrecognized mode.
+   const rawRefresh = readKey(tag, "refresh");
+   if (rawRefresh.malformed) malformed.push(rawRefresh.malformed);
+   const refresh = annotationFields.refresh ?? rawRefresh.text;
+   const incremental = refresh === "incremental";
+   const invalidRefresh =
+      refresh !== undefined &&
+      !(REFRESH_MODES as readonly string[]).includes(refresh)
+         ? refresh
+         : undefined;
+
+   const rawWatermark = readKey(tag, "watermark");
+   if (rawWatermark.malformed) malformed.push(rawWatermark.malformed);
+   const watermark =
+      rawWatermark.text === undefined
+         ? undefined
+         : resolveName(rawWatermark.text, columns, aggregates);
+   const watermarkOrderable =
+      watermark !== undefined &&
+      watermark.kind !== "unresolved" &&
+      ORDERABLE_TYPES.has(watermark.malloyType);
+
+   const rawMergeKey = readKey(tag, "merge_key");
+   if (rawMergeKey.malformed) malformed.push(rawMergeKey.malformed);
+   const mergeKeys: ResolvedName[] = [];
+   if (rawMergeKey.text !== undefined) {
+      const seen = new Set<string>();
+      for (const piece of rawMergeKey.text.split(",")) {
+         const name = piece.trim();
+         if (name.length === 0) {
+            // `merge_key="id,,region"` would otherwise silently narrow row identity.
+            if (
+               !malformed.some(
+                  (m) => m.key === "merge_key" && m.problem === "empty-entry",
+               )
+            ) {
+               malformed.push({ key: "merge_key", problem: "empty-entry" });
+            }
+            continue;
+         }
+         if (seen.has(name)) {
+            malformed.push({
+               key: "merge_key",
+               problem: "duplicate",
+               detail: name,
+            });
+            continue;
+         }
+         seen.add(name);
+         mergeKeys.push(resolveName(name, columns, aggregates));
+      }
+   }
+
+   const rawLookback = readKey(tag, "lookback");
+   if (rawLookback.malformed) malformed.push(rawLookback.malformed);
+   const lookback =
+      rawLookback.text === undefined
+         ? undefined
+         : {
+              text: rawLookback.text,
+              ...(durationSeconds(rawLookback.text) !== undefined
+                 ? { seconds: durationSeconds(rawLookback.text) }
+                 : {}),
+           };
+
+   const watermarkInMergeKeys =
+      watermark !== undefined &&
+      mergeKeys.some((k) => k.name === watermark.name);
+
+   // Undefined for anything incoherent, which the gates reject.
+   const strategy: IncrementalStrategy | undefined =
+      incremental && watermark !== undefined && watermark.kind === "dimension"
+         ? mergeKeys.length > 0
+            ? "merge"
+            : "range_replace"
+         : undefined;
+
+   const unknownKeys: string[] = [];
+   if (tag) {
+      try {
+         for (const [key] of tag.entries()) {
+            if (!RECOGNIZED_PERSIST_KEYS.has(key)) unknownKeys.push(key);
+         }
+      } catch {
+         // Degrade to no unknown keys — mirrors deriveAnnotationFields.
+      }
+   }
+
+   return {
+      refresh,
+      incremental,
+      invalidRefresh,
+      declaredWatermark: rawWatermark.declared,
+      declaredMergeKey: rawMergeKey.declared,
+      declaredLookback: rawLookback.declared,
+      ...(lookback ? { lookback } : {}),
+      watermark,
+      watermarkOrderable,
+      mergeKeys,
+      scopeColumns,
+      scopeIncomplete,
+      watermarkInMergeKeys,
+      strategy,
+      malformed,
+      unknownKeys,
+      calculateFields: analytics,
+      outputColumns: [...columns.keys()],
+   };
+}

@@ -9,7 +9,7 @@
  * a swapped-in joined source, changes which child row each parent row reaches
  * without touching `child.org_id` itself. These pin that the filter-binding
  * check compares those columns too, through the real `Model.create` /
- * `getQueryResults` path. The unrecorded-inputs cases are hand-built
+ * `runQuery` path. The unrecorded-inputs cases are hand-built
  * `SourceDef`s calling the assert directly, because the real compiler always
  * records a join's ON and `where:` inputs.
  *
@@ -17,6 +17,7 @@
  * so GROUPS [1] admits exactly parent ids 1,2. `active` is true only for
  * children 1,2.
  */
+import { unrecordedAudit } from "../../src/service/access_record";
 import {
    type FilterCondition,
    type GivenValue,
@@ -33,6 +34,7 @@ import {
    createTempModel,
    seededDuckdb,
 } from "../../src/test_helpers/temp_package";
+import { QueryPrivileges } from "../../src/service/model_query_request";
 
 const SEED_SQL = `
 CREATE OR REPLACE TABLE orgtable (id INTEGER, org_id INTEGER);
@@ -50,6 +52,7 @@ INSERT INTO grandtable VALUES (1, 1), (2, 1), (3, 2), (4, 2);
 
 const MODEL_TEXT = `##! experimental { givens parameters }
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -201,13 +204,10 @@ async function rows(
    queryText: string,
    givens: Record<string, GivenValue>,
 ): Promise<Record<string, unknown>[]> {
-   const result = await model.getQueryResults(
-      undefined,
-      undefined,
-      queryText,
-      {},
-      true,
-      givens,
+   const result = await model.runQuery(
+      unrecordedAudit(),
+      { query: queryText, filterParams: {}, givens },
+      QueryPrivileges.of({ bypassFilters: true }),
    );
    return result.compactResult as unknown as Record<string, unknown>[];
 }
@@ -593,6 +593,7 @@ source: gated_min is duckdb.table('orgtable') extend {
                "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -614,20 +615,12 @@ run: gated_active -> { group_by: id, child.org_id; order_by: id }
             "nb.malloynb",
          );
          try {
-            const result = await model.executeNotebookCell(
-               1,
-               undefined,
-               false,
-               {
-                  GROUPS: [1, 2],
-               },
-            );
-            const served = (
-               JSON.parse(result.result!) as {
-                  data?: { array_value?: unknown[] };
-               }
-            ).data?.array_value?.length;
-            expect(served).toBe(2);
+            // Cell 1's query, run on the notebook's own path.
+            const result = await model.runQuery(unrecordedAudit(), {
+               query: "run: gated_active -> { group_by: id, child.org_id; order_by: id }",
+               givens: { GROUPS: [1, 2] },
+            });
+            expect((result.compactResult as unknown[]).length).toBe(2);
          } finally {
             await cleanup();
          }

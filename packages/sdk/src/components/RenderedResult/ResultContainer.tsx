@@ -19,14 +19,14 @@ import { Loading, LOADING_COPY } from "../Loading";
 import { warmMalloyRenderer } from "./loadRenderer";
 import { summarizeRenderLogs } from "./renderLogs";
 import {
+   RESULT_SCROLLER_CLASS,
    resolveResultHeight,
    resultCap,
    type ResultSizing,
    TIGHT_ATTR,
 } from "./resultSizing";
 
-/** The box a dashboard tile's result scrolls in when it is taller than its cap. */
-export const RESULT_SCROLLER_CLASS = "publisher-result-scroller";
+export { RESULT_SCROLLER_CLASS };
 
 const RenderedResult = lazy(() => import("../RenderedResult/RenderedResult"));
 

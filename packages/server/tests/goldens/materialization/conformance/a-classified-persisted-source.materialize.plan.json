@@ -1,0 +1,170 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "classified@<pkg>/m.malloy": []
+        },
+        "order": [
+          "classified@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "classified@<pkg>/m.malloy": "materialize"
+    },
+    "materializePlans": {
+      "classified@<pkg>/m.malloy": {
+        "buildSourceName": "classified__mat",
+        "columns": [
+          {
+            "column": "customer_id",
+            "computed": false,
+            "dimension": "customer_id"
+          },
+          {
+            "column": "region",
+            "computed": false,
+            "dimension": "region"
+          },
+          {
+            "column": "total",
+            "computed": false,
+            "dimension": "total"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "classified",
+          "storage": "lake"
+        },
+        "sourceID": "classified@<pkg>/m.malloy",
+        "sourceName": "classified",
+        "storedColumns": [
+          {
+            "name": "customer_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "region",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "total",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "classified@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "classified@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [
+    {
+      "code": "classification-coverage",
+      "message": "Source orders_raw publishes 9 fields with no #(classification): id, customer_id, region, status, amount, discount, order_date, created_at, order. This package classifies its fields, so every dimension and measure a caller can read needs a class, or the policy has nothing to say about it. Write #(classification) \"<class>\" above each; a field reached through a join, or derived from a classified field, is classified where that field is declared.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "orders_raw"
+    },
+    {
+      "code": "classification-coverage",
+      "message": "Source customers_raw publishes 5 fields with no #(classification): id, name, segment, home_region, signup_date. This package classifies its fields, so every dimension and measure a caller can read needs a class, or the policy has nothing to say about it. Write #(classification) \"<class>\" above each; a field reached through a join, or derived from a classified field, is classified where that field is declared.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "customers_raw"
+    },
+    {
+      "code": "classification-coverage",
+      "message": "Source lines_raw publishes 4 fields with no #(classification): line_id, order_id, sku, qty. This package classifies its fields, so every dimension and measure a caller can read needs a class, or the policy has nothing to say about it. Write #(classification) \"<class>\" above each; a field reached through a join, or derived from a classified field, is classified where that field is declared.",
+      "model": "m.malloy",
+      "severity": "warn",
+      "subject": "lines_raw"
+    },
+    {
+      "code": "classification-coverage",
+      "message": "Source orders_raw publishes 9 fields with no #(classification): id, customer_id, region, status, amount, discount, order_date, created_at, order. This package classifies its fields, so every dimension and measure a caller can read needs a class, or the policy has nothing to say about it. Write #(classification) \"<class>\" above each; a field reached through a join, or derived from a classified field, is classified where that field is declared.",
+      "model": "raw.malloy",
+      "severity": "warn",
+      "subject": "orders_raw"
+    },
+    {
+      "code": "classification-coverage",
+      "message": "Source customers_raw publishes 5 fields with no #(classification): id, name, segment, home_region, signup_date. This package classifies its fields, so every dimension and measure a caller can read needs a class, or the policy has nothing to say about it. Write #(classification) \"<class>\" above each; a field reached through a join, or derived from a classified field, is classified where that field is declared.",
+      "model": "raw.malloy",
+      "severity": "warn",
+      "subject": "customers_raw"
+    },
+    {
+      "code": "classification-coverage",
+      "message": "Source lines_raw publishes 4 fields with no #(classification): line_id, order_id, sku, qty. This package classifies its fields, so every dimension and measure a caller can read needs a class, or the policy has nothing to say about it. Write #(classification) \"<class>\" above each; a field reached through a join, or derived from a classified field, is classified where that field is declared.",
+      "model": "raw.malloy",
+      "severity": "warn",
+      "subject": "lines_raw"
+    }
+  ],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "classified@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "classified@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "classified",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "classified",
+        "origin": "materialize",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "38ce5f3db9c65fb2c67e1dd4e7e5d6d52666932eabcb5ddc9b2ad503b52cfeeb",
+        "sourceID": "classified@<pkg>/m.malloy",
+        "sql": "sha256:dcd7c6263d60cf3c"
+      }
+    }
+  }
+}

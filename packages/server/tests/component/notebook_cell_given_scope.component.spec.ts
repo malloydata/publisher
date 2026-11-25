@@ -4,11 +4,17 @@
 // DEPRECATED FEATURE COVERAGE — delete together with
 // `.malloynb` notebooks (see RELEASE_NOTES deprecations). Every test in
 // this file is about that deprecated feature.
+//
+// Each cell's query runs on the notebook's own path, as the query route runs
+// it: every cell compiles into one model, so the notebook's givens are one
+// set, not a set per cell.
 
 // Harness pattern from tests/component/authorize/import_hop.spec.ts.
-import { MalloyError } from "@malloydata/malloy";
+import { unrecordedAudit } from "../../src/service/access_record";
+import { type GivenValue, MalloyError } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import { AccessDeniedError } from "../../src/errors";
+import type { Model, ModelQueryResults } from "../../src/service/model";
 import {
    createTempModel,
    seededDuckdb,
@@ -31,25 +37,27 @@ async function createModelWithFiles(
    });
 }
 
-function cellCount(cell: unknown): number {
-   const raw = (cell as { result?: string }).result;
-   if (!raw) throw new Error("notebook cell returned no result");
-   const parsed = JSON.parse(raw) as {
-      data?: {
-         array_value?: Array<{
-            record_value?: Array<{ number_value?: number }>;
-         }>;
-      };
-   };
-   const rows = parsed.data?.array_value ?? [];
+/**
+ * Run cell `cellIndex`'s query on the notebook's own path, as the Console
+ * sends it: the cell's served `runQuery`.
+ */
+async function runCell(
+   model: Model,
+   cellIndex: number,
+   givens?: Record<string, GivenValue>,
+): Promise<ModelQueryResults> {
+   const cell = (await model.getNotebook()).notebookCells?.[cellIndex];
+   const query = cell?.runQuery;
+   if (query === undefined) throw new Error(`cell ${cellIndex} runs no query`);
+   return model.runQuery(unrecordedAudit(), { query, givens });
+}
+
+function cellCount(result: ModelQueryResults): number {
+   const rows = result.compactResult as { c: number }[];
    if (rows.length !== 1) {
       throw new Error(`expected one aggregate row, got ${rows.length}`);
    }
-   const count = rows[0].record_value?.[0]?.number_value;
-   if (typeof count !== "number") {
-      throw new Error("aggregate cell was not a number");
-   }
-   return count;
+   return rows[0].c;
 }
 
 const PLAIN = `source: plain is duckdb.table('orgtable') extend {
@@ -60,6 +68,7 @@ const PLAIN = `source: plain is duckdb.table('orgtable') extend {
 /** Row-filter gate: forwarding GROUPS lets the caller scope the rows they see. */
 const GROUPS_GATE = `##! experimental.givens
 
+#(secure)
 given:
   GROUPS :: number[]
 
@@ -72,6 +81,7 @@ source: gated is duckdb.table('orgtable') extend {
 /** Lock gate: forwarding ROLE either admits or 403s. */
 const ROLE_LOCK = `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -81,8 +91,8 @@ source: locked is duckdb.table('orgtable') extend {
 }
 `;
 
-describe("notebook cells receive only the givens in their own scope", () => {
-   it("(1) pre-import cell with GROUPS supplied runs — the given isn't declared yet, so the value is dropped rather than 400ing", async () => {
+describe("a notebook's givens, on the notebook's own path", () => {
+   it("(1) a cell whose query does not read GROUPS runs with it supplied: GROUPS is on the notebook's surface", async () => {
       const { model, cleanup } = await createModelWithFiles(
          {
             "plain.malloy": PLAIN,
@@ -99,16 +109,14 @@ run: gated -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [1],
-         });
+         const result = await runCell(model, 0, { GROUPS: [1] });
          expect(cellCount(result)).toBe(4);
       } finally {
          await cleanup();
       }
    });
 
-   it("(2) a typo'd given 400s on both the pre-import and the post-import cell", async () => {
+   it("(2) a typo'd given 400s on both cells, and a gated cell missing its gate's given 403s first, as a query does", async () => {
       const { model, cleanup } = await createModelWithFiles(
          {
             "plain.malloy": PLAIN,
@@ -125,28 +133,33 @@ run: gated -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         for (const cellIndex of [0, 1]) {
-            const rejection = model.executeNotebookCell(
-               cellIndex,
-               undefined,
-               false,
-               { NOtaGiven: 1 },
-            );
+         const typos: [number, Record<string, GivenValue>][] = [
+            [0, { NOtaGiven: 1 }],
+            [1, { NOtaGiven: 1, GROUPS: [1] }],
+         ];
+         for (const [cellIndex, givens] of typos) {
+            const rejection = runCell(model, cellIndex, givens);
             await expect(rejection).rejects.toBeInstanceOf(MalloyError);
             await expect(rejection).rejects.toThrow(/NOtaGiven/);
          }
+         // The gate reads GROUPS, unsupplied: the opaque denial, before the
+         // typo is reported.
+         await expect(
+            runCell(model, 1, { NOtaGiven: 1 }),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup();
       }
    });
 
-   it("(3) a gate-only given (never on the model's own surface) is still dropped, cellDeclared or not", async () => {
+   it("(3) a gate-only given (never on the model's own surface) is still dropped", async () => {
       // ROLE is gate-only (never on the surface); a lock two hops deep always
       // denies, so the point is that it 403s rather than 400ing on ROLE.
       const { model, cleanup } = await createModelWithFiles(
          {
             "deep_base.malloy": `##! experimental.givens
 
+#(secure)
 given:
   ROLE :: string
 
@@ -168,16 +181,14 @@ run: deep_ext -> { aggregate: c }
       );
       try {
          await expect(
-            model.executeNotebookCell(0, undefined, false, {
-               ROLE: "analyst",
-            }),
+            runCell(model, 0, { ROLE: "analyst" }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup();
       }
    });
 
-   it("(4) post-import cell binds GROUPS: [1] filters, [] returns 0, and the lock admits/denies", async () => {
+   it("(4) a gated cell binds GROUPS: [1] filters, [] returns 0, and the lock admits/denies", async () => {
       const { model, cleanup } = await createModelWithFiles(
          {
             "gate.malloy": GROUPS_GATE,
@@ -194,114 +205,17 @@ run: locked -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         const mine = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [1],
-         });
+         const mine = await runCell(model, 0, { GROUPS: [1] });
          expect(cellCount(mine)).toBe(2);
 
-         const none = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [],
-         });
+         const none = await runCell(model, 0, { GROUPS: [] });
          expect(cellCount(none)).toBe(0);
 
-         const admitted = await model.executeNotebookCell(1, undefined, false, {
-            ROLE: "admin",
-         });
+         const admitted = await runCell(model, 1, { ROLE: "admin" });
          expect(cellCount(admitted)).toBe(4);
          await expect(
-            model.executeNotebookCell(1, undefined, false, { ROLE: "guest" }),
+            runCell(model, 1, { ROLE: "guest" }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
-      } finally {
-         await cleanup();
-      }
-   });
-
-   it("(5) a cell between `import plain` and `import groups` runs without GROUPS; a later cell filters", async () => {
-      const { model, cleanup } = await createModelWithFiles(
-         {
-            "plain.malloy": PLAIN,
-            "gate.malloy": GROUPS_GATE,
-            "nb.malloynb": `>>>malloy
-import "plain.malloy"
-run: plain -> { aggregate: c }
->>>malloy
-run: plain -> { aggregate: c }
->>>malloy
-##! experimental.givens
-import "gate.malloy"
-run: gated -> { aggregate: c }
-`,
-         },
-         "nb.malloynb",
-      );
-      try {
-         const middle = await model.executeNotebookCell(1, undefined, false, {
-            GROUPS: [1],
-         });
-         expect(cellCount(middle)).toBe(4);
-
-         const last = await model.executeNotebookCell(2, undefined, false, {
-            GROUPS: [1],
-         });
-         expect(cellCount(last)).toBe(2);
-      } finally {
-         await cleanup();
-      }
-   });
-
-   // TENANT is declared twice: defaulted in tenant_base (read by a plain
-   // `where:`), undefaulted in tenant_gate (read by a gate). Cell 0 reaches
-   // tenant_base two hops deep, so TENANT is in its declared set but not on its
-   // surface. Dropping it there would bind the default; it must 400 instead.
-   it("(6) a given declared deep in a cell but surfaced only by a later import 400s, never default-binds", async () => {
-      const { model, cleanup } = await createModelWithFiles(
-         {
-            "tenant_base.malloy": `##! experimental.givens
-
-given:
-  TENANT :: number is 1
-
-source: rows is duckdb.table('orgtable') extend {
-  where: org_id = $TENANT
-  measure: c is count()
-}
-`,
-            "tenant_hub.malloy": `import "tenant_base.malloy"
-
-source: visible_rows is rows extend {}
-`,
-            "tenant_gate.malloy": `##! experimental.givens
-
-given:
-  TENANT :: number
-
-#(access_filter) org_id = $TENANT
-source: gated_tenant is duckdb.table('orgtable') extend {
-  measure: c is count()
-}
-`,
-            "nb.malloynb": `>>>malloy
-import "tenant_hub.malloy"
-run: visible_rows -> { aggregate: c }
->>>malloy
-##! experimental.givens
-import { TENANT, gated_tenant } from "tenant_gate.malloy"
-run: gated_tenant -> { aggregate: c }
-`,
-         },
-         "nb.malloynb",
-      );
-      try {
-         const rejection = model.executeNotebookCell(0, undefined, false, {
-            TENANT: 2,
-         });
-         await expect(rejection).rejects.toBeInstanceOf(MalloyError);
-         await expect(rejection).rejects.toThrow(/TENANT/);
-
-         const later = await model.executeNotebookCell(1, undefined, false, {
-            TENANT: 2,
-         });
-         expect(cellCount(later)).toBe(2);
       } finally {
          await cleanup();
       }
@@ -309,6 +223,7 @@ run: gated_tenant -> { aggregate: c }
 
    const TENANT_BASE = `##! experimental.givens
 
+#(secure)
 given:
   TENANT :: number is 1
 
@@ -318,8 +233,8 @@ source: rows is duckdb.table('orgtable') extend {
 }
 `;
 
-   // The surface and the runtime bind by the alias; the cell's registry keeps
-   // the declaration name, so a name-only match would drop T and bind the default.
+   // The surface and the runtime bind by the alias; the registry keeps the
+   // declaration name, so a name-only match would drop T and bind the default.
    it("(6a) a given imported under an alias binds the caller's value, not the default", async () => {
       const { model, cleanup } = await createModelWithFiles(
          {
@@ -333,20 +248,18 @@ run: rows -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            T: 2,
-         });
+         const result = await runCell(model, 0, { T: 2 });
          expect(cellCount(result)).toBe(2);
-         const none = await model.executeNotebookCell(0, undefined, false, {
-            T: 3,
-         });
+         const none = await runCell(model, 0, { T: 3 });
          expect(cellCount(none)).toBe(0);
       } finally {
          await cleanup();
       }
    });
 
-   it("(6b) an alias surfaced only by a later cell still 400s on an earlier cell that reaches the given deep", async () => {
+   // Every cell compiles into one model, so the alias a later cell imports is
+   // on the surface for an earlier cell that reaches the given deep.
+   it("(6b) an alias surfaced only by a later cell binds the caller's value on an earlier cell that reaches the given deep", async () => {
       const { model, cleanup } = await createModelWithFiles(
          {
             "tenant_base.malloy": TENANT_BASE,
@@ -366,11 +279,8 @@ run: visible_rows -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         const rejection = model.executeNotebookCell(0, undefined, false, {
-            T: 3,
-         });
-         await expect(rejection).rejects.toBeInstanceOf(MalloyError);
-         await expect(rejection).rejects.toThrow(/'T'/);
+         expect(cellCount(await runCell(model, 0, { T: 3 }))).toBe(0);
+         expect(cellCount(await runCell(model, 0, { T: 2 }))).toBe(2);
       } finally {
          await cleanup();
       }
@@ -389,9 +299,7 @@ run: gated -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            GROUPS: [1],
-         });
+         const result = await runCell(model, 0, { GROUPS: [1] });
          expect(cellCount(result)).toBe(2);
       } finally {
          await cleanup();
@@ -416,11 +324,9 @@ run: plain -> { aggregate: c }
       );
       try {
          await expect(
-            model.executeNotebookCell(0, undefined, false, {
-               ROLE: "guest",
-            }),
+            runCell(model, 0, { ROLE: "guest" }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
-         await expect(model.executeNotebookCell(0)).rejects.toBeInstanceOf(
+         await expect(runCell(model, 0)).rejects.toBeInstanceOf(
             AccessDeniedError,
          );
       } finally {
@@ -428,49 +334,7 @@ run: plain -> { aggregate: c }
       }
    });
 
-   it("(9) a leading markdown cell doesn't shift index alignment", async () => {
-      const { model, cleanup } = await createModelWithFiles(
-         {
-            "plain.malloy": PLAIN,
-            "gate.malloy": GROUPS_GATE,
-            "nb.malloynb": `>>>markdown
-# Notes
->>>malloy
-import "plain.malloy"
-run: plain -> { aggregate: c }
->>>malloy
-##! experimental.givens
-import "gate.malloy"
-run: gated -> { aggregate: c }
-`,
-         },
-         "nb.malloynb",
-      );
-      try {
-         const markdown = await model.executeNotebookCell(0);
-         expect(markdown.type).toBe("markdown");
-
-         const preImport = await model.executeNotebookCell(
-            1,
-            undefined,
-            false,
-            { GROUPS: [1] },
-         );
-         expect(cellCount(preImport)).toBe(4);
-
-         const postImport = await model.executeNotebookCell(
-            2,
-            undefined,
-            false,
-            { GROUPS: [1] },
-         );
-         expect(cellCount(postImport)).toBe(2);
-      } finally {
-         await cleanup();
-      }
-   });
-
-   it("(10) a `#(secure)` given, the shape a host injects on every run, is dropped before its import and binds after it", async () => {
+   it("(10) a `#(secure)` given, the shape a host injects on every run, is ignored by a cell that does not read it and binds where it is read", async () => {
       const { model, cleanup } = await createModelWithFiles(
          {
             "plain.malloy": PLAIN,
@@ -496,22 +360,13 @@ run: gated -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         const preImport = await model.executeNotebookCell(
-            0,
-            undefined,
-            false,
-            { GROUPS: [1] },
-         );
+         const preImport = await runCell(model, 0, { GROUPS: [1] });
          expect(cellCount(preImport)).toBe(4);
 
-         const mine = await model.executeNotebookCell(1, undefined, false, {
-            GROUPS: [1],
-         });
+         const mine = await runCell(model, 1, { GROUPS: [1] });
          expect(cellCount(mine)).toBe(2);
 
-         const none = await model.executeNotebookCell(1, undefined, false, {
-            GROUPS: [],
-         });
+         const none = await runCell(model, 1, { GROUPS: [] });
          expect(cellCount(none)).toBe(0);
       } finally {
          await cleanup();
@@ -523,6 +378,7 @@ run: gated -> { aggregate: c }
 // reached only through the hub's `mid_gated`.
 const OG_BASE = `##! experimental.givens
 
+#(secure)
 given:
   HIDE :: string is 'none'
 
@@ -534,6 +390,7 @@ source: ungated_deep is duckdb.table('orgtable') extend {
 
 const OG_GATE = `##! experimental.givens
 
+#(secure)
 given:
   HIDE :: string
 
@@ -576,9 +433,9 @@ describe("a notebook cell that reads an off-surface gate given", () => {
          "nb.malloynb",
       );
       try {
-         const err = await model
-            .executeNotebookCell(1, undefined, false, { HIDE: "a" })
-            .catch((e: unknown) => e);
+         const err = await runCell(model, 1, { HIDE: "a" }).catch(
+            (e: unknown) => e,
+         );
          expect(err).toBeInstanceOf(MalloyError);
          expect((err as Error).message).toMatch(/unknown given 'HIDE'/);
       } finally {
@@ -592,9 +449,9 @@ describe("a notebook cell that reads an off-surface gate given", () => {
          "nb.malloynb",
       );
       try {
-         await expect(
-            model.executeNotebookCell(2, undefined, false, { HIDE: "a" }),
-         ).rejects.toBeInstanceOf(AccessDeniedError);
+         await expect(runCell(model, 2, { HIDE: "a" })).rejects.toBeInstanceOf(
+            AccessDeniedError,
+         );
       } finally {
          await cleanup();
       }
@@ -606,9 +463,7 @@ describe("a notebook cell that reads an off-surface gate given", () => {
          "nb.malloynb",
       );
       try {
-         const result = await model.executeNotebookCell(0, undefined, false, {
-            HIDE: "a",
-         });
+         const result = await runCell(model, 0, { HIDE: "a" });
          expect(cellCount(result)).toBe(4);
       } finally {
          await cleanup();

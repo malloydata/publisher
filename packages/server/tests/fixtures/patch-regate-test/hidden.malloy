@@ -1,0 +1,5 @@
+#(carries) ["none"]
+source: leaky is duckdb.sql("select 1 as id") extend {
+   #(classification) "phi.direct_identifier"
+   dimension: key is id
+}

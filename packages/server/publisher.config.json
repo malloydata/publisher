@@ -15,6 +15,10 @@
         {
           "name": "html-data-app",
           "location": "../../examples/html-data-app"
+        },
+        {
+          "name": "clinical-records",
+          "location": "../../examples/clinical-records"
         }
       ],
       "connections": []

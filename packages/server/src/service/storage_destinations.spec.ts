@@ -5,6 +5,7 @@ import { beforeEach, afterEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
 import sinon from "sinon";
 
 import { components } from "../api";
@@ -18,6 +19,8 @@ import {
 } from "../errors";
 import { ConnectionController } from "../controller/connection.controller";
 import { logger } from "../logger";
+import { allowedForLockdown } from "./duckdb_lockdown";
+import { installSettings } from "../test_helpers/settings_env";
 import { buildEnvironmentMalloyConfig } from "./connection";
 import {
    assembleEnvironmentConnections,
@@ -27,7 +30,8 @@ import {
    storageDestinationsEqual,
 } from "./connection_config";
 import { Environment } from "./environment";
-import type { EnvironmentStore } from "./environment_store";
+import { fakeOf } from "../test_helpers/store_fakes";
+import type { ConnectionAdmin } from "./environment_ports";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -116,14 +120,23 @@ describe("processStorageDestinations", () => {
    });
 
    it("drops a DuckLake destination missing the fields its attach needs", () => {
-      // A config that arrived without its storage block. The schema marks the
+      // A config that arrived without its catalog block. The schema marks the
       // field required, which is exactly why the validator has to check it: a
       // request body and a config file are not type-checked on the way in.
-      const noBucket = ducklakeDestination("managed", "org_a");
-      delete (noBucket.ducklakeConnection as unknown as Record<string, unknown>)
+      const noCatalog = ducklakeDestination("managed", "org_a");
+      delete (
+         noCatalog.ducklakeConnection as unknown as Record<string, unknown>
+      ).catalog;
+
+      expect(processStorageDestinations([noCatalog])).toEqual([]);
+   });
+
+   it("keeps a DuckLake destination with no data path, which reads the catalog's own", () => {
+      const noPath = ducklakeDestination("managed", "org_a");
+      delete (noPath.ducklakeConnection as unknown as Record<string, unknown>)
          .storage;
 
-      expect(processStorageDestinations([noBucket])).toEqual([]);
+      expect(processStorageDestinations([noPath])).toHaveLength(1);
    });
 
    it("keeps the first of two destinations sharing a name", () => {
@@ -320,6 +333,180 @@ describe("Environment: connections and storage destinations are disjoint", () =>
       expect(logged).toContain("managed");
    });
 
+   describe("a connection on a destination's catalog", () => {
+      const onCatalog = (
+         name: string,
+         postgresConnection: object,
+         ducklakeExtra: object = {},
+         extra: object = {},
+      ) =>
+         ({
+            name,
+            type: "ducklake",
+            ...extra,
+            ducklakeConnection: {
+               catalog: { postgresConnection, metadataSchema: "lake" },
+               storage: { bucketUrl: `gs://managed-tier/${name}` },
+               ...ducklakeExtra,
+            },
+         }) as ApiConnection;
+      const asModels = {
+         connectionString:
+            "postgres://models_ro:other@CATALOG.internal:5432/ducklake",
+      };
+      const asTier = {
+         host: "catalog.internal",
+         port: 5432,
+         databaseName: "ducklake",
+         userName: "publisher",
+         password: "catalog-secret",
+      };
+      const REACHES =
+         'Connection "models" reaches storage destination "managed"';
+      const warnings = (
+         connection: ApiConnection,
+         destination: ApiConnection,
+      ) => {
+         const warn = sinon.stub(logger, "warn").returns(logger as never);
+         makeEnvironment([connection], [destination]);
+         return warn.getCalls().map((call) => String(call.args[0]));
+      };
+      const has = (messages: string[], text: string) =>
+         messages.some((m) => m.includes(text));
+
+      it("warns when it connects as another role than the destination", () => {
+         const messages = warnings(
+            onCatalog("models", asModels),
+            onCatalog("managed", asTier),
+         );
+         expect(
+            has(messages, `${REACHES}: it names the same DuckLake catalog`),
+         ).toBe(true);
+      });
+
+      it("does not warn for a managed read-only view when the destination builds into a schema it does not list", () => {
+         const messages = warnings(
+            onCatalog(
+               "models",
+               asModels,
+               { readableSchemas: ["stripe"] },
+               { managed: true },
+            ),
+            onCatalog("managed", asTier, { destinationSchema: "materialized" }),
+         );
+         expect(has(messages, REACHES)).toBe(false);
+      });
+
+      it("still warns for a destination that builds into main", () => {
+         const messages = warnings(
+            onCatalog("models", asModels, {}, { managed: true }),
+            onCatalog("managed", asTier),
+         );
+         expect(has(messages, REACHES)).toBe(true);
+      });
+
+      describe("a readableSchemas entry the destination builds into", () => {
+         const listing = onCatalog(
+            "models",
+            asModels,
+            { readableSchemas: ["materialized"] },
+            { managed: true },
+         );
+         const builds = onCatalog("managed", asTier, {
+            destinationSchema: "materialized",
+         });
+         const other = onCatalog("managed", asTier, {
+            destinationSchema: "elsewhere",
+         });
+         const unrelated = tenantPostgresConnection("warehouse");
+
+         it("is refused at boot", () => {
+            expect(() => makeEnvironment([listing], [builds])).toThrow(
+               BadRequestError,
+            );
+         });
+
+         it("is refused when an update brings the connection, and nothing changes", async () => {
+            const environment = makeEnvironment([unrelated], [builds]);
+            await expect(
+               environment.update({
+                  name: "test-env",
+                  connections: [listing],
+               }),
+            ).rejects.toThrow(BadRequestError);
+            expect(environment.listApiConnections().map((c) => c.name)).toEqual(
+               ["warehouse"],
+            );
+         });
+
+         it("is refused when an update brings the destination, and the stored list stays", async () => {
+            const environment = makeEnvironment([listing], [other]);
+            await expect(
+               environment.update({
+                  name: "test-env",
+                  storageDestinations: [builds],
+               }),
+            ).rejects.toThrow(BadRequestError);
+            expect(
+               environment.listStorageDestinations()[0].ducklakeConnection
+                  ?.destinationSchema,
+            ).toBe("elsewhere");
+         });
+
+         it("is refused when one update brings both, against the next pair and not the stored one", async () => {
+            const environment = makeEnvironment([unrelated], [other]);
+            await expect(
+               environment.update({
+                  name: "test-env",
+                  connections: [listing],
+                  storageDestinations: [builds],
+               }),
+            ).rejects.toThrow(BadRequestError);
+            expect(environment.listApiConnections().map((c) => c.name)).toEqual(
+               ["warehouse"],
+            );
+            expect(
+               environment.listStorageDestinations()[0].ducklakeConnection
+                  ?.destinationSchema,
+            ).toBe("elsewhere");
+         });
+
+         it("applies nothing when the readme write fails", async () => {
+            const environment = makeEnvironment([unrelated], [builds]);
+            sinon
+               .stub(fs.promises, "writeFile")
+               .rejects(new Error("disk full"));
+            await expect(
+               environment.update({
+                  name: "test-env",
+                  readme: "new",
+                  connections: [listing],
+                  storageDestinations: [other],
+               }),
+            ).rejects.toThrow("Failed to update environment README");
+            expect(environment.listApiConnections().map((c) => c.name)).toEqual(
+               ["warehouse"],
+            );
+            expect(
+               environment.listStorageDestinations()[0].ducklakeConnection
+                  ?.destinationSchema,
+            ).toBe("materialized");
+         });
+
+         it("passes when the same update moves the destination off the listed schema", async () => {
+            const environment = makeEnvironment([unrelated], [builds]);
+            await environment.update({
+               name: "test-env",
+               connections: [listing],
+               storageDestinations: [other],
+            });
+            expect(environment.listApiConnections().map((c) => c.name)).toEqual(
+               ["models"],
+            );
+         });
+      });
+   });
+
    it("omits destinations from the connection list", () => {
       const environment = makeEnvironment(
          [tenantPostgresConnection("warehouse")],
@@ -488,13 +675,512 @@ describe("Environment: connections and storage destinations are disjoint", () =>
       expect(environment.hasAuthoritativeStorageDestinations()).toBe(false);
    });
 
-   it("derives a destination's DuckDB file apart from a same-named connection's", () => {
-      // A pooled DuckDB instance is keyed on `databasePath` + `workingDirectory`
-      // and NOT on the connection name, while both lists derive that path from
-      // `<root>/<name>`. Same root plus the same name would be one shared
-      // instance, and the attach is `ATTACH OR REPLACE … AS <name>` — so one
-      // would replace the other's, across two namespaces that are allowed to
-      // reuse a name. Different roots is what makes that unreachable.
+   describe("S3_CREDENTIAL_CHAIN_POLICY=destinations-only", () => {
+      // DuckDB reads the AWS variables from the process itself; the policy is
+      // a setting.
+      const ENV_KEYS = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"];
+      const saved: Record<string, string | undefined> = {};
+      let restoreSettings: () => void;
+
+      beforeEach(() => {
+         for (const key of ENV_KEYS) saved[key] = process.env[key];
+         process.env.AWS_ACCESS_KEY_ID = "AKIAFAKE";
+         process.env.AWS_SECRET_ACCESS_KEY = "fakesecret";
+         restoreSettings = installSettings({
+            env: { S3_CREDENTIAL_CHAIN_POLICY: "destinations-only" },
+         }).restore;
+      });
+      afterEach(() => {
+         restoreSettings();
+         for (const key of ENV_KEYS) {
+            if (saved[key] === undefined) delete process.env[key];
+            else process.env[key] = saved[key];
+         }
+      });
+
+      // `chain: "env"` resolves from the variables above, so CREATE SECRET never
+      // probes instance metadata.
+      const chainLake = (name: string): ApiConnection => {
+         const lake = ducklakeDestination(name, "org_a");
+         lake.ducklakeConnection!.storage = {
+            bucketUrl: "s3://managed-tier/org_a",
+            s3Connection: {
+               provider: "credential_chain",
+               chain: "env",
+               region: "us-east-1",
+            },
+         };
+         return lake;
+      };
+
+      const destinationLookupFailure = (
+         environment: Environment,
+         name: string,
+      ) =>
+         environment
+            .getStorageDestinationMalloyConfig()
+            .connections.lookupConnection(name)
+            .then(
+               () => undefined,
+               (error: Error) => error,
+            );
+
+      it("assembles a chain-auth destination and serves it past the policy gate", async () => {
+         const errors = sinon.stub(logger, "error");
+         const secretStatements: string[] = [];
+         const runSQL = DuckDBConnection.prototype.runSQL;
+         sinon
+            .stub(DuckDBConnection.prototype, "runSQL")
+            .callsFake(async function (this: DuckDBConnection, sql: string) {
+               if (/CREATE OR REPLACE SECRET/i.test(String(sql))) {
+                  secretStatements.push(String(sql));
+               }
+               // The catalog is unreachable; the secret comes after the ATTACH.
+               if (/ATTACH OR REPLACE 'ducklake:/.test(String(sql))) {
+                  return [] as never;
+               }
+               return runSQL.call(this, sql);
+            });
+         const environment = makeEnvironment([], [chainLake("managed")]);
+
+         // A dropped origin either rejects the destination at validation or installs an
+         // EMPTY config at the rebuild; either way there is no connection to look up.
+         const failure = await destinationLookupFailure(environment, "managed");
+
+         expect(
+            errors
+               .getCalls()
+               .filter((call) =>
+                  String(call.args[0]).includes(
+                     "Failed to assemble storage destinations",
+                  ),
+               ),
+         ).toHaveLength(0);
+         expect(environment.listStorageDestinations()).toHaveLength(1);
+         expect(failure).toBeDefined();
+         expect(failure!.message).not.toMatch(/not permitted/);
+         expect(failure!.message).not.toMatch(/No connection named/);
+         // The secret statement is the proof the policy gate was passed.
+         expect(secretStatements).toHaveLength(1);
+         expect(secretStatements[0]).toContain("PROVIDER credential_chain");
+      });
+
+      it("still refuses a tenant connection that shares the destination's name", async () => {
+         expect(() =>
+            buildEnvironmentMalloyConfig([chainLake("shared")], envPath),
+         ).toThrow(/not permitted/);
+
+         const environment = makeEnvironment([], [chainLake("shared")]);
+         const failure = await destinationLookupFailure(environment, "shared");
+         expect(environment.listStorageDestinations()).toHaveLength(1);
+         expect(failure).toBeDefined();
+         expect(failure!.message).not.toMatch(/not permitted/);
+         expect(failure!.message).not.toMatch(/No connection named/);
+      });
+   });
+
+   // A managed catalog's config states no data path (so no attach can create a
+   // catalog), and its storage secret is scoped to the path the catalog recorded,
+   // read from the attached catalog before the secret exists. The read-only view of a
+   // managed catalog reaches only its main schema's files.
+   describe("storage secret scope from the catalog's recorded data path", () => {
+      const noPathLake = (
+         name: string,
+         extra: Partial<ApiConnection> = {},
+         storage: "gcs" | "s3" = "gcs",
+      ): ApiConnection => ({
+         name,
+         type: "ducklake",
+         ...extra,
+         ducklakeConnection: {
+            catalog: {
+               postgresConnection: {
+                  host: "127.0.0.1",
+                  port: 1,
+                  databaseName: "d",
+                  userName: "u",
+                  password: "p",
+               },
+               metadataSchema: name,
+            },
+            storage:
+               storage === "gcs"
+                  ? { gcsConnection: { keyId: "k", secret: "s" } }
+                  : {
+                       s3Connection: {
+                          accessKeyId: "AK",
+                          secretAccessKey: "SK",
+                          region: "us-east-1",
+                       },
+                    },
+         },
+      });
+
+      type RecordedPath = { path: string; path_is_relative: boolean | null };
+      type Recorded = {
+         dataPath?: string;
+         main?: RecordedPath;
+         schemas?: Record<string, RecordedPath>;
+      };
+      const RECORDED: Recorded = {
+         dataPath: "gs://bucket/org_a/db_x/",
+         main: { path: "main/", path_is_relative: true },
+      };
+
+      // The catalog is unreachable (port 1), so the preflight falls back to the
+      // ATTACH. The stub answers the DuckLake ATTACH as a success and the attached
+      // catalog's metadata reads with what a present catalog records, lets the
+      // secret statement through without a live bucket, and passes everything
+      // else to the real engine, where nothing is attached.
+      const stubCatalog = (
+         statements: string[],
+         recorded: Recorded = RECORDED,
+      ) => {
+         const runSQL = DuckDBConnection.prototype.runSQL;
+         sinon
+            .stub(DuckDBConnection.prototype, "runSQL")
+            .callsFake(async function (this: DuckDBConnection, sql: string) {
+               const text = String(sql);
+               statements.push(text);
+               if (/ATTACH OR REPLACE 'ducklake:/.test(text))
+                  return [] as never;
+               if (/ducklake_metadata WHERE scope IS NULL/.test(text)) {
+                  return (
+                     recorded.dataPath
+                        ? [{ key: "data_path", value: recorded.dataPath }]
+                        : []
+                  ) as never;
+               }
+               const wanted =
+                  /\.ducklake_schema WHERE (?:schema_name IN \((.*)\) AND )?end_snapshot IS NULL/.exec(
+                     text,
+                  );
+               if (wanted) {
+                  const known: Record<string, RecordedPath | undefined> = {
+                     main: recorded.main,
+                     ...recorded.schemas,
+                  };
+                  // With no name filter the query returns every live schema.
+                  const names = wanted[1]
+                     ? [...wanted[1].matchAll(/'([^']*)'/g)].map(([, n]) => n)
+                     : Object.keys(known);
+                  return names
+                     .filter((name) => known[name])
+                     .map((name) => ({
+                        schema_name: name,
+                        ...known[name]!,
+                     })) as never;
+               }
+               if (/CREATE OR REPLACE SECRET/i.test(text)) return [] as never;
+               // The stubbed catalog has no `main` schema to search.
+               if (/^SET search_path/.test(text)) return [] as never;
+               return runSQL.call(this, sql);
+            });
+      };
+      const secrets = (statements: string[]) =>
+         statements.filter((sql) => /CREATE OR REPLACE SECRET/i.test(sql));
+      const lookupView = (lake: ApiConnection) =>
+         buildEnvironmentMalloyConfig([lake], envPath)
+            .malloyConfig.connections.lookupConnection(lake.name!)
+            .then(
+               () => undefined,
+               (error: Error) => error,
+            );
+      const lookupDestination = (lake: ApiConnection) =>
+         makeEnvironment([], [lake])
+            .getStorageDestinationMalloyConfig()
+            .connections.lookupConnection(lake.name!)
+            .then(
+               () => undefined,
+               (error: Error) => error,
+            );
+
+      it("scopes a managed connection's read-only view to the recorded main schema path", async () => {
+         const statements: string[] = [];
+         stubCatalog(statements);
+         await lookupView(noPathLake("db_x", { managed: true }));
+         expect(secrets(statements)).toHaveLength(1);
+         expect(secrets(statements)[0]).toContain("TYPE gcs");
+         expect(secrets(statements)[0]).toContain(
+            "SCOPE ['gs://bucket/org_a/db_x/main/']",
+         );
+      });
+
+      const readableView = (readableSchemas: string[]) => {
+         const lake = noPathLake("db_x", { managed: true });
+         lake.ducklakeConnection!.readableSchemas = readableSchemas;
+         return lake;
+      };
+
+      it("scopes a managed view to main and its readable schemas, in one metadata read, and lets the lock reach each", async () => {
+         const statements: string[] = [];
+         stubCatalog(statements, {
+            ...RECORDED,
+            schemas: {
+               extra_a: { path: "extra_a/", path_is_relative: true },
+               extra_b: { path: "extra_b/", path_is_relative: null },
+            },
+         });
+         const connection = await buildEnvironmentMalloyConfig(
+            [readableView(["extra_b", "extra_a", "main", "extra_a"])],
+            envPath,
+         ).malloyConfig.connections.lookupConnection("db_x");
+         expect(secrets(statements)).toHaveLength(1);
+         expect(secrets(statements)[0]).toContain(
+            "SCOPE ['gs://bucket/org_a/db_x/main/', 'gs://bucket/org_a/db_x/extra_a/', 'gs://bucket/org_a/db_x/extra_b/']",
+         );
+         expect(
+            statements.filter((sql) => /\.ducklake_schema WHERE/.test(sql)),
+         ).toHaveLength(1);
+         expect(allowedForLockdown(connection)).toEqual(
+            expect.arrayContaining([
+               "gs://bucket/org_a/db_x/main/",
+               "gs://bucket/org_a/db_x/extra_a/",
+               "gs://bucket/org_a/db_x/extra_b/",
+            ]),
+         );
+      });
+
+      it("re-emits the whole scope list when the renewer replaces a chain secret", async () => {
+         const restore = installSettings({
+            env: { S3_CREDENTIAL_CHAIN_POLICY: "any" },
+         }).restore;
+         try {
+            const statements: string[] = [];
+            stubCatalog(statements, {
+               ...RECORDED,
+               schemas: {
+                  extra_a: { path: "extra_a/", path_is_relative: true },
+               },
+            });
+            const lake = noPathLake("db_x", { managed: true }, "s3");
+            lake.ducklakeConnection!.storage = {
+               s3Connection: {
+                  provider: "credential_chain",
+                  chain: "env",
+                  region: "us-east-1",
+               },
+            };
+            lake.ducklakeConnection!.readableSchemas = ["extra_a"];
+            const connection = (await buildEnvironmentMalloyConfig(
+               [lake],
+               envPath,
+            ).malloyConfig.connections.lookupConnection("db_x")) as unknown as {
+               storageSecretRenewer: () => Promise<void>;
+            };
+            const scope =
+               "SCOPE ['gs://bucket/org_a/db_x/main/', 'gs://bucket/org_a/db_x/extra_a/']";
+            expect(secrets(statements)[0]).toContain("REFRESH 'auto'");
+            expect(secrets(statements)[0]).toContain(scope);
+
+            statements.length = 0;
+            await connection.storageSecretRenewer();
+            expect(secrets(statements)).toHaveLength(1);
+            expect(secrets(statements)[0]).toContain(scope);
+         } finally {
+            restore();
+         }
+      });
+
+      it("skips a readable schema the catalog does not record, and narrows to what resolves", async () => {
+         const statements: string[] = [];
+         const error = sinon.stub(logger, "error");
+         stubCatalog(statements, {
+            ...RECORDED,
+            schemas: {
+               extra_a: { path: "extra_a/", path_is_relative: true },
+               escape: { path: "../other/", path_is_relative: true },
+            },
+         });
+         await lookupView(readableView(["escape", "ghost", "extra_a"]));
+         expect(secrets(statements)[0]).toContain(
+            "SCOPE ['gs://bucket/org_a/db_x/main/', 'gs://bucket/org_a/db_x/extra_a/']",
+         );
+         expect(
+            error
+               .getCalls()
+               .map((call) => (call.args as unknown[])[1])
+               .filter(Boolean),
+         ).toEqual([
+            { catalog: "db_x", schema: "escape" },
+            { catalog: "db_x", schema: "ghost" },
+         ]);
+      });
+
+      it("refuses the attach when main is not recorded, whatever else is listed", async () => {
+         const statements: string[] = [];
+         stubCatalog(statements, {
+            dataPath: "gs://bucket/org_a/db_x/",
+            schemas: { extra_a: { path: "extra_a/", path_is_relative: true } },
+         });
+         const failure = await lookupView(readableView(["extra_a"]));
+         expect(failure?.message).toMatch(
+            /No storage secret could be scoped for DuckLake catalog 'db_x'/,
+         );
+         expect(secrets(statements)).toHaveLength(0);
+      });
+
+      it("refuses, and detaches, a local-data-path view whose listed schema's directory holds an unlisted schema", async () => {
+         const statements: string[] = [];
+         stubCatalog(statements, {
+            ...RECORDED,
+            schemas: {
+               extra_a: { path: "extra_a/", path_is_relative: true },
+               nested: { path: "extra_a/nested/", path_is_relative: true },
+            },
+         });
+         const lake = readableView(["extra_a"]);
+         lake.ducklakeConnection!.storage = { bucketUrl: envPath };
+         const failure = await lookupView(lake);
+         expect(failure?.message).toMatch(/'extra_a'.*'nested'/);
+         expect(statements.some((sql) => /^DETACH /.test(sql))).toBe(true);
+      });
+
+      it("does not read the schema paths for a destination, which serves every schema", async () => {
+         const statements: string[] = [];
+         stubCatalog(statements);
+         await lookupDestination(noPathLake("db_x"));
+         expect(
+            statements.filter((sql) => /\.ducklake_schema WHERE/.test(sql)),
+         ).toHaveLength(0);
+      });
+
+      it("scopes a destination with no configured path to the whole recorded data path", async () => {
+         const statements: string[] = [];
+         stubCatalog(statements);
+         await lookupDestination(noPathLake("db_x"));
+         expect(secrets(statements)).toHaveLength(1);
+         expect(secrets(statements)[0]).toContain(
+            "SCOPE ['gs://bucket/org_a/db_x/']",
+         );
+      });
+
+      it("never narrows a destination, whatever flags its entry carries", async () => {
+         // The narrowing is for a connection view; an operator's destination
+         // serves every schema, and a `managed` flag on its entry means nothing.
+         const statements: string[] = [];
+         stubCatalog(statements);
+         await lookupDestination(noPathLake("db_x", { managed: true }));
+         expect(secrets(statements)).toHaveLength(1);
+         expect(secrets(statements)[0]).toContain(
+            "SCOPE ['gs://bucket/org_a/db_x/']",
+         );
+      });
+
+      it("reads an empty or unflagged main path as the recorded default", async () => {
+         // '' is what a catalog migrated from DuckLake 0.2 records for `main`: its
+         // files sit directly under the data path. A NULL `path_is_relative` is
+         // relative.
+         const statements: string[] = [];
+         stubCatalog(statements, {
+            dataPath: "gs://bucket/org_a/db_x",
+            main: { path: "", path_is_relative: null },
+         });
+         await lookupView(noPathLake("db_x", { managed: true }));
+         expect(secrets(statements)[0]).toContain(
+            "SCOPE ['gs://bucket/org_a/db_x/']",
+         );
+         sinon.restore();
+         const relative: string[] = [];
+         stubCatalog(relative, {
+            dataPath: "gs://bucket/org_a/db_x",
+            main: { path: "main/", path_is_relative: null },
+         });
+         await lookupView(noPathLake("db_y", { managed: true }));
+         expect(secrets(relative)[0]).toContain(
+            "SCOPE ['gs://bucket/org_a/db_x/main/']",
+         );
+      });
+
+      it("creates the secret after the DuckLake ATTACH, from the attached catalog's own metadata", async () => {
+         const statements: string[] = [];
+         stubCatalog(statements);
+         await lookupView(noPathLake("db_x", { managed: true }));
+         const attach = statements.findIndex((sql) =>
+            /ATTACH OR REPLACE 'ducklake:/.test(sql),
+         );
+         const dataPath = statements.findIndex((sql) =>
+            /"__ducklake_metadata_db_x"\."db_x"\.ducklake_metadata WHERE scope IS NULL/.test(
+               sql,
+            ),
+         );
+         const mainPath = statements.findIndex((sql) =>
+            /"__ducklake_metadata_db_x"\."db_x"\.ducklake_schema WHERE end_snapshot IS NULL/.test(
+               sql,
+            ),
+         );
+         const secret = statements.findIndex((sql) =>
+            /CREATE OR REPLACE SECRET/i.test(sql),
+         );
+         expect(attach).toBeGreaterThanOrEqual(0);
+         expect(dataPath).toBeGreaterThan(attach);
+         expect(mainPath).toBeGreaterThan(attach);
+         expect(secret).toBeGreaterThan(dataPath);
+         expect(secret).toBeGreaterThan(mainPath);
+         // Nothing about the paths is read in the preflight any more.
+         expect(
+            statements.filter((sql) => /_fmt_preflight_/.test(sql)),
+         ).not.toContainEqual(
+            expect.stringMatching(/data_path|ducklake_schema/),
+         );
+      });
+
+      it("refuses an S3 catalog with nothing to scope to, detaches it, and retries on the next lookup", async () => {
+         // The catalog records no data path. The secret would have to be unscoped,
+         // so none is created, and the catalog is not left attached: an attached
+         // catalog with no secret would be found attached by the next lookup and
+         // never retried, while its reads fall to whatever else can sign them.
+         const statements: string[] = [];
+         stubCatalog(statements, {});
+         const lake = noPathLake("db_x", { managed: true }, "s3");
+         const config = buildEnvironmentMalloyConfig([lake], envPath);
+         const lookup = () =>
+            config.malloyConfig.connections.lookupConnection("db_x").then(
+               () => undefined,
+               (error: Error) => error,
+            );
+         const first = await lookup();
+         expect(first?.message).toMatch(
+            /No storage secret could be scoped for DuckLake catalog 'db_x'/,
+         );
+         expect(secrets(statements)).toHaveLength(0);
+         const off = statements.findIndex((sql) =>
+            /SET GLOBAL enable_global_s3_configuration=false/.test(sql),
+         );
+         const attach = statements.findIndex((sql) =>
+            /ATTACH OR REPLACE 'ducklake:/.test(sql),
+         );
+         const detach = statements.findIndex((sql) =>
+            /^DETACH "db_x";/.test(sql),
+         );
+         expect(off).toBeGreaterThanOrEqual(0);
+         expect(off).toBeLessThan(attach);
+         expect(detach).toBeGreaterThan(attach);
+
+         const second = await lookup();
+         expect(second?.message).toMatch(/No storage secret could be scoped/);
+         expect(
+            statements.filter((sql) =>
+               /ATTACH OR REPLACE 'ducklake:/.test(sql),
+            ),
+         ).toHaveLength(2);
+      });
+
+      it("refuses a GCS catalog with nothing to scope to", async () => {
+         const statements: string[] = [];
+         stubCatalog(statements, {});
+         const error = await lookupDestination(noPathLake("db_x"));
+         expect(error?.message).toMatch(/No storage secret could be scoped/);
+         expect(secrets(statements)).toHaveLength(0);
+      });
+   });
+
+   it("roots a destination apart from a same-named connection's", () => {
+      // A pooled DuckDB instance is keyed on its share key, which includes
+      // `workingDirectory` but not the connection name, and the attach is
+      // `ATTACH OR REPLACE … AS <name>`: one would replace the other's, across
+      // two namespaces that are allowed to reuse a name. Different roots is what
+      // makes that unreachable.
       const connectionSide = assembleEnvironmentConnections(
          [ducklakeDestination("shared", "tenant_lake")],
          envPath,
@@ -507,29 +1193,31 @@ describe("Environment: connections and storage destinations are disjoint", () =>
       const connectionMeta = connectionSide.metadata.get("shared")!;
       const destinationMeta = destinationSide.metadata.get("shared")!;
 
-      expect(destinationMeta.databasePath).not.toBe(
-         connectionMeta.databasePath,
-      );
       expect(destinationMeta.workingDirectory).not.toBe(
          connectionMeta.workingDirectory,
       );
-      expect(destinationMeta.databasePath).toContain(STORAGE_DESTINATIONS_DIR);
-      expect(connectionMeta.databasePath).not.toContain(
+      expect(destinationMeta.workingDirectory).toContain(
          STORAGE_DESTINATIONS_DIR,
       );
+      expect(connectionMeta.workingDirectory).not.toContain(
+         STORAGE_DESTINATIONS_DIR,
+      );
+      // A lake keeps no database file of its own.
+      expect(destinationMeta.databasePath).toBeUndefined();
+      expect(connectionMeta.databasePath).toBeUndefined();
    });
 
-   it("opens two different database files for one name held by both lists", async () => {
-      // The filesystem consequence of the derivation above, through a real
-      // Environment: resolving the name on each side opens its own DuckDB file.
-      // Both lookups fail — neither catalog exists — but the local database each
-      // one opened is what the instance pool keys on, so two files is two
-      // instances.
+   it("opens two different instances for one name held by both lists", async () => {
+      // The consequence of the rooting above, through a real Environment:
+      // resolving the name on each side opens its own in-memory instance, and
+      // neither leaves a file behind. Both lookups fail (neither catalog
+      // exists), but the instance each one opened is what the pool keys on.
       const environment = makeEnvironment(
          [ducklakeDestination("shared", "tenant_lake")],
          [ducklakeDestination("shared", "org_a")],
       );
-
+      const keysBefore = new Set(Object.keys(DuckDBConnection.activeDBs));
+      const opened = new Set<string>();
       for (const config of [
          environment.getEnvironmentMalloyConfig(),
          environment.getStorageDestinationMalloyConfig(),
@@ -539,19 +1227,15 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          } catch {
             // Expected: the catalogs behind both are unreachable.
          }
+         for (const key of Object.keys(DuckDBConnection.activeDBs)) {
+            if (!keysBefore.has(key)) opened.add(key);
+         }
       }
 
-      expect(fs.existsSync(path.join(envPath, "shared_ducklake.duckdb"))).toBe(
-         true,
-      );
+      expect(opened.size).toBe(2);
       expect(
-         fs.existsSync(
-            path.join(
-               storageDestinationRoot(envPath),
-               "shared_ducklake.duckdb",
-            ),
-         ),
-      ).toBe(true);
+         fs.readdirSync(envPath).filter((file) => file.endsWith(".duckdb")),
+      ).toEqual([]);
    });
 
    it("reports a destination as name and type, and never its config", async () => {
@@ -650,6 +1334,37 @@ describe("Environment: connections and storage destinations are disjoint", () =>
 
       expect(environment.hasStorageDestination("managed")).toBe(false);
       expect(environment.hasStorageDestination("other")).toBe(true);
+   });
+
+   it("resolves a keep reference after the update before it, so a concurrent update cannot revert a rotation", async () => {
+      const environment = makeEnvironment(
+         [],
+         [ducklakeDestination("managed", "org_a", "old-secret")],
+      );
+      // The rotation takes the update lock first and blocks in its readme write; the keep update queues behind it.
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+         release = resolve;
+      });
+      sinon.stub(fs.promises, "writeFile").callsFake(() => gate);
+      const rotation = environment.update({
+         name: "test-env",
+         readme: "slow",
+         storageDestinations: [
+            ducklakeDestination("managed", "org_a", "rotated-secret"),
+         ],
+      });
+      const keep = environment.update({
+         name: "test-env",
+         storageDestinations: [{ name: "managed", type: "ducklake" }],
+      });
+      release();
+      await Promise.all([rotation, keep]);
+
+      expect(
+         environment.getStorageDestination("managed").ducklakeConnection
+            ?.catalog?.postgresConnection?.password,
+      ).toBe("rotated-secret");
    });
 
    it("refuses an update carrying an unusable destination, and applies none of it", async () => {
@@ -784,9 +1499,9 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          [tenantPostgresConnection("warehouse")],
          [ducklakeDestination("managed", "org_a")],
       );
-      const store = {
+      const store = fakeOf<ConnectionAdmin>({
          getEnvironment: sinon.stub().resolves(environment),
-      } as unknown as EnvironmentStore;
+      });
       const controller = new ConnectionController(store);
 
       const listed = await controller.listConnections("test-env");

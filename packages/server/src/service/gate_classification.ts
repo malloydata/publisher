@@ -28,14 +28,12 @@ import { logger } from "../logger";
 import {
    annotationTexts,
    modelAnnotations,
-   ownLevelNotes,
    ownLevelNoteTexts,
    type AnnotationNote,
    type AnnotationsDef,
 } from "./annotations";
 import {
    buildRowLevelProbe,
-   collectAuthorizeExprsForRoute,
    gateFilterText,
    isLegacyQuotedPayload,
    liftProbeFilterCondition,
@@ -54,18 +52,15 @@ import {
    RETIRED_ROUTES,
    type AuthorizeGrammarRoutedTerm,
 } from "./authorize_grammar";
-import {
-   AUTHORIZE_ROUTE,
-   CANONICAL_AUTHORIZE_ROUTES,
-} from "./authorize_routes";
+import { AUTHORIZE_ROUTE } from "./authorize_routes";
 import type { CallerJoinPath } from "./caller_joins";
 import { expandRefSummaryGivenIds } from "./gate_dimension";
 import {
    ANCESTOR_WALK_MAX_DEPTH,
-   ancestorGateExprs,
-   resolveDeclaredSource,
-   resolveQuerySourceBase,
-} from "./gate_registry_walk";
+   gatePlan,
+   modelDefGateGraph,
+} from "./governance/gate_plan";
+import { resolveDeclaredSource } from "./governance/ir/source_graph";
 
 /** One reachable authorize gate found by {@link collectEntryPointGates}. */
 export type GateEntry = {
@@ -93,22 +88,101 @@ export type GateEntry = {
     * entry. {@link resolveGraftTarget} uses it to find where to graft.
     */
    struct?: SourceDef;
+   /**
+    * How many `->` derivations lie between {@link struct} and the level the
+    * gate was read on (`gatePlan`'s `baseHops`). 0: the gate applies to the
+    * entry point's own rows. N > 0: it applies to the rows of that base,
+    * inside the entry point ({@link derivationLevel}), before any derivation
+    * above it runs.
+    */
+   baseHops: number;
+   /** The struct the gate was read on; the lift resolves it to a source. */
+   level?: SourceDef;
 };
 
 /**
+ * Where inside a graft target a gate read on a `->` derivation's base lands:
+ * the base's copy found by its `sourceID`, or, for a base with none (an
+ * inline `x extend { ... } -> { ... }`), the struct `hops` derivations down
+ * (only when the graft target is the entry point itself, so the count is
+ * measured from the same struct).
+ */
+export type DerivationLanding = { sourceID: string } | { hops: number };
+
+/**
+ * The struct in `root`'s derivation chain that `landing` names: `root`
+ * itself, else its `query_source` base (`query.compositeResolvedSourceDef`
+ * ahead of `query.structRef`, the compiler's precedence), and so on down. A
+ * base named rather than inlined is read from `contents` (pass `undefined`
+ * to refuse one). `undefined` when no struct in the chain matches, or past
+ * {@link ANCESTOR_WALK_MAX_DEPTH}: the caller denies.
+ *
+ * This is where a gate read on a derivation's base is grafted and proven: the
+ * base's copy inside the derivation, so the gate filters the base's rows
+ * before the derivation runs.
+ */
+export function derivationLevel(
+   root: SourceDef | undefined,
+   landing: DerivationLanding,
+   contents: ModelDef["contents"] | undefined,
+): SourceDef | undefined {
+   let current = root;
+   for (let depth = 0; current && depth <= ANCESTOR_WALK_MAX_DEPTH; depth++) {
+      if (
+         "sourceID" in landing
+            ? current.sourceID === landing.sourceID
+            : depth === landing.hops
+      ) {
+         return current;
+      }
+      if (current.type !== "query_source") return undefined;
+      const query = (
+         current as unknown as {
+            query?: {
+               structRef?: unknown;
+               compositeResolvedSourceDef?: unknown;
+            };
+         }
+      ).query;
+      const ref = query?.compositeResolvedSourceDef ?? query?.structRef;
+      const base = typeof ref === "string" ? contents?.[ref] : ref;
+      current =
+         base && typeof base === "object" && isSourceDef(base as never)
+            ? (base as SourceDef)
+            : undefined;
+   }
+   return undefined;
+}
+
+/**
  * The model def + materializer a row-level gate is classified, lifted and
- * grafted against. The query path uses the model's cumulative scope; a
- * notebook cell passes an earlier cell's scope or its own (see
- * `Model.graftScopeForCell` and friends).
+ * grafted against. The query path uses the model's cumulative scope; an
+ * answer from a stored table, such as a served copy or a rollup, passes its
+ * own.
  *
  * `cacheScope` namespaces the gate-shape and grafted-materializer caches: two
  * scopes that name a source identically must never share a classification or
  * a materializer grafted against the wrong modelDef.
  */
+/** What a {@link GraftScope} reloads a grafted model copy through. */
+export interface GraftRuntime {
+   _loadModelFromModelDef(modelDef: ModelDef): ModelMaterializer;
+}
+
 export interface GraftScope {
    modelDef: ModelDef;
    materializer: ModelMaterializer;
    cacheScope: string;
+   /**
+    * The runtime `modelDef` was compiled in, which a graft on this scope
+    * reloads its grafted copy through: the model's own for the query path,
+    * the served copy's for a served-copy answer (its
+    * connections reach the storage destinations its `virtual()` sources name).
+    * Never defaulted: a graft reloaded through another runtime would bind the
+    * gate to the wrong connections, so a scope without one denies every
+    * row-level gate. Classification alone (the build plan) needs none.
+    */
+   runtime?: GraftRuntime;
 }
 
 /**
@@ -163,91 +237,23 @@ export function createGateClassificationDeps(
 }
 
 /**
- * Effective authorize exprs read off a struct's own annotations (else the
- * nearest ancestor's, via {@link ancestorGateExprs}). Used by the derivation
- * and composite walks, whose structs a `modelDef.contents` name lookup would
- * miss.
+ * The gates that apply to `struct` as an entry point, for both routes: a thin
+ * adapter over `gatePlan` (`./governance/gate_plan.ts`, the one
+ * gate-inheritance walk; its doc says what is and is not walked) with the
+ * `resolved` composite rule, since the query path resolves one composite
+ * branch per query.
  *
- * Fails closed: load-time validation only probes top-level sources, so a
- * malformed gate on a non-top-level base or composite member reaches here
- * unvalidated. A parse failure returns `["false"]`, never "no gate". The
- * sentinel is synthesized on either route because each route decides
- * own-wins-over-ancestor independently and may reach the unreadable branch
- * when the other does not.
+ * Every failure to read a gate is a `["false"]` entry (deny), never "no gate".
  *
- * `excludeNotes` is subtracted by identity from `struct`'s own notes: Malloy's
- * composite resolver copies a `query_source` base's note objects onto the
- * resolved member, and reading them would fold the base's gate into the
- * member's group instead of the separate AND'd entries
- * {@link collectEntryPointGates} produces. Empty except for that recursion.
- *
- * `fromAncestor` reports a gate from a derivation base (see `selfContained`).
- */
-function gateExprsForOwnAnnotations(
-   struct: SourceDef,
-   route: string,
-   modelDef?: ModelDef,
-   excludeNotes: readonly AnnotationNote[] = [],
-): {
-   exprs: string[];
-   fromAncestor: boolean;
-} {
-   // Both note keys: which one a gate lands in is decided by the author's
-   // syntax, not by scope. See {@link ownLevelNoteTexts}.
-   const ownNotes = ownLevelNotes(struct.annotations).filter(
-      (note) => !excludeNotes.includes(note),
-   );
-   try {
-      // The legacy quoted-string form is refused at load
-      // (`assertNoLegacyStringGate`), but a caller without that preflight
-      // (`build_plan.ts`) can still reach here with one. No special case is
-      // needed: the payload is returned verbatim and fails as an ordinary
-      // expression in `resolveGateShape`'s lift (see the comment there).
-      const own = collectAuthorizeExprsForRoute(
-         ownNotes.map((note) => note.text),
-         route,
-      );
-      if (own.length > 0) {
-         return { exprs: own, fromAncestor: false };
-      }
-      const ancestor = ancestorGateExprs(struct, modelDef, route);
-      return { exprs: ancestor, fromAncestor: ancestor.length > 0 };
-   } catch {
-      return {
-         exprs: ["false"],
-         fromAncestor: false,
-      };
-   }
-}
-
-/**
- * The gates that apply to `struct` as an entry point:
- *  - its own `#(authorize)`, else the nearest `extend` ancestor's;
- *  - if query-derived (`source: x is y -> {...}`), the base's gates, since a
- *    `QuerySourceDef`'s own annotations do not carry `y`'s gate and
- *    `source: mine is locked -> {...}` would otherwise launder it away;
- *  - if that base is a composite, the member Malloy resolved for this
- *    derivation (`query.compositeResolvedSourceDef`).
- * Derivation recurses here, so chains are covered at any depth; `seen`
- * (struct identity) guards cycles.
- *
- * Not collected: joined sources, members of a joined composite, query-local
- * joins and a derivation's inner-pipeline joins. A gate governs the source it
- * is declared on, not what its author joined beneath it. Caller-written joins
- * are gated separately (`./caller_joins`, `Model.probeCallerJoinGates`).
- *
- * `excludeNotes`: see {@link gateExprsForOwnAnnotations}. Only the
- * composite-member recursion passes one.
- *
- * `treatAsOwnGate` is true only for the run target itself and its resolved
- * composite branch, the call sites that are the entry point, and marks those
- * entries not self-contained.
+ * `seen`: structs already visited (copied per route). `treatAsOwnGate` is true
+ * only for the run target itself and its resolved composite branch, the call
+ * sites that are the entry point, and marks those entries not self-contained.
+ * `entryPointStruct` is what a row-level gate is grafted onto (see
+ * {@link resolveGraftTarget}). `excludeNotes` is subtracted by identity from
+ * `struct`'s own notes (only the composite-member recursion passes one).
  *
  * Returns entries for both routes. Many consumers call this walk directly, so
  * a separate per-route collector one of them forgot to call would fail open.
- * Each route runs the whole walk ({@link collectEntryPointGatesForRoute})
- * with its own fresh `seen` and its own own-wins-over-ancestor decision, so
- * one route's note never sheds the other route's inherited gate.
  */
 export function collectEntryPointGates(
    struct: SourceDef | undefined,
@@ -257,126 +263,32 @@ export function collectEntryPointGates(
    entryPointStruct: SourceDef | undefined = struct,
    excludeNotes: readonly AnnotationNote[] = [],
 ): GateEntry[] {
-   const results: GateEntry[] = [];
-   for (const route of CANONICAL_AUTHORIZE_ROUTES) {
-      results.push(
-         ...collectEntryPointGatesForRoute(
-            struct,
-            modelDef,
-            route,
-            new Set(seen),
-            treatAsOwnGate,
-            entryPointStruct,
-            excludeNotes,
-         ),
-      );
-   }
-   return results;
-}
-
-/** The single-route walk {@link collectEntryPointGates} runs per route. */
-function collectEntryPointGatesForRoute(
-   struct: SourceDef | undefined,
-   modelDef: ModelDef | undefined,
-   route: string,
-   // The struct that started this walk (run target or resolved composite
-   // branch), held fixed through the recursion: it, not the struct a gate
-   // was read off, is what {@link resolveGraftTarget} grafts onto. Grafting
-   // the base instead cannot reach a model-declared derivation
-   // (`Z is X -> {...}`), which snapshotted its base at declaration.
-   seen: Set<SourceDef>,
-   treatAsOwnGate: boolean,
-   entryPointStruct: SourceDef | undefined,
-   // Non-empty only for the composite-member recursion; see
-   // {@link gateExprsForOwnAnnotations}.
-   excludeNotes: readonly AnnotationNote[],
-): GateEntry[] {
-   if (!struct || !modelDef || seen.has(struct)) return [];
-   seen.add(struct);
-
-   const results: GateEntry[] = [];
-   const label = (struct as { as?: string }).as ?? struct.name;
-   const { exprs: ownExprs, fromAncestor } = gateExprsForOwnAnnotations(
-      struct,
-      route,
-      modelDef,
+   if (!struct || !modelDef) return [];
+   const { steps } = gatePlan(struct, modelDefGateGraph(modelDef), {
+      composite: "resolved",
+      seen,
+      treatAsOwnGate,
+      entryPoint: entryPointStruct,
       excludeNotes,
-   );
-   if (ownExprs.length > 0) {
-      results.push({
-         label,
-         exprs: ownExprs,
-         route,
+   });
+   const entries: GateEntry[] = [];
+   for (const step of steps) {
+      if (step.kind !== "gate") continue;
+      entries.push({
+         label: step.label,
+         exprs: step.exprs,
+         route: step.route,
          // A gate carried in from a derivation base counts as authored
          // elsewhere even when `struct` is the entry point.
-         selfContained: fromAncestor || !treatAsOwnGate,
-         // The entry point, not `struct`: where a row-level gate is grafted.
-         struct: entryPointStruct,
+         selfContained: step.fromAncestor || !step.treatAsOwn,
+         // The entry point, not the level read: where a row-level gate is
+         // grafted. Absent only for the unresolvable-base deny.
+         ...(step.entryPoint ? { struct: step.entryPoint } : {}),
+         baseHops: step.baseHops,
+         ...(step.level ? { level: step.level } : {}),
       });
    }
-
-   // Joined sources are deliberately not walked (see the doc above).
-
-   const duck = struct as unknown as {
-      type: string;
-      query?: {
-         structRef?: SourceDef | string;
-         compositeResolvedSourceDef?: SourceDef;
-      };
-   };
-   if (duck.type === "query_source") {
-      // The lookup is shared with `effectiveAncestorGateExprs`; this recursion
-      // (composite handling, `entryPointStruct` threading) is not.
-      const base = resolveQuerySourceBase(struct, modelDef);
-      if (base) {
-         results.push(
-            ...collectEntryPointGatesForRoute(
-               base,
-               modelDef,
-               route,
-               seen,
-               false,
-               entryPointStruct,
-               [],
-            ),
-         );
-      } else {
-         // A `query_source` derives from something by construction, so an
-         // unresolvable base is IR we failed to read, not an ungated source;
-         // contributing nothing would launder the base's gate away. Deny, on
-         // both routes (see `ancestorGateExprs`). An already-visited base
-         // still resolves and takes the branch above.
-         results.push({
-            label,
-            exprs: ["false"],
-            route,
-            selfContained: true,
-         });
-      }
-      // A query-source's base may be a composite (`qs is compose(a, b) ->
-      // {...}`); Malloy resolves it to one member for this derivation, on
-      // `query.compositeResolvedSourceDef` (not `query.structRef`). Without
-      // walking it, a query-source over a locked member would launder that
-      // member's gate away. Recursing here covers any nesting depth.
-      const resolved = duck.query?.compositeResolvedSourceDef;
-      if (resolved) {
-         results.push(
-            ...collectEntryPointGatesForRoute(
-               resolved,
-               modelDef,
-               route,
-               seen,
-               false,
-               entryPointStruct,
-               // Identity-subtract the base's own notes (see `excludeNotes`).
-               base ? ownLevelNotes(base.annotations) : [],
-            ),
-         );
-      }
-      // The derivation's inner-pipeline joins are not walked either.
-   }
-
-   return results;
+   return entries;
 }
 
 /**
@@ -403,8 +315,7 @@ function collectEntryPointGatesForRoute(
  * (a caller's `source: mine is X extend {}` becomes a real `contents` entry
  * only there), so its keys may not exist in the graft scope.
  * `originModelDef` is still what the ancestor walk uses, since only its
- * `sourceRegistry` links `entry.struct` to its bases. The two coincide on the
- * query path and differ for notebook cells.
+ * `sourceRegistry` links `entry.struct` to its bases.
  *
  * `graftScope` undefined (nothing to graft against) always rejects: a filter
  * with nowhere to attach cannot be enforced.
@@ -418,6 +329,11 @@ export async function resolveGateShape(
    | {
         shape: "row_level";
         graftTarget: string;
+        /**
+         * The derivation base inside `graftTarget` the filter lands on
+         * ({@link derivationLevel}); absent, `graftTarget` itself.
+         */
+        landing?: DerivationLanding;
         filterText: string;
         condition: FilterCondition;
         /** The givens the gate compares. */
@@ -436,8 +352,7 @@ export async function resolveGateShape(
 > {
    if (!entry.struct) return { shape: "rejected" };
    if (!graftScope) {
-      // No scope at all to graft against: for a notebook cell, no earlier code
-      // cell and no compiled model of its own. The caller still gets the same
+      // No scope at all to graft against. The caller still gets the same
       // opaque 403 (it must not leak whether a gate exists); the log line
       // tells operators this case apart.
       logger.debug(
@@ -452,12 +367,55 @@ export async function resolveGateShape(
       originModelDef,
       graftScope.modelDef,
    );
-   // No key to graft onto: an ephemeral run target (an independently
-   // recompiled `/compile` model, a notebook cell's `source: mine is
-   // base_locked extend {…}`) can fail this. Both routes need the lifted
+   // No key to graft onto: an ephemeral run target, such as an independently
+   // recompiled `/compile` model, can fail this. Both routes need the lifted
    // condition, so reject rather than fall back.
    if (!graftTarget) {
       return { shape: "rejected" };
+   }
+   // A row filter read on a derivation's base applies to that base's rows: it
+   // lands on the base's copy inside `graftTarget` (`derivationLevel`), so the
+   // derivation runs over only the rows it admits. It is lifted in the base's
+   // field space, on the source it was declared on, when that is a source of
+   // this model; else on `graftTarget` itself, which compiles only when the
+   // output keeps every field the gate reads (a lifted condition names fields
+   // by path, and the bind proof checks each path against the base where it
+   // lands). A base `graftTarget` does not contain has nothing to graft onto:
+   // deny. A lock is decided, never grafted, so it needs no landing.
+   let landing: DerivationLanding | undefined;
+   let liftTarget = graftTarget;
+   if (entry.baseHops > 0 && entry.level) {
+      liftTarget =
+         resolveGraftTarget(entry.level, originModelDef, graftScope.modelDef) ??
+         graftTarget;
+   }
+   if (entry.baseHops > 0 && entry.route !== AUTHORIZE_ROUTE) {
+      const target = graftScope.modelDef.contents[graftTarget] as
+         | SourceDef
+         | undefined;
+      const sourceID = entry.level?.sourceID;
+      // Counted hops are measured from the entry point, so they hold only
+      // when the graft target is that struct.
+      const candidate: DerivationLanding | undefined =
+         sourceID !== undefined
+            ? { sourceID }
+            : target === entry.struct ||
+                (target?.sourceID !== undefined &&
+                   target.sourceID === entry.struct.sourceID)
+              ? { hops: entry.baseHops }
+              : undefined;
+      if (
+         !entry.level ||
+         !candidate ||
+         !derivationLevel(target, candidate, graftScope.modelDef.contents)
+      ) {
+         logger.debug(
+            "Row-level gate on a derivation's base has no base to graft onto; denying",
+            { modelPath: deps.modelPath, label: entry.label },
+         );
+         return { shape: "rejected" };
+      }
+      landing = candidate;
    }
    const filterText = gateFilterText(entry.exprs);
    // `entry.route` is in the key although classification never reads it (the
@@ -466,14 +424,14 @@ export async function resolveGateShape(
    // (scope, target, text); if classification ever read the route, a shared
    // entry would hand the lock the filter's answer (200, zero rows) instead
    // of a refusal.
-   const cacheKey = `${graftScope.cacheScope}\u0000${entry.route}\u0000${graftTarget}\u0000${filterText}`;
+   const cacheKey = `${graftScope.cacheScope}\u0000${entry.route}\u0000${liftTarget}\u0000${filterText}`;
 
    let cached = deps.gateShapeCache.get(cacheKey);
    if (!cached) {
       let condition: FilterCondition;
       try {
          condition = await liftGateCondition(
-            graftTarget,
+            liftTarget,
             filterText,
             graftScope.materializer,
          );
@@ -485,7 +443,7 @@ export async function resolveGateShape(
          // `assertNoLegacyStringGate` structural rather than a special case.
          logger.debug("Row-level gate condition failed to lift; denying", {
             modelPath: deps.modelPath,
-            graftTarget,
+            graftTarget: liftTarget,
             error: err instanceof Error ? err.message : String(err),
          });
          return { shape: "rejected" };
@@ -535,7 +493,7 @@ export async function resolveGateShape(
          // Do not reject merely because `givenUsage` is absent: `1 = 1` reads
          // no given legitimately. Only an unresolvable path (`ok: false`)
          // denies.
-         const targetStruct = graftScope.modelDef.contents[graftTarget];
+         const targetStruct = graftScope.modelDef.contents[liftTarget];
          if (!isSourceDef(targetStruct)) {
             classification = {
                shape: "rejected",
@@ -601,7 +559,7 @@ export async function resolveGateShape(
                "Gate accepted a given off the model surface; denying",
                {
                   modelPath: deps.modelPath,
-                  graftTarget,
+                  graftTarget: liftTarget,
                   givenName: unreachable,
                },
             );
@@ -632,6 +590,7 @@ export async function resolveGateShape(
    return {
       shape: "row_level",
       graftTarget,
+      ...(landing !== undefined ? { landing } : {}),
       filterText,
       condition: cached.condition,
       givenNames: cached.classification.givenNames,
@@ -655,9 +614,12 @@ export async function resolveGateShape(
  * named query over an imported source reads the snapshot
  * `Model.graftIntoNamedQuerySnapshots` grafts.
  *
- * A `struct` that is itself a `contents` entry is grafted directly. That
- * covers `Y is X extend {}` and `Z is X -> {...}`; `Z` must be grafted at
- * `Z`, not `X`, because its compiled `SourceDef` snapshotted `X` when defined.
+ * A `struct` that is itself a `contents` entry is the graft target. That
+ * covers `Y is X extend {}` and `Z is X -> {...}`; for `Z` the target is `Z`,
+ * not `X`, because its compiled `SourceDef` snapshotted `X` when defined. A
+ * row filter `Z` inherits from `X` is grafted onto that snapshot inside `Z`
+ * (the gate's `landing`, {@link derivationLevel}), so it filters `X`'s rows
+ * before `Z`'s query runs; a gate `Z` declares itself is grafted onto `Z`.
  *
  * Otherwise `struct` is an ad-hoc caller-declared run target (`source: mine
  * is X extend {…}` + `run: mine`). Links are tried, nearest first, until one
@@ -675,8 +637,7 @@ export async function resolveGateShape(
  * and lift compile against), never `originModelDef`: there `mine` is a real
  * entry and would be returned directly, though it does not exist in
  * `graftModelDef`. `originModelDef` is still what the walk reads, since only
- * it links `struct` to its base. The two are the same on the query path and
- * differ for notebook cells (see {@link GraftScope}).
+ * it links `struct` to its base.
  *
  * Matches by identity, then `sourceID`, never by name alone: distinct
  * `SourceDef`s can share a name across an inheritance chain.
@@ -782,10 +743,8 @@ async function liftGateCondition(
    const probe = materializer.loadQuery(
       buildRowLevelProbe(graftTarget, filterText),
    );
-   const prepared = (await probe.getPreparedQuery()) as {
-      _query?: { structRef?: { filterList?: FilterCondition[] } };
-   };
-   return liftProbeFilterCondition(
+   const prepared = await probe.getPreparedQuery();
+   return liftProbeFilterCondition<FilterCondition>(
       prepared,
       `lifted probe for "${graftTarget}"`,
       filterText,
@@ -835,6 +794,8 @@ export function computeGivenDeclaredTypes(
 export type RowLevelGraftEntry = {
    label: string;
    graftTarget: string;
+   /** See {@link resolveGateShape}'s `landing`. */
+   landing?: DerivationLanding;
    filterText: string;
    condition: FilterCondition;
    givenNames: readonly string[];
@@ -891,9 +852,13 @@ export function assertAuthorizeGrammarValid(
       const struct = modelDef.contents[sourceName];
       const ownGroupTerms: AuthorizeGrammarRoutedTerm[] = [];
       const declaredAdmitAllRoutes: string[] = [];
-      for (const { route, exprs } of groups) {
+      const ownRoutesSeen = new Set<string>();
+      for (const { route, exprs, fromBase } of groups) {
+         // A query source's own group comes first; the base group after it is inherited.
          const isOwn =
-            (authorizeOwnNotes.get(sourceName)?.get(route)?.length ?? 0) > 0;
+            (authorizeOwnNotes.get(sourceName)?.get(route)?.length ?? 0) > 0 &&
+            !ownRoutesSeen.has(route);
+         if (isOwn) ownRoutesSeen.add(route);
          const filteredExprs = exprs.filter(
             (expr) =>
                (isOwn || expr !== "false") && !isLegacyQuotedPayload(expr),
@@ -915,7 +880,13 @@ export function assertAuthorizeGrammarValid(
                ) {
                   declaredAdmitAllRoutes.push(route);
                }
-               if (term.scope === "row_level" && isSourceDef(struct)) {
+               // A derivation's base gate reads the base's fields, checked
+               // where the base is an entry point, not this output.
+               if (
+                  term.scope === "row_level" &&
+                  !fromBase &&
+                  isSourceDef(struct)
+               ) {
                   assertNoFanoutFieldPath(
                      sourceName,
                      struct,

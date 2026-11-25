@@ -64,8 +64,8 @@ server that cannot be reached as unreachable (502, `CONNECTION_FAILED`). Two lim
   error rather than 424, as it does for Postgres there.
 
 The dialect is **experimental** upstream. Publisher accepts it on the author's behalf, so a model
-needs no `##! experimental.dialect.sqlserver` pragma. The connection is **read-only**: a colocated
-`#@ persist` on a SQL Server source is refused at load with reason `read_only_dialect` and the
+needs no `##! experimental.dialect.sqlserver` pragma. The connection is **read-only**: a database
+`#@ persist` on a SQL Server source is refused at load with reason `connection_cannot_hold_table` and the
 source serves live. The connector's README lists what the dialect does not translate yet (`nest:`,
 a boolean used as a condition, `all()`/`exclude()`, regular expressions before SQL Server 2025).
 
@@ -118,6 +118,29 @@ Constraints:
   identity: the fingerprint replaces the derived connection digest verbatim, and the derived
   digest already incorporates the impersonation reference precisely so that two environments
   with different identities never share persisted-table ids.
+
+## BigQuery table and column descriptions (`dbmeta`)
+
+Set `dbmeta` to copy BigQuery table and column descriptions onto the schema Malloy reads:
+
+```json
+{
+  "name": "bigquery",
+  "type": "bigquery",
+  "bigqueryConnection": {
+    "defaultProjectId": "my-project",
+    "dbmeta": true
+  }
+}
+```
+
+Malloy annotates each described table and column with `#(dbmeta) description="..."`.
+In `get_context`, a source, join or field with no `#(doc)` or `#"` doc string of its own takes its
+table's or column's description, marked `docs_source` or `description_source` `"dbmeta"` in the
+response. That text is doc text like any other: it is embedded when an embedding provider is
+configured and sent to the LLM when one is (see [configuration.md](configuration.md)).
+A join to a source locked with `#(authorize) false` carries no doc from that source.
+Off unless set; it never changes query results.
 
 ## Per-package DuckDB sandboxes
 
@@ -184,6 +207,8 @@ A `ducklake` connection pairs a **catalog** — a metadata database, typically P
 ```
 
 Materialized data always lands as **Parquet** in the storage bucket (Publisher disables DuckLake small-table inlining on the write path, so it never accumulates in the catalog database). The materialization tier is gated by `PERSIST_STORAGE_MODE` — see [configuration.md](configuration.md).
+
+The storage credential reaches only the catalog's data path. Publisher scopes the DuckDB secret it creates to `bucketUrl` (or, when the config leaves it out, to the path the catalog recorded), and on S3 turns off DuckDB's fallback to the host's `AWS_*` keys, so a read of any other object through this connection is unsigned. See [What the storage credential reaches](ducklake.md#what-the-storage-credential-reaches).
 
 ## Storage destinations
 
@@ -378,6 +403,12 @@ A proxy makes the server open an outbound SSH tunnel to a tenant-configured host
 connection configuration is the authorization boundary; host-key pinning is the trust
 control on the tunnel itself, and is required unless the deployment opts out.
 
+A tunnel that drops is detected, logged and rebuilt on the next query. Queries in flight at the
+drop fail with a connection error. A query that was waiting for a free session when the tunnel
+dropped waits out its 30 s and then fails with the "no free database session" error, which
+blames load; the tunnel-closed warning in the log is the real cause, and a retry gets the
+rebuilt tunnel.
+
 ### TLS to the database through the tunnel
 
 A proxied connection sets its TLS mode per-connection via `postgresConnection.sslmode`
@@ -426,11 +457,12 @@ applies `statementTimeoutMilliseconds`, the same way; its `sslmode` is described
   timeout is merged into them, so its other server settings are kept; a `statement_timeout`
   already in them is replaced by this field, with a warning logged. A connection pooler in
   transaction mode may not carry a session setting from one statement to the next. The timeout
-  bounds every statement on the connection, including persisted-source builds: a colocated
+  bounds every statement on the connection, including persisted-source builds: a database
   `#@ persist` build and a federated `storage=` build run on sessions that carry it, so size it
   for the longest build, not only for interactive queries.
 
-Neither setting is applied to a DuckLake catalog connection.
+A DuckLake catalog connection given as fields applies `sslmode` (when unset, the deployment
+`PGSSLMODE` applies) but not `statementTimeoutMilliseconds`.
 
 #### Effect on persisted sources
 

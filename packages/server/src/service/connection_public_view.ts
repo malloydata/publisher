@@ -60,6 +60,7 @@ const BIGQUERY: PublicShape = {
    impersonateServiceAccount: "scalar",
    maximumBytesBilled: "scalar",
    queryTimeoutMilliseconds: "scalar",
+   dbmeta: "scalar",
 };
 
 const SNOWFLAKE: PublicShape = {
@@ -171,12 +172,16 @@ const DUCKLAKE: PublicShape = {
       postgresConnection: POSTGRES,
       metadataSchema: "scalar",
    },
+   readOnly: "scalar",
+   destinationSchema: "scalar",
+   readableSchemas: "any",
 };
 
 const PUBLIC_CONNECTION: PublicShape = {
    resource: "scalar",
    name: "scalar",
    type: "scalar",
+   managed: "scalar",
    fingerprint: "scalar",
    // Opaque and writer-owned, but it must be RETURNED: a writer compares the
    // reported tag against the one it would send, so a dropped tag reads as
@@ -429,8 +434,8 @@ function isNamed(value: unknown): value is { name: string } {
  *
  * This exists because the connect path picks by PRESENCE, not by what the
  * caller most recently meant: `buildPostgresConnectionString` returns
- * `connectionString` if set, `hasSnowflakePrivateKey` routes to key-pair auth
- * if a private key is set, `hasS3` wins over GCS, and Trino's `peakaKey` short
+ * `connectionString` if set, a Snowflake connection uses key-pair auth if a
+ * private key is set, `hasS3` wins over GCS, and Trino's `peakaKey` short
  * circuits before `password` is even read. Carrying a remnant of the old method
  * forward would silently beat the method just configured, and the caller cannot
  * clear what it cannot see.

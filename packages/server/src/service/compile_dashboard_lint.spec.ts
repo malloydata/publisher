@@ -23,7 +23,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { logger } from "../logger";
 import { Environment } from "./environment";
-import { Model } from "./model";
+import { Model, ModelPolicy } from "./model";
 import { Package } from "./package";
 import { resetReportMetricsForTest } from "../report_metrics";
 import {
@@ -503,13 +503,20 @@ describe("Model.fromSerialized: authorize warning log", () => {
    const serialized = {
       modelPath: "m.malloy",
       modelType: "model",
-      authorizeWarnings: ["gate on x is not expressible"],
+      gateWarnings: [
+         {
+            sourceName: "x",
+            code: "row-level-gate-unexpressible",
+            message: "gate on x is not expressible",
+         },
+      ],
    } as unknown as Parameters<typeof Model.fromSerialized>[3];
 
    const hydrate = (skipAuthorizeWarningLog?: boolean): string[] => {
       const warn = spyOn(logger, "warn");
       try {
          Model.fromSerialized("pkg", "/unused", {} as never, serialized, {
+            policy: ModelPolicy.standalone(),
             skipAuthorizeWarningLog,
          });
          return warn.mock.calls.map(([message]) => String(message));
