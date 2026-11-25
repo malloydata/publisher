@@ -1,14 +1,15 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import {
    getEmbeddingConfig,
    getEmbeddingSettings,
    getLlmSettings,
    parseRetrievalConfig,
 } from "../config";
-import { getEgressPreset, setRetrievalConfig } from "./config";
+import { logger } from "../logger";
+import { RETIRED_EGRESS_WARNING, setRetrievalConfig } from "./config";
 import {
    _clearEmbeddingProviderForTests,
    embeddingConfigured,
@@ -135,7 +136,7 @@ describe("retrieval.llm validation", () => {
    });
 });
 
-describe("retrieval.embedding and retrieval.egress validation", () => {
+describe("retrieval.embedding validation, and the retired retrieval.egress", () => {
    it("accepts provider, model, dimensions and both prefixes", () => {
       expect(
          parseRetrievalConfig({
@@ -182,26 +183,36 @@ describe("retrieval.embedding and retrieval.egress validation", () => {
       ).not.toThrow();
    });
 
-   it("egress preset is default or full", () => {
-      expect(
-         parseRetrievalConfig({ egress: { preset: "full" } })?.egress,
-      ).toEqual({ preset: "full" });
-      expect(() =>
-         parseRetrievalConfig({ egress: { preset: "wide" } }),
-      ).toThrow(
-         'Invalid retrieval.egress.preset: expected one of default, full, got "wide". Fix:',
+   it("a retired egress block, whatever it says, loads, is ignored and warns", () => {
+      const warn = spyOn(logger, "warn").mockImplementation(
+         (() => logger) as never,
       );
-      expect(() =>
-         parseRetrievalConfig({ egress: { preset: "full", code: true } }),
-      ).toThrow("unknown key 'code'. Valid keys: preset");
-   });
-
-   it("egress defaults to default", () => {
-      setRetrievalConfig(undefined);
-      expect(getEgressPreset()).toBe("default");
-      setRetrievalConfig({ egress: { preset: "full" } });
-      expect(getEgressPreset()).toBe("full");
-      setRetrievalConfig(undefined);
+      try {
+         for (const egress of [
+            { preset: "default" },
+            { preset: "full" },
+            { preset: "wide", code: true },
+            null,
+         ]) {
+            warn.mockClear();
+            // Parsing is silent: the file is read more than once at boot.
+            const parsed = parseRetrievalConfig({ egress });
+            expect(parsed).toEqual({ egressIgnored: true });
+            expect(warn).not.toHaveBeenCalled();
+            // Installing it, once at boot, warns.
+            setRetrievalConfig(parsed);
+            expect(warn).toHaveBeenCalledTimes(1);
+            expect(warn).toHaveBeenCalledWith(RETIRED_EGRESS_WARNING);
+         }
+         warn.mockClear();
+         setRetrievalConfig(
+            parseRetrievalConfig({ embedding: { dimensions: 512 } }),
+         );
+         expect(warn).not.toHaveBeenCalled();
+      } finally {
+         setRetrievalConfig(undefined);
+         warn.mockRestore();
+      }
    });
 });
 

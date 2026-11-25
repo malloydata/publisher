@@ -13,10 +13,19 @@
  */
 
 import type {
+   BoundStorageColumns,
+   BoundStorageContract,
+   BoundTableContract,
+   PlanChainBuildText,
+   PlanChainStringReads,
+   UpstreamStringCapabilityOf,
+} from "./chain_build";
+import type {
    Connection as MalloyConnection,
    MalloyConfig,
 } from "@malloydata/malloy";
 import type { components } from "../../../api";
+import type { UpstreamSchemaReadings, UpstreamTable } from "./upstream_schemas";
 
 type WirePackageMaterialization =
    components["schemas"]["PackageMaterializationConfig"];
@@ -48,4 +57,52 @@ export interface BuildPlanPackage {
     * scope.
     */
    getVersionId(): string | undefined;
+   /**
+    * The native column types of `tables` (the tables its persist sources
+    * read), for the plan's addresses to fold in. `load`: as this load reads
+    * them (again, under an explicit reload or publish). `run`: as the plan
+    * in force read them, so a run addresses each source as its load did.
+    * Absent (a spec's package), none is read and every address is its SQL's
+    * alone.
+    */
+   readUpstreamSchemas?(
+      tables: UpstreamTable[],
+      use: "load" | "run",
+   ): Promise<UpstreamSchemaReadings>;
+   /**
+    * The served copy's chain text, for a `storage=` view or query over
+    * upstreams in its own destination (plan/storage_over_stored.ts). Absent
+    * (a spec's package), such a view or query is refused at plan.
+    */
+   planChainBuildText?: PlanChainBuildText;
+   /**
+    * The stored columns bound for an upstream, which a plan stands in for
+    * its table in place of the ones its build would write by default.
+    * Absent (the load worker, a spec's package): the defaults.
+    */
+   boundStorageColumns?: BoundStorageColumns;
+   /**
+    * Reads the strings a `storage=` build over stored upstreams compares
+    * (serve/chain_string_reads.ts). Absent (a spec's package), every such
+    * build is refused at plan.
+    */
+   planChainStringReads?: PlanChainStringReads;
+   /**
+    * The contract bound for an upstream, which a plan judges those strings
+    * against. Absent (the load worker, a spec's package): judged at build.
+    */
+   boundStorageContract?: BoundStorageContract;
+   /**
+    * How an upstream's source compares its strings live, which a plan judges
+    * those strings against while the upstream's table is not bound. Absent
+    * (the load worker, a spec's package): not read yet, so such a build is
+    * refused until a read lands and the plan is derived again.
+    */
+   upstreamStringCapability?: UpstreamStringCapabilityOf;
+   /**
+    * The contract bound for a table at its tier, which a plan judges an
+    * extension's build over a pair-table parent by. Absent (the load worker,
+    * a spec's package): judged at build.
+    */
+   boundTableContract?: BoundTableContract;
 }

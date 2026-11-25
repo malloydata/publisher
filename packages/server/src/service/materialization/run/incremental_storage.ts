@@ -15,10 +15,11 @@
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { PersistSource } from "@malloydata/malloy";
 
-import { projectToStoredColumns, storedColumnOf } from "../plan/build_plan";
+import { projectToStoredColumns, storedColumnOf } from "./run_plan";
 import {
    canonicalBoundValue,
    deltaSelect,
+   sqlDeltaTarget,
    type DeltaTarget,
    type IncrementalLineage,
    type SqlRunner,
@@ -28,19 +29,21 @@ import {
    wrapPassthrough,
 } from "./materialization_build_session";
 import type { BuildReadCost } from "./build_read_cost";
-import { markBigQueryRead } from "./bigquery_job_cancel";
-import type { FederatedSourceType } from "../../connection";
+import { passthroughBuildOf } from "./passthrough_build";
+import type { FederatedSourceType } from "../../dialects";
 import type { QueryMetadata } from "../../query_metadata";
 import { quoteIdentifier } from "../../quoting";
 import { errMessage } from "../../../utils";
+import { errorCodeOf } from "../../../error_code";
 import { storageTablePath } from "../domain/storage_table_path";
+import { storedTypesAsBuilt } from "../stored_column_types";
 import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
 import {
    decimalTypeOf,
    guardDeltaDecimals,
    numericAsTextSQL,
    postgresNumericColumns,
-} from "./postgres_numeric_precision";
+} from "./passthrough/postgres";
 
 /** What the passthrough's describe and type probe found ({@link postgresNumericColumns}). */
 type NumericRead = Awaited<ReturnType<typeof postgresNumericColumns>>;
@@ -176,7 +179,7 @@ function storageWindowRows(params: {
    watermarkColumn: string;
    queryMetadata?: QueryMetadata;
 }): Pick<DeltaTarget, "windowRows"> {
-   if (params.sourceType === "bigquery") return {};
+   if (passthroughBuildOf(params.sourceType)?.windowRows === false) return {};
    const sourceDialect = params.persistSource.dialectName;
    return {
       windowRows: async (start, end, columns) => {
@@ -201,6 +204,32 @@ function storageWindowRows(params: {
          );
          return read.selectSQL;
       },
+   };
+}
+
+/**
+ * A delta's column types as the destination session reads them (`DESCRIBE`
+ * of its SELECT), for a `storage=` table whose source is Postgres, whose
+ * passthrough's DESCRIBE prepares the query on the server, reading no row,
+ * and for an extension stacked on its parent's table in the destination.
+ * Another engine's may run it, so its delta's types are not read, and not
+ * judged (DeltaTarget.deltaColumnTypes).
+ */
+function describedTypes(
+   session: DuckDBConnection,
+): NonNullable<DeltaTarget["deltaColumnTypes"]> {
+   return async (deltaSQL) => {
+      try {
+         const rows = (await session.runSQL(`DESCRIBE (${deltaSQL})`))
+            .rows as Record<string, unknown>[];
+         return {
+            types: new Map(
+               rows.map((r) => [String(r.column_name), String(r.column_type)]),
+            ),
+         };
+      } catch (err) {
+         return { error: errMessage(err), errorCode: errorCodeOf(err) };
+      }
    };
 }
 
@@ -313,7 +342,7 @@ export function storageDeltaTarget(params: {
             // trade as a full build, bounded by the delta.
             // A numeric the seed stored as DECIMAL (or kept as text) is read as
             // Postgres's exact text too, and cast into its column only when it
-            // fits; one that does not re-seeds (postgres_numeric_precision.ts).
+            // fits; one that does not re-seeds (passthrough/postgres.ts).
             const exact = capabilitiesOf(sourceType).passthroughNumericAsDouble
                ? await exactNumericColumns(
                     session,
@@ -341,6 +370,13 @@ export function storageDeltaTarget(params: {
                : read.selectSQL;
          },
 
+         ...(capabilitiesOf(sourceType).passthroughNumericAsDouble
+            ? {
+                 deltaColumnTypes: describedTypes(session),
+                 storedAsBuilt: storedTypesAsBuilt,
+              }
+            : {}),
+
          ...storageWindowRows({
             session,
             sourceType,
@@ -363,14 +399,13 @@ export function storageDeltaTarget(params: {
             // PostgresConnection row rewrite, which this DuckDB session lacks.
             // Wrapping would make every probe read undefined and seed forever.
             try {
+               // Marked where the engine marks its reads (BigQuery's, so a
+               // cancel finds the job); unlabelled, as no metadata is passed.
+               const prepared = await passthroughBuildOf(
+                  sourceType,
+               )?.prepareRead(session, handle, inner);
                const result = await session.runSQL(
-                  wrapPassthrough(
-                     sourceType,
-                     handle,
-                     sourceType === "bigquery"
-                        ? markBigQueryRead(session, inner)
-                        : inner,
-                  ),
+                  wrapPassthrough(sourceType, handle, prepared?.sql ?? inner),
                );
                const rows = (result?.rows ?? []) as Record<string, unknown>[];
                const raw = rows[0]?.["watermark_max"];
@@ -383,5 +418,49 @@ export function storageDeltaTarget(params: {
             }
          },
       },
+   };
+}
+
+/**
+ * The delta target of a `storage=` extension table stacked on its parent's
+ * table in one destination (extension chains, case 2): the rows come from
+ * the extension's build SQL compiled over the parent's stored table
+ * (`storedSQL`, already projected to the stored columns, the CTAS's own),
+ * run on the same destination session that writes them, so nothing reads
+ * the warehouse. Filtered on the stored watermark column, as the seed's
+ * projection names it.
+ */
+export function stackedDeltaTarget(params: {
+   session: DuckDBConnection;
+   destinationName: string;
+   destinationSchema?: string;
+   physicalTableName: string;
+   quotedTablePath: string;
+   lineage: IncrementalLineage;
+   persistSource: PersistSource;
+   storedSQL: string;
+}): DeltaTarget {
+   const { session, lineage } = params;
+   const storedColumn = storedColumnOf(params.persistSource);
+   return {
+      ...sqlDeltaTarget({
+         dialect: STORAGE_DIALECT,
+         runner: sessionRunner(session),
+         quotedTablePath: params.quotedTablePath,
+         logicalTablePath: storageTablePath(
+            params.destinationName,
+            params.physicalTableName,
+            params.destinationSchema,
+         ),
+         sourceSQL: params.storedSQL,
+         watermarkName: storedColumn(lineage.watermarkName),
+         watermarkType: lineage.watermarkType,
+      }),
+      storedColumn,
+      // The parent's table is in the destination, so DESCRIBE reads no
+      // row: a parent rebuilt at a wider type is seen before the delta.
+      deltaColumnTypes: describedTypes(session),
+      // What the stacked build's casts store each computed type as.
+      storedAsBuilt: storedTypesAsBuilt,
    };
 }

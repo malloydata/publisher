@@ -12,10 +12,23 @@
  * refuses. A source the eligibility gate refuses is returned as refused and serves live.
  */
 
+import {
+   contractDigest,
+   parseContract,
+   servableContract,
+} from "../domain/column_contract";
+import { PACKAGE_SANDBOX_CONNECTION } from "../../connection_config";
+import { storageWritable } from "../domain/placement";
 import { freshnessOf } from "../domain/freshness";
 import type { PersistSource } from "@malloydata/malloy";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import {
+   entryTable,
+   recordedTableKey,
+   mayBeSameTable,
+   placedLeafKey,
+} from "../domain/physical_table";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import {
    authorModelPath,
@@ -25,9 +38,12 @@ import {
    sourceLabel,
    hasReservedTableSuffix,
    tableNameParts,
-   tableNamesMeet,
 } from "../domain/table_name";
-import { isPersistedQuerySourceID } from "../domain/table_plans";
+import {
+   isPersistedQuerySourceID,
+   pairLeafContractKeys,
+   type MaterializePlan,
+} from "../domain/table_plans";
 import { getPersistStorageMode } from "../../../config";
 import {
    BuildInstructionsInvalidError,
@@ -35,30 +51,25 @@ import {
 } from "../../../errors";
 import { logger } from "../../../logger";
 import { recordEligibilityRefused } from "../../../materialization_metrics";
-import { errMessage } from "../../../utils";
 import {
    packageTableSuffix,
-   tableIdentity,
    versionedTableName,
    versionTableSuffix,
    type WriteTarget,
 } from "../../versions/materialization_scope";
 import {
+   assertPlacementNamed,
+   assertTierEligible,
    computeSourceEntityId,
+   declaredStorage,
    foldDistinctTableNames,
    planAddresses,
+   type RunPlan,
    sharedTables,
    storedColumnNames,
    tierGateInputs,
-} from "../plan/build_plan";
-import {
-   type CompiledBuildPlan,
-   sourcesInBuildOrder,
-} from "../domain/compiled_build_plan";
-import {
-   assertPlacementNamed,
-   assertTierEligible,
-} from "../plan/materialization_eligibility";
+} from "./run_plan";
+import { sourcesInBuildOrder } from "../domain/compiled_build_plan";
 import {
    BuildInstruction,
    BuildPlan,
@@ -73,13 +84,10 @@ import {
 import type { EligibilityTier } from "./materialization_instructed_run";
 import {
    allSourcesRefusedError,
-   declaredStorage,
    refusalRecord,
-   resolveStorageDestination,
-   selfAssignTableName,
-   STAGING_ID_LEN,
-   tableKeyOf,
-} from "./materialization_run_support";
+} from "./materialization_instructed_run";
+import { resolveStorageDestination } from "./build_upstreams";
+import { selfAssignTableName, STAGING_ID_LEN } from "./build_table_names";
 import { hasAuthorTableName } from "./table_ownership";
 
 /**
@@ -125,42 +133,6 @@ export interface RenamedTable {
    previousPlace?: { storageDestinationName?: string };
 }
 
-/**
- * Whether two written names, in one place, may be one table: compared
- * unquoted and case-folded, with {@link tableNamesMeet}'s container rule. The
- * conservative answer, for deciding a table is NOT another: an over-wide
- * match only keeps a table.
- */
-export function mayBeOneTable(a: string, b: string): boolean {
-   const canon = (name: string) =>
-      name
-         .split(".")
-         .map((s) => s.replace(/["`[\]]/g, "").toLowerCase())
-         .join(".");
-   return tableNamesMeet(canon(a), canon(b));
-}
-
-/**
- * A written name's table segment, unquoted and case-folded: the key a
- * reclaim or a run's delete compares names by. Containers are left out, since
- * a container does not say which table a name reaches (on DuckDB a two-part
- * name may be a catalog's or a schema's: `memory.t` and `main.t` are one
- * table), and nor does a place (two names for one DuckLake).
- */
-export function tableLeafKey(name: string): string {
-   const parts = name.split(".");
-   return parts[parts.length - 1].replace(/["`[\]]/g, "").toLowerCase();
-}
-
-/**
- * Whether two written names may be one table wherever each is, compared by
- * table segment alone ({@link tableLeafKey}). The conservative answer for
- * deciding whether to drop a table: an over-wide match only keeps one.
- */
-export function mayBeOneTableAnywhere(a: string, b: string): boolean {
-   return tableLeafKey(a) === tableLeafKey(b);
-}
-
 /*
  * A run's build instructions: derived by auto-run from the compiled plan, or
  * checked when a caller supplies them, and where each instructed table lives.
@@ -179,8 +151,10 @@ interface ClearedSource {
  * targets a refused source.
  */
 function gateSources(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    include: Set<string> | null,
+   /** Upstreams of `include` pulled in (upstreamClosure): never thrown for. */
+   pulledIn: ReadonlySet<string> = new Set(),
 ): {
    sources: ClearedSource[];
    refused: Record<string, RefusedSource>;
@@ -206,7 +180,10 @@ function gateSources(
    });
    for (const build of compiled.builds) {
       for (const persistSource of sourcesInBuildOrder(build, compiled.tables)) {
-         if (include && !include.has(persistSource.name)) continue;
+         const pulled = pulledIn.has(persistSource.sourceID);
+         if (!pulled) {
+            if (include && !include.has(persistSource.name)) continue;
+         }
 
          // A source that DECLARES `storage=` must never silently downgrade
          // to a database CTAS into its own warehouse when
@@ -215,7 +192,7 @@ function gateSources(
          // Package.storageWarnings reports it. A plain `#@ persist` is
          // unaffected; database is its intent.
          if (
-            getPersistStorageMode() === "off" &&
+            !storageWritable(getPersistStorageMode()) &&
             declaredStorage(persistSource)
          ) {
             continue;
@@ -253,7 +230,7 @@ function gateSources(
             }
          } catch (err) {
             if (!(err instanceof MaterializationEligibilityError)) throw err;
-            if (include) throw err;
+            if (include && !pulled) throw err;
             if (!refused[persistSource.sourceID]) {
                refused[persistSource.sourceID] = refusalRecord(
                   persistSource,
@@ -265,11 +242,13 @@ function gateSources(
                // A refused rollup never fails the run: the author asked for
                // nothing they can see.
                if (!isRollup) refusals.push(err);
-               logger.warn(
+               // Info, not warn: a refusal is a property of the model, the
+               // same on every run, and its package warning already says so.
+               logger.info(
                   "Skipping a persist source the eligibility gate refuses",
                   {
                      sourceName: persistSource.name,
-                     reason: errMessage(err),
+                     reason: err.reason,
                   },
                );
             }
@@ -286,6 +265,7 @@ function gateSources(
                compiled.connectionDigests,
                undefined,
                tableFolds,
+               compiled.upstreamSchemas,
             ),
             destination,
          });
@@ -302,7 +282,7 @@ function gateSources(
  * the path the plan recorded, else the file's base name.
  */
 function modelPathOf(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    persistSource: PersistSource,
    packagePath: string | undefined,
 ): string {
@@ -329,10 +309,7 @@ function modelPathOf(
 }
 
 /** The source a table's readable name reads (see sourceLabel). */
-function labelOf(
-   compiled: CompiledBuildPlan,
-   persistSource: PersistSource,
-): string {
+function labelOf(compiled: RunPlan, persistSource: PersistSource): string {
    const rollup = compiled.tables[persistSource.sourceID]?.rollup;
    return sourceLabel(
       persistSource.name,
@@ -348,7 +325,7 @@ function labelOf(
  * way.
  */
 function namingSources(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    sources: ClearedSource[],
    packagePath: string | undefined,
 ): Map<string, PersistSource> {
@@ -380,7 +357,7 @@ function namingSources(
  * also takes the place of `<pkg>__<file>__<source>` before the tail.
  */
 function selfTableName(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    persistSource: PersistSource,
    namer: PersistSource,
    destination: string | undefined,
@@ -442,7 +419,7 @@ function keepsReadableName(
    recorded: string,
    fresh: string,
    naming: SelfTableNaming,
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    persistSource: PersistSource,
 ): boolean {
    if (recorded === fresh) return true;
@@ -500,7 +477,7 @@ function keepsReadableName(
  * proves the table was this package's default-named one.
  */
 function previousTableName(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    persistSource: PersistSource,
    naming: SelfTableNaming,
 ): string | undefined {
@@ -531,7 +508,7 @@ function previousTableName(
  * answered live, so two sources never write one table.
  */
 function tableNameCollision(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    persistSource: PersistSource,
    tableName: string,
    destination: string | undefined,
@@ -563,7 +540,7 @@ function tableNameCollision(
  * its old name never locks the new one out of its table.
  */
 function freshTableNames(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    sources: ClearedSource[],
    namers: Map<string, PersistSource>,
    naming: SelfTableNaming | undefined,
@@ -588,10 +565,12 @@ function freshTableNames(
          naming,
       );
       freshNames.set(sourceEntityId, fresh);
-      const key = tableKeyOf(
-         persistSource.connectionName,
-         destination,
-         tableIdentity(fresh),
+      const key = placedLeafKey(
+         entryTable({
+            connectionName: persistSource.connectionName,
+            storageDestinationName: destination,
+            physicalTableName: fresh,
+         }),
       );
       takenFresh.set(
          key,
@@ -603,10 +582,12 @@ function freshTableNames(
       takenByAnother: (persistSource, destination, name, sourceEntityId) =>
          [
             ...(takenFresh.get(
-               tableKeyOf(
-                  persistSource.connectionName,
-                  destination,
-                  tableIdentity(name),
+               placedLeafKey(
+                  entryTable({
+                     connectionName: persistSource.connectionName,
+                     storageDestinationName: destination,
+                     physicalTableName: name,
+                  }),
                ),
             ) ?? []),
          ].some((address) => address !== sourceEntityId),
@@ -620,7 +601,7 @@ function freshTableNames(
  * when the run moves it off that name.
  */
 function tableNameDecision(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    persistSource: PersistSource,
    sourceEntityId: string,
    destination: string | undefined,
@@ -713,7 +694,7 @@ function supersededTable(
    // name=, so neither reclaimed nor listed.
    if (
       !hasReservedTableSuffix(prior.physicalTableName) &&
-      mayBeOneTable(
+      mayBeSameTable(
          tableNameParts(prior.physicalTableName).leaf,
          persistSource.name,
       )
@@ -722,7 +703,7 @@ function supersededTable(
    }
    const before = prior.storageDestinationName ?? undefined;
    const moved = before !== destination;
-   if (!moved && mayBeOneTable(prior.physicalTableName, built)) {
+   if (!moved && mayBeSameTable(prior.physicalTableName, built)) {
       return undefined;
    }
    return {
@@ -772,7 +753,7 @@ function notWrittenThisRun(
          (w) =>
             w.connectionName === t.connectionName &&
             (w.storageDestinationName ?? undefined) === where &&
-            mayBeOneTable(w.physicalTableName, t.previousName),
+            mayBeSameTable(w.physicalTableName, t.previousName),
       );
    });
 }
@@ -784,6 +765,202 @@ export function previousDestinationOf(
    return t.previousPlace
       ? t.previousPlace.storageDestinationName
       : t.storageDestinationName;
+}
+
+/**
+ * Whether a run rebuilds a table even when it is unchanged: under
+ * `forceRefresh` (a scheduled fire, `forceRefresh`), and always for a table
+ * stored as of its build (its build reads the current time), since unchanged
+ * SQL does not mean unchanged rows.
+ */
+function rebuildsEveryRun(
+   compiled: RunPlan,
+   options: { forceRefresh?: boolean },
+   sourceID: string,
+): boolean {
+   return (
+      options.forceRefresh === true ||
+      Object.hasOwn(compiled.asOfBuild ?? {}, sourceID)
+   );
+}
+
+/** What {@link deriveSelfInstructions} decides for an auto-run. */
+interface SelfInstructions {
+   instructions: BuildInstruction[];
+   carried: Record<string, ManifestEntry>;
+   refused: Record<string, RefusedSource>;
+   cleared: Map<string, EligibilityTier>;
+   /**
+    * Carried tables at a `name=` the author chose, by content address, with
+    * the instruction that rebuilds each: carried only while the table is
+    * still marked as this package's (see uncarryUnownedTables).
+    */
+   recheck: Record<string, BuildInstruction>;
+   /**
+    * Carried tables in the package's own `duckdb` sandbox, by content
+    * address, with the instruction that rebuilds each: the sandbox is in
+    * memory, so a restart empties it while the run record survives. Carried
+    * only while the table still exists (see uncarryLostTables).
+    */
+   confirmExists: Record<string, BuildInstruction>;
+   /** Tables this run builds under a new name in place of an earlier run's. */
+   renamed: RenamedTable[];
+   /**
+    * Pair tables this run rebuilds because their contract records a leaf key
+    * check that could not run (`unverified`), by content address: a check
+    * the rebuild still cannot run is recorded `rebuiltToVerify`, and that
+    * table is not rebuilt for it again ({@link awaitsVerifyingRebuild}).
+    */
+   rebuiltToVerify: Set<string>;
+   /**
+    * Incremental tables a delta would advance in place rather than reseed,
+    * by content address, with their prior entries: the run keeps their rows,
+    * as it keeps a carried table's (see deriveHoldingCarried).
+    */
+   advanced: Record<string, ManifestEntry>;
+}
+
+/**
+ * Whether a prior table must be rebuilt in full: one with no servable
+ * contract (built before contracts were recorded, or one listing no column), or one a bind found incompatible
+ * with its contract, is never served from, so it is never carried, and an
+ * incremental one is reseeded rather than advanced by a delta. So is a pair
+ * table whose contract records no check of a leaf key the model declares
+ * now (`materialize`'s leaf keys): a reload that moves the leaf's primary key leaves its
+ * address alone, and nothing reads or builds over it until a build checks
+ * the new key. So is one whose check the build could not run (recorded
+ * `unverified`), once ({@link awaitsVerifyingRebuild}): the check runs again
+ * right after the rebuild writes the table, over the rows it was built
+ * from, never over a table built from rows since changed.
+ */
+function rebuiltInFull(
+   prior: ManifestEntry | undefined,
+   sourceEntityId: string,
+   options: { incompatible?: ReadonlySet<string> },
+   materialize: MaterializePlan | undefined,
+): boolean {
+   if (prior === undefined) return false;
+   const contract = servableContract(prior.contract);
+   const leafKeys = materialize ? pairLeafContractKeys(materialize) : [];
+   return (
+      contract === undefined ||
+      options.incompatible?.has(sourceEntityId) === true ||
+      leafKeys.some((k) => contract.keys?.[k] === undefined) ||
+      awaitsVerifyingRebuild(prior, materialize)
+   );
+}
+
+/**
+ * Whether a pair table's contract records a check of a leaf key the model
+ * declares that its build could not run (`unverified`), and the table was
+ * not itself rebuilt to run it (`rebuiltToVerify`). Such a table is rebuilt
+ * in full, once per table: a check is taken over the rows the table was
+ * built from, so one run later over the leaf's current rows could pass a
+ * table built while the leaf held a key twice. A rebuild whose check still
+ * cannot run records it `rebuiltToVerify`, and that table stays carried,
+ * the views over it refused, until it is rebuilt for another reason.
+ */
+function awaitsVerifyingRebuild(
+   prior: ManifestEntry | undefined,
+   materialize: MaterializePlan | undefined,
+): boolean {
+   if (prior === undefined || materialize === undefined) return false;
+   const keys = servableContract(prior.contract)?.keys;
+   return pairLeafContractKeys(materialize).some(
+      (k) => keys?.[k]?.unverified === true && keys[k].rebuiltToVerify !== true,
+   );
+}
+
+/**
+ * How {@link deriveSelfInstructions} decides what to carry.
+ *
+ * Rebuild every source (a scheduled fire, `forceRefresh`): nothing is
+ * carried. `priorEntries` still decide each table's name. `pastWindow`
+ * names a prior table past its declared freshness window, which is
+ * rebuilt rather than carried (freshness_stamp.ts); absent, none is.
+ */
+interface SelfInstructionOptions {
+   forceRefresh?: boolean;
+   pastWindow?: (sourceEntityId: string, prior: ManifestEntry) => boolean;
+   /**
+    * What a rebuilt table with a declared window reads: a carried table
+    * it reads (through the plan's edges, transitively) whose age is
+    * unknown or past that window is rebuilt too (see
+    * {@link rebuildStaleUpstreams}).
+    */
+   upstreams?: StaleUpstreamRule;
+   /**
+    * The tables a bind left out as incompatible with their contracts, by
+    * address: never carried, rebuilt in full (an incremental one
+    * reseeds).
+    */
+   incompatible?: ReadonlySet<string>;
+   /**
+    * Each incremental source's newest entry from any committed run, by
+    * address (materialization_scope.ts, `newestIncrementalEntries`): the
+    * table a delta advances when `priorEntries` has no entry for it (a run
+    * of other named sources left it out). It decides only whether that
+    * table is advanced or reseeded, and is held to its contract like any
+    * prior; never its name.
+    */
+   incrementalPriors?: Readonly<Record<string, ManifestEntry>>;
+}
+
+/**
+ * The entry recorded for the table a delta would advance in place: the
+ * source's prior, else its newest incremental entry from an earlier run
+ * (`incrementalPriors`: a run of other named sources records none for it,
+ * and the ledger still advances it), when it names the table this run
+ * writes (`logicalName`, in `destination`). Undefined when the source takes
+ * no delta, or the run writes another table, which a delta cannot advance.
+ */
+function advancedTableEntry(
+   deltaEligible: boolean,
+   prior: ManifestEntry | undefined,
+   table: {
+      sourceEntityId: string;
+      logicalName: string;
+      destination: string | undefined;
+      options: SelfInstructionOptions;
+   },
+): ManifestEntry | undefined {
+   if (!deltaEligible) return undefined;
+   const { sourceEntityId, logicalName, destination } = table;
+   const entry = prior ?? table.options.incrementalPriors?.[sourceEntityId];
+   return entry?.physicalTableName === logicalName &&
+      (entry.storageDestinationName ?? undefined) === destination
+      ? entry
+      : undefined;
+}
+
+/**
+ * Whether the delta path takes `persistSource`'s table: the SAME predicate
+ * the build's dispatch uses, so the two never disagree about which sources
+ * are incremental. A declaration the delta path cannot act on (unsupported
+ * dialect, unusable watermark) keeps skip-if-unchanged rather than
+ * rebuilding fully every run.
+ */
+function deltaPathTakes(
+   ...args: Parameters<typeof sourceIncrementalRefresh>
+): boolean {
+   return sourceIncrementalRefresh(...args) !== undefined;
+}
+
+/** The instruction that builds one source's table in an auto-run. */
+function selfInstruction(
+   sourceEntityId: string,
+   physicalTableName: string,
+   destination: string | undefined,
+   reseed: boolean,
+): BuildInstruction {
+   return {
+      sourceEntityId,
+      materializedTableId: `local-${sourceEntityId.substring(0, STAGING_ID_LEN)}`,
+      physicalTableName,
+      realization: "COPY",
+      ...(destination ? { destination } : {}),
+      ...(reseed ? { reseed: true } : {}),
+   };
 }
 
 /**
@@ -812,50 +989,26 @@ export function previousDestinationOf(
  * never kept (see takenByAnother), so a sticky name does not cause one.
  */
 export function deriveSelfInstructions(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    sourceNames: string[] | undefined,
    priorEntries: Record<string, ManifestEntry>,
    incremental?: IncrementalRunContext,
    naming?: SelfTableNaming,
-   /**
-    * Rebuild every source (a scheduled fire, `forceRefresh`): nothing is
-    * carried. `priorEntries` still decide each table's name. `pastWindow`
-    * names a prior table past its declared freshness window, which is
-    * rebuilt rather than carried (freshness_stamp.ts); absent, none is.
-    */
-   options: {
-      forceRefresh?: boolean;
-      pastWindow?: (sourceEntityId: string, prior: ManifestEntry) => boolean;
-      /**
-       * What a rebuilt table with a declared window reads: a carried table
-       * it reads (through the plan's edges, transitively) whose age is
-       * unknown or past that window is rebuilt too (see
-       * {@link rebuildStaleUpstreams}).
-       */
-      upstreams?: StaleUpstreamRule;
-   } = {},
-): {
-   instructions: BuildInstruction[];
-   carried: Record<string, ManifestEntry>;
-   refused: Record<string, RefusedSource>;
-   cleared: Map<string, EligibilityTier>;
-   /**
-    * Carried tables at a `name=` the author chose, by content address, with
-    * the instruction that rebuilds each: carried only while the table is
-    * still marked as this package's (see uncarryUnownedTables).
-    */
-   recheck: Record<string, BuildInstruction>;
-   /** Tables this run builds under a new name in place of an earlier run's. */
-   renamed: RenamedTable[];
-} {
+   options: SelfInstructionOptions = {},
+): SelfInstructions {
    const include = sourceNames ? new Set(sourceNames) : null;
+   const pulledIn = upstreamClosure(compiled, include);
    const instructions: BuildInstruction[] = [];
    const carried: Record<string, ManifestEntry> = {};
    const recheck: Record<string, BuildInstruction> = {};
+   const confirmExists: Record<string, BuildInstruction> = {};
    const renamed: RenamedTable[] = [];
+   const advanced: Record<string, ManifestEntry> = {};
+   const rebuiltToVerify = new Set<string>();
    const { sources, refused, refusals, cleared } = gateSources(
       compiled,
       include,
+      pulledIn,
    );
    const namers = namingSources(compiled, sources, naming?.packagePath);
    const { freshNames, takenByAnother } = freshTableNames(
@@ -885,36 +1038,30 @@ export function deriveSelfInstructions(
             takenByAnother,
             naming,
          );
-      if (naming && !named) {
-         const key = tableKeyOf(
-            persistSource.connectionName,
+      if (
+         naming &&
+         !named &&
+         !claimDerivedName(derived, sourceEntityId, {
+            connectionName: persistSource.connectionName,
+            storageDestinationName: destination,
+            physicalTableName: tableName,
+         })
+      ) {
+         refused[persistSource.sourceID] = tableNameCollision(
+            compiled,
+            persistSource,
+            tableName,
             destination,
-            tableIdentity(tableName),
          );
-         const holder = derived.get(key);
-         if (holder !== undefined && holder !== sourceEntityId) {
-            refused[persistSource.sourceID] = tableNameCollision(
-               compiled,
-               persistSource,
-               tableName,
-               destination,
-            );
-            cleared.delete(persistSource.sourceID);
-            continue;
-         }
-         derived.set(key, sourceEntityId);
+         cleared.delete(persistSource.sourceID);
+         continue;
       }
 
-      // The SAME predicate the build's dispatch uses, so the two never
-      // disagree about which sources are incremental. A declaration the
-      // delta path cannot act on (unsupported dialect, unusable watermark)
-      // keeps skip-if-unchanged rather than rebuilding fully every run.
-      const deltaEligible =
-         sourceIncrementalRefresh(incremental, persistSource, {
-            physicalTableName: tableName,
-            storageDestinationName: destination,
-            sourceEntityId,
-         }) !== undefined;
+      const deltaEligible = deltaPathTakes(incremental, persistSource, {
+         physicalTableName: tableName,
+         storageDestinationName: destination,
+         sourceEntityId,
+      });
 
       // An incremental source keeps a table named before readable names
       // until it is reseeded: its ledger is keyed by the table's name, so
@@ -925,37 +1072,45 @@ export function deriveSelfInstructions(
          renaming && deltaEligible && !incremental?.forceRefresh
             ? previous!
             : tableName;
-
-      const instruction: BuildInstruction = {
+      // The table a delta advances, held like any prior wherever its entry
+      // was recorded.
+      const inPlace = advancedTableEntry(deltaEligible, prior, {
          sourceEntityId,
-         materializedTableId: `local-${sourceEntityId.substring(
-            0,
-            STAGING_ID_LEN,
-         )}`,
-         physicalTableName: logicalName,
-         realization: "COPY",
-         ...(destination ? { destination } : {}),
-      };
-      // Carry forward only within the SAME destination, and only a table
-      // at the name this run would write: sourceEntityId encodes neither.
-      // A source that changes `storage=`, or whose table name changes (a
-      // `name=` removed or changed, a v1 source moved to `#(materialize)`,
-      // a table named before readable names, or the unsuffixed table a run
-      // before package-owned names built, which another package on the same
-      // schema may have written since) is rebuilt under its name now, and
-      // the old table is offered to the reclaim once this run commits
-      // (supersededTable), which drops it only when Publisher can prove it
-      // is its own.
+         logicalName,
+         destination,
+         options,
+      });
+      const materialize = compiled.tables[persistSource.sourceID]?.materialize;
+      const mustRebuild = rebuiltInFull(
+         prior ?? inPlace,
+         sourceEntityId,
+         options,
+         materialize,
+      );
+      const instruction = selfInstruction(
+         sourceEntityId,
+         logicalName,
+         destination,
+         mustRebuild && deltaEligible,
+      );
+      // A source whose `storage=` or name changed is rebuilt, the old table
+      // reclaimed once the run commits (supersededTable).
       if (
-         !deltaEligible &&
-         !options.forceRefresh &&
-         sameDestination &&
-         !options.pastWindow?.(sourceEntityId, prior!) &&
-         samePath(
-            prior!.physicalTableName,
+         carries({
+            compiled,
+            persistSource,
+            prior,
             logicalName,
-            tableNamesFoldCase(persistSource.dialectName, !!destination),
-         )
+            destination,
+            sourceEntityId,
+            sameDestination,
+            mustRebuild,
+            deltaEligible,
+            // A pulled-in upstream: only what was named is forced.
+            options: pulledIn.has(persistSource.sourceID)
+               ? { ...options, forceRefresh: false }
+               : options,
+         })
       ) {
          carried[sourceEntityId] = prior!;
          carriedInstructions.set(sourceEntityId, instruction);
@@ -963,6 +1118,13 @@ export function deriveSelfInstructions(
          // another package since (or before the mark existed).
          if (named && prior!.physicalTableName === logicalName) {
             recheck[sourceEntityId] = instruction;
+         }
+         // The package's in-memory sandbox loses every table on a restart.
+         if (
+            !destination &&
+            prior!.connectionName === PACKAGE_SANDBOX_CONNECTION
+         ) {
+            confirmExists[sourceEntityId] = instruction;
          }
          continue;
       }
@@ -979,6 +1141,14 @@ export function deriveSelfInstructions(
             logicalName,
          );
       if (superseded) renamed.push(superseded);
+      // A delta appends to the table it holds, so the run keeps its rows.
+      // A forced run too: only `reseed` rebuilds an incremental source.
+      if (inPlace !== undefined && !mustRebuild && !incremental?.forceRefresh) {
+         advanced[sourceEntityId] = inPlace;
+      }
+      if (awaitsVerifyingRebuild(prior ?? inPlace, materialize)) {
+         rebuiltToVerify.add(sourceEntityId);
+      }
       instructions.push(instruction);
    }
 
@@ -991,6 +1161,8 @@ export function deriveSelfInstructions(
          options.upstreams,
       );
    }
+
+   rebuildReaders(instructions, carried, carriedInstructions, recheck);
 
    if (
       refusals.length > 0 &&
@@ -1006,8 +1178,64 @@ export function deriveSelfInstructions(
       refused,
       cleared,
       recheck,
+      confirmExists,
       renamed: notWrittenThisRun(renamed, instructions, carried, sources),
+      advanced,
+      rebuiltToVerify,
    };
+}
+
+/**
+ * Claim a readable name this run derived, where it lives, for one table
+ * (`derived`, by placed leaf key): false when another table this run writes
+ * already holds it.
+ */
+function claimDerivedName(
+   derived: Map<string, string>,
+   sourceEntityId: string,
+   table: Parameters<typeof entryTable>[0],
+): boolean {
+   const key = placedLeafKey(entryTable(table));
+   const holder = derived.get(key);
+   if (holder !== undefined && holder !== sourceEntityId) return false;
+   derived.set(key, sourceEntityId);
+   return true;
+}
+
+/**
+ * The sourceIDs of every persisted upstream a named source reads, through
+ * the plan's edges, transitively, that is not itself named: a run of named
+ * sources carries each of them it can and rebuilds the rest (a table missing,
+ * at another tier or destination, past its window, with no contract, or one
+ * a bind found incompatible), since a downstream is built over its
+ * upstreams' tables or not at all. Empty for a run of every source.
+ */
+function upstreamClosure(
+   compiled: RunPlan,
+   include: ReadonlySet<string> | null,
+): Set<string> {
+   const out = new Set<string>();
+   if (!include) return out;
+   const reads = new Map<string, readonly string[]>();
+   for (const build of compiled.builds) {
+      for (const [id, deps] of Object.entries(build.dependsOn)) {
+         reads.set(id, [...(reads.get(id) ?? []), ...deps]);
+      }
+   }
+   const queue = Object.entries(compiled.tables)
+      .filter(([, t]) => include.has(t.source.name))
+      .map(([id]) => id);
+   while (queue.length > 0) {
+      for (const upstream of reads.get(queue.pop()!) ?? []) {
+         const name = compiled.tables[upstream]?.source.name;
+         if (name === undefined || include.has(name) || out.has(upstream)) {
+            continue;
+         }
+         out.add(upstream);
+         queue.push(upstream);
+      }
+   }
+   return out;
 }
 
 /** What {@link rebuildStaleUpstreams} reads. */
@@ -1067,6 +1295,48 @@ function rebuildStaleUpstreams(
             instructions.push(instruction);
          }
          visit(upstream, window);
+      }
+   }
+}
+
+/**
+ * Rebuild, rather than carry, each carried table built from an upstream
+ * table that is not the one it would read now (its `builtFrom`): one this
+ * run rebuilds, or a carried one of another build (`builtAt`) or another
+ * column contract (`contractDigest`, when both record one). Transitive: a
+ * reader moved to `instructions` makes its own readers rebuild. Moves each
+ * such table from `carried` (and `recheck`) to `instructions`.
+ */
+function rebuildReaders(
+   instructions: BuildInstruction[],
+   carried: Record<string, ManifestEntry>,
+   carriedInstructions: ReadonlyMap<string, BuildInstruction>,
+   recheck: Record<string, BuildInstruction>,
+): void {
+   const rebuilt = new Set(instructions.map((i) => i.sourceEntityId));
+   const digestOf = (entry: ManifestEntry): string | undefined => {
+      const contract = parseContract(entry.contract);
+      return contract && contractDigest(contract);
+   };
+   const readsOther = (entry: ManifestEntry): boolean =>
+      (entry.builtFrom ?? []).some((read) => {
+         if (rebuilt.has(read.sourceEntityId)) return true;
+         const now = carried[read.sourceEntityId];
+         if (now === undefined) return false;
+         if (now.builtAt !== read.builtAt) return true;
+         const digest = read.contractDigest && digestOf(now);
+         return digest !== undefined && digest !== read.contractDigest;
+      });
+   for (let moved = true; moved; ) {
+      moved = false;
+      for (const [address, entry] of Object.entries(carried)) {
+         const instruction = carriedInstructions.get(address);
+         if (instruction === undefined || !readsOther(entry)) continue;
+         delete carried[address];
+         delete recheck[address];
+         instructions.push(instruction);
+         rebuilt.add(address);
+         moved = true;
       }
    }
 }
@@ -1136,11 +1406,11 @@ export function validateInstructions(
             : undefined) ?? byAddress.get(instruction.sourceEntityId);
       if (!planSource) continue; // Unreachable: every instruction matched above.
       instructed.set(
-         tableKeyOf(
-            planSource.connectionName,
-            instruction.destination,
-            instruction.physicalTableName,
-         ),
+         recordedTableKey({
+            connectionName: planSource.connectionName,
+            storageDestinationName: instruction.destination,
+            physicalTableName: instruction.physicalTableName,
+         }),
          {
             sourceEntityId: planSource.sourceEntityId,
             refresh: planSource.refresh ?? null,
@@ -1149,22 +1419,17 @@ export function validateInstructions(
       );
       if (instruction.destination) {
          instructedIntoStorage.add(
-            tableKeyOf(
-               planSource.connectionName,
-               undefined,
-               instruction.physicalTableName,
-            ),
+            recordedTableKey({
+               connectionName: planSource.connectionName,
+               physicalTableName: instruction.physicalTableName,
+            }),
          );
       }
    }
 
    const seen = new Set<string>();
    for (const entry of ledger) {
-      const key = tableKeyOf(
-         entry.connectionName,
-         entry.storageDestinationName,
-         entry.physicalTableName,
-      );
+      const key = recordedTableKey(entry);
       const table =
          `'${entry.physicalTableName}' ` +
          (entry.storageDestinationName
@@ -1183,11 +1448,10 @@ export function validateInstructions(
          // build's index keys on the destination, so it finds no boundary).
          // An entry naming a DIFFERENT destination is refused below.
          const storedHere = instructedIntoStorage.has(
-            tableKeyOf(
-               entry.connectionName,
-               undefined,
-               entry.physicalTableName,
-            ),
+            recordedTableKey({
+               connectionName: entry.connectionName,
+               physicalTableName: entry.physicalTableName,
+            }),
          );
          if (entry.storageDestinationName === undefined && storedHere) {
             continue;
@@ -1264,4 +1528,38 @@ function samePath(a: string, b: string, foldCase: boolean): boolean {
          .map((s) => (foldCase ? s.toLowerCase() : s))
          .join(".");
    return canon(a) === canon(b);
+}
+
+/**
+ * Whether a prior table is carried rather than rebuilt: only within the SAME
+ * destination, and only a table at the name this run would write
+ * (sourceEntityId encodes neither); never one that must be rebuilt in full,
+ * an incremental one (its ledger decides), one rebuilt every run, or one
+ * past its window.
+ */
+function carries(a: {
+   compiled: RunPlan;
+   persistSource: PersistSource;
+   prior: ManifestEntry | undefined;
+   logicalName: string;
+   destination: string | undefined;
+   sourceEntityId: string;
+   sameDestination: boolean;
+   mustRebuild: boolean;
+   deltaEligible: boolean;
+   options: SelfInstructionOptions;
+}): boolean {
+   return (
+      a.prior !== undefined &&
+      !a.mustRebuild &&
+      !a.deltaEligible &&
+      !rebuildsEveryRun(a.compiled, a.options, a.persistSource.sourceID) &&
+      a.sameDestination &&
+      !a.options.pastWindow?.(a.sourceEntityId, a.prior) &&
+      samePath(
+         a.prior.physicalTableName,
+         a.logicalName,
+         tableNamesFoldCase(a.persistSource.dialectName, !!a.destination),
+      )
+   );
 }

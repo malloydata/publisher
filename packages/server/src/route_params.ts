@@ -15,8 +15,7 @@ import { LATEST_VERSION_ALIAS } from "./service/versions/version_service";
 /**
  * Read a boolean query param, keeping absent distinct from `false`, and throw
  * a {@link BadRequestError} for an unusable value. Only for params that need
- * the distinction, such as `bypass_filters`, whose Deprecation header fires on
- * `!== undefined`; otherwise use {@link booleanParam}.
+ * the distinction; otherwise use {@link booleanParam}.
  */
 export function optionalBooleanParam(
    req: Pick<Request, "query" | "path" | "method">,
@@ -117,12 +116,11 @@ export function assertListingTakesNoVersionId(versionId: unknown): void {
 }
 
 /**
- * The version a model query names: in the body, or in the URL as on every
- * other package route. Both may be given only if they agree.
+ * The version a request names in its body or its URL (`?versionId=`): the
+ * body's when it names one, else the URL's, else undefined. Both may be given
+ * only if they agree; an empty value names none.
  */
-export function queryVersionRefOf(
-   req: Pick<Request, "body" | "query">,
-): VersionRef {
+function bodyOrUrlVersionId(req: Pick<Request, "body" | "query">): unknown {
    const fromBody = req.body?.versionId;
    const fromUrl = req.query.versionId;
    const named = (value: unknown) =>
@@ -133,5 +131,29 @@ export function queryVersionRefOf(
          "The body and the URL name different versions; name one, or the same one.",
       );
    }
-   return VersionRef.parse(named(fromBody) ? fromBody : fromUrl);
+   if (named(fromBody)) return fromBody;
+   return named(fromUrl) ? fromUrl : undefined;
+}
+
+/**
+ * The version a model query names: in the body, or in the URL as on every
+ * other package route. Both may be given only if they agree.
+ */
+export function queryVersionRefOf(
+   req: Pick<Request, "body" | "query">,
+): VersionRef {
+   return VersionRef.parse(bodyOrUrlVersionId(req));
+}
+
+/**
+ * A materialization create's body, carrying the version its URL names when
+ * the body names none. Both may be given only if they agree, as on a model
+ * query; the controller checks the value itself.
+ */
+export function createBodyWithVersionId(
+   req: Pick<Request, "body" | "query">,
+): Record<string, unknown> {
+   const body = (req.body || {}) as Record<string, unknown>;
+   const versionId = bodyOrUrlVersionId(req);
+   return versionId === undefined ? body : { ...body, versionId };
 }

@@ -3,7 +3,7 @@
 
 /**
  * The field paths a Malloy IR expression reads, for the gate walk
- * (`gate_reads.ts`) and the collation check (`gate_collation.ts`), in a leaf
+ * (`gate_reads.ts`) and the collation check (`admission_lookup.ts`), in a leaf
  * module so neither imports the other for it.
  */
 

@@ -11,6 +11,9 @@
  *    SQL source: a refinement of a bare table is not planned) and
  *    query-shaped, read directly.
  *
+ * A stored truncation of a query-shaped source is served to a query that
+ * reads it in the zone its query computed it in, and declined in any other.
+ *
  * Every case answers equal to live, served or declined, in a `storage=`
  * destination (the database variant is the conformance shape "persist over
  * a zoned base", which binds v1 database tables as a package does). A refinement of a base that sets only the zone is served, its
@@ -69,6 +72,17 @@ source: ev_tz is duckdb.sql("SELECT * FROM ev") extend {
 #@ persist ${at("inh2_t")}
 source: inh2 is ev_tz extend { measure: total is amt.sum() }
 
+source: q1 is duckdb.table('ev') -> {
+  timezone: 'America/Los_Angeles'
+  group_by: id, ts, d is ts.day
+}
+
+#@ persist ${at("q2_t")}
+source: q2 is q1 -> { group_by: id, d, w is ts.week }
+
+#@ persist ${at("q3_t")}
+source: q3 is q1 extend { timezone: 'America/Chicago' } -> { group_by: id, d, w is ts.week }
+
 source: jb is duckdb.table('ev') extend {
   primary_key: id
   join_one: pq on id = pq.id
@@ -120,6 +134,16 @@ const CASES: [string, string, Outcome][] = [
       "TIME_ZONE",
    ],
    [
+      "the zone-setting query, read directly in its own zone: its stored day and hour",
+      "run: pq -> { timezone: 'America/New_York'; group_by: d, hr; aggregate: n is count() }",
+      "served",
+   ],
+   [
+      "the zone-setting query, read directly in another zone: its stored hour",
+      "run: pq -> { timezone: 'America/Chicago'; group_by: hr; aggregate: n is count() }",
+      "TIME_ZONE",
+   ],
+   [
       "through a join: a truncation of a zone-only base's column",
       "run: jb -> { group_by: d is inh2.ts.day; aggregate: n is count() }",
       "unrouted",
@@ -152,6 +176,26 @@ const CASES: [string, string, Outcome][] = [
    [
       "inherited, query-shaped: its stored day",
       "run: pqi -> { group_by: d; aggregate: n is count() }",
+      "TIME_ZONE",
+   ],
+   [
+      "inherited, query-shaped: its stored day, read in its base's zone",
+      "run: pqi -> { timezone: 'America/New_York'; group_by: d; aggregate: n is count() }",
+      "served",
+   ],
+   [
+      "over a query-shaped base: a truncation its base computed in its own zone",
+      "run: q2 -> { group_by: d; aggregate: n is count() }",
+      "TIME_ZONE",
+   ],
+   [
+      "over a query-shaped base: its own truncation, read in UTC",
+      "run: q2 -> { group_by: w; aggregate: n is count() }",
+      "TIME_ZONE",
+   ],
+   [
+      "over a query-shaped base given another zone: the base's truncation, read in that zone",
+      "run: q3 -> { timezone: 'America/Chicago'; group_by: d; aggregate: n is count() }",
       "TIME_ZONE",
    ],
    [

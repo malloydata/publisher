@@ -72,6 +72,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.ivx_orders"
+          }
+        ],
         "refresh": "incremental",
         "sourceEntityId": "e75a78c5fffa495f44acadeae0f4920b0814df2e3db3c71c8d84b3777e22323c",
         "sourceID": "batch_totals@<hammer>/ivx/ivx.malloy",

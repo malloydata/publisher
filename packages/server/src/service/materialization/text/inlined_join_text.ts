@@ -19,7 +19,8 @@
  */
 
 import { doubleQuotedString, identifier } from "../../malloy_text";
-import { lexAll, isName } from "./malloy_lexer";
+import { lexAll } from "../../malloy_lexer_core";
+import { isName } from "./malloy_lexer";
 import { definitionCutAt } from "./definition_cut";
 
 /** The timeframes a stored truncation can carry, the only ones emitted. */
@@ -207,7 +208,8 @@ function recordsOf(
 }
 
 /**
- * A run of `extend { … }` blocks with the join_one named `join` taken out:
+ * A run of `extend { … }` blocks with the join named `join`, of the kind
+ * `keyword` (a join_one unless said), taken out:
  * its definition, with the annotation lines written on it, or its whole
  * statement when it is the statement's only definition. The text unchanged
  * when it declares no such join (one inherited from a base the re-root
@@ -217,6 +219,7 @@ function recordsOf(
 export function dropJoinDefinition(
    text: string,
    join: string,
+   keyword: "join_one" | "join_many" = "join_one",
 ): string | undefined {
    const tokens = lexAll(text);
    if (!tokens) return undefined;
@@ -227,12 +230,17 @@ export function dropJoinDefinition(
       const cut = definitionCutAt(text, t.start);
       if (!cut || cut.left.name !== join) continue;
       if (!cut.left.keyword.startsWith("join_")) continue;
-      if (cut.left.keyword !== "join_one") return undefined;
+      if (cut.left.keyword !== keyword) return undefined;
       // An access label written on the statement goes with it when this is
       // its only definition, and stays on the others when it is not; the
       // record carries the join's own modifier, read off the compiled source
       // ({@link InlinedJoin.access}), not this text.
-      return text.slice(0, cut.start) + text.slice(cut.end);
+      // Its indentation goes too, so no line of spaces is left; spaces after
+      // code on its line stay, or the tokens either side would join.
+      let start = cut.start;
+      while (text[start - 1] === " " || text[start - 1] === "\t") start--;
+      if (start > 0 && text[start - 1] !== "\n") start = cut.start;
+      return text.slice(0, start) + text.slice(cut.end);
    }
    return text;
 }

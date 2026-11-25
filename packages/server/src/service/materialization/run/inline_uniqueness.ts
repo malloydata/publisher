@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The join_one uniqueness check (P8): before a
+ * The join_one uniqueness check: before a
  * `#(materialize)` source that inlines a join_one is built, its joined source
  * is grouped on the join's key, and any key held twice fails the build. A
  * duplicate would store the parent row once per match, so every count over
@@ -20,12 +20,13 @@
  * is checked on every build, because its rows change under a stable address.
  */
 
+import { contractKeyName } from "../domain/column_contract";
+import { placedLeafKey } from "../domain/physical_table";
 import { createHash } from "node:crypto";
-import { tableIdentity } from "../../versions/materialization_scope";
 import { recordKeyCheck } from "../../../materialization_metrics";
-import { isActiveRun } from "./materialization_run_support";
+import { isActiveRun } from "./run_status";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
-import type { KeyUniqueness, ManifestEntry } from "../domain/types";
+import type { KeyCheckRecord } from "./tier";
 import type {
    InlineUniquenessCheck,
    MaterializePlan,
@@ -33,7 +34,7 @@ import type {
 
 /**
  * A `#(materialize)` source inlines a join_one (`inline=["j"]`) whose joined
- * source holds one key more than once (P8), so its build would store a parent
+ * source holds one key more than once, so its build would store a parent
  * row once per match and every count over the table would come up high. The
  * build fails before writing anything; the message names the join.
  */
@@ -126,41 +127,6 @@ interface UniquenessCheckOutcome {
 }
 
 /**
- * What a run's rollup key check found (known limitation 29): whether the
- * rows a `#(rollup)` rollup grouped held its one grain dimension (a
- * join_one's key) once per value. Keyed in the run metadata by the rollup's
- * content address; it describes the table the run that checked wrote, so it
- * is carried to a later run only while that table is not written again and
- * the check is the same ({@link UniquenessLedger.carryRollupKey}).
- */
-export interface RollupKeyRecord {
-   /** The rollup's table: its connection and physical name. */
-   table: string;
-   keyColumn: string;
-   /** {@link checkDigest} of the table and the check's SQL. */
-   digest: string;
-   unique: boolean;
-   /** The run whose check ran (a carried record keeps it). */
-   checkedInRun?: string;
-   /**
-    * Set on a query source's primary key check (see `ParentKeyCheck`): the
-    * source whose key it read, beside the rollup at the record's address.
-    * Absent on the rollup's own key check. `unique` then says the key was
-    * held once per row and never NULL.
-    */
-   sourceID?: string;
-}
-
-/**
- * The key a rollup key record is held under: the rollup's content address,
- * and for a query source's primary key check the source too. Every record
- * under an address describes the rollup's table, so writing it loses them all.
- */
-export function rollupKeyRecordKey(address: string, sourceID?: string): string {
-   return sourceID === undefined ? address : `${address}#${sourceID}`;
-}
-
-/**
  * The joined source of a check as the parent's build reads it: a persisted
  * table, substituted for the source in the parent's build SQL. Resolved by
  * the build loop (instructed_build.ts), which knows the run's manifest; any
@@ -179,7 +145,7 @@ export interface StoredJoin {
  * The identity a pass is keyed by: the table the check reads (its connection
  * and name) and the exact SQL it runs, which names the join's key.
  */
-export function checkDigest(table: string, sql: string): string {
+function checkDigest(table: string, sql: string): string {
    return createHash("sha256")
       .update(table)
       .update("\u0000")
@@ -204,7 +170,6 @@ export class UniquenessLedger {
    private readonly outcomes: UniquenessCheckOutcome[] = [];
    private readonly writtenAddresses = new Set<string>();
    private readonly writtenTables = new Set<string>();
-   private readonly rollupKeys = new Map<string, RollupKeyRecord>();
 
    constructor(
       /** The previous run's passes; undefined when none may be relied on. */
@@ -212,61 +177,7 @@ export class UniquenessLedger {
          | Readonly<Record<string, UniquenessPass>>
          | undefined,
       private readonly runId?: string,
-      /**
-       * The previous run's rollup key records, under the same proof as its
-       * passes; undefined when none may be relied on.
-       */
-      private readonly priorRollupKeys?: Readonly<
-         Record<string, RollupKeyRecord>
-      >,
    ) {}
-
-   /**
-    * This run checked the rollup at `address` after writing its table: the
-    * record stands for that table until it is written again.
-    */
-   recordRollupKey(address: string, record: RollupKeyRecord): void {
-      this.rollupKeys.set(rollupKeyRecordKey(address, record.sourceID), {
-         ...record,
-         ...(this.runId ? { checkedInRun: this.runId } : {}),
-      });
-   }
-
-   /**
-    * Keep the previous run's record for a rollup this run did not build (its
-    * entry carried): only when this run wrote neither its address nor its
-    * table, and the record names the same table and the same check. With
-    * `sourceID`, the record of that query source's primary key check.
-    */
-   carryRollupKey(
-      address: string,
-      table: string,
-      digest: string,
-      sourceID?: string,
-   ): void {
-      const key = rollupKeyRecordKey(address, sourceID);
-      if (
-         this.rollupKeys.has(key) ||
-         this.writtenAddresses.has(address) ||
-         this.writtenTables.has(table)
-      ) {
-         return;
-      }
-      const prior = this.priorRollupKeys?.[key];
-      if (
-         prior &&
-         prior.table === table &&
-         prior.digest === digest &&
-         prior.sourceID === sourceID
-      ) {
-         this.rollupKeys.set(key, prior);
-      }
-   }
-
-   /** The rollup key records this run stands behind, by content address. */
-   rollupKeyRecords(): Record<string, RollupKeyRecord> {
-      return Object.fromEntries(this.rollupKeys);
-   }
 
    /** The recorded pass for `digest` that still describes `stored`, if any. */
    heldPass(digest: string, stored: StoredJoin): UniquenessPass | undefined {
@@ -308,15 +219,6 @@ export class UniquenessLedger {
             this.passes.delete(digest);
          }
       }
-      for (const [key, record] of this.rollupKeys) {
-         if (
-            key === address ||
-            key.startsWith(`${address}#`) ||
-            record.table === table
-         ) {
-            this.rollupKeys.delete(key);
-         }
-      }
    }
 
    get id(): string | undefined {
@@ -328,22 +230,14 @@ export class UniquenessLedger {
       | {
            passes: Record<string, UniquenessPass>;
            checks: UniquenessCheckOutcome[];
-           rollupKeys?: Record<string, RollupKeyRecord>;
         }
       | undefined {
-      if (
-         this.outcomes.length === 0 &&
-         this.passes.size === 0 &&
-         this.rollupKeys.size === 0
-      ) {
+      if (this.outcomes.length === 0 && this.passes.size === 0) {
          return undefined;
       }
       return {
          passes: Object.fromEntries(this.passes),
          checks: [...this.outcomes],
-         ...(this.rollupKeys.size > 0
-            ? { rollupKeys: Object.fromEntries(this.rollupKeys) }
-            : {}),
       };
    }
 }
@@ -383,46 +277,6 @@ export function uniquenessPassesIn(
 }
 
 /**
- * The rollup key records a run's metadata holds (known limitation 29), or
- * undefined when it holds none or the value is not the shape this Publisher
- * writes. A record that does not read whole is left out.
- */
-export function rollupKeyRecordsIn(
-   metadata: Record<string, unknown> | null | undefined,
-): Record<string, RollupKeyRecord> | undefined {
-   const value = metadata?.[INLINE_UNIQUENESS_KEY] as
-      | { rollupKeys?: unknown }
-      | undefined;
-   const records = value?.rollupKeys;
-   if (!records || typeof records !== "object" || Array.isArray(records)) {
-      return undefined;
-   }
-   const out: Record<string, RollupKeyRecord> = {};
-   for (const [address, record] of Object.entries(records)) {
-      const r = record as Partial<RollupKeyRecord> | null;
-      if (
-         r &&
-         typeof r.table === "string" &&
-         typeof r.keyColumn === "string" &&
-         typeof r.digest === "string" &&
-         typeof r.unique === "boolean"
-      ) {
-         out[address] = {
-            table: r.table,
-            keyColumn: r.keyColumn,
-            digest: r.digest,
-            unique: r.unique,
-            ...(typeof r.checkedInRun === "string"
-               ? { checkedInRun: r.checkedInRun }
-               : {}),
-            ...(typeof r.sourceID === "string" ? { sourceID: r.sourceID } : {}),
-         };
-      }
-   }
-   return out;
-}
-
-/**
  * `metadata` without the passes it records, keeping what became of each
  * check, or undefined when it records none. A pass is relied on only while
  * its run is the newest of the package and no other run overlapped it, which
@@ -435,15 +289,9 @@ export function withoutUniquenessPasses(
 ): Record<string, unknown> | undefined {
    const value = metadata?.[INLINE_UNIQUENESS_KEY];
    if (!metadata || !value || typeof value !== "object") return undefined;
-   const { passes, rollupKeys, ...rest } = value as {
-      passes?: unknown;
-      rollupKeys?: unknown;
-   };
-   const holds = (v: unknown) =>
-      !!v && typeof v === "object" && Object.keys(v as object).length > 0;
-   // A rollup key record is relied on under the same proof as a pass, so it
-   // is forgotten with them.
-   if (!holds(passes) && !holds(rollupKeys)) return undefined;
+   const { passes, ...rest } = value as { passes?: unknown };
+   if (!passes || typeof passes !== "object") return undefined;
+   if (Object.keys(passes).length === 0) return undefined;
    return { ...metadata, [INLINE_UNIQUENESS_KEY]: { ...rest, passes: {} } };
 }
 
@@ -535,14 +383,14 @@ export async function assertInlinedJoinsUnique(
 
 /**
  * A `#(materialize)` plan's pair-table leaf key checks
- * (`InlineUniquenessCheck.recordOnly`), each as a key check a run records
- * beside the table it wrote: the leaf source's sourceID, its key, and the
- * compiled SQL (one row when a value repeats or is NULL). A check that was not
+ * (`InlineUniquenessCheck.recordOnly`), each as a key check a build records
+ * in the contract of the table it wrote (`contractKey`): the leaf source's
+ * sourceID, its key, and the compiled SQL (one row when a value repeats or is NULL). A check that was not
  * compiled is left out, so the leaf's key stays unknown.
  */
 export function pairLeafKeyChecksOf(
    plan: MaterializePlan | undefined,
-): { sourceID: string; keyColumn: string; sql: string }[] {
+): { sourceID: string; keyColumn: string; sql: string; contractKey: string }[] {
    return (plan?.uniquenessChecks ?? []).flatMap((check) =>
       check.recordOnly && check.sql
          ? [
@@ -550,6 +398,11 @@ export function pairLeafKeyChecksOf(
                  sourceID: check.joinedSourceID,
                  keyColumn: check.keyColumn,
                  sql: check.sql,
+                 contractKey: contractKeyName(
+                    "leaf",
+                    check.join,
+                    check.keyColumn,
+                 ),
               },
            ]
          : [],
@@ -557,25 +410,18 @@ export function pairLeafKeyChecksOf(
 }
 
 /**
- * Run a rollup's key check (known limitation 29) on `connection` and say what
- * it found: unique when no non-NULL key value repeats. Undefined when the
- * check could not run, which the join-to-rollup branch reads as unknown and
- * declines as it did before the check existed; the build itself never fails
- * for it.
+ * Run a key check on `connection` and say what it found: unique when no
+ * key value repeats or is NULL. Undefined when the check could not run,
+ * which a reader reads as unknown and declines; the build itself never
+ * fails for it.
  */
-export async function runRollupKeyCheck(
+export async function runKeyCheck(
    check: { keyColumn: string; sql: string },
    connection: Pick<MalloyConnection, "runSQL">,
-   table: string,
-): Promise<Omit<RollupKeyRecord, "checkedInRun"> | undefined> {
+): Promise<KeyCheckRecord | undefined> {
    try {
       const result = await connection.runSQL(check.sql);
-      return {
-         table,
-         keyColumn: check.keyColumn,
-         digest: checkDigest(table, check.sql),
-         unique: result.rows.length === 0,
-      };
+      return { keyColumn: check.keyColumn, unique: result.rows.length === 0 };
    } catch {
       return undefined;
    }
@@ -624,117 +470,17 @@ export function uncontestedAutoRun<
 
 /**
  * The identity a uniqueness record names a table by: where it lives and its
- * name as {@link tableIdentity} reads it. Two names a warehouse may read as
- * one table get one identity, so a write to either loses the record: the
- * safe direction.
+ * name as `leafKey` (domain/physical_table.ts) reads it. Two names a
+ * warehouse may read as one table get one identity, so a write to either
+ * loses the record: the safe direction.
  */
 export function tableIdentityKey(
    kind: "connection" | "destination",
    where: string,
    physicalTableName: string,
 ): string {
-   return JSON.stringify([kind, where, tableIdentity(physicalTableName)]);
-}
-
-/**
- * The identity of the table `entry` names: in its destination for a stored
- * table, else on its connection; undefined when it names neither.
- */
-function entryTableIdentity(
-   entry: Pick<
-      ManifestEntry,
-      "physicalTableName" | "connectionName" | "storageDestinationName"
-   >,
-): string | undefined {
-   if (!entry.physicalTableName) return undefined;
-   if (entry.storageDestinationName) {
-      return tableIdentityKey(
-         "destination",
-         entry.storageDestinationName,
-         entry.physicalTableName,
-      );
-   }
-   return entry.connectionName
-      ? tableIdentityKey(
-           "connection",
-           entry.connectionName,
-           entry.physicalTableName,
-        )
-      : undefined;
-}
-
-/**
- * What a rollup key record says of the table `entry` names, database or in a
- * destination, or undefined when it names another table (a record never
- * describes a table it was not taken over).
- */
-export function keyUniquenessOf(
-   record: RollupKeyRecord | undefined,
-   entry: Pick<
-      ManifestEntry,
-      "physicalTableName" | "connectionName" | "storageDestinationName"
-   >,
-): KeyUniqueness | undefined {
-   const table = entryTableIdentity(entry);
-   if (
-      !record ||
-      table === undefined ||
-      record.sourceID !== undefined ||
-      record.table !== table
-   ) {
-      return undefined;
-   }
-   return { keyColumn: record.keyColumn, unique: record.unique };
-}
-
-/**
- * Everything `records` say of the table of the rollup at `address`: its own
- * key check ({@link keyUniquenessOf}) and each query source's primary key
- * check taken at its build, by sourceID. A record over another table is left
- * out; undefined when none describes this one.
- */
-export function keyUniquenessAt(
-   records: Readonly<Record<string, RollupKeyRecord>> | undefined,
-   address: string,
-   entry: Pick<
-      ManifestEntry,
-      "physicalTableName" | "connectionName" | "storageDestinationName"
-   >,
-): KeyUniqueness | undefined {
-   const table = entryTableIdentity(entry);
-   if (!records || table === undefined) return undefined;
-   const own = keyUniquenessOf(records[address], entry);
-   const parentKeys: Record<string, boolean> = {};
-   for (const [key, record] of Object.entries(records)) {
-      if (
-         record.sourceID !== undefined &&
-         key === rollupKeyRecordKey(address, record.sourceID) &&
-         record.table === table
-      ) {
-         parentKeys[record.sourceID] = record.unique;
-      }
-   }
-   const anyParent = Object.keys(parentKeys).length > 0;
-   if (!own && !anyParent) return undefined;
-   return { ...(own ?? {}), ...(anyParent ? { parentKeys } : {}) };
-}
-
-/**
- * `entries` with each rollup entry carrying what `run`'s key check
- * records say of its table (see {@link keyUniquenessOf}), for a bind that
- * restores serving from the store. Only an {@link uncontestedAutoRun}'s
- * records are read; any doubt leaves the entries as they are, unknown.
- */
-export function withRollupKeyRecords<E extends ManifestEntry>(
-   entries: Record<string, E>,
-   runs: readonly Parameters<typeof uncontestedAutoRun>[0][number][],
-): Record<string, E & { keyUniqueness?: KeyUniqueness }> {
-   const records = rollupKeyRecordsIn(uncontestedAutoRun(runs)?.metadata);
-   if (!records || Object.keys(records).length === 0) return entries;
-   const out: Record<string, E & { keyUniqueness?: KeyUniqueness }> = {};
-   for (const [address, entry] of Object.entries(entries)) {
-      const keyUniqueness = keyUniquenessAt(records, address, entry);
-      out[address] = keyUniqueness ? { ...entry, keyUniqueness } : entry;
-   }
-   return out;
+   return placedLeafKey({
+      place: { kind, name: where },
+      name: physicalTableName,
+   });
 }

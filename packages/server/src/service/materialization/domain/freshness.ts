@@ -54,6 +54,22 @@ export function freshnessOf(facts: FreshnessFacts, at: Date): Freshness {
    return facts.freshnessFallback === "stale_ok" ? "stale_ok" : "stale";
 }
 
+/**
+ * The instant, in epoch milliseconds, a table with `facts` stops being read
+ * ({@link freshnessOf} turns `stale`): the first moment its age exceeds its
+ * window. Undefined when it never does (no window, no anchor, or a
+ * `stale_ok` fallback, which keeps it read).
+ */
+export function stopsReadAt(facts: FreshnessFacts): number | undefined {
+   if (facts.freshnessWindowSeconds == null || facts.dataAsOf == null) {
+      return undefined;
+   }
+   if (facts.freshnessFallback === "stale_ok") return undefined;
+   const dataAsOfMs = Date.parse(facts.dataAsOf);
+   if (Number.isNaN(dataAsOfMs)) return undefined;
+   return dataAsOfMs + facts.freshnessWindowSeconds * 1000 + 1;
+}
+
 /** The `fallback` values a declaration may give. */
 export const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
 type FreshnessFallback = (typeof FRESHNESS_FALLBACKS)[number];
@@ -89,6 +105,16 @@ export function freshnessWindowSeconds(window: string): number | undefined {
    if (!Number.isSafeInteger(count) || count <= 0) return undefined;
    return count * WINDOW_UNITS[match[2]];
 }
+
+/**
+ * Why a `freshness.window=` value is refused, as a declaration's message
+ * says it after the route's name: the window must be a positive duration,
+ * a whole number greater than zero and one unit, so `0h`, `-1h` and `1.5h`
+ * are each refused with the same rule.
+ */
+export const FRESHNESS_WINDOW_PROBLEM =
+   "has a freshness.window= that is not a positive duration: write a whole " +
+   'number greater than zero and one unit (s, m, h, d or w), such as freshness.window="24h"';
 
 /**
  * Seconds per unit of a duration a `#@ persist` key takes (`lookback=`): the

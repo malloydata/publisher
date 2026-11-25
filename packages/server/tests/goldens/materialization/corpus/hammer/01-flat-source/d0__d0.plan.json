@@ -75,6 +75,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "c552f5e7e18d0c5cbf5f28fb0dee35f5aa77f96314aabebbc809f8be92f0f4a5",
         "sourceID": "daily_orders@<hammer>/d0/d0.malloy",

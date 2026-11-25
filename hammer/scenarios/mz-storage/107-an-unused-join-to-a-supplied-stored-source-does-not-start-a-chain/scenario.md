@@ -83,7 +83,7 @@ Expect:
 | ------------ | --------------- | ---------- |
 | 99           | 2026-01-03      | 1000       |
 
-## Build (orchestrated, strict, pkg=ujs)
+## Build (orchestrated, pkg=ujs)
 
 Strict: `rollup` alone, `daily` and `counts` by reference. The SQL reads
 `daily`'s table and never `counts`; the build is the passthrough, from the

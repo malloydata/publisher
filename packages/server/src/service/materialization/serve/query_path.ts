@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The path report (D1): what answered a query and why.
+ * The path report: what answered a query and why.
  *
  * Built after the query runs, from three things Publisher already has:
  *
@@ -14,7 +14,7 @@
  *   router. Read from Malloy's own lookup, never from the SQL text;
  * - the package's catalog of materialized tables (its build plan, bound
  *   manifest and `storage=` bindings), read against the queried source's
- *   chain, with the serve verdict (D2) of every table no query can be answered
+ *   chain, with the serve verdict of every table no query can be answered
  *   from, so a skip says why the table will not serve rather than only that it
  *   did not.
  *
@@ -212,7 +212,7 @@ export interface QueryPathInput {
    rollups: readonly ModelRollup[];
    /**
     * The bases of the rollups the query could read through one of its
-    * source's joins (A7, join-to-rollup): named as the query's own rollups.
+    * source's joins (join-to-rollup): named as the query's own rollups.
     */
    joinedRollupBases?: ReadonlySet<string>;
    /** The router's decision; empty when no candidate existed. */
@@ -227,6 +227,12 @@ export interface QueryPathInput {
    rollupTablesRead?: readonly StorageTable[];
    /** The tables only the served copy reads (`#(materialize)`): its decision is theirs. */
    servedCopyTables?: ReadonlySet<string>;
+   /**
+    * For a table only the served copy reads that it leaves as written for
+    * its columns (`column_types`): the columns, named, by table path. The
+    * table's `detail` when the served copy declined with none of its own.
+    */
+   servedCopyDetails?: ReadonlyMap<string, string>;
    /** For a storage answer: `served_copy` when the served copy on `virtual` answered. */
    via?: "served_copy";
    /**
@@ -245,9 +251,9 @@ export interface QueryPathInput {
     */
    rollupMember?: string;
    /**
-    * The table of the persisted view the query calls (`#@ persist` on a view,
-    * P14), or of the persisted named query it calls (`kind: "query"`), when
-    * it calls one: tried before every other table (R1).
+    * The table of the persisted view the query calls (`#@ persist` on a view),
+    * or of the persisted named query it calls (`kind: "query"`), when
+    * it calls one: tried before every other table.
     */
    view?: {
       kind?: "query";
@@ -255,6 +261,10 @@ export interface QueryPathInput {
       tier: "storage" | "database";
       built: boolean;
       stale: boolean;
+      /** A storage table the storage mode does not read (`storage_mode`). */
+      storageNotServed?: true;
+      /** A database table read in place of a storage one the mode does not read. */
+      storageTwinNotServed?: true;
       dataAsOf?: string;
    };
    /** The `sourceID` chain of every source in the model, for `notConsidered`. */
@@ -479,7 +489,7 @@ function pathTally(): PathTally {
 }
 
 /**
- * A persisted view's table, first (R1). When it answered, nothing after
+ * A persisted view's table, first. When it answered, nothing after
  * it was tried, so nothing after it is named: the report is returned.
  */
 function viewTableDecision(
@@ -503,6 +513,16 @@ function viewTableDecision(
          unbuilt: !input.view.built,
          ...(input.view.dataAsOf ? { dataAsOf: input.view.dataAsOf } : {}),
       };
+      if (input.view.storageTwinNotServed) {
+         // Its storage twin, which the storage mode does not read: named as
+         // a rollup's is, before the database table that answered.
+         skip(
+            { ...t, key: `${t.key}/storage`, tier: "storage", stale: false },
+            "NOT_SERVED",
+            undefined,
+            "storage_mode",
+         );
+      }
       if (viewDecision?.outcome === "used") {
          if (input.runFailed) {
             skip(t, "READ_FAILED");
@@ -522,6 +542,9 @@ function viewTableDecision(
          }
       } else if (!input.view.built) {
          skip(t, "NOT_BUILT");
+      } else if (input.view.storageNotServed) {
+         // The storage mode reads no destination; the serve verdict names it.
+         skip(t, "NOT_SERVED", undefined, "storage_mode");
       } else if (input.view.stale) {
          skip(t, "STALE");
       } else if (viewDecision?.reason === "row_level_gate") {
@@ -571,14 +594,17 @@ function storageTableDecisions(
             // A table only the served copy reads skipped for the served
             // copy's reason, whichever candidate the tier reported.
             const served = decided.get("served");
-            const decision =
-               served && input.servedCopyTables?.has(t.binding?.tablePath ?? "")
-                  ? served
-                  : storageDecision;
+            const servedOnly = input.servedCopyTables?.has(
+               t.binding?.tablePath ?? "",
+            );
+            const decision = served && servedOnly ? served : storageDecision;
             skip(
                t,
                skipReasonOf(decision),
-               decision.callerDetail,
+               decision.callerDetail ??
+                  (servedOnly && decision.code === "served_copy_not_served"
+                     ? input.servedCopyDetails?.get(t.binding?.tablePath ?? "")
+                     : undefined),
                declineOfCode(decision.code)?.code,
             );
          }
@@ -611,7 +637,10 @@ function storageTableDecisions(
    } else {
       // Not routed at all (the tier is off or write-only): every storage table
       // carries the package's warning, and the query reads its own warehouse.
-      for (const t of storageTables) if (t.warned) skip(t, "NOT_SERVED");
+      // The storage mode is the reason, whichever tier the verdict judged.
+      for (const t of storageTables) {
+         if (t.warned) skip(t, "NOT_SERVED", undefined, "storage_mode");
+      }
    }
    return storageAnswered;
 }
@@ -670,8 +699,13 @@ function databaseRollupDecisions(
             continue;
          } else if (rollupDecision.outcome === "used") {
             if (t === used) {
-               markUsed(t);
-               rollupAnswered = true;
+               // Its read failed and the query was retried live.
+               if (input.runFailed) {
+                  skip(t, "READ_FAILED");
+               } else {
+                  markUsed(t);
+                  rollupAnswered = true;
+               }
             } else if (!used && input.rollupMember !== undefined) {
                // The rollup leg answered from another rollup.
                skip(t, "GRAIN_TOO_COARSE");
@@ -851,6 +885,8 @@ function verdictWarningMessage(reason: string): string {
          return "This table's storage destination is not configured on this server, so its queries are answered live.";
       case "connection_cannot_hold_table":
          return "This table's connection cannot hold a table, so its queries are answered live.";
+      case "types_unrecorded":
+         return "This table's build recorded no column types, so a change since the build cannot be ruled out; its queries are answered live until it is rebuilt.";
       default:
          return "This table carries a publish warning and serves live; the package's warnings say why.";
    }
@@ -906,6 +942,22 @@ function tablesFor(
       };
       // A `#(rollup)` table is the rollup leg's on either tier.
       if (variant && binding) {
+         const database =
+            plan && input.storageWarned && !binding.database
+               ? { ...databaseState(plan, kind, input), ...named }
+               : undefined;
+         if (database && !database.unbuilt) {
+            // The storage mode reads no destination, so the leg reads the
+            // database table bound beside it: the storage one is the tier's,
+            // never the leg's, and is reported as not served.
+            add({
+               ...storageState(binding, plan, kind, fresh),
+               ...(rollupName ? { rollupName } : {}),
+               warned: true,
+            });
+            add(database);
+            return;
+         }
          add({ ...storageState(binding, plan, kind, fresh), ...named });
          return;
       }

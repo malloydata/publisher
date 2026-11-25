@@ -189,6 +189,121 @@ describe("MaterializationService", () => {
       });
    });
 
+   describe("createMaterialization while its package retires", () => {
+      it("cancels a run whose package's builds were aborted during its record's insert, and starts no build", async () => {
+         const runBuild = sinon.stub().resolves();
+         const service = serviceWith(ctx, {
+            runBuild: runBuild as unknown as RunCollaborators["runBuild"],
+         });
+         ctx.repository.getActiveMaterialization.resolves(null);
+         const pending = makeMaterialization({
+            id: "m-slow",
+            status: "PENDING",
+         });
+         let insert!: () => void;
+         ctx.repository.createMaterialization.callsFake(
+            () =>
+               new Promise((resolve) => {
+                  insert = () => resolve(pending);
+               }),
+         );
+         let status = "PENDING" as MaterializationStatus;
+         ctx.repository.getMaterializationById.callsFake(async () => ({
+            ...pending,
+            status,
+         }));
+         ctx.repository.updateMaterialization.callsFake(async (_id, update) => {
+            status = (update.status as MaterializationStatus) ?? status;
+            return { ...pending, ...update } as never;
+         });
+
+         const created = service.createMaterialization("my-env", "pkg");
+         while (!ctx.repository.createMaterialization.called) {
+            await new Promise((r) => setTimeout(r, 1));
+         }
+         // The package is deleted or unloaded while the record is written:
+         // its abort waits for the create to settle.
+         const retired = service.abortPackageRuns("my-env", "pkg", 5_000);
+         insert();
+         const result = await created;
+         await retired;
+
+         expect(result.status).toBe("CANCELLED");
+         expect(status).toBe("CANCELLED");
+         expect(runBuild.called).toBe(false);
+      });
+
+      it("cancels a run whose start waited on the package lock until a delete had removed the package", async () => {
+         const runBuild = sinon.stub().resolves();
+         const service = serviceWith(ctx, {
+            runBuild: runBuild as unknown as RunCollaborators["runBuild"],
+         });
+         ctx.repository.getActiveMaterialization.resolves(null);
+         const pending = makeMaterialization({
+            id: "m-late",
+            status: "PENDING",
+         });
+         ctx.repository.createMaterialization.resolves(pending);
+         let status = "PENDING" as MaterializationStatus;
+         ctx.repository.getMaterializationById.callsFake(async () => ({
+            ...pending,
+            status,
+         }));
+         ctx.repository.updateMaterialization.callsFake(async (_id, update) => {
+            status = (update.status as MaterializationStatus) ?? status;
+            return { ...pending, ...update } as never;
+         });
+         // The create found the package lock-free; its start queues on the
+         // lock the delete holds, and runs once the package is gone.
+         let loaded = true;
+         let releaseLock!: () => void;
+         const lockFree = new Promise<void>((resolve) => {
+            releaseLock = resolve;
+         });
+         const environment = await (
+            ctx.environmentStore.getEnvironment as sinon.SinonStub
+         )();
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            ...environment,
+            hasLoadedPackage: () => loaded,
+            withPackageLock: async (
+               _name: string,
+               fn: () => Promise<unknown>,
+            ) => {
+               await lockFree;
+               return fn();
+            },
+         });
+
+         // The delete's aborts ran before this create began, so they found
+         // nothing to stop; it then removes the package while holding the
+         // lock the create's start waits on.
+         await service.abortPackageRuns("my-env", "pkg", 0);
+         const created = service.createMaterialization("my-env", "pkg");
+         await new Promise((r) => setTimeout(r, 5));
+         loaded = false;
+         releaseLock();
+         const result = await created;
+
+         expect(result.status).toBe("CANCELLED");
+         expect(runBuild.called).toBe(false);
+      });
+
+      it("starts the build when no abort lands during the insert", async () => {
+         const runBuild = sinon.stub().resolves();
+         const service = serviceWith(ctx, {
+            runBuild: runBuild as unknown as RunCollaborators["runBuild"],
+         });
+         ctx.repository.getActiveMaterialization.resolves(null);
+         ctx.repository.createMaterialization.resolves(
+            makeMaterialization({ status: "PENDING" }),
+         );
+         const result = await service.createMaterialization("my-env", "pkg");
+         expect(result.status).toBe("PENDING");
+         expect(runBuild.calledOnce).toBe(true);
+      });
+   });
+
    describe("createMaterialization (orchestrated)", () => {
       it("creates a PENDING record with mode=orchestrated for valid instructions", async () => {
          setPackage(ctx.environmentStore, {
@@ -514,8 +629,6 @@ describe("runBuild (branch behavior)", () => {
                     connectionName?: string;
                  }[]
                | undefined;
-            strictUpstreams?: boolean | undefined;
-            warehouseReach?: "recompute" | "refuse";
             trigger?: "on_demand" | "scheduler";
          },
          signal: AbortSignal,
@@ -598,7 +711,7 @@ describe("runBuild (branch behavior)", () => {
       expect(svc.autoLoadManifest.called).toBe(false);
    });
 
-   it("orchestrated: seeds the build from referenceManifest and honors strictUpstreams", async () => {
+   it("orchestrated: seeds the build from referenceManifest, always strict", async () => {
       const svc = stubEngine();
       const instructions = [makeInstruction()];
 
@@ -617,7 +730,6 @@ describe("runBuild (branch behavior)", () => {
                   connectionName: "sf",
                },
             ],
-            strictUpstreams: true,
          },
          new AbortController().signal,
       );
@@ -634,8 +746,6 @@ describe("runBuild (branch behavior)", () => {
             connectionName: "sf",
          },
       });
-      // strictUpstreams flows through as the strict flag (6th arg).
-      expect(svc.executeInstructedBuild.firstCall.args[0].strict).toBe(true);
       // Reused upstreams are counted as carried, not built.
       expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
          mode: "orchestrated",
@@ -644,29 +754,6 @@ describe("runBuild (branch behavior)", () => {
       });
       // The host distributes an orchestrated manifest: nothing is loaded.
       expect(svc.commitManifest.firstCall.args[4]).toBeUndefined();
-   });
-
-   // ms2data/service#6756: the host's warehouseReach reaches the run, last.
-   it("orchestrated: passes warehouseReach through to the instructed build", async () => {
-      const svc = stubEngine();
-      await svc.runBuild(
-         "mat-1",
-         "my-env",
-         "pkg",
-         {
-            sourceNames: undefined,
-            forceRefresh: false,
-            buildInstructions: [makeInstruction()],
-            strictUpstreams: true,
-            warehouseReach: "refuse",
-         },
-         new AbortController().signal,
-      );
-      const [options] = svc.executeInstructedBuild.firstCall.args;
-      expect(options.strict).toBe(true);
-      expect(options.warehouseReach).toBe("refuse");
-      // A host's build relies on no earlier uniqueness check.
-      expect(options.uniqueness).toBeUndefined();
    });
 
    it("auto-run: derives instructions and auto-loads the manifest", async () => {
@@ -701,7 +788,7 @@ describe("runBuild (branch behavior)", () => {
    it("auto-run: a stop that lands while the manifest loads does not cut it short, and the run says so", async () => {
       const svc = stubEngine();
       svc.autoLoadManifest.callsFake(async (...args: unknown[]) => {
-         const finish = args[5] as (s: {
+         const finish = args[4] as (s: {
             metadata: Record<string, unknown>;
          }) => Promise<void>;
          await finish({ metadata: { autoLoad: "loaded" } });
@@ -989,8 +1076,6 @@ describe("runBuild (branch behavior)", () => {
                sourceEntityId: "build-orders",
                physicalTableName: '"orders_v1"',
                connectionName: "duckdb",
-               upstreamReuse: "recomputed",
-               upstreamRecomputeReason: `could not stack: ${where}`,
             },
          },
          failures: {
@@ -998,10 +1083,14 @@ describe("runBuild (branch behavior)", () => {
                sourceEntityId: "other",
                reason: "Failed to materialize source 'other': /test/m.malloy",
             },
+            third: {
+               sourceEntityId: "third",
+               reason: `could not compile: ${where}`,
+            },
          },
          sourcesRefused: 1,
          refusalsInFailures: 0,
-         refusedBesideBuilt: {
+         refusedSources: {
             gated: {
                name: "gated",
                sourceID: "gated",
@@ -1025,15 +1114,14 @@ describe("runBuild (branch behavior)", () => {
          new AbortController().signal,
       );
 
-      const [, entries, failures, metadata] = svc.commitManifest.firstCall
-         .args as [
+      const [, , failures, metadata] = svc.commitManifest.firstCall.args as [
          string,
-         Record<string, { upstreamRecomputeReason?: string }>,
+         unknown,
          Record<string, { reason: string }>,
          { refusedSources: Record<string, { message: string }> },
       ];
-      expect(entries["build-orders"].upstreamRecomputeReason).toBe(
-         "could not stack: FILE: sub/m.malloy\nline 3: 'x' is not defined",
+      expect(failures.third.reason).toBe(
+         "could not compile: FILE: sub/m.malloy\nline 3: 'x' is not defined",
       );
       expect(failures.other.reason).toBe(
          "Failed to materialize source 'other': m.malloy",
@@ -1092,7 +1180,7 @@ describe("runBuild (branch behavior)", () => {
             failures: {},
             sourcesRefused: 1,
             refusalsInFailures: 0,
-            refusedBesideBuilt: { gated: refused },
+            refusedSources: { gated: refused },
          });
 
          await svc.runBuild(

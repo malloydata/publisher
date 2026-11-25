@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Join-to-rollup (A7): the rollup leg's second form, its join branch. A
+ * Join-to-rollup: the rollup leg's second form, its join branch. A
  * query on a source that reads a joined source's measures
  * (`flights -> { group_by: carrier; aggregate: segments.seg_miles }`) can be
  * answered from the JOINED source's rollup, read at its grain: the variant
@@ -41,12 +41,12 @@
  *
  * A rollup in a `storage=` destination is joined there, so only for a query
  * source the served copy reads from the same destination: the variant is
- * then compiled over the served copy's files (known limitation 26,
- * `RollupVariantServe.answerJoinInDestination`); any other query source
+ * then compiled over the served copy's files
+ * (`RollupVariantServe.answerJoinInDestination`); any other query source
  * reads its own connection, and Malloy joins only within one
  * (`CROSS_CONNECTION`).
  *
- * Fan-out grains and join-level measures (A6, A2, row 27): a rollup row is
+ * Fan-out grains and join-level measures: a rollup row is
  * one group of the joined rows, so a partial re-summed across groups that
  * share a joined row counts it twice. {@link checkJoinCoverage} holds each
  * query to the base branch's rule, level by level, over `<join>.<field>`: a
@@ -63,9 +63,9 @@
  * declaring file with its gates (in a storage destination, the served
  * copy's copy of that file), where `govern()` grafts and proves them
  * (`joinGateDecline`, `compileJoinGated`, `compileJoinInDestinationGated`
- * in rollup_variants.ts; g-mixed for rollups, question 14). In a storage
+ * in rollup_variants.ts; the ungated-rows rule for rollups). In a storage
  * destination the answer keeps the gate only when every table it reads is a
- * G3 table. Any other gate declines (`ROW_LEVEL_GATE`).
+ * gate-keeping table. Any other gate declines (`ROW_LEVEL_GATE`).
  */
 
 import { requireUnique, type KeyVerdict } from "../domain/key_check";
@@ -239,9 +239,10 @@ function refusalOf(
          `another join's condition reads \`${name}\`, whose rows the rollup does not keep`,
       );
    }
-   // A6 and A2 across the join are judged per query (checkJoinCoverage),
-   // except a join key that is itself a fan-out dimension: a joined row would
-   // then meet the parent rows of more than one key.
+   // Fan-out grains and join-level measures across the join are judged per
+   // query (checkJoinCoverage), except a join key that is itself a fan-out
+   // dimension: a joined row would then meet the parent rows of more than one
+   // key.
    if (plan.fanOutDimensions.includes(join.keyColumn)) {
       return refuse(
          "rollup_grain_too_coarse",
@@ -379,22 +380,22 @@ function bareOperand(expr: MeasureExpr): string[] | undefined {
 }
 
 /**
- * A6 and A2 through the join, level by level: the base branch's
- * `checkCoverage` rule, read on the caller's compiled query, where the
- * rollup's fields are `<join>.<field>`. A rollup row is one group of the
- * joined rows, matched to each parent row with its key, so a measure partial
- * re-summed across groups that share a joined row would count that row
- * twice. Each level that aggregates anything through the join must group or
- * fix (`where: <join>.d = <value>`, there or above) every fan-out grain
- * dimension of the rollup (A6), and every grain dimension a join-level sum
- * or count it reads merges across (A2). Grouping or fixing the parent's own
- * key field fixes the join's key column: every rollup row a parent row meets
- * carries that key. A level that only reads the parent's own fields, or
- * another join's, aggregates nothing through the join: the parent's
- * aggregates are taken over its own rows whatever the join matches. Anything
- * the check cannot place (an expression over the join's measures, a
- * `having:`, a field it cannot trace) is held to every measure's dimensions;
- * an ungrouped aggregate (`all`, `exclude`) declines.
+ * Fan-out grains and join-level measures through the join, level by level: the
+ * base branch's `checkCoverage` rule, read on the caller's compiled query,
+ * where the rollup's fields are `<join>.<field>`. A rollup row is one group of
+ * the joined rows, matched to each parent row with its key, so a measure
+ * partial re-summed across groups that share a joined row would count that row
+ * twice. Each level that aggregates anything through the join must group or fix
+ * (`where: <join>.d = <value>`, there or above) every fan-out grain dimension
+ * of the rollup, and every grain dimension a join-level sum or count it reads
+ * merges across. Grouping or fixing the parent's own key field fixes the join's
+ * key column: every rollup row a parent row meets carries that key. A level
+ * that only reads the parent's own fields, or another join's, aggregates
+ * nothing through the join: the parent's aggregates are taken over its own rows
+ * whatever the join matches. Anything the check cannot place (an expression
+ * over the join's measures, a `having:`, a field it cannot trace) is held to
+ * every measure's dimensions; an ungrouped aggregate (`all`, `exclude`)
+ * declines.
  *
  * `parentReads` says how a parent field reads the join
  * (`sourceFieldJoinReads`). Returns why the branch cannot answer, or undefined.

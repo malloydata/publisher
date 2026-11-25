@@ -153,6 +153,15 @@ interface DistinctValueQuery {
    identity?: AccessIdentity;
    /** The system's own read (the index build): no caller, so no access record. */
    system?: boolean;
+   /**
+    * The index build's read of a source whose gate only splits its rows
+    * (CatalogSource.partitionKey), with the givens that name the keys to read
+    * (`retrieval.dimensionValues.givens`): each row carries its key as `k0`,
+    * `k1`, ... in this order. The read goes through the gate like any other;
+    * the stored values are served back only under the key the caller's
+    * givens name.
+    */
+   partitionColumns?: readonly string[];
 }
 
 /** What a value-scan stem may hold: no `~` (LIKE) wildcard can appear. */
@@ -176,6 +185,14 @@ export async function queryDistinctValues(
    // quoting covers the rest.
    if (request.stem && !LIKE_SAFE_STEM.test(request.stem)) {
       throw new Error("A value-scan stem may contain only letters and digits");
+   }
+   if (
+      request.partitionColumns?.length &&
+      (!request.system || !request.givens)
+   ) {
+      throw new Error(
+         "Only the index build reads a keyed source's values, and only with the givens that name its keys",
+      );
    }
    let refusal: SearchErrorDetails | undefined;
    const queryModelResolver =
@@ -205,10 +222,21 @@ export async function queryDistinctValues(
             : `${dim} != null`;
          // One row past the limit, to tell a full page from a truncated one.
          const limit = Math.trunc(request.limit) + 1;
+         const keys = (request.partitionColumns ?? []).map(
+            (column, i) =>
+               `, k${i} is ${column.split(".").map(quotedIdentifier).join(".")}`,
+         );
+         const groupBy = `group_by: v is ${dim}${keys.join("")}`;
          const body = request.counted
-            ? `where: ${where} group_by: v is ${dim} aggregate: n is count() order_by: n desc limit: ${limit}`
-            : `where: ${where} group_by: v is ${dim} limit: ${limit}`;
+            ? `where: ${where} ${groupBy} aggregate: n is count() order_by: n desc limit: ${limit}`
+            : `where: ${where} ${groupBy} limit: ${limit}`;
          const query = `run: ${quotedIdentifier(request.source)} -> { ${body} }`;
+         // The index build sends one set of givens to every model in the
+         // package, and Malloy refuses a given the model does not declare, so
+         // each model gets only its own. A caller's givens go as sent.
+         const givens = request.system
+            ? declaredOnly(request.givens, found.model.getGivens())
+            : request.givens;
          const slot = deps.querySlots.tryAcquire(request.routeLabel);
          try {
             const { compactResult } = await runWithQueryTimeout(
@@ -218,7 +246,7 @@ export async function queryDistinctValues(
                      {
                         query,
                         filterParams: request.filterParams,
-                        givens: request.givens as
+                        givens: givens as
                            | Record<string, GivenValue>
                            | undefined,
                         abortSignal: signal,
@@ -279,3 +307,14 @@ export const valueFetcherFor =
          truncated: rows.length > request.limit,
       };
    };
+
+/** `givens` cut to the ones `declared` names; undefined when none are left. */
+function declaredOnly(
+   givens: Record<string, unknown> | undefined,
+   declared: ReadonlyArray<{ name?: string }>,
+): Record<string, unknown> | undefined {
+   if (!givens) return undefined;
+   const names = new Set(declared.map((g) => g.name));
+   const kept = Object.entries(givens).filter(([name]) => names.has(name));
+   return kept.length > 0 ? Object.fromEntries(kept) : undefined;
+}

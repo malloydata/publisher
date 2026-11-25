@@ -27,13 +27,14 @@ import {
    assertListingTakesNoVersionId,
    booleanParam,
    optionalBooleanParam,
+   createBodyWithVersionId,
    queryVersionRefOf,
    assertNoCollectionReload,
    assertNoDropTables,
    versionRefOf,
 } from "../route_params";
 import { processStorageDestinationsOrThrow } from "../service/connection_config";
-import { registerDeprecatedRoutes } from "./deprecated";
+import { refuseListedDestinationSchema } from "../service/destination_overlap";
 import {
    apiRoute,
    legacyErrorBody,
@@ -249,7 +250,14 @@ function registerEnvironmentRoutes(
          // Strict here, where the author is waiting (`addEnvironment` is
          // lenient for boot and restore): a destination this body fails to
          // describe must not come back as a 200 that quietly omits it.
-         processStorageDestinationsOrThrow(req.body?.storageDestinations ?? []);
+         const destinations = processStorageDestinationsOrThrow(
+            req.body?.storageDestinations ?? [],
+         );
+         // Before the store does any disk work for an environment this refuses.
+         refuseListedDestinationSchema(
+            Array.isArray(req.body?.connections) ? req.body.connections : [],
+            destinations,
+         );
          const environment = await environmentStore.addEnvironment(req.body);
          return environment.serialize();
       }),
@@ -762,8 +770,6 @@ function registerPackageRoutes(
          ),
       ),
    );
-
-   registerDeprecatedRoutes(app, apiPrefix, environmentStore, querySlots);
 }
 
 function registerQueryRoutes(
@@ -910,7 +916,7 @@ function registerMaterializationRoutes(
             materializationController.createMaterialization(
                req.params.environmentName,
                req.params.packageName,
-               req.body || {},
+               createBodyWithVersionId(req),
             ),
          { status: 201 },
       ),

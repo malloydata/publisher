@@ -486,11 +486,7 @@ export default function Package({
                onClose={() => setCreating(false)}
                onCreated={(created) => {
                   setCreating(false);
-                  invalidateReportQueries(
-                     queryClient,
-                     environmentName,
-                     packageName,
-                  );
+                  invalidateReportQueries(queryClient);
                   void queryClient.invalidateQueries({ queryKey: ["models"] });
                   openDocument({
                      path: created.path,

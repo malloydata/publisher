@@ -10,8 +10,6 @@
 
 import { describe, expect, it } from "bun:test";
 import request from "supertest";
-import { PackageVersionError } from "./errors";
-import type { VersionRef } from "./service/identity";
 import { buildRouteApp, namedVersions } from "./test_helpers/route_app";
 
 const PKG = "/api/v0/projects/env/packages/pkg";
@@ -25,25 +23,7 @@ function recordingApp() {
          calls[name] = namedVersions(args);
          return {};
       };
-   // The legacy notebook routes reach the package through the store.
-   const environmentStore = {
-      getEnvironment: async () => ({
-         assertCanAdmitQuery: () => {},
-         getPackage: async (
-            _packageName: string,
-            _reload: boolean,
-            options: { versionId?: VersionRef },
-         ) => {
-            calls.storeGetPackage = [options.versionId?.requested()];
-            throw new PackageVersionError(
-               "VERSION_NOT_FOUND",
-               "No such version.",
-            );
-         },
-      }),
-   };
    const stubs = {
-      environmentStore,
       packageController: {
          getPackage: record("getPackage"),
          listPackages: record("listPackages"),
@@ -83,29 +63,6 @@ describe("legacy /projects routes and versionId", () => {
          "listDatabases",
          (a: unknown[]) => a[2],
          200,
-      ],
-      // The store answers 404 for the version, as it would for one never
-      // published: the version reached the lookup.
-      [
-         "its notebooks",
-         `${PKG}/notebooks`,
-         "storeGetPackage",
-         (a: unknown[]) => a[0],
-         404,
-      ],
-      [
-         "a notebook",
-         `${PKG}/notebooks/n.malloynb`,
-         "storeGetPackage",
-         (a: unknown[]) => a[0],
-         404,
-      ],
-      [
-         "a notebook cell",
-         `${PKG}/notebooks/n.malloynb/cells/0`,
-         "storeGetPackage",
-         (a: unknown[]) => a[0],
-         404,
       ],
    ] as const)(
       "GET %s hands the controller the pinned version",

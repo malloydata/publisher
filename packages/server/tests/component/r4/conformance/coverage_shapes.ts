@@ -277,7 +277,7 @@ source: classified is orders_raw -> {
    },
    {
       name: "persist with a rolling window",
-      about: "#@ persist on a query whose body filters on now (refused, current_time: built, it would bake the window in as of the build, so it answers live), and on one whose extend block does (built, the window applied at read). The window is wide, so the goldens hold still; r4/persist_rolling_window_coverage cuts the rows at a pinned clock",
+      about: "#@ persist on a query whose body filters on now (built and served as of its build, rebuilt every run, with a persist-reads-current-time warning), and on one whose extend block does (built, the window applied at read). The window is wide, so the goldens hold still; r4/persist_rolling_window_coverage cuts the rows at a pinned clock",
       variants: ["storage", "database"],
       files: {
          "m.malloy": `${HEADER}
@@ -305,7 +305,6 @@ source: recent_read is orders_raw -> {
             name: "a window in the persisted query",
             malloy:
                "run: recent_body -> { group_by: region; aggregate: total }",
-            expect: "live",
          },
          {
             name: "a window in the extend block",
@@ -452,7 +451,17 @@ source: pv_base is orders_raw -> {
          {
             name: "the view called",
             malloy: "run: pv_base -> by_region",
-            expect: "view",
+            // v2's view is a database view over a `storage=` source: refused
+            // at plan under strict upstreams, so answered from the source's
+            // stored table by its served copy.
+            expect: {
+               database: "view",
+               storage: "view",
+               // Over a database `#(materialize)` source it builds from the
+               // source's table, re-rooted, and the view leg answers.
+               materialize_database: "view",
+               materialize: "served",
+            },
          },
          {
             name: "the persisted source itself",

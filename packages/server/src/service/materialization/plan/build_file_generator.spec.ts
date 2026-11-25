@@ -16,7 +16,7 @@ import {
    addressSQL,
    buildSQLOf,
    computeSourceEntityId,
-   deriveBuildPlanOutcome,
+   derivePackagePlan,
 } from "./build_plan";
 import { compilePackageBuildPlan } from "./build_plan_compile";
 
@@ -32,7 +32,7 @@ import { incrementalPolicyRejections } from "./incremental_policy";
 import {
    assertInlinedJoinsUnique,
    pairLeafKeyChecksOf,
-   runRollupKeyCheck,
+   runKeyCheck,
 } from "../run/inline_uniqueness";
 import { rollingWindowsOf } from "../domain/read_time_terms";
 import { buildCopyText } from "./materialize_build_copy";
@@ -141,6 +141,7 @@ source: ext is stored extend {
          buildsOver: {
             sourceID: parent.sourceID,
             sourceName: "stored",
+            mode: { tier: "same" },
             declaration: at("stored", 7),
             path: [at("ext", 11)],
          },
@@ -653,7 +654,7 @@ source: orders is orders_raw extend {
       ["storage", 'storage="lake" '],
    ]) {
       it(
-         `never builds an extension over a pair table, which holds each parent once per child (${tier})`,
+         `builds an extension over a pair table with its join put back, relying on its leaf check (${tier})`,
          async () => {
             const ext = route.trim();
             const pkg = await packages.create(`${PAIRED}
@@ -674,25 +675,24 @@ source: orders_ext is orders extend {
                undefined,
                KEEP_INCREMENTAL,
             );
-            const plan = (name: string) =>
-               generatedPlans(c).find((p) => p.sourceName === name)!;
-            expect(plan("orders").pair?.join).toBe("lines");
-            // Over the raw chain, one row per order, never the parent's
-            // build source, whose rows are the pairs.
-            expect(plan("orders_ext").buildsOver).toBeUndefined();
-            const [sourceID, source] = Object.entries(sourcesIn(c)).find(
-               ([, s]) => s.name === "orders_ext",
-            )!;
-            const sql = buildSQLOf(
-               source,
-               { entries: {} },
-               targetsIn(c)?.[sourceID],
-            );
-            const duckdb = await pkg.getMalloyConnection("duckdb");
-            const rows = (
-               await duckdb.runSQL(`SELECT id FROM (${sql}) t ORDER BY id`)
-            ).rows.map((r) => Number(r.id));
-            expect(rows).toEqual([1, 2, 3]);
+            expect(
+               generatedPlans(c).find((p) => p.sourceName === "orders")?.pair
+                  ?.join,
+            ).toBe("lines");
+            // Linked over the pair table, read back one row per parent,
+            // never built over the raw chain.
+            expect(
+               generatedPlans(c).find((p) => p.sourceName === "orders_ext")
+                  ?.buildsOver?.mode,
+            ).toEqual({
+               tier: "same",
+               pair: { leafKeys: ["leaf:lines.line_id"] },
+            });
+            expect(
+               (c.annotationFindings ?? []).filter(
+                  (f) => f.code === "materialize-not-built",
+               ),
+            ).toEqual([]);
          },
          { timeout: 30000 },
       );
@@ -1040,17 +1040,17 @@ source: orders_one is ${orders} extend {
                   keyColumn: "line_id",
                   sourceID: expect.stringMatching(/^lines@/),
                });
-               expect(
-                  (await runRollupKeyCheck(leaf, bad.duckdb, "t"))?.unique,
-               ).toBe(false);
+               expect((await runKeyCheck(leaf, bad.duckdb))?.unique).toBe(
+                  false,
+               );
             }
          }
          // A clean leaf passes its check.
          for (const name of ["orders_hop", "orders_blocks", "orders_one"]) {
             for (const leaf of pairLeafKeyChecksOf(clean.byName.get(name))) {
-               expect(
-                  (await runRollupKeyCheck(leaf, clean.duckdb, "t"))?.unique,
-               ).toBe(true);
+               expect((await runKeyCheck(leaf, clean.duckdb))?.unique).toBe(
+                  true,
+               );
             }
          }
          // A null source key fails all three.
@@ -1488,7 +1488,7 @@ source: orders is orders_raw
             "freshness.window": "24h",
             "freshness.fallback": "stale_ok",
          });
-         const outcome = deriveBuildPlanOutcome(c, null);
+         const outcome = derivePackagePlan(c, null);
          const wire = Object.values(outcome.plan?.sources ?? {}).find(
             (s) => s.name === "orders",
          );
@@ -1528,7 +1528,7 @@ source: orders is orders_raw extend { dimension: big is amount > 10 }
          expect(c.builds.flatMap((b) => b.order)).toContain(p.sourceID);
          // Every name in the plan is unique: a source that is both #@ persist
          // and #(materialize) is refused, so the author's name is free.
-         const outcome = deriveBuildPlanOutcome(c, null);
+         const outcome = derivePackagePlan(c, null);
          const names = Object.values(outcome.plan?.sources ?? {}).map(
             (s) => s.name,
          );

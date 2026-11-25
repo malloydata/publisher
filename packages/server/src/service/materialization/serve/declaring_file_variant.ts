@@ -11,7 +11,7 @@
  * source's entry-point gates written on it as note lines ({@link gateLines}):
  * every gate the governor keys on that source (by name, then by `sourceID`)
  * finds its graft target in the variant, exactly as the served copy keeps it
- * by re-rooting the author's own file (R3, route then govern). The file's
+ * by re-rooting the author's own file (route then govern). The file's
  * other names come from a copy of it (`<file><copySuffix>`), and the query
  * model imports every name of the author's model from its declaring file,
  * the redeclared source from the overlay.
@@ -186,7 +186,7 @@ export async function compileDeclaringFileVariant(args: {
    // so a declaration there (a sibling extension of the redeclared source
    // that reads a column the stored table lacks) compiles as the author's
    // model does, and only the query model's run target reads the stored
-   // table (P2-41). The author's model is left alone when it exports a
+   // table. The author's model is left alone when it exports a
    // redeclared name: the query model imports that name from it.
    const exported = new Set(
       (namesModel as { exports?: string[] }).exports ?? [],
@@ -406,7 +406,7 @@ const GATE_ROUTES = new Set(["authorize", "access_filter"]);
 /**
  * The source's entry-point gates (the governor's walk: own, inherited, a
  * derivation's base), as note lines for the variant's source, so `govern()`
- * finds them there (R3). Throws when one cannot be written as a single line:
+ * finds them there. Throws when one cannot be written as a single line:
  * the variant is then not compiled and the stored table not read.
  */
 function gateLines(modelDef: ModelDef, sourceID: string): string {

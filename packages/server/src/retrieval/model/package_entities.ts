@@ -252,7 +252,7 @@ export function sliceRange(
  * coordinates yields confident text that is not the view. A model with no
  * snapshot (a `.malloynb`, a compile failure) yields no view code.
  */
-function makeSourceTextReader(
+export function makeSourceTextReader(
    pkg: Package,
 ): (url: string) => string | undefined {
    const cache = new Map<string, string | undefined>();

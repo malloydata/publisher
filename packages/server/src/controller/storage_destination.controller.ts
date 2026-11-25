@@ -15,8 +15,9 @@ import {
    cleanupStorageFiles,
    dropStorageTable,
    listStorageTables,
-} from "../service/materialization/run/materialization_build_session";
+} from "../service/materialization/run/storage_admin";
 import { parseEnvironmentName } from "../service/identity";
+import { destinationSchemaOf } from "../service/materialization/domain/storage_table_path";
 
 type ApiConnection = components["schemas"]["Connection"];
 type ApiStorageTable = components["schemas"]["StorageTable"];
@@ -76,12 +77,22 @@ export class StorageDestinationController {
          environmentName,
          destinationName,
       );
+      // An earlier release read `main` as the destination's build schema; qualified, it would now drop a person's `main` table and answer 204.
+      const builds = destinationSchemaOf(destination);
+      if (
+         schemaName.toLowerCase() === "main" &&
+         builds.toLowerCase() !== "main"
+      ) {
+         throw new BadRequestError(
+            `Schema 'main' is not the one storage destination '${destinationName}' builds into: its tables are in '${builds}', so use DELETE …/schemas/${builds}/tables/${tableName}. A table in main is dropped through the admin API, DELETE /catalogs/{catalog}/schemas/main/tables/{table}.`,
+         );
+      }
       try {
          await dropStorageTable({
             destinationName,
             destinationConnection: destination,
-            physicalTableName:
-               schemaName === "main" ? tableName : `${schemaName}.${tableName}`,
+            // Always qualified: a bare name would land in `destinationSchema`, not the schema the path names.
+            physicalTableName: `${schemaName}.${tableName}`,
             environmentPath: environment.getEnvironmentPath(),
          });
       } catch (error) {

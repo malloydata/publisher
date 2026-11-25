@@ -19,7 +19,9 @@
  * why this shipped broken. Every test here uses two files for that reason;
  * collapsing one into a single file makes it pass while testing nothing.
  */
+import type { GivenValue } from "@malloydata/malloy";
 import { unrecordedAudit } from "../../../src/service/access_record";
+import type { Model, ModelQueryResults } from "../../../src/service/model";
 import { describe, expect, it } from "bun:test";
 import { loadAuthorizeModel } from "../../../src/test_helpers/authorize_fixture";
 
@@ -56,39 +58,38 @@ function countRows(result: unknown): { c: number }[] {
 }
 
 /**
- * The aggregate count out of a notebook cell, whose `result` is JSON text
- * holding Malloy's nested cell encoding. Also returns the generated `sql`, so
- * a test can assert the gate reached the warehouse and not merely the IR.
+ * The aggregate count out of a query run on a notebook's path, with the
+ * generated `sql`, so a test can assert the gate reached the warehouse and not
+ * merely the IR.
  */
-function notebookCell(cell: unknown): { count: number; sql: string } {
-   const raw = (cell as { result?: string }).result;
-   if (!raw) throw new Error("notebook cell returned no result");
-   const parsed = JSON.parse(raw) as {
-      sql?: string;
-      data?: {
-         array_value?: Array<{
-            record_value?: Array<{ number_value?: number }>;
-         }>;
-      };
-   };
-   const rows = parsed.data?.array_value ?? [];
+function notebookCount(result: ModelQueryResults): {
+   count: number;
+   sql: string;
+} {
+   const rows = countRows(result);
    if (rows.length !== 1) {
       throw new Error(`expected one aggregate row, got ${rows.length}`);
    }
-   const count = rows[0].record_value?.[0]?.number_value;
-   if (typeof count !== "number") {
-      throw new Error("aggregate cell was not a number");
-   }
-   return { count, sql: parsed.sql ?? "" };
+   return { count: rows[0].c, sql: result.result.sql ?? "" };
+}
+
+/** Run `query` on the notebook's own path with `givens`, as the query route does. */
+async function runOnNotebook(
+   model: Model,
+   query: string,
+   givens: Record<string, GivenValue>,
+): Promise<{ count: number; sql: string }> {
+   return notebookCount(
+      await model.runQuery(unrecordedAudit(), { query, givens }),
+   );
 }
 
 // DEPRECATED FEATURE COVERAGE — delete together with
 // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
 describe("deprecated: .malloynb — a notebook cell that imports a gated source and runs it in the SAME cell", () => {
-   // The blocking regression. There is no earlier code cell to graft
-   // against, so the cell's own scope is the graft target and the bind goes
-   // through `_loadQueryFromQueryDef` — which never recompiles, so it never
-   // re-derives the run target from the grafted `contents`.
+   // The cell's query runs on the notebook's own path, so the gated source
+   // reaches the run target through the cell's `import`: the import hop the
+   // graft has to follow.
    it("ADMITS an authorized caller (given-only gate)", async () => {
       const { model, cleanup } = await loadAuthorizeModel(
          {
@@ -102,17 +103,13 @@ run: gated -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         const result = await model.executeNotebookCell(
-            unrecordedAudit(),
-            0,
-            undefined,
-            false,
-            {
-               ROLE: "analyst",
-            },
+         const result = await runOnNotebook(
+            model,
+            "run: gated -> { aggregate: c }",
+            { ROLE: "analyst" },
          );
          // 4, not 0: an admitted given-only gate filters nothing away.
-         expect(notebookCell(result).count).toBe(4);
+         expect(result.count).toBe(4);
       } finally {
          await cleanup();
       }
@@ -133,16 +130,11 @@ run: gated -> { aggregate: c }
       try {
          // 2, not 4: the `2` is what proves the condition bound to `org_id`
          // rather than merely attaching somewhere and admitting everything.
-         const mine = await model.executeNotebookCell(
-            unrecordedAudit(),
-            0,
-            undefined,
-            false,
-            {
-               GROUPS: [1],
-            },
+         const mineCell = await runOnNotebook(
+            model,
+            "run: gated -> { aggregate: c }",
+            { GROUPS: [1] },
          );
-         const mineCell = notebookCell(mine);
          expect(mineCell.count).toBe(2);
          // The gate reached the WAREHOUSE, not just the IR — the proof the
          // in-process checks structurally cannot give.
@@ -150,16 +142,12 @@ run: gated -> { aggregate: c }
          expect(mineCell.sql).toMatch(/org_id/i);
 
          // Empty membership matches no row — a 200 with zero, not a 403.
-         const none = await model.executeNotebookCell(
-            unrecordedAudit(),
-            0,
-            undefined,
-            false,
-            {
-               GROUPS: [],
-            },
+         const none = await runOnNotebook(
+            model,
+            "run: gated -> { aggregate: c }",
+            { GROUPS: [] },
          );
-         expect(notebookCell(none).count).toBe(0);
+         expect(none.count).toBe(0);
       } finally {
          await cleanup();
       }
@@ -170,11 +158,8 @@ run: gated -> { aggregate: c }
 // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
 describe("deprecated: .malloynb — the graft never escapes the request that made it", () => {
    it("gives two callers with different givens their own row sets from the SAME cell", async () => {
-      // `cell.runnable` is memoized across requests. Grafting the cell's
-      // queryDef IN PLACE would poison that cache: whoever queried first
-      // would decide what everyone after them sees. The queryDef is deep-
-      // cloned per request for exactly this reason, and this is the test that
-      // would catch losing that clone.
+      // A graft built for one request must not be seen by the next: whoever
+      // queried first must not decide what everyone after them sees.
       const { model, cleanup } = await loadAuthorizeModel(
          {
             "gate.malloy": ROW_FIELD_GATE,
@@ -186,72 +171,20 @@ run: gated -> { aggregate: c }
          },
          "nb.malloynb",
       );
+      const cell = "run: gated -> { aggregate: c }";
       try {
+         expect((await runOnNotebook(model, cell, { GROUPS: [1] })).count).toBe(
+            2,
+         );
+         // Runs second. A stacked or retained filter from the call above shows
+         // up here as 0 instead of 4, and a lost graft shows up as 4 instead
+         // of 2 on a repeat.
          expect(
-            notebookCell(
-               await model.executeNotebookCell(
-                  unrecordedAudit(),
-                  0,
-                  undefined,
-                  false,
-                  {
-                     GROUPS: [1],
-                  },
-               ),
-            ).count,
-         ).toBe(2);
-         // Runs second, against the same memoized runnable. A stacked or
-         // retained filter from the call above shows up here as 0 instead of
-         // 4, and a lost graft shows up as 4 instead of 2 on a repeat.
-         expect(
-            notebookCell(
-               await model.executeNotebookCell(
-                  unrecordedAudit(),
-                  0,
-                  undefined,
-                  false,
-                  {
-                     GROUPS: [1, 2],
-                  },
-               ),
-            ).count,
+            (await runOnNotebook(model, cell, { GROUPS: [1, 2] })).count,
          ).toBe(4);
-         expect(
-            notebookCell(
-               await model.executeNotebookCell(
-                  unrecordedAudit(),
-                  0,
-                  undefined,
-                  false,
-                  {
-                     GROUPS: [1],
-                  },
-               ),
-            ).count,
-         ).toBe(2);
-
-         // The row counts above CANNOT catch a lost clone on their own, which
-         // is worth stating because it is easy to assume they can. The gate's
-         // `condition.code` comes from the authored `#(authorize)` text, not
-         // from any caller's given values, so every caller of this cell
-         // computes the SAME code, the append is idempotent against it, and an
-         // in-place mutation is invisible in the results.
-         //
-         // So assert the memoized runnable directly: after serving a gated
-         // request, the cell's own compiled query must still carry no gate
-         // condition. This is the assertion that fails if the per-request
-         // deep clone is ever dropped.
-         const cells = (
-            model as unknown as {
-               runnableNotebookCells?: Array<{
-                  runnable?: { getPreparedQuery(): Promise<unknown> };
-               }>;
-            }
-         ).runnableNotebookCells;
-         const memoized = (await cells![0].runnable!.getPreparedQuery()) as {
-            _query?: { structRef?: { filterList?: Array<{ code?: string }> } };
-         };
-         expect(memoized._query?.structRef?.filterList ?? []).toHaveLength(0);
+         expect((await runOnNotebook(model, cell, { GROUPS: [1] })).count).toBe(
+            2,
+         );
       } finally {
          await cleanup();
       }
@@ -277,16 +210,10 @@ run: plain -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         const cell = notebookCell(
-            await model.executeNotebookCell(
-               unrecordedAudit(),
-               0,
-               undefined,
-               false,
-               {
-                  GROUPS: [1],
-               },
-            ),
+         const cell = await runOnNotebook(
+            model,
+            "run: plain -> { aggregate: c }",
+            { GROUPS: [1] },
          );
          expect(cell.count).toBe(4);
          expect(cell.sql).not.toMatch(/org_id/i);

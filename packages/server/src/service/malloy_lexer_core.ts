@@ -4,10 +4,12 @@
 /**
  * The one Malloy lexer core: how Malloy's own lexer reads a text's names,
  * spaces, strings, comments, annotations and SQL blocks, character by
- * character. Both readers of Malloy text build on it: the caller-text reader
- * (`query_text.ts`), which reads untrusted text before it is compiled, and
- * the rewriters' statement lexer (`materialization/text/malloy_lexer.ts`),
- * which reads the author's files to rewrite them. Neither is looser than
+ * character, and the statement tokens built on that (`lexAll`). The readers
+ * of Malloy text build on it: the caller-text reader (`query_text.ts`), which
+ * reads untrusted text before it is compiled, the rewriters' statement lexer
+ * (`materialization/text/malloy_lexer.ts`), which reads the author's files to
+ * rewrite them, and discovery's reading of the annotations a source declares
+ * (`entities/field_helpers.ts`). None is looser than
  * Malloy: a string ends at its line, a name may be any letter, `#|` opens a
  * block annotation, and `%{ … }` in a `"""` block is Malloy.
  *
@@ -310,6 +312,75 @@ function skipAnnotation(
    return at;
 }
 
+/** An annotation as the lexer reads it: where it starts and ends, and whether it is a `##` one. */
+interface AnnotationSpan {
+   from: number;
+   to: number;
+   /** A `##` or `##|` model annotation, which tags no statement. */
+   model: boolean;
+}
+
+/**
+ * The annotations from `from` to `to` that tag what follows `to`: the `#` and
+ * `##` lines and the `#|` / `##|` blocks, read as {@link skipAnnotation} reads
+ * them, past spaces and comments. Anything else in the span ends the run of
+ * annotations before it, so only those after the last such character count.
+ */
+function annotationsBefore(
+   text: string,
+   from: number,
+   to: number,
+): AnnotationSpan[] {
+   let found: AnnotationSpan[] = [];
+   const keep = (): void => undefined;
+   let i = from;
+   while (i < to) {
+      const code = text.charCodeAt(i);
+      if (isSpaceCode(code, text, i)) {
+         i += unitsAt(text, i);
+         continue;
+      }
+      let end = -1;
+      if (code === 35) {
+         end = skipAnnotation(text, i, keep);
+         if (end >= 0) {
+            found.push({ from: i, to: end, model: text.startsWith("##", i) });
+         }
+      } else if (text.startsWith("--", i) || text.startsWith("//", i)) {
+         end = toEndOfLine(text, i);
+      } else if (text.startsWith("/*", i)) {
+         const close = text.indexOf("*/", i + 2);
+         end = close === -1 ? text.length : close + 2;
+      }
+      if (end < 0) {
+         found = [];
+         i += unitsAt(text, i);
+         continue;
+      }
+      i = end;
+   }
+   return found;
+}
+
+/**
+ * Where the annotations tagging the statement at `at` start, `#|` blocks
+ * included: `at` when it has none. `floor` is where the token before it ends,
+ * so only trivia lies between; a `##` annotation is the file's, so the run
+ * stops at one.
+ */
+export function statementAnnotationsFrom(
+   text: string,
+   floor: number,
+   at: number,
+): number {
+   let from = at;
+   for (const tag of annotationsBefore(text, floor, at).reverse()) {
+      if (tag.model) break;
+      from = tag.from;
+   }
+   return from;
+}
+
 /** Whether the line starting at `at` closes a block annotation opened in `column`. */
 export function closesBlock(
    text: string,
@@ -549,4 +620,158 @@ function continuesToken(text: string, i: number): boolean {
    const code = text.charCodeAt(at);
    // `$name` is one given reference.
    return code === 36 || isNameCode(code, text, at);
+}
+
+/** One lexical token, at the bracket depth it sits at. */
+export interface Token {
+   kind: "word" | "open" | "close" | "other";
+   text: string;
+   start: number;
+   end: number;
+   /** The brackets enclosing it; a bracket itself has the depth outside it. */
+   depth: number;
+}
+
+/**
+ * Every token of `s` with its depth, read as Malloy's own lexer reads it
+ * (`service/malloy_lexer_core.ts`): comments and annotations (a `#|` block
+ * one included) are skipped; a string or quoted identifier is one "other"
+ * token, and so is a `"""` block, Malloy inside its `%{ … }` and all; a word
+ * starts with a letter or `_` and continues with letters, digits and `_`, a
+ * letter being any Unicode letter. Undefined when brackets do not balance or
+ * a string or quoted identifier does not close where Malloy closes it.
+ */
+export function lexAll(s: string): Token[] | undefined {
+   // Comments, annotations and string bodies blanked in place: every offset
+   // and every quote, bracket and name is where it is in `s`.
+   const code = stripMalloyCommentsAndLiterals(s);
+   const scan = new StringScan(s);
+   const out: Token[] = [];
+   let depth = 0;
+   let i = 0;
+   const n = code.length;
+   const push = (kind: Token["kind"], start: number, end: number, d = depth) =>
+      out.push({ kind, text: s.slice(start, end), start, end, depth: d });
+   while (i < n) {
+      const c = code.charCodeAt(i);
+      if (isSpaceCode(c, code, i)) {
+         i += unitsAt(code, i);
+         continue;
+      }
+      // A SQL block, Malloy in its `%{ … }` included, as one token.
+      if (code.startsWith('"""', i)) {
+         const end = sqlBlockEnd(code, i);
+         if (end < 0) return undefined;
+         push("other", i, end);
+         i = end;
+         continue;
+      }
+      // Strings and quoted identifiers, closed where Malloy closes them.
+      if (c === 39 || c === 34 || c === 96) {
+         const close = scan.stringClose(i);
+         if (close < 0) return undefined;
+         push("other", i, close + 1);
+         i = close + 1;
+         continue;
+      }
+      if (c === 123 || c === 40 || c === 91) {
+         push("open", i, i + 1);
+         depth++;
+         i++;
+         continue;
+      }
+      if (c === 125 || c === 41 || c === 93) {
+         depth--;
+         if (depth < 0) return undefined;
+         push("close", i, i + 1);
+         i++;
+         continue;
+      }
+      if (startsWord(c, code, i)) {
+         let j = i + unitsAt(code, i);
+         while (j < n && isNameCode(code.charCodeAt(j), code, j)) {
+            j += unitsAt(code, j);
+         }
+         push("word", i, j);
+         i = j;
+         continue;
+      }
+      const units = unitsAt(code, i);
+      push("other", i, i + units);
+      i += units;
+   }
+   return depth === 0 ? out : undefined;
+}
+
+/** Whether a word starts at `at`: a letter or `_`, never a digit. */
+function startsWord(c: number, text: string, at: number): boolean {
+   return c === 95 || (!(c >= 48 && c <= 57) && isNameCode(c, text, at));
+}
+
+/**
+ * The index just past the `"""` closing the SQL block opening at `i` in
+ * blanked text, stepping over the Malloy in each `%{ … }`; -1 when it never
+ * closes. The block's SQL is blank there, so only its delimiters, its
+ * interpolations and their brackets remain.
+ */
+function sqlBlockEnd(code: string, i: number): number {
+   let at = i + 3;
+   while (at < code.length) {
+      if (code.startsWith('"""', at)) return at + 3;
+      if (code.startsWith("%{", at)) {
+         let depth = 1;
+         at += 2;
+         while (at < code.length && depth > 0) {
+            const c = code.charCodeAt(at);
+            if (c === 123) depth++;
+            else if (c === 125) depth--;
+            at++;
+         }
+         continue;
+      }
+      at++;
+   }
+   return -1;
+}
+
+/**
+ * Indexes in `tokens` of a word followed by `:` (not `::`) at its own depth.
+ * Malloy lets whitespace, a line break included, sit between a keyword and
+ * its colon, and uses a lone `:` nowhere else.
+ */
+export function statementStarts(tokens: readonly Token[]): number[] {
+   const starts: number[] = [];
+   for (let k = 0; k + 1 < tokens.length; k++) {
+      const t = tokens[k];
+      if (
+         t.kind === "word" &&
+         tokens[k + 1].text === ":" &&
+         tokens[k + 2]?.text !== ":"
+      ) {
+         starts.push(k);
+      }
+   }
+   return starts;
+}
+
+/** The access modifiers a statement can be labelled with. */
+const ACCESS_LABELS: ReadonlySet<string> = new Set([
+   "public",
+   "private",
+   "internal",
+]);
+
+/**
+ * Where the statement whose keyword is `tokens[k]` begins: its access label
+ * (`internal dimension: …`) when it has one, else its keyword. The end of the
+ * statement before it is here, so a cut or a replacement of that statement
+ * never takes this one's label with it (which would expose or hide this one).
+ */
+export function statementHead(tokens: readonly Token[], k: number): Token {
+   const label = tokens[k - 1];
+   return label?.kind === "word" &&
+      label.depth === tokens[k].depth &&
+      ACCESS_LABELS.has(label.text.toLowerCase())
+      ? label
+      : tokens[k];
 }

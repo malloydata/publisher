@@ -23,8 +23,20 @@
  * `dialect_statements.golden.json`.
  */
 
-import { sqlLiteral } from "../../db_utils";
+import { sqlLiteral } from "../../introspection_sql";
 import { quoteIdentifier, quotePathParts, quoteTablePath } from "../../quoting";
+import {
+   bigqueryColumnCollation,
+   type Collation,
+   DUCKDB_COLLATE_DEFINITIONS,
+   duckdbDefaultCollation,
+   duckdbTableCollations,
+   PG_COLLATION_COLUMNS,
+   PG_COLLATION_IDENTITY,
+   postgresColumnCollation,
+   postgresJudged,
+   type TableCollations,
+} from "../domain/collation";
 import {
    capabilitiesOf,
    registeredDialect,
@@ -619,6 +631,35 @@ export function probeSelect(dialect: string, innerSelect: string): string {
 }
 
 /**
+ * The read of the server's version number as `version_num`, wrapped as a
+ * probe ({@link probeSelect}), for a dialect a version gates a statement on
+ * (`mergeGatedByServerVersion`: Postgres's MERGE, a syntax error before
+ * Postgres 15); undefined for any other.
+ */
+export function serverVersionSql(dialect: string): string | undefined {
+   const knownDialect = registeredDialect(dialect);
+   switch (knownDialect) {
+      case "postgres":
+         return probeSelect(
+            knownDialect,
+            `SELECT current_setting('server_version_num') AS version_num`,
+         );
+      case "duckdb":
+      case "standardsql":
+      case "snowflake":
+      case "databricks":
+      case "trino":
+      case "presto":
+      case "mysql":
+      case "sqlserver":
+         return undefined;
+      default:
+         unregistered(knownDialect);
+         return undefined;
+   }
+}
+
+/**
  * `sql` bounded to `timeoutMs` on the warehouse itself, for a read that may be
  * given up on (the late-row check): Postgres takes a transaction-local
  * `statement_timeout` (`set_config(…, true)`) in the same simple-protocol
@@ -724,6 +765,9 @@ export function targetColumnsProbeSql(
    segments: string[],
 ): string | undefined {
    const alias = quoteIdentifier("column_name", dialect);
+   // Each column's type as the catalog spells it, which a delta's own types
+   // are compared with (delta_type_widening.ts).
+   const typeAlias = quoteIdentifier("column_type", dialect);
    const knownDialect = registeredDialect(dialect);
    if (knownDialect === "duckdb") {
       // `duckdb_columns()`: an attached DuckLake catalog has no
@@ -738,7 +782,7 @@ export function targetColumnsProbeSql(
       // The catalog is the FIRST segment (the path is `<destination>.<name>`);
       // counting from the end would misread a longer name's container.
       const database = segments[0];
-      return `SELECT column_name AS ${alias}
+      return `SELECT column_name AS ${alias}, data_type AS ${typeAlias}
               FROM duckdb_columns()
               WHERE database_name = '${escapeSqlString(database, dialect)}'
                 AND schema_name = '${escapeSqlString(schema, dialect)}'
@@ -762,7 +806,7 @@ export function targetColumnsProbeSql(
             : "information_schema.columns";
       return probeSelect(
          dialect,
-         `SELECT column_name AS ${alias}
+         `SELECT column_name AS ${alias}, data_type AS ${typeAlias}
            FROM ${infoSchema}
            WHERE table_schema = ${schema}
              AND table_name = '${escapeSqlString(table, dialect)}'
@@ -777,10 +821,84 @@ export function targetColumnsProbeSql(
       .slice(0, -1)
       .map((s) => quoteIdentifier(s, dialect))
       .join(".");
-   return `SELECT column_name AS ${alias}
+   return `SELECT column_name AS ${alias}, data_type AS ${typeAlias}
               FROM ${container}.INFORMATION_SCHEMA.COLUMNS
               WHERE table_name = '${escapeSqlString(table, dialect)}'
               ORDER BY ordinal_position`;
+}
+
+/**
+ * The read of each of `columns` of `sql`'s rows with its type, without
+ * reading a row, spelled as targetColumnsProbeSql reads a stored column's,
+ * or undefined for a dialect it is not read on.
+ *
+ * Postgres: `pg_typeof` of each column of an empty read, joined to one row so
+ * there is a row to type; a domain reads as its base type. Its `regtype`
+ * text is `information_schema`'s `data_type` for every number type
+ * (`integer`, `bigint`, `real`, `double precision`, `numeric`).
+ *
+ * DuckDB (MotherDuck too): `DESCRIBE` of the query, which binds it and runs
+ * nothing, spelled as `duckdb_columns()` spells a stored column.
+ *
+ * Not read elsewhere. BigQuery has one integer and one float type, so
+ * neither widens; Snowflake's types are not read without running the query.
+ */
+export function deltaColumnTypesSql(
+   dialect: string,
+   sql: string,
+   columns: readonly string[],
+):
+   | {
+        sql: string;
+        typesOf(rows: Record<string, unknown>[]): Map<string, string>;
+     }
+   | undefined {
+   if (columns.length === 0) return undefined;
+   switch (registeredDialect(dialect)) {
+      case "postgres":
+         break;
+      case "duckdb":
+         return {
+            sql: `DESCRIBE (${sql})`,
+            typesOf: (rows) => {
+               const wanted = new Set(columns);
+               return new Map(
+                  rows.flatMap((r) =>
+                     typeof r["column_name"] === "string" &&
+                     typeof r["column_type"] === "string" &&
+                     wanted.has(r["column_name"])
+                        ? [[r["column_name"], r["column_type"]] as const]
+                        : [],
+                  ),
+               );
+            },
+         };
+      default:
+         return undefined;
+   }
+   const types = columns
+      .map(
+         (c, i) =>
+            `(SELECT coalesce(nullif(typbasetype, 0), oid)::regtype::text ` +
+            `FROM pg_type WHERE oid = pg_typeof(__q.${quoteIdentifier(c, dialect)})) AS t${i}`,
+      )
+      .join(", ");
+   return {
+      sql: probeSelect(
+         dialect,
+         `SELECT ${types} FROM (SELECT 1) AS __one LEFT JOIN ` +
+            `(SELECT * FROM (${sql}) AS __b LIMIT 0) AS __q ON true`,
+      ),
+      typesOf: (rows) => {
+         const row = rows[0] ?? {};
+         return new Map(
+            columns.flatMap((c, i) => {
+               const type = row[`t${i}`];
+               return typeof type === "string" ? [[c, type] as const] : [];
+            }),
+         );
+      },
+   };
 }
 
 /**
@@ -834,6 +952,39 @@ export function snowflakeScriptingBlock(statements: string[]): string {
  */
 export function transactsInScriptingBlock(dialect: string): boolean {
    return registeredDialect(dialect) === "snowflake";
+}
+
+/**
+ * A condition true for a row where `failing` is false or NULL, which fails
+ * the statement with `message` (plain text, no quote) where `failing` is
+ * true, or undefined on a dialect where that is not proven.
+ *
+ * DuckDB raises it with its `error()`, BigQuery with its `ERROR()`, both
+ * evaluated per row inside the CASE branch (BigQuery's documented runtime
+ * error). Postgres has none, so the message is cast to an integer, which
+ * fails quoting it; the cast is of a CASE over a row's value, never a
+ * constant, so the planner does not raise it while planning. Postgres and
+ * DuckDB are executed against the engine in incremental_dml_semantics.spec.ts
+ * and the component specs; BigQuery's text is pinned. Snowflake has no
+ * runtime error function, and a cast there might be folded while planning
+ * and fail every statement, so it gets no guard (see mergeKeyGuard).
+ */
+export function passesUnless(
+   dialect: string,
+   failing: string,
+   message: string,
+): string | undefined {
+   const text = `'${message}'`;
+   switch (registeredDialect(dialect)) {
+      case "duckdb":
+         return `(CASE WHEN ${failing} THEN error(${text}) END) IS NULL`;
+      case "standardsql":
+         return `(CASE WHEN ${failing} THEN ERROR(${text}) END) IS NULL`;
+      case "postgres":
+         return `CAST(CASE WHEN ${failing} THEN ${text} END AS INTEGER) IS NULL`;
+      default:
+         return undefined;
+   }
 }
 
 /**
@@ -1123,6 +1274,25 @@ function informationSchemaCatalogRead(
             .map((k) => String(field(r, k)))
             .join("."),
    };
+}
+
+/**
+ * The statement that reads the columns, with their native types, of any
+ * relation a model names (a table, a DuckDB file or URL), as Malloy reads
+ * its schema: `DESCRIBE SELECT * FROM <path>`, its rows' `column_name` and
+ * `column_type`. `path` is the model's table path, canonical SQL. Undefined
+ * on a dialect whose catalog is read instead.
+ */
+export function relationDescribeSQL(
+   path: string,
+   dialect: string,
+): string | undefined {
+   switch (registeredDialect(dialect)) {
+      case "duckdb":
+         return `DESCRIBE SELECT * FROM ${path}`;
+      default:
+         return undefined;
+   }
 }
 
 /** One table a batched catalog read asks for: a caller's key and its path's parts. */
@@ -1465,4 +1635,246 @@ export function snowflakeSetQueryTagStatement(
    // The outer literal is parsed by DuckDB, which has no backslash escape, so
    // the passthrough's own quote-doubling is the correct level here.
    return `SELECT * FROM snowflake_query('${inner.replace(/'/g, "''")}', '${secretName.replace(/'/g, "''")}')`;
+}
+
+/**
+ * One catalog query that reads several tables' column collations
+ * ({@link collationCatalogBatches}): the tables it answers for, by key, and
+ * how to read each one's collations from its rows. A table the query found
+ * nothing for is absent from what `collationsOf` returns.
+ */
+interface CollationBatch {
+   sql: string;
+   keys: string[];
+   collationsOf(rows: Record<string, unknown>[]): Map<string, TableCollations>;
+}
+
+/**
+ * The catalog queries that read tables' column collations, where the
+ * engine's catalog says (`domain/collation.ts` for the identities): one for
+ * every Postgres table (`pg_attribute.attcollation`), one per BigQuery
+ * dataset (`INFORMATION_SCHEMA.COLUMNS.collation_name`), and DuckDB's table
+ * definition per table (`duckdb_tables().sql`, since its catalog lists no
+ * column collation). No other dialect's collations are read: a string
+ * column there records no collation, which compares `none`.
+ *
+ * The same reads at build (the column contract's capture) and at bind (the
+ * contract's check), so a table straight out of a build reads as it was
+ * recorded.
+ */
+export function collationCatalogBatches(
+   tables: readonly CatalogTable[],
+   dialect: string,
+): CollationBatch[] {
+   const lit = (v: string) => sqlString(v, dialect);
+   const tableOf = (t: CatalogTable) => t.parts[t.parts.length - 1];
+   switch (registeredDialect(dialect)) {
+      case "duckdb":
+         return tables.map((t) => {
+            // A two-part name is a catalog's table or a schema's, as DuckDB
+            // resolves it: either matches.
+            const [p0, p1] = t.parts;
+            const qualifier =
+               t.parts.length >= 3
+                  ? ` AND lower(database_name) = lower(${lit(p0)}) AND lower(schema_name) = lower(${lit(p1)})`
+                  : t.parts.length === 2
+                    ? ` AND (lower(schema_name) = lower(${lit(p0)}) OR lower(database_name) = lower(${lit(p0)}))`
+                    : "";
+            return {
+               sql:
+                  "SELECT sql, current_setting('default_collation') AS dc " +
+                  "FROM duckdb_tables() WHERE NOT internal " +
+                  `AND lower(table_name) = lower(${lit(tableOf(t))})` +
+                  qualifier,
+               keys: [t.key],
+               collationsOf: (rows) => {
+                  const defs = rows
+                     .map((r) => field(r, "sql"))
+                     .filter((d): d is string => typeof d === "string");
+                  // Not found, or found in more than one schema: unread.
+                  return defs.length === 1
+                     ? new Map([
+                          [
+                             t.key,
+                             {
+                                ...duckdbTableCollations(defs[0]),
+                                defaultCollation: duckdbDefaultCollation(
+                                   field(rows[0], "dc"),
+                                ),
+                             },
+                          ],
+                       ])
+                     : new Map();
+               },
+            };
+         });
+      case "postgres": {
+         const where =
+            "FROM pg_collation c, pg_database d WHERE c.oid = a.attcollation AND d.datname = current_database()";
+         return chunks(tables).map((batch) => ({
+            sql:
+               "SELECT row_to_json(x) AS row FROM (" +
+               "SELECT r.k AS key, a.attname AS name, " +
+               `CASE WHEN a.attcollation = 0 THEN NULL ELSE (SELECT ${PG_COLLATION_IDENTITY} ${where}) END AS id, ` +
+               `CASE WHEN a.attcollation = 0 THEN NULL ELSE (SELECT row_to_json(j) FROM (SELECT ${PG_COLLATION_COLUMNS} ${where}) j) END AS judged ` +
+               `FROM (VALUES ${batch
+                  .map(
+                     (t) =>
+                        `(${lit(t.key)}, to_regclass(${lit(quotePathParts(t.parts, dialect))}))`,
+                  )
+                  .join(", ")}) AS r(k, oid) ` +
+               "JOIN pg_attribute a ON a.attrelid = r.oid " +
+               "WHERE a.attnum > 0 AND NOT a.attisdropped) x",
+            keys: batch.map((t) => t.key),
+            collationsOf: (rows) => {
+               const byKey = new Map<string, Map<string, string | null>>();
+               for (const r of rows) {
+                  const key = String(field(r, "key"));
+                  const id = field(r, "id");
+                  const judged = field(r, "judged");
+                  const columns = byKey.get(key) ?? new Map();
+                  columns.set(
+                     String(field(r, "name")),
+                     typeof id === "string"
+                        ? postgresColumnCollation(
+                             id,
+                             postgresJudged(
+                                typeof judged === "object" && judged !== null
+                                   ? (judged as Record<string, unknown>)
+                                   : undefined,
+                             ),
+                          )
+                        : null,
+                  );
+                  byKey.set(key, columns);
+               }
+               return new Map(
+                  [...byKey].map(([key, byColumn]) => [
+                     key,
+                     { byColumn, otherwise: null },
+                  ]),
+               );
+            },
+         }));
+      }
+      case "standardsql":
+         return groupBy(
+            tables.filter((t) => t.parts.length >= 2),
+            (t) => JSON.stringify(t.parts.slice(0, -1)),
+         ).flatMap((group) =>
+            chunks(group).map((batch) => ({
+               sql:
+                  "SELECT table_name, column_name, collation_name FROM " +
+                  `${quotePathParts(batch[0].parts.slice(0, -1), dialect)}.INFORMATION_SCHEMA.COLUMNS ` +
+                  `WHERE table_name IN (${batch.map((t) => lit(tableOf(t))).join(", ")})`,
+               keys: batch.map((t) => t.key),
+               collationsOf: (rows) => {
+                  const out = new Map<string, TableCollations>();
+                  for (const t of batch) {
+                     const own = rows.filter(
+                        (r) => String(field(r, "table_name")) === tableOf(t),
+                     );
+                     if (own.length === 0) continue;
+                     out.set(t.key, {
+                        byColumn: new Map(
+                           own.map((r) => [
+                              String(field(r, "column_name")),
+                              bigqueryColumnCollation(
+                                 field(r, "collation_name"),
+                              ),
+                           ]),
+                        ),
+                        otherwise: null,
+                     });
+                  }
+                  return out;
+               },
+            })),
+         );
+      default:
+         return [];
+   }
+}
+
+/**
+ * The reads that judge how each of `columns` compares where live reads
+ * `sql` (a build's own warehouse SQL), without running it: on Postgres,
+ * `pg_collation_for` of each column under `WHERE false`, one statement; on
+ * DuckDB, the instance's `default_collation` and the definitions that name
+ * a `COLLATE`, instance-wide as the serve side reads a DuckDB source.
+ * Undefined for a dialect whose source collation is not read here: its
+ * strings compare unknown. `judge` takes each statement's rows, in order.
+ */
+export function liveCollationReads(
+   dialect: string,
+   sql: string,
+   columns: readonly string[],
+):
+   | {
+        statements: string[];
+        judge(rows: Record<string, unknown>[][]): Map<string, Collation>;
+     }
+   | undefined {
+   switch (registeredDialect(dialect)) {
+      case "postgres": {
+         const select = columns
+            .map(
+               (c, i) =>
+                  `(SELECT row_to_json(j) FROM (SELECT ${PG_COLLATION_COLUMNS} FROM pg_collation c, pg_database d ` +
+                  `WHERE c.oid = (pg_collation_for((SELECT b.${quoteIdentifier(c, dialect)} FROM (${sql}) b WHERE false)))::regcollation ` +
+                  `AND d.datname = current_database()) j) AS c${i}`,
+            )
+            .join(", ");
+         return {
+            statements: [
+               `SELECT row_to_json(x) AS row FROM (SELECT ${select}) x`,
+            ],
+            judge: ([rows]) => {
+               const row = rows?.[0];
+               return new Map(
+                  columns.map((c, i) => {
+                     const judged = row ? field(row, `c${i}`) : undefined;
+                     return [
+                        c,
+                        postgresJudged(
+                           typeof judged === "object" && judged !== null
+                              ? (judged as Record<string, unknown>)
+                              : undefined,
+                        ),
+                     ];
+                  }),
+               );
+            },
+         };
+      }
+      case "duckdb":
+         return {
+            statements: [
+               "SELECT current_setting('default_collation') AS c",
+               DUCKDB_COLLATE_DEFINITIONS,
+            ],
+            judge: ([setting, defs]) => {
+               const binary =
+                  !/\bcollate\b/i.test(sql) &&
+                  String(setting?.[0]?.c ?? "").trim() === "" &&
+                  Number(defs?.[0]?.n ?? 1) === 0;
+               const judged: Collation = binary ? "binary" : "unknown";
+               return new Map(columns.map((c) => [c, judged]));
+            },
+         };
+      default:
+         return undefined;
+   }
+}
+
+/** Whether {@link collationCatalogBatches} reads a dialect's collations at all. */
+export function readsCollations(dialect: string): boolean {
+   switch (registeredDialect(dialect)) {
+      case "duckdb":
+      case "postgres":
+      case "standardsql":
+         return true;
+      default:
+         return false;
+   }
 }

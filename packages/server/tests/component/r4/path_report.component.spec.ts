@@ -180,6 +180,51 @@ source: daily is orders -> {
       expect(JSON.stringify(path)).not.toContain("no_such_table");
    });
 
+   // A binder error naming a catalog the destination does not hold is a
+   // misbinding, not a worker that lost its catalog (connection.ts confirms
+   // that against the instance, and only then answers live whatever the
+   // fallback): it keeps the binding's fallback.
+   it("keeps the fallback for a binder error naming a catalog the destination does not hold", async () => {
+      for (const freshnessFallback of [undefined, "fail" as const]) {
+         fixture.setBindings(
+            fixture.bindings.map((b) => {
+               const { freshnessFallback: _, ...rest } = b;
+               return {
+                  ...rest,
+                  tablePath: "lost_catalog.main.daily",
+                  ...(freshnessFallback ? { freshnessFallback } : {}),
+               };
+            }),
+         );
+         await expect(
+            fixture.runAsIs(
+               "run: daily -> { group_by: region; aggregate: t is total.sum() }",
+            ),
+         ).rejects.toThrow(/Catalog "lost_catalog" does not exist/);
+      }
+   });
+
+   // A table gone since the bind is the drift handler's failed-read
+   // trigger: answered live in that same query, whatever the fallback.
+   it("answers a missing table, not catalog, live, whatever its fallback", async () => {
+      for (const freshnessFallback of [undefined, "fail" as const]) {
+         fixture.setBindings(
+            fixture.bindings.map((b) => {
+               const { freshnessFallback: _, ...rest } = b;
+               return {
+                  ...rest,
+                  tablePath: "lake.no_such_table",
+                  ...(freshnessFallback ? { freshnessFallback } : {}),
+               };
+            }),
+         );
+         const { servedFrom } = await fixture.runAsIs(
+            "run: daily -> { group_by: region; aggregate: t is total.sum() }",
+         );
+         expect(servedFrom).toBe("live_fallback");
+      }
+   });
+
    it("reports nothing considered for a source with no table", async () => {
       fixture.setBindings(fixture.bindings);
       const { path } = await fixture.runAsIs(

@@ -4,10 +4,10 @@
 import { describe, expect, it } from "bun:test";
 
 import {
-   bigQueryQueryLabelValue,
    snowflakeQueryTagValue,
    snowflakeSetQueryTagSQL,
-} from "./build_query_tag";
+} from "./passthrough/snowflake";
+import { bigQueryQueryLabelValue } from "./passthrough/bigquery";
 
 describe("snowflakeQueryTagValue", () => {
    it("renders the bag as JSON so the properties stay queryable", () => {

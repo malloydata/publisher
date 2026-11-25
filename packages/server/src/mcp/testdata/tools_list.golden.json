@@ -593,7 +593,7 @@
     },
     {
       "name": "list_reports",
-      "description": "List the reports in one package: each one's path (its identity, for show_report), layout (grid, a dashboard; linear, a story read top to bottom), title and description. A report is a .malloy file with an ## artifact tag, wherever it lives in the package. Takes the environment and package names list_packages gives.",
+      "description": "List the reports in one package: each one's path (its identity, for show_report), layout (grid, a dashboard; linear, a story read top to bottom), title and description. A report is a .malloy file with an ## artifact tag, wherever it lives in the package, or a legacy .malloynb notebook, which is linear. Takes the environment and package names list_packages gives.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -634,7 +634,7 @@
           },
           "path": {
             "type": "string",
-            "description": "The report's path in the package, including `.malloy`, exactly as list_reports gives it: `sales/q3.malloy`."
+            "description": "The report's path in the package, with its extension, exactly as list_reports gives it: `sales/q3.malloy`."
           },
           "givens": {
             "type": "object",

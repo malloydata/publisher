@@ -31,8 +31,8 @@
  * A view without the mark, or marked for another package, is never touched.
  */
 
+import { errorCodeOf } from "../../../error_code";
 import { logger } from "../../../logger";
-import { errMessage } from "../../../utils";
 import type { ManifestEntry } from "../domain/types";
 import {
    parseNameViewComment,
@@ -274,7 +274,7 @@ export async function dropLeftoverNameViews(
          logger.warn("Failed to drop a leftover name= view with its table", {
             viewName: view.viewName,
             physicalTableName: entry.physicalTableName,
-            error: errMessage(err),
+            code: errorCodeOf(err),
          });
       }
    }

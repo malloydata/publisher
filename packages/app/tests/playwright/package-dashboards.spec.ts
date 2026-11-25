@@ -952,9 +952,26 @@ test.describe("package-dashboards", () => {
             page.getByRole("button", { name: "Apply" }),
          ).toBeVisible();
 
+         // The cells run through the query endpoint, against the notebook's
+         // own path, with the starting value as a given.
+         const cellQuery = page.waitForRequest(
+            (request) =>
+               request.method() === "POST" &&
+               request
+                  .url()
+                  .endsWith(
+                     `/packages/${dash.pkg}/models/orders-start.malloynb/query`,
+                  ),
+         );
          await page.goto(`/${dash.path}/orders-start.malloynb`);
          await expectFilterValue(page, "Ordered since", "Mar 1, 2024", 60_000);
-         await expect(page).toHaveURL(/[?&]SINCE=2024-03-01/);
+         expect((await cellQuery).postDataJSON()).toMatchObject({
+            query: "run: orders -> since_totals",
+            givens: { SINCE: "2024-03-01" },
+         });
+         // As on a `.malloy` report, a starting value is the file's, so it
+         // stays out of the URL.
+         expect(page.url()).not.toContain("SINCE=");
       });
    });
 

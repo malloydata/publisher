@@ -23,7 +23,7 @@ import { getMaxQueryRows, getMaxResponseBytes } from "./config";
  * limit can be lower), so alerts must not conflate the two.
  */
 export type QueryCapType = "rows" | "bytes" | "unserializable";
-export type QueryCapSource = "connection_sql" | "model_query" | "notebook_cell";
+export type QueryCapSource = "connection_sql" | "model_query";
 
 /** A cap gauge read per scrape, so an env-var change shows immediately; a parse failure reports -1. */
 function observeCap(
@@ -59,7 +59,7 @@ const capExceededCounter = lazyInstrument(() => {
    return suppressibleCounter(
       publisherMeter().createCounter("publisher_query_cap_exceeded_total", {
          description:
-            "413s for an oversized response. cap_type: rows|bytes exceeded that cap; unserializable could not be turned into JSON at all, so no cap need have been exceeded. source: connection_sql|model_query|notebook_cell.",
+            "413s for an oversized response. cap_type: rows|bytes exceeded that cap; unserializable could not be turned into JSON at all, so no cap need have been exceeded. source: connection_sql|model_query.",
       }),
    );
 });

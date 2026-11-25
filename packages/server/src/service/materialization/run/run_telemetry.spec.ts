@@ -20,8 +20,8 @@ import {
    type MetricsHarness,
 } from "../../../test_helpers/metrics_harness";
 import type { BuildInstruction, ManifestEntry } from "../domain/types";
-import { errorCodeOf } from "./error_code";
-import { BilledReadNotCapturedError } from "./materialization_build_session";
+import { errorCodeOf } from "../../../error_code";
+import { BilledReadNotCapturedError } from "./passthrough/bigquery";
 import {
    buildKindOf,
    buildKindsByAddress,
@@ -250,7 +250,6 @@ describe("run telemetry through the build loop", () => {
                ],
                seedEntries: {},
                signal: (opts.abort ?? new AbortController()).signal,
-               strict: false,
             })
             .then(
                (value) => ({ value }),
@@ -585,18 +584,18 @@ describe("run events", () => {
    afterEach(() => captured.restore());
 
    it("logs run.started and run.finished with the spec's fields and levels", () => {
-      const run = new RunTelemetry("run-9", "orchestrated", "pkg");
+      const startedAt = Date.now() - 1200;
+      const run = new RunTelemetry("run-9", "orchestrated", "pkg", startedAt);
       run.started("orchestrator", 3);
       run.tally.built = 2;
       run.tally.failed = 1;
-      run.finished("partial", 1200);
-      run.finished("success", 10);
+      run.finished("partial");
+      run.finished("success");
       run.finished(
          "failed",
-         20,
          Object.assign(new Error("SELECT 'x' failed"), { code: "XX000" }),
       );
-      run.finished("cancelled", 30, new Error("Build cancelled"));
+      run.finished("cancelled", new Error("Build cancelled"));
 
       expect(captured.logs.map((l) => [l.message, l.level])).toEqual([
          ["materialization.run.started", "info"],
@@ -617,12 +616,14 @@ describe("run events", () => {
          packageName: "pkg",
          mode: "orchestrated",
          outcome: "partial",
-         durationMs: 1200,
+         durationMs: expect.any(Number),
          built: 2,
          reused: 0,
          refused: 0,
          failed: 1,
       });
+      // Measured from the run's start, which the telemetry holds.
+      expect(captured.logs[1].meta?.durationMs).toBeGreaterThanOrEqual(1200);
       expect(captured.logs[3].meta).toMatchObject({ code: "XX000" });
       expect(JSON.stringify(captured.logs)).not.toContain("SELECT");
       // A cancellation keeps the code of what ended it: an abort can race a
@@ -725,7 +726,6 @@ describe("run telemetry review findings", () => {
             ],
             seedEntries: {},
             signal: new AbortController().signal,
-            strict: false,
          }),
       )) as {
          failures: Record<

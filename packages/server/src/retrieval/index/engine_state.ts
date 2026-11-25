@@ -50,11 +50,7 @@ import {
 import type { FcjState } from "./fcj_state";
 import { buildFcjIndex, type FcjIndex } from "./index_build";
 import type { VectorProgress } from "./vectors";
-import {
-   indexValueFetcherFor,
-   type ValueBuildReport,
-   type ValueIndex,
-} from "./values_index";
+import { indexValueFetcherFor } from "./values_index";
 
 export function fcjStateOf(
    registry: RetrievalRegistry,
@@ -150,14 +146,10 @@ export function kickFcjBuild(args: {
          return;
       }
       try {
-         const index = await buildFor(
-            args,
-            undefined,
-            (progress, lastWrittenAt) => {
-               building.progress = progress;
-               building.lastSyncedAt = lastWrittenAt;
-            },
-         );
+         const index = await buildFor(args, (progress, lastWrittenAt) => {
+            building.progress = progress;
+            building.lastSyncedAt = lastWrittenAt;
+         });
          if (await droppedDuringBuild(args, states)) return;
          states.set(
             pkg,
@@ -300,13 +292,9 @@ function rebuildForValues(
          return;
       }
       try {
-         const previous = state.index.report.values;
-         const index = await buildFor(
-            args,
-            "failed" in previous
-               ? { index: state.index.values, report: previous }
-               : undefined,
-         );
+         // The reads that succeeded before are stored, so only the ones
+         // that failed are read again (values_index.ts).
+         const index = await buildFor(args);
          if (await droppedDuringBuild(args, states)) return;
          states.set(
             pkg,
@@ -349,7 +337,6 @@ async function buildFor(
       packageName: string;
       pkg: Package;
    },
-   previousValues?: { index: ValueIndex; report: ValueBuildReport },
    onVectorProgress?: (
       progress: VectorProgress,
       lastWrittenAt?: number,
@@ -441,7 +428,6 @@ async function buildFor(
       ...(storedSummaries ? { storedSummaries } : {}),
       valueRead: { environmentStore, fetcher },
       budget,
-      ...(previousValues ? { previousValues } : {}),
       // A package removed mid-build stops reading values and embedding.
       shouldStop,
       ...(onVectorProgress ? { onVectorProgress } : {}),

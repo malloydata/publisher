@@ -7,7 +7,7 @@ import {
    type ModelFiles,
    planPackages,
 } from "../../../test_helpers/materialization_fixture";
-import { addressSQL } from "./build_plan";
+import { addressSQL, derivePackagePlan } from "./build_plan";
 import { buildCopyText } from "./materialize_build_copy";
 import { buildSourceName } from "./build_file_generator";
 import { storedChainText } from "./materialize_stored_chain";
@@ -20,8 +20,9 @@ import {
 /**
  * A chained `storage=` extension table (`materialize_stored_chain.ts`, P10):
  * the text its build compiles in the destination over its parent's stored
- * table, its own access modifiers lifted over the parent's re-root, and the
- * raw chain it falls back to when that text does not compile.
+ * table, its own access modifiers lifted over the parent's re-root, and its
+ * refusal (`upstream_table_unusable`, never the raw chain) when that text
+ * does not compile.
  */
 
 const packages = planPackages({}, { keepIncrementalUnbuildable: true });
@@ -95,6 +96,7 @@ source: ext is stored extend {
          buildsOver: {
             sourceID: parent.sourceID,
             sourceName: "stored",
+            mode: { tier: "same" },
             declaration: at("stored", 6),
             path: [at("ext", 10)],
          },
@@ -183,10 +185,25 @@ source: east is mid extend {
   dimension: label is concat(region, '!')
 }`,
          });
-         // Another destination, and a chain reaching a warehouse source the
-         // destination cannot read (a join), build over the raw chain.
-         expect(plan("elsewhere").buildsOver).toBeUndefined();
-         expect(plan("joined").buildsOver).toBeUndefined();
+         // Another destination is read with the parent's attached beside
+         // it; a chain reaching a warehouse source the destination cannot
+         // read (a join) is refused, never built over the raw chain.
+         expect(plan("elsewhere").buildsOver?.mode).toEqual({
+            tier: "across_destinations",
+            parentDestination: "lake",
+         });
+         expect(plan("elsewhere").buildsOver?.overStored?.declarations).toBe(
+            "source: orders is orders__mat extend {\n  measure: total is amount.sum()\n}\nsource: elsewhere is orders extend { dimension: w is region = 'west' }",
+         );
+         expect(
+            generatedPlans(c).find((p) => p.sourceName === "joined"),
+         ).toBeUndefined();
+         const refusals = Object.values(
+            derivePackagePlan(c, null).plan?.refusedSources ?? {},
+         ) as { name: string; reason: string; message: string }[];
+         const joined = refusals.find((r) => r.name === "joined");
+         expect(joined?.reason).toBe("upstream_table_unusable");
+         expect(joined?.message).toContain("it extends 'orders'");
          // Planned in order, the extension depending on its parent: the
          // build reads the parent's table, and its address stacks on it.
          const deps = c.builds.flatMap((b) => Object.entries(b.dependsOn));
@@ -201,7 +218,7 @@ source: east is mid extend {
    );
 
    it(
-      "builds an extension over the raw chain when its chained build does not compile",
+      "refuses an extension whose chained build does not compile, never building it over the raw chain",
       async () => {
          // `regions` is joined above the parent, so the parent's build source
          // does not carry it, and the extension's own dimension reads it.
@@ -221,12 +238,16 @@ source: orders_ext is orders extend {
   dimension: label is regions.label
 }
 `);
-         const ext = generatedPlans(c).find(
-            (p) => p.sourceName === "orders_ext",
-         )!;
-         expect(ext.buildsOver).toBeUndefined();
-         expect(ext.columns.map((col) => col.column)).toContain("label");
-         expect(c.builds.flatMap((b) => b.order).length).toBe(2);
+         expect(
+            generatedPlans(c).find((p) => p.sourceName === "orders_ext"),
+         ).toBeUndefined();
+         const refusals = Object.values(
+            derivePackagePlan(c, null).plan?.refusedSources ?? {},
+         ) as { name: string; reason: string; message: string }[];
+         const ext = refusals.find((r) => r.name === "orders_ext");
+         expect(ext?.reason).toBe("upstream_table_unusable");
+         expect(ext?.message).toContain("it extends 'orders'");
+         expect(c.builds.flatMap((b) => b.order).length).toBe(1);
       },
       { timeout: 30000 },
    );

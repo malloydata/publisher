@@ -10,12 +10,7 @@ SPDX-License-Identifier: MIT
 > from the [Publisher Console](console.md) on any source — the screenshots below use the bundled
 > [`storefront`](../examples/storefront) package.
 >
-> **Known issue.** The Explorer writes the queries it builds back to Malloy text through
-> `@malloydata/malloy-interfaces`, which puts a string value in unescaped (`escapeString` is a
-> TODO), so drilling into a value holding a double quote, such as `27" Monitor`, sends a query that
-> does not compile, and a crafted value can widen the filter it is drilled into. The values come from
-> the data. The server still compiles the query in restricted mode and applies `#(authorize)`. To take
-> the Explorer out of the Console, start the server with `PUBLISHER_MODEL_PAGE=viewer` (see
+> To take the Explorer out of the Console, start the server with `PUBLISHER_MODEL_PAGE=viewer` (see
 > [configuration](configuration.md)).
 
 ## 1. Introduction

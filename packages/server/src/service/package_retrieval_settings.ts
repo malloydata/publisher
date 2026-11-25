@@ -129,9 +129,9 @@ export interface FcjSettings {
     * PROVISIONAL, on by default. With `values` on, the stored values are also
     * embedded at index time (`value_embeddings`), and the find stage ranks
     * dimensions by the meaning of a target's value phrases as a fourth list,
-    * beside the spelling match. Only under `egress.preset: "full"`: values
-    * are data. Gated sources' values are never embedded.
-    * Off: spelling only, as before.
+    * beside the spelling match. A gated source's values are embedded only
+    * when it is keyed by the givens `retrieval.dimensionValues.givens` lists
+    * (CatalogSource.partitionKey). Off: spelling only, as before.
     */
    valueEmbeddings: boolean;
    /** One LLM call per cluster that picks the fields to return. */
@@ -163,7 +163,7 @@ export interface FcjSettings {
     * PROVISIONAL, `questions` by default. Which wording of llm/prompts/questions.ts
     * writes the index-time rows of a field: questions a person asks, the
     * search phrases an agent types, or questions that use the field's values
-    * (its stored values only under `egress.preset: "full"`).
+    * (its doc's value list, then its stored values).
     * A package prompt file (`retrieval.prompts.questions`) wins over it.
     */
    questionsPrompt: QuestionsPrompt;
@@ -317,7 +317,7 @@ export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    questions: "auto",
    docParts: "auto",
    values: true,
-   valueCap: 50_000,
+   valueCap: 5_000,
    valueEmbeddings: true,
    judge: "auto",
    contenderShare: 0,

@@ -643,7 +643,7 @@ source: nested is orders_raw -> {
    },
    {
       name: "reserved-word names",
-      about: "A source and its fields named by reserved words, quoted in backticks, persisted under a reserved table name",
+      about: "A source and its fields named by reserved words, quoted in backticks, persisted under a reserved table name; stored output columns named month and group (campaign P2-44)",
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -655,6 +655,12 @@ source: \`order\` is orders_raw -> {
 } extend {
   measure: \`group\` is amt.sum()
 }
+
+@PERSIST(month)
+source: \`month\` is orders_raw -> {
+  group_by: \`month\` is month(order_date), \`group\` is region
+  aggregate: total is amount.sum()
+}
 `,
       },
       queries: [
@@ -662,6 +668,16 @@ source: \`order\` is orders_raw -> {
             name: "reserved-word fields",
             malloy:
                "run: `order` -> { group_by: `select`, `order`; aggregate: c is `count`.sum(), `group` }",
+         },
+         {
+            name: "stored columns named month and group",
+            malloy:
+               "run: `month` -> { group_by: `month`, `group`; aggregate: t is total.sum(); order_by: `month`, `group` }",
+         },
+         {
+            name: "a filter on the stored month and group columns",
+            malloy:
+               "run: `month` -> { where: `month` > 0 and `group` != 'none'; group_by: `group`; aggregate: t is total.sum() }",
          },
       ],
    },

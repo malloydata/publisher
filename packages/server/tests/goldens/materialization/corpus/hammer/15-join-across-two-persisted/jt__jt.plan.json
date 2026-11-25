@@ -91,6 +91,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.jt_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "564149a103dc700271633fbe82a9b0b1762021a99d6dfda750206ff461bd12e8",
         "sourceID": "orders@<hammer>/jt/jt.malloy",
@@ -119,6 +125,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.jt_regions"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "9c2f05a717fe2161bbb147f590d625da5de3a7bc7a8b4c0d4e5cffa38b83982f",
         "sourceID": "regions@<hammer>/jt/jt.malloy",

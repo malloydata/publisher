@@ -1,0 +1,12 @@
+>>>markdown
+Each cell imports what it runs.
+>>>malloy
+import "../models/secured.malloy"
+run: gated -> { aggregate: n }
+>>>malloy
+import "../models/hidden.malloy"
+run: hidden -> { aggregate: secret_total }
+>>>malloy
+import { orders } from "../models/orders.malloy"
+# bar_chart
+run: orders -> { group_by: region; aggregate: order_count; order_by: region }

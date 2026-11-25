@@ -123,7 +123,7 @@ describe("the admin listener", () => {
                ifAbsent = absent;
                return {
                   table: {
-                     schema: "main",
+                     schema: "s",
                      name: "t",
                      columns: [],
                      partitionedBy: [],
@@ -137,7 +137,7 @@ describe("the admin listener", () => {
       expect(
          (await request(app).post("/api/v0/catalogs").send({})).status,
       ).toBe(201);
-      const path = "/api/v0/catalogs/ds_x/schemas/main/tables/t";
+      const path = "/api/v0/catalogs/ds_x/schemas/s/tables/t";
       expect((await request(app).put(path).send({})).status).toBe(201);
       expect(ifAbsent).toBe(false);
       created = false;
@@ -146,6 +146,225 @@ describe("the admin listener", () => {
             .status,
       ).toBe(200);
       expect(ifAbsent).toBe(true);
+   });
+
+   it("routes a load POST with the body and Idempotency-Key as given: 201 with a Location for a created load, 200 with none for a no-op, and a refusal's detail", async () => {
+      const seen: unknown[] = [];
+      let refuse: CatalogAdminError | undefined = undefined;
+      let created = true;
+      const counts = {
+         mode: "merge" as const,
+         rowsInserted: 1,
+         rowsReplaced: 0,
+         rowsUnchanged: 0,
+         rowsDeleted: 0,
+         rowCount: 1,
+         cursorMax: null,
+      };
+      const app = createAdminApp(
+         catalogs({
+            loadTable: async (c, s, t, body, key) => {
+               seen.push([c, s, t, body, key]);
+               if (refuse) throw refuse;
+               return created
+                  ? {
+                       load: {
+                          ...counts,
+                          id: "abc",
+                          snapshotId: 7,
+                          committedAt: "x",
+                       },
+                       created: true,
+                    }
+                  : { load: counts, created: false };
+            },
+         }),
+         watch,
+      );
+      const path = "/api/v0/catalogs/ds_x/schemas/s/tables/t/loads";
+      const body = {
+         commitMessage: "nightly",
+         mode: "merge",
+         key: ["id"],
+         objects: ["o"],
+      };
+      const ok = await request(app)
+         .post(path)
+         .set("Idempotency-Key", "run-1")
+         .send(body);
+      expect(ok.status).toBe(201);
+      expect(ok.headers.location).toBe("loads/abc");
+      // A trailing slash moves the base the reference resolves against.
+      for (const suffix of ["", "/"]) {
+         const res = await request(app).post(`${path}${suffix}`).send(body);
+         expect([
+            suffix,
+            new URL(res.headers.location, `http://h${path}${suffix}`).pathname,
+         ]).toEqual([suffix, `${path}/abc`]);
+      }
+      seen.length = 1;
+      expect(ok.body).toMatchObject({ id: "abc", rowsInserted: 1 });
+      expect(seen).toEqual([["ds_x", "s", "t", body, "run-1"]]);
+      created = false;
+      const noop = await request(app).post(path).send(body);
+      expect(noop.status).toBe(200);
+      expect(noop.headers.location).toBeUndefined();
+      expect(noop.body).not.toHaveProperty("id");
+      expect(seen[1]).toEqual(["ds_x", "s", "t", body, undefined]);
+      refuse = new CatalogAdminError(
+         422,
+         "LOAD_DELETE_LIMIT_EXCEEDED",
+         "too many",
+         {
+            wouldDelete: 4,
+            rowsBefore: 5,
+            maxDeletedRows: 3,
+         },
+      );
+      const refused = await request(app).post(path).send(body);
+      expect(refused.status).toBe(422);
+      expect(refused.body).toEqual({
+         code: 422,
+         message: "too many",
+         reason: "LOAD_DELETE_LIMIT_EXCEEDED",
+         detail: { wouldDelete: 4, rowsBefore: 5, maxDeletedRows: 3 },
+      });
+   });
+
+   it("routes a load's reads: one by id, and a list with its limit and cursor, refusing a limit outside 1 to 1000", async () => {
+      const seen: unknown[] = [];
+      const read = { id: "abc", mode: "merge", author: "publisher-admin" };
+      const app = createAdminApp(
+         catalogs({
+            getLoad: async (c, s, t, id) => {
+               seen.push(["get", c, s, t, id]);
+               if (id === "gone") {
+                  throw new CatalogAdminError(404, "LOAD_NOT_FOUND", "no");
+               }
+               return read as never;
+            },
+            listLoads: async (c, s, t, limit, after) => {
+               seen.push(["list", c, s, t, limit, after]);
+               return { items: [read as never], nextCursor: "next" };
+            },
+         }),
+         watch,
+      );
+      const path = "/api/v0/catalogs/ds_x/schemas/s/tables/t/loads";
+      expect((await request(app).get(`${path}/abc`)).body).toEqual(read);
+      const gone = await request(app).get(`${path}/gone`);
+      expect([gone.status, gone.body.reason]).toEqual([404, "LOAD_NOT_FOUND"]);
+      const list = await request(app).get(`${path}?limit=5&after=MQ`);
+      expect(list.body).toEqual({ items: [read], nextCursor: "next" });
+      await request(app).get(path);
+      expect(seen).toEqual([
+         ["get", "ds_x", "s", "t", "abc"],
+         ["get", "ds_x", "s", "t", "gone"],
+         ["list", "ds_x", "s", "t", 5, "MQ"],
+         ["list", "ds_x", "s", "t", 100, undefined],
+      ]);
+      const repeated = await request(app).get(`${path}?after=MQ&after=Mg`);
+      expect([repeated.status, repeated.body.reason]).toEqual([
+         400,
+         "INVALID_REQUEST",
+      ]);
+      expect(seen).toHaveLength(4);
+      for (const limit of ["0", "1001", "1.5", "x"]) {
+         const refused = await request(app).get(`${path}?limit=${limit}`);
+         expect([limit, refused.status, refused.body.reason]).toEqual([
+            limit,
+            400,
+            "INVALID_REQUEST",
+         ]);
+      }
+   });
+
+   it("routes a schema PUT to 201 or 200, passes If-None-Match, and maps a refusal to its reason", async () => {
+      let created = true;
+      const seen: unknown[][] = [];
+      const app = createAdminApp(
+         catalogs({
+            createSchema: async (...args: unknown[]) => {
+               seen.push(args);
+               if (args[1] === "taken") {
+                  throw new CatalogAdminError(412, "SCHEMA_EXISTS", "exists");
+               }
+               if (args[1] === "main") {
+                  throw new CatalogAdminError(400, "SCHEMA_RESERVED", "no");
+               }
+               return { schema: { name: args[1] as string }, created };
+            },
+         } as unknown as Partial<CatalogAdmin>),
+         watch,
+      );
+      const path = (s: string) => `/api/v0/catalogs/ds_x/schemas/${s}`;
+      const made = await request(app).put(path("staging"));
+      expect([made.status, made.body]).toEqual([201, { name: "staging" }]);
+      expect(seen[0]).toEqual(["ds_x", "staging", {}, false]);
+      created = false;
+      expect((await request(app).put(path("staging"))).status).toBe(200);
+      await request(app).put(path("staging")).set("If-None-Match", "*");
+      expect(seen[2][3]).toBe(true);
+      const taken = await request(app)
+         .put(path("taken"))
+         .set("If-None-Match", "*");
+      expect([taken.status, taken.body.reason]).toEqual([412, "SCHEMA_EXISTS"]);
+      const reserved = await request(app).put(path("main"));
+      expect([reserved.status, reserved.body.reason]).toEqual([
+         400,
+         "SCHEMA_RESERVED",
+      ]);
+   });
+
+   it("routes a schema DELETE to 204, and maps a refusal to its reason", async () => {
+      const dropped: string[][] = [];
+      const app = createAdminApp(
+         catalogs({
+            deleteSchema: async (c: string, s: string) => {
+               if (s === "main") {
+                  throw new CatalogAdminError(400, "SCHEMA_RESERVED", "no");
+               }
+               dropped.push([c, s]);
+            },
+         }),
+         watch,
+      );
+      const res = await request(app).delete(
+         "/api/v0/catalogs/ds_x/schemas/old",
+      );
+      expect([res.status, res.text, dropped]).toEqual([
+         204,
+         "",
+         [["ds_x", "old"]],
+      ]);
+      const reserved = await request(app).delete(
+         "/api/v0/catalogs/ds_x/schemas/main",
+      );
+      expect([reserved.status, reserved.body.reason]).toEqual([
+         400,
+         "SCHEMA_RESERVED",
+      ]);
+   });
+
+   it("lists a catalog's tables across schemas apart from one schema's", async () => {
+      const app = createAdminApp(
+         catalogs({
+            listTables: (async (_c: string, schema?: string) =>
+               schema === undefined
+                  ? [{ schema: "main", name: "t", sizeBytes: 1 }]
+                  : [
+                       { name: "t", sizeBytes: 1 },
+                    ]) as CatalogAdmin["listTables"],
+         }),
+         watch,
+      );
+      expect(
+         (await request(app).get("/api/v0/catalogs/ds_x/tables")).body,
+      ).toEqual([{ schema: "main", name: "t", sizeBytes: 1 }]);
+      expect(
+         (await request(app).get("/api/v0/catalogs/ds_x/schemas/main/tables"))
+            .body,
+      ).toEqual([{ name: "t", sizeBytes: 1 }]);
    });
 
    it("refuses a snapshot delete without a valid olderThan", async () => {
@@ -312,6 +531,27 @@ describe("the admin listener's configuration", () => {
          expect(() =>
             catalogConfigFrom({ PUBLISHER_ADMIN_CATALOG_DATABASE: db }),
          ).toThrow(/must not set `options`/);
+      }
+   });
+
+   it("fails startup on a connection string the load lock cannot use, without repeating its password", () => {
+      for (const db of [
+         "service=prod password=hunter2",
+         "host=a,b password=hunter2",
+         "host=h hostaddr=10.0.0.1 password=hunter2",
+      ]) {
+         const error = (() => {
+            try {
+               catalogConfigFrom({ PUBLISHER_ADMIN_CATALOG_DATABASE: db });
+            } catch (e) {
+               return String(e);
+            }
+            return "";
+         })();
+         expect(error).toContain(
+            "PUBLISHER_ADMIN_CATALOG_DATABASE: the connection string sets",
+         );
+         expect(error).not.toContain("hunter2");
       }
    });
 });

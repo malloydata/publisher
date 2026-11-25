@@ -25,7 +25,8 @@
  */
 
 import { declarationSpans, declaredBaseName } from "./declaration_text";
-import { lexAll, offsetOf } from "./malloy_lexer";
+import { lexAll } from "../../malloy_lexer_core";
+import { offsetOf } from "./malloy_lexer";
 import type { SourceMap } from "./source_map";
 import {
    splitSourceID,
@@ -124,7 +125,7 @@ interface LocatedAncestor extends KeptAncestor {
  * The ancestors of `sourceID` whose blocks its re-root can keep, nearest
  * first, from the compiled model: up `extend` and rename hops, each in
  * whatever file declares it, so an extension declared in a file that imports
- * its base's file keeps that base's blocks too (P2-22). A query-shaped
+ * its base's file keeps that base's blocks too. A query-shaped
  * ancestor (`x is y -> { … } extend { … }`) is kept, and the walk stops
  * there: its trailing run is over its query's output, which is what its
  * extensions' tables store. Each ancestor's renames are the ones declared in
@@ -166,7 +167,7 @@ export function keptAncestorChain(
  * one only when the extension holds every field of its base: an `except:`
  * drops one, so `no_region is orders extend { except: region }` gets no
  * edge, and a measure, view or join `orders` declares was lost from the
- * re-root (F-08, `fields_not_carried`). Its base is the source of the name
+ * re-root (`fields_not_carried`). Its base is the source of the name
  * the declaration reads (`<name> is <base> extend …`), in its own file or
  * one it imports, when that is a table-backed source on the same table and
  * every field the source has that its own statement does not declare is
@@ -302,6 +303,7 @@ export function confirmedAncestors(
             text,
             ancestor.url,
             runText ?? "",
+            fileText,
          )
       ) {
          break;
@@ -315,7 +317,7 @@ export function confirmedAncestors(
 
 /**
  * Whether `runText`, written in the file at `ancestorURL`, reads every name
- * the same way compiled in the file at `childURL` (P2-22, review).
+ * the same way compiled in the file at `childURL` (review).
  *
  * The guarantee is structural, from two conditions:
  *
@@ -324,10 +326,13 @@ export function confirmedAncestors(
  *    declare itself. A whole import brings every name the ancestor's file
  *    declares, and Malloy refuses a file that declares again a name it
  *    imported, so each such name reads the ancestor's own source;
- *  - the ancestor's file imports nothing. Imports are not transitive, so a
- *    name the ancestor's file imported would not reach the child through the
- *    whole import, and the child could bind that name itself. With none,
- *    every source name the run reads is one the ancestor's file declares.
+ *  - no word of the run is a name the ancestor's file imports: a selective
+ *    import's local names, and for a whole import every name the imported
+ *    file declares or imports, through its own whole imports in turn. A name
+ *    the ancestor's file imported need not reach the child through the whole
+ *    import, so the child could bind it itself; a run that reads none reads
+ *    only names the ancestor's file declares. An imported file that cannot
+ *    be read or lexed proves nothing.
  *
  * A third check is defence in depth: no word of the run (a backticked name
  * included) is a name the child declares or imports selectively from
@@ -343,11 +348,11 @@ function bindsAlikeAcrossFiles(
    ancestorText: string,
    ancestorURL: string,
    runText: string,
+   fileText: (url: string) => string | undefined,
 ): boolean {
    const childImports = topLevelImports(childText, childURL);
    const ancestorImports = topLevelImports(ancestorText, ancestorURL);
    if (!childImports || !ancestorImports) return false;
-   if (ancestorImports.length > 0) return false;
    if (
       !childImports.some((i) => i.whole && sameFile(i.resolved, ancestorURL))
    ) {
@@ -358,10 +363,42 @@ function bindsAlikeAcrossFiles(
    const runWords = new Set(
       runTokens.flatMap((t) => (isName(t) ? [unquote(t.text)] : [])),
    );
+   const imported = namesImported(ancestorImports, fileText);
+   if (!imported) return false;
+   for (const name of imported) if (runWords.has(name)) return false;
    const childNames = namesDeclaredOrImported(childText, childImports);
    if (!childNames) return false;
    for (const name of childNames) if (runWords.has(name)) return false;
    return true;
+}
+
+/**
+ * Every name `imports` bring into a file: a selective import's local names,
+ * and for a whole import each name the imported file declares or imports,
+ * following its whole imports in turn (each file once). Undefined when an
+ * imported file cannot be read or lexed.
+ */
+function namesImported(
+   imports: readonly FileImport[],
+   fileText: (url: string) => string | undefined,
+): Set<string> | undefined {
+   const names = new Set<string>();
+   const seen = new Set<string>();
+   const pending = [...imports];
+   while (pending.length > 0) {
+      const next = pending.pop()!;
+      for (const name of next.names) names.add(name);
+      if (!next.whole || seen.has(next.resolved)) continue;
+      seen.add(next.resolved);
+      const text = fileText(next.resolved);
+      if (text === undefined) return undefined;
+      const own = topLevelImports(text, next.resolved);
+      const declared = own && namesDeclaredOrImported(text, own);
+      if (!own || !declared) return undefined;
+      for (const name of declared) names.add(name);
+      pending.push(...own);
+   }
+   return names;
 }
 
 /** A top-level `import` of a file: its path resolved, and whether it is whole. */

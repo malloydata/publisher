@@ -20,6 +20,11 @@ import type { BuildPlanPackage } from "./domain/plan_input";
 import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
 import type { KeptTable, LateRows } from "./domain/types";
 import type {
+   IncrementalCheckFinding,
+   LedgerParent,
+   UnprovenGeneration,
+} from "./domain/incremental";
+import type {
    BuildPlan,
    FreshnessManifest,
    ManifestEntry,
@@ -50,12 +55,35 @@ interface MaterializationPackage extends BuildPlanPackage {
    /** The publish-gate rejections the scheduler honours before it arms a cron. */
    persistencePolicyWarnings(): string[];
    /**
-    * Drop the bound rollup key checks (known limitation 29) of the tables at
+    * Drop the bound rollup key checks of the tables at
     * these content addresses, which a run is about to write. Required, so a
     * package that stops implementing it fails to compile rather than
     * silently serving a check over rows the run rewrote.
     */
    forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void;
+   /**
+    * The bound tables a bind found incompatible with their contracts, by
+    * address, which a standalone run rebuilds in full rather than carry.
+    */
+   incompatibleTables?(
+      prior?: Readonly<Record<string, ManifestEntry>>,
+   ): ReadonlySet<string>;
+   /**
+    * Hold the tables a standalone run may carry to their contracts as they
+    * are now, handing each that moved since the bind to the drift handler,
+    * so {@link incompatibleTables} names it (see
+    * PackageMaterialization.holdCarriedToContracts).
+    */
+   holdCarriedToContracts?(
+      prior: Readonly<Record<string, ManifestEntry>>,
+      /** Where a `storage=` table is read (the environment's destinations). */
+      site?: {
+         getStorageDestination(destinationName: string): ApiConnection;
+         getEnvironmentPath(): string;
+      },
+      /** The reads' overall budget, and the run's cancel signal. */
+      options?: { budgetMs?: number; signal?: AbortSignal },
+   ): Promise<{ moved: ReadonlySet<string>; unread: ReadonlySet<string> }>;
    /**
     * The text a chained `storage=` build compiles on its destination alone:
     * the request's downstream, with each stored upstream the request carries
@@ -63,6 +91,11 @@ interface MaterializationPackage extends BuildPlanPackage {
     * never the package's bound tables.
     */
    chainBuildText(request: ChainBuildRequest): ChainBuildText;
+   /**
+    * The drift handler, for a build that found an upstream's table not as
+    * its plan recorded it: read the tables and derive the plan again.
+    */
+   reportIncompatible?(handles: readonly string[]): void;
    /**
     * The tables the newest auto-run of this package lists as kept after a
     * rename, which its warnings name (`table-kept`).
@@ -73,6 +106,35 @@ interface MaterializationPackage extends BuildPlanPackage {
     * address, which an incremental delta carries until a rebuild.
     */
    boundLateRows?(): ReadonlyMap<string, LateRows>;
+   /**
+    * What a run found of an incremental source's checks, by content address
+    * (IncrementalRunContext.noteIncrementalCheck), which the package warns of.
+    */
+   noteIncrementalCheck?(
+      sourceEntityId: string,
+      finding: IncrementalCheckFinding,
+   ): void;
+   /**
+    * Which build of each parent's table each bound entry was reached over, by
+    * the entry's address (incremental_upstream.ts, `boundParentReads`): what
+    * a standalone run's incremental extension last read.
+    */
+   boundParentReads?(): ReadonlyMap<string, readonly LedgerParent[]>;
+   /**
+    * Each bound manifest entry's `builtAt` and `ledger`, by content address:
+    * the build an incremental source's step starts from, as the bound entry
+    * names it (incremental_build.ts, `boundEntries`).
+    */
+   boundIncrementalEntries?(): ReadonlyMap<
+      string,
+      Pick<ManifestEntry, "builtAt" | "ledger">
+   >;
+   /**
+    * The incremental extensions the newest run rebuilt because no record
+    * said which build of their parent's table they last read, which the
+    * package warns about.
+    */
+   setUnprovenGenerations?(list: readonly UnprovenGeneration[]): void;
    /**
     * The physical names of the database tables this copy is bound to now,
     * as the bind wrote them (possibly quoted): a caller's drop refuses any of
@@ -132,6 +194,12 @@ export interface MaterializationEnvironment {
     */
    getStaleCompileErrors(): ReadonlyMap<string, unknown>;
    withPackageLock<T>(packageName: string, fn: () => Promise<T>): Promise<T>;
+   /**
+    * Whether a compiled copy of the package is in memory; never loads it
+    * (`Environment.hasLoadedPackage`). A run's start reads it under the
+    * package's lock, so a package a delete removed starts no build.
+    */
+   hasLoadedPackage(packageName: string): boolean;
 
    getVersionService(): MaterializationVersions | null;
    /**

@@ -52,7 +52,6 @@ const fullModel = {
       { sourceName: "s", code: "row-level-gate-reads-no-given", message: "w" },
    ],
    renderTagResults: [{ label: "v" }],
-   preaggregateCompanion: {},
    entities: plannedEntities(),
 };
 

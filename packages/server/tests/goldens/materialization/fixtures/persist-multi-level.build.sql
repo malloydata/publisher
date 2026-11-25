@@ -5,8 +5,8 @@
 -- ==== source orders_base
 -- sourceID: orders_base@<pkg>/multi_level.malloy
 -- connection: duckdb
--- sourceEntityId: 54d09a855ffdde69ba0ad3118d97631e8b6a42e40ec038c4b4e52846cc821315
--- compiler key: 54d09a855ffdde69ba0ad3118d97631e8b6a42e40ec038c4b4e52846cc821315 (the sourceEntityId)
+-- sourceEntityId: 1bb28858164cefd3a2649fb9cb621d7d9f68d5389410c61e7701a3b891f6d911
+-- compiler key: 54d09a855ffdde69ba0ad3118d97631e8b6a42e40ec038c4b4e52846cc821315
 -- build SQL:
 SELECT 
    base."category" as "category",
@@ -19,8 +19,8 @@ ORDER BY 2 desc NULLS LAST
 -- sourceID: orders_rollup@<pkg>/multi_level.malloy
 -- connection: duckdb
 -- reads: orders_base@<pkg>/multi_level.malloy
--- sourceEntityId: f16ff28010004bd1d26b6c3a5216d2417b23a6f8d3b723dc377db5dc6a89a7f9
--- compiler key: f16ff28010004bd1d26b6c3a5216d2417b23a6f8d3b723dc377db5dc6a89a7f9 (the sourceEntityId)
+-- sourceEntityId: ae2e931a995f7c0422af9e9930b2a6012974e4ba5ae5ce6bb59261c6c6f0cdd2
+-- compiler key: f16ff28010004bd1d26b6c3a5216d2417b23a6f8d3b723dc377db5dc6a89a7f9
 -- build SQL:
 WITH __stage0 AS (
   SELECT 

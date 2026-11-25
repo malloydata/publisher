@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+   byActionability,
    SOURCE_DECLINE_REASONS,
    servedCopyOutcomes,
    servesInPart,
@@ -117,6 +118,25 @@ describe("servedCopyOutcomes", () => {
          { outcome: "declined", reason: "compile_failed" },
          { outcome: "declined", reason: "compile_failed" },
          { outcome: "partial", reason: "inline_join_kept" },
+      ]);
+   });
+});
+
+describe("byActionability", () => {
+   it("orders reasons most actionable first, without repeats, unknown last", () => {
+      expect(
+         byActionability([
+            "fields_not_carried",
+            "some_new_reason",
+            "cross_connection_join",
+            "fields_not_carried",
+            "compile_failed",
+         ]),
+      ).toEqual([
+         "cross_connection_join",
+         "fields_not_carried",
+         "compile_failed",
+         "some_new_reason",
       ]);
    });
 });

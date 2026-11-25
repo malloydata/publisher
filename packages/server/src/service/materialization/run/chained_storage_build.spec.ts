@@ -11,6 +11,7 @@
  * at a seam; here it runs for real, over a plain-DuckDB file destination.
  */
 
+import type { StringReads } from "../domain/string_reads";
 import { sourcesIn } from "../../../test_helpers/materialization_test_fixtures";
 import { compiledTextReader } from "../../../utils";
 import { DuckDBInstance } from "@duckdb/node-api";
@@ -49,10 +50,7 @@ import type { ManifestEntry } from "../domain/types";
 import { chainBuildText } from "../serve/served_copy_serve";
 import { servedCopyAlias } from "../serve/served_copy_config";
 import * as session from "./materialization_build_session";
-import {
-   chainedPlanFacts,
-   type ChainedPlanFacts,
-} from "./materialization_run_support";
+import { type ChainedPlanFacts, chainedPlanFacts } from "./build_upstreams";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 
 const duckdb = new DuckDBConnection("duckdb", ":memory:");
@@ -141,6 +139,7 @@ async function planChain(
       parts.tables,
       { duckdb: "digest" },
       undefined,
+      undefined,
    );
    return {
       dir,
@@ -210,6 +209,11 @@ async function stack(
    chain: Chain,
    name: string,
    builtEntries: Record<string, ManifestEntry>,
+   /**
+    * The strings its plan recorded it compares: none by default, as for a
+    * DuckDB source with no collation; null records none.
+    */
+   stringReads: StringReads | null = { reads: [] },
 ): Promise<{
    result?: Awaited<
       ReturnType<StorageBuildStrategy["buildDownstreamViaParents"]>
@@ -250,6 +254,7 @@ async function stack(
             source._model?._modelDef,
             compiledTextReader(source._model?._modelDef),
          ),
+         stringReads ? { stringReads } : {},
       );
       return { result, models: transientModels(spy) };
    } catch (error) {
@@ -329,6 +334,32 @@ source: monthly is daily -> {
             readCost: null,
             upstreamReuse: "reused",
          });
+         expect(
+            await readLake(
+               chain.dir,
+               "SELECT CAST(m AS VARCHAR) AS m, total FROM monthly_t ORDER BY m",
+            ),
+         ).toEqual([
+            { m: "2026-01-01", total: 15 },
+            { m: "2026-02-01", total: 7 },
+         ]);
+      });
+
+      it("leaves out a source off its path with the block doc written on it", async () => {
+         const chain = await planChain(`${CHAIN}
+#|(doc)
+Off the downstream's path.
+|#
+source: other is raw extend {}
+`);
+         await writeLake(chain.dir, DAILY_ROWS);
+         const { result, error } = await stack(
+            chain,
+            "monthly",
+            parentEntry(chain, "daily"),
+         );
+         expect(error).toBeUndefined();
+         expect(result).toMatchObject({ rowCount: 2, upstreamReuse: "reused" });
          expect(
             await readLake(
                chain.dir,
@@ -505,7 +536,7 @@ source: by_raw is daily -> {
          ]);
          // The measure reading the left-out join is gone too, so a downstream
          // that reads it does not compile over the stored parent, and is a
-         // shape the build could not carry (the caller recomputes it), never a
+         // shape the build could not carry (the caller refuses it), never a
          // table built without it.
          const raw = await stack(chain, "by_raw", parentEntry(chain, "daily"));
          expect(raw.error).toBeInstanceOf(ChainedShapeNotCarriedError);
@@ -607,6 +638,56 @@ source: mixed is daily extend {
          expect(models).toEqual([]);
       });
 
+      it("does not stack a downstream whose strings its parent's contract records compared otherwise, nor one whose strings were not recorded", async () => {
+         const chain = await planChain(CHAIN);
+         await writeLake(chain.dir, DAILY_ROWS);
+         const entries = parentEntry(chain, "daily");
+         for (const entry of Object.values(entries)) {
+            entry.contract = {
+               v: 1,
+               dialect: "duckdb",
+               columns: [
+                  {
+                     name: "cat",
+                     nativeType: "VARCHAR",
+                     collation: "binary",
+                     compare: "none",
+                     gateExact: true,
+                  },
+               ],
+            };
+         }
+         const refused = await stack(chain, "monthly", entries, {
+            reads: [
+               {
+                  upstream: chain.byName("daily").id,
+                  names: ["cat"],
+                  need: "equality",
+               },
+            ],
+         });
+         // A shape no build over the parents gives live's rows for: refused
+         // as a shape it could not carry (refuseAfterStackFailure), never
+         // built from raw.
+         expect(refused.error).toBeInstanceOf(MaterializationEligibilityError);
+         expect((refused.error as Error).message).toBe(
+            "'monthly' compares a string over its stored upstreams ('daily') " +
+               "that the destination, byte-exact, would compare otherwise " +
+               "than its source does: it groups or compares 'cat', which its " +
+               "upstream's table records as compared unlike live",
+         );
+         expect(refused.models).toEqual([]);
+         // Nothing recorded at plan: it never stacks.
+         const unrecorded = await stack(chain, "monthly", entries, null);
+         expect(unrecorded.error).toBeInstanceOf(
+            MaterializationEligibilityError,
+         );
+         expect((unrecorded.error as Error).message).toEndWith(
+            "its string reads were not recorded",
+         );
+         expect(unrecorded.models).toEqual([]);
+      });
+
       it("reports a downstream the destination cannot compile as a shape it could not carry", async () => {
          const chain = await planChain(`${RAW}
 #@ persist storage="lake"
@@ -641,6 +722,124 @@ source: weird is daily -> {
          );
          // Nothing in the parent can be left out, so it is compiled once.
          expect(models.length).toBe(1);
+      });
+
+      describe("a parent's timestamp truncations, read in a zone", () => {
+         // `a` truncates in the default zone; its table stores `d` and `m`,
+         // which its re-root restates (`d is d__stored.day`) and so truncates
+         // again in the zone the downstream reads in.
+         const zoned = (downstreamZone: string) => `##! experimental.persistence
+source: raw is duckdb.sql("""
+  SELECT * FROM (VALUES
+    (1, TIMESTAMP '2024-01-07 03:30:00'),
+    (2, TIMESTAMP '2024-01-01 02:00:00'),
+    (3, TIMESTAMP '2024-03-31 23:30:00')
+  ) AS t(id, ts)
+""")
+
+#@ persist storage="lake"
+source: a is raw -> { select: id, ts, d is ts.day, m is ts.month }
+
+#@ persist storage="lake"
+source: b is a -> {
+  ${downstreamZone}
+  group_by: id, dd is d, dm is d.month, mm is m, tday is ts.day
+}
+
+source: a_live is raw -> { select: id, ts, d is ts.day, m is ts.month }
+source: b_live is a_live -> {
+  ${downstreamZone}
+  group_by: id, dd is d, dm is d.month, mm is m, tday is ts.day
+}
+`;
+         /** What `a`'s build wrote: each truncation in the default zone. */
+         const A_ROWS =
+            'CREATE TABLE "daily_t" AS SELECT id, ts, ' +
+            "date_trunc('day', ts) AS d, date_trunc('month', ts) AS m " +
+            "FROM (VALUES (1, TIMESTAMP '2024-01-07 03:30:00'), " +
+            "(2, TIMESTAMP '2024-01-01 02:00:00'), " +
+            "(3, TIMESTAMP '2024-03-31 23:30:00')) AS t(id, ts)";
+         const A_SCHEMA = [
+            { name: "id", type: "INTEGER" },
+            { name: "ts", type: "TIMESTAMP" },
+            { name: "d", type: "TIMESTAMP" },
+            { name: "m", type: "TIMESTAMP" },
+         ];
+         const COLUMNS = ["dd", "dm", "mm", "tday"];
+
+         /** `b_live`'s rows, each value as text. */
+         async function live(chain: Chain): Promise<unknown[]> {
+            const base = pathToFileURL(chain.dir + "/");
+            const runtime = new Runtime({ urlReader: reader(), connections });
+            const result = await runtime
+               .loadModel(new URL("m.malloy", base), { importBaseURL: base })
+               .loadQuery(
+                  `run: b_live -> { select: id, ${COLUMNS.map(
+                     (c) => `${c} is ${c}::string`,
+                  ).join(", ")}; order_by: id }`,
+               )
+               .run();
+            return result.data
+               .toObject()
+               .map((row) =>
+                  Object.fromEntries(
+                     Object.entries(row).map(([k, v]) => [
+                        k,
+                        k === "id" ? Number(v) : String(v),
+                     ]),
+                  ),
+               );
+         }
+
+         /** `b`'s stored rows, each value as text. */
+         async function stored(chain: Chain): Promise<unknown[]> {
+            return (
+               (await readLake(
+                  chain.dir,
+                  `SELECT id, ${COLUMNS.map(
+                     (c) => `${c}::VARCHAR AS ${c}`,
+                  ).join(", ")} FROM "b_t" ORDER BY id`,
+               )) as Record<string, unknown>[]
+            ).map((row) => ({ ...row, id: Number(row.id) }));
+         }
+
+         it("declines a downstream that reads them in another zone, which a stored value truncated twice would answer wrong", async () => {
+            const chain = await planChain(
+               zoned("timezone: 'America/Los_Angeles'"),
+            );
+            await writeLake(chain.dir, A_ROWS);
+            const { error } = await stack(
+               chain,
+               "b",
+               parentEntry(chain, "a", { schema: A_SCHEMA, rowCount: 3 }),
+            );
+            if (error === undefined) {
+               // Stacked: what it stored must be live's, which it is not.
+               expect(await stored(chain)).toEqual(await live(chain));
+            }
+            expect(error).toBeInstanceOf(ChainedShapeNotCarriedError);
+            expect((error as Error).message).toContain(
+               "the downstream reads 'a' in another time zone than its table was built in",
+            );
+         });
+
+         for (const [label, zone] of [
+            ["sets no zone", ""],
+            ["sets the zone they were truncated in", "timezone: 'UTC'"],
+         ] as const) {
+            it(`stacks a downstream that ${label}, storing live's rows`, async () => {
+               const chain = await planChain(zoned(zone));
+               await writeLake(chain.dir, A_ROWS);
+               const { error, result } = await stack(
+                  chain,
+                  "b",
+                  parentEntry(chain, "a", { schema: A_SCHEMA, rowCount: 3 }),
+               );
+               expect(error).toBeUndefined();
+               expect(result).toMatchObject({ upstreamReuse: "reused" });
+               expect(await stored(chain)).toEqual(await live(chain));
+            });
+         }
       });
 
       it("keeps a gated parent's gates on its re-root, as the author wrote them", async () => {

@@ -12,7 +12,7 @@ import {
    withQueryMetadataOn,
 } from "../../../test_helpers/materialization_service_harness";
 import { MaterializationService } from "./materialization_service";
-import { isReclaimableStorageTable } from "./materialization_run_support";
+import { isReclaimableStorageTable } from "./reclaimer";
 import { Reclaimer } from "./reclaimer";
 import { logger } from "../../../logger";
 import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";

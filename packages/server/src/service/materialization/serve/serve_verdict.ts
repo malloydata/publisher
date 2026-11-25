@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The serve verdict (D2): for each source the package materializes, whether
+ * The serve verdict: for each source the package materializes, whether
  * queries will be answered from its table, and when not, why and what to
  * change: as package state at publish, as the same answer before anything is
  * published (a preview), and as a reason in place of a silent live fallback.
@@ -18,6 +18,9 @@
  */
 
 import type { components } from "../../../api";
+import { readTier, storageServes } from "../domain/placement";
+import type { StorageMode } from "../domain/switches";
+import type { Tier } from "../domain/vocabulary";
 import {
    isPersistedQuerySourceID,
    isPersistedResultSourceID,
@@ -33,7 +36,7 @@ export const MATERIALIZATION_UNREACHABLE_CODE = "materialization-unreachable";
 
 /**
  * The `code` of the package warning for a `storage=` source whose destination
- * the environment does not configure (P13): every build into it fails, so the
+ * the environment does not configure: every build into it fails, so the
  * source serves live.
  */
 const MATERIALIZATION_DESTINATION_MISSING_CODE =
@@ -41,11 +44,25 @@ const MATERIALIZATION_DESTINATION_MISSING_CODE =
 
 /**
  * The `code` of the package warning for a database source whose connection
- * cannot hold a table (P13): a database build writes into that connection, so
+ * cannot hold a table: a database build writes into that connection, so
  * the source serves live.
  */
 const MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE =
    "materialization-connection-cannot-hold-table";
+
+/**
+ * The warning code of a bound table whose entry carries no column contract:
+ * it answers live until a build rebuilds it in full.
+ */
+const MATERIALIZATION_CONTRACT_MISSING_CODE =
+   "materialization-contract-missing";
+
+/**
+ * The warning code of a bound table that no longer matches its column
+ * contract: it answers live until a build rebuilds it.
+ */
+const MATERIALIZATION_TABLE_INCOMPATIBLE_CODE =
+   "materialization-table-incompatible";
 
 /**
  * The live verdict reasons that carry a publish warning of their own, with its
@@ -59,6 +76,8 @@ export const VERDICT_WARNING_CODES: Readonly<
    destination_missing: MATERIALIZATION_DESTINATION_MISSING_CODE,
    connection_cannot_hold_table:
       MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE,
+   contract_missing: MATERIALIZATION_CONTRACT_MISSING_CODE,
+   incompatible: MATERIALIZATION_TABLE_INCOMPATIBLE_CODE,
 };
 
 /** Why a materialized source's table answers no query. Open: see the module doc. */
@@ -75,9 +94,9 @@ type ServeVerdictReason =
    | "stale"
    /** Its storage table is bound, but every model's source of that name is another source. */
    | "shadowed"
-   /** `storage=` names a destination the environment does not configure (P13). */
+   /** `storage=` names a destination the environment does not configure. */
    | "destination_missing"
-   /** Database, on a connection whose type creates no tables (P13). */
+   /** Database, on a connection whose type creates no tables. */
    | "connection_cannot_hold_table"
    /**
     * A `#(materialize)` source, which only the served copy reads, and the
@@ -86,9 +105,24 @@ type ServeVerdictReason =
     */
    | "materialization_off"
    /**
-    * A `#(materialize)` source, which only the served copy reads, bound, but
-    * no model's served copy re-roots it (see the `served-copy-not-served`
-    * warning).
+    * A table whose manifest entry carries no column contract (built before
+    * contracts were recorded, or by a worker that predates them): never
+    * served from. Non-terminal: a rebuild fixes it, and its source counts as
+    * stale until then, so the next build rebuilds it in full.
+    */
+   | "contract_missing"
+   /**
+    * A table that no longer matches the column contract its build recorded
+    * (a column gone, retyped, or recollated since, or, for a source a build
+    * substitutes, its source now declaring another type): never served from
+    * until a rebuild. Non-terminal: a rebuild fixes it.
+    */
+   | "incompatible"
+   /**
+    * A source the served copy reads (a `#(materialize)` one, or a `#@ persist`
+    * one), bound, but no model's compiled served copy reads its table;
+    * `notServedIn` names each model and its `served-copy-not-served`
+    * reasons.
     */
    | "served_copy";
 
@@ -114,6 +148,37 @@ export interface ViewServeVerdict {
    detail?: string;
 }
 
+/** One model whose served copy holds a source but does not read its table, and why. */
+export interface NotServedIn {
+   /** The model file. */
+   model: string;
+   /**
+    * Every `served-copy-not-served` reason for the source in that model (on
+    * the source, or on the model's whole copy), most actionable first;
+    * `not_rerooted` alone when no warning names one.
+    */
+   reasons: string[];
+}
+
+/**
+ * Where, and why, a source the served copy reads is not answered from its
+ * table, as each model's compiled served copy left it: the one fact the
+ * `served-copy-not-served` warnings and the verdicts both read, the same for
+ * a `#(materialize)` source and a `#@ persist` one.
+ */
+export interface ServedCopyOutcome {
+   /**
+    * Some model's compiled served copy reads its table: re-roots it, or, an
+    * extension sharing a re-rooted base's table, reads it through that base.
+    */
+   serves: boolean;
+   /**
+    * Each model that holds the source and does not read its table, sorted by
+    * model; the declaring model when none holds it and none serves it.
+    */
+   notServedIn: NotServedIn[];
+}
+
 /** One materialized source's serve verdict. */
 export interface ServeVerdict {
    sourceName: string;
@@ -135,12 +200,35 @@ export interface ServeVerdict {
     */
    verdict: "serves" | "awaiting_build" | "live";
    reason?: ServeVerdictReason;
+   /**
+    * Each model that holds the source but does not read its table, with its
+    * reasons: every such model on a `served_copy` verdict, and on a `serves`
+    * verdict the models that answer it live while another serves it.
+    */
+   notServedIn?: NotServedIn[];
+   /**
+    * With `contract_missing` or `incompatible`: the table generation the
+    * verdict judged, so a consumer drops a verdict about a table it has
+    * since replaced: its `physicalTableName`, and the `builtAt` its entry
+    * carried (absent when the entry carried none).
+    */
+   table?: { physicalTableName: string; builtAt?: string };
+   /** With `incompatible`: what changed, and the columns it changed. */
+   incompatibility?: { code: string; columns: string[] };
    /** What the verdict means for this source, in a sentence. */
    message: string;
    /** For a `live` verdict, the changes that would let it serve. */
    fixes?: string[];
    /** Per named view, for a stored source on a preview. */
    views?: ViewServeVerdict[];
+}
+
+/** One bound table the bind held to its contract and left out. */
+export interface ContractVerdict {
+   reason: "contract_missing" | "incompatible";
+   physicalTableName: string;
+   builtAt?: string;
+   incompatibility?: { code: string; columns: string[] };
 }
 
 /** What {@link computeServeVerdicts} reads. Every predicate is per source. */
@@ -189,22 +277,52 @@ export interface ServeVerdictFacts {
     * (or whose fallback serves stale). Absent: every bound one is.
     */
    freshEntityIds?: ReadonlySet<string>;
+   /**
+    * Both tiers: the bound tables the bind left out because their entry
+    * carries no contract (`contract_missing`) or because they no longer
+    * match it (`incompatible`), by sourceEntityId, with the generation
+    * judged. Absent: none.
+    */
+   contractVerdicts?: ReadonlyMap<string, ContractVerdict>;
    /** Storage: the source names the package holds a serve binding for. */
    boundStorageNames: ReadonlySet<string>;
+   /**
+    * The sourceIDs a storage binding stores (its `sourceIDs`), whatever the
+    * annotation says: the tier a query reads the source's table in
+    * (`storageLookupOf`).
+    */
+   boundStorageIds: ReadonlySet<string>;
+   /**
+    * The sourceIDs a storage binding still within its freshness window (or
+    * whose fallback serves stale) stores. Absent: every bound one is.
+    */
+   freshStorageIds?: ReadonlySet<string>;
    /** Storage: the source names some model kept a binding for. */
    servedStorageNames: ReadonlySet<string>;
    /** Storage: the bound source names still fresh. Absent: every bound one is. */
    freshStorageNames?: ReadonlySet<string>;
    /**
-    * The plan's `#(materialize)` sources, by sourceID, and whether the served
-    * copy answers each from its table: `serves` when some model's compiled
-    * served copy re-roots it (or a served copy has yet to compile), `off` when
-    * the served copy is off, `not_served` otherwise. Absent: no source is a
-    * `#(materialize)` source.
+    * The plan's `#(materialize)` sources, by sourceID: `off` when the served
+    * copy is off, else `serves` (whether it reads the table is
+    * {@link servedCopyOutcome}'s, as for every source it reads). Undefined:
+    * not a `#(materialize)` source.
     */
-   materialize(sourceID: string): "serves" | "off" | "not_served" | undefined;
+   materialize(sourceID: string): "serves" | "off" | undefined;
    /**
-    * A persisted view's generated build source (`#@ persist` on a view, P14),
+    * Whether the compiled served copy re-rooted this source on its database
+    * table and on no storage table (it dropped the storage table: a field
+    * it does not carry, a refusal); undefined while it is off or has yet to
+    * compile. Absent: never.
+    */
+   servedCopyOnDatabaseOnly?(sourceID: string): boolean | undefined;
+   /**
+    * How the models' compiled served copies left a source they read; undefined
+    * while any served copy is off or has yet to compile, which reports
+    * nothing. Absent: never judged.
+    */
+   servedCopyOutcome?(sourceID: string): ServedCopyOutcome | undefined;
+   /**
+    * A persisted view's generated build source (`#@ persist` on a view),
     * by its plan sourceID: the source and view it stores. A query reaches it
     * by calling the view on that source, so reach and gates are the source's.
     * A persisted named query's build source carries `queryName`, and its run
@@ -260,9 +378,35 @@ function originOf(
    return "persist";
 }
 
-/** The tier a plan source's table lives in. */
-function planTier(source: PersistSourcePlan): "database" | "storage" {
-   return source.annotationFields?.storage?.trim() ? "storage" : "database";
+/** The tier a query reads a plan source's table in ({@link readTier}). */
+function planTier(
+   sourceID: string,
+   source: PersistSourcePlan,
+   servedCopy: boolean,
+   facts: Pick<
+      ServeVerdictFacts,
+      | "storageMode"
+      | "servedCopyOnDatabaseOnly"
+      | "boundStorageIds"
+      | "freshStorageIds"
+      | "boundEntityIds"
+      | "freshEntityIds"
+   >,
+): Tier {
+   const databaseBound = facts.boundEntityIds.has(source.sourceEntityId);
+   return readTier({
+      storageBound: facts.boundStorageIds.has(sourceID),
+      storageFresh: facts.freshStorageIds?.has(sourceID) ?? true,
+      storageServed: storageServes(facts.storageMode as StorageMode),
+      databaseBound,
+      databaseFresh:
+         databaseBound &&
+         (facts.freshEntityIds?.has(source.sourceEntityId) ?? true),
+      servedCopy,
+      servedCopyOnDatabase:
+         servedCopy && facts.servedCopyOnDatabaseOnly?.(sourceID) === true,
+      declaredStorage: !!source.annotationFields?.storage?.trim(),
+   });
 }
 
 /**
@@ -310,27 +454,30 @@ function verdictFor(
    facts: ServeVerdictFacts,
 ): ServeVerdict {
    const s = verdictSubjectOf(sourceID, source, facts);
-   const { origin, tier, rollupBase, view, subject, live } = s;
+   const { origin, tier, storageBound, rollupBase, view, subject, live } = s;
 
-   // Deployment facts (P13), ahead of the storage mode: under `write-only` the
+   // Deployment facts, ahead of the storage mode: under `write-only` the
    // build runs and fails on them, so they are the reason worth naming. Under
    // `off` the annotation is ignored, so a destination is never read. A table
    // already bound is never called unbuildable: what serves is reported as it
    // is, and the fact is read only to explain a table nothing has bound.
    const destination = source.annotationFields?.storage?.trim();
-   // Read once, here and in the storage branch below: one name-keyed lookup.
-   const storageBound = facts.boundStorageNames.has(source.name);
    const deployment = deploymentVerdict(s, destination, storageBound);
    if (deployment) return deployment;
 
    if (tier === "storage" && facts.storageMode !== "on") {
       return live(
          "storage_mode",
-         facts.storageMode === "off"
+         // A host's storage binding with no `storage=` has none to drop.
+         facts.storageMode === "off" && destination
             ? `${subject} declares storage=, which PERSIST_STORAGE_MODE=off ignores.`
             : `${subject} is built into storage, but PERSIST_STORAGE_MODE is ` +
                  `${facts.storageMode}, so no query is routed to it.`,
-         ["Set PERSIST_STORAGE_MODE=on on the server, or drop storage=."],
+         [
+            destination
+               ? "Set PERSIST_STORAGE_MODE=on on the server, or drop storage=."
+               : "Set PERSIST_STORAGE_MODE=on on the server.",
+         ],
       );
    }
 
@@ -413,6 +560,10 @@ interface VerdictSubject {
    facts: ServeVerdictFacts;
    origin: ServeVerdict["origin"];
    tier: "database" | "storage";
+   /** Whether the package holds a storage binding for it. */
+   storageBound: boolean;
+   /** Whether its table is read through the served copy (not a rollup's or persisted result's leg). */
+   servedCopy: boolean;
    base: Omit<ServeVerdict, "verdict" | "message">;
    rollupBase: string | undefined;
    view: ReturnType<NonNullable<ServeVerdictFacts["persistedViewOf"]>>;
@@ -434,7 +585,15 @@ function verdictSubjectOf(
    const origin = originOf(sourceID, isRollupOrigin(source.origin), {
       materialize: facts.materialize,
    });
-   const tier = planTier(source);
+   // Read once, for the deployment facts and the storage branch: one
+   // name-keyed lookup. The tier is the sourceID's.
+   const storageBound = facts.boundStorageNames.has(source.name);
+   // A rollup, persisted view or persisted query is read through its own
+   // leg (`storageLookupOf`); everything else through the served copy.
+   const servedCopy =
+      !isRollupOrigin(source.origin) &&
+      facts.persistedViewOf(sourceID) === undefined;
+   const tier = planTier(sourceID, source, servedCopy, facts);
    const base: Omit<ServeVerdict, "verdict" | "message"> = {
       sourceName: source.name,
       sourceID,
@@ -472,6 +631,8 @@ function verdictSubjectOf(
       facts,
       origin,
       tier,
+      storageBound,
+      servedCopy,
       base,
       rollupBase,
       view,
@@ -481,7 +642,7 @@ function verdictSubjectOf(
 }
 
 /**
- * A deployment fact (P13) that sends the source live: a `storage=`
+ * A deployment fact that sends the source live: a `storage=`
  * destination the environment does not configure, or a database connection
  * that cannot hold a table. Undefined when neither does.
  */
@@ -545,20 +706,41 @@ function boundVerdict(
    storageBound: boolean,
    materialized: ReturnType<NonNullable<ServeVerdictFacts["materialize"]>>,
 ): ServeVerdict {
-   const { sourceID, source, facts, origin, tier, base, subject, live } = s;
-   const notServed = (): ServeVerdict =>
-      live(
+   const { sourceID, source, facts, origin, tier, subject, live } = s;
+   // Every source the served copy reads, `#(materialize)` or `#@ persist`,
+   // is judged by what its compile did, the same fact its
+   // `served-copy-not-served` warnings are read from; a copy yet to
+   // compile for the first time judges nothing.
+   const copy = s.servedCopy ? facts.servedCopyOutcome?.(sourceID) : undefined;
+   const where = {
+      ...(copy && copy.notServedIn.length > 0
+         ? { notServedIn: copy.notServedIn }
+         : {}),
+   };
+   const base = { ...s.base, ...where };
+   const notServed = (): ServeVerdict => ({
+      ...live(
          "served_copy",
          `${subject}'s table is bound, but no model's served copy reads ` +
-            `it, so no query is answered from it: the served copy reads a ` +
-            `source it is built on from that source's table instead, or ` +
-            `leaves it as written for the reason a served-copy-not-served ` +
-            `warning gives.`,
-         [
-            "Fix what the served-copy-not-served warning names, if there is one.",
-            "Or drop #(materialize) from it if a source it is built on already answers its queries.",
-         ],
-      );
+            `it, so no query is answered from it` +
+            (copy && copy.notServedIn.length > 0
+               ? ` (${copy.notServedIn
+                    .map((n) => `${n.model}: ${n.reasons.join(", ")}`)
+                    .join("; ")})`
+               : "") +
+            `. The served-copy-not-served warning on each model says why.`,
+         origin === "materialize"
+            ? [
+                 "Fix what the served-copy-not-served warning names, if there is one.",
+                 "Or drop #(materialize) from it if a source it is built on already answers its queries.",
+              ]
+            : [
+                 "Fix what the served-copy-not-served warning names, if there is one.",
+              ],
+      ),
+      ...where,
+   });
+   const copyLeavesIt = copy !== undefined && !copy.serves;
 
    const stale = (): ServeVerdict =>
       live(
@@ -570,18 +752,55 @@ function boundVerdict(
          ],
       );
 
+   const contractVerdict = (): ServeVerdict | undefined => {
+      const judged = facts.contractVerdicts?.get(source.sourceEntityId ?? "");
+      if (!judged) return undefined;
+      const table = {
+         physicalTableName: judged.physicalTableName,
+         ...(judged.builtAt ? { builtAt: judged.builtAt } : {}),
+      };
+      return judged.reason === "contract_missing"
+         ? {
+              ...live(
+                 "contract_missing",
+                 `${subject}'s table carries no column contract (it was built ` +
+                    `before contracts were recorded), so no query is answered ` +
+                    `from it until a build rebuilds it in full.`,
+                 [
+                    "Run a build: the table is rebuilt in full, with its contract.",
+                 ],
+              ),
+              table,
+           }
+         : {
+              ...live(
+                 "incompatible",
+                 `${subject}'s table no longer matches the column contract its ` +
+                    `build recorded (${judged.incompatibility?.code ?? "changed"}: ` +
+                    `${(judged.incompatibility?.columns ?? []).join(", ")}), so no ` +
+                    `query is answered from it until a build rebuilds it.`,
+                 ["Run a build: the table is rebuilt from its source."],
+              ),
+              table,
+              ...(judged.incompatibility
+                 ? { incompatibility: judged.incompatibility }
+                 : {}),
+           };
+   };
+
    if (tier === "storage") {
       const views = facts.views?.get(sourceID);
       const withViews = views && views.length > 0 ? { views } : {};
       if (!storageBound) {
          return {
-            ...base,
+            ...s.base,
             ...withViews,
             verdict: "awaiting_build",
             message: `${subject} will serve from storage once a build binds its table.`,
          };
       }
-      if (materialized === "not_served") return notServed();
+      const held = contractVerdict();
+      if (held) return held;
       if (
          materialized === undefined &&
          origin !== "rollup" &&
@@ -602,6 +821,7 @@ function boundVerdict(
       ) {
          return stale();
       }
+      if (copyLeavesIt) return notServed();
       return {
          ...base,
          ...withViews,
@@ -615,18 +835,20 @@ function boundVerdict(
 
    if (!facts.boundEntityIds.has(source.sourceEntityId)) {
       return {
-         ...base,
+         ...s.base,
          verdict: "awaiting_build",
          message: `${subject} will serve from its table once a build binds it.`,
       };
    }
+   const held = contractVerdict();
+   if (held) return held;
    if (
       facts.freshEntityIds &&
       !facts.freshEntityIds.has(source.sourceEntityId)
    ) {
       return stale();
    }
-   if (materialized === "not_served") return notServed();
+   if (copyLeavesIt) return notServed();
    return {
       ...base,
       verdict: "serves",

@@ -10,11 +10,16 @@ import { chmodSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { applySessionResourceLimits } from "./connection";
-import { createIsolatedBuildSession } from "./materialization/run/materialization_build_session";
-import { applyExtensionSessionSettings } from "./connection";
+import {
+   applyExtensionSessionSettings,
+   applySessionResourceLimits,
+} from "./duckdb_session_setup";
+import {
+   applyLoadSessionSettings,
+   createIsolatedBuildSession,
+} from "./materialization/run/materialization_build_session";
 import { DuckDBConnection as MetadataStoreConnection } from "../storage/duckdb/DuckDBConnection";
-import { assertDuckDBResourceConfig } from "../config";
+import { assertDuckDBResourceConfig, duckDBByteSize } from "../config";
 import { installSettings } from "../test_helpers/settings_env";
 
 let restoreSettings: (() => void) | undefined;
@@ -40,6 +45,79 @@ function recorder(): { conn: DuckDBConnection; sql: string[] } {
    } as unknown as DuckDBConnection;
    return { conn, sql };
 }
+
+describe("duckDBByteSize", () => {
+   it.each([
+      ["1.5GB", 1.5e9],
+      ["1GiB", 2 ** 30],
+      ["512 MB", 512e6],
+      ["512mib", 512 * 2 ** 20],
+      ["100B", 100],
+      ["2TB", 2e12],
+   ])("reads %s as DuckDB does", (size, bytes) => {
+      expect(duckDBByteSize(size)).toBe(bytes);
+   });
+
+   it("refuses what DuckDB would not take as a size", () => {
+      for (const bad of ["", "off", "1", "0GB", "GB", "1.5 XB"]) {
+         expect(() => duckDBByteSize(bad)).toThrow(/Not a DuckDB size/);
+      }
+   });
+});
+
+describe("applyLoadSessionSettings", () => {
+   const settingsFor = async (memoryLimit?: string): Promise<string[]> => {
+      installEnv(
+         memoryLimit === undefined
+            ? {}
+            : { PUBLISHER_DUCKDB_MEMORY_LIMIT: memoryLimit },
+      );
+      const { conn, sql } = recorder();
+      await applyLoadSessionSettings(conn);
+      return sql;
+   };
+
+   it("caps a load at 1.5GB of memory and 6GiB of spill when the operator set no limit", async () => {
+      expect(await settingsFor()).toEqual([
+         "SET memory_limit='1.5GB'",
+         "SET max_temp_directory_size='6GiB'",
+         "SET preserve_insertion_order=false",
+         "SET enable_http_metadata_cache=true",
+         "SET parquet_metadata_cache=true",
+      ]);
+   });
+
+   it("takes the operator's memory limit when it is the smaller", async () => {
+      expect((await settingsFor("512MB"))[0]).toBe("SET memory_limit='512MB'");
+      expect((await settingsFor("1GiB"))[0]).toBe("SET memory_limit='1GiB'");
+   });
+
+   it("keeps its own cap when the operator's limit is larger, equal, or off", async () => {
+      for (const limit of ["4GB", "1500MB", "off"]) {
+         expect((await settingsFor(limit))[0]).toBe("SET memory_limit='1.5GB'");
+      }
+   });
+
+   it("leaves the spill cap at its default when the general limit is set", async () => {
+      expect((await settingsFor("512MB"))[1]).toBe(
+         "SET max_temp_directory_size='6GiB'",
+      );
+   });
+
+   it("takes the admin caps; a memory cap above the general limit is held to it", async () => {
+      installEnv({
+         PUBLISHER_ADMIN_MEMORY_LIMIT: "3GB",
+         PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE: "20GB",
+         PUBLISHER_DUCKDB_MEMORY_LIMIT: "2GB",
+      });
+      const { conn, sql } = recorder();
+      await applyLoadSessionSettings(conn);
+      expect(sql.slice(0, 2)).toEqual([
+         "SET memory_limit='2GB'",
+         "SET max_temp_directory_size='20GB'",
+      ]);
+   });
+});
 
 describe("applySessionResourceLimits", () => {
    it("issues nothing when neither is configured", async () => {
@@ -235,6 +313,20 @@ describe("applySessionResourceLimits", () => {
          for (const value of ["1GB", "1gb", "1 GB", "1GiB", "1.5GB", "512MB"]) {
             installEnv({ PUBLISHER_DUCKDB_MEMORY_LIMIT: value });
             expect(() => assertDuckDBResourceConfig()).not.toThrow();
+         }
+      });
+
+      it("rejects an admin cap that is not a DuckDB size", () => {
+         for (const variable of [
+            "PUBLISHER_ADMIN_MEMORY_LIMIT",
+            "PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE",
+         ]) {
+            for (const bad of ["lots", "off", "6"]) {
+               installEnv({ [variable]: bad });
+               expect(() => assertDuckDBResourceConfig()).toThrow(
+                  new RegExp(variable),
+               );
+            }
          }
       });
 

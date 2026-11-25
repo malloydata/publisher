@@ -18,7 +18,7 @@ import { computeSourceEntityId } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
 import type { BuildInstruction, ManifestEntry } from "../domain/types";
 import { InstructedBuild } from "./instructed_build";
-import type { BuildEnvironment } from "./materialization_run_support";
+import { type BuildEnvironment } from "./build_upstreams";
 import { buildSource } from "./source_build";
 
 const packages = tempBuildPlanPackages();
@@ -141,10 +141,8 @@ async function scenario() {
          instructions,
          seedEntries: {},
          signal: new AbortController().signal,
-         strict: false,
          priorRefusals: [],
          hostInstructed: false,
-         warehouseReach: "recompute",
       });
    const columns = async (table: string) =>
       (

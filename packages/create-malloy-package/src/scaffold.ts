@@ -1618,6 +1618,8 @@ export const SERVER_VALUE_FLAGS = new Set([
    "--admin-host",
    "--admin_host",
    "--admin-request-timeout-ms",
+   "--admin-memory-limit",
+   "--admin-max-temp-directory-size",
    "--admin-storage-provider",
    "--admin-storage-key-id",
    "--admin-storage-region",

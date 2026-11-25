@@ -63,8 +63,25 @@ import {
 } from "../config";
 import { logger } from "../logger";
 import {
+   attachedSystemSchemaIn,
+   attachedSystemSchemaInParts,
+   attachedSystemSchemaOfNode,
+   CALL_ONLY_NAMES,
+   DUCKLAKE_FUNCTION_PREFIX,
+   introspectionCallInParse,
+   introspectionNameIn,
+   isIntrospectionCall,
+   isIntrospectionName,
+} from "./duckdb_introspection";
+import {
+   managedCatalogMessage,
+   managedCatalogRefusal,
+} from "./managed_catalog_scope";
+import {
    assertSingleSelect,
+   containsStatementSeparator,
    countStatements,
+   DUCKDB_STATEMENT_SEPARATOR,
    serializeSQL,
 } from "./single_select";
 
@@ -382,7 +399,8 @@ async function setting(
    name: string,
 ): Promise<unknown> {
    const rows = rowsOf(
-      await connection.runSQL(
+      await runInternalSQL(
+         connection,
          `SELECT current_setting(${sqlString(name)}) AS v`,
       ),
    );
@@ -408,6 +426,36 @@ export function duckDBInstanceOf(connection: unknown): object | undefined {
    return DuckDBConnectionClass.activeDBs[shareKey]?.instance as
       | object
       | undefined;
+}
+
+/** A number per native instance, for logs: two lines naming one are one instance. */
+const instanceIds = new WeakMap<object, number>();
+let lastInstanceId = 0;
+
+/** {@link duckDBInstanceOf}'s number for logs; undefined before it opens. */
+export function duckDBInstanceId(connection: unknown): number | undefined {
+   const instance = duckDBInstanceOf(connection);
+   if (!instance) return undefined;
+   let id = instanceIds.get(instance);
+   if (id === undefined) {
+      id = ++lastInstanceId;
+      instanceIds.set(instance, id);
+   }
+   return id;
+}
+
+/**
+ * Whether anything besides `connection` holds its native instance: another
+ * connection object (a draining generation's), or an open still joining it.
+ */
+export function duckDBInstanceHasOtherHolders(connection: unknown): boolean {
+   const shareKey = (connection as { shareKey?: string }).shareKey;
+   if (!shareKey) return false;
+   const own = (connection as { connection?: unknown }).connection;
+   const holders = DuckDBConnectionClass.activeDBs[shareKey]?.connections as
+      | unknown[]
+      | undefined;
+   return (holders ?? []).some((holder) => holder !== own);
 }
 
 /** Record that `connection`'s instance is locked. */
@@ -446,8 +494,11 @@ export function isLockedByOptions(connection: unknown): boolean {
 async function loadedExtensions(
    connection: DuckDBConnection,
 ): Promise<Set<string>> {
+   // duckdb_extensions() lists install paths, so caller and author SQL may
+   // not read it: Publisher's own read runs as an internal statement.
    const rows = rowsOf(
-      await connection.runSQL(
+      await runInternalSQL(
+         connection,
          "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
       ),
    );
@@ -503,8 +554,16 @@ export async function preloadExcel(
 }
 
 /** A directory or URL prefix as an allowlist entry: one trailing slash. */
+/**
+ * Whether `path` carries a URL scheme (`s3://`, `gs://`, `az://`, ...): an
+ * object store's prefix rather than a local path.
+ */
+export function hasUrlScheme(path: string): boolean {
+   return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(path);
+}
+
 function asAllowEntry(prefix: string): string {
-   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(prefix)) {
+   if (hasUrlScheme(prefix)) {
       return prefix.endsWith("/") ? prefix : `${prefix}/`;
    }
    return canonicalDirectory(prefix);
@@ -531,20 +590,42 @@ export async function lockDownDuckDBSession(
    connection: DuckDBConnection,
    options: Parameters<typeof lockDownOnce>[1] = {},
 ): Promise<void> {
+   await runExclusiveOnDuckDBInstance(connection, () =>
+      lockDownOnce(connection, options),
+   );
+}
+
+/**
+ * Run `step` with no other exclusive step (a lockdown, a DuckLake attach) on
+ * `connection`'s instance. A setup that must not straddle the lock (an ATTACH
+ * and the storage secret that follows it) runs here, so the lock lands before
+ * or after it, never between its statements. Keyed on the instance once the
+ * connection is open; on the connection itself before.
+ */
+export async function runExclusiveOnDuckDBInstance<T>(
+   connection: DuckDBConnection,
+   step: () => Promise<T>,
+): Promise<T> {
    const key = duckDBInstanceOf(connection) ?? connection;
-   const run = (lockdownsInFlight.get(key) ?? Promise.resolve())
+   const run = (exclusiveStepsInFlight.get(key) ?? Promise.resolve())
       .catch(() => {})
-      .then(() => lockDownOnce(connection, options));
-   lockdownsInFlight.set(key, run);
+      .then(step);
+   const settled = run.then(
+      () => {},
+      () => {},
+   );
+   exclusiveStepsInFlight.set(key, settled);
    try {
-      await run;
+      return await run;
    } finally {
-      if (lockdownsInFlight.get(key) === run) lockdownsInFlight.delete(key);
+      if (exclusiveStepsInFlight.get(key) === settled) {
+         exclusiveStepsInFlight.delete(key);
+      }
    }
 }
 
-/** The lockdown running on each instance, which the next one waits for. */
-const lockdownsInFlight = new WeakMap<object, Promise<void>>();
+/** The exclusive step running on each instance, which the next one waits for. */
+const exclusiveStepsInFlight = new WeakMap<object, Promise<void>>();
 
 /** One {@link lockDownDuckDBSession}, with no other on its instance. */
 async function lockDownOnce(
@@ -754,43 +835,6 @@ export function setupIdentity(value: unknown): string {
 
 // --- The statement gate on a locked instance ---------------------------------
 
-/**
- * Names that reach DuckDB's logging and profiling, which DuckDB 1.5.5's
- * `lock_configuration` does not cover (a locked session could otherwise log
- * other callers' query text and the signed request headers of the instance's
- * own reads, and read them back), or that run SQL taken from text the gate
- * cannot see through (`query`, `query_table`, `json_execute_serialized_sql`,
- * `import_database`). Checked against `duckdb_functions()` on 1.5.5 with
- * json, icu, excel, ducklake and httpfs loaded.
- *
- * Refused wherever the name appears as a word (in code, a comment, a string
- * literal, at any depth): none is a plausible column or table name, so the
- * gate does not need to know how DuckDB would have read it. `query` is the
- * exception, refused only where it is called ({@link CALL_ONLY}).
- */
-const REFUSED_NAMES: ReadonlySet<string> = new Set([
-   "enable_logging",
-   "disable_logging",
-   "truncate_duckdb_logs",
-   "duckdb_logs",
-   "duckdb_logs_parsed",
-   "duckdb_log_contexts",
-   "write_log",
-   "parse_duckdb_log_message",
-   "enable_profiling",
-   "disable_profiling",
-   "enable_profile",
-   "disable_profile",
-   "all_profiling_output",
-   "duckdb_profiling_settings",
-   "query_table",
-   "json_execute_serialized_sql",
-   "import_database",
-]);
-
-/** Refused only as a call: a column or alias named `query` is common. */
-const CALL_ONLY: ReadonlySet<string> = new Set(["query"]);
-
 /** Words that may stand between CREATE/DROP and SECRET. */
 const SECRET_MODIFIERS = new Set([
    "or",
@@ -809,7 +853,8 @@ export class DuckDBStatementRefusedError extends Error {
       super(
          `This DuckDB connection is locked down and refuses ${reason}. ` +
             `Publisher's DuckDB connections do not expose logging, profiling, ` +
-            `SQL run from text, or secret management to SQL.`,
+            `SQL run from text, secret management, or catalog and settings ` +
+            `introspection to SQL.`,
       );
       this.name = "DuckDBStatementRefusedError";
    }
@@ -952,10 +997,11 @@ function secretStatementAt(words: string[], w: number): string | undefined {
 /**
  * Why `sql` must not run on a locked instance, read lexically, or undefined.
  * Two layers, both fail-closed: the raw words of the whole text (a refused
- * name anywhere, `IMPORT DATABASE`, a CREATE or DROP of a secret), and the
- * tokens (a call of `query`, and a secret statement with comments between its
- * words), where comment and string text is re-read the same way, to any
- * depth.
+ * name anywhere, `IMPORT DATABASE`, a CREATE or DROP of a secret, an attached
+ * database's Postgres system schema), and the tokens (a call of `query`, a
+ * secret statement with comments between its words, and an attached
+ * database's Postgres system schema with comments around its dot), where
+ * comment and string text is re-read the same way, to any depth.
  */
 export function refusedOnLockedInstance(
    sql: string,
@@ -963,14 +1009,30 @@ export function refusedOnLockedInstance(
 ): string | undefined {
    const words = rawWords(sql);
    for (let w = 0; w < words.length; w++) {
-      if (REFUSED_NAMES.has(words[w])) return `'${words[w]}'`;
+      if (isIntrospectionName(words[w])) {
+         return `'${words[w]}'`;
+      }
       if (words[w] === "import" && words[w + 1] === "database") {
          return "IMPORT DATABASE";
       }
       const secret = secretStatementAt(words, w);
       if (secret) return secret;
    }
+   const rawSchema = attachedSystemSchemaIn(sql);
+   if (rawSchema) return `'${rawSchema}'`;
    const tokens = tokenizeDuckDBSQL(sql);
+   const codeSchema = attachedSystemSchemaInParts(
+      tokens
+         .filter((token) => token.kind !== "comment")
+         .map((token) =>
+            token.kind === "word"
+               ? { kind: "word" as const, value: token.value }
+               : token.kind === "punct" && token.value === "."
+                 ? { kind: "dot" as const, value: "." }
+                 : { kind: "other" as const, value: token.value },
+         ),
+   );
+   if (codeSchema) return `'${codeSchema}'`;
    const codeWords: string[] = [];
    for (let t = 0; t < tokens.length; t++) {
       const token = tokens[t];
@@ -985,7 +1047,10 @@ export function refusedOnLockedInstance(
       }
       if (token.kind !== "word") continue;
       codeWords.push(token.value);
-      if (CALL_ONLY.has(token.value)) {
+      if (
+         CALL_ONLY_NAMES.has(token.value) ||
+         token.value.startsWith(DUCKLAKE_FUNCTION_PREFIX)
+      ) {
          const next = tokens.slice(t + 1).find((x) => x.kind !== "comment");
          const previous = tokens
             .slice(0, t)
@@ -1013,7 +1078,8 @@ export function refusedOnLockedInstance(
 /**
  * Why DuckDB's own parser says `sql` must not run, or undefined. The parser
  * serializes SELECT statements only (`json_serialize_sql`, single_select.ts):
- * for those, every function and table it names is checked; SQL it fails to
+ * for those, every function and table it names, and the catalog and schema
+ * of every table it reads, is checked; SQL it fails to
  * parse is refused (DuckDB would refuse it too); other statement kinds are
  * left to {@link refusedOnLockedInstance}, which reads every statement.
  */
@@ -1031,15 +1097,25 @@ async function refusedByParser(sql: string): Promise<string | undefined> {
          node.forEach(walk);
          return;
       }
+      const schema = attachedSystemSchemaOfNode(
+         node as Record<string, unknown>,
+      );
+      if (schema) {
+         refused = `'${schema}'`;
+         return;
+      }
       for (const [key, value] of Object.entries(node)) {
          if (
-            (key === "function_name" || key === "table_name") &&
+            (key === "function_name" ||
+               key === "table_name" ||
+               key === "catalog_name") &&
             typeof value === "string"
          ) {
             const name = value.toLowerCase();
             if (
-               REFUSED_NAMES.has(name) ||
-               (key === "function_name" && CALL_ONLY.has(name))
+               key === "function_name"
+                  ? isIntrospectionCall(name)
+                  : isIntrospectionName(name)
             ) {
                refused = `'${name}'`;
                return;
@@ -1084,6 +1160,19 @@ export function runAsInternalStatement<T>(
 }
 
 /**
+ * Run Publisher's own `sql` on `connection`, admitted by the gate on a locked
+ * instance: a read of the instance's own catalog (which databases are
+ * attached, a DuckLake catalog's recorded settings) that caller and author SQL
+ * may not make.
+ */
+export function runInternalSQL<R>(
+   connection: { runSQL(sql: string, options?: never): Promise<R> },
+   sql: string,
+): Promise<R> {
+   return runAsInternalStatement(sql, () => connection.runSQL(sql));
+}
+
+/**
  * The span of a connection's own setup (Malloy's baseline and the operator's
  * setupSQL), which runs before any caller statement and may issue several
  * statements at once. Like {@link internalStatement}, it belongs to the setup's
@@ -1098,21 +1187,25 @@ export function runAsOperatorSetup<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /** Malloy's own statement separator (its DuckDB dialect's `hackSplitComment`). */
-const MALLOY_SPLIT = "-- hack: split on this";
+const MALLOY_SPLIT = DUCKDB_STATEMENT_SEPARATOR;
 
 /**
  * Refuse a Malloy-shaped SQL text (`runSQL`, `runSQLStream`) on a locked
  * instance unless every part Malloy splits off before the last is a macro
- * Malloy itself defines (`DROP MACRO` / `CREATE MACRO`): author text that
- * spells the separator cannot slip a statement of its own in front of the
- * query.
+ * Malloy itself defines (`DROP MACRO` / `CREATE MACRO`), and the last part
+ * (the query) is one the statement gate ({@link assertStatementAllowed})
+ * admits: author or caller text that spells the separator can neither slip a
+ * statement of its own in front of the query nor after it. Every check runs
+ * before any part does, so a refused text runs nothing.
  */
 async function assertMalloyParts(
    connection: unknown,
    sql: string,
 ): Promise<void> {
    if (!isConfigurationFrozen(connection) || operatorSetup.getStore()) return;
+   if (!containsStatementSeparator(sql)) return;
    const parts = sql.split(MALLOY_SPLIT);
+   await assertStatementAllowed(connection, parts[parts.length - 1]);
    for (const part of parts.slice(0, -1)) {
       const words = tokenizeDuckDBSQL(part)
          .filter((token) => token.kind === "word")
@@ -1173,33 +1266,75 @@ export async function assertStatementAllowed(
  * expression of one SELECT, so it cannot end the query Malloy builds around
  * it and start another statement. Decided by DuckDB's parser, for sources of
  * the DuckDB dialect only; a built-in function's own template (its
- * `overload`) is the compiler's SQL and is not read.
+ * `overload`) is the compiler's SQL and is not read. Author SQL and `.table()`
+ * paths that name an introspection function, a DuckLake metadata catalog or
+ * an attached database's Postgres system schema (duckdb_introspection.ts) are
+ * refused here too, at load, because a build session runs author SQL before
+ * any lock would refuse it.
  */
 export async function authorSqlRefusals(
    modelPath: string,
    modelDef: unknown,
+   options: {
+      /**
+       * The schemas author SQL on the connection of that name may name when
+       * it is configured `managed`, undefined when it is not
+       * (managed_catalog_scope.ts).
+       */
+      managedSchemas?: (
+         connectionName: string,
+      ) => Promise<ReadonlySet<string> | undefined>;
+   } = {},
 ): Promise<string[]> {
    const checks = new Map<string, string>();
+   /** Table paths named by `.table()` sources. */
+   const tablePaths = new Set<string>();
    /** Raw SQL expressions, by their fragments and how many arguments each places. */
    const expressions: { fragments: string[]; argCount: number }[] = [];
+   /** Author SQL by the connection it runs on, for the managed scope. */
+   const byConnection: { connection: string; what: string; sql: string }[] = [];
    const seen = new Set<object>();
-   const walk = (node: unknown, dialect: string | undefined, depth: number) => {
+   const walk = (
+      node: unknown,
+      dialect: string | undefined,
+      connection: string | undefined,
+      depth: number,
+   ) => {
       if (depth > 400 || node === null || typeof node !== "object") return;
       if (seen.has(node)) return;
       seen.add(node);
       if (Array.isArray(node)) {
-         for (const child of node) walk(child, dialect, depth + 1);
+         for (const child of node) walk(child, dialect, connection, depth + 1);
          return;
       }
       const record = node as Record<string, unknown>;
       const here =
          typeof record.dialect === "string" ? record.dialect : dialect;
+      const on =
+         typeof record.connection === "string" ? record.connection : connection;
       if (here === "duckdb") {
          if (
             record.type === "sql_select" &&
             typeof record.selectStr === "string"
          ) {
             checks.set(record.selectStr, `a .sql() source`);
+            if (on) {
+               byConnection.push({
+                  connection: on,
+                  what: "A .sql() source",
+                  sql: record.selectStr,
+               });
+            }
+         }
+         if (record.type === "table" && typeof record.tablePath === "string") {
+            tablePaths.add(record.tablePath);
+            if (on) {
+               byConnection.push({
+                  connection: on,
+                  what: "A .table() source",
+                  sql: `SELECT * FROM ${record.tablePath}`,
+               });
+            }
          }
          if (record.node === "genericSQLExpr" && Array.isArray(record.src)) {
             // Each argument stands as its own column reference, placed where
@@ -1209,19 +1344,43 @@ export async function authorSqlRefusals(
             // fails, since its value could end the statement at run time.
             const args = (record.kids as { args?: unknown[] } | undefined)
                ?.args;
+            const fragments = (record.src as unknown[]).map(String);
             expressions.push({
-               fragments: (record.src as unknown[]).map(String),
+               fragments,
                argCount: Array.isArray(args) ? args.length : 0,
             });
+            if (on) {
+               byConnection.push({
+                  connection: on,
+                  what: "A raw SQL expression",
+                  sql: `SELECT ${fragments.join(" NULL ")}`,
+               });
+            }
          }
       }
       for (const [key, child] of Object.entries(record)) {
          if (record.node === "function_call" && key === "overload") continue;
-         walk(child, here, depth + 1);
+         walk(child, here, on, depth + 1);
       }
    };
-   walk(modelDef, undefined, 0);
+   walk(modelDef, undefined, undefined, 0);
    const refusals: string[] = [];
+   if (options.managedSchemas) {
+      const managed = new Map<string, ReadonlySet<string> | undefined>();
+      for (const { connection, what, sql } of byConnection) {
+         if (!managed.has(connection)) {
+            managed.set(connection, await options.managedSchemas(connection));
+         }
+         const schemas = managed.get(connection);
+         if (!schemas) continue;
+         const refused = await managedCatalogRefusal(sql, connection, schemas);
+         if (refused) {
+            refusals.push(
+               `${modelPath}: ${managedCatalogMessage(what, connection, refused)}`,
+            );
+         }
+      }
+   }
    const refuse = (what: string, sql: string) => {
       const shown = sql.length > 120 ? `${sql.slice(0, 117)}...` : sql;
       refusals.push(
@@ -1230,14 +1389,66 @@ export async function authorSqlRefusals(
             `SELECT), and this one does not: ${shown}`,
       );
    };
+   const introspection = (what: string, name: string) => {
+      refusals.push(
+         `${modelPath}: ${what} on a DuckDB connection names '${name}', which ` +
+            `author SQL may not use: Publisher's DuckDB connections do not ` +
+            `expose catalog and settings introspection, logging, profiling, ` +
+            `SQL run from text, or an attached database beyond its tables, ` +
+            `to SQL.`,
+      );
+   };
+   const separator = (what: string) => {
+      refusals.push(
+         `${modelPath}: ${what} on a DuckDB connection contains the DuckDB ` +
+            `connector's statement separator comment, which the connector ` +
+            `splits into separate statements wherever it appears (in a ` +
+            `comment or a string literal too), so author SQL may not spell it.`,
+      );
+   };
    for (const { fragments, argCount } of expressions) {
       const shown = fragments.join(" ? ");
-      if (!(await expressionReadsArgumentsAsValues(fragments, argCount))) {
+      if (containsStatementSeparator(fragments.join(""))) {
+         separator("a raw SQL expression");
+         continue;
+      }
+      const name =
+         introspectionNameIn(fragments.join(" ")) ??
+         introspectionCallInParse(
+            (await serializeSQL(`SELECT ${fragments.join(" NULL ")}`))
+               .statements,
+         );
+      if (name) {
+         introspection("a raw SQL expression", name);
+      } else if (
+         !(await expressionReadsArgumentsAsValues(fragments, argCount))
+      ) {
          refuse("a raw SQL expression", `SELECT ${shown}`);
       }
    }
    for (const [sql, what] of checks) {
-      if (!(await isOneSelect(sql))) refuse(what, sql);
+      if (containsStatementSeparator(sql)) {
+         separator(what);
+         continue;
+      }
+      const name =
+         introspectionNameIn(sql) ??
+         introspectionCallInParse((await serializeSQL(sql)).statements);
+      if (name) introspection(what, name);
+      else if (!(await isOneSelect(sql))) refuse(what, sql);
+   }
+   for (const tablePath of tablePaths) {
+      if (containsStatementSeparator(tablePath)) {
+         separator("a .table() source");
+         continue;
+      }
+      // Malloy reads a DuckDB table path as written, after FROM.
+      const name =
+         introspectionNameIn(tablePath) ??
+         introspectionCallInParse(
+            (await serializeSQL(`SELECT * FROM ${tablePath}`)).statements,
+         );
+      if (name) introspection("a .table() source", name);
    }
    return refusals;
 }

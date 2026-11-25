@@ -24,7 +24,6 @@ import { logger } from "../../../logger";
 import {
    FreshnessManifest,
    isLegacyFailedEntry,
-   type KeyUniqueness,
    ManifestEntry,
 } from "../domain/types";
 
@@ -42,6 +41,52 @@ export interface FetchedManifest {
    /** `storage=` entries by sourceEntityId, kept whole for serve bindings. */
    storageEntries: Record<string, ManifestEntry>;
 }
+
+/**
+ * A manifest location that holds no usable build manifest: nothing is there
+ * (`not_found`), or what is there does not parse or is not a manifest
+ * (`invalid`). The caller named it, so retrying unchanged fails the same way;
+ * every other failure (a timeout, refused credentials, a network error) is
+ * the server's to settle.
+ */
+export class ManifestUnusableError extends Error {
+   constructor(
+      readonly problem: "not_found" | "invalid",
+      message: string,
+      options?: { cause?: unknown },
+   ) {
+      super(message, options);
+      this.name = "ManifestUnusableError";
+   }
+}
+
+/**
+ * Whether a read failed because nothing is at the location: a missing file
+ * or directory, or an object store's 404 (no such object or bucket). An
+ * object store that refuses access answers 403 even for a missing object
+ * when the caller may not list the bucket, so a refusal is not read as one.
+ */
+export function isManifestNotFound(error: unknown): boolean {
+   if (typeof error !== "object" || error === null) return false;
+   const e = error as {
+      code?: unknown;
+      name?: unknown;
+      $metadata?: { httpStatusCode?: unknown };
+   };
+   return (
+      e.code === "ENOENT" ||
+      e.code === "ENOTDIR" ||
+      // @google-cloud/storage's ApiError
+      e.code === 404 ||
+      // @aws-sdk/client-s3
+      e.name === "NoSuchKey" ||
+      e.name === "NoSuchBucket" ||
+      e.$metadata?.httpStatusCode === 404
+   );
+}
+
+const isJsonObject = (value: unknown): value is Record<string, unknown> =>
+   typeof value === "object" && value !== null && !Array.isArray(value);
 
 // Lazily created; both use the ambient credential chain, as the package
 // downloader does.
@@ -91,25 +136,61 @@ async function readManifestBytes(uri: string): Promise<string> {
 /**
  * Fetch and parse the host-computed build manifest at `uri`, split by tier
  * (see {@link splitManifestEntries}). Does not filter on freshness; the serve
- * path does that per query. Throws if the URI can't be read or parsed.
+ * path does that per query. Throws if the URI can't be read or parsed: a
+ * {@link ManifestUnusableError} when nothing is there, or what is there is
+ * not a JSON object whose `entries`, if any, is an object.
  */
 export async function fetchManifestEntries(
    uri: string,
 ): Promise<FetchedManifest> {
-   const raw = await readManifestBytes(uri);
-
-   let parsed: WireBuildManifest;
+   let raw: string;
    try {
-      parsed = JSON.parse(raw) as WireBuildManifest;
+      raw = await readManifestBytes(uri);
    } catch (err) {
-      throw new Error(
+      if (isManifestNotFound(err)) {
+         throw new ManifestUnusableError(
+            "not_found",
+            `No build manifest at ${uri}`,
+            { cause: err },
+         );
+      }
+      if ((err as { code?: unknown } | null)?.code === "EISDIR") {
+         throw new ManifestUnusableError(
+            "invalid",
+            `The build manifest location ${uri} is a directory, not a file`,
+            { cause: err },
+         );
+      }
+      throw err;
+   }
+
+   let parsed: unknown;
+   try {
+      parsed = JSON.parse(raw);
+   } catch (err) {
+      throw new ManifestUnusableError(
+         "invalid",
          `Failed to parse build manifest at ${uri}: ${
             err instanceof Error ? err.message : String(err)
          }`,
+         { cause: err },
+      );
+   }
+   if (!isJsonObject(parsed)) {
+      throw new ManifestUnusableError(
+         "invalid",
+         `The build manifest at ${uri} is not a JSON object`,
+      );
+   }
+   const entries = (parsed as WireBuildManifest).entries;
+   if (entries !== undefined && entries !== null && !isJsonObject(entries)) {
+      throw new ManifestUnusableError(
+         "invalid",
+         `The build manifest at ${uri} has an "entries" that is not an object`,
       );
    }
 
-   return splitManifestEntries(parsed.entries ?? {}, uri);
+   return splitManifestEntries(entries ?? {}, uri);
 }
 
 /**
@@ -136,13 +217,8 @@ export function isUsableTableName(name: string): boolean {
 export function splitManifestEntries(
    entries: Record<string, ManifestEntry>,
    source: string,
-   // Where the entries came from. Only Publisher's own store is read for a
-   // key check record (withRollupKeyRecords); a host's manifest is never
-   // trusted with one.
-   from: "store" | "host" = "host",
    { quiet = false }: { quiet?: boolean } = {},
 ): FetchedManifest {
-   const readKeyUniqueness = from === "store";
    const tableNameManifest: FreshnessManifest = {};
    const storageEntries: Record<string, ManifestEntry> = {};
    for (const [sourceEntityId, entry] of Object.entries(entries)) {
@@ -182,17 +258,12 @@ export function splitManifestEntries(
          continue;
       }
       if (entry.storageDestinationName) {
-         // The internal key record only from the local store
-         // (withRollupKeyRecords); a host's entry never brings one.
+         // A key check is read off the table's contract when it is bound
+         // (package_materialization.ts), never off a record an entry carries.
          const { keyUniqueness: _unread, ...plain } = entry as ManifestEntry & {
             keyUniqueness?: unknown;
          };
-         const keyUniqueness = readKeyUniqueness
-            ? keyUniquenessOnEntry(entry)
-            : undefined;
-         storageEntries[sourceEntityId] = keyUniqueness
-            ? ({ ...plain, keyUniqueness } as ManifestEntry)
-            : plain;
+         storageEntries[sourceEntityId] = plain;
          continue;
       }
       tableNameManifest[sourceEntityId] = {
@@ -204,35 +275,14 @@ export function splitManifestEntries(
          ...boundSchemaOf(entry.schema),
          ...boundNativeSchemaOf(entry.nativeSchema),
          ...(entry.lateRows ? { lateRows: entry.lateRows } : {}),
-         // Set only by a bind from the local store (withRollupKeyRecords);
-         // a host's manifest never carries it.
-         ...(readKeyUniqueness && keyUniquenessOnEntry(entry)
-            ? { keyUniqueness: keyUniquenessOnEntry(entry) }
-            : {}),
+         // Every incremental entry's: which build of its table it describes
+         // (`advancedBy`, `seededBy`, `advances`), what an extension over it
+         // compares with the build it last read (incremental_upstream.ts).
+         ...(entry.ledger ? { ledger: entry.ledger } : {}),
+         ...(entry.builtFrom?.length ? { builtFrom: entry.builtFrom } : {}),
+         ...(entry.contract !== undefined ? { contract: entry.contract } : {}),
+         ...(entry.builtAt ? { builtAt: entry.builtAt } : {}),
       };
    }
    return { tableNameManifest, storageEntries };
-}
-
-/** The internal rollup key record a local-store entry may carry. */
-function keyUniquenessOnEntry(entry: ManifestEntry): KeyUniqueness | undefined {
-   const k = (entry as { keyUniqueness?: Partial<KeyUniqueness> })
-      .keyUniqueness;
-   if (!k) return undefined;
-   const own =
-      typeof k.keyColumn === "string" && typeof k.unique === "boolean"
-         ? { keyColumn: k.keyColumn, unique: k.unique }
-         : undefined;
-   const parentKeys =
-      k.parentKeys && typeof k.parentKeys === "object"
-         ? Object.fromEntries(
-              Object.entries(k.parentKeys).filter(
-                 ([, unique]) => typeof unique === "boolean",
-              ),
-           )
-         : {};
-   const anyParent = Object.keys(parentKeys).length > 0;
-   return own || anyParent
-      ? { ...(own ?? {}), ...(anyParent ? { parentKeys } : {}) }
-      : undefined;
 }

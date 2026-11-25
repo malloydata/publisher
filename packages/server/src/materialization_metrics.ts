@@ -17,6 +17,10 @@
  */
 
 import {
+   type TableKind,
+   TIERS,
+} from "./service/materialization/domain/vocabulary";
+import {
    lazyCounter,
    lazyHistogram,
    resetInstrumentsForTesting,
@@ -29,7 +33,7 @@ import type {
 
 /**
  * Every label below is a closed union whose values are listed in a const array
- * (materialization v2 plan, section 5, "Step 4 specification"), so a spec can
+ * (the telemetry specification in docs/materialization-v2-plan.md), so a spec can
  * enumerate each one and adding a value is a reviewed change. No instrument
  * here carries a package, environment, source, model, table, destination,
  * connection or query label, and none is filled from a runtime string.
@@ -49,11 +53,11 @@ export const BUILD_KINDS = [
    "view",
    "query",
    "pair",
-] as const;
+] as const satisfies readonly TableKind[];
 export type BuildKind = (typeof BUILD_KINDS)[number];
 
 /** Where a table is built: the source's own warehouse, or a `storage=` destination. */
-export const BUILD_TIERS = ["database", "storage"] as const;
+export const BUILD_TIERS = TIERS;
 export type BuildTier = (typeof BUILD_TIERS)[number];
 
 /** A full rebuild, or an incremental delta applied in place. */
@@ -103,9 +107,20 @@ export const INCREMENTAL_STEP_REASONS = [
    "table_emptied",
    "shape_mismatch",
    "ledger_unreadable",
+   "ledger_entry_malformed",
+   // A recorded boundary on a table the run's pre-run read did not hold to
+   // its contract (a seed whose run never committed, a destination left).
+   "ledger_unheld",
    "plan_error",
    "chained_storage",
    "pair_parent_row",
+   "merge_key_not_unique",
+   // An incremental extension that could not prove it last read its
+   // incremental parent's immediately prior table, so it rebuilds.
+   "upstream_generation_skipped",
+   // An incremental extension on another watermark than its incremental
+   // parent's, rebuilt whenever the parent's table changed.
+   "upstream_watermark_differs",
    // Skips.
    "frontier_unreadable",
    "not_advanced",
@@ -159,7 +174,7 @@ type RouteOutcome = (typeof ROUTE_OUTCOMES)[number];
 type SkipReason = components["schemas"]["SkipReason"];
 /**
  * `publisher_query_route_total{reason}`: `NONE` when used, else the public
- * `SkipReason` the path report shows (2h's one vocabulary).
+ * `SkipReason` the path report shows (one vocabulary for both).
  */
 export const ROUTE_REASONS = [
    "NONE",
@@ -255,26 +270,22 @@ export type EligibilityRefusalReason =
  * How a chained `storage=` source (one that reads a storage-materialized
  * upstream) was built: `parent_reuse` = built by reading the upstream's stored
  * lake table ("stack on the parent" — reuses the parent's work and is
- * consistent-by-construction); `inline_fallback` = stacking was ineligible/failed
- * so the upstream was recomputed from raw against the warehouse (non-strict);
- * `strict_shape_fallback` = under `strictUpstreams`, the downstream reaches the
- * source warehouse (a table joined beside a stored parent, through a
- * non-persisted source), so no build over the parents exists and it was
- * recomputed from raw — the one recompute strict permits; `strict_refused` =
- * under `strictUpstreams`, a persisted upstream was neither built in the run
- * nor referenced, or the downstream reads only stored upstreams yet could not be
- * built over them, so the build failed loudly rather than recomputing a table
- * the orchestrator meant to pin.
+ * consistent-by-construction); `strict_refused` = no build over its stored
+ * upstreams exists (an upstream neither built in the run nor referenced, a
+ * path to the warehouse, a shape the build could not carry, a string the
+ * destination compares otherwise), so the build failed rather than
+ * recomputing its upstreams from raw.
+ *
+ * Retained label values, no longer produced (no build reads its upstreams'
+ * definitions in place of their tables): `inline_fallback` and
+ * `strict_shape_fallback`.
  */
 type ChainedStorageBuildOutcome =
    | "parent_reuse"
-   | "inline_fallback"
-   | "strict_shape_fallback"
    | "strict_refused"
    // The parent-reuse attempt failed on infrastructure (attach, CTAS, the
-   // destination being unreachable) rather than on shape. Distinct from
-   // `inline_fallback` because it is an outage, not a modelling limit: the build
-   // fails rather than recomputing from raw against the same destination.
+   // destination being unreachable) rather than on shape: an outage, not a
+   // modelling limit, and the build fails.
    | "infra_failure";
 
 const runCounter = lazyCounter(
@@ -436,6 +447,40 @@ const keyCheckCounter = lazyCounter(
       "the key unknown or repeated, so queries that need it unique are " +
       "answered live.",
 );
+const contractCaptureCounter = lazyCounter(
+   "publisher_materialization_contract_capture_total",
+   "Column contracts a build captured over the table it wrote. Labels: tier " +
+      "('database'|'storage'), outcome ('captured'|'unread'). An unread " +
+      "capture records no contract: the table is not served from until it " +
+      "is rebuilt (serve verdict reason contract_missing).",
+);
+const incompatibleDetectedCounter = lazyCounter(
+   "publisher_materialization_incompatible_detected_total",
+   "Bound tables a bind's catalog read, or a standalone run's read of the " +
+      "tables it would carry, found no longer matching the column contract " +
+      "their build recorded, so they answer live until rebuilt (a run " +
+      "rebuilds them rather than carry them). " +
+      "Labels: trigger ('bind'|'run'), code ('column_gone'|'column_retyped'|" +
+      "'collation_changed'|'declared_moved'|...). A failed stored read is " +
+      "never counted: it leaves the table unread until that read.",
+);
+/**
+ * Where a query walks the IR for a fact a compile or bind records, because
+ * the record does not cover it (an inline `extend`, an unrecorded lane or
+ * stored set).
+ */
+export type QueryWalkSite =
+   | "served_copy_declines"
+   | "scope"
+   | "rollup_candidates"
+   | "path_chain";
+const queryWalkCounter = lazyCounter(
+   "publisher_query_walks_total",
+   "IR walks a query made for a fact the served copy's compile or the bind " +
+      "records, because the record did not cover the query (an inline " +
+      "extend, an unrecorded lane or stored set). Labels: site " +
+      "('served_copy_declines'|'scope'|'rollup_candidates'|'path_chain').",
+);
 const storageTableRetainedCounter = lazyCounter(
    "publisher_storage_tables_retained_total",
    "Tables a FAILED run left in a storage= destination and deliberately did not " +
@@ -471,13 +516,13 @@ const eligibilityRefusedCounter = lazyCounter(
 const serveShapeTypeFallbackCounter = lazyCounter(
    "publisher_storage_serve_shape_type_fallback_total",
    "Captured DuckDB column types mapped to json in a stored table's declared " +
-      "type (type fidelity loss). Named for the retired storage serve shape. " +
+      "type (type fidelity loss). " +
       "Label: kind ('array'|'unrecognized').",
 );
 const storedColumnTypeMismatchCounter = lazyCounter(
    "publisher_storage_column_type_mismatch_total",
    "Stored columns whose DuckDB type does not serve as the type Malloy " +
-      "declares for them (ms2data/service#6642). Labels: stage ('build' = " +
+      "declares for them. Labels: stage ('build' = " +
       "found after a storage build; 'serve' = found when a model's bindings " +
       "are set, then cast on read or left out of the served copy so queries " +
       "reading it are answered live), declared (the Malloy type).",
@@ -485,19 +530,23 @@ const storedColumnTypeMismatchCounter = lazyCounter(
 const chainedStorageBuildCounter = lazyCounter(
    "publisher_storage_chained_build_total",
    "Chained storage= source builds (a source reading a storage-materialized " +
-      "upstream). Label: outcome ('parent_reuse'|'inline_fallback'|" +
-      "'strict_shape_fallback'|'strict_refused'|'infra_failure'). The " +
-      "parent_reuse share is the headline signal for how far the " +
-      "stack-on-the-parent path gets us vs recompute-from-raw.",
+      "upstream). Label: outcome ('parent_reuse'|'strict_refused'|" +
+      "'infra_failure'; 'inline_fallback' and 'strict_shape_fallback' are " +
+      "retained but no longer produced: no build recomputes its upstreams " +
+      "from raw).",
 );
-const staleUpstreamEntryCounter = lazyCounter(
-   "publisher_materialization_stale_upstream_entry_total",
-   "Builds that could not use an upstream's manifest entry because it is at a " +
-      "different tier than the upstream is declared on now (ms2data/service#7087: " +
-      "a source moved to or from storage= keeps its content address). The build " +
-      "recomputes that upstream from raw instead, which reads the warehouse. " +
-      "Label: tier ('database'|'storage'), the tier of the build that " +
-      "recomputed.",
+const uncheckedUpstreamReadCounter = lazyCounter(
+   "publisher_materialization_upstream_recompute_total",
+   "Builds that read a stored upstream's database table unchecked: a host's " +
+      "reference carried no nativeSchema (a storage= one, no contract), so the " +
+      "table's columns could not be " +
+      "checked against its build. No build recomputes an upstream, so this is " +
+      "the only reason and outcome produced. Labels: reason " +
+      "('reference_types_unrecorded'), build ('chained' for a build over the " +
+      "upstream, 'rollup' for a database rollup over its stored base), and " +
+      "outcome ('read_unchecked'). The reasons 'moved', 'unreadable', " +
+      "'types_unrecorded' and 'persisted_result' and the outcome 'recomputed' " +
+      "are retired: such a build is refused.",
 );
 
 /**
@@ -771,6 +820,31 @@ export function recordKeyCheck(
    keyCheckCounter().add(1, { kind, outcome });
 }
 
+/**
+ * Record a table a bind's catalog read found incompatible with its contract
+ * (package_materialization.ts), by code. A failed stored read is never
+ * counted: it leaves the table unread until that read.
+ */
+export function recordIncompatibleDetected(
+   trigger: "bind" | "run",
+   code: string,
+): void {
+   incompatibleDetectedCounter().add(1, { trigger, code });
+}
+
+/** Record one query-path walk for a recorded fact. */
+export function recordQueryWalk(site: QueryWalkSite): void {
+   queryWalkCounter().add(1, { site });
+}
+
+/** Record one column contract capture (run/column_contract_capture.ts). */
+export function recordContractCapture(
+   tier: BuildTier,
+   outcome: "captured" | "unread",
+): void {
+   contractCaptureCounter().add(1, { tier, outcome });
+}
+
 /** Record how long the router took to choose the leg that answered a query. */
 export function recordQueryRouteDuration(
    durationMs: number,
@@ -805,39 +879,18 @@ export function recordAttributionSkipped(
 }
 
 /**
- * Record a materialization-eligibility refusal. A build plan records each
- * source in its `refusedSources` once per derivation, under the reason there,
- * and never a source it does not refuse (a database source only unservable
- * from storage); a run records the refusals only it can find. The `given`
- * reason is a security
- * refusal (a frozen given-filtered table would leak rows across tenants); worth
- * tracking how often authors attempt it.
+ * Record a materialization-eligibility refusal. A build plan's refusals are
+ * counted as it is derived and recorded where the plan is adopted (a load, a
+ * run's guard), each source in its `refusedSources` once, under the reason
+ * there, and never a source it does not refuse (a database source only
+ * unservable from storage); a run records the refusals only it can find. The
+ * `given` reason is a security refusal (a frozen given-filtered table would
+ * leak rows across tenants); worth tracking how often authors attempt it.
  */
 export function recordEligibilityRefused(
    reason: EligibilityRefusalReason,
 ): void {
-   const counts = eligibilityRefusalSink?.();
-   if (counts) {
-      counts[reason] = (counts[reason] ?? 0) + 1;
-      return;
-   }
    eligibilityRefusedCounter().add(1, { reason });
-}
-
-let eligibilityRefusalSink:
-   | (() => Partial<Record<EligibilityRefusalReason, number>> | undefined)
-   | undefined;
-
-/**
- * Route eligibility refusals to the counts `sink` returns instead of the
- * meter, whenever it returns any. The package-load worker derives build plans
- * on a thread whose meter is a no-op, so it counts each job's refusals in that
- * job's own context and hands them back for the main thread to record.
- */
-export function setEligibilityRefusalSink(
-   sink: () => Partial<Record<EligibilityRefusalReason, number>> | undefined,
-): void {
-   eligibilityRefusalSink = sink;
 }
 
 /**
@@ -889,12 +942,15 @@ export function recordChainedStorageBuild(
 }
 
 /**
- * Record a build that recomputed an upstream from raw because the upstream's
- * manifest entry is at a different tier than it is declared on now (see
- * {@link staleUpstreamEntryCounter}). Once per run per upstream.
+ * Record a build that read a host-referenced upstream table unchecked (see
+ * {@link uncheckedUpstreamReadCounter}). Once per build per upstream.
  */
-export function recordStaleUpstreamEntry(tier: "database" | "storage"): void {
-   staleUpstreamEntryCounter().add(1, { tier });
+export function recordUpstreamReadUnchecked(build: "chained" | "rollup"): void {
+   uncheckedUpstreamReadCounter().add(1, {
+      reason: "reference_types_unrecorded",
+      build,
+      outcome: "read_unchecked",
+   });
 }
 
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */

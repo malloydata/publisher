@@ -16,7 +16,11 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { createTableWithDeclaredTypes } from "./materialization_build_session";
 import { stackFrames } from "./run_lifecycle";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
+import { fakeContractReads } from "../../../test_helpers/contract_fixture";
+
+// Builds over fake connections, which answer no catalog query.
+fakeContractReads();
 
 // The never-log rule (docs/materialization-v2-plan.md, "Step 4
 // specification"): no log call, at any level, carries a value from the data
@@ -349,7 +353,6 @@ describe("build failure logs never carry the driver's message", () => {
          ],
          seedEntries: {},
          signal: new AbortController().signal,
-         strict: false,
       })) as { failures: Record<string, { reason: string }> };
 
       expect(result.failures["a1aaaaaaaaaaaaaa"].reason).toContain(ROW_VALUE);

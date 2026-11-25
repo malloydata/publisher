@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { contractFor } from "../../../test_helpers/contract_fixture";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import path from "path";
 import { pathToFileURL } from "url";
@@ -139,6 +140,7 @@ const prior = (table: string, sourceEntityId: string): ManifestEntry =>
    ({
       sourceEntityId,
       physicalTableName: table,
+      contract: contractFor(),
       connectionName: "duckdb",
    }) as ManifestEntry;
 
@@ -579,6 +581,7 @@ describe("a table named before readable names", () => {
          b1aaaaaaaaaaaaaa: {
             sourceEntityId: "b1aaaaaaaaaaaaaa",
             physicalTableName: legacy,
+            contract: contractFor(),
             connectionName: "wh",
          } as ManifestEntry,
       };

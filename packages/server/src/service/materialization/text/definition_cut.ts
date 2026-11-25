@@ -15,12 +15,13 @@
  */
 
 import {
-   isName,
    lexAll,
+   statementAnnotationsFrom,
    statementHead,
    statementStarts,
    type Token,
-} from "./malloy_lexer";
+} from "../../malloy_lexer_core";
+import { isName } from "./malloy_lexer";
 
 /** The statements a definition can be left out of. */
 const DEFINITION_KEYWORDS = new Set([
@@ -46,6 +47,11 @@ export interface LeftOutDefinition {
    declaration?: string;
    /** True for a join Malloy refused across connections; false for what read it. */
    crossConnection: boolean;
+   /**
+    * For a top-level source or query left out whole because a join refused
+    * across connections inside it could not be left out alone: that join.
+    */
+   join?: string;
 }
 
 /** A half-open character range of a file to blank. */
@@ -53,6 +59,13 @@ export interface Cut {
    start: number;
    end: number;
    left: Omit<LeftOutDefinition, "url" | "crossConnection">;
+   /**
+    * For one definition of a statement that holds several (`join_one: a is
+    * …, b is …`): the whole statement's range, and how many definitions it
+    * holds, so a rewrite that leaves every one of them out removes the
+    * statement rather than leave its keyword with nothing after it.
+    */
+   statement?: { start: number; end: number; definitions: number };
 }
 
 /** A statement: its keyword token, its colon, and where it ends. */
@@ -99,7 +112,12 @@ function statementsOf(text: string, tokens: readonly Token[]): Statement[] {
  * `query:`), and within it the one `<name> is …` (or `<name> with …`, `<name>
  * on …`) that holds the offset. Undefined when no such statement holds it.
  */
-export function definitionCutAt(text: string, offset: number): Cut | undefined {
+export function definitionCutAt(
+   text: string,
+   offset: number,
+   /** Only a top-level `source:` or `query:`: the declaration around it. */
+   topLevel = false,
+): Cut | undefined {
    const tokens = lexAll(text);
    if (!tokens) return undefined;
    const statements = statementsOf(text, tokens);
@@ -109,8 +127,13 @@ export function definitionCutAt(text: string, offset: number): Cut | undefined {
          s.keyword.start <= offset &&
          offset < s.end &&
          // `source:` and `query:` are definitions only at the top level.
-         (s.keyword.depth === 0 ||
-            (s.keyword.text !== "source" && s.keyword.text !== "query")),
+         (s.keyword.depth === 0
+            ? !topLevel ||
+              s.keyword.text === "source" ||
+              s.keyword.text === "query"
+            : !topLevel &&
+              s.keyword.text !== "source" &&
+              s.keyword.text !== "query"),
    );
    if (holding.length === 0) return undefined;
    const stmt = holding.reduce((a, b) =>
@@ -182,57 +205,29 @@ export function definitionCutAt(text: string, offset: number): Cut | undefined {
       name,
       ...(declaration && declaration !== name ? { declaration } : {}),
    };
-   if (defs.length === 1) {
-      // The whole statement, with its access label and the annotation lines
-      // written on it.
-      const head = statementHead(tokens, tokens.indexOf(stmt.keyword));
-      const before = tokens.filter((t) => t.end <= head.start);
-      return {
-         start: annotationsStart(
-            text,
-            before[before.length - 1]?.end ?? 0,
-            head.start,
-         ),
-         end: stmtLast.end,
-         left,
-      };
-   }
+   // The whole statement, with its access label and the annotations written
+   // on it.
+   const head = statementHead(tokens, tokens.indexOf(stmt.keyword));
+   const before = tokens[tokens.indexOf(head) - 1];
+   const whole = {
+      start: statementAnnotationsFrom(text, before?.end ?? 0, head.start),
+      end: stmtLast.end,
+   };
+   if (defs.length === 1) return { ...whole, left };
+   const statement = { ...whole, definitions: defs.length };
    if (index === 0) {
       // From the colon, so its own annotation lines go with it, through its
       // comma; the next definition keeps the annotation lines written on it.
-      return { start: stmt.colon.end, end: def.fullEnd, left };
+      return { start: stmt.colon.end, end: def.fullEnd, left, statement };
    }
    // From the end of the definition before it (taking the comma between them,
    // and this one's annotation lines).
-   return { start: defs[index - 1].lastEnd, end: def.lastEnd, left };
-}
-
-/**
- * Where the annotation lines written on a statement at `keyword` begin: the
- * run of `#` lines (and blank lines) right above it, no further back than
- * `floor`. A `##` model annotation is the file's, not the statement's, so the
- * run stops at one; nothing on the statement's own line before it moves.
- */
-function annotationsStart(
-   text: string,
-   floor: number,
-   keyword: number,
-): number {
-   const lineStart = text.lastIndexOf("\n", keyword - 1) + 1;
-   if (lineStart < floor || text.slice(lineStart, keyword).trim() !== "") {
-      return keyword;
-   }
-   let start = lineStart;
-   while (start > floor) {
-      const prevStart = text.lastIndexOf("\n", start - 2) + 1;
-      if (prevStart < floor) break;
-      const line = text.slice(prevStart, start - 1).trim();
-      if (line !== "" && !(line.startsWith("#") && !line.startsWith("##"))) {
-         break;
-      }
-      start = prevStart;
-   }
-   return start;
+   return {
+      start: defs[index - 1].lastEnd,
+      end: def.lastEnd,
+      left,
+      statement,
+   };
 }
 
 /** The name of the top-level `source:` or `query:` holding `offset`. */

@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { contractFor } from "../../../test_helpers/contract_fixture";
 import { describe, expect, it } from "bun:test";
 import {
    compiledWith,
@@ -284,6 +285,7 @@ describe("a standalone run's carry-forward", () => {
    const prior = (address: string, name: string, dataAsOf?: string) => ({
       sourceEntityId: address,
       physicalTableName: name,
+      contract: contractFor(),
       connectionName: "duckdb",
       ...(dataAsOf ? { dataAsOf } : {}),
    });
@@ -346,5 +348,59 @@ describe("a standalone run's carry-forward", () => {
          "b1aaaaaaaaaaaaaa",
          "b2bbbbbbbbbbbbbb",
       ]);
+   });
+
+   it("never carries a table stored as of its build: its build reads the current time", () => {
+      const nowReading = compiledWith(
+         {
+            s1: fakeSource({
+               name: "s1",
+               sourceEntityId: "b1aaaaaaaaaaaaaa",
+               sourceDef: {
+                  type: "query_source",
+                  query: {
+                     structRef: { type: "table", fields: [] },
+                     pipeline: [
+                        {
+                           type: "project",
+                           filterList: [
+                              {
+                                 node: "filterCondition",
+                                 code: "ts > now",
+                                 e: {
+                                    node: ">",
+                                    kids: {
+                                       left: { node: "field", path: ["ts"] },
+                                       right: { node: "now" },
+                                    },
+                                 },
+                              },
+                           ],
+                        },
+                     ],
+                  },
+               },
+            }),
+            s2: fakeSource({ name: "s2", sourceEntityId: "b2bbbbbbbbbbbbbb" }),
+         },
+         [["s1", "s2"]],
+      );
+      const { instructions, carried } = deriveSelfInstructions(
+         {
+            ...nowReading,
+            asOfBuild: { s1: { name: "s1", reads: [] } },
+            // No access decision reads it, so the gate builds it.
+            accessReads: [],
+         },
+         undefined,
+         {
+            b1aaaaaaaaaaaaaa: prior("b1aaaaaaaaaaaaaa", "s1"),
+            b2bbbbbbbbbbbbbb: prior("b2bbbbbbbbbbbbbb", "s2"),
+         },
+      );
+      expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+         "b1aaaaaaaaaaaaaa",
+      ]);
+      expect(Object.keys(carried)).toEqual(["b2bbbbbbbbbbbbbb"]);
    });
 });

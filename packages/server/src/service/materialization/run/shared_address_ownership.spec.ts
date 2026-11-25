@@ -22,7 +22,7 @@ import { parsePackageName, VersionRef } from "../../identity";
 import { storageBindingResolverFor } from "../../versions/materialization_scope";
 import type { BuildInstruction, ManifestEntry } from "../domain/types";
 import { InstructedBuild } from "./instructed_build";
-import type { BuildEnvironment } from "./materialization_run_support";
+import { type BuildEnvironment } from "./build_upstreams";
 import { MaterializationService } from "./materialization_service";
 import { ownedTableComment, TABLE_OWNED_ELSEWHERE } from "./table_ownership";
 import {
@@ -494,7 +494,6 @@ describe("the build loop: one ownership decision per shared table", () => {
             ],
             seedEntries: {},
             signal: new AbortController().signal,
-            strict: false,
             owner: { environmentId: ENV_ID, packageName: PKG },
             ...(options.hostInstructed ? { hostInstructed: true } : {}),
          });

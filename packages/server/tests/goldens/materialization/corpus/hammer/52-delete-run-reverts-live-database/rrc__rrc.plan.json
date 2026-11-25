@@ -70,6 +70,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.rrc_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "15b55e6dc57f590c3eadf4c175108973723ce5e4771a5d3d8a725c7f9d23a7dd",
         "sourceID": "daily@<hammer>/rrc/rrc.malloy",

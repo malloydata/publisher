@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import {
    answerKeepsGates,
+   gateColumnTypeExact,
    legMayPassGate,
    tableKeepsGates,
    type GatedTable,
@@ -346,6 +347,77 @@ describe("the gate policy at the router", () => {
             true,
          );
       }
+   });
+
+   it("R-10: keeps a gate over a stored DOUBLE that copies a warehouse double compared as DuckDB compares it, and no other float", () => {
+      const read = (
+         stored: string,
+         upstream: { dialect: string; nativeType: string } | undefined,
+      ) => [
+         {
+            tier: "storage" as const,
+            ownGateKept: true,
+            gateColumnTypes: ["BIGINT", stored],
+            // As the build records it (`gateExact`).
+            gateColumnsExactRecorded: gateColumnTypeExact(stored, upstream),
+         },
+      ];
+      const keeps = (
+         stored: string,
+         upstream: { dialect: string; nativeType: string } | undefined,
+      ) => answerKeepsGates("served", read(stored, upstream), OFF, G3);
+      // Exact: the same 8-byte double, NaN compared alike.
+      expect(
+         keeps("DOUBLE", { dialect: "snowflake", nativeType: "FLOAT" }),
+      ).toBe(true);
+      expect(
+         keeps("DOUBLE", {
+            dialect: "snowflake",
+            nativeType: "double precision",
+         }),
+      ).toBe(true);
+      expect(
+         keeps("DOUBLE", {
+            dialect: "postgres",
+            nativeType: "double precision",
+         }),
+      ).toBe(true);
+      expect(keeps("DOUBLE", { dialect: "duckdb", nativeType: "DOUBLE" })).toBe(
+         true,
+      );
+      // Not: BigQuery's FLOAT64 compares NaN false; a 4-byte float rounds a
+      // literal live; an exact number or an integer rounds past 2^53; a
+      // column the build computed, or whose table was not read, is unknown.
+      for (const upstream of [
+         { dialect: "standardsql", nativeType: "FLOAT64" },
+         { dialect: "postgres", nativeType: "real" },
+         { dialect: "duckdb", nativeType: "FLOAT" },
+         { dialect: "snowflake", nativeType: "NUMBER(38,2)" },
+         { dialect: "snowflake", nativeType: "NUMBER(38,0)" },
+         { dialect: "postgres", nativeType: "bigint" },
+         { dialect: "postgres", nativeType: "numeric(12,4)" },
+         { dialect: "mysql", nativeType: "double" },
+         undefined,
+      ]) {
+         expect({ upstream, kept: keeps("DOUBLE", upstream) }).toEqual({
+            upstream,
+            kept: false,
+         });
+      }
+      // Stored narrower than the double it copies, or as a 128-bit integer.
+      expect(
+         keeps("FLOAT", { dialect: "snowflake", nativeType: "FLOAT" }),
+      ).toBe(false);
+      expect(
+         keeps("HUGEINT", { dialect: "snowflake", nativeType: "FLOAT" }),
+      ).toBe(false);
+      // A struct holding a double is not a copy of one.
+      expect(
+         keeps("STRUCT(x DOUBLE)", {
+            dialect: "snowflake",
+            nativeType: "FLOAT",
+         }),
+      ).toBe(false);
    });
 
    it("fails closed on a leg with no row", () => {

@@ -8,10 +8,10 @@ import { buildEnvironmentStub } from "../../../test_helpers/materialization_serv
 import type { MaterializePlan } from "../domain/table_plans";
 import type { ManifestEntry } from "../domain/types";
 import {
+   type ChainedPlanFacts,
    NO_PLAN_FACTS,
    presentedSourceName,
-   type ChainedPlanFacts,
-} from "./materialization_run_support";
+} from "./build_upstreams";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 
 /**
@@ -19,7 +19,7 @@ import { StorageBuildStrategy } from "./storage_build_strategy";
  * in the same destination, from the chain its plan carries. These pin what it
  * does when that table is not there to read: it names the author's parent,
  * never the generated build source, and says where the table is instead, so
- * the ladder above it recomputes, or refuses under `strictUpstreams`.
+ * the build above it refuses with that reason.
  */
 
 const PARENT_ID = "orders@file:///pkg/m.malloy";
@@ -34,6 +34,7 @@ const plan: MaterializePlan = {
    buildsOver: {
       sourceID: PARENT_ID,
       sourceName: "orders",
+      mode: { tier: "same" },
       declaration: {
          url: "file:///pkg/m.malloy",
          range: {

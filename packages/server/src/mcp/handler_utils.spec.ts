@@ -73,6 +73,7 @@ describe("classifyToolError", () => {
       expect(details).toEqual({
          message:
             "The database connection for env/pkg is down: the database could not be reached, so the query never ran.",
+         reason: "CONNECTION_FAILED",
          suggestions: [
             "The query and the model are fine. Do not rewrite them.",
             "Retry once. If it fails again, report that the database connection is down rather than changing the query.",
@@ -93,6 +94,7 @@ describe("classifyToolError", () => {
       expect(details).toEqual({
          message:
             "The database rejected the connection's credentials for env/pkg. The query never ran.",
+         reason: "CONNECTION_AUTH_FAILED",
          suggestions: [
             "The query and the model are fine. Do not rewrite them, and do not retry: it fails the same way until the credentials are fixed.",
             "Report that the connection's user, password, key or token needs updating.",
@@ -110,6 +112,7 @@ describe("classifyToolError", () => {
       expect(details).toEqual({
          message:
             'No connection named "bq_demo" found in config. The model for env/pkg uses a connection this environment does not have, so the query never ran.',
+         reason: "CONNECTION_NOT_FOUND",
          suggestions: [
             "The query is fine. Do not rewrite it, and do not retry: it fails the same way until the connection exists.",
             "Report that the environment is missing this connection; it was likely deleted or renamed.",
@@ -401,7 +404,14 @@ describe("getModelForQuery setup failures", () => {
       [
          "an authorize denial",
          new AccessDeniedError("denied"),
-         getMalloyErrorDetails(LOAD, modelId, new AccessDeniedError("denied")),
+         {
+            ...getMalloyErrorDetails(
+               LOAD,
+               modelId,
+               new AccessDeniedError("denied"),
+            ),
+            reason: "ACCESS_DENIED",
+         },
       ],
       [
          "back-pressure",

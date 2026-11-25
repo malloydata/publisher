@@ -556,10 +556,10 @@ function fieldKey(field: unknown): string {
  * as itself; only a reference with no identity, or to a name the model lacks,
  * is raw.
  *
- * A chained build's refusal turns on this: a stored table not bound is an
- * upstream `strictUpstreams` refuses; a raw path can only be recomputed from
- * the warehouse; a source reaching neither that still cannot be carried is a
- * carrying limit, which strict must not treat as licence to recompute.
+ * A chained build's refusal turns on this: a stored table not bound is a
+ * missing upstream; a raw path reads the warehouse, which no stored table
+ * stands in for; a source reaching neither that still cannot be carried is a
+ * carrying limit. Each is refused with its own reason.
  */
 export function reachPersisted(
    ctx: ReachContext,
@@ -671,6 +671,21 @@ export function reachPersisted(
               ? def.query?.structRef
               : undefined;
       if (base === undefined) {
+         // An extension of a table-backed source records no `extends`: its
+         // base as the compiler's shared structure names it, and only the
+         // joins it adds.
+         const inferred = inferredExtendedSource(def, ctx) as
+            | MappedSourceDef
+            | undefined;
+         if (inferred) {
+            follow(inferred, label);
+            const baseFields = new Set((inferred.fields ?? []).map(fieldKey));
+            followJoins(
+               (def.fields ?? []).filter((f) => !baseFields.has(fieldKey(f))),
+               label,
+            );
+            return;
+         }
          // A table or a SQL source: nothing stored stands behind it.
          reachRaw(label, via);
          return;

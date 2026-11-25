@@ -171,6 +171,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.frp_deals"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "9dce68668f4c9afdd11326365c251098976f35118dcac86137845d120b1606eb",
         "sourceID": "deals@<hammer>/frp/frp.malloy",
@@ -207,6 +213,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.frp_deals"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "9dce68668f4c9afdd11326365c251098976f35118dcac86137845d120b1606eb",
         "sourceID": "deals_alias@<hammer>/frp/frp.malloy",
@@ -243,6 +255,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.frp_deals"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "9dce68668f4c9afdd11326365c251098976f35118dcac86137845d120b1606eb",
         "sourceID": "pipeline_now@<hammer>/frp/frp.malloy",
@@ -267,6 +285,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.frp_deals"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "cf4461896a5a940f45f0c599155081dacaa0ffd03f1f54e78e9b2c8d7548daa2",
         "sourceID": "w@<hammer>/frp/frp.malloy",
@@ -291,6 +315,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.frp_deals"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "83831f3a9aa8a6acd61b001f72557a76b91abf07a388b09cfb13f139d4188f7d",
         "sourceID": "x@<hammer>/frp/frp.malloy",
@@ -315,6 +345,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.frp_deals"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "d256b2d677d1669f14fabbc68e182911b847491cc66693b57dc1ea147546bd71",
         "sourceID": "y@<hammer>/frp/frp.malloy",
@@ -343,6 +379,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.frp_deals"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "7fb062ba34fdf1e0f477bf692648688cde2a49d50e1465ea3cb238400364d387",
         "sourceID": "z@<hammer>/frp/frp.malloy",

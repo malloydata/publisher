@@ -395,6 +395,8 @@ export function useSuggestOptions(
                     givens,
                  },
             undefined,
+            // versionId: carried in the body.
+            undefined,
             { signal },
          );
          return readOptionPage(

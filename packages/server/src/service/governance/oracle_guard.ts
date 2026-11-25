@@ -13,12 +13,12 @@
  * unconditionally. Removing a check here may leak schema through compile
  * errors; it must never change which rows a query can read.
  *
- * Moved verbatim from `Model.runQueryResults`, `Model.runNotebookCell` and
+ * Moved verbatim from `Model.runQueryResults` and
  * `Model.assertAuthorizedForText`; the checks themselves stay on
  * `QueryGovernor`, which hands them in as {@link OracleChecks}.
  */
 
-import type { GivenValue, QueryMaterializer } from "@malloydata/malloy";
+import type { GivenValue } from "@malloydata/malloy";
 import { hasCallerAuthorizeAnnotation } from "../authorize";
 import type { CallerRegion } from "../caller_joins";
 import type { GraftScope } from "../gate_classification";
@@ -53,11 +53,6 @@ export interface OracleChecks {
       givens: Record<string, GivenValue>,
       bypassAuthorize?: boolean,
    ): Promise<void>;
-   probeEntryPointGates(
-      runnable: QueryMaterializer,
-      givens: Record<string, GivenValue>,
-      graftScope: GraftScope | undefined,
-   ): Promise<unknown>;
    /** The model's declared sources and queries, by name. */
    sources(): ReadonlyArray<{ name?: string }> | undefined;
    queries(): ReadonlyArray<{ name?: string; sourceName?: string }> | undefined;
@@ -205,20 +200,5 @@ export class OracleGuard {
          false,
          decided,
       );
-   }
-
-   /**
-    * A notebook cell's gate on its UNREFINED runnable, before a `#(filter)`
-    * refinement rebuilds it, so a denied caller gets the 403 rather than a
-    * 400 from a broken refinement or bad `filterParams`. Locks and rejected
-    * gates throw; row-level gates are left to `govern` on the refined
-    * runnable.
-    */
-   public async beforeCellRefinement(
-      runnable: QueryMaterializer,
-      givens: Record<string, GivenValue>,
-      graftScope: GraftScope | undefined,
-   ): Promise<void> {
-      await this.checks.probeEntryPointGates(runnable, givens, graftScope);
    }
 }

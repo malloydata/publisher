@@ -191,19 +191,9 @@ function compilationErrorOf(model: Model): Error | undefined {
    return (model as unknown as { compilationError?: Error }).compilationError;
 }
 
-/** A notebook cell's `result` is Malloy's own wire-format JSON, not the
- *  `compactResult` shape `runQuery` returns — same helper
- *  `tests/component/authorize/row_level_enforcement.spec.ts` keeps its own copy of. */
-function firstCellResultValue(resultJson: string): unknown {
-   const parsed = JSON.parse(resultJson);
-   const row = parsed?.data?.array_value?.[0]?.record_value?.[0];
-   return (
-      row?.number_value ??
-      row?.string_value ??
-      row?.boolean_value ??
-      row?.timestamp_value ??
-      null
-   );
+/** The `n` of a one-row aggregate, as `runQuery`'s `compactResult` holds it. */
+function firstN(result: { compactResult: unknown }): unknown {
+   return (result.compactResult as unknown as { n: number }[])[0].n;
 }
 
 /** Assert `queryText` denies with `AccessDeniedError` — the shared shape for
@@ -837,8 +827,12 @@ run: filtered_parent extend { except: val } extend { rename: val is note } -> { 
       );
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
+         // The cell's query, run on the notebook's path with the filter value.
          await expect(
-            model.executeNotebookCell(unrecordedAudit(), 1, { val: "a" }),
+            model.runQuery(unrecordedAudit(), {
+               query: "run: filtered_parent extend { except: val } extend { rename: val is note } -> { group_by: id; aggregate: n is count() }",
+               filterParams: { val: "a" },
+            }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup();
@@ -1230,17 +1224,12 @@ run: gated_parent extend { where: id = 1 } -> { aggregate: n is count() }
          );
          try {
             expect(compilationErrorOf(model)).toBeUndefined();
-            const result = await model.executeNotebookCell(
-               unrecordedAudit(),
-               1,
-               {},
-               false,
-               {
-                  GROUPS: [1],
-               },
-            );
-            expect(result.result).toBeDefined();
-            expect(firstCellResultValue(result.result!)).toBe(1);
+            const result = await model.runQuery(unrecordedAudit(), {
+               query: "run: gated_parent extend { where: id = 1 } -> { aggregate: n is count() }",
+               filterParams: {},
+               givens: { GROUPS: [1] },
+            });
+            expect(firstN(result)).toBe(1);
          } finally {
             await cleanup();
          }
@@ -1323,14 +1312,15 @@ import "child_dimension_misbind.malloy"
 run: child_src -> { aggregate: n is count() }
 `,
    };
+   /** Each notebook's last cell, sent to the notebook's own path. */
+   const CELL = "run: child_src -> { aggregate: n is count() }";
 
    // A MODEL-declared misbind (the model file itself, not the caller's query
    // text, does the `except:`/`rename:`), spread across an IMPORT boundary
-   // and run from a notebook cell — the one shape `findFilterAnnotationDeclaringSource`
-   // can genuinely fail to resolve on its own (a notebook's per-cell compile
-   // does not always carry an imported base source forward as its own
-   // `modelDef.contents` entry) and needs the sibling-model lookup to reach
-   // `base.malloy`'s real declaration. Reaching it must not admit THIS
+   // and run on a notebook's path — a shape `findFilterAnnotationDeclaringSource`
+   // can fail to resolve on its own (an imported base source is not always
+   // carried forward as its own `modelDef.contents` entry) and needs the
+   // sibling-model lookup to reach `base.malloy`'s real declaration. Reaching it must not admit THIS
    // shape merely because it cannot tell it apart from the innocent one —
    // the field-binding check that runs against the sibling's struct is what
    // still denies it.
@@ -1340,7 +1330,10 @@ run: child_src -> { aggregate: n is count() }
          const model = pkg.getModel("nb.malloynb");
          expect(model).toBeDefined();
          await expect(
-            model!.executeNotebookCell(unrecordedAudit(), 1, { org_id: "2" }),
+            model!.runQuery(unrecordedAudit(), {
+               query: CELL,
+               filterParams: { org_id: "2" },
+            }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup();
@@ -1352,11 +1345,11 @@ run: child_src -> { aggregate: n is count() }
       try {
          const model = pkg.getModel("nb_unmodified.malloynb");
          expect(model).toBeDefined();
-         const result = await model!.executeNotebookCell(unrecordedAudit(), 1, {
-            org_id: "2",
+         const result = await model!.runQuery(unrecordedAudit(), {
+            query: CELL,
+            filterParams: { org_id: "2" },
          });
-         expect(result.result).toBeDefined();
-         expect(firstCellResultValue(result.result!)).toBe(2);
+         expect(firstN(result)).toBe(2);
       } finally {
          await cleanup();
       }
@@ -1375,7 +1368,10 @@ run: child_src -> { aggregate: n is count() }
          const model = pkg.getModel("nb_dimension_misbind.malloynb");
          expect(model).toBeDefined();
          await expect(
-            model!.executeNotebookCell(unrecordedAudit(), 1, { org_id: "2" }),
+            model!.runQuery(unrecordedAudit(), {
+               query: CELL,
+               filterParams: { org_id: "2" },
+            }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup();

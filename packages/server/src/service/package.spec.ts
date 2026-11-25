@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { runInternalSQL } from "./duckdb_lockdown";
 import { unrecordedAudit } from "./access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import "@malloydata/db-duckdb/native";
@@ -130,7 +131,8 @@ describe("service/package", () => {
                const sandbox = (await pkg
                   .getMalloyConfig()
                   .connections.lookupConnection("duckdb")) as DuckDBConnection;
-               const result = await sandbox.runSQL(
+               const result = await runInternalSQL(
+                  sandbox,
                   "SELECT current_setting('autoinstall_known_extensions') AS v",
                );
                expect(result.rows).toEqual([{ v: false }]);

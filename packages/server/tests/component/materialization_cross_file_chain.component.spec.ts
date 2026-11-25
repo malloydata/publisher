@@ -479,7 +479,7 @@ source: child is mid2 extend {
       await expectChained(m, chain, queries, false);
    });
 
-   it("builds a child from the warehouse when a file between declares a #(materialize) it does not plan, with the same rows", async () => {
+   it("builds a child over its parent's table through a file between that declares a #(materialize) it refuses, with the same rows", async () => {
       await setUp({
          ...THROUGH_THIRD,
          // Refused, for itself alone: its inlined join's rows read the
@@ -506,8 +506,12 @@ source: mid is parent extend {
             (s) => s.name === "mid",
          ),
       ).toBe(false);
+      // `mid` has no table, so the walk passes through it, as through any
+      // declaration, to `parent`: never over the raw chain.
       const child = entryOf(m, "child");
-      expect(createdBy(child.physicalTableName)).toContain(RAW_MARK);
+      const create = createdBy(child.physicalTableName);
+      expect(create).toContain(entryOf(m, "parent").physicalTableName);
+      expect(create).not.toContain(RAW_MARK);
       expect(await rowsOf(`SELECT * FROM ${child.physicalTableName}`)).toEqual(
          await rowsOf(await plannedSQL(child)),
       );

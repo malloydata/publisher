@@ -55,12 +55,15 @@ import {
    readTimeDynamicTerms,
 } from "./persist_dynamic_terms";
 import { routeReadsEnv } from "../../motly";
+import { EVERY_SOURCE } from "../domain/compiled_build_plan";
 import { EMPTY_STORAGE_REASON } from "./declaration";
 import { rollupGateEnforcedAtRead } from "./rollup_plan";
 import {
    storageBuildReadsConnectionType,
+   catalogAuthorSqlMessage,
    unreadableSourceConnectionMessage,
 } from "../domain/source_connection_type";
+import { authorSqlCause } from "../domain/same_catalog_build";
 
 /**
  * What an eligible source carries into the build. Returned by the gate rather
@@ -86,8 +89,9 @@ import {
  *     them. Fails closed. The one exception is `gateEnforcedAtRead` (see
  *     {@link gateEnforcedAtRead}): a source's own row-level gate, kept by the
  *     served copy, which re-roots the author's text, gates included, and has
- *     them grafted and re-proven on every query (R3, and G3 for a `storage=`
- *     table as for a database one). Every other check here still applies.
+ *     them grafted and re-proven on every query (and own-gate keeping for a
+ *     `storage=` table as for a database one). Every other check here still
+ *     applies.
  *
  *     Join reach is PARTIAL: the deep walk finds a gate on a plainly-joined
  *     source and under `annotations.inherits`, but NOT through an ANNOTATED
@@ -202,10 +206,46 @@ function assertStorageBuildReadsConnection(
    connectionTypes: TierGateInputs["connectionTypes"],
 ): void {
    const type = connectionTypes?.[persistSource.connectionName];
-   if (type === undefined || storageBuildReadsConnectionType(type)) return;
+   if (type === undefined) return;
+   if (!storageBuildReadsConnectionType(type)) {
+      throw new MaterializationEligibilityError({
+         reason: "storage_source_unsupported",
+         message: unreadableSourceConnectionMessage(persistSource, type),
+      });
+   }
+   // A DuckLake source builds into its own catalog only, on a read-write
+   // session that runs only SQL Malloy generated (the build session's
+   // same-catalog rule), so one carrying author SQL can never build.
+   const cause =
+      type === "ducklake"
+         ? authorSqlCause(sourceDefOf(persistSource))
+         : undefined;
+   if (cause !== undefined) {
+      throw new MaterializationEligibilityError({
+         reason: "storage_source_unsupported",
+         message: catalogAuthorSqlMessage(persistSource, cause),
+      });
+   }
+}
+
+/**
+ * Refuse a source on a connection configured `managed` that carries author
+ * SQL. A managed catalog's tables are built inside the catalog, on a
+ * read-write session that runs only SQL Malloy generated (the build session's
+ * same-catalog rule), whatever the source declares: a host places a database
+ * table there as a build into the catalog itself. So such a source can never
+ * build, and is refused here rather than failing its build.
+ */
+function assertManagedBuildRunsMalloySql(
+   source: PersistSource,
+   plan: TierGateInputs | undefined,
+): void {
+   if (!plan?.managedConnections?.includes(source.connectionName)) return;
+   const cause = authorSqlCause(sourceDefOf(source));
+   if (cause === undefined) return;
    throw new MaterializationEligibilityError({
       reason: "storage_source_unsupported",
-      message: unreadableSourceConnectionMessage(persistSource, type),
+      message: catalogAuthorSqlMessage(source, cause, { managed: true }),
    });
 }
 
@@ -331,7 +371,7 @@ export function assertDatabasePersistNotAuthorizeGated(
    options: {
       /**
        * From {@link gateEnforcedAtRead}, for a `#(rollup)` rollup whose
-       * base gate is grafted and proven on its variant at read (R3): skip
+       * base gate is grafted and proven on its variant at read: skip
        * only the gate refusal.
        */
       gateEnforcedAtRead?: boolean;
@@ -438,9 +478,9 @@ export function assertDatabasePersistNotAuthorizeGated(
          message: inheritedRowFilterRefusal(sourceName, "database"),
       });
    }
-   // G3, the gate policy's: the entry point's own gate compiles to a row
-   // filter and nothing else is reachable beneath it, so database serving
-   // grafts exactly what a live query would.
+   // Own-gate keeping, the gate policy's: the entry point's own gate compiles
+   // to a row filter and nothing else is reachable beneath it, so database
+   // serving grafts exactly what a live query would.
    if (
       origin === "persist" &&
       tableKeepsGates(
@@ -604,6 +644,19 @@ const MAX_AUTHORIZE_WALK_DEPTH = 200;
 function referencesAuthorize(persistSource: PersistSource): boolean {
    try {
       return walkForAuthorize(sourceDefOf(persistSource), new WeakSet(), 0);
+   } catch {
+      return true;
+   }
+}
+
+/**
+ * {@link referencesAuthorize} over a slice of compiled IR: a source or query
+ * definition of a model's contents. Fails closed: a walk that cannot finish
+ * reads as gated.
+ */
+export function irCarriesAGate(def: unknown): boolean {
+   try {
+      return walkForAuthorize(def, new WeakSet(), 0);
    } catch {
       return true;
    }
@@ -818,7 +871,7 @@ function walkForAuthorizeNotes(
 
 /**
  * Whether a gated source may be built because its gate is enforced when the
- * table is read (R3, contracts at read; G3). True only
+ * table is read (contracts at read; own-gate keeping). True only
  * when all hold:
  *
  * - the source is a `#(materialize)` source (a `materialize` table) with
@@ -832,7 +885,7 @@ function walkForAuthorizeNotes(
  * - its gate is the entry point's own and classifies `row_level` against the
  *   author's model (the table's `gate`), an attributed row filter or lock
  *   with no row filter inherited from a source it extends: the bar the
- *   database tier sets. Under G3 this holds on both tiers with
+ *   database tier sets. Under own-gate keeping this holds on both tiers with
  *   `materialize.gatedSources` off, by maintainer decision ahead of the
  *   question-14 review; the managed tier then holds the gated source's
  *   columns, every caller's rows.
@@ -852,7 +905,7 @@ export function gateEnforcedAtRead(
 ): boolean {
    const table = plan?.tables?.[sourceID];
    // A rollup asks its own question: its base gates are grafted and proven on
-   // its variant (R3 for rollups), for a `#(rollup)` rollup and a v1
+   // its variant (for rollups), for a `#(rollup)` rollup and a v1
    // `#@ preaggregate` line read as one alike.
    if (table?.rollup !== undefined) {
       return rollupGateEnforcedAtRead(table.rollup);
@@ -881,7 +934,8 @@ export function gateEnforcedAtRead(
       {
          kind: "materialize",
          // Database only when neither the caller nor the plan says storage:
-         // G3 admits a database table alone, so a doubt reads as storage.
+         // Own-gate keeping admits a database table alone, so a doubt reads as
+         // storage.
          tier:
             !storage && materialized.persist?.storage === undefined
                ? "database"
@@ -895,9 +949,9 @@ export function gateEnforcedAtRead(
 
 /**
  * Whether a source's `storage=` table is read past its own row-level gate
- * under G3: it is gated, and {@link gateEnforcedAtRead} admits it as stored.
- * Its bindings carry `ownGateKept`, so a served answer reading it may pass
- * that gate as one reading a database table may.
+ * under own-gate keeping: it is gated, and {@link gateEnforcedAtRead} admits it
+ * as stored. Its bindings carry `ownGateKept`, so a served answer reading it
+ * may pass that gate as one reading a database table may.
  */
 export function storageKeepsOwnGate(
    source: PersistSource,
@@ -916,7 +970,7 @@ export function storageKeepsOwnGate(
  * ({@link referencesAuthorize}'s walk, the one that refuses a gated build).
  * A walk that fails reads as gated (fail closed). A gated entry point over
  * such a table is served from it on every tier: its gate is grafted and
- * proven on the answer, as on a database table (g-mixed).
+ * proven on the answer, as on a database table (the ungated-rows rule).
  */
 export function holdsOnlyUngatedRows(source: PersistSource): boolean {
    return !referencesAuthorize(source);
@@ -949,7 +1003,10 @@ export interface TierGateInputs {
    tables?: Readonly<
       Record<
          string,
-         Pick<TablePlan, "kind" | "materialize" | "rollup" | "gate">
+         Pick<TablePlan, "kind" | "materialize" | "rollup" | "gate"> & {
+            /** The planned source, which the access-input rule reads. */
+            source?: PersistSource;
+         }
       >
    >;
    /**
@@ -958,6 +1015,18 @@ export interface TierGateInputs {
     * build can read a source.
     */
    connectionTypes?: Readonly<Record<string, string>>;
+   /**
+    * The connections configured `managed`, by name
+    * (`CompiledBuildPlan.managedConnections`): every table built on one is
+    * built inside its catalog by SQL Malloy generates.
+    */
+   managedConnections?: readonly string[];
+   /**
+    * Every sourceID an access decision of the package reads
+    * (`CompiledBuildPlan.accessReads`); unknown refuses every relation that
+    * reads the current time.
+    */
+   accessReads?: readonly string[];
 }
 
 /**
@@ -1049,6 +1118,7 @@ export function assertTierEligible(
       assertBuildReadsNoCurrentTime(source, plan);
       return;
    }
+   assertManagedBuildRunsMalloySql(source, plan);
    const table = plan?.tables?.[source.sourceID];
    const rollup = table?.rollup;
    assertDatabasePersistNotAuthorizeGated(
@@ -1061,11 +1131,11 @@ export function assertTierEligible(
    );
    // A database `#(materialize)` table is read only through the served copy
    // (never Malloy's compiler manifest), which keeps the entry point's own
-   // row-level gate under G3 as v1 database does: the gate policy admits it
-   // with `materialize.enabled`, and the gated-sources switch is not needed.
-   // Every other gate is refused above (a joined, inherited or not row-level
-   // one), so this refuses a gated one only when the policy does not keep it,
-   // and a table is never built that cannot be served.
+   // row-level gate under own-gate keeping as v1 database does: the gate policy
+   // admits it with `materialize.enabled`, and the gated-sources switch is not
+   // needed. Every other gate is refused above (a joined, inherited or not
+   // row-level one), so this refuses a gated one only when the policy does not
+   // keep it, and a table is never built that cannot be served.
    if (
       table?.materialize &&
       referencesAuthorize(source) &&
@@ -1110,13 +1180,21 @@ export function assertTierEligible(
 }
 
 /**
- * Refuse a v1 `#@ persist` source whose build reads the current time
- * ({@link buildReadsCurrentTime}): its table would hold the rows as of the
- * build and serve them until the next rebuild, while a live query reads `now`
- * again every time. Not built, and answered live. `now` in the source's own
- * extend block is re-applied at every read, so it is admitted. A rollup
- * (rollup_plan.ts, `rollup-not-built`, reason `current_time`) and a `#(materialize)` source
- * (materialize_plan.ts) are judged by their own planners.
+ * Refuse a v1 `#@ persist` source, persisted view or persisted query whose
+ * build reads the current time ({@link buildReadsCurrentTime}: `now`, or a
+ * relative time filter string) where a table as of its build is unsafe:
+ *
+ * - it is gated (`#(authorize)` or `#(access_filter)` beneath it): the rows a
+ *   caller may see would be decided by a clock frozen at the build;
+ * - it is an access input ({@link currentTimeAccessInput}): the rows it
+ *   holds decide what a caller may see, so a frozen clock is a stale grant;
+ * - it refreshes incrementally: a delta reads only rows past its watermark,
+ *   so a window over the clock would never drop the rows it has passed.
+ *
+ * Every other such source builds, and is served as of its build and rebuilt
+ * on every run (see {@link storedAsOfBuild}). A rollup (rollup_plan.ts) and
+ * a `#(materialize)` source (materialize_plan.ts) are judged by their own
+ * planners.
  */
 export function assertBuildReadsNoCurrentTime(
    source: PersistSource,
@@ -1125,18 +1203,71 @@ export function assertBuildReadsNoCurrentTime(
    const table = plan?.tables?.[source.sourceID];
    if (table?.rollup || table?.materialize) return;
    if (!buildReadsCurrentTime(source)) return;
+   const why = currentTimeRefusalCause(source, plan);
+   if (why === undefined) return;
    throw new MaterializationEligibilityError({
       reason: "current_time",
       message:
          `Source '${source.name}' cannot be materialized: the relation it ` +
-         `persists reads the current time (\`now\`), in its query, a view ` +
-         `it runs, the \`where:\`, a field or a join of the source that ` +
-         `query reads, or the query of a query-shaped source it is built ` +
-         `from or joins. Its table would hold the rows as of the build and ` +
-         `serve them until the next rebuild, while a live query reads \`now\` ` +
-         `again every time, so it is not built and is answered live. To serve ` +
-         `it from a table, move the \`now\` into the persisted source's own ` +
-         `extend block (a \`where:\`, dimension or measure there is applied ` +
-         `at every read), or stop persisting this source.`,
+         `persists reads the current time (\`now\`, or a relative time ` +
+         `filter such as \`f'last 7 days'\`), so its table would hold the ` +
+         `rows as of its build, and ${why}. It is not built and is answered ` +
+         `live. To serve it from a table, move the \`now\` or the filter into ` +
+         `the persisted source's own extend block (a \`where:\`, dimension or ` +
+         `measure there is applied at every read).`,
    });
+}
+
+/**
+ * Why a source whose build reads the current time must not be stored as of
+ * its build, or undefined when it may be ({@link assertBuildReadsNoCurrentTime}).
+ */
+function currentTimeRefusalCause(
+   source: PersistSource,
+   plan: TierGateInputs | undefined,
+): string | undefined {
+   if (referencesAuthorize(source)) {
+      return (
+         "it is protected by an #(authorize) or #(access_filter) gate, whose " +
+         "decision a table as of its build would freeze"
+      );
+   }
+   if (deriveAnnotationFields(source).refresh === "incremental") {
+      return (
+         "it refreshes incrementally, and a delta never re-reads the rows " +
+         "its window has passed"
+      );
+   }
+   if (currentTimeAccessInput(source, plan)) {
+      return (
+         "its rows feed an access decision (it is scoped by a given, joins " +
+         "a source scoped by one, or a source that carries a gate or reads " +
+         "a given extends, derives from, joins or composes it), so a table " +
+         "as of its build would keep a grant past its time"
+      );
+   }
+   return undefined;
+}
+
+/**
+ * Whether a source's rows feed an access decision: its own read-time terms
+ * or joins read a given (a caller-scoped source, or one that joins a grant
+ * table, {@link admitGivenPositions}), or a definition of the package that
+ * carries a gate or reads a given depends on it, at any depth: extends it,
+ * derives from it with `->`, joins it, composes it, or builds a stored
+ * relation over it (`accessReads`). Fails closed: an unknown closure, or a
+ * classification that cannot be read, counts.
+ */
+function currentTimeAccessInput(
+   source: PersistSource,
+   plan: TierGateInputs | undefined,
+): boolean {
+   const admitted = admitGivenPositions(source);
+   if (!admitted.ok) return true;
+   if (admitted.terms.length > 0 || (admitted.joinedTerms ?? []).length > 0) {
+      return true;
+   }
+   const reads = plan?.accessReads;
+   if (reads === undefined) return true;
+   return reads.includes(source.sourceID) || reads.includes(EVERY_SOURCE);
 }

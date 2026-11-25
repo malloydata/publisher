@@ -14,9 +14,10 @@
  *  - built in a run that rebuilds only the rollup, it reads the base's table
  *    carried from the run before, a computed grain dimension read from the
  *    stored column;
- *  - with no base table in the run, a base too old for the rollup's window,
- *    or a host's reference to the base at another tier, it builds from the
- *    warehouse as planned;
+ *  - a run of the rollup alone builds its base first and reads that table,
+ *    as does a run whose base table is too old for the rollup's window; a
+ *    host's reference to the base at another tier refuses the rollup, never
+ *    builds it from the warehouse;
  *  - over a gated base, under G3 or with gated sources on, it stores the
  *    warehouse build's rows and answers each caller as live;
  *  - over an extension table (P10), it reads the extension's own table;
@@ -61,6 +62,17 @@ setDefaultTimeout(120_000);
 
 const ENV = "e1";
 const ENV_ID = "env-1";
+/** The destination a wrong-tier reference names: configured, never written. */
+const LAKE_DESTINATION = {
+   name: "lake",
+   type: "ducklake",
+   ducklakeConnection: {
+      catalog: {
+         postgresConnection: { host: "h", databaseName: "d", userName: "u" },
+      },
+      storage: { bucketUrl: "/nonexistent-lake" },
+   },
+} as never;
 const PKG = "pkg";
 
 /** The raw rows, read only through `raw`, so a build that reads them names RAW_MARK. */
@@ -144,7 +156,9 @@ describe("a database rollup over a database #(materialize) base", () => {
          { "m.malloy": model },
          { manifest: { name: PKG, description: "fixture" } },
       );
-      env = await Environment.create(ENV, envPath, []);
+      // A storage destination the host's references may name (the
+      // wrong-tier test); nothing here builds into it.
+      env = await Environment.create(ENV, envPath, [], [LAKE_DESTINATION]);
       await env.addPackage(PKG);
       service = serviceOverEnvironment(
          () => repo,
@@ -279,6 +293,56 @@ describe("a database rollup over a database #(materialize) base", () => {
       };
    }
 
+   /** A query's rows, each value as a string (never through a double), and which table answered. */
+   async function exactAnswer(query: string) {
+      const pkg = await env.getPackage(parsePackageName(PKG), false);
+      const result = await pkg
+         .getModel("m.malloy")!
+         .runQuery(
+            unrecordedAudit(),
+            { query } as never,
+            QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+         );
+      return {
+         rows: (result.compactResult as Record<string, unknown>[]).map((r) =>
+            Object.fromEntries(
+               Object.entries(r).map(([k, v]) => [k, String(v)]),
+            ),
+         ),
+         servedBy: result.path?.servedBy?.kind ?? "live",
+      };
+   }
+
+   /**
+    * The rollup `m` built answers `orders` by `sub` equal to live (the same
+    * aggregates over `raw`, which nothing stores). Then the rollup's table and
+    * the base's are tampered, each with its own suffix, so an answer read
+    * from the base's table, or live, is told apart from one read from the
+    * rollup's.
+    */
+   async function expectBySubFromRollup(m: Materialization): Promise<void> {
+      const live = await exactAnswer(
+         "run: raw -> { group_by: sub; aggregate: grand is amt.sum(), rows is count(), least is amt.min(); order_by: sub }",
+      );
+      expect(live.servedBy).toBe("live");
+      const served = await exactAnswer(queryAt("sub"));
+      expect(served.servedBy).toBe("rollup");
+      expect(served.rows).toEqual(live.rows);
+      for (const [table, tag] of [
+         [rollupOf(m, "orders").physicalTableName, "_rollup"],
+         [entryOf(m, "orders").physicalTableName, "_base"],
+      ]) {
+         await (
+            await connection()
+         ).runSQL(`UPDATE "${table}" SET sub = sub || '${tag}'`);
+      }
+      const tampered = await exactAnswer(queryAt("sub"));
+      expect(tampered.servedBy).toBe("rollup");
+      expect(tampered.rows).toEqual(
+         live.rows.map((r) => ({ ...r, sub: `${r.sub}_rollup` })),
+      );
+   }
+
    /** The rollup's planned SQL: what its warehouse build runs. */
    async function plannedSQL(rollup: Entry): Promise<string> {
       const pkg = await env.getPackage(parsePackageName(PKG), false);
@@ -354,7 +418,7 @@ describe("a database rollup over a database #(materialize) base", () => {
       ]);
    });
 
-   it("builds from the warehouse when the run holds no table of the base", async () => {
+   it("builds the base first when a run names only the rollup, and reads its table", async () => {
       await setUp();
       const pkg = await env.getPackage(parsePackageName(PKG), false);
       const rollupName = Object.values(pkg.getBuildPlan()!.sources).find(
@@ -363,10 +427,11 @@ describe("a database rollup over a database #(materialize) base", () => {
       const m = await build({ sourceNames: [rollupName] });
       expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
       const rollup = rollupOf(m, "orders");
-      expect(entries(m).map((e) => e.sourceName)).toEqual([rollup.sourceName]);
-      // It read the raw rows, and says so: no `upstreamReuse`.
-      expect(rollup.upstreamReuse).toBeUndefined();
-      expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+      const base = entryOf(m, "orders");
+      expect(rollup.upstreamReuse).toBe("reused");
+      expect(createdBy(rollup.physicalTableName)).toContain(
+         `"${base.physicalTableName}"`,
+      );
       const served = await answer(queryAt("cat"));
       expect(served.servedBy).toBe("rollup");
    });
@@ -379,10 +444,11 @@ describe("a database rollup over a database #(materialize) base", () => {
       expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
    });
 
-   it("leaves out only a base whose stored copy does not compile: the other rollups still read their bases' tables", async () => {
+   it("refuses only the rollup whose base's stored copy does not compile: the other rollups still read their bases' tables", async () => {
       // `tagged` renames `mark` to `tag` and then excludes `tag`: its table
       // stores neither, so its re-rooted copy cannot rename `mark` and does
-      // not compile. Its rollup builds from the warehouse, while the
+      // not compile. Its rollup is refused at plan (upstream_table_unusable)
+      // and answered live, never built from the warehouse, while the
       // `#@ persist` and the other `#(materialize)` rollups still read their
       // bases' tables.
       await setUp(`##! experimental.persistence
@@ -424,14 +490,9 @@ extend {
          expect(create).not.toContain(RAW_MARK);
       }
 
-      const tagged = rollupOf(m, "tagged");
-      expect(tagged.upstreamReuse).toBeUndefined();
-      expect(createdBy(tagged.physicalTableName)).toContain(RAW_MARK);
-      expect(await rowsOf(`SELECT * FROM ${tagged.physicalTableName}`)).toEqual(
-         await rowsOf(await plannedSQL(tagged)),
-      );
+      expect(() => rollupOf(m, "tagged")).toThrow("no rollup of tagged");
       const served = await answer(query("tagged", "tgrand"));
-      expect(served.servedBy).toBe("rollup");
+      expect(served.servedBy).not.toBe("rollup");
       expect(served.rows).toEqual(live.rows);
    });
 
@@ -471,7 +532,7 @@ source: clipped is raw extend {
    });
 
    describe("with freshness", () => {
-      it("builds a windowed rollup from the warehouse over a carried base of unknown age, and serves it", async () => {
+      it("rebuilds a carried base of unknown age for a windowed rollup, builds the rollup from it, and serves it", async () => {
          const windowed = ' freshness.window="1h"';
          await setUp(modelOf("cat", windowed));
          const first = await build();
@@ -481,33 +542,37 @@ source: clipped is raw extend {
          await rewrite(modelOf("sub", windowed));
          const started = Date.now();
          const second = await build();
-         expect(second.metadata).toMatchObject({ sourcesReused: 2 });
+         // The rollup's edge to its base: a table of unknown age is rebuilt,
+         // not carried, and the rollup reads the rebuilt table.
          const rollup = rollupOf(second, "orders");
-         expect(rollup.upstreamReuse).toBeUndefined();
-         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+         expect(rollup.upstreamReuse).toBe("reused");
+         expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
          expect(Date.parse(rollup.dataAsOf!)).toBeGreaterThanOrEqual(
             started - 1000,
          );
-         const served = await answer(queryAt("sub"));
-         expect(served.servedBy).toBe("rollup");
+         await expectBySubFromRollup(second);
       });
 
-      it("builds a rollup whose window is narrower than its carried base's age from the warehouse", async () => {
+      it("rebuilds a carried base older than a rollup's narrower window, and builds the rollup from it", async () => {
          const base = ' freshness.window="1h"';
-         const rollupWindow = ' freshness.window="2s"';
+         // Wide enough that the rebuilt rollup is still fresh when the
+         // query below runs on a loaded runner; the wait outlasts it.
+         const rollupWindow = ' freshness.window="8s"';
          await setUp(modelOf("cat", rollupWindow, base));
          const first = await build();
          const baseAnchor = entryOf(first, "orders").dataAsOf!;
-         await until(baseAnchor, 2500);
+         await until(baseAnchor, 8500);
          await rewrite(modelOf("sub", rollupWindow, base));
+         const started = Date.now();
          const second = await build();
-         // The base is inside its own window, so it is carried.
-         expect(entryOf(second, "orders").dataAsOf).toBe(baseAnchor);
+         // Past the rollup's window, so rebuilt for it.
+         expect(
+            Date.parse(entryOf(second, "orders").dataAsOf!),
+         ).toBeGreaterThanOrEqual(started - 1000);
          const rollup = rollupOf(second, "orders");
-         expect(rollup.upstreamReuse).toBeUndefined();
-         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
-         const served = await answer(queryAt("sub"));
-         expect(served.servedBy).toBe("rollup");
+         expect(rollup.upstreamReuse).toBe("reused");
+         expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
+         await expectBySubFromRollup(second);
       });
 
       it("builds a windowed rollup from a carried base inside its window, anchored at the base", async () => {
@@ -524,7 +589,7 @@ source: clipped is raw extend {
       });
    });
 
-   it("builds from the warehouse on a host's run whose reference to the base is at another tier", async () => {
+   it("refuses a rollup on a host's run whose reference to the base is at another tier", async () => {
       await setUp();
       const first = await build();
       const base = entryOf(first, "orders");
@@ -557,16 +622,15 @@ source: clipped is raw extend {
       expect(createdBy(read.physicalTableName)).toContain(
          `"${base.physicalTableName}"`,
       );
-      // At another tier, it is not: the rollup reads the warehouse.
+      // At another tier, it is not, and the rollup is refused as the
+      // host's: never built from the warehouse.
       statements.length = 0;
       const moved = await host({ storageDestinationName: "lake" });
-      expect([moved.status, moved.error]).toEqual([
-         "MANIFEST_FILE_READY",
-         null,
-      ]);
-      const warehouse = rollupOf(moved, "orders");
-      expect(warehouse.upstreamReuse).toBeUndefined();
-      expect(createdBy(warehouse.physicalTableName)).toContain(RAW_MARK);
+      expect(moved.status).toBe("FAILED");
+      expect(JSON.stringify(moved.manifest ?? moved.error)).toContain(
+         "supplied at the wrong tier",
+      );
+      expect(statements.some((s) => s.includes(RAW_MARK))).toBe(false);
    });
 
    const GATED = `##! experimental { persistence givens }

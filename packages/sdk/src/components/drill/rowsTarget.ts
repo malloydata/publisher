@@ -18,15 +18,13 @@ import type { DrillField, DrillTagReader } from "./resolveDrill";
  * whatever the tile was written as: `source -> view`, a refined view, a
  * named query, an inline query, a nest.
  *
- * `where:` and not `drill:`, measured on Malloy 0.0.435. `drill:` needs the
- * view's own path for every dimension, and a refined or named query reports a
- * plain source field with none (`region`, not `by_month.region`), so its rows
- * could not be named that way. And a `drill:` on a joined field
- * (`by_name.name`, grouped as `customers.name`) does not bring the join in,
- * so its query failed with `Referenced table … not found`; the same filter as
- * `where:` does (malloydata/malloy#3158). Once a Malloy release with that fix
- * reaches Publisher, the join is no longer a reason; the refined query's
- * missing view path still is.
+ * `where:` and not `drill:`, because `drill:` needs the view's own path for
+ * every dimension, and a refined view, or a query with no view at all, reports
+ * a plain source field with none (`region`, not `by_month.region`), so its
+ * rows could not be named that way. Measured on Malloy 0.0.438, for a refined
+ * view written inline and as a named query. A `drill:` on a joined field no
+ * longer fails to bring the join in (malloydata/malloy#3158, fixed in
+ * 0.0.437), so that is not a reason.
  *
  * A field reads as having rows only when every piece is there: a source with
  * no arguments, every level on the way down marked `drillable` (one stage),

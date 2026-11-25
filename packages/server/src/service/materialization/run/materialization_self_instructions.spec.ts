@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { contractFor } from "../../../test_helpers/contract_fixture";
+import { deriveSelfInstructions } from "./run_instructions";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { MaterializationEligibilityError } from "../../../errors";
 import { BuildInstruction } from "../domain/types";
@@ -43,6 +45,7 @@ describe("deriveSelfInstructions", () => {
             sourceEntityId: "b1aaaaaaaaaaaaaa",
             // At the name this run writes: carried only there.
             physicalTableName: "s1",
+            contract: contractFor(),
             connectionName: "duckdb",
          },
       };
@@ -84,6 +87,7 @@ describe("deriveSelfInstructions", () => {
             sourceEntityId: "b1aaaaaaaaaaaaaa",
             // At the name this run writes: carried only there.
             physicalTableName: "s1",
+            contract: contractFor(),
             connectionName: "duckdb",
          },
       };
@@ -412,6 +416,7 @@ describe("deriveSelfInstructions", () => {
                a0a0a0a0a0a0a0a0: {
                   sourceEntityId: "a0a0a0a0a0a0a0a0",
                   physicalTableName: "ok",
+                  contract: contractFor(),
                   connectionName: "duckdb",
                },
             },
@@ -548,6 +553,7 @@ describe("deriveSelfInstructions", () => {
          b1aaaaaaaaaaaaaa: {
             sourceEntityId: "b1aaaaaaaaaaaaaa",
             physicalTableName: "s1",
+            contract: contractFor(),
             connectionName: "wh",
          },
       };
@@ -585,6 +591,7 @@ describe("deriveSelfInstructions", () => {
          b1aaaaaaaaaaaaaa: {
             sourceEntityId: "b1aaaaaaaaaaaaaa",
             physicalTableName: "s1",
+            contract: contractFor(),
             connectionName: "duckdb",
          },
       };
@@ -619,5 +626,313 @@ describe("deriveSelfInstructions", () => {
       expect(instructions).toHaveLength(1);
       expect(instructions[0].sourceEntityId).toBe("b2bbbbbbbbbbbbbb");
       expect(Object.keys(carried as Record<string, unknown>)).toHaveLength(0);
+   });
+});
+
+describe("a prior table its bind cannot serve is rebuilt in full", () => {
+   const compiled = () =>
+      compiledWith(
+         {
+            s1: fakeSource({ name: "s1", sourceEntityId: "b1aaaaaaaaaaaaaa" }),
+         },
+         [["s1"]],
+      );
+   const prior = (contract?: unknown) => ({
+      b1aaaaaaaaaaaaaa: {
+         sourceEntityId: "b1aaaaaaaaaaaaaa",
+         physicalTableName: "s1",
+         connectionName: "duckdb",
+         ...(contract !== undefined ? { contract } : {}),
+      },
+   });
+
+   it("never carries a table whose entry has no contract (built before contracts were recorded)", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         prior() as never,
+      );
+      expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+         "b1aaaaaaaaaaaaaa",
+      ]);
+      expect(carried).toEqual({});
+   });
+
+   it("never carries a table a bind found incompatible with its contract", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         prior(contractFor()) as never,
+         undefined,
+         undefined,
+         { incompatible: new Set(["b1aaaaaaaaaaaaaa"]) },
+      );
+      expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+         "b1aaaaaaaaaaaaaa",
+      ]);
+      expect(carried).toEqual({});
+   });
+
+   it("still carries a table whose contract it holds", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         prior(contractFor()) as never,
+      );
+      expect(instructions).toEqual([]);
+      expect(Object.keys(carried)).toEqual(["b1aaaaaaaaaaaaaa"]);
+   });
+
+   describe("a pair table", () => {
+      // `s1` stores the inlined join_many `items`, whose key the model
+      // declares now as `childKey`.
+      const pairCompiled = (childKey: string) => {
+         const c = compiled();
+         for (const table of Object.values(c.tables)) {
+            (table as { materialize?: unknown }).materialize = {
+               pair: {
+                  join: "items",
+                  parentKey: "id",
+                  childKey,
+                  childSourceID: "items@m.malloy",
+                  parentRowColumn: "__parent_row",
+               },
+            };
+         }
+         return c;
+      };
+      const checked = (key: string) => ({
+         ...contractFor(),
+         keys: { [key]: { unique: true, level: "leaf" } },
+      });
+
+      it("is carried while its contract records a check of the leaf key the model declares", () => {
+         const { instructions, carried } = deriveSelfInstructions(
+            pairCompiled("item_id"),
+            undefined,
+            prior(checked("leaf:items.item_id")) as never,
+         );
+         expect(instructions).toEqual([]);
+         expect(Object.keys(carried)).toEqual(["b1aaaaaaaaaaaaaa"]);
+      });
+
+      it("is rebuilt once a reload moves the leaf key to one its contract records no check of", () => {
+         const { instructions, carried } = deriveSelfInstructions(
+            pairCompiled("sku"),
+            undefined,
+            prior(checked("leaf:items.item_id")) as never,
+         );
+         expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+            "b1aaaaaaaaaaaaaa",
+         ]);
+         expect(carried).toEqual({});
+      });
+
+      const unverified = (rebuiltToVerify: boolean) => ({
+         ...contractFor(),
+         keys: {
+            "leaf:items.item_id": {
+               unique: false,
+               level: "leaf",
+               unverified: true,
+               ...(rebuiltToVerify ? { rebuiltToVerify: true } : {}),
+            },
+         },
+      });
+
+      it("is rebuilt once to verify when its check of the declared key could not run, recorded unverified", () => {
+         const { instructions, carried, rebuiltToVerify } =
+            deriveSelfInstructions(
+               pairCompiled("item_id"),
+               undefined,
+               prior(unverified(false)) as never,
+            );
+         expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+            "b1aaaaaaaaaaaaaa",
+         ]);
+         expect(carried).toEqual({});
+         expect([...rebuiltToVerify]).toEqual(["b1aaaaaaaaaaaaaa"]);
+      });
+
+      it("is carried, not rebuilt again, when the table was itself rebuilt to verify and the check still could not run", () => {
+         const { instructions, carried, rebuiltToVerify } =
+            deriveSelfInstructions(
+               pairCompiled("item_id"),
+               undefined,
+               prior(unverified(true)) as never,
+            );
+         expect(instructions).toEqual([]);
+         expect(Object.keys(carried)).toEqual(["b1aaaaaaaaaaaaaa"]);
+         expect(rebuiltToVerify.size).toBe(0);
+      });
+
+      it("names no table rebuilt to verify when one is rebuilt for another reason", () => {
+         const { instructions, rebuiltToVerify } = deriveSelfInstructions(
+            pairCompiled("sku"),
+            undefined,
+            prior(checked("leaf:items.item_id")) as never,
+         );
+         expect(instructions).toHaveLength(1);
+         expect(rebuiltToVerify.size).toBe(0);
+      });
+
+      it("is carried when its check of the declared key recorded a failure, which a rebuild would not change", () => {
+         const { carried } = deriveSelfInstructions(
+            pairCompiled("item_id"),
+            undefined,
+            prior({
+               ...contractFor(),
+               keys: {
+                  "leaf:items.item_id": { unique: false, level: "leaf" },
+               },
+            }) as never,
+         );
+         expect(Object.keys(carried)).toEqual(["b1aaaaaaaaaaaaaa"]);
+      });
+   });
+});
+
+describe("a run of named sources pulls in their upstreams", () => {
+   // `s2` reads `s1`'s table (the plan's edge).
+   const compiled = () => {
+      const c = compiledWith(
+         {
+            s1: fakeSource({ name: "s1", sourceEntityId: "b1aaaaaaaaaaaaaa" }),
+            s2: fakeSource({ name: "s2", sourceEntityId: "b2bbbbbbbbbbbbbb" }),
+         },
+         [["s1"], ["s2"]],
+      );
+      c.builds[0].dependsOn = { s1: [], s2: ["s1"] };
+      return c;
+   };
+   const upstream = {
+      b1aaaaaaaaaaaaaa: {
+         sourceEntityId: "b1aaaaaaaaaaaaaa",
+         physicalTableName: "s1",
+         connectionName: "duckdb",
+         contract: contractFor(),
+      },
+   };
+
+   it("builds an upstream with no table beside the named source", () => {
+      const { instructions } = deriveSelfInstructions(compiled(), ["s2"], {});
+      expect(instructions.map((i) => i.sourceEntityId).sort()).toEqual([
+         "b1aaaaaaaaaaaaaa",
+         "b2bbbbbbbbbbbbbb",
+      ]);
+   });
+
+   it("carries an upstream whose table it can serve, even on a forced run", () => {
+      for (const forceRefresh of [false, true]) {
+         const { instructions, carried } = deriveSelfInstructions(
+            compiled(),
+            ["s2"],
+            upstream as never,
+            undefined,
+            undefined,
+            { forceRefresh },
+         );
+         expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+            "b2bbbbbbbbbbbbbb",
+         ]);
+         expect(Object.keys(carried)).toEqual(["b1aaaaaaaaaaaaaa"]);
+      }
+   });
+
+   it("rebuilds an upstream a bind found incompatible", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         ["s2"],
+         upstream as never,
+         undefined,
+         undefined,
+         { incompatible: new Set(["b1aaaaaaaaaaaaaa"]) },
+      );
+      expect(instructions.map((i) => i.sourceEntityId).sort()).toEqual([
+         "b1aaaaaaaaaaaaaa",
+         "b2bbbbbbbbbbbbbb",
+      ]);
+      expect(carried).toEqual({});
+   });
+});
+
+describe("a carried reader of a table not the one it was built from is rebuilt", () => {
+   // `s2` reads `s1`'s table (the plan's edge), and was built from it.
+   const compiled = () => {
+      const c = compiledWith(
+         {
+            s1: fakeSource({ name: "s1", sourceEntityId: "c1aaaaaaaaaaaaaa" }),
+            s2: fakeSource({ name: "s2", sourceEntityId: "c2bbbbbbbbbbbbbb" }),
+         },
+         [["s1"], ["s2"]],
+      );
+      c.builds[0].dependsOn = { s1: [], s2: ["s1"] };
+      return c;
+   };
+   const prior = (s1BuiltAt: string, readBuiltAt: string) => ({
+      c1aaaaaaaaaaaaaa: {
+         sourceEntityId: "c1aaaaaaaaaaaaaa",
+         physicalTableName: "s1",
+         connectionName: "duckdb",
+         builtAt: s1BuiltAt,
+         contract: contractFor(),
+      },
+      c2bbbbbbbbbbbbbb: {
+         sourceEntityId: "c2bbbbbbbbbbbbbb",
+         physicalTableName: "s2",
+         connectionName: "duckdb",
+         builtAt: "2026-11-02T00:00:00.000Z",
+         contract: contractFor(),
+         builtFrom: [
+            {
+               sourceEntityId: "c1aaaaaaaaaaaaaa",
+               physicalTableName: "s1",
+               builtAt: readBuiltAt,
+            },
+         ],
+      },
+   });
+   const T1 = "2026-11-01T00:00:00.000Z";
+   const T2 = "2026-11-03T00:00:00.000Z";
+
+   it("carries a reader built from the upstream table it would read now", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         prior(T1, T1) as never,
+      );
+      expect(instructions).toEqual([]);
+      expect(Object.keys(carried).sort()).toEqual([
+         "c1aaaaaaaaaaaaaa",
+         "c2bbbbbbbbbbbbbb",
+      ]);
+   });
+
+   it("rebuilds a reader whose upstream this run rebuilds", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         prior(T1, T1) as never,
+         undefined,
+         undefined,
+         { incompatible: new Set(["c1aaaaaaaaaaaaaa"]) },
+      );
+      expect(instructions.map((i) => i.sourceEntityId).sort()).toEqual([
+         "c1aaaaaaaaaaaaaa",
+         "c2bbbbbbbbbbbbbb",
+      ]);
+      expect(carried).toEqual({});
+   });
+
+   it("rebuilds a reader of an older build of a carried upstream", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         prior(T2, T1) as never,
+      );
+      expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+         "c2bbbbbbbbbbbbbb",
+      ]);
+      expect(Object.keys(carried)).toEqual(["c1aaaaaaaaaaaaaa"]);
    });
 });

@@ -520,7 +520,6 @@ source: by_category_table is orders -> by_category
             malloyConfig,
             defaultConnectionName: "duckdb",
             computeBuildPlan: true,
-            withPreaggregateCompanions: true,
             withEntities: true,
          });
       } finally {
@@ -537,8 +536,6 @@ source: by_category_table is orders -> by_category
       expect(outcome.models[0].renderTagResults?.[0].result).not.toHaveProperty(
          "sql",
       );
-      // A v1 rollup is the rollup leg's: no composite companion is compiled.
-      expect(outcome.models[0].preaggregateCompanion?.modelDef).toBeUndefined();
       const entities = outcome.models[0].entities;
       expect(entities?.status).toBe("planned");
       if (entities?.status !== "planned") return;
@@ -552,12 +549,11 @@ source: by_category_table is orders -> by_category
       ]);
    });
 
-   it("leaves the render-tag results, companion and plan to the main thread past the budget", async () => {
+   it("leaves the render-tag results and plan to the main thread past the budget", async () => {
       const outcome = await loadWith(0);
       expect(outcome.models[0].compilationError).toBeUndefined();
       // No target reached, so the main thread prepares all of them.
       expect(outcome.models[0].renderTagResults).toEqual([]);
-      expect(outcome.models[0].preaggregateCompanion).toBeUndefined();
       expect(outcome.buildPlan).toBeUndefined();
       // The main thread plans the entities itself.
       expect(outcome.models[0].entities).toBeUndefined();
@@ -599,7 +595,6 @@ describe("PackageLoadPool (work for the main thread)", () => {
             malloyConfig,
             defaultConnectionName: "duckdb",
             computeBuildPlan,
-            withPreaggregateCompanions: true,
          });
       const tearDown = async () => {
          await pool.shutdown();
@@ -804,8 +799,6 @@ source: orders is duckdb.table('limit_t') extend {
          );
          const outcome = await load(true);
          expect(outcome.models[0].compilationError).toBeUndefined();
-         // No composite companion: the plan's own rollup companion compiles.
-         expect(outcome.models[0].preaggregateCompanion).toEqual({});
          expect(outcome.buildPlan?.ok).toBe(true);
       } finally {
          await tearDown();
@@ -838,8 +831,6 @@ source: orders is duckdb.table('shared_t') extend {
             "create or replace table shared_t as select 10 as amount, 'A' as category",
          );
          const outcome = await load(true);
-         // No composite companion: the plan's own rollup companion compiles.
-         expect(outcome.models[0].preaggregateCompanion).toEqual({});
          expect(outcome.buildPlan?.ok).toBe(true);
          expect(
             tableFetches.filter((paths) => paths.includes("shared_t")),

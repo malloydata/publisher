@@ -81,6 +81,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.xt_orders"
+          }
+        ],
         "refresh": "incremental",
         "sourceEntityId": "a5362d1c70d80dd3e761f0cd761d1175187b5f2645fc76c5963d2b4202d554ba",
         "sourceID": "order_rows@<hammer>/xt/xt.malloy",

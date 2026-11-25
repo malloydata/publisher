@@ -25,6 +25,7 @@
  * Pure: the caller passes the instant.
  */
 
+import type { TableKind, Tier } from "./vocabulary";
 import { isRollupOrigin } from "./table_plans";
 import { freshnessOf, type Freshness } from "./freshness";
 import { storageTablePath } from "./storage_table_path";
@@ -32,19 +33,16 @@ import type {
    BuildManifest,
    FreshnessAwareManifestEntry,
    FreshnessManifest,
+   KeyUniqueness,
    ManifestEntry,
 } from "./types";
+import type { ColumnContract } from "./column_contract";
 
 /** What a stored table holds, from the plan: never read off a name. */
-export type BindingKind =
-   | "persist"
-   | "materialize"
-   | "rollup"
-   | "view"
-   | "query";
+export type BindingKind = Exclude<TableKind, "pair">;
 
 /** Where a stored table lives: the source's own warehouse, or a storage destination. */
-type BindingTier = "database" | "storage";
+type BindingTier = Tier;
 
 /**
  * One stored table as serving reads it, under one source name.
@@ -56,6 +54,11 @@ type BindingTier = "database" | "storage";
  */
 export interface Binding {
    readonly kind: BindingKind;
+   /**
+    * Its stored relation reads the current time, so it holds the rows as of
+    * its build (`PackagePlan.asOfBuild`); see `TableRead.asOfBuild`.
+    */
+   readonly asOfBuild?: boolean;
    readonly tier: BindingTier;
    /** The Malloy source name it rebinds (`source: <sourceName> is ...`). */
    sourceName: string;
@@ -73,17 +76,19 @@ export interface Binding {
     * is NULL. Internal: absent on every binding a host's manifest makes.
     */
    primaryKeys?: Record<string, boolean>;
+   /** The key column each of {@link primaryKeys} checked, by sourceID. */
+   primaryKeyColumns?: Record<string, string>;
    /**
-    * A stored rollup's own key check (known limitation 29), as the run that
+    * A stored rollup's own key check, as the run that
     * wrote or carried the table found it: whether its base held the grain's
     * one dimension once per row. Internal, as {@link primaryKeys} is.
     */
    rollupKey?: { keyColumn: string; unique: boolean };
    /**
     * A `storage=` table plan admitted past a stored source's own row-level
-    * gate under G3 (`SourceEligibility.gateKept`), marked under every name
-    * it is bound by: the router lets a served answer reading it past an
-    * entry-point gate, as it does a database table's. Set by the bind;
+    * gate under own-gate keeping (`SourceEligibility.gateKept`), marked under
+    * every name it is bound by: the router lets a served answer reading it past
+    * an entry-point gate, as it does a database table's. Set by the bind;
     * absent reads as not kept (fail closed).
     */
    ownGateKept?: boolean;
@@ -93,8 +98,8 @@ export interface Binding {
     * derivations included), marked under every name it is bound by: the
     * router lets an answer reading it past a gated entry point's gate, as it
     * does a database table's, and `govern()` grafts and proves that gate on
-    * the answer (g-mixed). Set by the bind; absent reads as not proven (fail
-    * closed).
+    * the answer (the ungated-rows rule). Set by the bind; absent reads as not
+    * proven (fail closed).
     */
    holdsOnlyUngatedRows?: boolean;
    /**
@@ -192,6 +197,28 @@ export function heldReadBinding(
 export interface Snapshot {
    readonly bindings: readonly Binding[];
    readonly entries: Readonly<FreshnessManifest>;
+   /**
+    * Content addresses whose tables are bound but not served: a failed
+    * reload found what they were built from changed upstream. A pin leaves
+    * their entries out of the compiler's manifest and their bindings out of
+    * {@link Pinned.tableFor}; the served copy keeps them (its files no longer
+    * compile against the refetched schemas, so it must not recompile) and
+    * the router declines an answer that reads one (`query_serving.ts`), so
+    * their queries answer live.
+    */
+   readonly withdrawn?: ReadonlySet<string>;
+   /**
+    * The key Malloy files each address's table under, where it is not the
+    * address (`PackagePlan.compilerKeys`): what {@link underCompilerKeys}
+    * files a manifest handed to Malloy under.
+    */
+   readonly compilerKeys?: Readonly<Record<string, string>>;
+   /**
+    * Each served table's column contract, as its build recorded it and the
+    * bind held its table to, by content address: what read admission looks
+    * a stored column's collation up in (`serve/admission_lookup.ts`).
+    */
+   readonly contracts?: ReadonlyMap<string, ColumnContract>;
 }
 
 /**
@@ -201,8 +228,19 @@ export interface Snapshot {
 export function makeSnapshot(
    bindings: readonly Binding[],
    entries: Readonly<FreshnessManifest> = {},
+   withdrawn?: ReadonlySet<string>,
+   compilerKeys?: Readonly<Record<string, string>>,
+   contracts?: ReadonlyMap<string, ColumnContract>,
 ): Snapshot {
-   return Object.freeze({ bindings, entries });
+   return Object.freeze({
+      bindings,
+      entries,
+      ...(withdrawn && withdrawn.size > 0 ? { withdrawn } : {}),
+      ...(compilerKeys && Object.keys(compilerKeys).length > 0
+         ? { compilerKeys }
+         : {}),
+      ...(contracts && contracts.size > 0 ? { contracts } : {}),
+   });
 }
 
 /** Nothing bound: every query is answered live. */
@@ -286,6 +324,8 @@ function readable(state: Freshness): boolean {
  */
 export function pin(snapshot: Snapshot, asOf: Date): Pinned {
    const states = new Map<Binding, Freshness>();
+   const withdrawn = snapshot.withdrawn;
+   const servable = (b: Binding): boolean => !withdrawn?.has(b.virtualHandle);
    const stateOf = (b: Binding): Freshness => {
       let state = states.get(b);
       if (state === undefined) {
@@ -309,7 +349,7 @@ export function pin(snapshot: Snapshot, asOf: Date): Pinned {
          if (!compilerManifest) {
             const entries: BuildManifest["entries"] = {};
             for (const [id, entry] of Object.entries(snapshot.entries)) {
-               if (readable(freshnessOf(entry, asOf))) {
+               if (!withdrawn?.has(id) && readable(freshnessOf(entry, asOf))) {
                   entries[id] = { tableName: entry.tableName };
                }
             }
@@ -324,7 +364,10 @@ export function pin(snapshot: Snapshot, asOf: Date): Pinned {
       serves: (b: Binding) => readable(stateOf(b)),
       tableFor(sourceID: string, kind: BindingKind): TableLookup {
          const stored = snapshot.bindings.filter(
-            (b) => b.kind === kind && (b.sourceIDs ?? []).includes(sourceID),
+            (b) =>
+               servable(b) &&
+               b.kind === kind &&
+               (b.sourceIDs ?? []).includes(sourceID),
          );
          if (stored.length === 0) return { state: "not_built" };
          for (const binding of stored) {
@@ -334,6 +377,131 @@ export function pin(snapshot: Snapshot, asOf: Date): Pinned {
          return { state: "stale", binding: stored[0] };
       },
    });
+}
+
+/**
+ * Each content address paired with the key Malloy files its table under
+ * (`PackagePlan.compilerKeys`, where the two differ), in plan order.
+ */
+type CompilerKeys =
+   | Readonly<Record<string, string>>
+   | Iterable<readonly [address: string, key: string]>;
+
+function pairsOf(keys: CompilerKeys): Iterable<readonly [string, string]> {
+   return Symbol.iterator in keys
+      ? (keys as Iterable<readonly [string, string]>)
+      : Object.entries(keys as Readonly<Record<string, string>>);
+}
+
+/**
+ * Which address fills each compiler key {@link underCompilerKeys} files:
+ * the first address, in plan order, with an entry, whose key is neither
+ * its own address, `claimed`, nor already a key of `entries`.
+ */
+function filings(
+   entries: Readonly<Record<string, unknown>>,
+   keys: CompilerKeys,
+   claimed: ReadonlySet<string>,
+): Map<string, string> {
+   const filed = new Map<string, string>();
+   for (const [address, key] of pairsOf(keys)) {
+      if (
+         key === address ||
+         claimed.has(key) ||
+         !(address in entries) ||
+         key in entries ||
+         filed.has(key)
+      ) {
+         continue;
+      }
+      filed.set(key, address);
+   }
+   return filed;
+}
+
+/**
+ * `manifest`, keyed by Publisher's content addresses, as Malloy must see
+ * it: each entry also under the key Malloy files its table under, so
+ * Malloy's own lookup finds it (an address folds in more than Malloy's key
+ * does: a destination, a `name=`, the upstream column types). Sources
+ * folded apart share one key; the first in plan order with an entry fills
+ * it, unless the key is an entry's own address or `claimed` (a key the
+ * caller decided itself). Every manifest handed to a Malloy runtime, a
+ * compile or a package load passes through here; Publisher's own reads of
+ * a manifest (freshness, the path report, verdicts) stay on addresses.
+ * Unchanged when nothing is filed.
+ */
+export function underCompilerKeys<M extends BuildManifest | undefined>(
+   manifest: M,
+   keys: CompilerKeys | undefined,
+   claimed: ReadonlySet<string> = new Set(),
+): M {
+   if (!manifest || !keys) return manifest;
+   const filed = filings(manifest.entries, keys, claimed);
+   if (filed.size === 0) return manifest;
+   const entries = { ...manifest.entries };
+   for (const [key, address] of filed) entries[key] = entries[address];
+   return { ...manifest, entries };
+}
+
+/**
+ * The manifest entries a run over {@link underCompilerKeys}`(manifest, keys)`
+ * read, by address: a read of a key it filed is a read of the address that
+ * filled it.
+ */
+export function readsUnderCompilerKeys(
+   read: ReadonlySet<string>,
+   manifest: BuildManifest | undefined,
+   keys: CompilerKeys | undefined,
+): ReadonlySet<string> {
+   if (!manifest || !keys || read.size === 0) return read;
+   const filed = filings(manifest.entries, keys, new Set());
+   if (![...read].some((k) => filed.has(k))) return read;
+   return new Set([...read].map((k) => filed.get(k) ?? k));
+}
+
+/**
+ * A database table Malloy files under a key that is not its address: sources
+ * of one build placed in two tables (foldDistinctTableNames) each have an
+ * address of their own, and Malloy files every one under the build's
+ * `buildId` (PlannedTable.compilerKey).
+ */
+export interface KeyedTable {
+   readonly tableId: string;
+   readonly compilerKey: string;
+}
+
+/**
+ * `manifest` with `table`'s entry also under its compiler key, so a compile
+ * that reads `table`'s source substitutes `table`, not a twin filed under the
+ * same key. Unchanged when `manifest` holds no entry at `table`'s address.
+ */
+export function manifestUnderCompilerKey<M extends BuildManifest | undefined>(
+   manifest: M,
+   table: KeyedTable | undefined,
+): M {
+   const own = table ? manifest?.entries[table.tableId] : undefined;
+   if (!manifest || !table || !own) return manifest;
+   return {
+      ...manifest,
+      entries: { ...manifest.entries, [table.compilerKey]: own },
+   };
+}
+
+/**
+ * The manifest entries a run read, by address: a read under `table`'s
+ * compiler key is a read of `table`, since {@link manifestUnderCompilerKey}
+ * put its entry there.
+ */
+export function readsByAddress(
+   read: ReadonlySet<string>,
+   table: KeyedTable | undefined,
+): ReadonlySet<string> {
+   if (!table || !read.has(table.compilerKey)) return read;
+   const byAddress = new Set(read);
+   byAddress.delete(table.compilerKey);
+   byAddress.add(table.tableId);
+   return byAddress;
 }
 
 /**
@@ -354,29 +522,116 @@ export function bindingServesModelSource(
 }
 
 /**
- * The primary key checks a local run recorded on a stored entry (its own
- * source's, by sourceID): internal, set only by the committing run or a
- * restore from the store, never by a host's manifest.
+ * A stored entry's `keyUniqueness`, each part kept only when it is well formed
+ * and not empty: the rollup's own check (`keyColumn` with `unique`), the
+ * primary key checks by sourceID (`parentKeys`), and the column each read
+ * (`parentKeyColumns`). Undefined when no part is.
  */
-export function primaryKeysOf(entry: {
-   keyUniqueness?: { parentKeys?: unknown };
-}): Record<string, boolean> | undefined {
-   const keys = entry.keyUniqueness?.parentKeys;
-   if (!keys || typeof keys !== "object") return undefined;
+function parseKeyUniqueness(raw: unknown): KeyUniqueness | undefined {
+   if (!raw || typeof raw !== "object") return undefined;
+   const k = raw as Record<string, unknown>;
+   const own =
+      typeof k.keyColumn === "string" && typeof k.unique === "boolean"
+         ? { keyColumn: k.keyColumn, unique: k.unique }
+         : undefined;
+   const parentKeys = recordOf(k.parentKeys, "boolean") as
+      | Record<string, boolean>
+      | undefined;
+   const parentKeyColumns = recordOf(k.parentKeyColumns, "string") as
+      | Record<string, string>
+      | undefined;
+   if (!own && !parentKeys && !parentKeyColumns) return undefined;
+   return {
+      ...(own ?? {}),
+      ...(parentKeys ? { parentKeys } : {}),
+      ...(parentKeyColumns ? { parentKeyColumns } : {}),
+   };
+}
+
+/** `value`'s entries of type `of`, or undefined when it has none. */
+function recordOf(
+   value: unknown,
+   of: "boolean" | "string",
+): Record<string, unknown> | undefined {
+   if (!value || typeof value !== "object") return undefined;
    const out = Object.fromEntries(
-      Object.entries(keys).filter(([, v]) => typeof v === "boolean"),
-   ) as Record<string, boolean>;
+      Object.entries(value).filter(([, v]) => typeof v === of),
+   );
    return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/**
+ * The primary key checks a stored entry carries, by sourceID: internal, set
+ * only by a bind, off the table's contract (`keyUniquenessOfContract`).
+ */
+export function primaryKeysOf(
+   entry: object,
+): Record<string, boolean> | undefined {
+   return keyUniquenessOf(entry)?.parentKeys;
+}
+
+/** The key column each of {@link primaryKeysOf}'s checks read, by sourceID. */
+export function primaryKeyColumnsOf(
+   entry: object,
+): Record<string, string> | undefined {
+   return keyUniquenessOf(entry)?.parentKeyColumns;
+}
+
+/** The `keyUniqueness` a stored entry carries, parsed ({@link parseKeyUniqueness}). */
+function keyUniquenessOf(entry: object): KeyUniqueness | undefined {
+   return parseKeyUniqueness(
+      (entry as { keyUniqueness?: unknown }).keyUniqueness,
+   );
+}
+
+/**
+ * Whether `columns` records `sourceID`'s primary key check as one of `key`:
+ * a check of another column, or one with no column recorded, says nothing,
+ * so a primary key moved since the check reads as unchecked.
+ */
+export function checkedKeyIs(
+   columns: Readonly<Record<string, string>> | undefined,
+   sourceID: string,
+   key: string | undefined,
+): boolean {
+   return key !== undefined && columns?.[sourceID] === key;
+}
+
 /** A rollup's own key check a local run recorded on a stored entry, as {@link primaryKeysOf}. */
-function rollupKeyOf(entry: {
-   keyUniqueness?: { keyColumn?: unknown; unique?: unknown };
-}): Binding["rollupKey"] {
-   const k = entry.keyUniqueness;
-   return typeof k?.keyColumn === "string" && typeof k.unique === "boolean"
+function rollupKeyOf(entry: object): Binding["rollupKey"] {
+   const k = keyUniquenessOf(entry);
+   return k?.keyColumn !== undefined && k.unique !== undefined
       ? { keyColumn: k.keyColumn, unique: k.unique }
       : undefined;
+}
+
+/**
+ * `binding` with the key checks `entry` records now (its stored sources'
+ * primary keys, and a rollup's own key), in place of the ones it was made
+ * with: what a reload that moves a primary key gives a `storage=` binding
+ * without binding its entries again.
+ */
+export function withEntryKeyChecks(
+   binding: Binding,
+   entry: ManifestEntry,
+): Binding {
+   const {
+      primaryKeys: _was,
+      primaryKeyColumns: _wasColumns,
+      rollupKey: _wasKey,
+      ...rest
+   } = binding;
+   const primaryKeys = primaryKeysOf(entry);
+   const primaryKeyColumns = primaryKeyColumnsOf(entry);
+   const rollupKey = isRollupOrigin(entry.origin)
+      ? rollupKeyOf(entry)
+      : undefined;
+   return {
+      ...rest,
+      ...(primaryKeys ? { primaryKeys } : {}),
+      ...(primaryKeyColumns ? { primaryKeyColumns } : {}),
+      ...(rollupKey ? { rollupKey } : {}),
+   };
 }
 
 /**
@@ -423,9 +678,10 @@ export function deriveServeBindings(
             (name) => !builders.has(name),
          ),
       ].filter((name, i, all) => all.indexOf(name) === i);
-      const primaryKeys = primaryKeysOf(entry as never);
+      const primaryKeys = primaryKeysOf(entry);
+      const primaryKeyColumns = primaryKeyColumnsOf(entry);
       const rollupKey = isRollupOrigin(entry.origin)
-         ? rollupKeyOf(entry as never)
+         ? rollupKeyOf(entry)
          : undefined;
       for (const sourceName of names) {
          // Set whenever there is a plan to read, even empty: an empty list
@@ -450,6 +706,7 @@ export function deriveServeBindings(
             freshnessWindowSeconds: entry.freshnessWindowSeconds,
             freshnessFallback: entry.freshnessFallback,
             ...(primaryKeys ? { primaryKeys } : {}),
+            ...(primaryKeyColumns ? { primaryKeyColumns } : {}),
             ...(rollupKey ? { rollupKey } : {}),
          });
       }

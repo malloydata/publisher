@@ -82,7 +82,7 @@ export interface CurrentTimeReadTerm {
 
 /**
  * A given-reading `where:` term a materialized source's build leaves out and
- * its served copy keeps (P2). `columns` are the stored columns it reads, so a
+ * its served copy keeps. `columns` are the stored columns it reads, so a
  * read over the table can apply it. The served copy writes nothing for it:
  * the term is in the declaration's own trailing `extend`, which the re-root
  * keeps as written (see {@link termSpans}).
@@ -97,6 +97,14 @@ export interface GivenReadTerm {
    columns: string[];
    /** Where it reads each field and given, in the declaring file. */
    at: TermUse[];
+   /**
+    * Written outside this source's own declaration: a base's or a
+    * materialized parent's. Never planned: the planner keeps it only to
+    * refuse the source, as `inherited_where_with_given`, or, for an
+    * extension of a `#(materialize)` parent, as `upstream_table_unusable`
+    * (`chainVerdict`).
+    */
+   inherited?: true;
 }
 
 /**
@@ -107,7 +115,7 @@ export interface GivenReadTerm {
  * build's own `now` stores the widest set, and is also the bound an
  * incremental refresh deletes below; a current-time term holding an upper
  * bound is left out of the build (`leftOut`), since with no refresh interval
- * the widest set is every row. A given-reading term (P2) is left out of the
+ * the widest set is every row. A given-reading term is left out of the
  * build and kept by the served copy as the author wrote it.
  */
 export type MaterializeReadTimeTerm = CurrentTimeReadTerm | GivenReadTerm;

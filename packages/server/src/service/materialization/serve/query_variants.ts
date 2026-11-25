@@ -34,6 +34,7 @@
  * Behind `materialize.enabled`.
  */
 
+import { VariantCompileCache } from "./variant_compile_cache";
 import type {
    MalloyConfig,
    ModelDef,
@@ -94,11 +95,8 @@ interface QueryVariantHost {
 export class PersistedQueryServe {
    private packagePath?: string;
    private packageConfig?: ModelConnectionInput;
-   /** Bumped when the context or the bindings change: a graft cache scope. */
-   private generation = 0;
-   private compiled = new Map<string, Promise<CompiledVariant>>();
-   /** The snapshot bindings {@link compiled} was compiled over. */
-   private compiledFor: readonly Binding[] | undefined;
+   /** The compiled variants, by key: a graft cache scope per generation. */
+   private readonly compiled = new VariantCompileCache<CompiledVariant>();
    private planMemo?: { modelDef: unknown; plans: PersistedQueryPlan[] };
 
    /**
@@ -117,15 +115,7 @@ export class PersistedQueryServe {
    }
 
    invalidate(): void {
-      this.generation++;
-      this.compiled.clear();
-   }
-
-   /** Start a new compile cache when the snapshot's bindings changed. */
-   private compiledOver(pinned: Pinned): void {
-      if (this.compiledFor === pinned.snapshot.bindings) return;
-      if (this.compiledFor !== undefined) this.invalidate();
-      this.compiledFor = pinned.snapshot.bindings;
+      this.compiled.invalidate();
    }
 
    /** Every persisted named query this model can see. */
@@ -200,6 +190,7 @@ export class PersistedQueryServe {
          binding,
          databaseTable,
          leftOut,
+         asOfBuild,
          ...table
       } = this.views.tableOf(called.plan, pinned, pinned.compilerManifest);
       void virtualMap;
@@ -207,6 +198,7 @@ export class PersistedQueryServe {
       void binding;
       void databaseTable;
       void leftOut;
+      void asOfBuild;
       return { ...table, kind: "query" };
    }
 
@@ -226,7 +218,7 @@ export class PersistedQueryServe {
       /** The pinned build manifest without the rollups' entries. */
       buildManifest: BuildManifest | undefined;
    }): Promise<ViewAnswer> {
-      this.compiledOver(args.pinned);
+      this.compiled.over(args.pinned);
       const called = this.calledQuery(args.queryString);
       if (!called) throw new LegDecline("query_shape_mismatch");
       const { call, plan } = called;
@@ -296,6 +288,7 @@ export class PersistedQueryServe {
       }
       const table = this.views.tableOf(plan, args.pinned, args.buildManifest);
       if (!table.built) throw new LegDecline("query_not_built");
+      if (table.storageNotServed) throw new LegDecline("query_storage_mode");
       if (table.stale || (!table.virtualMap && !table.databaseTable)) {
          throw new LegDecline("query_stale");
       }
@@ -319,7 +312,10 @@ export class PersistedQueryServe {
          table,
          modelPath: this.host.modelPath(),
          subject: `query ${plan.queryName}`,
-         cacheScope: `persisted_query\u0000${this.generation}\u0000${plan.buildSourceID}\u0000${runTarget ?? ""}`,
+         cacheScope:
+            variant.cacheScope === undefined
+               ? undefined
+               : `persisted_query\u0000${variant.cacheScope}\u0000${runTarget ?? ""}`,
          compilerKey: this.views.compilerKeyOf(plan.buildSourceID),
       });
    }
@@ -334,14 +330,15 @@ export class PersistedQueryServe {
             ? `${table.binding.destinationName}/${table.binding.virtualHandle}`
             : "database",
       ].join("\u0000");
-      let compiled = this.compiled.get(key);
-      if (!compiled) {
-         compiled = this.compile(plan, table).catch((error) => ({
-            error: error instanceof Error ? error.message : String(error),
-         }));
-         this.compiled.set(key, compiled);
-      }
-      return compiled;
+      return this.compiled.get(
+         key,
+         (scope) =>
+            this.compile(plan, table).then((v) => ({
+               ...v,
+               cacheScope: `${scope}\u0000${plan.buildSourceID}`,
+            })),
+         (error) => ({ error }),
+      );
    }
 
    /**

@@ -255,15 +255,42 @@ jobs:
       # reusable workflow (job_workflow_ref) in the certificate, so the identity
       # names this file, not release.yml. The ref is matched loosely here and
       # printed, so the exact identity is visible in the run.
+      #
+      # Docker Hub does not always serve a just-pushed signature at once: the 0.15.0
+      # and 0.16.0 releases both failed here with "no signatures found" two seconds
+      # after "Pushing signature to", and passed on a re-run. So that one error is
+      # retried with backoff (6 attempts, about 2.5 minutes in all). Any other error,
+      # an identity or issuer mismatch included, fails at once, and the image is
+      # never re-signed here: a second sign would add a second signature.
       - name: Verify signature
         env:
           IMAGE: ${{ env.REGISTRY_IMAGE }}@${{ steps.pushed.outputs.digest }}
         run: |
           set -euo pipefail
-          identity=$(cosign verify "$IMAGE" \
-            --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/docker-image\.yml@" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            | jq -r '.[0].optional.Subject')
+          errfile=$(mktemp)
+          attempts=6
+          delay=5
+          for attempt in $(seq 1 "$attempts"); do
+            if verified=$(cosign verify "$IMAGE" \
+              --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/docker-image\.yml@" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              2>"$errfile"); then
+              status=0
+            else
+              status=$?
+            fi
+            cat "$errfile" >&2
+            if [ "$status" -eq 0 ]; then
+              break
+            fi
+            if ! grep -q 'no signatures found' "$errfile" || [ "$attempt" -eq "$attempts" ]; then
+              exit "$status"
+            fi
+            echo "::warning title=Signature not visible yet::attempt ${attempt}/${attempts} found no signature for ${IMAGE}; retrying in ${delay}s"
+            sleep "$delay"
+            delay=$((delay * 2))
+          done
+          identity=$(jq -r '.[0].optional.Subject' <<<"$verified")
           echo "::notice title=Image signed::${IMAGE} signed by ${identity}"
 
       - name: Inspect image

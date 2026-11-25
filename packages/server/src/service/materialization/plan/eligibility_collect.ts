@@ -8,6 +8,7 @@
  */
 
 import { refusalKey, tierOf } from "./refusal_key";
+import { errorCodeOf } from "../../../error_code";
 import { components } from "../../../api";
 import { MaterializationEligibilityError } from "../../../errors";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
@@ -45,6 +46,10 @@ import {
 } from "../../annotation_reader";
 import { MATERIALIZE_ROUTE } from "./build_file_generator";
 import type { SourceBuild } from "../domain/compiled_build_plan";
+import type {
+   DatabaseSourceEligibility,
+   SourceEligibility,
+} from "../domain/package_plan";
 import { materializeRefusalFinding } from "./materialize_plan";
 import {
    isPersistedResultSourceID,
@@ -68,6 +73,10 @@ interface EligibilityPlan {
    addresses: PlanAddresses;
    /** See `CompiledBuildPlan.connectionTypes`. */
    connectionTypes?: Record<string, string>;
+   /** See `CompiledBuildPlan.managedConnections`. */
+   managedConnections?: readonly string[];
+   /** See `CompiledBuildPlan.accessReads`. */
+   accessReads?: readonly string[];
    /** See `CompiledBuildPlan.versionScoped` ({@link persistTableTarget}). */
    versionScoped?: boolean;
 }
@@ -524,49 +533,18 @@ export function withoutSources<
 
 /** A compiled plan as the tier gate reads it. */
 export function tierGateInputs(
-   compiled: Pick<EligibilityPlan, "tables" | "connectionTypes">,
+   compiled: Pick<
+      EligibilityPlan,
+      "tables" | "connectionTypes" | "managedConnections" | "accessReads"
+   >,
 ): TierGateInputs {
    return {
       tables: compiled.tables,
       connectionTypes: compiled.connectionTypes,
+      managedConnections: compiled.managedConnections,
+      accessReads: compiled.accessReads,
    };
 }
-
-/**
- * Which sources may be served from a materialized table, decided here where the
- * compiled sources exist: binding a host's manifest skips the recompile, so the
- * serve side cannot re-derive this.
- *
- * Carries the ELIGIBLE names so the serve side requires a positive result.
- * Absence is not eligibility: a `#@ persist` filtered pass-through (the
- * row-level-access shape) never reaches this record, and a refusal-only view
- * would read that silence as consent. Keyed by source NAME, as serve bindings are.
- *
- * Keyed by `sourceID`, never by name (the source map's keying rule): two models
- * may declare same-named sources, and a synthesized rollup is recorded under
- * its own `sourceID` rather than passing on its generated name.
- */
-export type SourceEligibility = {
-   /** sourceIDs compiled, examined, and found eligible. */
-   eligible: string[];
-   /** sourceID -> why it was refused; for the operator-facing log. */
-   refused: Record<string, string>;
-   /**
-    * The eligible sourceIDs admitted past their own row-level gate under G3
-    * (`gateEnforcedAtRead`), whose bindings the router lets a served answer
-    * read past that gate. Absent, as in a record made before it: none.
-    */
-   gateKept?: string[];
-   /**
-    * The eligible sourceIDs whose tables hold only ungated rows: no gate
-    * anywhere beneath the source, its joins and the sources it derives from
-    * included (`holdsOnlyUngatedRows`). A `storage=` table every source on
-    * whose address is listed here is read past a gated entry point's gate,
-    * as a database table is (g-mixed). Absent, as in a record made before
-    * it: none.
-    */
-   ungated?: string[];
-};
 
 export function collectSourceEligibility(
    compiled: EligibilityPlan,
@@ -588,25 +566,6 @@ export function collectSourceEligibility(
    }
    return { eligible, refused, gateKept, ungated };
 }
-
-/**
- * Which sources may be served from a DATABASE materialized table, decided here
- * for the same reason as {@link SourceEligibility}.
- *
- * Keyed by `sourceEntityId`, not name: a database binding carries only the id,
- * and two models may declare same-named sources, so a name key would let one's
- * eligibility authorize the other.
- *
- * Two DIFFERENT sources can share an id (identical SQL, different gates, since
- * the build SQL excludes annotations). Refusal therefore dominates: one refusal
- * retracts the id for good, regardless of iteration order.
- */
-export type DatabaseSourceEligibility = {
-   /** sourceEntityId of database sources examined and found eligible. */
-   eligibleEntityIds: Set<string>;
-   /** sourceEntityId -> why it was refused; for the operator-facing log. */
-   refused: Record<string, string>;
-};
 
 export function collectDatabaseSourceEligibility(
    compiled: EligibilityPlan,
@@ -633,8 +592,8 @@ export function collectDatabaseSourceEligibility(
                {
                   sourceID,
                   sourceName: source.name,
-                  refusal: errMessage(err),
-                  error: errMessage(idErr),
+                  reason: errorCodeOf(err),
+                  code: errorCodeOf(idErr),
                },
             );
             continue;
@@ -652,7 +611,7 @@ export function collectDatabaseSourceEligibility(
       } catch (err) {
          logger.warn(
             "Dropping an eligible database source: its content address could not be computed",
-            { sourceID, sourceName: source.name, error: errMessage(err) },
+            { sourceID, sourceName: source.name, code: errorCodeOf(err) },
          );
          continue;
       }

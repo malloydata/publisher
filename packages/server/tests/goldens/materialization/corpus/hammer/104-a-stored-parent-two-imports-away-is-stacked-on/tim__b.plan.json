@@ -87,6 +87,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.tim_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "77d1ee2d60220500033e17b15b7fe81dd68320356a8d460ec224f14100d5b3a6",
         "sourceID": "daily@<hammer>/tim/a.malloy",
@@ -115,6 +121,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.tim_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "5ec6ceb979baf8d955182e10cc2e660837d7b414db4f0eaba3c68a51a87ece53",
         "sourceID": "weekly@<hammer>/tim/b.malloy",

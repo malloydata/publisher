@@ -33,6 +33,7 @@ import {
    PUBLISHER_DATA_DIR,
 } from "../constants";
 import {
+   BadRequestError,
    ConnectionSaveError,
    EnvironmentNotFoundError,
    FrozenConfigError,
@@ -50,6 +51,8 @@ import {
    type ResourceRepository,
 } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
+import { validateConnectionSqlFields } from "./connection_config";
+import { deleteUnconfiguredRetrievalRows } from "../storage/duckdb/schema";
 import { extractErrorDataFromError, validateAzureUrl } from "./db_utils";
 import {
    Environment,
@@ -62,7 +65,6 @@ import { environmentResource } from "../api_resource";
 import { type EnvironmentName, parseEnvironmentName } from "./identity";
 import { VersionStore } from "./versions/version_store";
 import { storageBindingResolverFor } from "./versions/materialization_scope";
-import { withRollupKeyRecords } from "./materialization/run/inline_uniqueness";
 import { keptTablesResolverFor } from "./materialization";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import { SERVER_VERSION } from "../version";
@@ -167,6 +169,19 @@ const connectionSaveFailureCounter = lazyCounter(
    "Environment syncs to the database whose connection rows did not all save, so the connections in memory will differ after a restart. Label: path ('request'|'boot'|'load'|'reload').",
 );
 
+/** Each connection's attached database names and S3 regions, as a 400 (connection_config.ts). */
+function validateEnvironmentConnectionSqlFields(
+   environment: ApiEnvironment,
+): void {
+   for (const conn of environment.connections || []) {
+      try {
+         validateConnectionSqlFields(conn);
+      } catch (error) {
+         throw new BadRequestError((error as Error).message);
+      }
+   }
+}
+
 function validateEnvironmentAzureUrls(environment: ApiEnvironment): void {
    for (const conn of environment.connections || []) {
       if (conn.type !== "duckdb") continue;
@@ -235,6 +250,13 @@ export function formatReadinessLine(counts: {
  */
 interface EnvironmentHooks {
    packageLoaded: ((environmentName: string, pkg: Package) => void) | null;
+   /**
+    * A package is about to be deleted or unloaded: its running builds are
+    * aborted before this returns, and it resolves once they have settled.
+    */
+   packageRetiring:
+      | ((environmentName: string, packageName: string) => Promise<void>)
+      | null;
    versionArchived:
       | ((
            environmentName: string,
@@ -288,6 +310,10 @@ const ATTACH_HOOK: {
       env.setPackageLoadedHook(
          hook && ((pkg) => hook(env.getEnvironmentName(), pkg)),
       ),
+   packageRetiring: (env, hook) =>
+      env.setPackageRetiringHook(
+         hook && ((pkg) => hook(env.getEnvironmentName(), pkg)),
+      ),
    versionArchived: (env, hook) =>
       env.setVersionArchivedHook(
          hook &&
@@ -306,6 +332,9 @@ const ATTACH_HOOK: {
             ((packageName, versionId) => hook(env, packageName, versionId)),
       ),
 };
+
+/** Handed to every Environment when it is created. */
+const PACKAGE_HOOKS = ["packageLoaded", "packageRetiring"] as const;
 
 /** Picked up when an Environment's version registry is bound. */
 const VERSION_HOOKS = [
@@ -376,6 +405,7 @@ export class EnvironmentStore
    private memoryGovernor: PackageMemoryGovernor | null = null;
    private hooks: EnvironmentHooks = {
       packageLoaded: null,
+      packageRetiring: null,
       versionArchived: null,
       versionDeleted: null,
       owedReclaim: null,
@@ -477,6 +507,17 @@ export class EnvironmentStore
     */
    public setPackageLoadedHook(hook: EnvironmentHooks["packageLoaded"]): void {
       this.setHook("packageLoaded", hook);
+   }
+
+   /**
+    * Attach (or detach with `null`) the callback run before a package is
+    * deleted or unloaded, which aborts its running builds before it returns
+    * and resolves once they have settled.
+    */
+   public setPackageRetiringHook(
+      hook: EnvironmentHooks["packageRetiring"],
+   ): void {
+      this.setHook("packageRetiring", hook);
    }
 
    /**
@@ -860,7 +901,7 @@ export class EnvironmentStore
             environmentInstance.markStorageDestinationsUnknown();
          }
          environmentInstance.setMemoryGovernor(this.memoryGovernor);
-         this.attachHooks(environmentInstance, ["packageLoaded"]);
+         this.attachHooks(environmentInstance, PACKAGE_HOOKS);
          // Its version rules, with the storage-binding resolver every package
          // here restores its serve bindings through.
          await this.bindVersionRegistry(environmentInstance, dbEnvironment.id);
@@ -903,6 +944,15 @@ export class EnvironmentStore
             );
 
          await this.cleanupAndCreatePublisherPath();
+         if (reInit) {
+            await deleteUnconfiguredRetrievalRows(
+               this.storageManager.getDuckDbConnection(),
+               environmentManifest.environments.map((e) => ({
+                  environment: e.name,
+                  packages: e.packages.map((p) => p.name),
+               })),
+            );
+         }
 
          const repository = this.storageManager.getRepository();
 
@@ -1048,11 +1098,7 @@ export class EnvironmentStore
       // A version of a `scope: version` package reads only its own runs;
       // everything else reads the package's shared runs.
       environment.setStorageBindingResolver(
-         storageBindingResolverFor(
-            repository,
-            environmentId,
-            withRollupKeyRecords,
-         ),
+         storageBindingResolverFor(repository, environmentId),
       );
       environment.setKeptTablesResolver(
          keptTablesResolverFor(repository, environmentId),
@@ -2084,6 +2130,7 @@ export class EnvironmentStore
       if (!skipInitialization && this.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
+      validateEnvironmentConnectionSqlFields(environment);
       assertSafePackageName(environment.name);
       const environmentName = environment.name;
       for (const _package of environment.packages || []) {
@@ -2136,7 +2183,7 @@ export class EnvironmentStore
          environment.storageDestinations || [],
       );
       newEnvironment.setMemoryGovernor(this.memoryGovernor);
-      this.attachHooks(newEnvironment, ["packageLoaded"]);
+      this.attachHooks(newEnvironment, PACKAGE_HOOKS);
 
       if (!newEnvironment.metadata) newEnvironment.metadata = {};
       newEnvironment.metadata.location = absoluteEnvironmentPath;
@@ -2176,6 +2223,7 @@ export class EnvironmentStore
          throw new FrozenConfigError();
       }
       validateEnvironmentAzureUrls(environment);
+      validateEnvironmentConnectionSqlFields(environment);
       assertSafePackageName(environment.name);
       const environmentName = environment.name;
       for (const _package of environment.packages || []) {
