@@ -2888,8 +2888,10 @@ paths:
         listed file is read from disk and served only if it still hashes to its
         listed digest.
 
-        404 when no skill of that name is in force, or the skill has no such
-        file; the message names the skill's files.
+        404 when no skill of that name is in force, the skill has no such file
+        (the message names the skill's files), or a package skill's listed file
+        changed on disk after the package loaded (it is served again once the
+        package reloads).
       parameters:
         - name: environmentName
           in: path
@@ -6900,8 +6902,8 @@ components:
           additionalProperties: true
           description: >-
             The YAML block of `SKILL.md` as an object, parsed as YAML 1.2 core
-            (so `yes`, `on` and `0755` are not booleans or octal; dates are ISO
-            strings, keys are strings). Only when `path` is `SKILL.md`; empty
+            (so `yes`, `on` and `0755` are not booleans or octal, and a plain
+            date stays the string as written; keys are strings). Only when `path` is `SKILL.md`; empty
             when the block did not parse.
         files:
           type: array

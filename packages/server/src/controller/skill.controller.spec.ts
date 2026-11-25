@@ -6,6 +6,7 @@ import { SkillNotFoundError } from "../errors";
 import {
    BUNDLED_CATALOG,
    type ServedSkill,
+   type SkillFileRead,
 } from "../service/skills/package_skills";
 import { SkillController } from "./skill.controller";
 import { fakeOf } from "../test_helpers/store_fakes";
@@ -14,11 +15,11 @@ import type { PackageLookup } from "../service/environment_ports";
 const bundled = BUNDLED_CATALOG[0]!;
 const bundledDescription = bundled.frontmatter.description as string;
 
-/** A package skill whose files are text, or a message with a size (a file with no text). */
+/** A package skill whose files are text, or a read with a size (a file with no text). */
 const packageSkill = (
    name: string,
    description: string,
-   files: Record<string, string | { message: string; size: number }>,
+   files: Record<string, string | { read: SkillFileRead; size: number }>,
 ): ServedSkill => ({
    name,
    description,
@@ -37,7 +38,7 @@ const packageSkill = (
    },
    read: (p) => {
       const file = files[p]!;
-      return typeof file === "string" ? { text: file } : file;
+      return typeof file === "string" ? { text: file } : file.read;
    },
 });
 
@@ -145,10 +146,7 @@ describe("SkillController skills", () => {
          storeWith([
             packageSkill("house", "d", {
                "SKILL.md": "S",
-               "assets/logo.png": {
-                  message: "'assets/logo.png' is binary",
-                  size: 68,
-               },
+               "assets/logo.png": { read: { binary: true }, size: 68 },
             }),
          ]),
       );
@@ -159,9 +157,36 @@ describe("SkillController skills", () => {
          path: "assets/logo.png",
          description: "d",
          size: 68,
-         message: "'assets/logo.png' is binary",
+         message:
+            "'assets/logo.png' is a binary file (68 bytes), and only text files are served.",
          origin: "package",
       });
+   });
+
+   it("answers 404 for a listed file that changed since the load, as the agent skill-file route does", async () => {
+      const controller = new SkillController(
+         storeWith([
+            packageSkill("house", "d", {
+               "SKILL.md": "S",
+               "scripts/run.py": { read: { changed: true }, size: 9 },
+            }),
+         ]),
+      );
+      const err = await controller
+         .getSkill("env", "pkg", "house", "scripts/run.py")
+         .catch((e) => e);
+      expect(err).toBeInstanceOf(SkillNotFoundError);
+      expect(err.message).toContain("changed on disk");
+   });
+
+   it("reads a path with a leading ./ as the path without it", async () => {
+      const controller = new SkillController(
+         storeWith([
+            packageSkill("house", "d", { "SKILL.md": "S", "a.md": "A" }),
+         ]),
+      );
+      const file = await controller.getSkill("env", "pkg", "house", "./a.md");
+      expect(file).toMatchObject({ path: "a.md", content: "A" });
    });
 
    it("throws SkillNotFoundError for a name nothing defines, and for a path the skill lacks, naming its files", async () => {

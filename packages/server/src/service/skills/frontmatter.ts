@@ -29,6 +29,10 @@ function lineRead(front: string, key: string): string | undefined {
    return value === undefined ? undefined : unquote(value);
 }
 
+/** Alias-free output is at most its source size (key stringification stays under 4x); an alias, even of a scalar, can exceed it. */
+const EMIT_FACTOR = 4;
+const EMIT_SLACK = 10_000;
+
 /** The frontmatter block as a JSON object, or why it is not one. Never throws. */
 function parseYaml(
    front: string,
@@ -39,8 +43,26 @@ function parseYaml(
       if (doc.errors.length > 0) {
          return { problem: doc.errors[0]!.message.split("\n")[0]! };
       }
+      // Each alias is walked again, so the replacer sees (and stops) an expansion before its string is built.
+      let emitted = 0;
+      const limit = EMIT_FACTOR * front.length + EMIT_SLACK;
+      const bounded = (_key: string, node: unknown): unknown => {
+         emitted += 1;
+         if (typeof node === "string") emitted += node.length;
+         else if (node === null || typeof node !== "object") {
+            emitted += JSON.stringify(node)?.length ?? 0;
+         } else if (!Array.isArray(node)) {
+            for (const k of Object.keys(node)) emitted += k.length;
+         }
+         if (emitted > limit) {
+            throw new Error("frontmatter expands past its source size");
+         }
+         return node;
+      };
       // A JSON round trip drops what JSON cannot hold and turns a Date into its ISO string.
-      const value: unknown = JSON.parse(JSON.stringify(doc.toJS() ?? {}));
+      const value: unknown = JSON.parse(
+         JSON.stringify(doc.toJS() ?? {}, bounded),
+      );
       if (typeof value !== "object" || value === null || Array.isArray(value)) {
          return { problem: "it is not a mapping" };
       }

@@ -44,8 +44,21 @@ export const PACKAGE_SKILLS_DIR = "skills";
 /** Where a skill came from, once the bundled and package sets are resolved. */
 type SkillOrigin = "bundled" | "package";
 
-/** What a read of one listed file of a skill gives: its text, or why it has none. */
-export type SkillFileRead = { text: string } | { message: string };
+/**
+ * What a read of one listed file of a skill gives: its text; a message when
+ * the server does not carry it; `binary` when it is not text; or `changed`
+ * when it is no longer the file that was listed.
+ */
+export type SkillFileRead =
+   | { text: string }
+   | { message: string }
+   | { binary: true }
+   | { changed: true };
+
+/** Why a listed file that changed since the package loaded is not served. */
+export function fileChangedMessage(relative: string): string {
+   return `'${relative}' changed on disk after the package loaded, so it is not served until the package reloads.`;
+}
 
 /** A skill served from a package or the bundle: its catalog entry and how to read a file the entry lists. */
 export interface ServedSkill {
@@ -690,6 +703,14 @@ function inlineMarkdown(
       d.later.list.push(relative);
       return;
    }
+   // A .md that is not strict UTF-8 text is listed like any binary file, never served as lossy text.
+   if (decodeText(read.raw) === undefined) {
+      ctx.warnings.push(
+         `Package skill file '${shown}' is not UTF-8 text, so it is listed instead of inlined.`,
+      );
+      d.later.list.push(relative);
+      return;
+   }
    ctx.inline.left -= Buffer.byteLength(read.text);
    d.inline.push({ relative, text: read.text });
    d.files[relative] = {
@@ -718,12 +739,13 @@ function readFirst(s: ScannedSkill, ctx: FinishContext): SkillDraft {
    const d: SkillDraft = {
       s,
       inline: [{ relative: SKILL_MD, text: s.skillMd.text }],
-      files: {
+      // No prototype, so a root file named `__proto__` is listed like any other.
+      files: Object.assign(Object.create(null) as SkillDraft["files"], {
          [SKILL_MD]: {
             digest: `sha256:${sha256(s.skillMd.raw)}`,
             size: s.skillMd.raw.length,
          },
-      },
+      }),
       listed: [],
       later: { markdown: [], list: [] },
    };
@@ -983,16 +1005,8 @@ function packageSkill(packagePath: string, read: ReadSkill): ServedSkill {
             relative,
             read.catalog.files[relative]!.digest.slice(SHA_PREFIX.length),
          );
-         if (listed === undefined) {
-            return {
-               message: `'${relative}' changed on disk after the package loaded, so it is not served until the package reloads.`,
-            };
-         }
-         return "text" in listed
-            ? listed
-            : {
-                 message: `'${relative}' is a binary file (${listed.binarySize} bytes), and only text files are served.`,
-              };
+         if (listed === undefined) return { changed: true };
+         return "text" in listed ? listed : { binary: true };
       },
    };
 }

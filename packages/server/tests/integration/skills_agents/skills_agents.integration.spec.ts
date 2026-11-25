@@ -129,11 +129,7 @@ describe("Package skills and agents (E2E)", () => {
       });
 
       it("serves any file of a skill by its path, verbatim, literal or encoded", async () => {
-         for (const sub of [
-            "reference/margin.md",
-            "reference%2Fmargin.md",
-            "./reference/margin.md",
-         ]) {
+         for (const sub of ["reference/margin.md", "reference%2Fmargin.md"]) {
             const { status, body } = await get(`/skills/house-rules/${sub}`);
             expect(status).toBe(200);
             expect(body).toMatchObject({

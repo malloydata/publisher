@@ -5,6 +5,7 @@ import { components } from "../api";
 import { AgentNotFoundError, SkillNotFoundError } from "../errors";
 import {
    BUNDLED_CATALOG,
+   fileChangedMessage,
    namedSkillFiles,
    resolveSkills,
    skillFilePath,
@@ -106,6 +107,9 @@ export class SkillController {
          );
       }
       const read = skill.read(relative);
+      if ("changed" in read) {
+         throw new SkillNotFoundError(fileChangedMessage(relative));
+      }
       return {
          ...skillFileView(
             skill,
@@ -113,7 +117,14 @@ export class SkillController {
             "text" in read ? read.text : undefined,
          ),
          description: skill.description,
-         ...("message" in read ? { message: read.message } : {}),
+         ...("text" in read
+            ? {}
+            : {
+                 message:
+                    "message" in read
+                       ? read.message
+                       : `'${relative}' is a binary file (${skill.catalog.files[relative]!.size} bytes), and only text files are served.`,
+              }),
       };
    }
 

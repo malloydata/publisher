@@ -6,9 +6,9 @@ import { z } from "zod/v3";
 import type { PackageLookup } from "../../service/environment_ports";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
-import { MAX_RESULT_CHARS } from "../query_envelope";
 import { type BundledSkill } from "../../service/skills/build_skills_bundle";
 import {
+   fileChangedMessage,
    namedSkillFiles,
    resolveSkills,
    SKILL_MD,
@@ -19,6 +19,9 @@ import {
 } from "../../service/skills/package_skills";
 import { jsonResource } from "../tool_response";
 import { parseEnvironmentName, parsePackageName } from "../../service/identity";
+
+/** Cursor rejects a tool result over 35K characters, the strictest host cap. */
+export const GET_SKILL_MAX_CHARS = 35_000;
 
 const GET_SKILL_DESCRIPTION = `Fetch a task guide, or list the guides available. Guides are concise procedural instructions for working with Malloy and this server: query patterns, chart and rendering tags, analysis pitfalls, how to build or review a model.
 
@@ -97,7 +100,7 @@ function wireChars(uri: string, payload: unknown): number {
 function oversizeMessage(relative: string, wire: number): string {
    const smaller =
       relative === SKILL_MD ? "one of the other files" : "a smaller file";
-   return `'${relative}' would be ${wire} characters as a tool result, over the limit of ${MAX_RESULT_CHARS}, so get_skill cannot return it. Read ${smaller} listed in \`files\`.`;
+   return `'${relative}' would be ${wire} characters as a tool result, over the limit of ${GET_SKILL_MAX_CHARS}, so get_skill cannot return it. Read ${smaller} listed in \`files\`.`;
 }
 
 /** The most files that fit: all `hi` if that does, else the largest n below it (a cut list carries a longer message, so the full count is checked on its own), or undefined when not even 0 fit. */
@@ -116,8 +119,9 @@ function largest(fits: (n: number) => boolean, hi: number): number | undefined {
 
 /**
  * The fullest SKILL.md answer within the tool-result limit: the whole read, else
- * the body with as many file entries as fit, else the entries alone with the
- * body withheld, else without the frontmatter too. The body outranks the list
+ * the body with as many file entries as fit, else the body without the parsed
+ * frontmatter (its text is in the body), else the entries alone with the body
+ * withheld, else without the frontmatter too. The body outranks the list
  * because the list can be read from the skill's own files one by one, and the
  * body cannot.
  */
@@ -132,7 +136,11 @@ function guideAnswer(skill: ResolvedSkill, text: string, uri: string) {
       const unlisted = entries.length - listed;
       const message = [
          content ? "" : oversizeMessage(SKILL_MD, wire),
-         frontmatter ? "" : "Its frontmatter was too large to return.",
+         frontmatter
+            ? ""
+            : content
+              ? "Its parsed frontmatter was too large to return; the text is in `content`."
+              : "Its frontmatter was too large to return.",
          unlisted > 0
             ? `${unlisted} of ${entries.length} files are not listed to keep this reply within the host's tool-result limit. Read any file of the skill by calling get_skill again with its \`path\` (and the \`scopes\` you used).`
             : "",
@@ -152,16 +160,17 @@ function guideAnswer(skill: ResolvedSkill, text: string, uri: string) {
    };
    const full = answer(true, true, entries.length, 0);
    const wire = wireChars(uri, full);
-   if (wire <= MAX_RESULT_CHARS) return full;
+   if (wire <= GET_SKILL_MAX_CHARS) return full;
    for (const [content, frontmatter] of [
       [true, true],
+      [true, false],
       [false, true],
       [false, false],
    ] as const) {
       const listed = largest(
          (n) =>
             wireChars(uri, answer(content, frontmatter, n, wire)) <=
-            MAX_RESULT_CHARS,
+            GET_SKILL_MAX_CHARS,
          entries.length,
       );
       if (listed !== undefined) {
@@ -174,16 +183,20 @@ function guideAnswer(skill: ResolvedSkill, text: string, uri: string) {
 /** One file of a skill as the tool answers it; `relative` is a path the skill lists. */
 function fileAnswer(skill: ResolvedSkill, relative: string, uri: string) {
    const read = skill.read(relative);
-   if ("message" in read) {
+   if ("changed" in read) return { message: fileChangedMessage(relative) };
+   if (!("text" in read)) {
       return {
          skill: skillFileView(skill, relative, undefined),
-         message: read.message,
+         message:
+            "message" in read
+               ? read.message
+               : `'${relative}' is a binary file (${skill.catalog.files[relative]!.size} bytes); get_skill returns text files only.`,
       };
    }
    if (relative === SKILL_MD) return guideAnswer(skill, read.text, uri);
    const full = { skill: skillFileView(skill, relative, read.text) };
    const wire = wireChars(uri, full);
-   return wire <= MAX_RESULT_CHARS
+   return wire <= GET_SKILL_MAX_CHARS
       ? full
       : {
            skill: skillFileView(skill, relative, undefined),

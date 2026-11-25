@@ -28,6 +28,7 @@ import {
    readAgentAsset,
    readPackageAgents,
    readSkillsDir,
+   skillFileList,
    type PackageAgent,
 } from "./package_skills";
 import { REFERENCE_MAX_EXAMINED, skillFiles } from "./skill_files";
@@ -601,18 +602,45 @@ describe("a package's own skills", () => {
       expect(skill!.read("docs/Guide.MD")).toEqual({
          text: String(FILES["docs/Guide.MD"]),
       });
-      expect(skill!.read("assets/logo.png")).toEqual({
-         message: `'assets/logo.png' is a binary file (${PNG.length} bytes), and only text files are served.`,
-      });
+      expect(skill!.read("assets/logo.png")).toEqual({ binary: true });
    });
 
-   it("answers a listed file that changed on disk since the load with a message, never its new bytes", () => {
+   it("answers a listed file that changed on disk since the load as changed, never its new bytes", () => {
       writeSkill(pkg, "skills");
       const [skill] = readSkillsDir(pkg).skills;
       fs.writeFileSync(path.join(skillsDir(), "pricing/scripts/run.py"), "x");
-      expect(skill!.read("scripts/run.py")).toEqual({
-         message: expect.stringContaining("changed on disk"),
-      });
+      expect(skill!.read("scripts/run.py")).toEqual({ changed: true });
+   });
+
+   it("lists and serves a root file named __proto__", () => {
+      writeSkillMd("odd", "---\nname: odd\ndescription: d\n---\n\nbody\n");
+      fs.writeFileSync(path.join(skillsDir(), "odd/__proto__"), "hi\n");
+      const [skill] = readSkillsDir(pkg).skills;
+      expect(Object.hasOwn(skill!.catalog.files, "__proto__")).toBe(true);
+      expect(skillFileList(skill!).map((f) => f.path)).toEqual([
+         "SKILL.md",
+         "__proto__",
+      ]);
+      expect(skill!.read("__proto__")).toEqual({ text: "hi\n" });
+   });
+
+   it("lists a Markdown file that is not UTF-8 text as a binary file, never as lossy text", () => {
+      writeSkillMd("odd", "---\nname: odd\ndescription: d\n---\n\nbody\n");
+      const dir = path.join(skillsDir(), "odd/reference");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "nul.md"), Buffer.from("a\0b"));
+      fs.writeFileSync(path.join(dir, "latin.md"), Buffer.from([0x63, 0xe9]));
+      const { skills, warnings } = readSkillsDir(pkg);
+      const skill = skills[0]!;
+      expect(Object.keys(skill.catalog.files)).toEqual([
+         "SKILL.md",
+         "reference/latin.md",
+         "reference/nul.md",
+      ]);
+      expect(skill.catalog.files["reference/latin.md"]!.size).toBe(2);
+      expect(skill.read("reference/nul.md")).toEqual({ binary: true });
+      expect(skill.read("reference/latin.md")).toEqual({ binary: true });
+      expect(warnings.join("\n")).toContain("not UTF-8 text");
    });
 
    it.skipIf(isWindows)(
@@ -620,14 +648,13 @@ describe("a package's own skills", () => {
       () => {
          writeSkill(pkg, "skills");
          const [skill] = readSkillsDir(pkg).skills;
+         // The target holds run.py's own bytes, so its digest still matches and only the link refusal can stop the read.
          const secret = path.join(pkg, "secret.txt");
-         fs.writeFileSync(secret, "SECRET");
+         fs.writeFileSync(secret, String(FILES["scripts/run.py"]));
          const file = path.join(skillsDir(), "pricing/scripts/run.py");
          fs.rmSync(file);
          fs.symlinkSync(secret, file);
-         expect(JSON.stringify(skill!.read("scripts/run.py"))).not.toContain(
-            "SECRET",
-         );
+         expect(skill!.read("scripts/run.py")).toEqual({ changed: true });
       },
    );
 

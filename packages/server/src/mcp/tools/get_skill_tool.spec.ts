@@ -4,9 +4,11 @@
 import { describe, expect, it } from "bun:test";
 import { z } from "zod/v3";
 import { type BundledSkill } from "../../service/skills/build_skills_bundle";
-import { type ServedSkill } from "../../service/skills/package_skills";
-import { MAX_RESULT_CHARS } from "../query_envelope";
-import { registerGetSkillTool } from "./get_skill_tool";
+import {
+   type ServedSkill,
+   type SkillFileRead,
+} from "../../service/skills/package_skills";
+import { GET_SKILL_MAX_CHARS, registerGetSkillTool } from "./get_skill_tool";
 import { fakeOf } from "../../test_helpers/store_fakes";
 import type { PackageLookup } from "../../service/environment_ports";
 
@@ -42,11 +44,11 @@ const bundledSkill = (
    bodies,
 });
 
-/** A package skill whose files are text, or a message with a size (a file with no text). */
+/** A package skill whose files are text, or a read with a size (a file with no text). */
 const packageSkill = (
    name: string,
    description: string,
-   files: Record<string, string | { message: string; size: number }>,
+   files: Record<string, string | { read: SkillFileRead; size: number }>,
 ): ServedSkill => ({
    name,
    description,
@@ -62,7 +64,7 @@ const packageSkill = (
    },
    read: (p) => {
       const file = files[p]!;
-      return typeof file === "string" ? { text: file } : file;
+      return typeof file === "string" ? { text: file } : file.read;
    },
 });
 
@@ -116,7 +118,8 @@ const house = packageSkill("house", "ours", {
    "SKILL.md": "HOUSE",
    "scripts/run.py": "print('run')\n",
    "references/a.md": "# A\n",
-   "assets/logo.png": { message: "'assets/logo.png' is binary", size: 68 },
+   "assets/logo.png": { read: { binary: true }, size: 68 },
+   "scripts/moved.py": { read: { changed: true }, size: 9 },
 });
 
 describe("get_skill tool", () => {
@@ -222,6 +225,19 @@ describe("get_skill tool", () => {
       });
    });
 
+   it("reads a path with a leading ./ as the path without it", async () => {
+      const { handler } = register([house]);
+      const out = body(
+         await handler({
+            scopes,
+            skill_name: "house",
+            path: "./references/a.md",
+         }),
+      );
+      expect(out.skill.path).toBe("references/a.md");
+      expect(out.skill.content).toBeDefined();
+   });
+
    it("reads ./SKILL.md and an empty path as SKILL.md", async () => {
       const { handler } = register([]);
       for (const path of ["./SKILL.md", "", " "]) {
@@ -241,7 +257,7 @@ describe("get_skill tool", () => {
             `'${path}' is not a file of skill 'house'`,
          );
          expect(out.message).toContain(
-            "Its files: SKILL.md, assets/logo.png, references/a.md, scripts/run.py.",
+            "Its files: SKILL.md, assets/logo.png, references/a.md, scripts/moved.py, scripts/run.py.",
          );
       }
    });
@@ -262,7 +278,23 @@ describe("get_skill tool", () => {
             size: 68,
             origin: "package",
          },
-         message: "'assets/logo.png' is binary",
+         message:
+            "'assets/logo.png' is a binary file (68 bytes); get_skill returns text files only.",
+      });
+   });
+
+   it("answers a listed file that changed since the load as a message alone, with no size", async () => {
+      const { handler } = register([house]);
+      const out = body(
+         await handler({
+            scopes,
+            skill_name: "house",
+            path: "scripts/moved.py",
+         }),
+      );
+      expect(out).toEqual({
+         message:
+            "'scripts/moved.py' changed on disk after the package loaded, so it is not served until the package reloads.",
       });
    });
 
@@ -340,7 +372,7 @@ describe("get_skill tool: a reply always fits the tool-result limit", () => {
       );
 
    it("withholds a file over the limit, with its size and a message", async () => {
-      const big = "y".repeat(MAX_RESULT_CHARS + 1);
+      const big = "y".repeat(GET_SKILL_MAX_CHARS + 1);
       const { handler } = register([
          packageSkill("big", "d", {
             "SKILL.md": "S",
@@ -361,12 +393,12 @@ describe("get_skill tool: a reply always fits the tool-result limit", () => {
       });
       expect(out.message).toContain("over the limit of");
       expect(out.message).toContain("a smaller file");
-      expect(wire(result)).toBeLessThanOrEqual(MAX_RESULT_CHARS);
+      expect(wire(result)).toBeLessThanOrEqual(GET_SKILL_MAX_CHARS);
    });
 
    it("measures the message the host receives, not the text alone", async () => {
       // Quotes escape twice (in the text, then in the message), so text under the cap can still be over it on the wire.
-      const quotes = '"'.repeat(Math.floor(MAX_RESULT_CHARS / 3));
+      const quotes = '"'.repeat(Math.floor(GET_SKILL_MAX_CHARS / 3));
       const { handler } = register([
          packageSkill("q", "d", { "SKILL.md": "S", "references/q.md": quotes }),
       ]);
@@ -378,7 +410,7 @@ describe("get_skill tool: a reply always fits the tool-result limit", () => {
       const out = body(result);
       expect(out.skill.content).toBeUndefined();
       expect(out.message).toContain("over the limit of");
-      expect(wire(result)).toBeLessThanOrEqual(MAX_RESULT_CHARS);
+      expect(wire(result)).toBeLessThanOrEqual(GET_SKILL_MAX_CHARS);
    });
 
    it("keeps a SKILL.md that fits, with every file listed and no message", async () => {
@@ -390,11 +422,11 @@ describe("get_skill tool: a reply always fits the tool-result limit", () => {
       expect(out.skill.content).toBe("S");
       expect(out.skill.files).toHaveLength(21);
       expect(out.message).toBeUndefined();
-      expect(wire(result)).toBeLessThanOrEqual(MAX_RESULT_CHARS);
+      expect(wire(result)).toBeLessThanOrEqual(GET_SKILL_MAX_CHARS);
    });
 
    it("keeps the body and trims the file list, saying how many files are not listed", async () => {
-      const text = "b".repeat(MAX_RESULT_CHARS - 20_000);
+      const text = "b".repeat(GET_SKILL_MAX_CHARS - 20_000);
       const { handler } = register([
          packageSkill("many", "d", { "SKILL.md": text, ...entries(1500) }),
       ]);
@@ -413,13 +445,13 @@ describe("get_skill tool: a reply always fits the tool-result limit", () => {
          `${1501 - listed} of 1501 files are not listed`,
       );
       expect(out.message).toContain("`path`");
-      expect(wire(result)).toBeLessThanOrEqual(MAX_RESULT_CHARS);
+      expect(wire(result)).toBeLessThanOrEqual(GET_SKILL_MAX_CHARS);
       // The most that fits: the slack is less than one more entry.
-      expect(wire(result)).toBeGreaterThan(MAX_RESULT_CHARS - 150);
+      expect(wire(result)).toBeGreaterThan(GET_SKILL_MAX_CHARS - 150);
    });
 
    it("drops the body only when SKILL.md is over the limit alone, and still lists what fits", async () => {
-      const text = "b".repeat(MAX_RESULT_CHARS + 1);
+      const text = "b".repeat(GET_SKILL_MAX_CHARS + 1);
       const { handler } = register([
          packageSkill("huge", "d", { "SKILL.md": text, ...entries(3) }),
       ]);
@@ -432,11 +464,11 @@ describe("get_skill tool: a reply always fits the tool-result limit", () => {
       expect(out.message).toContain("over the limit of");
       expect(out.message).toContain("one of the other files");
       expect(out.message).not.toContain("not listed");
-      expect(wire(result)).toBeLessThanOrEqual(MAX_RESULT_CHARS);
+      expect(wire(result)).toBeLessThanOrEqual(GET_SKILL_MAX_CHARS);
    });
 
    it("trims the list of a withheld SKILL.md too, when even that reply is over", async () => {
-      const text = "b".repeat(MAX_RESULT_CHARS + 1);
+      const text = "b".repeat(GET_SKILL_MAX_CHARS + 1);
       const { handler } = register([
          packageSkill("huge", "d", { "SKILL.md": text, ...entries(3000) }),
       ]);
@@ -446,27 +478,63 @@ describe("get_skill tool: a reply always fits the tool-result limit", () => {
       expect(out.skill.files.length).toBeLessThan(3001);
       expect(out.message).toContain("over the limit of");
       expect(out.message).toContain("files are not listed");
-      expect(wire(result)).toBeLessThanOrEqual(MAX_RESULT_CHARS);
+      expect(wire(result)).toBeLessThanOrEqual(GET_SKILL_MAX_CHARS);
    });
 
-   it("drops the frontmatter as a last resort, when it alone is over the limit", async () => {
+   it("keeps a short body and says its text is in `content` when only the frontmatter is over the limit", async () => {
       const { handler } = register([
-         packageSkill("fat", "d".repeat(MAX_RESULT_CHARS + 1), {
+         packageSkill("fat", "d".repeat(GET_SKILL_MAX_CHARS + 1), {
             "SKILL.md": "S",
             ...entries(3),
          }),
       ]);
       const result = await handler({ scopes, skill_name: "fat" });
       const out = body(result);
+      expect(out.skill.content).toBe("S");
+      expect(out.skill.frontmatter).toBeUndefined();
+      expect(out.skill.files).toHaveLength(4);
+      expect(out.message).toBe(
+         "Its parsed frontmatter was too large to return; the text is in `content`.",
+      );
+      expect(wire(result)).toBeLessThanOrEqual(GET_SKILL_MAX_CHARS);
+   });
+
+   it("drops the frontmatter too when the body and the frontmatter cannot both fit", async () => {
+      const { handler } = register([
+         packageSkill("fat", "d".repeat(GET_SKILL_MAX_CHARS - 10_000), {
+            "SKILL.md": "b".repeat(GET_SKILL_MAX_CHARS - 10_000),
+            ...entries(3),
+         }),
+      ]);
+      const result = await handler({ scopes, skill_name: "fat" });
+      const out = body(result);
+      expect(out.skill.content).toHaveLength(GET_SKILL_MAX_CHARS - 10_000);
+      expect(out.skill.frontmatter).toBeUndefined();
+      expect(out.message).toContain("the text is in `content`");
+      expect(wire(result)).toBeLessThanOrEqual(GET_SKILL_MAX_CHARS);
+   });
+
+   it("drops the body, then the frontmatter, as a last resort", async () => {
+      const text = "b".repeat(GET_SKILL_MAX_CHARS + 1);
+      const { handler } = register([
+         packageSkill("fat", "d".repeat(GET_SKILL_MAX_CHARS + 1), {
+            "SKILL.md": text,
+            ...entries(3),
+         }),
+      ]);
+      const result = await handler({ scopes, skill_name: "fat" });
+      const out = body(result);
+      expect(out.skill.content).toBeUndefined();
       expect(out.skill.frontmatter).toBeUndefined();
       expect(out.skill.files).toHaveLength(4);
       expect(out.message).toContain("Its frontmatter was too large to return.");
-      expect(wire(result)).toBeLessThanOrEqual(MAX_RESULT_CHARS);
+      expect(out.message).toContain("one of the other files");
+      expect(wire(result)).toBeLessThanOrEqual(GET_SKILL_MAX_CHARS);
    });
 
    it("lists every file when the full count fits, though a cut list would carry a longer message", async () => {
       // The body is withheld (over the limit alone); grow the file count until one more would not fit.
-      const text = "b".repeat(MAX_RESULT_CHARS + 1);
+      const text = "b".repeat(GET_SKILL_MAX_CHARS + 1);
       const probe = async (n: number) => {
          const { handler } = register([
             packageSkill("edge", "d", { "SKILL.md": text, ...entries(n) }),
@@ -481,7 +549,7 @@ describe("get_skill tool: a reply always fits the tool-result limit", () => {
       expect(notListed(atEdge)).toBe(false);
       expect(body(atEdge).skill.files).toHaveLength(n + 1);
       // Less slack than the longer message needs: a search that tried n - 1 first would have missed it.
-      expect(wire(atEdge)).toBeGreaterThan(MAX_RESULT_CHARS - 150);
-      expect(wire(atEdge)).toBeLessThanOrEqual(MAX_RESULT_CHARS);
+      expect(wire(atEdge)).toBeGreaterThan(GET_SKILL_MAX_CHARS - 150);
+      expect(wire(atEdge)).toBeLessThanOrEqual(GET_SKILL_MAX_CHARS);
    });
 });
