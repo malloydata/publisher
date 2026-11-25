@@ -35,7 +35,7 @@ A package can declare agents in its `publisher.json`: a named brief its author w
 
 ## Installing the agent's skills
 
-`skills` is a list of `{relative_filepath, file_contents}`. The first path segment is the skill's directory name; `SKILL.md` and any `reference/` files sit under it.
+`skills` is a list of `{relative_filepath, file_contents}`: `SKILL.md` and the skill's other Markdown (`references/`, or `reference/`). The first path segment is the skill's directory name. Every other file of the skill (scripts, templates, data, images) is in `assets`, covered below. Install both: a skill is its whole directory, and its `SKILL.md` can point at `scripts/check.py` or a template.
 
 Write each file under the directory your harness reads skills from:
 
@@ -53,15 +53,17 @@ Rules:
 - Install into the project directory only, never the user's home directory: these files outlive the session and are text a package author wrote.
 - Tell the user which skills you installed and where, and offer to remove them when the work is done.
 
-### Assets: files a skill copies
+### Listed files: scripts, templates, data and assets
 
-A skill may ship `assets/`: files its instructions tell you to copy into what you build (a chart module, a template). The definition lists them in `assets` as `{relative_filepath, bytes, sha256}`, with no contents, and `asset_roots` maps each skill to its package-relative directory. Install each one at `<dir>/<relative_filepath>`, beside the skill's `SKILL.md`, and **never read it into your context or retype it**:
+The definition lists every file of a skill that is not inline Markdown in `assets` as `{relative_filepath, bytes, sha256}`, with no contents, and `asset_roots` maps each skill to its package-relative directory. These are scripts the skill runs, files its instructions tell you to copy into what you build (a chart module, a template), data and images. Install each one at `<dir>/<relative_filepath>`, beside the skill's `SKILL.md`, and **never read it into your context or retype it**:
 
-- **You have the package's files** (a checkout or a mounted package): copy it from `<asset_roots[skill]>/<relative_filepath minus its first segment>` in the package.
-- **You have a shell that reaches the Publisher:** fetch it over REST (`.../agents/{name}/skills/{relative_filepath}`), not through `get_agent`'s `skill_path`, which would put it in your context, and write its `file_contents` straight to disk with a JSON tool, for example `curl -s "$URL" | jq -j .file_contents > "$DEST"`, so it never passes through your context.
-- **Neither:** install the Markdown only, and tell the user which steps copy an asset and cannot run here. Never reconstruct an asset from memory or from its description.
+- **You have the package's files** (a checkout or a mounted package): copy it from `<asset_roots[skill]>/<relative_filepath minus its first segment>` in the package. This is the only way to install a binary file, which the Publisher never serves as text.
+- **You have a shell that reaches the Publisher:** fetch a text file over REST (`.../agents/{name}/skills/{relative_filepath}`), not through `get_agent`'s `skill_path`, which would put it in your context. Write it to a temporary file and move it into place only when `file_contents` came back, so a failed fetch installs nothing: `mkdir -p "$(dirname "$DEST")" && curl -sf "$URL" | jq -ej .file_contents > "$DEST.part" && mv "$DEST.part" "$DEST" || { rm -f "$DEST.part"; echo "not installed: $DEST" >&2; }`. A binary file answers `{message}` with no `file_contents`, so that command installs nothing for it; copy it from the package instead.
+- **Neither:** install the Markdown only, and tell the user which steps need a listed file and cannot run here. Never reconstruct a listed file from memory or from its description.
 
 The same install rules apply: the same skills directory, no `..` or absolute paths, and never overwrite an existing skill.
+
+A file under `scripts/` is a program for the skill's own steps. Run it as a command (`python3 scripts/check.py`) only when the `SKILL.md` says to and your harness lets you; installing it grants nothing, and no file keeps an executable bit.
 
 ## Report
 

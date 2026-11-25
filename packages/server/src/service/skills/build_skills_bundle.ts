@@ -6,7 +6,7 @@
  * MCP prompts (dual-channel): skill-aware hosts read the skill files directly, while
  * hosts that only ingest MCP get the same guidance through these prompts.
  *
- * Every file of a skill is in its manifest; only Markdown text is embedded, which keeps the bundle small.
+ * Every file of a skill is in its manifest; only Markdown outside `assets/` is embedded, which keeps the bundle small.
  *
  * Committed as a build-time asset so the server has no runtime dependency on the
  * skills directory layout. Regenerate when the skills change:
