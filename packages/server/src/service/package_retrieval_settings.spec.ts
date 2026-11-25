@@ -58,7 +58,7 @@ describe("publisher.json retrieval block", () => {
          questions: "auto",
          docParts: "auto",
          values: true,
-         valueCap: 50_000,
+         valueCap: 5_000,
          valueEmbeddings: true,
          judge: "auto",
          contenderShare: 0,

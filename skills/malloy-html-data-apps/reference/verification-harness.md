@@ -257,7 +257,7 @@ Sections 2 and 3 prove the tiles render. They do not prove the app is polished, 
 
 **Load it embedded, not only standalone.** Two hosts, in order of effort:
 
-- **The Publisher console**, at `http://localhost:4000/<env>/<package>/data-apps/<path>` (for example `.../data-apps/index.html`). Same origin, no setup, and it sizes the frame through the same resize contract a host does.
+- **The Publisher console**, at `http://localhost:4000/<env>/<package>/data-apps/<path>` (for example `.../data-apps/index.html`). Same origin, no setup, and it sizes the frame through the same resize contract a host does. Like most hosts it scrolls a container, so on a lazy page tiles start loading only once they are on screen, unlike the page standalone (`reference/lazy-load.md`).
 - **A test host page** that calls `Publisher.embed` inside a fixed header and a *scrolling container*, which is how real hosts lay out. Serve it from another origin (`python3 -m http.server 4100 --bind 127.0.0.1`) and start Publisher with `PUBLISHER_FRAME_ANCESTORS="'self' http://127.0.0.1:4100"`, or the browser refuses to frame the app.
 
 Then, per page, embedded and standalone:

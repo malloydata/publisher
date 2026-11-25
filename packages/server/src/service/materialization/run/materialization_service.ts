@@ -1480,7 +1480,20 @@ export class MaterializationService {
          }
          let recheck: Record<string, BuildInstruction>;
          let confirmExists: Record<string, BuildInstruction>;
+         let advanced: Record<string, ManifestEntry>;
          const freshness = declaredFreshnessIndex(pkg.getBuildPlan());
+         // Each table it keeps (carried, or advanced by a delta), held to
+         // its contract as it is now: one altered since the bind is
+         // rebuilt in full, never carried and built over; an advanced one
+         // not read is reseeded. A forced run is held too: it carries
+         // nothing, but its incremental sources still take a delta (only
+         // `reseed` rebuilds them), so it reads the tables those advance.
+         const hold = pkg.holdCarriedToContracts
+            ? (kept: Readonly<Record<string, ManifestEntry>>) =>
+                 pkg.holdCarriedToContracts!(kept, environment, {
+                    signal: run.signal,
+                 })
+            : undefined;
          ({
             instructions,
             carried,
@@ -1490,6 +1503,7 @@ export class MaterializationService {
             confirmExists = {},
             renamed = [],
             rebuiltToVerify,
+            advanced,
          } = await deriveHoldingCarried(
             (incompatible) =>
                this.collaborators.deriveSelfInstructions(
@@ -1523,18 +1537,15 @@ export class MaterializationService {
                   },
                ),
             () => pkg.incompatibleTables?.(priorEntries) ?? new Set(),
-            // Each table it keeps (carried, or advanced by a delta), held to
-            // its contract as it is now: one altered since the bind is
-            // rebuilt in full, never carried and built over; an advanced one
-            // not read is reseeded. A forced refresh is not held.
-            pkg.holdCarriedToContracts && !opts.forceRefresh
-               ? (carried) =>
-                    pkg.holdCarriedToContracts!(carried, environment, {
-                       signal: run.signal,
-                    })
-               : undefined,
+            hold,
             packageName,
          ));
+         // A delta advances only a table that read held: one whose ledger
+         // names any other (a seed whose run never committed, a destination
+         // it left) is reseeded (`ledger_unheld`).
+         if (incremental) {
+            incremental.heldAdvanced = new Map(Object.entries(advanced ?? {}));
+         }
          // A carried table at the author's `name=` is reused only while
          // it is still marked as this package's (table_ownership.ts).
          const siteContext = () =>

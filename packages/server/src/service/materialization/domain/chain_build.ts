@@ -22,7 +22,7 @@
 
 import type { QueryMaterializer } from "@malloydata/malloy";
 import type { ColumnContract } from "./column_contract";
-import type { StringReads } from "./string_reads";
+import type { StringReads, UpstreamStringCapability } from "./string_reads";
 import type { MaterializePlan } from "./table_plans";
 import type { ManifestEntry } from "./types";
 
@@ -168,6 +168,17 @@ export type BoundStorageContract = (
    sourceID: string,
    destination: string,
 ) => ColumnContract | undefined;
+
+/**
+ * How the source of the upstream `sourceID` compares its strings live, as
+ * the package's last bind read recorded it (`serve/source_capability.ts`):
+ * what a plan judges a build's compared strings against while that
+ * upstream's table is not bound (`string_reads.ts`). Waits a bounded time
+ * for a read still running; `unread` past it.
+ */
+export type UpstreamStringCapabilityOf = (
+   sourceID: string,
+) => Promise<UpstreamStringCapability>;
 
 /**
  * The column contract the package has bound for the table of `sourceID`: in

@@ -1325,10 +1325,9 @@ export function assembleRetrieval(file: unknown): {
       return { block: file, ignored };
    }
    const block = (file ? structuredClone(file) : {}) as Record<string, unknown>;
-   // Every leaf, the keys included: null is unset for each.
-   for (const leaf of REGISTRY.filter(
-      (entry) =>
-         entry.key.startsWith("retrieval.") && entry.kind !== "structured",
+   // Every leaf, the keys and file-only leaves included: null is unset for each.
+   for (const leaf of REGISTRY.filter((entry) =>
+      entry.key.startsWith("retrieval."),
    )) {
       const pathInBlock = leaf.key.split(".").slice(1);
       const parent = nodeAt(block, pathInBlock.slice(0, -1));

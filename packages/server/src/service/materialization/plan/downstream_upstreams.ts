@@ -135,6 +135,30 @@ export function reachedUpstreams(
 }
 
 /**
+ * `sourceID`'s name and its source's dialect when its own notes declare
+ * `#(materialize)` and not `#@ persist`, else undefined: an upstream whose
+ * `storage=` downstreams the plan judges, while its table is not bound, by
+ * how its source compares strings live.
+ */
+export function materializedUpstream(
+   sourceID: string,
+   map: SourceMap,
+): { name: string; dialect: unknown } | undefined {
+   const node = map.node(sourceID);
+   const def = node?.def as
+      | { annotations?: AnnotationsDef; dialect?: unknown }
+      | undefined;
+   const notes = ownLevelNotes(def?.annotations);
+   if (notesDeclarePersist(notes.filter((n) => routeOfNote(n.text) === "@"))) {
+      return undefined;
+   }
+   if (!notes.some((n) => routeOfNote(n.text) === "materialize")) {
+      return undefined;
+   }
+   return { name: node?.name ?? sourceID, dialect: def?.dialect };
+}
+
+/**
  * Why a database downstream cannot be built over its upstreams' tables
  * because one is stored in a `storage=` destination, naming that upstream,
  * or undefined when none is.

@@ -29,6 +29,7 @@ import {
 import { deleteEngineRows, ENGINE_TABLES } from "./catalog_store";
 import { listItems, resolveDocParts, splitDocByRules } from "./doc_parts";
 import { buildFcjIndex } from "./index_build";
+import { callerKeyOf, lockedSourcesFor } from "./values_index";
 import { KeywordIndex, stem, terms } from "./keyword";
 import { VectorSyncError, type VectorProgress } from "./vectors";
 import { SyncRequestBudget } from "../llm/llm_calls";
@@ -347,7 +348,6 @@ describe("index build", () => {
    });
 
    describe("value vectors", () => {
-      beforeEach(() => setRetrievalConfig({ egress: { preset: "full" } }));
       afterEach(() => setRetrievalConfig(undefined));
       const withValues = (
          settings = DEFAULT_FCJ_SETTINGS,
@@ -372,25 +372,20 @@ describe("index build", () => {
          "Chicago O'Hare (ORD)",
       ];
 
-      it("embeds no stored value under the default egress preset, and says why", async () => {
-         setRetrievalConfig(undefined);
-         const built = await withValues();
+      it("embeds no stored value when there is no embedding provider, and says why", async () => {
+         const built = await withValues(DEFAULT_FCJ_SETTINGS, null as never);
          expect(built.values.embedded).toBe(0);
          expect(built.report.valueVectors).toMatchObject({
             values: 4,
             embedded: 0,
-            skipped:
-               'egress.preset is "default": stored values are sent to the embedding provider only under "full"',
+            skipped: "no embedding provider is configured",
          });
          const rows = await db.all("SELECT * FROM value_embeddings");
          expect(rows).toEqual([]);
       });
 
       it("reads no stored value when the operator turned value search off", async () => {
-         setRetrievalConfig({
-            egress: { preset: "full" },
-            dimensionValues: { enabled: false },
-         });
+         setRetrievalConfig({ dimensionValues: { enabled: false } });
          const built = await withValues();
          expect(built.values.size).toBe(0);
          expect(built.report.values).toEqual({
@@ -580,18 +575,21 @@ describe("index build", () => {
          '"questions": ["...", "...", "...", "...", "..."]',
       );
       seen.length = 0;
-      // Under the default egress preset the values wording shows no stored
-      // value: they are data, and leave the server only under `full`.
-      await run({ ...DEFAULT_FCJ_SETTINGS, questionsPrompt: "values" });
+      // With value search off there are no stored values, so the values
+      // wording shows none.
+      await run({
+         ...DEFAULT_FCJ_SETTINGS,
+         questionsPrompt: "values",
+         values: false,
+      });
       expect(seen.every((p) => !p.includes(" Values: "))).toBe(true);
       seen.length = 0;
-      // Under `full`, an #(index) dimension shows its stored values on its
+      // With it on, an #(index) dimension shows its stored values on its
       // line, so only those two lines are written again.
-      setRetrievalConfig({ egress: { preset: "full" } });
       const withValues = await run({
          ...DEFAULT_FCJ_SETTINGS,
          questionsPrompt: "values",
-      }).finally(() => setRetrievalConfig(undefined));
+      });
       expect(withValues.report.questions).toMatchObject({
          written: 2,
          reused: 37,
@@ -607,7 +605,8 @@ describe("index build", () => {
 
 describe("the value index on a model with access gates", () => {
    // Every gated source here carries an #(index) dimension, so only the
-   // derivation of `gated` (catalogInputOf) keeps its values out.
+   // derivation of `gated` and `partitionKey` (catalogInputOf) decides which
+   // are read.
    const GATED_FILES: Record<string, string> = {
       "gates.malloy": `##! experimental.givens
 given:
@@ -632,6 +631,19 @@ source: authorized_ext is authorized extend {
 }
 
 source: open is duckdb.sql("select 'o' as label") extend {
+  #(index)
+  dimension: tag is label
+}
+
+#(access_filter) label = $ROLE
+source: keyed is duckdb.sql("select 'k' as label") extend {
+  #(index)
+  dimension: tag is label
+}
+
+#(access_filter) label = $ROLE
+source: keyed_join is duckdb.sql("select 'j' as label") extend {
+  join_one: authorized on label = authorized.label
   #(index)
   dimension: tag is label
 }
@@ -662,7 +674,7 @@ source: imported_ext is authorized extend {
 `,
    };
 
-   it("reads and embeds only the ungated source's values, whatever the gate and wherever the source is served", async () => {
+   it("reads an ungated or lock-only source, keeps a lock-only one's values under its lock, and skips the rest", async () => {
       // Real Models: the compiled sources carry the gates (getSources), which
       // the compiler-only fixture does not.
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fcj-gated-"));
@@ -698,7 +710,6 @@ source: imported_ext is authorized extend {
       );
       const { db, close } = await openTempDb(createCatalogTables);
       const asked: string[] = [];
-      setRetrievalConfig({ egress: { preset: "full" } });
       try {
          const built = await buildFcjIndex({
             pkgIndex,
@@ -718,16 +729,51 @@ source: imported_ext is authorized extend {
                },
             },
          });
-         expect(asked).toEqual(["gates.malloy:open.tag"]);
-         const stored = await db.all<{ value: string }>(
-            "SELECT DISTINCT value FROM dimension_values",
-         );
-         expect(stored.map((r) => r.value)).toEqual(["open-value"]);
-         const embedded = await db.all<{ node_key: string }>(
-            "SELECT node_key FROM value_embeddings",
-         );
-         expect(embedded.map((r) => r.node_key)).toEqual(["open-value"]);
-         expect(built.values.distinctValues()).toEqual(["open-value"]);
+         // `filtered` (`in`, not `=`) and `secure_reader` (a secure given)
+         // stay unread; a lock does not split rows, so the locked sources
+         // and their extensions are read.
+         expect(asked.sort()).toEqual([
+            "gates.malloy:authorized.tag",
+            "gates.malloy:authorized_ext.tag",
+            "gates.malloy:open.tag",
+            "reports.malloy:imported_ext.tag",
+         ]);
+         expect(
+            built.values.values.map((v) => `${v.value}:${v.key ?? "-"}`).sort(),
+         ).toEqual([
+            "authorized-value:",
+            "authorized_ext-value:",
+            "imported_ext-value:",
+            "open-value:-",
+         ]);
+         // A source that joins a locked one keys nothing: the search checks
+         // only the source's own lock.
+         expect(
+            built.catalog.sources.get("keyed@gates.malloy")?.partitionKey,
+         ).toEqual([{ column: "label", given: "ROLE", type: "string" }]);
+         expect(
+            built.catalog.sources.get("keyed_join@gates.malloy")?.partitionKey,
+         ).toBeUndefined();
+         // At search time the lock is the query path's own check.
+         const catalog = built.catalog;
+         const locked = (givens?: Record<string, unknown>) =>
+            lockedSourcesFor(catalog, givens, (p) => models.get(p));
+         const names = async (givens?: Record<string, unknown>) => {
+            const refused = await locked(givens);
+            const key = callerKeyOf(catalog, givens, refused);
+            return built.values
+               .search("value", (d, k) => k === undefined || key(d) === k)
+               .map((m) => m.value)
+               .sort();
+         };
+         expect(await names()).toEqual(["open-value"]);
+         expect(await names({ ROLE: "viewer" })).toEqual(["open-value"]);
+         expect(await names({ ROLE: "analyst" })).toEqual([
+            "authorized-value",
+            "authorized_ext-value",
+            "imported_ext-value",
+            "open-value",
+         ]);
       } finally {
          setRetrievalConfig(undefined);
          await close();

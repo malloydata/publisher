@@ -1142,12 +1142,8 @@ export function deriveSelfInstructions(
          );
       if (superseded) renamed.push(superseded);
       // A delta appends to the table it holds, so the run keeps its rows.
-      if (
-         inPlace !== undefined &&
-         !mustRebuild &&
-         !incremental?.forceRefresh &&
-         !(options.forceRefresh && !pulledIn.has(persistSource.sourceID))
-      ) {
+      // A forced run too: only `reseed` rebuilds an incremental source.
+      if (inPlace !== undefined && !mustRebuild && !incremental?.forceRefresh) {
          advanced[sourceEntityId] = inPlace;
       }
       if (awaitsVerifyingRebuild(prior ?? inPlace, materialize)) {

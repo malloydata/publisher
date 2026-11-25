@@ -152,6 +152,7 @@ import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
 import { overStoredProven, sameColumnsOverStandIn } from "./over_stored_proof";
 import {
    persistOverMaterializedReason,
+   materializedUpstream,
    placementReason,
    reachedUpstreams,
    UPSTREAM_TABLE_UNUSABLE_REASON,
@@ -163,12 +164,17 @@ import type {
    ChainStringReadsRequest,
    PlanChainBuildText,
    PlanChainStringReads,
+   UpstreamStringCapabilityOf,
 } from "../domain/chain_build";
 import {
+   capabilityFingerprint,
    type StringReads,
    stringReadsRefusal,
+   unboundStringReadsRefusal,
+   type UpstreamStringCapability,
    unstoredReadRefusal,
 } from "../domain/string_reads";
+import { capabilitiesOf } from "../domain/dialect";
 import { pairLeafCheckFailure } from "../domain/column_contract";
 import { reachPersisted, SourceMap } from "../text/source_map";
 import { authorModelReachContext } from "../text/author_model";
@@ -248,6 +254,7 @@ import {
    materializePlansOf,
    type CompiledBuildPlan as PlannedBuild,
    type SourceBuild,
+   stringCapabilityKey,
 } from "../domain/compiled_build_plan";
 import {
    databaseRefusalsByAddress,
@@ -712,6 +719,8 @@ export interface BuildPlanParts {
    omittedSources: Omission[];
    /** See {@link CompiledBuildPlan.accessReads}: every model's, merged. */
    accessReads: string[];
+   /** See {@link CompiledBuildPlan.stringCapabilityReads}: every model's. */
+   stringCapabilityReads: Record<string, string>;
 }
 
 export function emptyBuildPlanParts(): BuildPlanParts {
@@ -724,6 +733,7 @@ export function emptyBuildPlanParts(): BuildPlanParts {
       persistedViews: {},
       omittedSources: [],
       accessReads: [],
+      stringCapabilityReads: {},
    };
 }
 
@@ -752,6 +762,7 @@ export function mergeBuildPlanParts(
    into.accessReads = [
       ...new Set([...into.accessReads, ...from.accessReads]),
    ].sort();
+   Object.assign(into.stringCapabilityReads, from.stringCapabilityReads);
 }
 
 /**
@@ -1158,6 +1169,10 @@ async function collectGeneratedRollups(
                     stored: [storedBase.baseSourceID],
                  },
                  plan.storage,
+                 {
+                    modelDef: args.modelDef,
+                    judged: parts.stringCapabilityReads,
+                 },
               )
             : undefined;
       // Proven at plan, and recorded.
@@ -1228,25 +1243,41 @@ function provenRollupOverStored(
  * compile; `boundContract`, when the package has bound its tables, judges
  * them here against each upstream's bound contract, so a build that cannot
  * compare them as live does is refused at plan. Absent `read`, every such
- * build is refused; absent `boundContract`, each is judged at build against
- * the contract its upstream's table records then.
+ * build is refused. An upstream with no bound contract is judged at build
+ * against the contract its table records then, and, when it is a
+ * `#(materialize)` source on a dialect whose strings compare per column
+ * (Postgres), here too, by how its source compares them live
+ * (`capability`; absent, not read yet: refused).
  */
 type StringReadsPorts = {
    read: PlanChainStringReads;
    boundContract?: BoundStorageContract;
+   capability?: UpstreamStringCapabilityOf;
+};
+
+/**
+ * Where {@link planStringReads} reads the upstreams a build stacks on (the
+ * author's model, by sourceID) and records what it judged an unbound one by
+ * (`BuildPlanParts.stringCapabilityReads`).
+ */
+type StringReadsUpstreams = {
+   modelDef: unknown;
+   judged: Record<string, string>;
 };
 
 /**
  * The strings the build `request` names compares in `destination`, read in
  * `materializer`'s model, refused here when every upstream it reads has a
  * bound contract and one of them does not compare a string as the build
- * needs ({@link StringReadsPorts}).
+ * needs, or when one it reads from an unbound `#(materialize)` upstream
+ * does not by that upstream's source ({@link StringReadsPorts}).
  */
 async function planStringReads(
    ports: StringReadsPorts | undefined,
    materializer: ModelMaterializer,
    request: ChainStringReadsRequest,
    destination: string,
+   upstreams: StringReadsUpstreams,
 ): Promise<StringReads> {
    if (!ports) {
       return { refused: "this package reads no string a build compares" };
@@ -1264,13 +1295,66 @@ async function planStringReads(
    // bound: the build would read the warehouse, which no contract changes.
    const unstored = unstoredReadRefusal(reads);
    if (unstored !== undefined) return { refused: unstored, unstored: true };
-   if ("refused" in reads || !ports.boundContract) return reads;
+   if ("refused" in reads) return reads;
    const contracts = new Map(
-      request.stored.map((id) => [id, ports.boundContract!(id, destination)]),
+      request.stored.map((id) => [id, ports.boundContract?.(id, destination)]),
    );
-   if ([...contracts.values()].some((c) => c === undefined)) return reads;
-   const why = stringReadsRefusal(reads, contracts);
+   const why =
+      ports.boundContract &&
+      [...contracts.values()].every((c) => c !== undefined)
+         ? stringReadsRefusal(reads, contracts)
+         : unboundStringReadsRefusal(
+              reads,
+              await unboundCapabilities(
+                 ports,
+                 reads,
+                 request.stored.filter((id) => contracts.get(id) === undefined),
+                 destination,
+                 upstreams,
+              ),
+           );
    return why === undefined ? reads : { refused: why };
+}
+
+/**
+ * The capability of each of `unbound` that `reads` reads a string from and
+ * that the plan judges by it: a `#(materialize)` upstream whose source's
+ * dialect compares strings per column. Each is recorded in
+ * `upstreams.judged`, so a later read that differs derives the plan again.
+ * Any other unbound upstream is judged at build alone.
+ */
+async function unboundCapabilities(
+   ports: StringReadsPorts,
+   reads: StringReads,
+   unbound: readonly string[],
+   destination: string,
+   upstreams: StringReadsUpstreams,
+): Promise<
+   Map<string, { name: string; capability: UpstreamStringCapability }>
+> {
+   const out = new Map<
+      string,
+      { name: string; capability: UpstreamStringCapability }
+   >();
+   if ("refused" in reads) return out;
+   const map = SourceMap.of(upstreams.modelDef);
+   for (const id of unbound) {
+      if (!reads.reads.some((r) => r.upstream === id)) continue;
+      const upstream = materializedUpstream(id, map);
+      if (
+         upstream === undefined ||
+         capabilitiesOf(upstream.dialect).stringCollation !== "column"
+      ) {
+         continue;
+      }
+      const capability: UpstreamStringCapability = ports.capability
+         ? await ports.capability(id).catch(() => "unread" as const)
+         : "unread";
+      upstreams.judged[stringCapabilityKey(id, destination)] =
+         capabilityFingerprint(capability);
+      out.set(id, { name: upstream.name, capability });
+   }
+   return out;
 }
 
 /**
@@ -1430,6 +1514,7 @@ function inDestinationStringReads(
    args: { materializer: ModelMaterializer; stringReads?: StringReadsPorts },
    stored: StoredInDestination,
    planned: PersistedViewPlan | PersistedQueryPlan,
+   upstreams: StringReadsUpstreams,
 ): Promise<StringReads> {
    const run =
       planned.kind === "query"
@@ -1440,6 +1525,7 @@ function inDestinationStringReads(
       args.materializer,
       { run, stored: stored.upstreams.map((u) => u.sourceID) },
       planned.storage!,
+      upstreams,
    );
 }
 
@@ -1453,6 +1539,7 @@ async function chainedStringReads(
    modelDef: ModelDef,
    materializer: ModelMaterializer,
    ports: StringReadsPorts | undefined,
+   judged: Record<string, string>,
 ): Promise<StringReads | undefined> {
    const destination = declaredStorage(source)?.trim();
    if (!destination) return undefined;
@@ -1476,6 +1563,7 @@ async function chainedStringReads(
       materializer,
       { downstream: source.name, stored },
       destination,
+      { modelDef, judged },
    );
    if (!("refused" in reads) || !reads.unstored) return reads;
    // Name what it reads instead, as a run would: the warehouse table and the
@@ -1676,6 +1764,7 @@ async function collectGeneratedPersistedViews(
                  args,
                  inDestination.stored,
                  query ?? plan!,
+                 { modelDef: authorDef, judged: parts.stringCapabilityReads },
               )
             : undefined;
       // A persisted query's table is a view's, built from the same
@@ -2331,6 +2420,7 @@ async function planV1PersistSources(
                  classificationCtx.modelDef,
                  materializer,
                  args.stringReads,
+                 parts.stringCapabilityReads,
               )
             : parts.tables[sourceID]?.stringReads;
       // What its build reads: its query, never a join only its read
@@ -3131,6 +3221,10 @@ export function derivePackagePlan(
       materializePlans: materializePlansOf(compiled.tables),
       asOfBuild,
       accessReads: [...(compiled.accessReads ?? [])],
+      ...(compiled.stringCapabilityReads &&
+      Object.keys(compiled.stringCapabilityReads).length > 0
+         ? { stringCapabilityReads: { ...compiled.stringCapabilityReads } }
+         : {}),
       eligibilityRefused: { ...counts },
    };
 }

@@ -138,7 +138,7 @@ Malloy annotates each described table and column with `#(dbmeta) description="..
 In `get_context`, a source, join or field with no `#(doc)` or `#"` doc string of its own takes its
 table's or column's description, marked `docs_source` or `description_source` `"dbmeta"` in the
 response. That text is doc text like any other: it is embedded when an embedding provider is
-configured and sent to the LLM under `retrieval.egress.preset` (see [configuration.md](configuration.md)).
+configured and sent to the LLM when one is (see [configuration.md](configuration.md)).
 A join to a source locked with `#(authorize) false` carries no doc from that source.
 Off unless set; it never changes query results.
 

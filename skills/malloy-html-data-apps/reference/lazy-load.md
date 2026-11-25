@@ -56,6 +56,17 @@ function reserveHeight(el) {
 }
 ```
 
+**In a frame, the margin rarely reaches.** The observer's implicit root is the top-level window, and every scrolling box between it and a tile clips the margin away: a host page's own scroll container, or the frame itself when it scrolls. Across origins the browser also ignores `rootMargin` outright. So in most embeds a tile starts loading only once it is on screen, which is when reserved heights matter most.
+
+- **A page that scrolls itself inside its frame** (one that declares `<meta name="publisher:fit" content="viewport">`, in a host that honors it, such as the Publisher console): observe with `root: document`. It measures against the frame's own viewport, so the margin works again.
+- **A frame sized to the whole page** (the default in the console, and every `Publisher.embed` frame): keep the implicit root. With `root: document` the whole page counts as visible and every tile loads at once.
+
+```js
+// Pass ROOT to the observer in lazyLoad above: { root: ROOT, rootMargin: MARGIN }.
+const FITS_VIEWPORT = !!document.querySelector('meta[name="publisher:fit"][content="viewport"]');
+const ROOT = window.self !== window.top && FITS_VIEWPORT ? document : null;
+```
+
 ## Verification gotcha: test on a *small* viewport
 
 On a short page (or a tall default headless viewport like 1280×720+), every tile intersects the `rootMargin` box at once, so *nothing* actually defers, and your test reports a false "everything lazy-loaded correctly" pass while the feature does nothing. **Verify with a deliberately small viewport** so tiles genuinely start off-screen:

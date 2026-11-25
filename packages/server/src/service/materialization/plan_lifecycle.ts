@@ -98,6 +98,8 @@ interface PlanRecord {
    upstreamSchemas: UpstreamSchemaReadings;
    /** Addresses not served while this record serves (see withdraw). */
    withdrawn: ReadonlySet<string>;
+   /** See PackagePlan.stringCapabilityReads. */
+   stringCapabilityReads: Readonly<Record<string, string>>;
 }
 
 /** A record holding nothing: no plan, both eligibilities unknown. */
@@ -118,6 +120,7 @@ const EMPTY_RECORD: PlanRecord = {
    asOfBuild: {},
    upstreamSchemas: {},
    withdrawn: new Set(),
+   stringCapabilityReads: {},
 };
 
 /**
@@ -251,6 +254,14 @@ export class PlanLifecycle {
     */
    get upstreamSchemas(): UpstreamSchemaReadings {
       return this.serving().upstreamSchemas;
+   }
+   /**
+    * What the plan in force judged each unbound upstream's compared strings
+    * by (PackagePlan.stringCapabilityReads), the same object until the plan
+    * is derived again.
+    */
+   get stringCapabilityReads(): Readonly<Record<string, string>> {
+      return this.serving().stringCapabilityReads;
    }
    /** See PackagePlan.asOfBuild. */
    get asOfBuild(): Readonly<Record<string, AsOfBuildSource>> {
@@ -415,6 +426,7 @@ export class PlanLifecycle {
          asOfBuild: outcome.asOfBuild ?? {},
          upstreamSchemas: outcome.upstreamSchemas ?? {},
          withdrawn: new Set(),
+         stringCapabilityReads: outcome.stringCapabilityReads ?? {},
       };
    }
 

@@ -321,15 +321,16 @@ describe("published versions across a restart", () => {
          body: JSON.stringify({ archiveStatus: "archive" }),
       });
       expect(archived.status).toBe(200);
-      // The PUT refuses a manifest that does not bind, and keeps the row.
+      // The PUT refuses a manifest location with nothing at it as the
+      // caller's input, and keeps the row.
       const bound = await fetch(`${pkgApi("kept")}/versions/1.0.0/manifest`, {
          method: "PUT",
          headers: json,
          body: JSON.stringify({ manifestLocation: manifestUri }),
       });
-      expect(bound.status).toBe(500);
+      expect(bound.status).toBe(400);
       expect(((await bound.json()) as { reason?: string }).reason).toBe(
-         "MANIFEST_BIND_FAILED",
+         "MANIFEST_NOT_FOUND",
       );
 
       expect(await publish("owned", "1.0.0", 1, "version")).toEqual({

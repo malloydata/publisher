@@ -293,6 +293,7 @@ describe("a standalone run reads only the tables it would carry", () => {
       ids: string[],
       carriedToo: string[],
       budgetMs?: number,
+      forceRefresh = false,
    ) {
       const { plan, context } = incremental(ids, carriedToo);
       const prior = Object.fromEntries(
@@ -301,6 +302,7 @@ describe("a standalone run reads only the tables it would carry", () => {
       const derive = (incompatible: ReadonlySet<string>) =>
          deriveSelfInstructions(plan, undefined, prior, context, undefined, {
             incompatible,
+            forceRefresh,
          });
       // The source is incremental: a delta would advance it in place.
       for (const id of ids) {
@@ -327,6 +329,24 @@ describe("a standalone run reads only the tables it would carry", () => {
       );
       expect(reseed).toEqual({ altered: true, intact: false });
       expect(Object.keys(derived.advanced)).toEqual(["intact"]);
+      m.dispose();
+   });
+
+   it("holds the tables a forced run advances: it carries nothing, but a delta still writes in place", async () => {
+      const m = await facade();
+      const derived = await deltaRun(
+         m,
+         ["altered", "intact"],
+         [],
+         undefined,
+         true,
+      );
+      const reseed = Object.fromEntries(
+         derived.instructions.map((i) => [i.sourceEntityId, i.reseed === true]),
+      );
+      expect(reseed).toEqual({ altered: true, intact: false });
+      expect(Object.keys(derived.advanced)).toEqual(["intact"]);
+      expect(derived.carried).toEqual({});
       m.dispose();
    });
 
