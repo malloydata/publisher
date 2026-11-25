@@ -3,7 +3,8 @@
 
 /**
  * The drive-less file URL check: `publisher/no-driveless-file-url`
- * (eslint.config.mjs) refuses a `file:///…` literal in a spec or test helper,
+ * (eslint.config.mjs) refuses a drive-less `file:///…` in a spec's or test
+ * helper's string, at its start or inside it (a source ID, `m@file:///…`),
  * because on Windows it names no path, and points at
  * src/test_helpers/test_file_url.ts. The files that spelled one when the rule
  * was added are listed in driveless_file_url_baseline.mjs, and the list only
@@ -20,7 +21,11 @@ import {
    DRIVELESS_FILE_URL_BASELINE,
    isDrivelessFileURL,
 } from "../driveless_file_url_baseline.mjs";
-import { testFilePath, testFileURL } from "./test_helpers/test_file_url";
+import {
+   testFilePath,
+   testFileURL,
+   testSourceID,
+} from "./test_helpers/test_file_url";
 
 const SERVER_DIR = path.resolve(__dirname, "..");
 const REPO_DIR = path.resolve(SERVER_DIR, "../..");
@@ -30,10 +35,10 @@ const posix = (p: string) => p.split(path.sep).join("/");
 /** The bare scheme, which the rule allows, so this spec can spell the URLs it refuses. */
 const FILE = "file:///";
 
-/** The `.ts` files under `dir` (server-relative) that `keep` accepts. */
+/** The `.ts`/`.tsx` files under `dir` (repo-relative) that `keep` accepts. */
 function filesUnder(dir: string, keep: (rel: string) => boolean): string[] {
    return fs
-      .readdirSync(path.join(SERVER_DIR, dir), {
+      .readdirSync(path.join(REPO_DIR, dir), {
          recursive: true,
          encoding: "utf8",
       })
@@ -46,10 +51,14 @@ function filesUnder(dir: string, keep: (rel: string) => boolean): string[] {
 function coveredFiles(): string[] {
    return [
       ...filesUnder(
-         "src",
-         (f) => /\.spec\.ts$/.test(f) || f.startsWith("src/test_helpers/"),
+         "packages/server/src",
+         (f) =>
+            /\.spec\.ts$/.test(f) ||
+            f.startsWith("packages/server/src/test_helpers/"),
       ),
-      ...filesUnder("tests", () => true),
+      ...filesUnder("packages/server/tests", (f) => f.endsWith(".ts")),
+      ...filesUnder("packages/sdk/src", (f) => /\.spec\.tsx?$/.test(f)),
+      ...filesUnder("packages/sdk/test", () => true),
    ];
 }
 
@@ -65,7 +74,14 @@ function drivelessLiterals(file: string, text: string): number {
       ) {
          if (isDrivelessFileURL(node.text, false)) count++;
       } else if (ts.isTemplateExpression(node)) {
-         if (isDrivelessFileURL(node.head.text, true)) count++;
+         const pieces = [
+            node.head.text,
+            ...node.templateSpans.map((s) => s.literal.text),
+         ];
+         if (
+            pieces.some((t, i) => isDrivelessFileURL(t, i < pieces.length - 1))
+         )
+            count++;
       }
       ts.forEachChild(node, visit);
    };
@@ -94,6 +110,12 @@ describe("testFileURL", () => {
       );
       expect(testFilePath("pkg/").endsWith(path.sep)).toBe(true);
    });
+
+   it("names a source declared in that file", () => {
+      expect(testSourceID("m", "pkg", "m.malloy")).toBe(
+         `m@${testFileURL("pkg", "m.malloy")}`,
+      );
+   });
 });
 
 describe("isDrivelessFileURL", () => {
@@ -103,10 +125,19 @@ describe("isDrivelessFileURL", () => {
       expect(isDrivelessFileURL("file:///", true)).toBe(true);
    });
 
+   it("finds one inside the text, as in a source ID", () => {
+      expect(isDrivelessFileURL(`m@${FILE}pkg/m.malloy`, false)).toBe(true);
+      expect(isDrivelessFileURL(`x file:///C:/a ${FILE}b`, false)).toBe(true);
+      expect(isDrivelessFileURL("m@file:///", true)).toBe(true);
+   });
+
    it("leaves a drive letter, a bare prefix and anything else alone", () => {
       expect(isDrivelessFileURL("file:///C:/pkg/m.malloy", false)).toBe(false);
       expect(isDrivelessFileURL("file:///", false)).toBe(false);
-      expect(isDrivelessFileURL("m@file:///pkg/m.malloy", false)).toBe(false);
+      expect(isDrivelessFileURL("m@file:///C:/pkg/m.malloy", false)).toBe(
+         false,
+      );
+      expect(isDrivelessFileURL("m@file:///", false)).toBe(false);
       expect(isDrivelessFileURL("https://x/", true)).toBe(false);
    });
 });
@@ -148,11 +179,12 @@ describe("the lint rule", () => {
       return result.messages.filter((m) => m.ruleId === RULE);
    };
    const PLANTED = [
-      'export const a = "file:///pkg/m.malloy";',
-      "export const b = (n: string) => `file:///${n}`;",
-      'export const c = "file:///C:/pkg/m.malloy";',
-      'export const d = "file:///";',
-      'export const e = "m@file:///pkg/m.malloy";',
+      `export const a = "${FILE}pkg/m.malloy";`,
+      "export const b = (n: string) => `" + FILE + "${n}`;",
+      `export const c = "m@${FILE}pkg/m.malloy";`,
+      "export const d = (n: string) => `${n}@" + FILE + "pkg/${n}.malloy`;",
+      'export const e = "file:///C:/pkg/m.malloy";',
+      `export const f = "${FILE}";`,
       "",
    ].join("\n");
 
@@ -167,8 +199,9 @@ describe("the lint rule", () => {
             path.join(SERVER_DIR, file),
             PLANTED,
          );
-         expect({ file, count: messages.length }).toEqual({ file, count: 2 });
+         expect({ file, count: messages.length }).toEqual({ file, count: 4 });
          expect(messages[0].message).toContain("testFileURL");
+         expect(messages[0].message).toContain("testSourceID");
       }
    });
 
@@ -183,7 +216,7 @@ describe("the lint rule", () => {
       expect(
          await flagged(
             server,
-            path.join(SERVER_DIR, DRIVELESS_FILE_URL_BASELINE[0]),
+            path.join(REPO_DIR, DRIVELESS_FILE_URL_BASELINE[0]),
             PLANTED,
          ),
       ).toEqual([]);
@@ -195,7 +228,7 @@ describe("the lint rule", () => {
          path.join(REPO_DIR, "packages/sdk/src/__planted__.spec.ts"),
          PLANTED,
       );
-      expect(messages).toHaveLength(2);
+      expect(messages).toHaveLength(4);
    });
 });
 
@@ -205,7 +238,7 @@ describe("the baseline only shrinks", () => {
          (f) =>
             drivelessLiterals(
                f,
-               fs.readFileSync(path.join(SERVER_DIR, f), "utf8"),
+               fs.readFileSync(path.join(REPO_DIR, f), "utf8"),
             ) > 0,
       );
       // A glob that matched nothing would pass vacuously.
