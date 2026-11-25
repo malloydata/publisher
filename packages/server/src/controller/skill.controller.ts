@@ -3,10 +3,13 @@
 
 import { components } from "../api";
 import { AgentNotFoundError, SkillNotFoundError } from "../errors";
-import { type SkillEntry } from "../service/skills/build_skills_bundle";
 import {
-   BUNDLED_SKILLS,
+   BUNDLED_CATALOG,
+   namedSkillFiles,
    resolveSkills,
+   skillFilePath,
+   skillFileView,
+   type ResolvedSkill,
 } from "../service/skills/package_skills";
 import type { PackageLookup } from "../service/environment_ports";
 import { VersionRef } from "../service/identity";
@@ -20,8 +23,8 @@ type ApiSkillSummary = components["schemas"]["SkillSummary"];
 
 /**
  * The REST half of the `get_skill` and `get_agent` MCP tools: the bundled
- * guides, shadowed by the package's own `skills/` of the same name, and the
- * package's declared agents. Serves state read at load; nothing compiles.
+ * guides, shadowed by the package's own `skills/` of the same name and read
+ * file by file by path, and the package's declared agents. Serves state read at load; nothing compiles.
  * Every route takes the package's `versionId`, so a version's own skills and
  * agents are served, never `latest`'s.
  */
@@ -49,9 +52,9 @@ export class SkillController {
       environmentName: string,
       packageName: string,
       versionId: VersionRef,
-   ): Promise<Array<SkillEntry & { origin: "bundled" | "package" }>> {
+   ): Promise<ResolvedSkill[]> {
       const p = await this.packageOf(environmentName, packageName, versionId);
-      return resolveSkills(BUNDLED_SKILLS, p.listSkills());
+      return resolveSkills(BUNDLED_CATALOG, p.listSkills());
    }
 
    /** Name, description and origin for every skill in force for the package. */
@@ -73,15 +76,16 @@ export class SkillController {
    }
 
    /**
-    * One skill with its body.
-    *
-    * `skillName` may name a reference file as `<skill>/<stem>`, so a caller
-    * that received that pointer in a body can fetch what it points at.
+    * One file of a skill, its `SKILL.md` when `path` is omitted. Text comes
+    * back verbatim as `content`; a file with none (binary, or one a bundled
+    * skill does not carry) comes back as its `size` and a `message`, never as
+    * bytes. A `SKILL.md` also carries the skill's `frontmatter` and every file.
     */
    public async getSkill(
       environmentName: string,
       packageName: string,
       skillName: string,
+      path?: string,
       versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiSkill> {
       const resolved = await this.resolvedSkills(
@@ -89,17 +93,27 @@ export class SkillController {
          packageName,
          versionId,
       );
-      const match = resolved.find((skill) => skill.name === skillName);
-      if (!match) {
+      const skill = resolved.find((s) => s.name === skillName);
+      if (!skill) {
          throw new SkillNotFoundError(
             `Skill '${skillName}' not found in package '${packageName}'.`,
          );
       }
+      const relative = skillFilePath(path);
+      if (!Object.hasOwn(skill.catalog.files, relative)) {
+         throw new SkillNotFoundError(
+            `File '${relative}' not found in skill '${skillName}' of package '${packageName}'. Its files: ${namedSkillFiles(skill)}.`,
+         );
+      }
+      const read = skill.read(relative);
       return {
-         name: match.name,
-         description: match.description,
-         content: match.body,
-         origin: match.origin,
+         ...skillFileView(
+            skill,
+            relative,
+            "text" in read ? read.text : undefined,
+         ),
+         description: skill.description,
+         ...("message" in read ? { message: read.message } : {}),
       };
    }
 

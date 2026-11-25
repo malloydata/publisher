@@ -104,7 +104,6 @@ import {
    type PackageLoadStatus,
 } from "../package_load_metrics";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
-import { type SkillEntry } from "./skills/build_skills_bundle";
 import {
    PACKAGE_SKILLS_DIR,
    readAgentAsset,
@@ -112,6 +111,7 @@ import {
    readSkillsDir,
    summarizeAgentSkillFile,
    type PackageAgent,
+   type ServedSkill,
 } from "./skills/package_skills";
 import {
    canonicalJson,
@@ -538,7 +538,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * The skills in `skills/`, refreshed with the content sha so a skill edit is
     * covered by the reload receipt by construction.
     */
-   private packageSkills: SkillEntry[] = [];
+   private packageSkills: ServedSkill[] = [];
    private packageSkillWarnings: string[] = [];
    /**
     * The manifest's raw `agents` value, held apart from `packageMetadata` so a
@@ -596,7 +596,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /** The agent skills this package ships, in on-disk order. */
-   public listSkills(): SkillEntry[] {
+   public listSkills(): ServedSkill[] {
       return this.packageSkills;
    }
 

@@ -729,9 +729,8 @@ export class DashboardNotFoundError extends Error {
 }
 
 /**
- * No skill with that name is in force for the package. Covers both a name
- * nothing defines and a reference file (`<skill>/<stem>`) that no served skill
- * carries.
+ * No skill with that name is in force for the package, or the skill holds no
+ * file at the path asked for.
  */
 export class SkillNotFoundError extends Error {
    get kind(): "skill_not_found" {

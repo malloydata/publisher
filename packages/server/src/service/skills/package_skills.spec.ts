@@ -7,23 +7,54 @@ import { execFileSync } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { type SkillEntry } from "./build_skills_bundle";
+import { type BundledSkill } from "./build_skills_bundle";
 import {
+   namedSkillFiles,
    PACKAGE_SKILL_FILE_MAX_BYTES,
    readSkillsDir,
    resolveSkills,
+   skillFileList,
+   skillFilePath,
+   type ServedSkill,
 } from "./package_skills";
 
-const skill = (name: string, description = "", body = ""): SkillEntry => ({
+const digest = "sha256:0";
+
+const bundledSkill = (
+   name: string,
+   description: string,
+   body: string,
+   others: Record<string, number> = {},
+): BundledSkill => ({
+   name,
+   frontmatter: { name, description },
+   files: {
+      "SKILL.md": { digest, size: body.length },
+      ...Object.fromEntries(
+         Object.entries(others).map(([p, size]) => [p, { digest, size }]),
+      ),
+   },
+   bodies: { "SKILL.md": body },
+});
+
+const packageSkill = (
+   name: string,
+   description: string,
+   body: string,
+): ServedSkill => ({
    name,
    description,
-   body,
+   catalog: {
+      name,
+      frontmatter: { name, description },
+      files: { "SKILL.md": { digest, size: body.length } },
+   },
+   read: () => ({ text: body }),
 });
 
 const NOTHING = {
    skills: [],
    files: [],
-   catalog: [],
    paths: [],
    contentShas: new Map(),
    warnings: [],
@@ -164,7 +195,7 @@ describe("readSkillsDir", () => {
          );
          const { skills, warnings } = readSkillsDir(pkg);
          expect(skills.map((s) => s.name)).toEqual(["ok"]);
-         expect(skills[0]!.body).not.toContain("leak");
+         expect(Object.keys(skills[0]!.catalog.files)).toEqual(["SKILL.md"]);
          expect(warnings.join("\n")).toContain("outside the package");
       });
 
@@ -201,17 +232,20 @@ describe("readSkillsDir", () => {
       expect(warnings.join("\n")).toContain("byte cap");
    });
 
-   it("reads a skill's frontmatter and body", () => {
-      writeSkill(
-         "revenue-rules",
-         "---\nname: revenue-rules\ndescription: How revenue is defined here.\n---\n\nUse net_revenue, never gross.\n",
-      );
+   it("reads a skill's frontmatter, and serves its SKILL.md verbatim", () => {
+      const text =
+         "---\nname: revenue-rules\ndescription: How revenue is defined here.\n---\n\nUse net_revenue, never gross.\n";
+      writeSkill("revenue-rules", text);
       const { skills, files, warnings } = readSkillsDir(pkg);
       expect(warnings).toEqual([]);
       expect(skills).toHaveLength(1);
       expect(skills[0]!.name).toBe("revenue-rules");
       expect(skills[0]!.description).toBe("How revenue is defined here.");
-      expect(skills[0]!.body).toBe("Use net_revenue, never gross.");
+      expect(skills[0]!.catalog.frontmatter).toEqual({
+         name: "revenue-rules",
+         description: "How revenue is defined here.",
+      });
+      expect(skills[0]!.read("SKILL.md")).toEqual({ text });
       expect(files.map((f) => f.path)).toEqual([
          "skills/revenue-rules/SKILL.md",
       ]);
@@ -222,25 +256,21 @@ describe("readSkillsDir", () => {
       expect(readSkillsDir(pkg).skills[0]!.name).toBe("house-style");
    });
 
-   it("serves reference files as their own entries and points the body at them", () => {
-      writeSkill(
-         "revenue-rules",
-         "---\nname: revenue-rules\ndescription: d\n---\n\nSee reference/margin.md.\n",
-      );
+   it("serves a reference file by its path, and the skill's own text with nothing added", () => {
+      const text =
+         "---\nname: revenue-rules\ndescription: d\n---\n\nSee reference/margin.md.\n";
+      writeSkill("revenue-rules", text);
       writeReference("revenue-rules", "margin.md", "# Margin\n\nDetail.\n");
       const { skills, files } = readSkillsDir(pkg);
-      expect(skills.map((s) => s.name)).toEqual([
-         "revenue-rules",
-         "revenue-rules/margin",
+      expect(skills.map((s) => s.name)).toEqual(["revenue-rules"]);
+      expect(Object.keys(skills[0]!.catalog.files)).toEqual([
+         "SKILL.md",
+         "reference/margin.md",
       ]);
-      // The parent body has to tell an MCP-only caller where the file went,
-      // since a relative path means nothing over that channel: the prompt-name
-      // template, and which files are actually there.
-      // A package skill has no MCP prompt, so the pointer names get_skill.
-      expect(skills[0]!.body).toContain("get_skill");
-      expect(skills[0]!.body).toContain("`revenue-rules/<name>`");
-      expect(skills[0]!.body).not.toContain("prompt");
-      expect(skills[0]!.body).toContain("Available: margin.");
+      expect(skills[0]!.read("SKILL.md")).toEqual({ text });
+      expect(skills[0]!.read("reference/margin.md")).toEqual({
+         text: "# Margin\n\nDetail.\n",
+      });
       expect(files.map((f) => f.path)).toEqual([
          "skills/revenue-rules/SKILL.md",
          "skills/revenue-rules/reference/margin.md",
@@ -275,9 +305,12 @@ describe("readSkillsDir", () => {
    it("lists a plain file named reference like any other file, with no warning", () => {
       writeSkill("odd", "---\nname: odd\ndescription: d\n---\n\nbody\n");
       fs.writeFileSync(path.join(pkg, "skills", "odd", "reference"), "x");
-      const { skills, catalog, warnings, blocking } = readSkillsDir(pkg);
+      const { skills, warnings, blocking } = readSkillsDir(pkg);
       expect(skills.map((s) => s.name)).toEqual(["odd"]);
-      expect(Object.keys(catalog[0]!.files)).toEqual(["SKILL.md", "reference"]);
+      expect(Object.keys(skills[0]!.catalog.files)).toEqual([
+         "SKILL.md",
+         "reference",
+      ]);
       expect(warnings).toEqual([]);
       expect(blocking).toEqual([]);
    });
@@ -362,8 +395,8 @@ describe("readSkillsDir", () => {
 
 describe("resolveSkills", () => {
    const bundled = [
-      skill("malloy-analysis", "bundled analysis", "BUNDLED ANALYSIS"),
-      skill("malloy-phrase-detection", "bundled phrases", "BUNDLED PHRASES"),
+      bundledSkill("malloy-analysis", "bundled analysis", "BUNDLED ANALYSIS"),
+      bundledSkill("malloy-phrase-detection", "bundled phrases", "PHRASES"),
    ];
 
    it("returns the bundled set unchanged when the package ships none", () => {
@@ -372,25 +405,31 @@ describe("resolveSkills", () => {
          ["malloy-analysis", "bundled"],
          ["malloy-phrase-detection", "bundled"],
       ]);
+      expect(resolved[0]!.description).toBe("bundled analysis");
+      expect(resolved[0]!.read("SKILL.md")).toEqual({
+         text: "BUNDLED ANALYSIS",
+      });
    });
 
    it("shadows a bundled skill of the same name, in place", () => {
       const resolved = resolveSkills(bundled, [
-         skill("malloy-phrase-detection", "ours", "OUR PHRASES"),
+         packageSkill("malloy-phrase-detection", "ours", "OUR PHRASES"),
       ]);
       expect(resolved).toHaveLength(2);
       const shadowed = resolved[1]!;
       expect(shadowed.name).toBe("malloy-phrase-detection");
-      expect(shadowed.body).toBe("OUR PHRASES");
+      expect(shadowed.read("SKILL.md")).toEqual({ text: "OUR PHRASES" });
       expect(shadowed.origin).toBe("package");
       // The one it did not shadow is untouched.
-      expect(resolved[0]!.body).toBe("BUNDLED ANALYSIS");
+      expect(resolved[0]!.read("SKILL.md")).toEqual({
+         text: "BUNDLED ANALYSIS",
+      });
       expect(resolved[0]!.origin).toBe("bundled");
    });
 
    it("appends a package skill whose name is new", () => {
       const resolved = resolveSkills(bundled, [
-         skill("revenue-rules", "ours", "OURS"),
+         packageSkill("revenue-rules", "ours", "OURS"),
       ]);
       expect(resolved.map((s) => s.name)).toEqual([
          "malloy-analysis",
@@ -402,8 +441,8 @@ describe("resolveSkills", () => {
 
    it("shadows and appends in one pass", () => {
       const resolved = resolveSkills(bundled, [
-         skill("malloy-analysis", "ours", "OUR ANALYSIS"),
-         skill("revenue-rules", "ours", "OURS"),
+         packageSkill("malloy-analysis", "ours", "OUR ANALYSIS"),
+         packageSkill("revenue-rules", "ours", "OURS"),
       ]);
       expect(resolved.map((s) => [s.name, s.origin])).toEqual([
          ["malloy-analysis", "package"],
@@ -412,34 +451,81 @@ describe("resolveSkills", () => {
       ]);
    });
 
-   it("drops a shadowed bundled skill's reference entries, since nothing is merged", () => {
-      const withRefs = [
-         skill("malloy-review", "bundled", "BUNDLED"),
-         skill("malloy-review/rubric", "bundled ref", "BUNDLED REF"),
-         skill("malloy-analysis", "bundled", "A"),
-         skill("malloy-analysis/detail", "bundled ref", "A REF"),
-      ];
-      const resolved = resolveSkills(withRefs, [
-         skill("malloy-review", "ours", "OURS"),
-         skill("malloy-review/ours-ref", "ours ref", "OUR REF"),
-      ]);
-      expect(resolved.map((s) => [s.name, s.origin])).toEqual([
-         ["malloy-review", "package"],
-         ["malloy-analysis", "bundled"],
-         ["malloy-analysis/detail", "bundled"],
-         ["malloy-review/ours-ref", "package"],
-      ]);
+   it("drops a shadowed bundled skill's other files, since nothing is merged", () => {
+      const resolved = resolveSkills(
+         [
+            bundledSkill("malloy-review", "bundled", "B", {
+               "reference/x.md": 3,
+            }),
+         ],
+         [packageSkill("malloy-review", "ours", "OURS")],
+      );
+      expect(Object.keys(resolved[0]!.catalog.files)).toEqual(["SKILL.md"]);
+   });
+
+   it("serves a bundled skill's Markdown, and names the package to install for any other file", () => {
+      const [skill] = resolveSkills(
+         [bundledSkill("pricing", "d", "B", { "scripts/run.py": 120 })],
+         [],
+      );
+      const read = skill!.read("scripts/run.py");
+      expect(read).toEqual({
+         message: expect.stringContaining("@malloy-publisher/skills"),
+      });
+      expect(JSON.stringify(read)).toContain("120 bytes");
    });
 
    it("does not mutate the inputs", () => {
-      const packageSkills = [skill("malloy-analysis", "ours", "OURS")];
+      const packageSkills = [packageSkill("malloy-analysis", "ours", "OURS")];
       resolveSkills(bundled, packageSkills);
-      expect(bundled[0]!.body).toBe("BUNDLED ANALYSIS");
-      expect(
-         (bundled[0] as SkillEntry & { origin?: string }).origin,
-      ).toBeUndefined();
-      expect(
-         (packageSkills[0] as SkillEntry & { origin?: string }).origin,
-      ).toBeUndefined();
+      expect((bundled[0] as { origin?: string }).origin).toBeUndefined();
+      expect((packageSkills[0] as { origin?: string }).origin).toBeUndefined();
+   });
+});
+
+describe("a path of a skill", () => {
+   const [skill] = resolveSkills(
+      [
+         bundledSkill("pricing", "d", "B", {
+            "scripts/run.py": 1,
+            "references/a.md": 2,
+            "NOTES.md": 3,
+         }),
+      ],
+      [],
+   );
+
+   it("defaults to SKILL.md, and drops whitespace and a leading ./", () => {
+      expect(skillFilePath(undefined)).toBe("SKILL.md");
+      expect(skillFilePath(null)).toBe("SKILL.md");
+      expect(skillFilePath("  ")).toBe("SKILL.md");
+      expect(skillFilePath("./scripts/run.py")).toBe("scripts/run.py");
+      expect(skillFilePath(" ././references/a.md ")).toBe("references/a.md");
+      expect(skillFilePath("scripts/../scripts/run.py")).toBe(
+         "scripts/../scripts/run.py",
+      );
+   });
+
+   it("lists SKILL.md first, then by path", () => {
+      expect(skillFileList(skill!).map((f) => f.path)).toEqual([
+         "SKILL.md",
+         "NOTES.md",
+         "references/a.md",
+         "scripts/run.py",
+      ]);
+   });
+
+   it("names the first 25 files and counts the rest", () => {
+      const many = Object.fromEntries(
+         Array.from({ length: 30 }, (_, i) => [
+            `f${String(i).padStart(2, "0")}.md`,
+            1,
+         ]),
+      );
+      const [big] = resolveSkills([bundledSkill("big", "d", "B", many)], []);
+      const named = namedSkillFiles(big!);
+      expect(named.startsWith("SKILL.md, f00.md, f01.md")).toBe(true);
+      expect(named).toContain("(and 6 more; see `files` on SKILL.md");
+      expect(named).not.toContain("f29.md");
    });
 });

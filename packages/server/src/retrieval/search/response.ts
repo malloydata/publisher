@@ -457,16 +457,11 @@ const SKILLS_DESCRIPTION_BUDGET = 4000;
 export function skillsFor(ctx: Pick<ListingContext, "pkgIndex">) {
    // Descriptions are author-written and ride every response, so their total is bounded.
    let budget = SKILLS_DESCRIPTION_BUDGET;
-   const skills = ctx.pkgIndex.pkg
-      .listSkills()
-      // Reference entries are on-demand detail addressed by the parent's
-      // pointer, not something to choose from a list.
-      .filter((skill) => !skill.name.includes("/"))
-      .map((skill) => {
-         const description = skill.description.slice(0, budget);
-         budget -= description.length;
-         return { name: skill.name, description };
-      });
+   const skills = ctx.pkgIndex.pkg.listSkills().map((skill) => {
+      const description = skill.description.slice(0, budget);
+      budget -= description.length;
+      return { name: skill.name, description };
+   });
    return skills.length > 0
       ? {
            skills,

@@ -646,12 +646,12 @@ describe("get_context discovery tiers", () => {
             {
                name: "storefront-conventions",
                description: "What the measures actually count.",
-               body: "LONG BODY",
-            },
-            {
-               name: "storefront-conventions/margin",
-               description: "Reference detail.",
-               body: "REFERENCE BODY",
+               catalog: {
+                  name: "storefront-conventions",
+                  frontmatter: { license: "LONG FRONTMATTER" },
+                  files: { "SKILL.md": { digest: "sha256:0", size: 9 } },
+               },
+               read: () => ({ text: "LONG BODY" }),
             },
          ],
       };
@@ -664,8 +664,6 @@ describe("get_context discovery tiers", () => {
             scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
-      // The reference entry is addressed by its parent's pointer, so it is not
-      // one of the things a caller chooses from.
       expect(payload.skills).toEqual([
          {
             name: "storefront-conventions",
@@ -673,6 +671,7 @@ describe("get_context discovery tiers", () => {
          },
       ]);
       expect(JSON.stringify(payload)).not.toContain("LONG BODY");
+      expect(JSON.stringify(payload)).not.toContain("LONG FRONTMATTER");
       expect(typeof payload.skills_note).toBe("string");
    });
 
@@ -685,7 +684,6 @@ describe("get_context discovery tiers", () => {
                   ["a", "b", "c"].map((name) => ({
                      name,
                      description: "x".repeat(3000),
-                     body: "",
                   })),
             })),
       });

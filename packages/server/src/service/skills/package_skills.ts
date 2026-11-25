@@ -5,9 +5,6 @@ import { createHash } from "crypto";
 import fs from "fs";
 import * as path from "path";
 import {
-   flatSkills,
-   parseReference,
-   referencePointer,
    stripLicenseHeader,
    type BundledSkill,
    type SkillCatalogEntry,
@@ -41,24 +38,32 @@ export const BUNDLED_CATALOG = (
    skillsBundle as unknown as { skills: BundledSkill[] }
 ).skills;
 
-/** The bundle as the flat entries served as MCP prompts and through get_skill. */
-export const BUNDLED_SKILLS = flatSkills(BUNDLED_CATALOG);
-
 /** The directory a package keeps its own agent skills in. */
 export const PACKAGE_SKILLS_DIR = "skills";
 
 /** Where a skill came from, once the bundled and package sets are resolved. */
 type SkillOrigin = "bundled" | "package";
 
-export interface ResolvedSkill extends SkillEntry {
+/** What a read of one listed file of a skill gives: its text, or why it has none. */
+export type SkillFileRead = { text: string } | { message: string };
+
+/** A skill served from a package or the bundle: its catalog entry and how to read a file the entry lists. */
+export interface ServedSkill {
+   name: string;
+   description: string;
+   catalog: SkillCatalogEntry;
+   /** Reads a path of `catalog.files`; never joins a caller's path onto the filesystem. */
+   read(path: string): SkillFileRead;
+}
+
+export interface ResolvedSkill extends ServedSkill {
    origin: SkillOrigin;
 }
 
 interface PackageSkills {
-   skills: SkillEntry[];
+   skills: ServedSkill[];
    /** The inline Markdown read, package-relative path and raw text. */
    files: Array<{ path: string; text: string }>;
-   catalog: SkillCatalogEntry[];
    /** Every package-relative path the package's content hash covers: `files`, each listed file and each applied `.skillignore`. */
    paths: string[];
    /** sha256 of each listed file in `paths`, hashed at load so the content hash does not read it again. */
@@ -302,7 +307,7 @@ interface ReadRoot {
    scans: Map<string, { scan: Scan; used: { assets: number; other: number } }>;
 }
 
-const SKILL_MD = "SKILL.md";
+export const SKILL_MD = "SKILL.md";
 const RESERVED_WHY =
    "is named like a file the agent computer reads with authority";
 /** The agent computer refuses a whole agent for one of these in a skill path, and a POSIX file name can carry one. */
@@ -960,11 +965,42 @@ function listFile(
    return undefined;
 }
 
+const SHA_PREFIX = "sha256:";
+
+/** A package skill as `get_skill` and the REST routes read it: inline Markdown from what load read, every listed file from disk against its listed sha. */
+function packageSkill(packagePath: string, read: ReadSkill): ServedSkill {
+   const texts = new Map(read.inline.map((f) => [f.relative, f.text]));
+   return {
+      name: read.meta.name,
+      description: read.meta.description,
+      catalog: read.catalog,
+      read(relative) {
+         const text = texts.get(relative);
+         if (text !== undefined) return { text };
+         const listed = readListedFile(
+            packagePath,
+            read.rel,
+            relative,
+            read.catalog.files[relative]!.digest.slice(SHA_PREFIX.length),
+         );
+         if (listed === undefined) {
+            return {
+               message: `'${relative}' changed on disk after the package loaded, so it is not served until the package reloads.`,
+            };
+         }
+         return "text" in listed
+            ? listed
+            : {
+                 message: `'${relative}' is a binary file (${listed.binarySize} bytes), and only text files are served.`,
+              };
+      },
+   };
+}
+
 /**
  * The package's skills under `<dirRel>/`: each skill's SKILL.md inline with its
- * other Markdown, and every other file listed and hashed. `skills` is the shape
- * `get_skill` and the REST routes read: a skill's `reference/*.md` as entries of
- * their own named `<skill>/<stem>`.
+ * other Markdown, and every other file listed and hashed. `skills` is what
+ * `get_skill` and the REST routes read, each with its catalog entry.
  */
 export function readSkillsDir(
    packagePath: string,
@@ -979,7 +1015,6 @@ export function readSkillsDir(
    const result: PackageSkills = {
       skills: [],
       files: [],
-      catalog: [],
       paths: [],
       contentShas: new Map(),
       warnings: scan.warnings,
@@ -993,29 +1028,13 @@ export function readSkillsDir(
       refusals: [],
    };
    for (const read of readSkills(scan.skills, ctx)) {
-      const references = read.inline.flatMap((f) => {
-         const file = /^reference\/([^/]+)$/.exec(f.relative)?.[1];
-         return file === undefined ? [] : [{ file, text: f.text }];
-      });
-      const skill: SkillEntry = { ...read.meta };
-      if (references.length > 0) {
-         skill.body = `${skill.body}\n\n${referencePointer(
-            skill.name,
-            references.map((r) => r.file),
-            "package",
-         )}`;
-      }
-      result.skills.push(
-         skill,
-         ...references.map((r) => parseReference(r.text, skill.name, r.file)),
-      );
+      result.skills.push(packageSkill(packagePath, read));
       result.files.push(
          ...read.inline.map((f) => ({
             path: `${read.rel}/${f.relative}`,
             text: f.text,
          })),
       );
-      result.catalog.push(read.catalog);
       if (read.skillignore !== null) {
          result.paths.push(`${read.rel}/.skillignore`);
       }
@@ -1352,12 +1371,38 @@ function readAgentBudget(raw: unknown): PackageAgentBudget | undefined {
 }
 
 /**
- * A listed file's text, re-checked on every request with the checks that
- * listed it, and only when its bytes still hash to the listed sha256: files can
- * change after load, and a watch-mode edit does not reload. A binary file
- * answers with a message naming its size, never its bytes. Undefined (a 404)
- * when it is no longer servable.
+ * A listed file of the skill at `skillRel`, re-checked on every request with
+ * the checks that listed it, and only when its bytes still hash to `sha`:
+ * files can change after load, and a watch-mode edit does not reload. A binary
+ * file answers with its size, never its bytes. Undefined (a 404) when it is no
+ * longer servable.
  */
+function readListedFile(
+   packagePath: string,
+   skillRel: string,
+   relative: string,
+   sha: string,
+): { text: string } | { binarySize: number } | undefined {
+   try {
+      const skillDir = path.join(packagePath, skillRel);
+      // The skill directory is resolved by the package's own walk first, so
+      // one swapped for a link out is not looked through.
+      if (insidePackage(packagePath, skillDir) === undefined) return undefined;
+      const read = readListedBytes(
+         packagePath,
+         skillDir,
+         path.join(skillDir, relative),
+         PACKAGE_ASSET_FILE_MAX_BYTES - 1,
+      );
+      if (!("bytes" in read) || sha256(read.bytes) !== sha) return undefined;
+      const text = decodeText(read.bytes);
+      return text === undefined ? { binarySize: read.bytes.length } : { text };
+   } catch {
+      return undefined;
+   }
+}
+
+/** One listed file of an agent's skills: its text, or a message naming its size when it is binary; undefined when it is not served. */
 export function readAgentAsset(
    packagePath: string,
    agent: PackageAgent,
@@ -1372,29 +1417,16 @@ export function readAgentAsset(
          ? agent.asset_roots[skill]
          : undefined;
    if (skillRel === undefined || !listing) return undefined;
-   try {
-      const skillDir = path.join(packagePath, skillRel);
-      // The skill directory is resolved by the package's own walk first, so
-      // one swapped for a link out is not looked through.
-      if (insidePackage(packagePath, skillDir) === undefined) return undefined;
-      const read = readListedBytes(
-         packagePath,
-         skillDir,
-         path.join(skillDir, relativeFilepath.slice(skill.length)),
-         PACKAGE_ASSET_FILE_MAX_BYTES - 1,
-      );
-      if (!("bytes" in read) || sha256(read.bytes) !== listing.sha256) {
-         return undefined;
-      }
-      const text = decodeText(read.bytes);
-      return text === undefined
-         ? {
-              message: `'${relativeFilepath}' is a binary file of ${read.bytes.length} bytes. It is listed for the agent computer to copy, and is not served as text.`,
-           }
-         : { text };
-   } catch {
-      return undefined;
-   }
+   const read = readListedFile(
+      packagePath,
+      skillRel,
+      relativeFilepath.slice(skill.length + 1),
+      listing.sha256,
+   );
+   if (read === undefined || "text" in read) return read;
+   return {
+      message: `'${relativeFilepath}' is a binary file of ${read.binarySize} bytes. It is listed for the agent computer to copy, and is not served as text.`,
+   };
 }
 
 /** What an agent's skill roots read into, sorted by relative path. */
@@ -1807,41 +1839,123 @@ export function readPackageAgents(
    return result;
 }
 
+/** Where a skill's files are installed from when this server does not carry them. */
+const SKILLS_PACKAGE = "@malloy-publisher/skills";
+
+/** A bundled skill read as a package's is: its Markdown from the bundle, everything else a manifest entry only. */
+function bundledSkill({ bodies, ...catalog }: BundledSkill): ServedSkill {
+   const { description } = catalog.frontmatter;
+   return {
+      name: catalog.name,
+      description: typeof description === "string" ? description.trim() : "",
+      catalog,
+      read: (relative) =>
+         Object.hasOwn(bodies, relative)
+            ? { text: bodies[relative]! }
+            : {
+                 message: `'${relative}' (${catalog.files[relative]!.size} bytes) is part of the bundled skill '${catalog.name}' but this server does not carry it. Install \`${SKILLS_PACKAGE}\` to get it.`,
+              },
+   };
+}
+
 /**
  * The skills in force for one package: the bundled set, with the package's own
  * skills shadowing any bundled skill of the same name and adding the rest.
  *
  * Shadowing by name is the whole mechanism: Publisher does not know which
  * skills the agent already holds, so it cannot merge, only choose what a name
- * returns. `origin` is on every entry because a replaced skill is otherwise
+ * returns. Nothing is merged, a shadowed skill's bundled files go with it.
+ * `origin` is on every entry because a replaced skill is otherwise
  * indistinguishable from the original.
  */
 export function resolveSkills(
-   bundled: SkillEntry[],
-   packageSkills: SkillEntry[],
+   bundled: BundledSkill[],
+   packageSkills: ServedSkill[],
 ): ResolvedSkill[] {
-   // A reference entry is `<skill>/<stem>`; a package skill's own name carries no slash.
-   const root = (name: string) => name.split("/")[0]!;
-   const shadows = new Map(
-      packageSkills
-         .filter((s) => !s.name.includes("/"))
-         .map((s) => [s.name, s]),
-   );
+   const shadows = new Map(packageSkills.map((s) => [s.name, s]));
    const bundledNames = new Set(bundled.map((s) => s.name));
    // Bundled order first, each skill replaced in place by the package's copy
    // when there is one, then the package's new names in their own order. Two
    // packages' listings therefore line up row for row wherever they agree.
    return [
-      ...bundled.flatMap((s): ResolvedSkill[] => {
-         const shadow = shadows.get(root(s.name));
-         if (!shadow) return [{ ...s, origin: "bundled" }];
-         // Nothing is merged: a shadowed skill's bundled references go with it.
-         return s.name === shadow.name
-            ? [{ ...shadow, origin: "package" }]
-            : [];
+      ...bundled.map((b): ResolvedSkill => {
+         const shadow = shadows.get(b.name);
+         // A bundled manifest is informational: it lists a template's publisher.json, which the package reserved-name and listed-file rules would skip.
+         return shadow
+            ? { ...shadow, origin: "package" }
+            : { ...bundledSkill(b), origin: "bundled" };
       }),
       ...packageSkills
-         .filter((s) => s.name.includes("/") || !bundledNames.has(s.name))
+         .filter((s) => !bundledNames.has(s.name))
          .map((s): ResolvedSkill => ({ ...s, origin: "package" })),
    ];
+}
+
+/** A path as a caller wrote it, as a path of the skill: without a leading `./`, and `SKILL.md` when empty. */
+export function skillFilePath(raw: string | null | undefined): string {
+   let relative = (raw ?? "").trim();
+   while (relative.startsWith("./")) relative = relative.slice(2);
+   return relative || SKILL_MD;
+}
+
+/** Every file of a skill as path and size, SKILL.md first, then by path. */
+export function skillFileList(
+   skill: ServedSkill,
+): Array<{ path: string; size: number }> {
+   return Object.entries(skill.catalog.files)
+      .map(([filePath, { size }]) => ({ path: filePath, size }))
+      .sort(
+         (a, b) =>
+            Number(b.path === SKILL_MD) - Number(a.path === SKILL_MD) ||
+            compareText(a.path, b.path),
+      );
+}
+
+/** An unknown path's answer names this many of the skill's files; the rest are counted. */
+const NAMED_FILES_MAX = 25;
+
+/** The skill's first files by name, for a message about a path it does not have. */
+export function namedSkillFiles(skill: ServedSkill): string {
+   const files = skillFileList(skill);
+   const more = files.length - NAMED_FILES_MAX;
+   return (
+      files
+         .slice(0, NAMED_FILES_MAX)
+         .map((f) => f.path)
+         .join(", ") +
+      (more > 0
+         ? ` (and ${more} more; see \`files\` on SKILL.md, or the paths its text names)`
+         : "")
+   );
+}
+
+/**
+ * One read of `relative` as it is answered: `content` when there is text, its
+ * `size` when there is none, and for a SKILL.md the frontmatter and the files
+ * (`entries`, every one unless the caller trims them; the frontmatter unless
+ * `withFrontmatter` is false).
+ */
+export function skillFileView(
+   skill: ResolvedSkill,
+   relative: string,
+   content: string | undefined,
+   entries: Array<{ path: string; size: number }> = skillFileList(skill),
+   withFrontmatter = true,
+) {
+   return {
+      name: skill.name,
+      path: relative,
+      ...(content === undefined
+         ? { size: skill.catalog.files[relative]!.size }
+         : { content }),
+      origin: skill.origin,
+      ...(relative === SKILL_MD
+         ? {
+              ...(withFrontmatter
+                 ? { frontmatter: skill.catalog.frontmatter }
+                 : {}),
+              files: entries,
+           }
+         : {}),
+   };
 }

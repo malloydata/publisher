@@ -17,7 +17,7 @@ ADOPT AN AGENT ONLY WHEN THE USER NAMES IT. Listing agents is not a reason to ap
 - \`scopes\` only: list the agents the package declares (name, description, model, schedules, budget).
 - \`scopes\` and \`agent_name\`: fetch that agent's resolved definition.
 - plus \`skills: "summary"\`: the same definition with each skill file reduced to {relative_filepath, name, description, bytes}. Use it when the skill set is large.
-- plus \`skill_path\`: one skill file, {relative_filepath, file_contents}, by a relative_filepath from the summary or the full view's \`assets\`; \`source\` comes with it.
+- plus \`skill_path\`: one skill file, {relative_filepath, file_contents}, by a relative_filepath from the summary or \`assets\`; a binary file gets a message instead. \`source\` comes with it.
 
 ## Parameters
 - scopes (required): exactly one {environment, package}, from list_packages.

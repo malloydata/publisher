@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { initializeMcpServer } from "./server";
+import { BUNDLED_CATALOG } from "../service/skills/package_skills";
 import {
    RELOAD_FAILURE_IS_SAFE,
    RELOAD_NEEDS_WATCH_MODE,
@@ -198,10 +199,49 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       }
    });
 
-   it("exposes the skill set as dual-channel prompts", async () => {
+   it("exposes one prompt per bundled skill, and none for a file of a skill", async () => {
       const { prompts } = await client.listPrompts();
-      expect(prompts.length).toBeGreaterThanOrEqual(24);
+      expect(prompts.map((p) => p.name).sort()).toEqual(
+         BUNDLED_CATALOG.map((s) => s.name).sort(),
+      );
       expect(prompts.some((p) => p.name === "malloy-analysis")).toBe(true);
+      expect(prompts.some((p) => p.name.includes("/"))).toBe(false);
+   });
+
+   it("reads a bundled skill's SKILL.md and another of its files by path through get_skill", async () => {
+      const skill = BUNDLED_CATALOG.find(
+         (s) => Object.keys(s.bodies).length > 1,
+      )!;
+      const res = await client.callTool({
+         name: "get_skill",
+         arguments: { skill_name: skill.name },
+      });
+      const out = JSON.parse(
+         (res.content as Array<{ resource: { text: string } }>)[0]!.resource
+            .text,
+      );
+      expect(out.skill.content).toBe(skill.bodies["SKILL.md"]!);
+      expect(out.skill.path).toBe("SKILL.md");
+      expect(out.skill.frontmatter).toEqual(skill.frontmatter);
+      expect(out.skill.files.map((f: { path: string }) => f.path)).toContain(
+         "SKILL.md",
+      );
+      const other = Object.keys(skill.bodies).find((p) => p !== "SKILL.md");
+      expect(other).toBeDefined();
+      const file = await client.callTool({
+         name: "get_skill",
+         arguments: { skill_name: skill.name, path: other },
+      });
+      const read = JSON.parse(
+         (file.content as Array<{ resource: { text: string } }>)[0]!.resource
+            .text,
+      );
+      expect(read.skill).toEqual({
+         name: skill.name,
+         path: other,
+         content: skill.bodies[other!]!,
+         origin: "bundled",
+      });
    });
 
    it("names the real release in the initialize handshake", () => {
@@ -228,6 +268,8 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
          "In a watched environment, after every model edit, call reload_package before querying",
       );
       expect(instructions).toContain("get_status");
+      // A guide's relative paths have one reader.
+      expect(instructions).toContain("get_skill(skill_name, path)");
       // Agents are an explicit user choice, so nothing pre-authorization names them.
       expect(instructions).not.toContain("agent_name");
       expect(instructions).not.toContain("get_agent");

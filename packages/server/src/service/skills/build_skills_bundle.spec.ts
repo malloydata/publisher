@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { buildSkills, flatSkills, parseSkill } from "./build_skills_bundle";
+import { buildSkills, parseSkill } from "./build_skills_bundle";
 import { unquote } from "./frontmatter";
 
 const SKILL_MD =
@@ -93,15 +93,6 @@ describe("buildSkills", () => {
       write("pricing/SKILL.md", "---\nname: [\n---\nbody\n");
       expect(() => buildSkills(skillsDir)).toThrow(/not valid YAML/);
       write("pricing/SKILL.md", SKILL_MD);
-   });
-
-   it("flattens to the entries get_skill reads: a body with a pointer section, and one per reference file", () => {
-      const flat = flatSkills(buildSkills(skillsDir));
-      expect(flat.map((s) => s.name)).toEqual(["pricing", "pricing/rules"]);
-      expect(flat[0]!.body).toContain("# Pricing");
-      expect(flat[0]!.body).not.toContain("SPDX-License-Identifier");
-      expect(flat[0]!.body).toContain("Reference files over MCP");
-      expect(flat[1]!.body).toBe("# Rules\n\nDetail.");
    });
 });
 

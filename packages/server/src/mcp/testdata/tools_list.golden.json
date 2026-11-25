@@ -453,7 +453,7 @@
     },
     {
       "name": "get_skill",
-      "description": "Fetch a task guide, or list the guides available. Guides are concise procedural instructions for working with Malloy and this server: query patterns, chart and rendering tags, analysis pitfalls, how to build or review a model.\n\nA package can ship guides of its OWN, describing how to use that package specifically: which source answers which question, what the business terms mean here, which conventions apply. Pass `scopes` to see them. A package guide whose name matches a built-in one REPLACES it for that package, so the package's version is what you get back; `origin` on every entry says which you are reading.\n\n## Call modes\n- No arguments: list the built-in guides (name plus a one-line description).\n- `scopes`: list the guides in force for that package, built-in and package alike.\n- `skill_name`: fetch that guide's full Markdown. Combine with `scopes` to get the package's version when it has one.\n\n## Parameters\n- skill_name (optional): a name from `availableSkills`. Omit to list.\n- scopes (optional): exactly one {environment, package}, from list_packages. Omit for the built-in set only.\n\n## Response\n- skill: the requested guide ({name, content, origin}), or null when listing or when skill_name did not match.\n- availableSkills: always present; every guide in scope with its description and origin.\n- message: only when skill_name did not match; says so and points at availableSkills.\n\n`origin` is \"package\" for a guide the package ships (including one replacing a built-in) and \"bundled\" for a built-in. Reading a guide is not the same as having it available: fetch the one that covers what you are about to do before you do it.",
+      "description": "Fetch a task guide, or list the guides available. Guides are concise procedural instructions for working with Malloy and this server: query patterns, chart and rendering tags, analysis pitfalls, how to build or review a model.\n\nA guide is a directory: a SKILL.md plus files it names by path relative to its root (`references/joins.md`, `scripts/check.py`). A package can ship guides of its OWN, about that package (which source answers which question, its terms, its conventions). Pass `scopes` to see them. A package guide named like a built-in one REPLACES it for that package; `origin` (\"package\" or \"bundled\") says which you are reading.\n\n## Call modes\n- No arguments: list the built-in guides.\n- `scopes`: list the guides in force for that package.\n- `skill_name`: that guide's SKILL.md verbatim, with `frontmatter` and `files`. Add `scopes` for a package's version.\n- `skill_name` and `path`: one other file of the guide, verbatim.\n\n## Parameters\n- skill_name (optional): a name from `availableSkills`. Omit to list.\n- path (optional): a path from `files`. Defaults to SKILL.md.\n- scopes (optional): exactly one {environment, package}, from list_packages. Omit for the built-in set only.\n\n## Response\n- skill: {name, path, content, origin}. SKILL.md also has `frontmatter` (its YAML as an object, parsed as YAML 1.2) and `files` ([{path, size}]; for a package guide, exactly what this server serves).\n- A binary file, or one too large for a tool result, comes back as {name, path, size, origin} and a message. A SKILL.md reply always fits and keeps the body over the file list: if the list does not fit, `files` is cut short and the message counts the files not listed (read any by `path`).\n- A built-in guide serves its Markdown only; for any other file the message says to install `@malloy-publisher/skills`.\n- availableSkills: on a listing, and with a message when skill_name did not match.\n- message: when skill_name or path did not match (an unknown path names the guide's files), or why a file has no content.\n\nReading a guide is not the same as having it available: fetch the one that covers what you are about to do before you do it.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -469,6 +469,18 @@
               }
             ],
             "description": "Name of the guide to fetch, as returned in availableSkills. Omit to list."
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "File to read, relative to the guide's root (for example `references/joins.md` or `scripts/check.py`). Defaults to `SKILL.md`, which also returns the guide's `frontmatter` and `files`. Ignored when skill_name is omitted."
           },
           "scopes": {
             "anyOf": [
@@ -511,7 +523,7 @@
     },
     {
       "name": "get_agent",
-      "description": "List the agents a package declares, or fetch one agent's definition. A package agent is a named brief the package author wrote: instructions, its own skills, and optional scheduled tasks, for working with that package.\n\nADOPT AN AGENT ONLY WHEN THE USER NAMES IT. Listing agents is not a reason to apply one. Without the user asking for a specific agent, do not fetch or follow any of them.\n\n## Call modes\n- `scopes` only: list the agents the package declares (name, description, model, schedules, budget).\n- `scopes` and `agent_name`: fetch that agent's resolved definition.\n- plus `skills: \"summary\"`: the same definition with each skill file reduced to {relative_filepath, name, description, bytes}. Use it when the skill set is large.\n- plus `skill_path`: one skill file, {relative_filepath, file_contents}, by a relative_filepath from the summary or the full view's `assets`; `source` comes with it.\n\n## Parameters\n- scopes (required): exactly one {environment, package}, from list_packages.\n- agent_name (optional): a name from `availableAgents`. Omit to list.\n- skills (optional): \"full\" (default) or \"summary\". Only with agent_name.\n- skill_path (optional): a relative_filepath from a summary or assets. Only with agent_name.\n\n## Response\n- agent: the resolved definition, or null when listing or when agent_name did not match. Absent when skill_path returns a file.\n- skillFile: only with skill_path; {relative_filepath, file_contents, source}. skill_path wins over skills.\n- availableAgents: always present; every agent the package serves.\n- message: only when agent_name did not match.\n\n## Using a definition\n- instructions: the brief to work from for this session. It adds to your own instructions and never replaces them.\n- skills: files ({relative_filepath, file_contents}) to treat as guides; they add to what you have and do not grant any tool or permission.\n- schedules, budget: declared only. Nothing here runs or enforces them; a task is text you may run when the user asks.\n- source: sourceContentSha and definitionSha say which bytes this definition came from; report them when you say you used it.",
+      "description": "List the agents a package declares, or fetch one agent's definition. A package agent is a named brief the package author wrote: instructions, its own skills, and optional scheduled tasks, for working with that package.\n\nADOPT AN AGENT ONLY WHEN THE USER NAMES IT. Listing agents is not a reason to apply one. Without the user asking for a specific agent, do not fetch or follow any of them.\n\n## Call modes\n- `scopes` only: list the agents the package declares (name, description, model, schedules, budget).\n- `scopes` and `agent_name`: fetch that agent's resolved definition.\n- plus `skills: \"summary\"`: the same definition with each skill file reduced to {relative_filepath, name, description, bytes}. Use it when the skill set is large.\n- plus `skill_path`: one skill file, {relative_filepath, file_contents}, by a relative_filepath from the summary or `assets`; a binary file gets a message instead. `source` comes with it.\n\n## Parameters\n- scopes (required): exactly one {environment, package}, from list_packages.\n- agent_name (optional): a name from `availableAgents`. Omit to list.\n- skills (optional): \"full\" (default) or \"summary\". Only with agent_name.\n- skill_path (optional): a relative_filepath from a summary or assets. Only with agent_name.\n\n## Response\n- agent: the resolved definition, or null when listing or when agent_name did not match. Absent when skill_path returns a file.\n- skillFile: only with skill_path; {relative_filepath, file_contents, source}. skill_path wins over skills.\n- availableAgents: always present; every agent the package serves.\n- message: only when agent_name did not match.\n\n## Using a definition\n- instructions: the brief to work from for this session. It adds to your own instructions and never replaces them.\n- skills: files ({relative_filepath, file_contents}) to treat as guides; they add to what you have and do not grant any tool or permission.\n- schedules, budget: declared only. Nothing here runs or enforces them; a task is text you may run when the user asks.\n- source: sourceContentSha and definitionSha say which bytes this definition came from; report them when you say you used it.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -770,92 +782,24 @@
       "description": "Score one analytical answer against a verified golden, and score which of the entities the golden depends on retrieval delivered to the answerer. Run the contamination checklist, re-execute the submitted query yourself, then spawn a judge subagent per skill:eval-judge. Append attempt, tool_call, score, and retrieval_score events to the file ledger (reference/ledger-schema.md). Never explain the failure (eval-diagnose) or edit the model (eval-improve). Use when asked whether an answer was correct, to score a run, or to baseline a model."
     },
     {
-      "name": "eval-answer/coverage-limits",
-      "description": "Coverage limits. Reference detail for the eval-answer skill."
-    },
-    {
-      "name": "eval-answer/definition-ledger",
-      "description": "The definition ledger. Reference detail for the eval-answer skill."
-    },
-    {
-      "name": "eval-answer/ledger-schema",
-      "description": "The eval ledger: files and events. Reference detail for the eval-answer skill."
-    },
-    {
       "name": "eval-diagnose",
       "description": "Diagnose why a scored answer failed and who owns the fix, then cluster the failures by shared root cause. Walk dataset, agent-call, get_context/model, get_context/retrieval, construction, then model-definition. Append issue events to the file ledger, linked by traceId, one per cluster. Use after eval-answer, when triaging a run, or before changing a model. Does not edit the model (eval-improve)."
-    },
-    {
-      "name": "eval-diagnose/output-contract",
-      "description": "Output contract. Reference detail for the eval-diagnose skill."
     },
     {
       "name": "eval-import",
       "description": "Turn a list of questions into an eval set, whatever shape it arrived in: a JSONL a customer sent, a CSV, a spreadsheet export, a markdown doc, an email thread, or a pull from production logs. Classify each item by what came WITH the question (a query, a number, prose criteria, or nothing), write cases.jsonl and set.json per reference/case-format.md, keep the file as it arrived, and seal each question so a later edit is detectable. Never marks a value-bearing golden verified and never invents a question. Use when questions arrive from outside and need to become a set, or before the first run against a set nobody here authored."
     },
     {
-      "name": "eval-import/case-format",
-      "description": "Reading an arriving question list. Reference detail for the eval-import skill."
-    },
-    {
       "name": "eval-improve",
       "description": "Make the smallest safe edit that closes a diagnosed gap the model repo owns: a Malloy model edit, or a package skill under skills/. Every factual claim carries a probe receipt. Use after eval-diagnose, or when asked to fix a model so an agent can discover the right answer. Never accepts its own edit; the acceptance check belongs to eval-loop. Does not decide whether an answer was wrong (eval-answer) or why (eval-diagnose)."
-    },
-    {
-      "name": "eval-improve/output-contract",
-      "description": "Output contract. Reference detail for the eval-improve skill."
     },
     {
       "name": "eval-judge",
       "description": "Decide whether ONE answer matches its golden, and say whether you believe the golden. Read this before emitting any verdict. Covers containment, column pairing, near_match, refusals, and the gold_status judgement. Use when scoring an attempt in an evaluation run; never to conduct a run (eval-loop), diagnose a failure (eval-diagnose) or edit a model (eval-improve)."
     },
     {
-      "name": "eval-judge/refusal",
-      "description": "Refusal. Reference detail for the eval-judge skill."
-    },
-    {
-      "name": "eval-judge/retrieval-judge",
-      "description": "Retrieval judge. Reference detail for the eval-judge skill."
-    },
-    {
-      "name": "eval-judge/suspect-goldens",
-      "description": "When the answer key looks wrong. Reference detail for the eval-judge skill."
-    },
-    {
-      "name": "eval-judge/writing-rubrics",
-      "description": "Writing a rubric the judge can execute. Reference detail for the eval-judge skill."
-    },
-    {
       "name": "eval-loop",
       "description": "Conduct a local Publisher evaluation loop in five steps: scrape/run, eval, diagnose, improve, checkpoint. You are the conductor: import cases into the file ledger, spawn a blind answerer, then run eval-answer, eval-diagnose, and eval-improve. Persistence is plain files: the set in the model package's evals/ directory, runs in the set's workdir; checkpoints are git commits of the model repo. `eval.py` runs each step from the set's eval.toml. Use to score a model, diagnose failures, improve behind an acceptance check, or roll back a bad direction."
-    },
-    {
-      "name": "eval-loop/acceptance-check",
-      "description": "The acceptance check. Reference detail for the eval-loop skill."
-    },
-    {
-      "name": "eval-loop/auditing-an-answer-key",
-      "description": "Auditing an answer key. Reference detail for the eval-loop skill."
-    },
-    {
-      "name": "eval-loop/checking-the-judge",
-      "description": "Checking the judge. Reference detail for the eval-loop skill."
-    },
-    {
-      "name": "eval-loop/golden-side-door",
-      "description": "The golden side door. Reference detail for the eval-loop skill."
-    },
-    {
-      "name": "eval-loop/measurement",
-      "description": "Measurement. Reference detail for the eval-loop skill."
-    },
-    {
-      "name": "eval-loop/running-a-run",
-      "description": "Running a run, concretely. Reference detail for the eval-loop skill."
-    },
-    {
-      "name": "eval-loop/setting-up-a-set",
-      "description": "Setting up a set on your own model. Reference detail for the eval-loop skill."
     },
     {
       "name": "eval-report",
@@ -882,18 +826,6 @@
       "description": "Check a Malloy package and its controls against a written access policy: turn the policy's prose into a control register, run compliance.py check against a served package (structure, access as each role, and the values themselves), judge what needs a person, and produce a report and a signable attestation. Use when the user asks whether a model \"complies with\", \"satisfies\" or \"meets\" a policy, HIPAA, SOC 2, PCI or the like, asks for a compliance review or attestation, or wants the review in CI."
     },
     {
-      "name": "malloy-compliance-review/checks",
-      "description": "The checks. Reference detail for the malloy-compliance-review skill."
-    },
-    {
-      "name": "malloy-compliance-review/register",
-      "description": "The control register. Reference detail for the malloy-compliance-review skill."
-    },
-    {
-      "name": "malloy-compliance-review/report",
-      "description": "Reading the report. Reference detail for the malloy-compliance-review skill."
-    },
-    {
       "name": "malloy-dashboards",
       "description": "Renamed to malloy-reports. A dashboard is now a report with layout=grid: a .malloy file with an ## artifact tag, written at the package root. Load malloy-reports instead when the user asks for a dashboard, a filterable view, or drill-through between views."
     },
@@ -918,50 +850,6 @@
       "description": "Move an Excel workbook (.xlsx or .xlsm) onto Malloy - recover the model hiding in its cells, translate its formulas and pivots, and prove the numbers match against the values the file already stores. Use when a workbook is present, when a user wants to migrate or switch off a spreadsheet, and whenever a specific formula has to become Malloy - SUMIFS, COUNTIF, SUMPRODUCT, VLOOKUP, XLOOKUP, INDEX/MATCH, pivot tables, assumption cells, roll-forwards, circular references, Monte Carlo, or a Power Pivot model. Carries worked recipes, each labelled executed or semantics-cited in place, and states what each port costs. Works with or without a database connection."
     },
     {
-      "name": "malloy-excel-review/_concepts",
-      "description": "Excel → Malloy Concept Mapping. Reference detail for the malloy-excel-review skill."
-    },
-    {
-      "name": "malloy-excel-review/cookbook-lookup-aggregate",
-      "description": "Cookbook: Aggregates and Lookups (Step 3). Reference detail for the malloy-excel-review skill."
-    },
-    {
-      "name": "malloy-excel-review/cookbook-pivot",
-      "description": "Cookbook: Pivot Tables (Step 3). Reference detail for the malloy-excel-review skill."
-    },
-    {
-      "name": "malloy-excel-review/cookbook-scenario",
-      "description": "Cookbook: Scenario and Financial Models (Step 3). Reference detail for the malloy-excel-review skill."
-    },
-    {
-      "name": "malloy-excel-review/discover",
-      "description": "Excel Discovery (Step 1). Reference detail for the malloy-excel-review skill."
-    },
-    {
-      "name": "malloy-excel-review/limitations",
-      "description": "What the script reads, and what it does not (any step). Reference detail for the malloy-excel-review skill."
-    },
-    {
-      "name": "malloy-excel-review/parity",
-      "description": "Cached-Value Parity (Step 5). Reference detail for the malloy-excel-review skill."
-    },
-    {
-      "name": "malloy-excel-review/power-pivot",
-      "description": "Power Pivot: Workbooks With a Data Model (Step 4). Reference detail for the malloy-excel-review skill."
-    },
-    {
-      "name": "malloy-excel-review/recover-sources",
-      "description": "Recover Sources (Step 2). Reference detail for the malloy-excel-review skill."
-    },
-    {
-      "name": "malloy-excel-review/review-coverage",
-      "description": "Excel Coverage Review (Step 6). Reference detail for the malloy-excel-review skill."
-    },
-    {
-      "name": "malloy-excel-review/translate-formulas",
-      "description": "Formula Translation (Step 3). Reference detail for the malloy-excel-review skill."
-    },
-    {
       "name": "malloy-getting-started",
       "description": "First steps for using a Malloy Publisher deployment through its MCP tools. Use when connecting to Publisher for the first time, when you do not yet know the available environments, packages, or models, or when a user asks what data they can explore. Also use for \"malloy help\" or which Malloy skill to read. Covers verifying the server, discovering data with get_context, and running a first grounded query."
     },
@@ -974,116 +862,12 @@
       "description": "Build or modify an in-package HTML data app for a Malloy Publisher package (a public/ directory the package serves): design it, write its Publisher.query code, embed it. Hand-authored, no build step."
     },
     {
-      "name": "malloy-html-data-apps/archetypes",
-      "description": "The five archetypes. Reference detail for the malloy-html-data-apps skill."
-    },
-    {
-      "name": "malloy-html-data-apps/depth-patterns",
-      "description": "Depth patterns. Reference detail for the malloy-html-data-apps skill."
-    },
-    {
-      "name": "malloy-html-data-apps/design",
-      "description": "Designing a Data App. Reference detail for the malloy-html-data-apps skill."
-    },
-    {
-      "name": "malloy-html-data-apps/embedding",
-      "description": "Embedding an HTML Data App. Reference detail for the malloy-html-data-apps skill."
-    },
-    {
-      "name": "malloy-html-data-apps/lazy-load",
-      "description": "Lazy-Loading Tiles Below the Fold. Reference detail for the malloy-html-data-apps skill."
-    },
-    {
-      "name": "malloy-html-data-apps/overlays",
-      "description": "Drawers, trays and toasts in an embedded app. Reference detail for the malloy-html-data-apps skill."
-    },
-    {
-      "name": "malloy-html-data-apps/performance",
-      "description": "Performance and layout stability. Reference detail for the malloy-html-data-apps skill."
-    },
-    {
-      "name": "malloy-html-data-apps/runtime",
-      "description": "HTML Data App Runtime. Reference detail for the malloy-html-data-apps skill."
-    },
-    {
-      "name": "malloy-html-data-apps/token-contract",
-      "description": "The token contract. Reference detail for the malloy-html-data-apps skill."
-    },
-    {
-      "name": "malloy-html-data-apps/verification-harness",
-      "description": "Headless Verification Harness. Reference detail for the malloy-html-data-apps skill."
-    },
-    {
-      "name": "malloy-html-data-apps/visual-craft",
-      "description": "Visual craft. Reference detail for the malloy-html-data-apps skill."
-    },
-    {
       "name": "malloy-lookml-review",
       "description": "Analyze LookML files as prior art for Malloy modeling. Used during Step 1 (DISCOVER) when .lkml files are present. Coordinates reference files that extract business logic, relationships, and curation decisions. Works with or without a database connection."
     },
     {
-      "name": "malloy-lookml-review/_concepts",
-      "description": "LookML → Malloy Concept Mapping. Reference detail for the malloy-lookml-review skill."
-    },
-    {
-      "name": "malloy-lookml-review/build-derived-tables",
-      "description": "LookML Derived Table Conversion (Step 5). Reference detail for the malloy-lookml-review skill."
-    },
-    {
-      "name": "malloy-lookml-review/build-unnest",
-      "description": "LookML UNNEST & Struct Conversion (Step 5). Reference detail for the malloy-lookml-review skill."
-    },
-    {
-      "name": "malloy-lookml-review/curate-visibility",
-      "description": "LookML Visibility → Malloy Access Modifiers (Step 8). Reference detail for the malloy-lookml-review skill."
-    },
-    {
-      "name": "malloy-lookml-review/discover",
-      "description": "LookML Discovery (Step 1). Reference detail for the malloy-lookml-review skill."
-    },
-    {
-      "name": "malloy-lookml-review/document",
-      "description": "LookML Documentation Seeds (Step 9). Reference detail for the malloy-lookml-review skill."
-    },
-    {
-      "name": "malloy-lookml-review/propose-fields",
-      "description": "LookML Field Extraction (Step 4). Reference detail for the malloy-lookml-review skill."
-    },
-    {
-      "name": "malloy-lookml-review/review-coverage",
-      "description": "LookML Coverage Review (Step 7). Reference detail for the malloy-lookml-review skill."
-    },
-    {
       "name": "malloy-materialization",
       "description": "Add, confirm and debug Malloy Persistence materializations in a package - persist an expensive source so queries read a pre-built table, in the source's own warehouse or in a storage destination. Read this whenever the user wants to materialize a source, add a persist annotation, speed up a slow source, build one stored rollup over another, tune what to persist, or asks why a persist source isn't building or isn't being read."
-    },
-    {
-      "name": "malloy-materialization/access-filter",
-      "description": "Persisting a `#(access_filter)`-gated source. Reference detail for the malloy-materialization skill."
-    },
-    {
-      "name": "malloy-materialization/annotation",
-      "description": "The `#@ persist` annotation. Reference detail for the malloy-materialization skill."
-    },
-    {
-      "name": "malloy-materialization/chaining",
-      "description": "Chaining: one stored source built over another. Reference detail for the malloy-materialization skill."
-    },
-    {
-      "name": "malloy-materialization/policy",
-      "description": "The package policy: `scope`, `queryMetadata`, and where the rules are enforced. Reference detail for the malloy-materialization skill."
-    },
-    {
-      "name": "malloy-materialization/refresh",
-      "description": "Keeping a table current: freshness, schedule, incremental refresh. Reference detail for the malloy-materialization skill."
-    },
-    {
-      "name": "malloy-materialization/storage",
-      "description": "The storage tier: `storage=`, and how a stored table is served. Reference detail for the malloy-materialization skill."
-    },
-    {
-      "name": "malloy-materialization/tuning",
-      "description": "Tuning materializations for cost and performance. Reference detail for the malloy-materialization skill."
     },
     {
       "name": "malloy-model",
@@ -1092,26 +876,6 @@
     {
       "name": "malloy-model-as-you-go",
       "description": "After answering a data question, write down what the answer assumed so the next reader can trust the number. A field with a #(doc) in the model when you can edit it, an extend in the notebook when you can only author reports, or a stated assumption plus a Malloy snippet when you can only chat. Use after every answered question that rested on a judgment call, and whenever a question is asked against tables that have no model yet."
-    },
-    {
-      "name": "malloy-model/access-modifiers",
-      "description": "Access Modifiers: Curate the Interface. Reference detail for the malloy-model skill."
-    },
-    {
-      "name": "malloy-model/analysis-to-model",
-      "description": "Starting from Analysis. Reference detail for the malloy-model skill."
-    },
-    {
-      "name": "malloy-model/bridge-tables",
-      "description": "Bridge Tables & Composite Keys. Reference detail for the malloy-model skill."
-    },
-    {
-      "name": "malloy-model/normalized-schemas",
-      "description": "Normalized Schemas (3-Stage Pattern). Reference detail for the malloy-model skill."
-    },
-    {
-      "name": "malloy-model/query-sources",
-      "description": "Query-Based Sources (Derived/Pre-Aggregated). Reference detail for the malloy-model skill."
     },
     {
       "name": "malloy-modeling",
@@ -1130,54 +894,6 @@
       "description": "Move a Power BI semantic model (TMDL, PBIP, or .pbix) onto Malloy - read their model, transpile its DAX, and prove the numbers match. Use when Power BI artifacts are present, when a user wants to migrate or switch off Power BI, and whenever a specific DAX measure has to become Malloy - CALCULATE, ALL/ALLSELECTED/ALLEXCEPT, RANKX and top-N, time intelligence, USERELATIONSHIP, calculation groups, what-if parameters, or an RLS role. Carries a worked, executed transpile per construct and states what each port costs. Works with or without a database connection."
     },
     {
-      "name": "malloy-powerbi-review/_concepts",
-      "description": "Power BI → Malloy Concept Mapping. Reference detail for the malloy-powerbi-review skill."
-    },
-    {
-      "name": "malloy-powerbi-review/cookbook-filter-context",
-      "description": "Cookbook: Filter Context (Step 5). Reference detail for the malloy-powerbi-review skill."
-    },
-    {
-      "name": "malloy-powerbi-review/cookbook-structure",
-      "description": "Cookbook: Model Structure (Step 5). Reference detail for the malloy-powerbi-review skill."
-    },
-    {
-      "name": "malloy-powerbi-review/cookbook-time",
-      "description": "Cookbook: Time Intelligence (Step 5). Reference detail for the malloy-powerbi-review skill."
-    },
-    {
-      "name": "malloy-powerbi-review/corpus",
-      "description": "Development corpus. Reference detail for the malloy-powerbi-review skill."
-    },
-    {
-      "name": "malloy-powerbi-review/discover",
-      "description": "Power BI Discovery (Step 1). Reference detail for the malloy-powerbi-review skill."
-    },
-    {
-      "name": "malloy-powerbi-review/document",
-      "description": "Power BI Documentation Extraction (Step 9). Reference detail for the malloy-powerbi-review skill."
-    },
-    {
-      "name": "malloy-powerbi-review/limitations",
-      "description": "What the script reads, and what it does not. Reference detail for the malloy-powerbi-review skill."
-    },
-    {
-      "name": "malloy-powerbi-review/propose-fields",
-      "description": "Field Proposals from Power BI (Step 4). Reference detail for the malloy-powerbi-review skill."
-    },
-    {
-      "name": "malloy-powerbi-review/review-coverage",
-      "description": "Power BI Coverage Review (Step 7). Reference detail for the malloy-powerbi-review skill."
-    },
-    {
-      "name": "malloy-powerbi-review/rls-roles",
-      "description": "RLS Roles and Visibility (Step 8). Reference detail for the malloy-powerbi-review skill."
-    },
-    {
-      "name": "malloy-powerbi-review/translate-measures",
-      "description": "DAX Measure Translation (Step 5). Reference detail for the malloy-powerbi-review skill."
-    },
-    {
       "name": "malloy-publish",
       "description": "Package Malloy models for serving by Malloy Publisher. Use when user asks to \"publish\", \"package\", \"deploy\", or wants to share models with others."
     },
@@ -1190,56 +906,8 @@
       "description": "Build or modify a Malloy Publisher report: a .malloy file with an ## artifact tag, written at the package root unless asked otherwise, laid out as a grid (a dashboard, scanned at a glance) or linear (a notebook or data story, read top to bottom), with filter controls rendered from givens and # drill click-through. Use when the user asks for a dashboard, a notebook, a report, a data story, a filterable view, or drill-through between views, and no code is wanted. Legacy .malloynb files are read, not authored."
     },
     {
-      "name": "malloy-reports/grid",
-      "description": "Grid layout. Reference detail for the malloy-reports skill."
-    },
-    {
-      "name": "malloy-reports/linear",
-      "description": "Linear layout. Reference detail for the malloy-reports skill."
-    },
-    {
       "name": "malloy-review",
       "description": "Malloy semantic-model code review. Invoke when the user asks to review, audit, or critique a `.malloy` file, a folder of Malloy models, or a GitHub PR that touches Malloy. Enforces project modeling standards and emits a navigable review file."
-    },
-    {
-      "name": "malloy-review/output-template",
-      "description": "Review Results File: Template & Assembly Rules. Reference detail for the malloy-review skill."
-    },
-    {
-      "name": "malloy-review/rubric-correctness",
-      "description": "Rubric: Correctness (Semantic Hazards Only). Reference detail for the malloy-review skill."
-    },
-    {
-      "name": "malloy-review/rubric-documentation",
-      "description": "Rubric: Documentation. Reference detail for the malloy-review skill."
-    },
-    {
-      "name": "malloy-review/rubric-governance",
-      "description": "Rubric: Governance & Access. Reference detail for the malloy-review skill."
-    },
-    {
-      "name": "malloy-review/rubric-queries",
-      "description": "Rubric: Queries & Views. Reference detail for the malloy-review skill."
-    },
-    {
-      "name": "malloy-review/rubric-rendering",
-      "description": "Rubric: Rendering. Reference detail for the malloy-review skill."
-    },
-    {
-      "name": "malloy-review/rubric-structure",
-      "description": "Rubric: Structure. Reference detail for the malloy-review skill."
-    },
-    {
-      "name": "malloy-review/rubric-style",
-      "description": "Rubric: Style & Naming. Reference detail for the malloy-review skill."
-    },
-    {
-      "name": "malloy-review/scope-resolution",
-      "description": "Scope Resolution. Reference detail for the malloy-review skill."
-    },
-    {
-      "name": "malloy-review/severity-taxonomy",
-      "description": "Severity, Confidence, Categorization. Reference detail for the malloy-review skill."
     },
     {
       "name": "malloy-run-agent",

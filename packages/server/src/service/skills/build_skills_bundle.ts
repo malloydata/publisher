@@ -74,60 +74,6 @@ export function isCredible(dirName: string): boolean {
    return dirName.toLowerCase().startsWith("credible-");
 }
 
-/** The subdirectory a skill keeps its on-demand detail in. */
-const REFERENCE_DIR = "reference";
-
-/** Prompt name for one reference file: `<skill>/<file stem>`. */
-function referenceName(skillName: string, file: string): string {
-   return `${skillName}/${path.basename(file, ".md")}`;
-}
-
-/**
- * Turn a reference file into an entry. These carry no frontmatter, so the
- * description comes from the first H1.
- */
-export function parseReference(
-   md: string,
-   skillName: string,
-   file: string,
-): SkillEntry {
-   const body = stripLicenseHeader(md.replace(/\r\n/g, "\n"));
-   const heading = body.match(/^#\s+(.+)$/m)?.[1]?.trim();
-   return {
-      name: referenceName(skillName, file),
-      description: heading
-         ? `${heading}. Reference detail for the ${skillName} skill.`
-         : `Reference detail for the ${skillName} skill.`,
-      body,
-   };
-}
-
-/**
- * Tell an agent that reached this body over MCP where the reference files went.
- * The skill's relative `reference/...` paths are unresolvable over MCP, and
- * rewriting them in the source would break the filesystem channel, so the
- * mapping is appended to the served copy only.
- */
-export function referencePointer(
-   skillName: string,
-   files: string[],
-   channel: "bundled" | "package" = "bundled",
-): string {
-   const stems = files.map((f) => path.basename(f, ".md"));
-   // Prompts are registered once at server start, for bundled skills only.
-   const how =
-      channel === "bundled"
-         ? `served as separate prompts, one per file, fetched only when you ask for them. Where the text above says to read \`${REFERENCE_DIR}/<name>.md\`, get the prompt named \`${skillName}/<name>\` instead.`
-         : `served as separate guides, one per file, fetched only when you ask for them. Where the text above says to read \`${REFERENCE_DIR}/<name>.md\`, call get_skill with skill_name \`${skillName}/<name>\` and the same \`scopes\` you used for this skill instead.`;
-   return [
-      `## Reference files over MCP`,
-      ``,
-      `This skill's \`${REFERENCE_DIR}/\` files are ${how}`,
-      ``,
-      `Available: ${stems.join(", ")}.`,
-   ].join("\n");
-}
-
 /**
  * The skills the deployment manifest ships, as a set. The manifest is the single
  * answer to "what ships", so a skill merely present in the tree does not reach
@@ -189,29 +135,6 @@ export function buildSkills(skillsDir: string): BundledSkill[] {
       const skillDir = path.join(skillsDir, entry.name);
       if (!fs.existsSync(path.join(skillDir, "SKILL.md"))) continue;
       skills.push(bundleSkill(skillDir, entry.name));
-   }
-   return skills.sort((a, b) => compareText(a.name, b.name));
-}
-
-/**
- * The flat `{name, description, body}` entries `get_skill`, the REST route and
- * the MCP prompts still read: each skill's `SKILL.md` body with a pointer
- * section, and each `reference/<stem>.md` as an entry named `<skill>/<stem>`.
- */
-export function flatSkills(bundled: BundledSkill[]): SkillEntry[] {
-   const skills: SkillEntry[] = [];
-   for (const { name, bodies } of bundled) {
-      const skill = parseSkill(bodies["SKILL.md"] ?? "", name);
-      const references = Object.keys(bodies).filter((p) =>
-         /^reference\/[^/]+$/.test(p),
-      );
-      if (references.length > 0) {
-         skill.body = `${skill.body}\n\n${referencePointer(skill.name, references)}`;
-      }
-      skills.push(
-         skill,
-         ...references.map((p) => parseReference(bodies[p]!, skill.name, p)),
-      );
    }
    return skills.sort((a, b) => compareText(a.name, b.name));
 }

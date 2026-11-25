@@ -311,10 +311,9 @@ describe("a skill is its whole directory", () => {
       fs.cpSync(skillDir(), path.join(pkg, "skills/pricing"), {
          recursive: true,
       });
-      const { skills, files, catalog, paths, blocking } = readSkillsDir(pkg);
+      const { skills, files, paths, blocking } = readSkillsDir(pkg);
       expect(skills).toEqual([]);
       expect(files).toEqual([]);
-      expect(catalog).toEqual([]);
       expect(paths).toEqual([]);
       expect(blocking.join("\n")).toContain("not a regular file");
    });
@@ -547,7 +546,8 @@ describe("a package's own skills", () => {
 
    it("builds a catalog entry per skill: its frontmatter as JSON and every served file's digest and size", () => {
       writeSkill(pkg, "skills");
-      const { catalog, warnings, blocking } = readSkillsDir(pkg);
+      const { skills, warnings, blocking } = readSkillsDir(pkg);
+      const catalog = skills.map((s) => s.catalog);
       expect(blocking).toEqual([]);
       expect(catalog).toHaveLength(1);
       const [entry] = catalog;
@@ -574,19 +574,76 @@ describe("a package's own skills", () => {
       expect(warnings.join("\n")).toContain("scripts/run-link.sh");
    });
 
-   it("keeps get_skill's view of reference/*.md, and nothing else, until it is addressed by path", () => {
+   it("is one skill, with its inline Markdown named in the content hash", () => {
       writeSkill(pkg, "skills");
       const { skills, files } = readSkillsDir(pkg);
-      expect(skills.map((s) => s.name)).toEqual([
-         "pricing",
-         "pricing/50%-rule",
-      ]);
+      expect(skills.map((s) => s.name)).toEqual(["pricing"]);
       expect(files.map((f) => f.path)).toEqual([
          "skills/pricing/SKILL.md",
          "skills/pricing/NOTES.md",
          "skills/pricing/reference/50%-rule.md",
          "skills/pricing/references/a.md",
       ]);
+   });
+
+   it("reads every file it lists by its path: Markdown verbatim, a script as text, a binary as a message", () => {
+      writeSkill(pkg, "skills");
+      const [skill] = readSkillsDir(pkg).skills;
+      expect(skill!.read("SKILL.md")).toEqual({
+         text: String(FILES["SKILL.md"]),
+      });
+      expect(skill!.read("reference/50%-rule.md")).toEqual({
+         text: String(FILES["reference/50%-rule.md"]),
+      });
+      expect(skill!.read("scripts/run.py")).toEqual({
+         text: String(FILES["scripts/run.py"]),
+      });
+      expect(skill!.read("docs/Guide.MD")).toEqual({
+         text: String(FILES["docs/Guide.MD"]),
+      });
+      expect(skill!.read("assets/logo.png")).toEqual({
+         message: `'assets/logo.png' is a binary file (${PNG.length} bytes), and only text files are served.`,
+      });
+   });
+
+   it("answers a listed file that changed on disk since the load with a message, never its new bytes", () => {
+      writeSkill(pkg, "skills");
+      const [skill] = readSkillsDir(pkg).skills;
+      fs.writeFileSync(path.join(skillsDir(), "pricing/scripts/run.py"), "x");
+      expect(skill!.read("scripts/run.py")).toEqual({
+         message: expect.stringContaining("changed on disk"),
+      });
+   });
+
+   it.skipIf(isWindows)(
+      "does not read a listed file that became a link out of the skill",
+      () => {
+         writeSkill(pkg, "skills");
+         const [skill] = readSkillsDir(pkg).skills;
+         const secret = path.join(pkg, "secret.txt");
+         fs.writeFileSync(secret, "SECRET");
+         const file = path.join(skillsDir(), "pricing/scripts/run.py");
+         fs.rmSync(file);
+         fs.symlinkSync(secret, file);
+         expect(JSON.stringify(skill!.read("scripts/run.py"))).not.toContain(
+            "SECRET",
+         );
+      },
+   );
+
+   it("lists exactly the files it serves: a skipped, ignored or built-in-excluded file is not in the catalog", () => {
+      writeSkill(pkg, "skills");
+      const [skill] = readSkillsDir(pkg).skills;
+      for (const left of [
+         "scripts/run_test.py",
+         "fixtures/data.csv",
+         LINK,
+         "templates/CLAUDE.md",
+         ".env",
+         ".skillignore",
+      ]) {
+         expect(Object.hasOwn(skill!.catalog.files, left)).toBe(false);
+      }
    });
 
    it("lists and hashes against budgets of its own: 200 files", () => {
@@ -597,7 +654,8 @@ describe("a package's own skills", () => {
          });
          fs.writeFileSync(path.join(skillsDir(), `many/scripts/f${i}.py`), "x");
       }
-      const { catalog, warnings, contentShas } = readSkillsDir(pkg);
+      const { skills, warnings, contentShas } = readSkillsDir(pkg);
+      const catalog = skills.map((s) => s.catalog);
       expect(Object.keys(catalog[0]!.files)).toHaveLength(1 + 200);
       expect(contentShas.size).toBe(200);
       expect(warnings.join("\n")).toContain(
@@ -614,7 +672,8 @@ describe("a package's own skills", () => {
             Buffer.alloc(900_000, 1),
          );
       }
-      const { catalog, warnings } = readSkillsDir(pkg);
+      const { skills, warnings } = readSkillsDir(pkg);
+      const catalog = skills.map((s) => s.catalog);
       expect(Object.keys(catalog[0]!.files)).toHaveLength(1 + 4);
       expect(warnings.join("\n")).toContain("f4.bin");
       expect(warnings.join("\n")).toContain("per-package skills cap");
@@ -627,7 +686,8 @@ describe("a package's own skills", () => {
          path.join(skillsDir(), "only/.skillignore"),
          "*\n!SKILL.md\n",
       );
-      const { catalog, warnings } = readSkillsDir(pkg);
+      const { skills, warnings } = readSkillsDir(pkg);
+      const catalog = skills.map((s) => s.catalog);
       expect(Object.keys(catalog[0]!.files)).toEqual(["SKILL.md"]);
       expect(warnings).toEqual([]);
    });
@@ -642,9 +702,9 @@ describe("a package's own skills", () => {
             path.join(skillsDir(), "bad/SKILL.md"),
          );
          fs.writeFileSync(path.join(skillsDir(), "bad/run.py"), "x");
-         const { catalog, files, paths, contentShas, blocking } =
+         const { skills, files, paths, contentShas, blocking } =
             readSkillsDir(pkg);
-         expect([catalog, files, paths]).toEqual([[], [], []]);
+         expect([skills, files, paths]).toEqual([[], [], []]);
          expect(contentShas.size).toBe(0);
          expect(blocking.join("\n")).toContain("outside the package");
       } finally {
@@ -668,9 +728,9 @@ describe("a package's own skills", () => {
             "loose",
             "---\nname: loose\ndescription: Use when: a thing happens.\n---\n\nbody\n",
          );
-         const { skills, catalog, warnings, blocking } = readSkillsDir(pkg);
+         const { skills, warnings, blocking } = readSkillsDir(pkg);
          expect(skills[0]!.description).toBe("Use when: a thing happens.");
-         expect(catalog[0]!.frontmatter).toEqual({});
+         expect(skills[0]!.catalog.frontmatter).toEqual({});
          expect(blocking).toEqual([]);
          expect(warnings).toHaveLength(1);
          expect(warnings[0]).toContain("skills/loose/SKILL.md");
@@ -868,10 +928,9 @@ describe("a skill read whole still serves what it served before", () => {
          const agent = agentOf();
          expect(inline(agent)).toEqual(["s/SKILL.md", "s/reference/a.md"]);
          expect(listed(agent)).toEqual([]);
-         expect(readSkillsDir(pkg, ROOT).skills.map((s) => s.name)).toEqual([
-            "s",
-            "s/a",
-         ]);
+         expect(
+            Object.keys(readSkillsDir(pkg, ROOT).skills[0]!.catalog.files),
+         ).toEqual(["SKILL.md", "reference/a.md"]);
       });
 
       it("is not served, with a warning, when it leads out of the package", () => {

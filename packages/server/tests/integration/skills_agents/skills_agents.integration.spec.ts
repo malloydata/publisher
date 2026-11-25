@@ -10,8 +10,10 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { BUNDLED_CATALOG } from "../../../src/service/skills/package_skills";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -79,6 +81,10 @@ describe("Package skills and agents (E2E)", () => {
    });
 
    describe("skills", () => {
+      const skillDir = path.join(fixtureDir, "skills/house-rules");
+      const text = (relative: string) =>
+         fs.readFileSync(path.join(skillDir, relative), "utf8");
+
       it("lists bundled and package skills, the package's replacing a bundled name", async () => {
          const { status, body } = await get("/skills");
          expect(status).toBe(200);
@@ -91,44 +97,99 @@ describe("Package skills and agents (E2E)", () => {
          expect(byName.get("malloy-getting-started")).toBe("bundled");
          expect(byName.get("malloy-analysis")).toBe("package");
          expect(byName.get("house-rules")).toBe("package");
-         expect(byName.get("house-rules/margin")).toBe("package");
+         // A skill's files are not skills.
+         expect([...byName.keys()].some((n) => n.includes("/"))).toBe(false);
          expect(JSON.stringify(body)).not.toContain("OUR ANALYSIS GUIDE");
       });
 
-      it("returns a skill body, with the package's copy replacing the bundled one", async () => {
+      it("returns a skill's SKILL.md verbatim, with its frontmatter and every file, the package's copy replacing the bundled one", async () => {
          const { status, body } = await get("/skills/malloy-analysis");
          expect(status).toBe(200);
          expect(body).toMatchObject({
             name: "malloy-analysis",
+            path: "SKILL.md",
             origin: "package",
+            frontmatter: {
+               name: "malloy-analysis",
+               description: "The package's own analysis guide.",
+            },
+            files: [{ path: "SKILL.md", size: expect.any(Number) }],
          });
          expect(body.content).toContain("OUR ANALYSIS GUIDE");
+
+         const house = (await get("/skills/house-rules")).body;
+         expect(house.content).toBe(text("SKILL.md"));
+         expect(house.content).not.toContain("get_skill");
+         expect(house.files.map((f: { path: string }) => f.path)).toEqual([
+            "SKILL.md",
+            "assets/blob.bin",
+            "reference/margin.md",
+            "scripts/check.py",
+         ]);
       });
 
-      it("points a package skill's references at get_skill, not at a prompt", async () => {
-         const { body } = await get("/skills/house-rules");
-         expect(body.content).toContain("get_skill");
-         expect(body.content).not.toContain("prompt");
-      });
-
-      it("serves a reference entry whose name has a slash, literal or encoded", async () => {
-         for (const name of ["house-rules/margin", "house-rules%2Fmargin"]) {
-            const { status, body } = await get(`/skills/${name}`);
+      it("serves any file of a skill by its path, verbatim, literal or encoded", async () => {
+         for (const sub of [
+            "reference/margin.md",
+            "reference%2Fmargin.md",
+            "./reference/margin.md",
+         ]) {
+            const { status, body } = await get(`/skills/house-rules/${sub}`);
             expect(status).toBe(200);
-            expect(body.name).toBe("house-rules/margin");
-            expect(body.content).toContain("net of refunds");
+            expect(body).toMatchObject({
+               name: "house-rules",
+               path: "reference/margin.md",
+               origin: "package",
+               content: text("reference/margin.md"),
+            });
+            expect(body.frontmatter).toBeUndefined();
+            expect(body.files).toBeUndefined();
          }
+         const script = await get("/skills/house-rules/scripts/check.py");
+         expect(script.status).toBe(200);
+         expect(script.body.content).toBe(text("scripts/check.py"));
       });
 
-      it("serves a bundled skill the package does not shadow", async () => {
+      it("answers a binary file with its size and a message, never its bytes", async () => {
+         const { status, body } = await get(
+            "/skills/house-rules/assets/blob.bin",
+         );
+         expect(status).toBe(200);
+         expect(body).toMatchObject({
+            name: "house-rules",
+            path: "assets/blob.bin",
+            size: 4,
+            origin: "package",
+         });
+         expect(body.content).toBeUndefined();
+         expect(body.message).toContain("binary");
+      });
+
+      it("serves a bundled skill the package does not shadow, its Markdown by path and a file it does not carry as a message", async () => {
          const { status, body } = await get("/skills/malloy-getting-started");
          expect(status).toBe(200);
          expect(body.origin).toBe("bundled");
+         const withScript = BUNDLED_CATALOG.find((s) =>
+            Object.keys(s.files).some((f) => !(f in s.bodies)),
+         )!;
+         const script = Object.keys(withScript.files).find(
+            (f) => !(f in withScript.bodies),
+         )!;
+         const file = await get(`/skills/${withScript.name}/${script}`);
+         expect(file.status).toBe(200);
+         expect(file.body.content).toBeUndefined();
+         expect(file.body.size).toBe(withScript.files[script]!.size);
+         expect(file.body.message).toContain("@malloy-publisher/skills");
       });
 
-      it("answers 404 for a name nothing defines, a missing reference, and an unknown package", async () => {
+      it("answers 404 for a name nothing defines, a path the skill lacks, the old <skill>/<stem> name, and an unknown package", async () => {
          expect((await get("/skills/nope")).status).toBe(404);
-         expect((await get("/skills/house-rules/nope")).status).toBe(404);
+         const missing = await get("/skills/house-rules/nope.md");
+         expect(missing.status).toBe(404);
+         expect(missing.body.message).toContain(
+            "Its files: SKILL.md, assets/blob.bin, reference/margin.md, scripts/check.py.",
+         );
+         expect((await get("/skills/house-rules/margin")).status).toBe(404);
          const res = await fetch(
             `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/missing/skills`,
          );

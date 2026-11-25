@@ -6,9 +6,15 @@ import { z } from "zod/v3";
 import type { PackageLookup } from "../../service/environment_ports";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
-import { type SkillEntry } from "../../service/skills/build_skills_bundle";
+import { MAX_RESULT_CHARS } from "../query_envelope";
+import { type BundledSkill } from "../../service/skills/build_skills_bundle";
 import {
+   namedSkillFiles,
    resolveSkills,
+   SKILL_MD,
+   skillFileList,
+   skillFilePath,
+   skillFileView,
    type ResolvedSkill,
 } from "../../service/skills/package_skills";
 import { jsonResource } from "../tool_response";
@@ -16,23 +22,27 @@ import { parseEnvironmentName, parsePackageName } from "../../service/identity";
 
 const GET_SKILL_DESCRIPTION = `Fetch a task guide, or list the guides available. Guides are concise procedural instructions for working with Malloy and this server: query patterns, chart and rendering tags, analysis pitfalls, how to build or review a model.
 
-A package can ship guides of its OWN, describing how to use that package specifically: which source answers which question, what the business terms mean here, which conventions apply. Pass \`scopes\` to see them. A package guide whose name matches a built-in one REPLACES it for that package, so the package's version is what you get back; \`origin\` on every entry says which you are reading.
+A guide is a directory: a SKILL.md plus files it names by path relative to its root (\`references/joins.md\`, \`scripts/check.py\`). A package can ship guides of its OWN, about that package (which source answers which question, its terms, its conventions). Pass \`scopes\` to see them. A package guide named like a built-in one REPLACES it for that package; \`origin\` ("package" or "bundled") says which you are reading.
 
 ## Call modes
-- No arguments: list the built-in guides (name plus a one-line description).
-- \`scopes\`: list the guides in force for that package, built-in and package alike.
-- \`skill_name\`: fetch that guide's full Markdown. Combine with \`scopes\` to get the package's version when it has one.
+- No arguments: list the built-in guides.
+- \`scopes\`: list the guides in force for that package.
+- \`skill_name\`: that guide's SKILL.md verbatim, with \`frontmatter\` and \`files\`. Add \`scopes\` for a package's version.
+- \`skill_name\` and \`path\`: one other file of the guide, verbatim.
 
 ## Parameters
 - skill_name (optional): a name from \`availableSkills\`. Omit to list.
+- path (optional): a path from \`files\`. Defaults to SKILL.md.
 - scopes (optional): exactly one {environment, package}, from list_packages. Omit for the built-in set only.
 
 ## Response
-- skill: the requested guide ({name, content, origin}), or null when listing or when skill_name did not match.
-- availableSkills: always present; every guide in scope with its description and origin.
-- message: only when skill_name did not match; says so and points at availableSkills.
+- skill: {name, path, content, origin}. SKILL.md also has \`frontmatter\` (its YAML as an object, parsed as YAML 1.2) and \`files\` ([{path, size}]; for a package guide, exactly what this server serves).
+- A binary file, or one too large for a tool result, comes back as {name, path, size, origin} and a message. A SKILL.md reply always fits and keeps the body over the file list: if the list does not fit, \`files\` is cut short and the message counts the files not listed (read any by \`path\`).
+- A built-in guide serves its Markdown only; for any other file the message says to install \`@malloy-publisher/skills\`.
+- availableSkills: on a listing, and with a message when skill_name did not match.
+- message: when skill_name or path did not match (an unknown path names the guide's files), or why a file has no content.
 
-\`origin\` is "package" for a guide the package ships (including one replacing a built-in) and "bundled" for a built-in. Reading a guide is not the same as having it available: fetch the one that covers what you are about to do before you do it.`;
+Reading a guide is not the same as having it available: fetch the one that covers what you are about to do before you do it.`;
 
 const getSkillShape = {
    skill_name: z
@@ -42,6 +52,13 @@ const getSkillShape = {
       .nullish()
       .describe(
          "Name of the guide to fetch, as returned in availableSkills. Omit to list.",
+      ),
+   path: z
+      .string()
+      .max(512)
+      .nullish()
+      .describe(
+         "File to read, relative to the guide's root (for example `references/joins.md` or `scripts/check.py`). Defaults to `SKILL.md`, which also returns the guide's `frontmatter` and `files`. Ignored when skill_name is omitted.",
       ),
    scopes: z
       .array(
@@ -68,10 +85,116 @@ function summarize(skills: ResolvedSkill[]) {
    }));
 }
 
+/** Characters of the JSON-RPC message the host receives for this answer, with a client-chosen id of up to 64 characters. */
+function wireChars(uri: string, payload: unknown): number {
+   return JSON.stringify({
+      jsonrpc: "2.0",
+      id: "i".repeat(62),
+      result: jsonResource(uri, payload),
+   }).length;
+}
+
+function oversizeMessage(relative: string, wire: number): string {
+   const smaller =
+      relative === SKILL_MD ? "one of the other files" : "a smaller file";
+   return `'${relative}' would be ${wire} characters as a tool result, over the limit of ${MAX_RESULT_CHARS}, so get_skill cannot return it. Read ${smaller} listed in \`files\`.`;
+}
+
+/** The most files that fit: all `hi` if that does, else the largest n below it (a cut list carries a longer message, so the full count is checked on its own), or undefined when not even 0 fit. */
+function largest(fits: (n: number) => boolean, hi: number): number | undefined {
+   if (fits(hi)) return hi;
+   if (hi === 0 || !fits(0)) return undefined;
+   let lo = 0;
+   let top = hi - 1;
+   while (lo < top) {
+      const mid = Math.ceil((lo + top) / 2);
+      if (fits(mid)) lo = mid;
+      else top = mid - 1;
+   }
+   return lo;
+}
+
+/**
+ * The fullest SKILL.md answer within the tool-result limit: the whole read, else
+ * the body with as many file entries as fit, else the entries alone with the
+ * body withheld, else without the frontmatter too. The body outranks the list
+ * because the list can be read from the skill's own files one by one, and the
+ * body cannot.
+ */
+function guideAnswer(skill: ResolvedSkill, text: string, uri: string) {
+   const entries = skillFileList(skill);
+   const answer = (
+      content: boolean,
+      frontmatter: boolean,
+      listed: number,
+      wire: number,
+   ) => {
+      const unlisted = entries.length - listed;
+      const message = [
+         content ? "" : oversizeMessage(SKILL_MD, wire),
+         frontmatter ? "" : "Its frontmatter was too large to return.",
+         unlisted > 0
+            ? `${unlisted} of ${entries.length} files are not listed to keep this reply within the host's tool-result limit. Read any file of the skill by calling get_skill again with its \`path\` (and the \`scopes\` you used).`
+            : "",
+      ]
+         .filter(Boolean)
+         .join(" ");
+      return {
+         skill: skillFileView(
+            skill,
+            SKILL_MD,
+            content ? text : undefined,
+            entries.slice(0, listed),
+            frontmatter,
+         ),
+         ...(message ? { message } : {}),
+      };
+   };
+   const full = answer(true, true, entries.length, 0);
+   const wire = wireChars(uri, full);
+   if (wire <= MAX_RESULT_CHARS) return full;
+   for (const [content, frontmatter] of [
+      [true, true],
+      [false, true],
+      [false, false],
+   ] as const) {
+      const listed = largest(
+         (n) =>
+            wireChars(uri, answer(content, frontmatter, n, wire)) <=
+            MAX_RESULT_CHARS,
+         entries.length,
+      );
+      if (listed !== undefined) {
+         return answer(content, frontmatter, listed, wire);
+      }
+   }
+   return answer(false, false, 0, wire);
+}
+
+/** One file of a skill as the tool answers it; `relative` is a path the skill lists. */
+function fileAnswer(skill: ResolvedSkill, relative: string, uri: string) {
+   const read = skill.read(relative);
+   if ("message" in read) {
+      return {
+         skill: skillFileView(skill, relative, undefined),
+         message: read.message,
+      };
+   }
+   if (relative === SKILL_MD) return guideAnswer(skill, read.text, uri);
+   const full = { skill: skillFileView(skill, relative, read.text) };
+   const wire = wireChars(uri, full);
+   return wire <= MAX_RESULT_CHARS
+      ? full
+      : {
+           skill: skillFileView(skill, relative, undefined),
+           message: oversizeMessage(relative, wire),
+        };
+}
+
 /**
  * Registers the get_skill MCP tool: serves the bundled guides, and the guides a
  * package ships under `skills/`, with the package's copy shadowing a bundled
- * one of the same name.
+ * one of the same name. A guide is read file by file, by path.
  *
  * A tool rather than more prompts: prompts are registered once at start, while
  * packages load and reload at runtime, and a tool takes the package as an
@@ -83,7 +206,7 @@ function summarize(skills: ResolvedSkill[]) {
 export function registerGetSkillTool(
    mcpServer: McpServer,
    environmentStore: PackageLookup,
-   bundledSkills: SkillEntry[],
+   bundledSkills: BundledSkill[],
 ): void {
    registerGuardedTool(mcpServer, {
       name: "get_skill",
@@ -106,6 +229,7 @@ export function registerGetSkillTool(
       },
       logFields: (params) => ({
          skillName: params.skill_name,
+         path: params.path,
          environmentName: params.scopes?.[0]?.environment,
          packageName: params.scopes?.[0]?.package,
       }),
@@ -124,16 +248,14 @@ export function registerGetSkillTool(
             resolved = resolveSkills(bundledSkills, pkg.listSkills());
          }
 
-         const availableSkills = summarize(resolved);
          if (params.skill_name === undefined || params.skill_name === null) {
-            return jsonResource(uri, { skill: null, availableSkills });
+            return jsonResource(uri, { availableSkills: summarize(resolved) });
          }
 
-         const match = resolved.find((s) => s.name === params.skill_name);
-         if (!match) {
+         const skill = resolved.find((s) => s.name === params.skill_name);
+         if (!skill) {
             return jsonResource(uri, {
-               skill: null,
-               availableSkills,
+               availableSkills: summarize(resolved),
                message: `No guide named ${JSON.stringify(params.skill_name)}${
                   scope
                      ? ` for package ${scope.environment}/${scope.package}`
@@ -142,18 +264,21 @@ export function registerGetSkillTool(
                   scope
                      ? "."
                      : ", or pass scopes to include a package's own guides."
+               }${
+                  params.skill_name.includes("/")
+                     ? " A file inside a guide is read with `skill_name` plus `path`."
+                     : ""
                }`,
             });
          }
 
-         return jsonResource(uri, {
-            skill: {
-               name: match.name,
-               content: match.body,
-               origin: match.origin,
-            },
-            availableSkills,
-         });
+         const relative = skillFilePath(params.path);
+         if (!Object.hasOwn(skill.catalog.files, relative)) {
+            return jsonResource(uri, {
+               message: `'${relative}' is not a file of skill '${skill.name}'. Its files: ${namedSkillFiles(skill)}. Call get_skill again with one of these as \`path\`.`,
+            });
+         }
+         return jsonResource(uri, fileAnswer(skill, relative, uri));
       },
    });
 }
