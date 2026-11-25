@@ -10,16 +10,22 @@
  * value list in a doc ("one of DTC, B2B, Amazon") seeds its dimension even
  * without a tag.
  *
- * Governance. Values are data, so only sources with no gate are read, and
- * they are read once at load through the ordinary query path with no givens,
- * so a source the query path would refuse contributes nothing. A gated
- * source's values are never stored here and never embedded; they are
+ * Governance. Values are data, and every read goes through the ordinary
+ * query path and every gate, so a source the query path would refuse
+ * contributes nothing. An ungated source is read with no givens, or the
+ * listed givens its definition names. A gated source is read only when its
+ * gate splits rows by a key (CatalogSource.partitionKey), once per key that
+ * `retrieval.dimensionValues.givens` lists, and each value is stored with
+ * its key: a search returns it only to a caller whose givens name that key
+ * and whom the source's own `#(authorize)` admits. Any other gated source is
  * reachable only through the query-time lookup with the caller's givens
- * (../search/values.ts). The values read from ungated sources leave the
- * server only under `egress.preset: "full"`: then the judge sees them, the
- * `values` question wording shows them to the LLM, and
- * `retrieval.fcj.valueEmbeddings` (on by default) embeds them. Under
- * `default` they are matched by spelling alone and sent nowhere.
+ * (../search/values.ts). Tagging a dimension `#(index)` is the author's
+ * consent for its values to be searched, so the stored values go to
+ * whatever provider the operator configured: the judge sees those that
+ * matched, `retrieval.fcj.valueEmbeddings` (on by default) embeds them, and
+ * the `values` question wording shows the LLM those stored under no key.
+ * With no provider configured they are matched by spelling alone and sent
+ * nowhere.
  *
  * Two ways to match, each giving the find stage its own ranked list:
  *
@@ -38,9 +44,12 @@
  * store that value, the same idea as rare-word weighting in keyword search.
  */
 
+import type { GivenValue } from "@malloydata/malloy";
+import { createHash } from "crypto";
 import { QueryTimeoutError, ServiceUnavailableError } from "../../errors";
 import { logger } from "../../logger";
 import type { PackageLookup } from "../../service/environment_ports";
+import { parseEnvironmentName } from "../../service/identity";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import {
    editDistance,
@@ -53,7 +62,7 @@ import {
    usableValue,
    type ValueQueryDeps,
 } from "../search/values";
-import type { Catalog, CatalogNode } from "../model/catalog";
+import type { Catalog, CatalogNode, PartitionKey } from "../model/catalog";
 import type { DocParts } from "./doc_parts";
 import { dot } from "./vectors";
 
@@ -66,11 +75,122 @@ interface IndexedValue {
    /** Node key of the dimension. */
    dimension: string;
    origin: "data" | "doc";
+   /**
+    * For a source whose gate splits its rows (CatalogSource.partitionKey):
+    * the key the value was read under, from {@link partitionKeyText}. A
+    * search returns it only to a caller whose givens name that key.
+    */
+   key?: string;
+}
+
+/**
+ * Which stored values a search may return: by dimension, and, for a value
+ * stored under a key, by that key.
+ */
+export type ValueAllow = (dimension: string, key?: string) => boolean;
+
+/**
+ * One part of a partition key as text, so the database's value and the
+ * caller's given compare equal. A one-element list is its element. Only a
+ * `number` given is read as a number, so `362023`, `362023.0` and
+ * `"362023"` are one key, and an integer past 2^53 keeps every digit. Any
+ * other given keeps its text: for a string given `'001'` and `'1'` are
+ * different rows, so they are different keys.
+ */
+export function partitionKeyPart(
+   raw: unknown,
+   type: string,
+): string | undefined {
+   const v = Array.isArray(raw) && raw.length === 1 ? raw[0] : raw;
+   if (v === null || v === undefined || Array.isArray(v)) return undefined;
+   if (v instanceof Date) {
+      const iso = v.toISOString();
+      return iso.endsWith("T00:00:00.000Z") ? iso.slice(0, 10) : iso;
+   }
+   if (type !== "number") return String(v);
+   if (typeof v === "bigint") return v.toString();
+   const text = String(v).trim();
+   if (/^[+-]?\d+$/.test(text)) return BigInt(text).toString();
+   const n = Number(text);
+   return text !== "" && Number.isFinite(n) ? String(n) : text;
+}
+
+/**
+ * The key the caller's givens name for each dimension's source, by dimension
+ * node key: undefined when the source is not split by a key, or when the
+ * caller did not send every given its key needs (then none of its stored
+ * values match).
+ */
+export function callerKeyOf(
+   catalog: Catalog,
+   givens: Readonly<Record<string, unknown>> | undefined,
+   /** Sources whose `#(authorize)` refused the caller (lockedSourcesFor). */
+   refused: ReadonlySet<string> = new Set(),
+): (dimension: string) => string | undefined {
+   return (dimension) => {
+      const node = catalog.nodes.get(dimension);
+      if (!node || refused.has(node.sourceKey)) return undefined;
+      const key = catalog.sources.get(node.sourceKey)?.partitionKey;
+      if (!key) return undefined;
+      return partitionKeyText(
+         key.map((p) => givens?.[p.given]),
+         key.map((p) => p.type),
+      );
+   };
+}
+
+/**
+ * The keys of the sources whose `#(authorize)` lock refuses a caller with
+ * `givens`, decided by the same check a query runs (Model.assertAuthorized).
+ * A lock that cannot be decided refuses, as it does for a query.
+ */
+export async function lockedSourcesFor(
+   catalog: Catalog,
+   givens: Readonly<Record<string, unknown>> | undefined,
+   modelOf: (modelPath: string) =>
+      | {
+           assertAuthorized(
+              source: string,
+              givens: Record<string, GivenValue>,
+           ): Promise<void>;
+        }
+      | undefined,
+): Promise<Set<string>> {
+   const refused = new Set<string>();
+   for (const source of catalog.sources.values()) {
+      if (!source.hasAuthorize || !source.partitionKey) continue;
+      const model = modelOf(source.modelPaths[0]);
+      try {
+         if (!model) throw new Error("no model");
+         await model.assertAuthorized(
+            source.name,
+            (givens ?? {}) as Record<string, GivenValue>,
+         );
+      } catch {
+         refused.add(source.key);
+      }
+   }
+   return refused;
+}
+
+/** A whole partition key as text, or undefined when a part is missing. */
+export function partitionKeyText(
+   parts: readonly unknown[],
+   types: readonly string[],
+): string | undefined {
+   const out: string[] = [];
+   for (const [i, raw] of parts.entries()) {
+      const part = partitionKeyPart(raw, types[i] ?? "string");
+      if (part === undefined) return undefined;
+      out.push(part);
+   }
+   return out.join("\u0000");
 }
 
 /** What one data read returns, most frequent first. */
 interface CountedValues {
-   values: Array<{ value: string; count: number }>;
+   /** `key` is set when the read named partition columns. */
+   values: Array<{ value: string; count: number; key?: string }>;
    /** More distinct values exist than were read. */
    truncated: boolean;
 }
@@ -86,6 +206,10 @@ export interface IndexValueRequest {
    limit: number;
    timeoutMs: number;
    givens?: Record<string, unknown>;
+   /** Return each value's key; see DistinctValueQuery.partitionColumns. */
+   partitionColumns?: readonly string[];
+   /** The declared type of each partition column's given, for its key text. */
+   partitionTypes?: readonly string[];
 }
 
 export type IndexValueFetcher = (
@@ -105,9 +229,29 @@ const VALUE_READ_TIMEOUT_MS = 60_000;
 const VALUE_READ_BUDGET_MS = 300_000;
 
 /**
+ * How long a stored read is reused while its source's definition is
+ * unchanged (`dimension_value_reads`). A model edit, a reload and a restart
+ * all reuse it; past this age the data is read again, so values still follow
+ * the warehouse.
+ */
+const VALUE_REUSE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** One stored read: one dimension under one combination of givens. */
+interface StoredRead {
+   dimension: string;
+   /** The combination as JSON, "" with none (givensId). */
+   givens: string;
+   readKey: string;
+   truncated: boolean;
+   values: CountedValues["values"];
+   readAt: number;
+}
+
+/**
  * The read: the `limit` most frequent non-null values of one dimension,
- * through the normal query path, with no givens (an ungated source needs
- * none) and no `#(authorize)` bypass.
+ * through the normal query path and every gate, with the configured givens
+ * (none for an ungated source). For a source whose gate splits its rows,
+ * each row also carries its key; see DistinctValueQuery.partitionColumns.
  */
 export const indexValueFetcherFor =
    (deps: ValueQueryDeps): IndexValueFetcher =>
@@ -121,11 +265,22 @@ export const indexValueFetcherFor =
          },
          deps,
       );
-      const values: Array<{ value: string; count: number }> = [];
+      const values: CountedValues["values"] = [];
+      const keyCount = request.partitionColumns?.length ?? 0;
       for (const row of rows.slice(0, request.limit)) {
          const text = usableValue(row.v);
          if (text === undefined) continue;
-         values.push({ value: text, count: Number(row.n) || 0 });
+         if (keyCount === 0) {
+            values.push({ value: text, count: Number(row.n) || 0 });
+            continue;
+         }
+         // A row whose key is null belongs to no caller: drop it.
+         const key = partitionKeyText(
+            Array.from({ length: keyCount }, (_, i) => row[`k${i}`]),
+            request.partitionTypes ?? [],
+         );
+         if (key === undefined) continue;
+         values.push({ value: text, count: Number(row.n) || 0, key });
       }
       return { values, truncated: rows.length > request.limit };
    };
@@ -266,7 +421,7 @@ export class ValueIndex {
    searchByMeaning(
       phrase: string,
       vec: Float32Array,
-      allow: (dimension: string) => boolean = () => true,
+      allow: ValueAllow = () => true,
    ): ValueMatch[] {
       const m = this.meaning;
       if (!m || vec.length !== m.dims) return [];
@@ -283,7 +438,7 @@ export class ValueIndex {
             m.matrix.subarray(t * m.dims, (t + 1) * m.dims),
          );
          if (score < floor) continue;
-         if (!m.rows[t].some((i) => allow(this.values[i].dimension))) continue;
+         if (!m.rows[t].some((i) => allowed(allow, this.values[i]))) continue;
          hits.push({ t, score });
       }
       if (hits.length === 0) return [];
@@ -294,7 +449,7 @@ export class ValueIndex {
          if (h.score < cut) break;
          for (const i of m.rows[h.t]) {
             const v = this.values[i];
-            if (!allow(v.dimension)) continue;
+            if (!allowed(allow, v)) continue;
             out.push({
                value: v.value,
                dimension: v.dimension,
@@ -314,12 +469,12 @@ export class ValueIndex {
     * "Denver International (DIA)" in another; which of the two the question
     * means is the connect stage's call, not this one's.
     */
-   search(phrase: string, allow: (dimension: string) => boolean = () => true) {
+   search(phrase: string, allow: ValueAllow = () => true) {
       const norm = normalizeText(phrase);
       if (!norm) return [];
       const exact = (this.byNormalized.get(norm) ?? [])
          .map((i) => this.values[i])
-         .filter((v) => allow(v.dimension))
+         .filter((v) => allowed(allow, v))
          .map<ValueMatch>((v) => ({
             value: v.value,
             dimension: v.dimension,
@@ -327,8 +482,8 @@ export class ValueIndex {
             how: "exact",
          }));
       const done = new Set(exact.map((m) => m.dimension));
-      const open = (dimension: string) =>
-         allow(dimension) && !done.has(dimension);
+      const open = (v: IndexedValue) =>
+         allowed(allow, v) && !done.has(v.dimension);
 
       // Words: every value sharing a word with the phrase, or holding a word
       // within two edits of one of its words.
@@ -352,7 +507,7 @@ export class ValueIndex {
       const byWords: ValueMatch[] = [];
       for (const i of candidates) {
          const v = this.values[i];
-         if (!open(v.dimension)) continue;
+         if (!open(v)) continue;
          const score = scoreValue(phrase, v.value);
          if (score >= VALUE_MATCH_FLOOR) {
             byWords.push({
@@ -378,7 +533,7 @@ export class ValueIndex {
       const byGrams: ValueMatch[] = [];
       for (const [i, shared] of overlap) {
          const v = this.values[i];
-         if (!open(v.dimension)) continue;
+         if (!open(v)) continue;
          const theirs = trigrams(v.normalized).size;
          const jaccard = shared / (grams.size + theirs - shared);
          if (jaccard >= NGRAM_MIN_OVERLAP) {
@@ -399,7 +554,7 @@ export class ValueIndex {
     */
    nominate(
       phrases: readonly string[],
-      allow: (dimension: string) => boolean = () => true,
+      allow: ValueAllow = () => true,
    ): ValueNomination[] {
       return this.nominateFrom(phrases.map((p) => this.search(p, allow)));
    }
@@ -410,7 +565,7 @@ export class ValueIndex {
     */
    nominateByMeaning(
       phrases: ReadonlyArray<{ phrase: string; vec: Float32Array }>,
-      allow: (dimension: string) => boolean = () => true,
+      allow: ValueAllow = () => true,
    ): ValueNomination[] {
       return this.nominateFrom(
          phrases.map((p) => this.searchByMeaning(p.phrase, p.vec, allow)),
@@ -450,6 +605,54 @@ export class ValueIndex {
                  : 0),
       );
    }
+}
+
+/**
+ * Every combination of the configured givens' values, one per read; `[undefined]`
+ * (one read with no givens) when none are configured.
+ */
+export function combinationsOf(
+   givens: Readonly<Record<string, readonly unknown[]>> | undefined,
+): Array<Record<string, unknown> | undefined> {
+   const entries = Object.entries(givens ?? {});
+   if (entries.length === 0) return [undefined];
+   let out: Array<Record<string, unknown>> = [{}];
+   for (const [name, list] of entries) {
+      out = out.flatMap((c) => list.map((v) => ({ ...c, [name]: v })));
+   }
+   return out;
+}
+
+/**
+ * One read per combination, merged. A value read under a key keeps it (two
+ * combinations name two keys); a value with none is one value, its counts
+ * summed. Truncated when any read was.
+ */
+async function readEachCombination(
+   combinations: ReadonlyArray<Record<string, unknown> | undefined>,
+   read: (
+      givens: Record<string, unknown> | undefined,
+      i: number,
+   ) => Promise<CountedValues>,
+): Promise<CountedValues> {
+   if (combinations.length === 1) return read(combinations[0], 0);
+   const merged = new Map<string, CountedValues["values"][number]>();
+   let truncated = false;
+   for (const [i, givens] of combinations.entries()) {
+      const got = await read(givens, i);
+      truncated ||= got.truncated;
+      for (const v of got.values) {
+         const id = `${v.key ?? ""}\u0000${v.value}`;
+         const seen = merged.get(id);
+         if (seen) seen.count += v.count;
+         else merged.set(id, { ...v });
+      }
+   }
+   return { values: [...merged.values()], truncated };
+}
+
+function allowed(allow: ValueAllow, v: IndexedValue): boolean {
+   return v.key === undefined ? allow(v.dimension) : allow(v.dimension, v.key);
 }
 
 function push(map: Map<string, number[]>, key: string, i: number) {
@@ -511,14 +714,33 @@ function isTransientReadFailure(error: unknown): boolean {
    );
 }
 
-/** Whether a node's values may be read into the shared index. */
+/**
+ * Whether a node's values may be read into the shared index. A source split
+ * by a key is read only for the keys `givens` lists: reading every key at
+ * once scans the whole table, and on a production model the cap then keeps
+ * a sliver of the (value, key) pairs, so most keys would get nothing.
+ */
 function readable(
    catalog: Catalog,
    node: CatalogNode,
+   givens: Readonly<Record<string, readonly unknown[]>> | undefined,
+   packageName: string | undefined,
 ): { ok: true } | { ok: false; reason: string } {
    if (!node.indexed) return { ok: false, reason: "not tagged #(index)" };
    if (node.joinPath) return { ok: false, reason: "a field of a join" };
-   if (catalog.sources.get(node.sourceKey)?.gated) {
+   const owner = catalog.sources.get(node.sourceKey);
+   const unlisted = owner?.partitionKey
+      ?.map((p) => p.given)
+      .filter((g) => !givens?.[g]);
+   if (unlisted?.length) {
+      return {
+         ok: false,
+         reason:
+            `its source's rows are split by ${unlisted.join(", ")}, and reading every value of it scans the whole table. ` +
+            `Fix: list the ones to index in publisher.config.json, "retrieval": { "dimensionValues": { "givens": { "${packageName ?? "<package>"}": { "${unlisted[0]}": [...] } } } }`,
+      };
+   }
+   if (owner?.gated && !owner.partitionKey) {
       return {
          ok: false,
          reason:
@@ -545,30 +767,41 @@ export async function buildValueIndex(args: {
       /** The read; indexValueFetcherFor in production, a stand-in in a spec. */
       fetcher: IndexValueFetcher;
    };
+   /**
+    * Where the index is written, and where each read is stored and found
+    * again: a read stored by an earlier build is reused while its source's
+    * definition, the dimension, the cap and the givens are unchanged and it
+    * is younger than {@link VALUE_REUSE_MAX_AGE_MS}.
+    */
    db?: DuckDBConnection;
    shouldStop?: () => boolean;
-   /**
-    * The index this build replaces, after some of its reads failed. A
-    * dimension it read is not read again: its values are reused. Only the
-    * dimensions in its report's `failed` are read.
-    */
-   previous?: { index: ValueIndex; report: ValueBuildReport };
    /** Test seam for {@link VALUE_READ_BUDGET_MS}. */
    readBudgetMs?: number;
+   /** Test seam for {@link VALUE_REUSE_MAX_AGE_MS}. */
+   reuseMaxAgeMs?: number;
+   /**
+    * `retrieval.dimensionValues.givens` for this package: every dimension is
+    * read once per combination of these values, with that combination as
+    * its givens.
+    */
+   givens?: Readonly<Record<string, readonly unknown[]>>;
 }): Promise<{ index: ValueIndex; report: ValueBuildReport }> {
    const started = Date.now();
    const budgetMs = args.readBudgetMs ?? VALUE_READ_BUDGET_MS;
-   const reread = args.previous
-      ? new Set(args.previous.report.failed.map((f) => f.dimension))
-      : undefined;
-   const previousValues = new Map<string, IndexedValue[]>();
-   for (const v of args.previous?.index.values ?? []) {
-      if (v.origin !== "data") continue;
-      const list = previousValues.get(v.dimension) ?? [];
-      list.push(v);
-      previousValues.set(v.dimension, list);
-   }
+   const maxAgeMs = args.reuseMaxAgeMs ?? VALUE_REUSE_MAX_AGE_MS;
+   const stored =
+      args.db && args.read
+         ? await loadReads(
+              args.db,
+              args.read.environmentName,
+              args.read.packageName,
+           )
+         : new Map<string, StoredRead>();
+   /** Every read this build holds, reused or new: what is stored at the end. */
+   const reads: StoredRead[] = [];
+   const connections = args.read ? await connectionsDigest(args.read) : "";
    const values: IndexedValue[] = [];
+   const givenCombinations = combinationsOf(args.givens);
    const report: ValueBuildReport = {
       dimensionsRead: 0,
       dimensionsReused: 0,
@@ -594,7 +827,12 @@ export async function buildValueIndex(args: {
          report.valuesFromDocs += 1;
       }
       if (!node.indexed) continue;
-      const check = readable(args.catalog, node);
+      const check = readable(
+         args.catalog,
+         node,
+         args.givens,
+         args.read?.packageName,
+      );
       if (!check.ok) {
          report.skipped.push({ dimension: node.key, reason: check.reason });
          continue;
@@ -607,19 +845,34 @@ export async function buildValueIndex(args: {
          continue;
       }
       if (args.shouldStop?.()) break;
-      if (reread && !reread.has(node.key)) {
-         // Read by the build this one replaces: keep what it got.
-         const kept = previousValues.get(node.key) ?? [];
-         values.push(...kept);
-         report.dimensionsReused += 1;
-         report.valuesFromData += kept.length;
-         const cut = args.previous!.report.cut.find(
-            (c) => c.dimension === node.key,
-         );
-         if (cut) report.cut.push(cut);
-         continue;
-      }
-      if (Date.now() - started >= budgetMs) {
+      const source = args.catalog.sources.get(node.sourceKey);
+      const partitionKey = source?.partitionKey;
+      const readKey = source?.readDefinition
+         ? readKeyOf(
+              source.readDefinition,
+              node,
+              args.cap,
+              partitionKey,
+              connections,
+           )
+         : undefined;
+      const combinations = combinationsFor(
+         givenCombinations,
+         source?.readGivens,
+         partitionKey,
+      );
+      const givenIds = combinations.map(givensId);
+      const now = Date.now();
+      const kept = givenIds.map((id) => {
+         const old = stored.get(`${node.key}\u0000${id}`);
+         return readKey &&
+            old?.readKey === readKey &&
+            now - old.readAt < maxAgeMs
+            ? old
+            : undefined;
+      });
+      const allKept = kept.every((k) => k !== undefined);
+      if (!allKept && Date.now() - started >= budgetMs) {
          report.failed.push({
             dimension: node.key,
             reason: `not read: this build's value reads used their ${Math.round(budgetMs / 1000)} s budget`,
@@ -628,20 +881,63 @@ export async function buildValueIndex(args: {
       }
       const fetcher = args.read.fetcher;
       try {
-         const got = await fetcher({
-            environmentStore: args.read.environmentStore,
-            environmentName: args.read.environmentName,
-            packageName: args.read.packageName,
-            modelPath: node.modelPaths[0],
-            source: node.source,
-            dimension: node.name,
-            limit: args.cap,
-            timeoutMs: VALUE_READ_TIMEOUT_MS,
-         });
-         report.dimensionsRead += 1;
+         const got = await readEachCombination(
+            combinations,
+            async (givens, i) => {
+               const old = kept[i];
+               if (old) {
+                  reads.push(old);
+                  return { values: old.values, truncated: old.truncated };
+               }
+               // Checked before every read, so a dimension with many
+               // combinations cannot run far past the budget. The reads
+               // already made are stored, so the retry reads only the rest.
+               if (Date.now() - started >= budgetMs) throw new BudgetSpent();
+               const fresh = await fetcher({
+                  environmentStore: args.read!.environmentStore,
+                  environmentName: args.read!.environmentName,
+                  packageName: args.read!.packageName,
+                  modelPath: node.modelPaths[0],
+                  source: node.source,
+                  dimension: node.name,
+                  limit: args.cap,
+                  timeoutMs: VALUE_READ_TIMEOUT_MS,
+                  ...(givens ? { givens } : {}),
+                  ...(partitionKey
+                     ? {
+                          partitionColumns: partitionKey.map((p) => p.column),
+                          partitionTypes: partitionKey.map((p) => p.type),
+                       }
+                     : {}),
+               });
+               if (readKey) {
+                  reads.push({
+                     dimension: node.key,
+                     givens: givenIds[i],
+                     readKey,
+                     truncated: fresh.truncated,
+                     values: fresh.values,
+                     readAt: Date.now(),
+                  });
+               }
+               return fresh;
+            },
+         );
+         if (allKept) report.dimensionsReused += 1;
+         else report.dimensionsRead += 1;
          if (got.truncated)
             report.cut.push({ dimension: node.key, kept: got.values.length });
-         for (const { value, count } of got.values) {
+         for (const { value, count, key: readKeyText } of got.values) {
+            // A keyed source's value always carries a key, so a search checks
+            // the caller's key and lock before returning it. One whose only
+            // gate is a lock has one key, empty. A keyed value without one
+            // belongs to no caller.
+            const key = !partitionKey
+               ? undefined
+               : partitionKey.length === 0
+                 ? ""
+                 : readKeyText;
+            if (partitionKey && key === undefined) continue;
             const normalized = normalizeText(value);
             if (!normalized) continue;
             values.push({
@@ -650,13 +946,27 @@ export async function buildValueIndex(args: {
                count,
                dimension: node.key,
                origin: "data",
+               ...(key !== undefined ? { key } : {}),
             });
             report.valuesFromData += 1;
          }
       } catch (error) {
+         if (error instanceof BudgetSpent) {
+            report.failed.push({
+               dimension: node.key,
+               reason: `not read in full: this build's value reads used their ${Math.round(budgetMs / 1000)} s budget`,
+            });
+            continue;
+         }
+         const message = error instanceof Error ? error.message : String(error);
+         const unset = /Given '([^']+)' has no value and no default/.exec(
+            message,
+         );
          (isTransientReadFailure(error) ? report.failed : report.skipped).push({
             dimension: node.key,
-            reason: `the read failed: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`,
+            reason: unset
+               ? `the read needs the given ${unset[1]}, which has no default. Fix: name its values for this package in publisher.config.json, "retrieval": { "dimensionValues": { "givens": { "${args.read.packageName}": { "${unset[1]}": [...] } } } }`
+               : `the read failed: ${message.slice(0, 200)}`,
          });
       }
    }
@@ -667,6 +977,12 @@ export async function buildValueIndex(args: {
             args.read.environmentName,
             args.read.packageName,
             values,
+         );
+         await saveReads(
+            args.db,
+            args.read.environmentName,
+            args.read.packageName,
+            reads,
          );
       } catch (error) {
          logger.warn(
@@ -679,6 +995,197 @@ export async function buildValueIndex(args: {
    }
    report.ms = Date.now() - started;
    return { index: new ValueIndex(values), report };
+}
+
+/** A combination of givens as text that does not depend on key order. */
+function givensId(givens: Record<string, unknown> | undefined): string {
+   if (!givens) return "";
+   return JSON.stringify(
+      Object.keys(givens)
+         .sort()
+         .map((k) => [k, givens[k]]),
+   );
+}
+
+/** Thrown before a read once the build's read budget is spent. */
+class BudgetSpent extends Error {}
+
+/**
+ * The combinations one source is read with: each listed combination cut to
+ * the givens the source can depend on, duplicates dropped. A source that
+ * reads no given is read once, with none.
+ */
+function combinationsFor(
+   combinations: ReadonlyArray<Record<string, unknown> | undefined>,
+   readGivens: readonly string[] | undefined,
+   partitionKey: PartitionKey | undefined,
+): Array<Record<string, unknown> | undefined> {
+   // Unknown when the model has no compiled definition: read them all.
+   if (!readGivens) return [...combinations];
+   const needed = new Set([
+      ...readGivens,
+      ...(partitionKey ?? []).map((p) => p.given),
+   ]);
+   const out = new Map<string, Record<string, unknown> | undefined>();
+   for (const c of combinations) {
+      const kept = Object.entries(c ?? {}).filter(([k]) => needed.has(k));
+      const projected = kept.length ? Object.fromEntries(kept) : undefined;
+      const id = givensId(projected);
+      if (!out.has(id)) out.set(id, projected);
+   }
+   return [...out.values()];
+}
+
+/** Keys of a connection's config that hold a credential, not where it points. */
+const CREDENTIAL_KEY =
+   /pass|secret|token|private|credential|apikey|api_key|accesskey/i;
+
+/**
+ * A digest of where the environment's connections point: every setting but
+ * the credentials, so a rotated token keeps the stored reads while a
+ * connection pointed at another database, account or role reads again.
+ */
+async function connectionsDigest(read: {
+   environmentStore: PackageLookup;
+   environmentName: string;
+}): Promise<string> {
+   try {
+      const environment = await read.environmentStore.getEnvironment(
+         parseEnvironmentName(read.environmentName),
+      );
+      const text = JSON.stringify(
+         environment.listApiConnections(),
+         (key, value: unknown) =>
+            key && CREDENTIAL_KEY.test(key) ? undefined : value,
+      );
+      return createHash("sha256").update(text, "utf8").digest("hex");
+   } catch (error) {
+      // Unknown: a key no stored read matches, so every read runs again.
+      logger.warn(
+         "[get_context fcj] The connections could not be read for the value read key; every dimension is read",
+         { error: error instanceof Error ? error.message : String(error) },
+      );
+      return `unknown-${Date.now()}`;
+   }
+}
+
+/** What a stored read of `node` must match to be reused. */
+function readKeyOf(
+   readDefinition: string,
+   node: CatalogNode,
+   cap: number,
+   partitionKey: PartitionKey | undefined,
+   connections: string,
+): string {
+   return createHash("sha256")
+      .update(
+         JSON.stringify([
+            readDefinition,
+            node.modelPaths[0],
+            node.source,
+            node.name,
+            cap,
+            (partitionKey ?? []).map((p) => [p.column, p.type]),
+            connections,
+         ]),
+         "utf8",
+      )
+      .digest("hex");
+}
+
+/** The package's stored reads, by dimension and givens. Empty when unreadable. */
+async function loadReads(
+   db: DuckDBConnection,
+   environmentName: string,
+   packageName: string,
+): Promise<Map<string, StoredRead>> {
+   const out = new Map<string, StoredRead>();
+   let rows: Array<Record<string, unknown>>;
+   try {
+      rows = await db.all<Record<string, unknown>>(
+         `SELECT dimension_key, givens, read_key, truncated, read_values, epoch_ms(read_at) AS read_ms
+          FROM dimension_value_reads WHERE environment_name = ? AND package_name = ?`,
+         [environmentName, packageName],
+      );
+   } catch (error) {
+      logger.warn(
+         "[get_context fcj] Stored value reads could not be loaded; every dimension is read",
+         { error: error instanceof Error ? error.message : String(error) },
+      );
+      return out;
+   }
+   for (const row of rows) {
+      let parsed: unknown;
+      try {
+         parsed = JSON.parse(String(row.read_values));
+      } catch {
+         continue;
+      }
+      if (!Array.isArray(parsed)) continue;
+      const values: CountedValues["values"] = [];
+      for (const v of parsed) {
+         if (!Array.isArray(v) || typeof v[0] !== "string") continue;
+         values.push({
+            value: v[0],
+            count: Number(v[1]) || 0,
+            ...(typeof v[2] === "string" ? { key: v[2] } : {}),
+         });
+      }
+      const read: StoredRead = {
+         dimension: String(row.dimension_key),
+         givens: String(row.givens),
+         readKey: String(row.read_key),
+         truncated: Boolean(row.truncated),
+         values,
+         readAt: Number(row.read_ms),
+      };
+      out.set(`${read.dimension}\u0000${read.givens}`, read);
+   }
+   return out;
+}
+
+/** Replace the package's stored reads with this build's. */
+async function saveReads(
+   db: DuckDBConnection,
+   environmentName: string,
+   packageName: string,
+   reads: readonly StoredRead[],
+): Promise<void> {
+   await db.run(
+      `DELETE FROM dimension_value_reads WHERE environment_name = ? AND package_name = ?`,
+      [environmentName, packageName],
+   );
+   const seen = new Set<string>();
+   const rows: unknown[][] = [];
+   for (const r of reads) {
+      const id = `${r.dimension}\u0000${r.givens}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      rows.push([
+         environmentName,
+         packageName,
+         r.dimension,
+         r.givens,
+         r.readKey,
+         r.truncated,
+         JSON.stringify(
+            r.values.map((v) =>
+               v.key === undefined
+                  ? [v.value, v.count]
+                  : [v.value, v.count, v.key],
+            ),
+         ),
+         new Date(r.readAt).toISOString(),
+      ]);
+   }
+   for (let i = 0; i < rows.length; i += 50) {
+      const batch = rows.slice(i, i + 50);
+      await db.run(
+         `INSERT INTO dimension_value_reads (environment_name, package_name, dimension_key, givens, read_key, truncated, read_values, read_at)
+          VALUES ${batch.map(() => "(?, ?, ?, ?, ?, ?, ?, ?)").join(", ")}`,
+         batch.flat(),
+      );
+   }
 }
 
 async function saveValues(
