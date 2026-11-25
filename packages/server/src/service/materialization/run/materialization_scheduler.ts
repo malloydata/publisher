@@ -16,7 +16,10 @@ import { errorCodeOf } from "../../../error_code";
 import type { MaterializationSchedulerConfig } from "../../../config";
 import { MaterializationConflictError } from "../../../errors";
 import { logger } from "../../../logger";
-import { recordScheduledFire } from "../../../materialization_metrics";
+import {
+   recordScheduledFire,
+   recordSchedulerTickSkipped,
+} from "../../../materialization_metrics";
 import { CronEvaluator } from "./cron_evaluator";
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
 import type { MaterializationService } from "./materialization_service";
@@ -70,6 +73,12 @@ export class MaterializationScheduler {
    private readonly state = new Map<string, ScheduleState>();
    /** Versions whose unreadable publisher.json was already warned about. */
    private readonly unreadableVersions = new Set<string>();
+   /** A sweep is running: a tick that finds one is skipped (see tick). */
+   private sweeping = false;
+   /** When the running sweep began, for the skip warning. */
+   private sweepStartedAtMs = 0;
+   /** Ticks skipped behind the running sweep so far. */
+   private skippedBehindSweep = 0;
 
    constructor(
       private readonly host: Pick<MaterializationHost, "getLoadedEnvironments">,
@@ -106,8 +115,55 @@ export class MaterializationScheduler {
     * One sweep: arm newly-seen schedules, fire due ones (capped per tick), and
     * prune state for packages no longer loaded/scheduled. Exposed so tests can
     * drive it synchronously. Never throws — per-package errors are isolated.
+    *
+    * Skipped, and counted, while the sweep before it is still running. A
+    * sweep can outlast the interval (a version due to fire compiles first,
+    * and up to `maxFiresPerTick` fire in turn), and a schedule's next fire
+    * time moves only once its fire returns, so a second sweep beside it
+    * would fire the same schedule again.
     */
    public async tick(nowMs: number = Date.now()): Promise<void> {
+      if (this.sweeping) {
+         recordSchedulerTickSkipped();
+         this.skippedBehindSweep += 1;
+         const runningForMs = Date.now() - this.sweepStartedAtMs;
+         if (this.skippedBehindSweep === 1) {
+            // Never cleared by a timeout: the old sweep may still be firing,
+            // and a second beside it would fire the same schedule twice. A
+            // sweep that never settles therefore stops every later tick, so
+            // the first skip of a run says so at warn.
+            logger.warn(
+               "MaterializationScheduler: skipped a tick; the sweep before it is still running. If this repeats, that sweep is stuck and no schedule fires until it settles or the server restarts",
+               { runningForMs },
+            );
+         } else {
+            logger.debug(
+               "MaterializationScheduler: skipped a tick; the one before is still running",
+               { runningForMs },
+            );
+         }
+         return;
+      }
+      this.sweeping = true;
+      this.sweepStartedAtMs = Date.now();
+      try {
+         await this.sweep(nowMs);
+      } finally {
+         this.sweeping = false;
+         if (this.skippedBehindSweep > 0) {
+            logger.warn(
+               "MaterializationScheduler: the sweep that caused skipped ticks has finished; ticks run again",
+               {
+                  skippedTicks: this.skippedBehindSweep,
+                  ranForMs: Date.now() - this.sweepStartedAtMs,
+               },
+            );
+            this.skippedBehindSweep = 0;
+         }
+      }
+   }
+
+   private async sweep(nowMs: number): Promise<void> {
       const seen = new Set<string>();
       const sweep = { fired: 0 };
 

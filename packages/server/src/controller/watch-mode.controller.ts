@@ -35,6 +35,46 @@ const ASSET_EXTS = new Set([
 ]);
 const MODEL_EXTS = new Set([".malloy", ".malloynb", ".md"]);
 
+/**
+ * The package a watched file belongs to: the first folder under the
+ * environment directory. None for a file at the environment root or outside
+ * it, and none under a folder whose name starts with `.`. Those are the
+ * server's own (`.staging`, `.retired`, `.legacy`, `.install-records`,
+ * `.storage-destinations`), which an install writes and removes as it runs,
+ * or an editor's or VCS's: never a package, since no package name starts
+ * with `.` (assertSafePackageName).
+ */
+export function watchedPackageOf(
+   watchPath: string,
+   filePath: string,
+): string | null {
+   const segments = path.relative(watchPath, filePath).split(path.sep);
+   const [first] = segments;
+   if (segments.length < 2 || !first || first.startsWith(".")) return null;
+   return first;
+}
+
+/**
+ * Whether the watcher skips a path: anything at the environment root whose
+ * name starts with `.`, so nothing under the server's own folders is watched
+ * (see watchedPackageOf), and any file that is neither a model nor an asset.
+ */
+export function ignoredByWatch(
+   watchPath: string,
+   filePath: string,
+   stats?: { isFile(): boolean },
+): boolean {
+   if (
+      path.relative(watchPath, path.dirname(filePath)) === "" &&
+      path.basename(filePath).startsWith(".")
+   ) {
+      return true;
+   }
+   if (!stats?.isFile()) return false;
+   const ext = path.extname(filePath).toLowerCase();
+   return !MODEL_EXTS.has(ext) && !ASSET_EXTS.has(ext);
+}
+
 export class WatchModeController {
    watchingPath: string | null;
    watchingEnvironmentName: string | null;
@@ -104,11 +144,8 @@ export class WatchModeController {
       this.watchingEnvironmentName = watchName;
       this.watchingPath = watchPath;
       this.watcher = chokidar.watch(this.watchingPath, {
-         ignored: (filePath, stats) => {
-            if (!stats?.isFile()) return false;
-            const ext = path.extname(filePath).toLowerCase();
-            return !MODEL_EXTS.has(ext) && !ASSET_EXTS.has(ext);
-         },
+         ignored: (filePath, stats) =>
+            ignoredByWatch(watchPath, filePath, stats),
          ignoreInitial: true,
       });
       // Recompile just the changed file's package. An env-level reload would
@@ -139,15 +176,9 @@ export class WatchModeController {
       const onEvent =
          (kind: "add" | "change" | "unlink") => async (filePath: string) => {
             logger.info(`Watch ${kind}: ${filePath}; environment=${watchName}`);
-            // Packages are env/<pkg>/...; files at the env root are ignored.
-            const rel = path.relative(this.watchingPath ?? "", filePath);
-            const segments = rel.split(path.sep);
-            const pkgName =
-               segments.length > 1 &&
-               segments[0] &&
-               !segments[0].startsWith("..")
-                  ? segments[0]
-                  : null;
+            // Packages are env/<pkg>/...; a file at the env root, or under
+            // one of the server's own dot-directories, is no package's.
+            const pkgName = watchedPackageOf(watchPath, filePath);
             if (!pkgName) return;
 
             // Assets need only the live-reload fanout. A model edit signals

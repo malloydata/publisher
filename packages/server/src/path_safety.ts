@@ -13,8 +13,10 @@ import { BadRequestError } from "./errors";
  * escape. Both are shapes CodeQL's `js/path-injection` recognises.
  */
 
-// One segment. No leading `.`, so internal dirs (`.staging`, `.retired`) and
-// editor/VCS dirs cannot be addressed by name.
+// One segment. No leading `.`, so the server's own dirs under an environment
+// (`.staging`, `.retired`, `.legacy`, `.install-records`,
+// `.storage-destinations`) and editor/VCS dirs cannot be addressed by name,
+// and the watch-mode watcher can skip them as no package's.
 const SAFE_NAME_RE = /^(?!\.\.?$)(?!\.)[A-Za-z0-9._-]{1,255}$/;
 
 const MAX_MODEL_PATH_LEN = 1024;

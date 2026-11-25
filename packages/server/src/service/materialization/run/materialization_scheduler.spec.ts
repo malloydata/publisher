@@ -202,6 +202,38 @@ describe("MaterializationScheduler", () => {
       expect(service.calls.length).toBe(1);
    });
 
+   it("skips a tick while the one before it is still firing, so a due schedule fires once", async () => {
+      // The first tick's fire is held, as a slow compile holds it: the
+      // schedule stays due until that fire returns.
+      const service = fakeService({ lastFireAt: new Date(t0 - 10 * 60_000) });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let firing!: () => void;
+      const fired = new Promise<void>((resolve) => (firing = resolve));
+      const create = service.createMaterialization.bind(service);
+      service.createMaterialization = (async (
+         ...args: Parameters<typeof create>
+      ) => {
+         firing();
+         await gate;
+         return create(...args);
+      }) as typeof create;
+      const sched = makeScheduler(
+         [fakePackage("p", { schedule: "* * * * *" })],
+         service,
+      );
+      const first = sched.tick(t0);
+      await fired;
+      // The interval comes round while the first is still firing.
+      const second = sched.tick(t0 + 1);
+      release();
+      await Promise.all([first, second]);
+      expect(service.calls.length).toBe(1);
+      // The next tick runs as usual.
+      await sched.tick(t0 + 2);
+      expect(service.calls.length).toBe(1);
+   });
+
    it("does not catch up a never-fired schedule on first arm", async () => {
       // No prior SCHEDULER fire on record -> anchor is now -> strictly future,
       // so a freshly-scheduled (never-fired) package does not fire on arm.
@@ -486,5 +518,50 @@ describe("MaterializationScheduler: published versions", () => {
       expect(service.calls.map((c) => [c.pkg, c.opts.versionId])).toEqual([
          ["p", undefined],
       ]);
+   });
+
+   it("warns once when ticks are skipped behind a sweep that has not settled, and once more when it settles", async () => {
+      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      try {
+         const service = fakeService();
+         let release: () => void = () => {};
+         const held = new Promise<void>((resolve) => (release = resolve));
+         const fire = service.createMaterialization;
+         service.createMaterialization = ((
+            ...args: Parameters<typeof fire>
+         ) => {
+            fire(...args);
+            return held.then(() => ({}));
+         }) as typeof fire;
+         const sched = makeScheduler(
+            [fakePackage("p", { schedule: "* * * * *" })],
+            service,
+         );
+         const skipWarns = () =>
+            (warn.mock.calls as unknown as unknown[][]).filter(([message]) =>
+               String(message).includes("skipped a tick"),
+            );
+         const settledWarns = () =>
+            (warn.mock.calls as unknown as unknown[][]).filter(([message]) =>
+               String(message).includes("has finished"),
+            );
+         await sched.tick(t0);
+         const stuck = sched.tick(dueLater);
+         await sched.tick(dueLater + 1);
+         await sched.tick(dueLater + 2);
+         expect(service.calls).toHaveLength(1);
+         expect(skipWarns()).toHaveLength(1);
+         expect(skipWarns()[0][1]).toHaveProperty("runningForMs");
+         expect(settledWarns()).toHaveLength(0);
+
+         release();
+         await stuck;
+         expect(settledWarns()).toHaveLength(1);
+         expect(settledWarns()[0][1]).toMatchObject({ skippedTicks: 2 });
+         await sched.tick(dueLater + 3);
+         expect(settledWarns()).toHaveLength(1);
+      } finally {
+         warn.mockRestore();
+      }
    });
 });
