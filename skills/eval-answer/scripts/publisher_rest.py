@@ -232,6 +232,11 @@ def materialization_state(base: str, environment: str, package: str,
             ssb = st.get("storageServeBindings")
             if isinstance(ssb, list):
                 out["storageServeBindings"] = len(ssb)
+            verdicts = serve_verdicts(st.get("serveVerdicts"))
+            if verdicts:
+                out["serveVerdicts"] = verdicts
+                out["notServing"] = sorted(v["source"] for v in verdicts
+                                           if v["verdict"] != "serves")
     except Exception:                                   # noqa: BLE001
         pass
     try:
@@ -251,10 +256,35 @@ def materialization_state(base: str, environment: str, package: str,
                 out["builds"] = builds
     except Exception:                                   # noqa: BLE001
         pass
-    if "persistSources" in out:
+    if "serveVerdicts" in out:
+        # Per table, and it covers v2 tables, which the package-wide binding
+        # status does not.
+        out["bound"] = not out["notServing"]
+    elif "persistSources" in out:
         out["bound"] = (out.get("manifestBindingStatus") == "bound"
                         or bool(out.get("storageServeBindings")))
     return out
+
+
+def serve_verdicts(raw: Any) -> list[dict[str, Any]]:
+    """Whether each table the package declares serves queries, from `…/status`
+    (or a dry-run publish): one row per table with `source`, `origin`
+    (`persist`, `materialize`, `rollup`, `view`, `query`), `tier`, `verdict`
+    (`serves`, `awaiting_build`, `live`), `reason` when it is live, and the
+    server's `message`. A `serves` table can still be passed over for one
+    query; only the path report says which table answered a query."""
+    out = []
+    for v in raw if isinstance(raw, list) else []:
+        if not isinstance(v, dict):
+            continue
+        row = {"source": v.get("sourceName"), "origin": v.get("origin"),
+               "tier": v.get("tier"), "verdict": v.get("verdict"),
+               "message": v.get("message")}
+        for k in ("reason", "notServedIn", "fixes"):
+            if v.get(k):
+                row[k] = v[k]
+        out.append(row)
+    return sorted(out, key=lambda r: str(r["source"]))
 
 
 def build_costs(manifest: Any) -> list[dict[str, Any]]:
@@ -270,7 +300,13 @@ def build_costs(manifest: Any) -> list[dict[str, Any]]:
     entries = (manifest or {}).get("entries") if isinstance(manifest, dict) else None
     out = []
     for e in (entries or {}).values() if isinstance(entries, dict) else []:
-        if not isinstance(e, dict) or e.get("error"):
+        if not isinstance(e, dict):
+            continue
+        if e.get("error"):
+            # A table that failed to build costs a build and serves nothing:
+            # kept, so a failed candidate is never read as free.
+            out.append({"source": e.get("sourceName"), "origin": e.get("origin") or "persist",
+                        "error": str(e.get("error"))[:300]})
             continue
         out.append({"source": e.get("sourceName"),
                     "origin": e.get("origin") or "persist",

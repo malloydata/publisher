@@ -90,6 +90,20 @@ class HotSource(unittest.TestCase):
                          ("HOT-SOURCE", ["a"], 400.0))
         self.assertIn("82%", i["diagnosis"])
 
+    def test_time_a_rollup_already_answers_does_not_count_and_skip_reasons_come_along(self):
+        # `orders` is the bigger source, but a rollup answers its frequent query;
+        # what is left live on it is small, so `items` is the one to work on.
+        rows = [{**row("a", "orders", 10, False), "count": 40, "served_by": {"kind": "rollup"}},
+                {**row("b", "orders", 5, False), "served_by": {"kind": "live"}},
+                {**row("c", "items", 300, False), "served_by": {"kind": "live"},
+                 "skipped": [{"reason": "GRAIN_TOO_COARSE"}, {"reason": "GRAIN_TOO_COARSE"}],
+                 "shape": {"sourceName": "items", "groupedBy": ["brand"]}}]
+        got = self.findings(rows)
+        self.assertEqual(list(got), ["perf-hot-items"])
+        ev = got["perf-hot-items"]["evidence"]
+        self.assertEqual(ev["skipReasons"], {"GRAIN_TOO_COARSE": 1})
+        self.assertEqual(ev["shapes"]["c"]["groupedBy"], ["brand"])
+
     def test_a_source_that_is_already_persisted_is_not(self):
         rows = [{**row("a", "orders", 10, False), "count": 40}, row("b", "items", 90, False)]
         self.assertEqual(self.findings(rows, persisted=["orders"]), {})

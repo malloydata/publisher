@@ -96,22 +96,39 @@ def findings(run: pathlib.Path) -> list[dict[str, Any]]:
             "issue", issue_id=f"perf-hot-{src}", qids=qids,
             primary_code="HOT-SOURCE", component="performance", owner="model",
             diagnosis=(f"`{src}` takes {share:.0%} of the replay's time ({ms:g} ms across "
-                       f"{len(qids)} quer{'y' if len(qids) == 1 else 'ies'}, each counted as "
-                       f"often as it ran) and is not persisted. No query is over a budget. "
-                       f"Candidate: persist or preaggregate it, if the time saved is worth a "
-                       f"build on every refresh."),
+                       f"{len(qids)} quer{'y' if len(qids) == 1 else 'ies'} answered live, each "
+                       f"counted as often as it ran). No query is over a budget. Candidate: a "
+                       f"`#(rollup)` at the grain these queries group and filter by, or "
+                       f"`#(materialize)` on the source, if the time saved is worth a build on "
+                       f"every refresh. The evidence's skip reasons say why existing tables did "
+                       f"not answer."),
             severity="low", confidence="medium", diagnosedBy=BY,
-            evidence={"source": src, "weightedMs": ms, "share": round(share, 3)}))
+            evidence={"source": src, "weightedMs": ms, "share": round(share, 3),
+                      "skipReasons": skip_reasons(rows, set(qids)),
+                      "shapes": {r["qid"]: r["shape"] for r in rows
+                                 if r["qid"] in qids and r.get("shape")}}))
     return out
 
 
 HOT_SHARE = 0.3
 
 
+def skip_reasons(rows: list[dict[str, Any]], qids: set[str]) -> dict[str, int]:
+    """How often each path-report skip reason (GRAIN_TOO_COARSE, MISSING_FIELD,
+    ...) kept an existing table from answering these queries, by query count."""
+    out: dict[str, int] = {}
+    for r in rows:
+        if r["qid"] in qids:
+            for reason in {s.get("reason") for s in r.get("skipped") or [] if s.get("reason")}:
+                out[reason] = out.get(reason, 0) + 1
+    return dict(sorted(out.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
 def hot_source(rows: list[dict[str, Any]], persisted: set[str], named: set[Any]
                ) -> tuple[str, float, float, list[str]] | None:
-    """The unpersisted source with the largest share of the replay's time, when
-    that share is at least HOT_SHARE and no other finding names it.
+    """The unpersisted source with the largest share of the replay's time still
+    answered live, when that share is at least HOT_SHARE and no other finding
+    names it. The share is of the whole replay's time.
 
     Time is each query's median by how often it ran (`count`, 1 unless the
     replay came from a workload file). A query whose source could not be read
@@ -122,6 +139,11 @@ def hot_source(rows: list[dict[str, Any]], persisted: set[str], named: set[Any]
     for r in rows:
         src = r.get("source")
         ms = (r.get("median_ms") or 0) * (r.get("count") or 1)
+        # Time a table already saves cannot be saved again: a query the path
+        # report says a table answered does not count toward its source. One
+        # with no path report (an older server) counts, as before.
+        if (r.get("served_by") or {}).get("kind") not in (None, "live"):
+            continue
         if src:
             cost[src] = cost.get(src, 0.0) + ms
             qids.setdefault(src, []).append(r["qid"])

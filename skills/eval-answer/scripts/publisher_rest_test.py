@@ -276,11 +276,23 @@ class BuildCosts(unittest.TestCase):
                     "buildDurationMs": None, "queryCostBytes": 2048},
             "bad@m": {"sourceName": "bad", "error": "boom"}}}
         got = publisher_rest.build_costs(manifest)
-        self.assertEqual([b["source"] for b in got], ["a", "b"])       # sorted, failures out
+        self.assertEqual([b["source"] for b in got], ["a", "b", "bad"])  # sorted
+        # A failed table is kept with its error: it cost a build and serves nothing.
+        self.assertEqual(got[2], {"source": "bad", "origin": "persist", "error": "boom"})
         self.assertEqual((got[0]["origin"], got[0]["buildMs"], got[0]["scannedBytes"]),
                          ("preaggregate", None, 2048))                  # null stays null
         self.assertEqual((got[1]["origin"], got[1]["rows"], got[1]["storage"]),
                          ("persist", 10, "lake"))
+
+    def test_serve_verdicts_are_one_row_per_table_and_say_which_do_not_serve(self):
+        raw = [{"sourceName": "r2", "origin": "rollup", "tier": "database", "verdict": "serves",
+                "message": "The rollup of `oi` at (category, region) serves from its table."},
+               {"sourceName": "r1", "origin": "materialize", "tier": "database", "verdict": "live",
+                "reason": "served_copy", "message": "m", "fixes": ["f"]}, "junk"]
+        got = publisher_rest.serve_verdicts(raw)
+        self.assertEqual([v["source"] for v in got], ["r1", "r2"])
+        self.assertEqual((got[0]["reason"], got[0]["fixes"]), ("served_copy", ["f"]))
+        self.assertNotIn("reason", got[1])
 
     def test_no_manifest_is_no_builds(self):
         for m in (None, {}, {"entries": None}, "x"):
