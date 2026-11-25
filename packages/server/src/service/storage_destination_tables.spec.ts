@@ -246,7 +246,7 @@ describe("storage destination attach under destinations-only (DuckLake)", () => 
       } finally {
          await session.close();
       }
-      expect(secretStatements[0]).toContain("SCOPE 's3://bucket/prefix/'");
+      expect(secretStatements[0]).toContain("SCOPE ['s3://bucket/prefix/']");
    });
 
    it("reads a chain-auth catalog past the policy gate", async () => {
@@ -298,7 +298,7 @@ describe("storage destination attach under destinations-only (DuckLake)", () => 
             secretStatements.length = 0;
             await attach(lakeAt(url));
             expect(secretStatements).toHaveLength(1);
-            expect(secretStatements[0]).toContain(`SCOPE '${scope}'`);
+            expect(secretStatements[0]).toContain(`SCOPE ['${scope}']`);
          }
       });
 
@@ -306,7 +306,7 @@ describe("storage destination attach under destinations-only (DuckLake)", () => 
          await attach(lakeAt("gs://bucket/prefix", true));
          expect(secretStatements).toHaveLength(1);
          expect(secretStatements[0]).toContain("TYPE gcs");
-         expect(secretStatements[0]).toContain("SCOPE 'gs://bucket/prefix/'");
+         expect(secretStatements[0]).toContain("SCOPE ['gs://bucket/prefix/']");
       });
 
       it("turns off the env-seeded global S3 config before anything reaches S3", async () => {
@@ -397,7 +397,7 @@ describe("storage destination attach under destinations-only (DuckLake)", () => 
             delete proto.setStorageSecretRenewer;
          }
          expect(secretStatements).toHaveLength(1);
-         expect(secretStatements[0]).toContain("SCOPE 's3://bucket/prefix/'");
+         expect(secretStatements[0]).toContain("SCOPE ['s3://bucket/prefix/']");
       });
    });
 });

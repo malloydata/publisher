@@ -353,7 +353,6 @@ describe("build failure logs never carry the driver's message", () => {
          ],
          seedEntries: {},
          signal: new AbortController().signal,
-         strict: false,
       })) as { failures: Record<string, { reason: string }> };
 
       expect(result.failures["a1aaaaaaaaaaaaaa"].reason).toContain(ROW_VALUE);

@@ -30,11 +30,11 @@ import type {
    KeyCheckRecord,
    TierAdapter,
 } from "./tier";
-import { runRollupKeyCheck } from "./inline_uniqueness";
+import { runKeyCheck } from "./inline_uniqueness";
 import { buildDatabaseDelta } from "./incremental_delta_strategy";
 import {
    advanceLedgerAfterSeed,
-   carriedLedgerExtensions,
+   ledgerExtensionKeys,
    ledgerFields,
    refreshFields,
    resetLedger,
@@ -113,9 +113,8 @@ export class DatabaseTier
    checkKey(
       site: DatabaseSite,
       check: KeyCheck,
-      table: string,
    ): Promise<KeyCheckRecord | undefined> {
-      return runRollupKeyCheck(check, site.connection, table);
+      return runKeyCheck(check, site.connection);
    }
 
    /** The staging CTAS and the swap onto the served name. */
@@ -267,7 +266,12 @@ export class DatabaseTier
          ...ledgerFields(
             incrementalRefresh?.lineage,
             seededThrough,
-            carriedLedgerExtensions(incrementalRefresh, instruction.reseed),
+            ledgerExtensionKeys(
+               incrementalRefresh,
+               instruction.reseed,
+               incrementalRefresh?.context.materializationId,
+               incrementalRefresh ? "full" : undefined,
+            ),
          ),
          // Reported for any incremental source that rebuilt, so a full rebuild
          // is distinguishable from a delta.

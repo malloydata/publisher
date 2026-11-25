@@ -329,7 +329,18 @@ export const getDuckDBTempDirectory = (): string | undefined =>
  * sensible zero.
  */
 const DUCKDB_BYTE_SIZE =
-   /^(?!0+(\.0+)?\s*[A-Za-z])\d+(\.\d+)?\s*(B|KB|KIB|MB|MIB|GB|GIB|TB|TIB)$/i;
+   /^(?!0+(\.0+)?\s*[A-Za-z])(?<amount>\d+(\.\d+)?)\s*(?<unit>B|KB|KIB|MB|MIB|GB|GIB|TB|TIB)$/i;
+
+/** A size {@link DUCKDB_BYTE_SIZE} accepts, in bytes: `GB` is 1000^3 and `GiB` 1024^3, as DuckDB reads them. */
+export function duckDBByteSize(size: string): number {
+   const groups = DUCKDB_BYTE_SIZE.exec(size.trim())?.groups;
+   if (!groups) throw new Error(`Not a DuckDB size: "${size}"`);
+   const unit = groups.unit.toUpperCase();
+   return (
+      Number(groups.amount) *
+      (unit.includes("I") ? 1024 : 1000) ** "BKMGT".indexOf(unit[0])
+   );
+}
 
 /**
  * Validate the DuckDB resource settings at boot, and create the spill
@@ -345,6 +356,18 @@ export function assertDuckDBResourceConfig(): void {
          `Invalid value for PUBLISHER_DUCKDB_MEMORY_LIMIT: expected a size like ` +
             `"1GB" or "512MB" (or "off" to disable), got "${memoryLimit}"`,
       );
+   }
+   for (const [key, variable] of [
+      ["admin.memoryLimit", "PUBLISHER_ADMIN_MEMORY_LIMIT"],
+      ["admin.maxTempDirectorySize", "PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE"],
+   ] as const) {
+      const size = settings.get(key);
+      if (!DUCKDB_BYTE_SIZE.test(size)) {
+         throw new Error(
+            `Invalid value for ${variable}: expected a size like "1.5GB" or ` +
+               `"6GiB", got "${size}"`,
+         );
+      }
    }
    const rowGroupSizeBytes = getDuckLakeRowGroupSizeBytes();
    if (
@@ -1302,10 +1325,9 @@ export function assembleRetrieval(file: unknown): {
       return { block: file, ignored };
    }
    const block = (file ? structuredClone(file) : {}) as Record<string, unknown>;
-   // Every leaf, the keys included: null is unset for each.
-   for (const leaf of REGISTRY.filter(
-      (entry) =>
-         entry.key.startsWith("retrieval.") && entry.kind !== "structured",
+   // Every leaf, the keys and file-only leaves included: null is unset for each.
+   for (const leaf of REGISTRY.filter((entry) =>
+      entry.key.startsWith("retrieval."),
    )) {
       const pathInBlock = leaf.key.split(".").slice(1);
       const parent = nodeAt(block, pathInBlock.slice(0, -1));

@@ -32,7 +32,7 @@ export const retrieval = [
       type: structured(),
       kind: "structured",
       description:
-         "Semantic retrieval: indexing limits, the LLM, the embedding provider and egress.",
+         "Semantic retrieval: indexing limits, the LLM, the embedding provider and value search.",
       aliases: { file: ["retrieval"] },
    }),
    setting({
@@ -140,10 +140,10 @@ export const retrieval = [
    setting({
       key: "retrieval.egress.preset",
       type: oneOf(EGRESS_PRESETS),
-      default: "default",
       description:
-         "What may be sent to the LLM: default (names, doc text, schema context) or full (also code and dimension values).",
-      notes: "`default` sends entity names, doc text (`#(doc)`, `#\"`, and the database's descriptions on a connection with `dbmeta` on) and schema context. `full` also sends code and dimension values. Access predicates (`#(access_filter)`, `#(authorize)`) never leave, whatever this says.",
+         "No longer read: #(index) alone decides whether a dimension's values reach the embedding provider and LLM. Setting it logs a startup warning.",
+      notes: "Retired. An earlier release sent `#(index)` values to the embedding provider and the LLM only under `full`. Now the `#(index)` tag decides, as it does on a hosted index. To keep values on the machine, leave `EMBEDDING_API_KEY` unset, set `retrieval.fcj.valueEmbeddings` to `false` in the package's `publisher.json`, or set `retrieval.dimensionValues.enabled` to `false`. Access predicates (`#(access_filter)`, `#(authorize)`) never leave.",
+      defaultText: "_ignored_",
       aliases: { file: ["retrieval.egress.preset"] },
    }),
    setting({
@@ -157,6 +157,16 @@ export const retrieval = [
          // The block's parser took a JSON boolean only.
          today: { file: "json-boolean" },
       },
+   }),
+   setting({
+      key: "retrieval.dimensionValues.givens",
+      type: structured(),
+      kind: "structured",
+      description:
+         "Local development: per package, the givens the value index reads with, so a source gated by `column = $GIVEN` is indexed for the listed values only.",
+      notes: 'An object of packages, each an object of givens, each one value or a list: `{ "<package>": { "REPORT_ID": [123, 456] } }`. Each `#(index)` dimension is read once per combination of the listed values (at most 50), through its gate. A source gated by `column = $GIVEN` is skipped unless its given is listed here. Never published with a package, and not a way to limit what hosted Credible indexes. See "Dimension value search" below.',
+      defaultText: "_unset_ (gated sources skipped)",
+      aliases: { file: ["retrieval.dimensionValues.givens"] },
    }),
    setting({
       key: "retrieval.embedding.apiKey",

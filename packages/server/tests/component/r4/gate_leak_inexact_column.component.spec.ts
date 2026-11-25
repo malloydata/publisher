@@ -319,16 +319,18 @@ describe("L2: a gate over a column stored inexactly is never read from the table
          entry.schema = (entry.schema as { name: string; type: string }[]).map(
             (c) => (c.name === "acct" ? { ...c, type: "DOUBLE" } : c),
          );
-         // And recorded in its contract, as that build would have, so the
-         // rebind holds the table to the type it holds.
+         // And its contract, as that build recorded the column it wrote, so
+         // the bind's contract check finds the table as it was built.
          const contract = entry.contract as
-            | { columns: { name: string; nativeType: string }[] }
+            | { columns?: { name: string; nativeType: string }[] }
             | undefined;
-         if (contract) {
+         if (contract?.columns) {
             entry.contract = {
                ...contract,
                columns: contract.columns.map((c) =>
-                  c.name === "acct" ? { ...c, nativeType: "DOUBLE" } : c,
+                  c.name === "acct"
+                     ? { ...c, nativeType: "DOUBLE", gateExact: false }
+                     : c,
                ),
             };
          }

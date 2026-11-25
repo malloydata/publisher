@@ -10,7 +10,12 @@ import path from "path";
 import { pathToFileURL } from "url";
 import { logger } from "../../../logger";
 import { ManifestEntry } from "../domain/types";
-import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
+import {
+   fetchManifestEntries,
+   isManifestNotFound,
+   ManifestUnusableError,
+   splitManifestEntries,
+} from "./manifest_loader";
 
 describe("fetchManifestEntries", () => {
    let dir: string;
@@ -181,9 +186,50 @@ describe("fetchManifestEntries", () => {
    });
 
    it("throws when the file does not exist", async () => {
-      await expect(
-         fetchManifestEntries(path.join(dir, "missing.json")),
-      ).rejects.toThrow();
+      const missing = await fetchManifestEntries(
+         path.join(dir, "missing.json"),
+      ).catch((error: unknown) => error);
+      expect(missing).toBeInstanceOf(ManifestUnusableError);
+      expect((missing as ManifestUnusableError).problem).toBe("not_found");
+   });
+
+   it("reads malformed JSON, a non-object, a non-object entries or a directory as invalid", async () => {
+      const bad = path.join(dir, "bad.json");
+      await fs.writeFile(bad, "{ not json", "utf8");
+      const refusals: unknown[] = [
+         await fetchManifestEntries(bad).catch((error: unknown) => error),
+         await fetchManifestEntries(dir).catch((error: unknown) => error),
+      ];
+      for (const contents of [
+         [],
+         "a string",
+         null,
+         { entries: "x" },
+         { entries: [] },
+      ]) {
+         const file = await writeManifest(contents);
+         refusals.push(
+            await fetchManifestEntries(file).catch((error: unknown) => error),
+         );
+      }
+      for (const refused of refusals) {
+         expect(refused).toBeInstanceOf(ManifestUnusableError);
+         expect((refused as ManifestUnusableError).problem).toBe("invalid");
+      }
+   });
+
+   it("reads an object store's 404 as not found, and a refusal as neither", () => {
+      // Classified on the error's shape, as each client throws it.
+      expect(isManifestNotFound({ code: 404 })).toBe(true);
+      expect(isManifestNotFound({ name: "NoSuchKey" })).toBe(true);
+      expect(isManifestNotFound({ name: "NoSuchBucket" })).toBe(true);
+      expect(isManifestNotFound({ $metadata: { httpStatusCode: 404 } })).toBe(
+         true,
+      );
+      expect(isManifestNotFound({ code: 403 })).toBe(false);
+      expect(isManifestNotFound({ name: "AccessDenied" })).toBe(false);
+      expect(isManifestNotFound({ code: "EACCES" })).toBe(false);
+      expect(isManifestNotFound(new Error("Timed out after 1ms"))).toBe(false);
    });
 
    it("rejects a malformed gs:// URI without a key", async () => {
@@ -268,11 +314,11 @@ describe("splitManifestEntries", () => {
       };
       const warn = spyOn(logger, "warn");
       try {
-         const quiet = splitManifestEntries(entries, "test", "store", {
+         const quiet = splitManifestEntries(entries, "test", {
             quiet: true,
          });
          expect(warn.mock.calls.length).toBe(0);
-         const loud = splitManifestEntries(entries, "test", "store");
+         const loud = splitManifestEntries(entries, "test");
          expect(warn.mock.calls.map((c) => String(c[0]))).toEqual([
             "Manifest entry records a failed source; skipping",
             "Manifest entry has no physicalTableName; skipping",
@@ -294,47 +340,76 @@ describe("splitManifestEntries: table names it cannot read safely", () => {
          ...(storage ? { storageDestinationName: storage } : {}),
       }) as never;
 
-   for (const from of ["host", "store"] as const) {
-      it(`refuses a backslash, quotes that do not parse, or an empty part, from the ${from}, on either tier`, () => {
-         const split = splitManifestEntries(
-            {
-               a: entry("t\\'; DROP TABLE x --"),
-               b: entry('"s.t'),
-               c: entry('s"x.t'),
-               d: entry("sch\\.t", "lake"),
-               e: entry("a..b"),
-               f: entry(".t"),
-               g: entry("s.", "lake"),
-            },
-            "test",
-            from,
-         );
-         expect(split.tableNameManifest).toEqual({});
-         expect(split.storageEntries).toEqual({});
-      });
+   it("refuses a backslash, quotes that do not parse, or an empty part, on either tier", () => {
+      const split = splitManifestEntries(
+         {
+            a: entry("t\\'; DROP TABLE x --"),
+            b: entry('"s.t'),
+            c: entry('s"x.t'),
+            d: entry("sch\\.t", "lake"),
+            e: entry("a..b"),
+            f: entry(".t"),
+            g: entry("s.", "lake"),
+         },
+         "test",
+      );
+      expect(split.tableNameManifest).toEqual({});
+      expect(split.storageEntries).toEqual({});
+   });
 
-      it(`keeps every name a writer sends, from the ${from}`, () => {
-         const split = splitManifestEntries(
-            {
-               a: entry("analytics.orders__g001__0a1b2c3d"),
-               b: entry("s.t"),
-               c: entry("proj-1.ds.t"),
-               d: entry("it's.t"),
-               // An author's own manifestLocation manifest, or a legacy one.
-               e: entry('"My Schema"."T x"'),
-               f: entry("`proj.ds.t`"),
-            },
-            "test",
-            from,
-         );
-         expect(Object.keys(split.tableNameManifest).sort()).toEqual([
-            "a",
-            "b",
-            "c",
-            "d",
-            "e",
-            "f",
-         ]);
-      });
-   }
+   it("keeps every name a writer sends", () => {
+      const split = splitManifestEntries(
+         {
+            a: entry("analytics.orders__g001__0a1b2c3d"),
+            b: entry("s.t"),
+            c: entry("proj-1.ds.t"),
+            d: entry("it's.t"),
+            // An author's own manifestLocation manifest, or a legacy one.
+            e: entry('"My Schema"."T x"'),
+            f: entry("`proj.ds.t`"),
+         },
+         "test",
+      );
+      expect(Object.keys(split.tableNameManifest).sort()).toEqual([
+         "a",
+         "b",
+         "c",
+         "d",
+         "e",
+         "f",
+      ]);
+   });
+});
+
+describe("splitManifestEntries: an incremental entry's ledger", () => {
+   it("keeps every bound entry's ledger, not only an extension's", () => {
+      // A carried incremental parent that is no extension itself: an
+      // extension over it records which build of its table it read from
+      // this ledger (incremental_upstream.ts), so dropping it costs a reseed.
+      const ledger = {
+         connectionName: "wh",
+         physicalTableName: "ev_t",
+         coveredThrough: "2024-06-01 00:00:00",
+         coveredThroughType: "timestamp",
+         watermark: "ts",
+         strategy: "merge",
+         sourceEntityId: "ev",
+         advancedBy: "run-1",
+         seededBy: "run-1",
+         advances: [],
+      };
+      const split = splitManifestEntries(
+         {
+            ev: {
+               sourceEntityId: "ev",
+               physicalTableName: "ev_t",
+               connectionName: "wh",
+               builtAt: "2024-06-01T00:00:10.000Z",
+               ledger,
+            } as unknown as ManifestEntry,
+         },
+         "test",
+      );
+      expect(split.tableNameManifest.ev?.ledger).toEqual(ledger as never);
+   });
 });

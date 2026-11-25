@@ -51,8 +51,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2n",
    "service/environment.ts -> service/materialization/run/manifest_loader":
       "2n",
-   "service/environment_store.ts -> service/materialization/run/inline_uniqueness":
-      "2n",
    "service/model.ts -> service/materialization/plan/build_plan": "2n",
    "service/model.ts -> service/materialization/plan/persisted_view": "2n",
    "service/model.ts -> service/materialization/plan/preaggregation_validation":
@@ -375,7 +373,10 @@ export const RATCHET_STORED_TYPE_PATTERNS = {
  * its port, a file move away from the shell) and the served copy's runtime.
  */
 export const RATCHET_SERVE_IO = {
-   "service/materialization/serve/gate_collation.ts": { count: 9, step: "2r" },
+   "service/materialization/serve/collation/catalog_io.ts": {
+      count: 1,
+      step: "2r",
+   },
    "service/materialization/serve/served_copy_config.ts": {
       count: 2,
       step: "2r",
@@ -393,7 +394,7 @@ export const RATCHET_ADMISSION_IMPORTS = {
  * domain/vocabulary.ts, per file: each derives from the vocabulary instead.
  */
 export const RATCHET_VOCABULARY_UNIONS = {
-   "materialization_metrics.ts": { count: 2, step: "2q" },
+   "materialization_metrics.ts": { count: 1, step: "2q" },
    "service/materialization/domain/gate_policy.ts": { count: 2, step: "2q" },
    "service/materialization/domain/table_plans.ts": { count: 3, step: "2q" },
    "service/materialization/plan/materialization_eligibility.ts": {
@@ -402,12 +403,11 @@ export const RATCHET_VOCABULARY_UNIONS = {
    },
    "service/materialization/plan/materialize_plan.ts": { count: 2, step: "2q" },
    "service/materialization/plan/refusal_key.ts": { count: 1, step: "2q" },
-   "service/materialization/run/build_upstreams.ts": { count: 2, step: "2q" },
+   "service/materialization/run/build_upstreams.ts": { count: 1, step: "2q" },
    "service/materialization/run/materialization_instructed_run.ts": {
       count: 1,
       step: "2q",
    },
-   "service/materialization/serve/gate_collation.ts": { count: 1, step: "2q" },
    "service/materialization/serve/leg.ts": { count: 1, step: "2q" },
    "service/materialization/serve/query_path.ts": { count: 3, step: "2q" },
    "service/materialization/serve/serve_verdict.ts": { count: 4, step: "2q" },

@@ -1423,7 +1423,17 @@ source: events is warehouse.sql("""
             storageDestinationName: LAKE,
             physicalTableName: TABLE,
          });
-      const ledgerOf = (coveredThrough: string, sourceEntityId: string) => ({
+      const ledgerOf = (
+         coveredThrough: string,
+         sourceEntityId: string,
+         // The run that last changed the table: a delta or a seed, never a
+         // run that applied nothing.
+         advancedBy: unknown = expect.any(String),
+      ) => ({
+         advancedBy,
+         // The table's history since its last full rebuild.
+         seededBy: expect.any(String),
+         advances: expect.any(Array),
          connectionName: "warehouse",
          physicalTableName: TABLE,
          storageDestinationName: LAKE,
@@ -1466,7 +1476,11 @@ source: events is warehouse.sql("""
             refresh: "full",
          });
          // The seed's boundary is its table's greatest watermark.
-         expect(entry.ledger).toEqual(ledgerOf("30", address));
+         expect(entry.ledger).toEqual(ledgerOf("30", address, seed.id));
+         expect(entry.ledger).toMatchObject({
+            seededBy: seed.id,
+            advances: [],
+         });
          expect(await ledgerRow()).toMatchObject({
             coveredThroughValue: "30",
             coveredThroughType: "number",
@@ -1518,7 +1532,7 @@ source: events is warehouse.sql("""
          });
          // A numeric watermark's range ends at the source's frontier,
          // exclusive: the boundary advances to it.
-         expect(entry.ledger).toEqual(ledgerOf("50", address));
+         expect(entry.ledger).toEqual(ledgerOf("50", address, m.id));
          expect(await ledgerRow()).toMatchObject({
             coveredThroughValue: "50",
             advancedByMaterializationId: m.id,
@@ -1528,14 +1542,17 @@ source: events is warehouse.sql("""
          // be probed in Postgres for a numeric to re-seed; there is none), the
          // shape and emptiness probes on the lake table, the frontier through
          // the passthrough, the delta's column types (a describe, which runs
-         // nothing), the delta as one script, then the late-row check below
-         // its range (the watermark alone, read through the passthrough).
+         // nothing), those types against the stored ones (a describe of the
+         // delta itself, which runs nothing either), the delta as one script,
+         // then the late-row check below its range (the watermark alone, read
+         // through the passthrough).
          expect(lake.statements.map(statementShape)).toEqual([
             `DESCRIBE "lake"."${TABLE}"`,
             `DESCRIBE "lake"."${TABLE}"`,
-            'SELECT column_name AS "column_name"',
+            'SELECT column_name AS "column_name", data_type AS "column_type"',
             `SELECT 1 AS present FROM "lake"."${TABLE}" LIMIT 1`,
             'SELECT * FROM postgres_query(\'warehouse\', \'SELECT MAX("wm") AS "watermark_max" FROM (SELECT ',
+            "DESCRIBE (passthrough)",
             "DESCRIBE (passthrough)",
             "BEGIN;",
             'SELECT (SELECT COUNT(*) FROM (SELECT * FROM postgres_query(\'warehouse\', \'SELECT "wm" FROM (SELECT "id", "cat", "amt", "wm" FROM (SELECT * FROM (SELECT ',
@@ -1591,7 +1608,14 @@ source: events is warehouse.sql("""
             ledger?: unknown;
          };
          expect(skippedEntry).toMatchObject({ refresh: "none", rowCount: 4 });
-         expect(skippedEntry.ledger).toEqual(ledgerOf("50", address));
+         // Applied nothing: the table is the one the delta before it wrote.
+         expect(skippedEntry.ledger).toEqual(
+            ledgerOf(
+               "50",
+               address,
+               (await ledgerRow())?.advancedByMaterializationId,
+            ),
+         );
          expect(
             lake.statements.filter(
                (s) => s.startsWith("BEGIN") || s.startsWith("CREATE"),

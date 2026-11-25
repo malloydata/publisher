@@ -52,6 +52,7 @@ import {
 } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { validateConnectionSqlFields } from "./connection_config";
+import { deleteUnconfiguredRetrievalRows } from "../storage/duckdb/schema";
 import { extractErrorDataFromError, validateAzureUrl } from "./db_utils";
 import {
    Environment,
@@ -64,7 +65,6 @@ import { environmentResource } from "../api_resource";
 import { type EnvironmentName, parseEnvironmentName } from "./identity";
 import { VersionStore } from "./versions/version_store";
 import { storageBindingResolverFor } from "./versions/materialization_scope";
-import { withRollupKeyRecords } from "./materialization/run/inline_uniqueness";
 import { keptTablesResolverFor } from "./materialization";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import { SERVER_VERSION } from "../version";
@@ -944,6 +944,15 @@ export class EnvironmentStore
             );
 
          await this.cleanupAndCreatePublisherPath();
+         if (reInit) {
+            await deleteUnconfiguredRetrievalRows(
+               this.storageManager.getDuckDbConnection(),
+               environmentManifest.environments.map((e) => ({
+                  environment: e.name,
+                  packages: e.packages.map((p) => p.name),
+               })),
+            );
+         }
 
          const repository = this.storageManager.getRepository();
 
@@ -1089,11 +1098,7 @@ export class EnvironmentStore
       // A version of a `scope: version` package reads only its own runs;
       // everything else reads the package's shared runs.
       environment.setStorageBindingResolver(
-         storageBindingResolverFor(
-            repository,
-            environmentId,
-            withRollupKeyRecords,
-         ),
+         storageBindingResolverFor(repository, environmentId),
       );
       environment.setKeptTablesResolver(
          keptTablesResolverFor(repository, environmentId),

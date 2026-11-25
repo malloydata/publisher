@@ -4,8 +4,10 @@
 import { describe, expect, it } from "bun:test";
 import type { Materialization } from "../../storage/DatabaseInterface";
 import {
+   newestIncrementalEntries,
    newestServingEntries,
    ownedVersionOf,
+   storageBindingResolverFor,
    SUPERSEDED_TABLES_KEY,
    versionedTableName,
    versionTableSuffix,
@@ -232,5 +234,151 @@ describe("newestServingEntries", () => {
       expect(
          newestServingEntries([run("x", { status: "PENDING" })], {}),
       ).toEqual({});
+   });
+});
+
+describe("storageBindingResolverFor", () => {
+   const keyed = {
+      v: 1,
+      dialect: "duckdb",
+      columns: [{ name: "id", nativeType: "INTEGER" }],
+      keys: { "rollup:id": { unique: true, level: "rollup" } },
+   };
+   const committed = (): Materialization => {
+      const r = run("a");
+      const entries = (
+         r.manifest as { entries: Record<string, Record<string, unknown>> }
+      ).entries;
+      entries["eid-t_a"]!.contract = keyed;
+      return r;
+   };
+   const resolve = (runs: Materialization[]) =>
+      storageBindingResolverFor(
+         { listMaterializations: async () => runs },
+         "env",
+      )("pkg", {});
+
+   it("binds each contract as stored when no run is active", async () => {
+      const entries = await resolve([committed()]);
+      expect(entries["eid-t_a"]?.contract).toEqual(keyed);
+   });
+
+   it("binds no passed key check while a run may be rewriting a table, and keeps the rest of the contract", async () => {
+      const entries = await resolve([
+         committed(),
+         run("b", { status: "PENDING", manifest: null, tables: [] }),
+      ]);
+      const { keys: _keys, ...rest } = keyed;
+      expect(entries["eid-t_a"]?.contract).toEqual(rest);
+   });
+
+   it("keeps a check that found its key repeated, or could not run, while a run is active: it only declines", async () => {
+      const repeated = { unique: false, level: "parent" };
+      const unverified = { unique: false, level: "leaf", unverified: true };
+      const r = committed();
+      (
+         r.manifest as { entries: Record<string, Record<string, unknown>> }
+      ).entries["eid-t_a"]!.contract = {
+         ...keyed,
+         keys: {
+            ...keyed.keys,
+            "parent:orders@m.malloy.id": repeated,
+            "leaf:items.item_id": unverified,
+         },
+      };
+      const entries = await resolve([
+         r,
+         run("b", { status: "PENDING", manifest: null, tables: [] }),
+      ]);
+      expect(
+         (entries["eid-t_a"]?.contract as { keys?: unknown } | undefined)?.keys,
+      ).toEqual({
+         "parent:orders@m.malloy.id": repeated,
+         "leaf:items.item_id": unverified,
+      });
+   });
+});
+
+describe("newestIncrementalEntries", () => {
+   const ledger = { coveredThrough: "2026-01-01" };
+   /** A committed run at `at` recording `entries` as [address, table, ledger?]. */
+   function committedRun(
+      id: string,
+      at: number,
+      entries: [string, string, boolean][],
+      metadata: Record<string, unknown> | null = null,
+   ): Materialization {
+      return run(id, {
+         completedAt: new Date(at),
+         metadata,
+         manifest: {
+            strict: false,
+            entries: Object.fromEntries(
+               entries.map(([address, table, incremental]) => [
+                  address,
+                  {
+                     sourceEntityId: address,
+                     physicalTableName: table,
+                     connectionName: "warehouse",
+                     ...(incremental ? { ledger } : {}),
+                  },
+               ]),
+            ),
+         } as Materialization["manifest"],
+      });
+   }
+
+   it("takes each incremental source's newest entry, from whichever run recorded it", () => {
+      const entries = newestIncrementalEntries(
+         [
+            committedRun("old", 1, [["x", "t_x", true]]),
+            committedRun("new", 2, [["b", "t_b", false]]),
+         ],
+         {},
+      );
+      expect(Object.keys(entries)).toEqual(["x"]);
+      expect(entries.x?.physicalTableName).toBe("t_x");
+   });
+
+   it("ignores an entry its run has marked superseded", () => {
+      const entries = newestIncrementalEntries(
+         [
+            committedRun("old", 1, [["x", "t_x", true]], {
+               [SUPERSEDED_TABLES_KEY]: ["t_x"],
+            }),
+            committedRun("new", 2, [["b", "t_b", false]]),
+         ],
+         {},
+      );
+      expect(entries).toEqual({});
+   });
+
+   it("ignores an entry for a table a later committed run recorded again, for another source or as no increment", () => {
+      for (const later of [
+         ["y", "T_X", true],
+         ["x", "t_x", false],
+      ] as [string, string, boolean][]) {
+         const entries = newestIncrementalEntries(
+            [
+               committedRun("old", 1, [["x", "t_x", true]]),
+               committedRun("new", 2, [later]),
+            ],
+            {},
+         );
+         expect(entries.x).toBeUndefined();
+      }
+   });
+
+   it("keeps an entry for the same name in another destination", () => {
+      const old = committedRun("old", 1, [["x", "t_x", true]]);
+      const newer = committedRun("new", 2, [["y", "t_x", true]]);
+      (
+         newer.manifest as {
+            entries: Record<string, Record<string, unknown>>;
+         }
+      ).entries.y!.storageDestinationName = "lake";
+      expect(
+         newestIncrementalEntries([old, newer], {}).x?.physicalTableName,
+      ).toBe("t_x");
    });
 });

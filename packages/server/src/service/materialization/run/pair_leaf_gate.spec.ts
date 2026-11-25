@@ -17,6 +17,7 @@ import {
 import type { ManifestEntry } from "../domain/types";
 import { pairLeafContractKeys } from "../plan/pair_reroot";
 import { pairLeafKeyChecksOf } from "./inline_uniqueness";
+import { withLeafKeys } from "./instructed_build";
 import { assertPairLeafKeysPassed, pairLeafRefusal } from "./pair_leaf_gate";
 
 const withKeys = (keys?: Record<string, unknown>): ManifestEntry =>
@@ -37,8 +38,8 @@ describe("the leaf key gate of a view over a pair table", () => {
          pairLeafRefusal(
             "v",
             "orders",
-            ["items.item_id"],
-            withKeys({ "items.item_id": { unique: true, level: "leaf" } }),
+            ["leaf:items.item_id"],
+            withKeys({ "leaf:items.item_id": { unique: true, level: "leaf" } }),
          ),
       ).toBeUndefined();
       // A view over any other table relies on none.
@@ -50,8 +51,10 @@ describe("the leaf key gate of a view over a pair table", () => {
          pairLeafRefusal(
             "v",
             "orders",
-            ["items.item_id"],
-            withKeys({ "items.item_id": { unique: false, level: "leaf" } }),
+            ["leaf:items.item_id"],
+            withKeys({
+               "leaf:items.item_id": { unique: false, level: "leaf" },
+            }),
          ),
       ).toMatch(
          /^'v' was not built over its upstream 'orders''s pair table: .*found the key 'items\.item_id' held more than once or NULL/,
@@ -61,20 +64,42 @@ describe("the leaf key gate of a view over a pair table", () => {
    it("refuses an unrecorded check: no keys, no contract, no entry", () => {
       for (const entry of [
          withKeys(),
-         withKeys({ "notes.note_id": { unique: true, level: "leaf" } }),
+         withKeys({ "leaf:notes.note_id": { unique: true, level: "leaf" } }),
          { sourceEntityId: "a" } as unknown as ManifestEntry,
          undefined,
       ]) {
          expect(
-            pairLeafRefusal("v", "orders", ["items.item_id"], entry),
+            pairLeafRefusal("v", "orders", ["leaf:items.item_id"], entry),
          ).toMatch(/recorded no result for the key 'items\.item_id'/);
       }
+   });
+
+   it("refuses a check recorded unverified (it could not run) as unrecorded, not as failed", () => {
+      expect(
+         pairLeafRefusal(
+            "v",
+            "orders",
+            ["leaf:items.item_id"],
+            withKeys({
+               "leaf:items.item_id": {
+                  unique: false,
+                  level: "leaf",
+                  unverified: true,
+               },
+            }),
+         ),
+      ).toMatch(/recorded no result for the key 'items\.item_id'/);
    });
 
    it("throws the refusal as schema_incompatible", () => {
       let thrown: unknown;
       try {
-         assertPairLeafKeysPassed("v", "orders", ["items.item_id"], undefined);
+         assertPairLeafKeysPassed(
+            "v",
+            "orders",
+            ["leaf:items.item_id"],
+            undefined,
+         );
       } catch (err) {
          thrown = err;
       }
@@ -114,8 +139,62 @@ source: orders is duckdb.sql("""select 1 as id""") extend {
          pairLeafKeyChecksOf(plan).map((check) => check.contractKey),
       );
       expect(pairLeafContractKeys(plan)).toEqual([
-         "items.options.option_id",
-         "notes.note_id",
+         "leaf:items.options.option_id",
+         "leaf:notes.note_id",
       ]);
+   });
+});
+
+describe("a built pair table's leaf keys in its contract", () => {
+   const check = {
+      sourceID: "items@m.malloy",
+      keyColumn: "item_id",
+      sql: "select 1",
+      contractKey: "leaf:items.item_id",
+   };
+   const keysOf = (entry: ManifestEntry) =>
+      (entry.contract as { keys?: Record<string, unknown> }).keys;
+
+   it("records each check that ran under its key", () => {
+      expect(
+         keysOf(
+            withLeafKeys(
+               withKeys(),
+               [
+                  {
+                     check,
+                     record: {
+                        keyColumn: "item_id",
+                        unique: true,
+                     },
+                  },
+               ],
+               ["leaf:items.item_id"],
+            ),
+         ),
+      ).toEqual({ "leaf:items.item_id": { unique: true, level: "leaf" } });
+   });
+
+   it("records a declared key whose check threw, or was never compiled, as unverified", () => {
+      // Threw: the check is listed with no record.
+      const threw = withLeafKeys(
+         withKeys(),
+         [{ check, record: undefined }],
+         ["leaf:items.item_id"],
+      );
+      // Never compiled: the check is not listed at all.
+      const uncompiled = withLeafKeys(withKeys(), [], ["leaf:items.item_id"]);
+      for (const entry of [threw, uncompiled]) {
+         expect(keysOf(entry)).toEqual({
+            "leaf:items.item_id": {
+               unique: false,
+               level: "leaf",
+               unverified: true,
+            },
+         });
+         expect(
+            pairLeafRefusal("v", "orders", ["leaf:items.item_id"], entry),
+         ).toMatch(/recorded no result/);
+      }
    });
 });

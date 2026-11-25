@@ -46,7 +46,9 @@ import { Package } from "../package";
 import { variantsOf } from "../query_serving";
 import { type LegContext, makeLegs } from "./serve/leg";
 import { routeQuery } from "../query_router";
-import { EMPTY_SNAPSHOT, pin } from "./domain/binding";
+import { makeSnapshot, pin } from "./domain/binding";
+import { parseContract } from "./domain/column_contract";
+import { contractFor } from "../../test_helpers/contract_fixture";
 import { gateEnforcedAtRead } from "./plan/materialization_eligibility";
 import { recordConnectionsAsForTests } from "../connection_type";
 
@@ -677,6 +679,7 @@ describe("gate keeping at the router, under an entry-point veto", () => {
       tier: "database" | "storage";
       sourceName: string;
       tablePath: string;
+      virtualHandle: string;
       destinationName: string;
       schema: { name: string; type: string }[];
       ownGateKept?: boolean;
@@ -685,6 +688,7 @@ describe("gate keeping at the router, under an entry-point veto", () => {
       tier,
       sourceName: `t_${tier}`,
       tablePath: `t_${tier}`,
+      virtualHandle: `t_${tier}`,
       destinationName: "lake",
       schema: [{ name: "id", type: "BIGINT" }],
    });
@@ -699,7 +703,11 @@ describe("gate keeping at the router, under an entry-point veto", () => {
       ],
       "a kept and another storage table": [
          { ...table("storage"), ownGateKept: true },
-         { ...table("storage"), sourceName: "t_other" },
+         {
+            ...table("storage"),
+            sourceName: "t_other",
+            virtualHandle: "t_other",
+         },
       ],
       "no table": [],
    };
@@ -777,7 +785,23 @@ describe("gate keeping at the router, under an entry-point veto", () => {
             const rows: Record<string, string> = {};
             for (const leg of ["view", "rollup", "served"] as const) {
                for (const [read, tables] of Object.entries(reads)) {
-                  const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
+                  // Each table's contract, as its build records it: its
+                  // gate column exact.
+                  const pinned = pin(
+                     makeSnapshot(
+                        [],
+                        {},
+                        undefined,
+                        undefined,
+                        new Map(
+                           tables.map((t) => [
+                              t.virtualHandle,
+                              parseContract(contractFor(t.schema))!,
+                           ]),
+                        ),
+                     ),
+                     new Date(0),
+                  );
                   const legs = host(tables);
                   const candidates = variantsOf(
                      makeLegs(pinned, {

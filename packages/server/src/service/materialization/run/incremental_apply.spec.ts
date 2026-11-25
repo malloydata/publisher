@@ -20,7 +20,9 @@ import {
    decodeTablePathSegments,
    deltaScript,
    deltaStatements,
+   isMergeKeyGuardFailure,
    isPairGuardFailure,
+   mergeGuardedInStatement,
    ledgerLineageMismatch,
    PAIR_GUARD_MESSAGE,
    pairStagingTable,
@@ -387,6 +389,7 @@ describe("probeTargetColumns", () => {
          "analytics.daily",
       );
       expect(result.columns).toEqual(["a", "b"]);
+      expect(seen[0]).toContain('data_type AS "column_type"');
       expect(seen[0]).toContain("information_schema.columns");
       expect(seen[0]).toContain("table_schema = 'analytics'");
       expect(seen[0]).toContain("table_name = 'daily'");
@@ -478,7 +481,7 @@ describe("probeTargetColumns", () => {
          "postgres",
          "analytics.gone",
       );
-      expect(result).toEqual({ columns: [] });
+      expect(result).toEqual({ columns: [], types: new Map() });
    });
 
    it("turns a failed probe into a reason, not an exception", async () => {
@@ -962,6 +965,10 @@ describe("planIncrementalStep", () => {
          columns?: string[];
          nonEmpty?: boolean;
          maxWatermark?: unknown;
+         /** Each stored column's type, as the catalog spells it. */
+         storedTypes?: string[];
+         /** Each delta column's type (`pg_typeof`), or a failed read. */
+         deltaTypes?: string[] | "fails";
       } = {},
    ): { runner: SqlRunner; seen: string[] } {
       const seen: string[] = [];
@@ -974,7 +981,24 @@ describe("planIncrementalStep", () => {
             return {
                rows: (
                   answers.columns ?? ["order_date", "region", "revenue"]
-               ).map((c) => ({ column_name: c })),
+               ).map((c, i) => ({
+                  column_name: c,
+                  ...(answers.storedTypes
+                     ? { column_type: answers.storedTypes[i] }
+                     : {}),
+               })),
+            };
+         }
+         if (sql.includes("pg_typeof")) {
+            if (answers.deltaTypes === "fails") {
+               throw new Error("permission denied for table base");
+            }
+            return {
+               rows: [
+                  Object.fromEntries(
+                     (answers.deltaTypes ?? []).map((t, i) => [`t${i}`, t]),
+                  ),
+               ],
             };
          }
          if (sql.includes("LIMIT 1")) {
@@ -1010,6 +1034,67 @@ describe("planIncrementalStep", () => {
       });
    };
 
+   describe("a source column widened after the build", () => {
+      const STORED = ["date", "text", "integer"];
+      it("rebuilds when the delta's type is wider than the stored column's", async () => {
+         const step = await plan(
+            {},
+            { storedTypes: STORED, deltaTypes: ["date", "text", "bigint"] },
+         );
+         expect(step).toMatchObject({
+            mode: "seed",
+            reasonCode: "shape_mismatch",
+         });
+         if (step.mode !== "seed") return;
+         expect(step.reason).toContain('"revenue" (integer → bigint)');
+      });
+
+      it("deltas when the types are unchanged, or narrower", async () => {
+         for (const revenue of ["integer", "smallint"]) {
+            const step = await plan(
+               {},
+               { storedTypes: STORED, deltaTypes: ["date", "text", revenue] },
+            );
+            expect(step.mode).toBe("delta");
+         }
+      });
+
+      it("rebuilds when the delta's types cannot be read", async () => {
+         const step = await plan(
+            {},
+            { storedTypes: STORED, deltaTypes: "fails" },
+         );
+         expect(step).toMatchObject({
+            mode: "seed",
+            reasonCode: "shape_mismatch",
+         });
+      });
+
+      it("reads the delta's types with no row: pg_typeof over an empty read", async () => {
+         const { runner, seen } = fakeRunner({
+            storedTypes: STORED,
+            deltaTypes: STORED,
+         });
+         await planIncrementalStep({
+            target: warehouseDeltaTarget({
+               dialect: "postgres",
+               runner,
+               quotedTablePath: `"analytics"."daily"`,
+               lineage: LINEAGE,
+               sourceSQL: "SELECT * FROM base",
+            }),
+            lineage: LINEAGE,
+            ledgerEntry: LEDGER,
+            forceRefresh: false,
+            now: NOW,
+            columns: ["order_date", "region", "revenue"],
+         });
+         const read = seen.find((q) => q.includes("pg_typeof"));
+         expect(read).toContain("LIMIT 0");
+         expect(read).toContain('pg_typeof(__q."revenue")) AS t2');
+      });
+   });
+
    it("applies a delta over [covered_through, snapshot) for a date watermark", async () => {
       const step = await plan();
       expect(step.mode).toBe("delta");
@@ -1026,6 +1111,76 @@ describe("planIncrementalStep", () => {
       expect(script).toContain("FROM (SELECT * FROM base)");
       expect(script).toContain("2024-06-01");
       expect(script).toContain("2024-07-01");
+   });
+
+   describe("for an extension over its parent's table (upstream)", () => {
+      it("starts no later than the parent's delta start", async () => {
+         const step = await plan({
+            upstream: {
+               startAtMost: { malloyType: "date", value: "2024-05-20" },
+            },
+         });
+         expect(step.mode).toBe("delta");
+         if (step.mode !== "delta") return;
+         expect(step.start.value).toBe("2024-05-20");
+         expect(step.end.value).toBe("2024-07-01");
+         // A later parent start leaves its own lower bound.
+         const later = await plan({
+            upstream: {
+               startAtMost: { malloyType: "date", value: "2024-06-15" },
+            },
+         });
+         expect(later.mode === "delta" && later.start.value).toBe("2024-06-01");
+      });
+
+      it("ends a time range at the parent's coverage, and records it", async () => {
+         const step = await plan({
+            upstream: {
+               endAtMost: { malloyType: "date", value: "2024-06-20" },
+            },
+         });
+         expect(step.mode).toBe("delta");
+         if (step.mode !== "delta") return;
+         expect(step.end.value).toBe("2024-06-20");
+         expect(step.coveredThrough.value).toBe("2024-06-20");
+         // A parent that covers no more than the extension: nothing to do.
+         const behind = await plan({
+            upstream: {
+               endAtMost: { malloyType: "date", value: "2024-06-01" },
+            },
+         });
+         expect(behind.mode).toBe("skip");
+      });
+
+      it("seeds with the run's reason, before any probe", async () => {
+         const { runner, seen } = fakeRunner();
+         const step = await planIncrementalStep({
+            target: warehouseDeltaTarget({
+               dialect: "postgres",
+               runner,
+               quotedTablePath: `"analytics"."daily"`,
+               lineage: LINEAGE,
+               sourceSQL: "SELECT * FROM base",
+            }),
+            lineage: LINEAGE,
+            ledgerEntry: LEDGER,
+            forceRefresh: false,
+            now: NOW,
+            columns: ["order_date", "region", "revenue"],
+            upstream: {
+               reseed: {
+                  reasonCode: "upstream_generation_skipped",
+                  reason: "missed one",
+               },
+            },
+         });
+         expect(step).toEqual({
+            mode: "seed",
+            reasonCode: "upstream_generation_skipped",
+            reason: "missed one",
+         });
+         expect(seen).toEqual([]);
+      });
    });
 
    it("seeds on forceRefresh, before touching the warehouse", async () => {
@@ -1226,5 +1381,79 @@ describe("seedCoveredThrough", () => {
          NOW,
       );
       expect(result.bound).toBeUndefined();
+   });
+});
+
+describe("a merge whose source repeats a key", () => {
+   const merge = (dialect: string) =>
+      deltaStatements({
+         dialect,
+         quotedTablePath: "tgt",
+         deltaSQL: "SELECT * FROM src",
+         columns: ["id", "amount"],
+         mergeKeys: ["id"],
+         watermarkName: "updated_at",
+         start: { malloyType: "date", value: "2024-06-01" },
+         end: { malloyType: "date", value: "2024-07-01" },
+      })[0];
+
+   it("is guarded on Postgres and DuckDB, where the guard's failure is executed", () => {
+      for (const dialect of ["postgres", "duckdb"]) {
+         expect(merge(dialect)).toContain("__merge_key_rows > 1");
+      }
+   });
+
+   it("is guarded on BigQuery with ERROR() in the CASE branch, its runtime error", () => {
+      expect(merge("standardsql")).toContain(
+         "USING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY `id`) " +
+            "AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k " +
+            "WHERE (CASE WHEN __merge_key_rows > 1 THEN " +
+            "ERROR('incremental-merge-key-not-unique') END) IS NULL) AS __s",
+      );
+   });
+
+   it("is merged unguarded on Snowflake, which has no runtime error function, and probed after", () => {
+      expect(merge("snowflake")).toContain("USING (SELECT * FROM src) AS __s");
+      expect(mergeGuardedInStatement("snowflake")).toBe(false);
+      for (const dialect of ["postgres", "duckdb", "standardsql"]) {
+         expect(mergeGuardedInStatement(dialect)).toBe(true);
+      }
+   });
+
+   // Verified by message match only: neither engine runs in these tests. The
+   // messages are as each engine documents and raises them.
+   it.each([
+      [
+         "BigQuery",
+         "UPDATE/MERGE must match at most one source row for each target row",
+      ],
+      [
+         "Snowflake (ERROR_ON_NONDETERMINISTIC_MERGE)",
+         "100090 (42P18): Duplicate row detected during DML action\nRow Values: [1, 10]",
+      ],
+      [
+         "BigQuery's ERROR() in the guard",
+         "Error: incremental-merge-key-not-unique; reason: invalidQuery, message: incremental-merge-key-not-unique",
+      ],
+      [
+         "Postgres, past the guard",
+         "MERGE command cannot affect row a second time",
+      ],
+      [
+         "the guard",
+         'invalid input syntax for type integer: "incremental-merge-key-not-unique"',
+      ],
+   ])("reads %s's refusal as a repeated key", (_engine, message) => {
+      expect(isMergeKeyGuardFailure(new Error(message))).toBe(true);
+   });
+
+   it("reads any other failure as itself", () => {
+      for (const message of [
+         "permission denied for table tgt",
+         "Duplicate column name",
+         "Query exceeded resource limits",
+      ]) {
+         expect(isMergeKeyGuardFailure(new Error(message))).toBe(false);
+      }
    });
 });

@@ -183,7 +183,7 @@ export interface Capabilities {
    catalogHidesTables: boolean;
    /**
     * How a string column's comparison is read, for a gate or a `where:` a
-    * `storage=` copy re-applies byte-exact (`serve/gate_collation.ts`):
+    * `storage=` copy re-applies byte-exact (`serve/admission_lookup.ts`):
     * `binary` (always byte-exact), `instance` (byte-exact unless the DuckDB
     * instance sets a `default_collation` or a `COLLATE` is written), `column`
     * (the column's own collation, read with Postgres's `pg_collation_for`),

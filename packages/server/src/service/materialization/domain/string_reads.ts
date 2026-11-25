@@ -20,7 +20,12 @@
  * Pure.
  */
 
-import { type ColumnContract, contractColumn } from "./column_contract";
+import type { Collation } from "./collation";
+import {
+   type ColumnContract,
+   contractColumn,
+   liveCompare,
+} from "./column_contract";
 
 /** What a read of a string needs its stored column to compare as. */
 type StringReadNeed = "exact" | "equality";
@@ -44,12 +49,40 @@ export type StringRead = {
  */
 export type StringReads =
    | { reads: readonly StringRead[] }
-   | { refused: string };
+   /**
+    * `unstored`: refused because a string it compares is read from no
+    * stored upstream's table ({@link unstoredReadRefusal}), not for a
+    * collation.
+    */
+   | { refused: string; unstored?: true };
 
 const MEETS: Record<StringReadNeed, ReadonlySet<string>> = {
    exact: new Set(["exact"]),
    equality: new Set(["exact", "equality"]),
 };
+
+/**
+ * Why a build reading `reads` cannot be built over its stored upstreams at
+ * all, whatever any contract records: a string it compares is read from a
+ * table no stored upstream holds (the source warehouse, through a join or
+ * a source nothing stores). That is not a collation the destination lacks,
+ * so callers report it as itself, never framed as a string comparison.
+ * Undefined when every read reaches a stored upstream (or none is recorded).
+ */
+export function unstoredReadRefusal(
+   reads: StringReads | undefined,
+): string | undefined {
+   if (reads === undefined) return undefined;
+   if ("refused" in reads) return reads.unstored ? reads.refused : undefined;
+   const unstored = reads.reads.find((r) => r.upstream === undefined);
+   if (unstored === undefined) return undefined;
+   const name = unstored.names[unstored.names.length - 1] ?? "?";
+   return (
+      `it reads '${name}' from a table no stored upstream holds (the source ` +
+      `warehouse, through a join or a source nothing stores), which no ` +
+      `stored table can stand in for`
+   );
+}
 
 /**
  * Why a build reading `reads` over tables recorded by `contracts` (by the
@@ -66,6 +99,8 @@ export function stringReadsRefusal(
    if (reads === undefined) return "its string reads were not recorded";
    if ("refused" in reads) return reads.refused;
    if (reads.reads.length === 0) return undefined;
+   const unstored = unstoredReadRefusal(reads);
+   if (unstored !== undefined) return unstored;
    if (contracts.size === 0 || [...contracts.values()].some((c) => !c)) {
       return "an upstream it reads has no column contract";
    }
@@ -105,4 +140,76 @@ function recordedCompare(
       if ("nativeType" in column) return column.compare;
    }
    return "none";
+}
+
+/**
+ * How an upstream's source compares each of its string fields live, by
+ * field name, as its model's last bind read recorded it
+ * (`serve/source_capability.ts`); `unread` when none is recorded yet. A
+ * field it does not list is unknown.
+ */
+export type UpstreamStringCapability =
+   | { readonly fields: ReadonlyMap<string, Collation> }
+   | "unread";
+
+/**
+ * Why a build reading `reads` is refused at plan over upstreams whose tables
+ * are not bound yet (`unbound`, by sourceID: each one's name and how its
+ * source compares its strings live), or undefined when each string it reads
+ * from one compares there as the build needs. Judged as the table's
+ * contract will record it (a byte-exact destination, each column compared
+ * as its source compares it live: {@link liveCompare}), so a build planned
+ * here still checks that contract once its upstream is built. A capability
+ * not read yet, and a field it does not list, refuse.
+ */
+export function unboundStringReadsRefusal(
+   reads: StringReads,
+   unbound: ReadonlyMap<
+      string,
+      { name: string; capability: UpstreamStringCapability }
+   >,
+): string | undefined {
+   if ("refused" in reads) return undefined;
+   for (const read of reads.reads) {
+      const upstream =
+         read.upstream === undefined ? undefined : unbound.get(read.upstream);
+      if (upstream === undefined) continue;
+      const name = read.names[read.names.length - 1] ?? "?";
+      const verb = read.need === "exact" ? "orders" : "groups or compares";
+      const { capability } = upstream;
+      if (capability === "unread") {
+         return (
+            `it ${verb} '${name}' from '${upstream.name}', whose table is not ` +
+            `bound yet and whose source's string comparison has not been ` +
+            `read yet`
+         );
+      }
+      const live = [...read.names]
+         .reverse()
+         .map((n) => capability.fields.get(n))
+         .find((c) => c !== undefined);
+      const compare = liveCompare(live);
+      if (!MEETS[read.need].has(compare)) {
+         return (
+            `it ${verb} '${name}' from '${upstream.name}', whose table is not ` +
+            `bound yet and whose source compares it ` +
+            `${compare === "none" ? "unlike byte order" : `by ${compare} only`}`
+         );
+      }
+   }
+   return undefined;
+}
+
+/**
+ * A stable rendering of what a plan judged an upstream by: its capability,
+ * or `bound` when its table's contract judged it instead. Two renderings
+ * differ only when the plan would judge otherwise.
+ */
+export function capabilityFingerprint(
+   judged: UpstreamStringCapability | "bound",
+): string {
+   if (typeof judged === "string") return judged;
+   return JSON.stringify(
+      [...judged.fields].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+   );
 }

@@ -1687,6 +1687,15 @@ paths:
         `PACKAGE_IS_VERSIONED`), as is a package with no `latest` yet: publish a new version to
         change content.
 
+        A `manifestLocation` URI that cannot be fetched or bound is refused as on the version
+        route: 400 `MANIFEST_NOT_FOUND` when nothing is at it, 422 `MANIFEST_INVALID` when what is
+        there is not a build manifest, and otherwise 500 `MANIFEST_BIND_FAILED`. That holds on a
+        versioned package, and on an unversioned one with nothing of the PATCH applied: its metadata and publisher.json stay as
+        they were, and it serves what it served before, the manifest it had bound or, with none,
+        live (or this server's own store, where the server restores unversioned packages from it).
+        A manifest that binds with some of its tables declined (one the warehouse does not hold,
+        say) is not a failure: it answers 200, and those sources answer live.
+
         It keeps working, so that callers which predate versions do not break, and says it is
         deprecated: every response carries `Deprecation: true` and a `Link` to the package
         versions reference, every request is counted in `publisher_deprecated_usage_total`
@@ -1762,8 +1771,24 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "422":
+          description: >-
+            The `manifestLocation` holds no build manifest: it does not parse,
+            or is not a manifest (`reason` `MANIFEST_INVALID`; nothing of the
+            PATCH was applied).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
-          $ref: "#/components/responses/InternalServerError"
+          description: >-
+            The `manifestLocation` could not be fetched or bound (`reason`
+            `MANIFEST_BIND_FAILED`; nothing of it was applied), or another
+            internal error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
     delete:
@@ -2029,6 +2054,25 @@ paths:
         a PUT replaces the binding, and many generated clients drop a null field from the JSON
         they send. `manifestLocation` is the body's only field, so any other field is refused
         with 400 naming it, rather than read as a clear.
+
+        A manifest that cannot be fetched or bound is refused with the cause in the message:
+        400 with `reason` `MANIFEST_NOT_FOUND` when nothing is at the location (no such file, or
+        an object store's no such object or bucket); 422 with `reason` `MANIFEST_INVALID` when
+        what is there does not parse, is not a JSON object, or has an `entries` that is not an
+        object; and 500 with `reason` `MANIFEST_BIND_FAILED` otherwise (the fetch timed out, the
+        network failed, the store refused the server's credentials, or the bind threw). The
+        first two are the caller's input and fail the same way until it changes; the last is the
+        server's. Whichever it is, nothing of it is applied: the version's `manifestLocation` stays what it was, the version
+        is not marked host-owned, and it serves what it served before the request, the manifest
+        it had bound or, with none, live (or this server's own runs' tables, for a version no
+        host has bound). Its status says the same: `manifestBindingStatus`, `boundManifestUri` and
+        `manifestEntryCount` describe that previous binding. One exception: when the failure came
+        after the version's models moved, the previous manifest is fetched and bound again, and if
+        that fails too the version reports `bind_failed`, as any failed rebind does (see
+        `manifestBindingStatus`), and the server logs that failed bind.
+        Releases before this one answered 200 here and reported the failure only as
+        `manifestBindingStatus` `bind_failed`. A publish that names a `manifestLocation` still
+        loads the version and reports a failed bind that way.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
@@ -2059,10 +2103,26 @@ paths:
           $ref: "#/components/responses/NotFound"
         "410":
           $ref: "#/components/responses/Gone"
+        "422":
+          description: >-
+            The manifest at `manifestLocation` does not parse, or is not a
+            build manifest (`reason` `MANIFEST_INVALID`; nothing of it was
+            applied).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "424":
           $ref: "#/components/responses/PackageManifestError"
         "500":
-          $ref: "#/components/responses/InternalServerError"
+          description: >-
+            The manifest could not be fetched or bound (`reason`
+            `MANIFEST_BIND_FAILED`; nothing of it was applied), or another
+            internal error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -3954,7 +4014,12 @@ paths:
         (`admin-api-doc.yaml`); this route is removed in a later release.
 
         Drops one named table from a storage destination. Idempotent: a table that
-        does not exist answers 204 as well, so a retried drop is free.
+        does not exist answers 204 as well, so a retried drop is free. The path's
+        schema qualifies the table. On a destination whose `destinationSchema` is
+        set and is not `main`, a `main` path answers `400` naming the
+        `destinationSchema` (an earlier release read `main` as the destination's
+        own schema): name the `destinationSchema` to drop a build table, and drop
+        a table in `main` through the admin API.
 
         For a DuckLake destination this retires the table in the catalog; its data
         files stay in storage until a file cleanup reclaims them (see
@@ -5051,13 +5116,14 @@ components:
           type: boolean
           deprecated: true
           description: >-
-            DEPRECATED, removed in a later release: a bind now compiles every
-            model's served copy over the new tables before they are swapped
-            in, and models read the previous tables until then, so a verdict
-            read after a bind returns is never pending. Present, and `true`,
-            only while some model holding this source has yet to compile its
-            copy over the tables bound now, which a server's own binds never
-            leave behind.
+            Retained, no longer produced. A bind compiles each model's served
+            copy over the new tables before they are swapped in. A freshness
+            window that lapses changes the tables a query reads with no bind:
+            from that edge, each query compiles its own copy without the
+            lapsed table, the package recompiles each served copy at the edge,
+            and until that compile lands a verdict leaves the lapsed table
+            out by its recorded window, judged against the clock. A verdict
+            is therefore never pending, and this field is never present.
         message:
           type: string
           description: What the verdict means for this source, in a sentence.
@@ -5983,6 +6049,18 @@ components:
                   table (an inlined `join_many`) whose `refresh="incremental"`
                   is not honoured: it is rebuilt in full on every refresh, and
                   served (`subject` the source; `warn`).
+                  `materialize-extension-full-refresh`: an incremental
+                  `#(materialize)` extension whose watermark is not the same
+                  stored column as its incremental parent's: it is rebuilt in
+                  full over the parent's table whenever that table changes, and
+                  served (`subject` the extension; `warn`; the message names
+                  both watermarks).
+                  `materialize-extension-generation-unproven`: the newest run
+                  rebuilt an incremental extension in full because it could not
+                  prove which build of its parent's table it last read (neither
+                  the run's ledger entry nor the bound manifest records it;
+                  step reason `upstream_generation_skipped`) (`subject` the
+                  extension; `warn`).
                   `rollup-join-one-key-repeated`: a rollup's last build found
                   a `join_one` key repeated in the data, so queries that read
                   that join beside other aggregates are answered live
@@ -6118,6 +6196,12 @@ components:
                   `connection_failed`, `timed_out`, `catalog_query_failed`,
                   `not_found`, `ambiguous`, `unparseable`, `not_read`; `warn`;
                   see docs/materialization.md).
+                  `storage-table-unread`: the same, for a bound `storage=`
+                  table whose columns its destination session could not read
+                  when it was bound, or that a query's failed read left
+                  unread until the package reads it again; the message names
+                  the table or rollup and its destination; same fields and
+                  reasons.
                   `database-native-type-missing`: a database table is bound
                   with no captured warehouse type (its manifest entry's
                   `nativeSchema`) for a column whose field Malloy types as a big
@@ -6150,13 +6234,31 @@ components:
                   rather than on the message (whose wording may change): the
                   refusal record's `reason` on a `*-not-built` warning; the served copy's reason on
                   `served-copy-not-served`; the unread reason on
-                  `database-table-unread`; the kept table's reason on
+                  `database-table-unread` and `storage-table-unread`; the kept table's reason on
                   `table-kept`; the serve verdict's reason on a
                   `materialization-*` verdict warning; `storage_mode` on
                   `materialization-storage-mode`; the rule a cell breaks on
                   `malloynb-cell-refused` (`off_surface`, `caller_annotation`,
                   `required_filter`, `restricted_mode`, `compile_error`). Always snake_case. An open
                   string; absent on a finding that has none.
+              sourceEntityId:
+                type: string
+                description: >-
+                  The content address (its manifest key) of the stored table a
+                  finding is about, so a client routes it without reading the
+                  message: set on `database-table-unread` and
+                  `storage-table-unread`, where `subject` names the source a
+                  query names (a rollup's base) and this names the unread
+                  table's own source. Absent on every other finding.
+              sourceName:
+                type: string
+                description: >-
+                  The name of the source whose stored table a finding is about,
+                  beside `sourceEntityId`: for a rollup's table, the rollup's
+                  own source (`<base>__rollup__…`), not the base `subject`
+                  names. Set on `database-table-unread` and
+                  `storage-table-unread` when the build plan knows the table;
+                  absent otherwise.
               severity:
                 type: string
                 enum:
@@ -9109,9 +9211,11 @@ components:
             This is a rule on statements, not on what a SELECT reads: that is
             bounded by the catalog role and by the session's storage secret,
             which on a managed connection attached read-only is scoped to the
-            `main` schema's recorded path, so a SELECT reads only that schema's
-            files; another schema's files, and any other object in the bucket,
-            are unsigned (403). Absent or false is the pre-existing behavior.
+            recorded paths of the `main` schema and of the schemas
+            `ducklakeConnection.readableSchemas` lists, so a SELECT reads only
+            those schemas' files; another schema's files, and any other object
+            in the bucket, are unsigned (403). Absent or false is the
+            pre-existing behavior.
         fingerprint:
           type: string
           description: >
@@ -9642,13 +9746,47 @@ components:
             Storage destinations only; ignored on a connection. The schema a
             destination builds its tables into and binds them from, so an
             orchestrator can keep the tables it owns apart from a catalog's `main`
-            (where people put their own). Absent means `main`, the pre-existing
+            (a table PUT may write people's own tables there; a load may not, so
+            loads go in a schema created through the admin API). Absent means
+            `main`, the pre-existing
             layout. The schema must already exist in the catalog: a build does not
             create it. A `#@ persist name=` that already names a schema keeps that
             schema. Must be a plain identifier (`[A-Za-z_][A-Za-z0-9_]*`).
             Serving reads the schema configured now, not the one a table was
             built into, so changing it on a destination re-points every bound
             table at once: rebuild or rebind as you change it.
+        readableSchemas:
+          type: array
+          items:
+            type: string
+            pattern: "^[a-z_][a-z0-9_]*$"
+          description: >-
+            Additional schemas a managed read-only view may read. Only on a
+            connection with `managed: true` and a read-only attach (never on a
+            storage destination). `main` is always readable and may be omitted.
+            The view's storage secret is scoped to the recorded path of `main`
+            and of each schema listed here, so a SELECT reads those schemas'
+            files and nothing else in the bucket. Each name is a plain lowercase
+            identifier (`[a-z_][a-z0-9_]*`); order and duplicates are ignored. A
+            schema the catalog does not record, or whose recorded path is not
+            under the catalog's data path, is left out of the scope. On a local
+            data path the view's file allowlist is scoped the same way. SQL on
+            the connection may name a listed schema's tables as it does
+            `main`'s, its schema and table listings show the listed schemas
+            beside `main`, and every other schema stays refused. `main` is
+            implicit, and the request is refused with a 400 when it lists
+            `memory`, `information_schema`, `pg_catalog`, `temp`, `system` or a
+            name starting with `__ducklake_metadata_`, or a schema that a storage
+            destination of the same environment on the same catalog builds into
+            (that destination's stored copies, gated sources' rows among them,
+            would be readable by name without their gate); the same pair in a
+            configured environment fails that environment's load at startup. A
+            destination that shares the catalog and builds into `main` must set
+            `destinationSchema`. Create a schema in the
+            catalog before listing it: a schema listed before it exists gets no
+            file access until the connection is next edited or the server
+            restarts. Removing a schema from the list takes effect for
+            already-loaded packages only after they reload.
         readOnly:
           type: boolean
           default: true
@@ -10057,7 +10195,12 @@ components:
             recorded on the run instead: as a `SourceFailure` with `refused`
             and `refusalReason` on a run with `buildInstructions`, otherwise
             in the run's `metadata.refusedSources`, or its `error` when
-            nothing else was left to build.
+            nothing else was left to build. `failures` holds one outcome per
+            address, so on a run with `buildInstructions` a refused source
+            whose address holds another outcome (a table an eligible source
+            built, another source's build failure, or another source's
+            refusal) is in `metadata.refusedSources` instead, with its own
+            reason, on a FAILED run too.
 
             TABLE_OWNED_ELSEWHERE and TABLE_OWNERSHIP_UNVERIFIED, on a 400,
             mean a build was refused before it wrote because its `name=` is
@@ -10093,6 +10236,22 @@ components:
             that is not latest touching the tables a `scope: package`
             package's versions share (name tables of its own in
             `buildInstructions`). The message says which.
+
+            MANIFEST_BIND_FAILED, on a 500 from
+            `set-package-version-manifest` or the deprecated `update-package`
+            PATCH that names a `manifestLocation` (on a versioned or an
+            unversioned package), means the manifest could not be fetched or
+            bound, so nothing of it was applied: the `manifestLocation` stays
+            what it was (an unversioned package's whole PATCH is undone,
+            publisher.json included), and the package or version serves what
+            it served before. The message carries the cause.
+
+            MANIFEST_NOT_FOUND, on a 400 from the same routes, means nothing
+            is at the `manifestLocation` (no such file, object or bucket),
+            and MANIFEST_INVALID, on a 422, that what is there does not parse
+            or is not a build manifest. Both are the caller's input: nothing
+            of the manifest was applied, as with MANIFEST_BIND_FAILED, and
+            sending it unchanged fails the same way.
 
             Deliberately an open string rather than an enum. Generators render
             an enum closed, so adding a second value here would break every
@@ -11756,17 +11915,6 @@ components:
             the upstreams a named source reads when it cannot carry them)
             fails the build, and a downstream is never built by recomputing
             its upstreams from raw.
-        warehouseReach:
-          type: string
-          default: recompute
-          deprecated: true
-          description: >-
-            Deprecated: accepted and ignored. No build recomputes a stored
-            upstream from the source warehouse, so there is nothing for it to
-            choose; a request that sends it (or `strictUpstreams`) logs one
-            deprecation warning. The values are still validated: `recompute`
-            and `refuse` are accepted, null reads as absent, and any other
-            value is a 400.
         ledger:
           type: array
           items:
@@ -11886,6 +12034,30 @@ components:
             strings compare with live, and, for a pair table, whether its leaf
             key check passed; without it those columns are unknown, and a
             downstream that needs them is refused. Optional and additive.
+        ledger:
+          allOf:
+            - $ref: "#/components/schemas/LedgerEntry"
+          description: >-
+            The referenced upstream's ledger entry (`ManifestEntry.ledger`),
+            exactly as the publisher reported it, sent back whole: opaque, like
+            an entry in `BuildInstructions.ledger`. Absent means unknown.
+
+            An incremental `#(materialize)` extension built in this run over a
+            referenced incremental parent reads the parent's history from it
+            (`seededBy`, `advances`, `advancedBy`) to prove it may refresh by
+            delta. Without it, on a worker whose bound manifest and own store
+            do not name the parent's current build, the extension rebuilds in
+            full (`upstream_generation_skipped`). It is preferred over both.
+
+            It must name the reference's table and source (the same
+            `connectionName`, `physicalTableName`, `storageDestinationName` and
+            `sourceEntityId`). One that does not, or whose own shape is malformed
+            (see `LedgerEntry`), is dropped with a logged warning and the request
+            proceeds as if it were absent, never a 400: the extensions fall back
+            to the bound manifest's entry, then the worker's own, and rebuild in
+            full only when neither proves which build of the parent they read. Keys this release does not know are
+            kept. Unlike `BuildInstructions.ledger`, it names a table this run
+            does not build, and is never written to. Optional and additive.
 
     BuildInstruction:
       type: object
@@ -12062,6 +12234,51 @@ components:
             `BuildInstruction.sourceEntityId`. The match is what guarantees a
             boundary is never applied to a table whose definition has moved on
             since it was measured.
+        advancedBy:
+          type: string
+          description: >-
+            The materialization run that last changed the table: a delta, or
+            a full rebuild. A run that applied nothing (`refresh: none`) keeps
+            the one before. Which build of the table the boundary describes,
+            for an extension table built over it (`parent.advancedBy`).
+            Returned verbatim; absent on an entry an older release reported.
+        parent:
+          type: object
+          description: >-
+            For an incremental extension table (a `#(materialize)` extension
+            of a `#(materialize)` parent, built over the parent's table): which
+            build of the parent's table this boundary was reached over, as
+            `builtFrom` names it. The next refresh deltas only when the
+            parent's table is still that build, or was refreshed in that run
+            from exactly it; otherwise the extension rebuilds in full over the
+            parent's table (step reason `upstream_generation_skipped`), since a
+            delta could miss rows a parent refresh it never read restated.
+            Returned verbatim like every other field; a caller that drops it
+            costs each extension a full rebuild, never a wrong row. Absent for
+            any other source.
+          required: [sourceEntityId]
+          properties:
+            sourceEntityId:
+              type: string
+              description: The parent's content address, as its manifest entry is keyed.
+            advancedBy:
+              type: string
+              description: >-
+                The parent's own `ledger.advancedBy` when the extension read
+                it: the build of the parent's table it read, compared with
+                the one the parent's next refresh starts from.
+            builtAt:
+              type: string
+              format: date-time
+              description: The parent entry's `builtAt` when the extension read it.
+            coveredThrough:
+              type: string
+              description: >-
+                The parent's own `ledger.coveredThrough` when the extension read
+                it, when the parent is incremental.
+            coveredThroughType:
+              type: string
+              description: The Malloy type of `coveredThrough`.
 
     BuiltFromTable:
       type: object
@@ -12098,6 +12315,14 @@ components:
             only while its upstream's current entry still has this digest, so
             a rebuilt or altered upstream rebuilds its readers. Absent when
             the upstream carried no contract.
+        coveredThrough:
+          type: string
+          description: >-
+            The upstream's incremental boundary when the build read it: its
+            entry's `ledger.coveredThrough`, as canonical scalar text. Absent
+            when the upstream is not incrementally refreshed. An incremental
+            extension's range ends no later than this, so it never records
+            coverage its parent's table lacks.
 
     ColumnContract:
       type: object
@@ -12137,10 +12362,21 @@ components:
         keys:
           type: object
           description: >-
-            For a pair table (an `inline=` join_many), the key checks its build
-            ran, by stored key column: whether the key held one row per value
-            and no NULL. A view built over a pair table needs its leaf key's
-            check recorded as passed.
+            The key checks the table's build ran, each named
+            `<level>:<subject>.<keyColumn>` (or `<level>:<keyColumn>` when it
+            has no subject), with whether the key held one row per value and
+            no NULL. `leaf`: a pair table's (an `inline=` join_many's) leaf
+            key, its subject the join path (`leaf:items.options.option_id`);
+            a view built over a pair table needs it recorded as passed.
+            `rollup`: a rollup's own key, its one grain dimension, with no
+            subject (`rollup:category`). `parent`: the primary key of a query
+            source that reads the rollup through a join_many, and `stored`: a
+            stored source's own primary key, each with the source as its
+            subject, named by its sourceID with the file relative to the
+            package (`parent:orders@models/orders.malloy.id`). A rollup or
+            source check serves a join only under the key the model declares
+            now. Readers look up the names they need and never parse one;
+            an unknown name or level is ignored.
           additionalProperties:
             type: object
             required: [unique]
@@ -12149,7 +12385,9 @@ components:
                 type: boolean
               level:
                 type: string
-                description: "`parent`, `middle` or `leaf`. An open set."
+                description: >-
+                  `leaf`, `rollup`, `parent` or `stored`, as the name's
+                  prefix. An open set.
 
     ContractColumn:
       type: object
@@ -12315,8 +12553,15 @@ components:
             is non-terminal, never a refusal: the package reads its tables and
             derives its plan again at once, and the next build either builds
             the source over the upstream's table as it is or the plan refuses
-            it (`upstream_table_unusable`); the source is `retryable`. An open
-            set; absent for a failure that has none.
+            it (`upstream_table_unusable`); the source is `retryable`.
+            `instruction_unresolved` (an instruction no source in the run's
+            build plan resolves to, so nothing was built for it; not
+            `retryable` until the caller reads the plan again). Every
+            instructed source ends in `entries` or `failures`: one the run's
+            plan refused since the caller read it is a refusal carrying the
+            plan's reason, and any other unmatched instruction fails with this
+            code; none is dropped. An open set; absent for a failure that has
+            none.
         refused:
           type: boolean
           description: >-
@@ -12814,8 +13059,10 @@ components:
       in: path
       required: true
       description: |
-        Schema within the storage destination. A table built from a bare
-        physical name lives in `main`.
+        Schema within the storage destination: the path's table is `{schemaName}.{tableName}`.
+        A build writes a bare physical name into the destination's `destinationSchema`
+        (`main` when it declares none), so a drop in `main` on a destination that sets
+        another `destinationSchema` answers `400` naming it.
       schema:
         $ref: "#/components/schemas/IdentifierPattern"
     materializationId:

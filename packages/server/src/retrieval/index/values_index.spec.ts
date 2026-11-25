@@ -3,17 +3,24 @@
 
 import { beforeAll, describe, expect, it } from "bun:test";
 import { QueryTimeoutError, ServiceUnavailableError } from "../../errors";
+import { createCatalogTables } from "../../storage/duckdb/schema";
 import {
    compileFcjFixture,
+   openTempDb,
    type FcjFixture,
 } from "../../test_helpers/fcj_fixture";
+import { readDefinitionOf } from "../model/catalog";
+import { compileModelFiles } from "../../test_helpers/get_context_join_fixture";
 import embeddings from "../../test_helpers/value_embeddings_fixture.json";
 import { normalizeText } from "../search/value_match";
 import type { DocParts } from "./doc_parts";
 import { toUnit } from "./vectors";
 import {
    buildValueIndex,
+   callerKeyOf,
+   combinationsOf,
    MEANING_SHORT_FLOOR,
+   partitionKeyPart,
    ValueIndex,
    type IndexValueFetcher,
    type IndexValueRequest,
@@ -51,8 +58,12 @@ beforeAll(async () => {
 });
 
 const noParts = new Map<string, DocParts>();
+/** The environment's connections, as the read key sees them. */
+let connections: unknown[] = [{ name: "duckdb", type: "duckdb" }];
 const read = (f = fetcher) => ({
-   environmentStore: {} as never,
+   environmentStore: {
+      getEnvironment: async () => ({ listApiConnections: () => connections }),
+   } as never,
    environmentName: "env",
    packageName: "fixture",
    fetcher: f,
@@ -158,38 +169,6 @@ describe("value index build", () => {
       );
    });
 
-   it("given the build it replaces, reads only the dimensions that failed there", async () => {
-      const first = await buildValueIndex({
-         catalog: fixture.catalog,
-         parts: noParts,
-         cap: 100,
-         read: read(async (req) => {
-            if (req.source === "cities")
-               throw new ServiceUnavailableError("busy");
-            return fetcher(req);
-         }),
-      });
-      asked.length = 0;
-      const { index, report } = await buildValueIndex({
-         catalog: fixture.catalog,
-         parts: noParts,
-         cap: 100,
-         read: read(),
-         previous: first,
-      });
-      expect(asked.map((r) => r.source)).toEqual(["cities"]);
-      expect(report).toMatchObject({ dimensionsRead: 1, dimensionsReused: 1 });
-      expect(index.values.map((v) => v.value).sort()).toEqual(
-         [
-            "Boulder",
-            "Chicago O'Hare (ORD)",
-            "Denver",
-            "Denver International (DIA)",
-            "N/A",
-         ].sort(),
-      );
-   });
-
    it("reports a failed read and goes on", async () => {
       const failing: IndexValueFetcher = async (req) => {
          if (req.source === "cities") throw new Error("table not found");
@@ -230,6 +209,455 @@ describe("value index build", () => {
          },
       ]);
       expect(index.size).toBe(0);
+   });
+});
+
+describe("value index build with stored reads", () => {
+   const ALL = [
+      "Boulder",
+      "Chicago O'Hare (ORD)",
+      "Denver",
+      "Denver International (DIA)",
+      "N/A",
+   ];
+   const build = (
+      db: Parameters<typeof buildValueIndex>[0]["db"],
+      f = fetcher,
+      extra: Partial<Parameters<typeof buildValueIndex>[0]> = {},
+   ) =>
+      buildValueIndex({
+         catalog: fixture.catalog,
+         parts: noParts,
+         cap: 100,
+         read: read(f),
+         db,
+         ...extra,
+      });
+   const sorted = (index: ValueIndex) =>
+      index.values.map((v) => v.value).sort();
+
+   it("reuses a stored read, and reads again only what failed", async () => {
+      const { db, close } = await openTempDb(createCatalogTables);
+      try {
+         await build(db, async (req) => {
+            if (req.source === "cities")
+               throw new ServiceUnavailableError("busy");
+            return fetcher(req);
+         });
+         asked.length = 0;
+         const second = await build(db);
+         expect(asked.map((r) => r.source)).toEqual(["cities"]);
+         expect(second.report).toMatchObject({
+            dimensionsRead: 1,
+            dimensionsReused: 1,
+            valuesFromData: 5,
+         });
+         expect(sorted(second.index)).toEqual(ALL);
+
+         asked.length = 0;
+         const third = await build(db);
+         expect(asked).toEqual([]);
+         expect(third.report).toMatchObject({
+            dimensionsRead: 0,
+            dimensionsReused: 2,
+         });
+         expect(sorted(third.index)).toEqual(ALL);
+      } finally {
+         await close();
+      }
+   });
+
+   it("reads again when the source's definition, the cap or the age no longer match", async () => {
+      const { db, close } = await openTempDb(createCatalogTables);
+      const cities = fixture.catalog.sources.get("cities@travel.malloy")!;
+      const definition = cities.readDefinition;
+      try {
+         await build(db);
+         cities.readDefinition = "edited";
+         asked.length = 0;
+         await build(db);
+         expect(asked.map((r) => r.source)).toEqual(["cities"]);
+
+         asked.length = 0;
+         const cut = await build(db, fetcher, { cap: 2 });
+         expect(asked.map((r) => r.source)).toEqual(["cities", "flights"]);
+         expect(cut.report.cut).toEqual([{ dimension: ARRIVES, kept: 2 }]);
+         // The cut is stored with the read, so a reuse still reports it.
+         asked.length = 0;
+         const again = await build(db, fetcher, { cap: 2 });
+         expect(asked).toEqual([]);
+         expect(again.report.cut).toEqual([{ dimension: ARRIVES, kept: 2 }]);
+
+         asked.length = 0;
+         await build(db, fetcher, { cap: 2, reuseMaxAgeMs: 0 });
+         expect(asked.map((r) => r.source)).toEqual(["cities", "flights"]);
+
+         // A rotated credential keeps the reads; a connection pointed
+         // elsewhere reads again.
+         const before = connections;
+         try {
+            connections = [{ name: "duckdb", type: "duckdb", password: "new" }];
+            asked.length = 0;
+            await build(db, fetcher, { cap: 2 });
+            expect(asked).toEqual([]);
+            connections = [{ name: "duckdb", type: "duckdb", role: "other" }];
+            await build(db, fetcher, { cap: 2 });
+            expect(asked.map((r) => r.source)).toEqual(["cities", "flights"]);
+         } finally {
+            connections = before;
+         }
+      } finally {
+         if (definition) cities.readDefinition = definition;
+         await close();
+      }
+   });
+
+   it("checks the read budget before every read, and stores the reads it made", async () => {
+      const { db, close } = await openTempDb(createCatalogTables);
+      const cities = fixture.catalog.sources.get("cities@travel.malloy")!;
+      cities.gated = true;
+      cities.partitionKey = [
+         { column: "tenant", given: "TENANT", type: "string" },
+      ];
+      let clock = 0;
+      const slow: IndexValueFetcher = async (req) => {
+         asked.push(req);
+         clock += 100;
+         return { values: [], truncated: false };
+      };
+      const realNow = Date.now;
+      Date.now = () => realNow() + clock;
+      try {
+         asked.length = 0;
+         const first = await build(db, slow, {
+            givens: { TENANT: ["a", "b", "c", "d"] },
+            readBudgetMs: 150,
+         });
+         // Two reads fit; the rest of the dimension waits for the retry.
+         expect(asked.filter((r) => r.source === "cities").length).toBe(2);
+         expect(first.report.failed.map((f) => f.dimension)).toContain(CITY);
+         asked.length = 0;
+         await build(db, slow, { givens: { TENANT: ["a", "b", "c", "d"] } });
+         expect(
+            asked.filter((r) => r.source === "cities").map((r) => r.givens),
+         ).toEqual([{ TENANT: "c" }, { TENANT: "d" }]);
+      } finally {
+         Date.now = realNow;
+         cities.gated = false;
+         delete cities.partitionKey;
+         await close();
+      }
+   });
+
+   it("keeps a keyed value's key, and reads only a combination it has not stored", async () => {
+      const { db, close } = await openTempDb(createCatalogTables);
+      const cities = fixture.catalog.sources.get("cities@travel.malloy")!;
+      cities.gated = true;
+      cities.partitionKey = [
+         { column: "tenant", given: "TENANT", type: "string" },
+      ];
+      const keyed: IndexValueFetcher = async (req) => {
+         if (req.source !== "cities") return fetcher(req);
+         asked.push(req);
+         const tenant = String(req.givens?.TENANT);
+         return {
+            values: [{ value: `${tenant} city`, count: 1, key: tenant }],
+            truncated: false,
+         };
+      };
+      try {
+         await build(db, keyed, { givens: { TENANT: ["acme"] } });
+         asked.length = 0;
+         const { index, report } = await build(db, keyed, {
+            givens: { TENANT: ["acme", "globex"] },
+         });
+         // flights reads no given, so its one read is reused.
+         expect(asked.map((r) => [r.source, r.givens?.TENANT])).toEqual([
+            ["cities", "globex"],
+         ]);
+         expect(report).toMatchObject({
+            dimensionsRead: 1,
+            dimensionsReused: 1,
+         });
+         expect(
+            index.values
+               .filter((v) => v.dimension === CITY)
+               .map((v) => `${v.key}:${v.value}`),
+         ).toEqual(["acme:acme city", "globex:globex city"]);
+      } finally {
+         cities.gated = false;
+         delete cities.partitionKey;
+         await close();
+      }
+   });
+});
+
+describe("a source's read definition", () => {
+   const hashOf = async (text: string) => {
+      const { pkg } = await compileModelFiles({ "m.malloy": text });
+      const model = (
+         pkg as { getModel: (p: string) => { getModelDef: () => never } }
+      ).getModel("m.malloy");
+      return readDefinitionOf(model.getModelDef(), "s");
+   };
+   const base = (doc: string, where = "", gate = "") => `##! experimental.givens
+given: TENANT :: string
+${gate}
+#(doc) ${doc}
+source: s is duckdb.sql("select 'a' as tenant, 'x' as city") extend {
+  ${where}
+  #(doc) The city. ${doc}
+  dimension: town is city
+}`;
+
+   it("is the same for two compiles of a source that joins a query", async () => {
+      const text = `${base("One row per city.")}
+source: t is s extend {
+  join_one: q is s -> { group_by: tenant } on tenant = q.tenant
+}`;
+      const hash = async () => {
+         const { pkg } = await compileModelFiles({ "m.malloy": text });
+         const model = (
+            pkg as { getModel: (p: string) => { getModelDef: () => never } }
+         ).getModel("m.malloy");
+         return readDefinitionOf(model.getModelDef(), "t");
+      };
+      const first = await hash();
+      expect(first).toBeDefined();
+      expect(await hash()).toBe(first);
+   });
+
+   it("ignores a table column's inferred type, but not a dimension's expression", async () => {
+      const { pkg } = await compileModelFiles({
+         "m.malloy": base("One row per city."),
+      });
+      const def = (
+         pkg as {
+            getModel: (p: string) => {
+               getModelDef: () => Record<string, never>;
+            };
+         }
+      )
+         .getModel("m.malloy")
+         .getModelDef();
+      const plain = readDefinitionOf(def as never, "s");
+      const source = (
+         def as unknown as { contents: Record<string, { fields: unknown[] }> }
+      ).contents.s;
+      const fields = source.fields as Array<Record<string, unknown>>;
+      const column = fields.find((f) => f.name === "city")!;
+      const town = fields.find((f) => f.name === "town")!;
+      const [type, e] = [column.type, town.e];
+      try {
+         // A Snowflake VARIANT column can come back typed differently.
+         column.type = "sql native";
+         expect(readDefinitionOf(def as never, "s")).toBe(plain);
+         town.e = { node: "stringLiteral", literal: "y" };
+         expect(readDefinitionOf(def as never, "s")).not.toBe(plain);
+      } finally {
+         column.type = type;
+         town.e = e;
+      }
+   });
+
+   it("ignores the order a warehouse lists a table's columns in", async () => {
+      const { pkg } = await compileModelFiles({
+         "m.malloy": base("One row per city."),
+      });
+      const def = (
+         pkg as {
+            getModel: (p: string) => {
+               getModelDef: () => Record<string, never>;
+            };
+         }
+      )
+         .getModel("m.malloy")
+         .getModelDef();
+      const plain = readDefinitionOf(def as never, "s");
+      const source = (
+         def as unknown as { contents: Record<string, { fields: unknown[] }> }
+      ).contents.s;
+      expect(source.fields.length).toBeGreaterThan(1);
+      source.fields.reverse();
+      try {
+         expect(readDefinitionOf(def as never, "s")).toBe(plain);
+      } finally {
+         source.fields.reverse();
+      }
+   });
+
+   it("ignores docs and moved lines, and changes with the rows or the gate", async () => {
+      const plain = await hashOf(base("One row per city."));
+      expect(plain).toBeDefined();
+      expect(await hashOf(base("Another doc."))).toBe(plain);
+      expect(await hashOf(`\n\n${base("One row per city.")}`)).toBe(plain);
+      expect(
+         await hashOf(base("One row per city.", "where: city != 'y'")),
+      ).not.toBe(plain);
+      expect(
+         await hashOf(
+            base("One row per city.", "", "#(access_filter) tenant = $TENANT"),
+         ),
+      ).not.toBe(plain);
+   });
+
+   it("sees a gate in any bracket the annotation reader accepts", async () => {
+      for (const [open, close] of [
+         ["[", "]"],
+         ["{", "}"],
+         ["<", ">"],
+      ]) {
+         const gate = (g: string) =>
+            hashOf(
+               base(
+                  "One row per city.",
+                  "",
+                  `#${open}access_filter${close} tenant = ${g}`,
+               ),
+            );
+         expect(await gate("$TENANT")).not.toBe(await gate("'acme'"));
+      }
+   });
+});
+
+describe("a partition key part", () => {
+   it("reads only a number given as a number", () => {
+      expect(partitionKeyPart("001", "string")).toBe("001");
+      expect(partitionKeyPart("1", "string")).toBe("1");
+      expect(partitionKeyPart("362023.0", "number")).toBe("362023");
+      expect(partitionKeyPart(362023, "number")).toBe("362023");
+      expect(partitionKeyPart("001", "number")).toBe("1");
+      expect(partitionKeyPart(["7"], "number")).toBe("7");
+      // Past 2^53 every digit is kept, so two IDs never fold together.
+      expect(partitionKeyPart("9007199254740993", "number")).toBe(
+         "9007199254740993",
+      );
+      expect(partitionKeyPart(9007199254740993n, "number")).toBe(
+         "9007199254740993",
+      );
+      expect(partitionKeyPart(null, "number")).toBeUndefined();
+   });
+});
+
+describe("value index build over a source whose gate splits its rows", () => {
+   /** A keyed read: each tenant's cities, under the tenant's key. */
+   const keyed: IndexValueFetcher = async (req) => {
+      if (req.source !== "cities") return fetcher(req);
+      asked.push(req);
+      const rows = [
+         { value: "Denver", count: 3, key: "acme" },
+         { value: "Boulder", count: 1, key: "acme" },
+         { value: "Paris", count: 2, key: "globex" },
+      ];
+      const tenant = req.givens?.TENANT;
+      return {
+         values: rows.filter((r) => tenant === undefined || r.key === tenant),
+         truncated: false,
+      };
+   };
+   const withKey = async <T>(run: () => Promise<T>): Promise<T> => {
+      const cities = fixture.catalog.sources.get("cities@travel.malloy")!;
+      cities.gated = true;
+      cities.partitionKey = [
+         { column: "tenant", given: "TENANT", type: "string" },
+      ];
+      try {
+         return await run();
+      } finally {
+         cities.gated = false;
+         delete cities.partitionKey;
+      }
+   };
+
+   it("skips a keyed source no configured givens name, saying how to list them", async () => {
+      asked.length = 0;
+      await withKey(async () => {
+         const { report } = await buildValueIndex({
+            catalog: fixture.catalog,
+            parts: noParts,
+            cap: 100,
+            read: read(keyed),
+         });
+         expect(asked.map((r) => r.source)).toEqual(["flights"]);
+         expect(report.skipped).toEqual([
+            {
+               dimension: CITY,
+               reason:
+                  'its source\'s rows are split by TENANT, and reading every value of it scans the whole table. Fix: list the ones to index in publisher.config.json, "retrieval": { "dimensionValues": { "givens": { "fixture": { "TENANT": [...] } } } }',
+            },
+         ]);
+      });
+   });
+
+   it("with configured givens, reads once per listed value and keeps each value under its key", async () => {
+      asked.length = 0;
+      await withKey(async () => {
+         const { index, report } = await buildValueIndex({
+            catalog: fixture.catalog,
+            parts: noParts,
+            cap: 100,
+            read: read(keyed),
+            givens: { TENANT: ["acme", "globex"] },
+         });
+         expect(
+            asked.map((r) => [r.source, r.givens?.TENANT, r.partitionColumns]),
+         ).toEqual([
+            ["cities", "acme", ["tenant"]],
+            ["cities", "globex", ["tenant"]],
+            // flights reads no given: read once, with none.
+            ["flights", undefined, undefined],
+         ]);
+         expect(
+            index.values
+               .filter((v) => v.dimension === CITY)
+               .map((v) => `${v.key}:${v.value}`),
+         ).toEqual(["acme:Denver", "acme:Boulder", "globex:Paris"]);
+         // Read once, so its count is not summed across the combinations.
+         expect(
+            index.values.find((v) => v.value === "Denver International (DIA)")
+               ?.count,
+         ).toBe(10);
+         expect(report.dimensionsRead).toBe(2);
+         const searchAs = (givens?: Record<string, unknown>) => {
+            const key = callerKeyOf(fixture.catalog, givens);
+            return index
+               .search("Paris", (d, k) => k === undefined || key(d) === k)
+               .map((m) => m.value);
+         };
+         expect(searchAs({ TENANT: "globex" })).toEqual(["Paris"]);
+         expect(searchAs({ TENANT: "acme" })).toEqual([]);
+         expect(searchAs()).toEqual([]);
+      });
+   });
+
+   it("names the config fix when a read needs a given nobody set", async () => {
+      const { report } = await buildValueIndex({
+         catalog: fixture.catalog,
+         parts: noParts,
+         cap: 100,
+         read: read(async (req) => {
+            if (req.source === "cities")
+               throw new Error(
+                  "Given 'TENANT' has no value and no default. To fix: ...",
+               );
+            return fetcher(req);
+         }),
+      });
+      expect(report.skipped).toEqual([
+         {
+            dimension: CITY,
+            reason:
+               'the read needs the given TENANT, which has no default. Fix: name its values for this package in publisher.config.json, "retrieval": { "dimensionValues": { "givens": { "fixture": { "TENANT": [...] } } } }',
+         },
+      ]);
+   });
+
+   it("makes one combination per pairing of the listed values, and one read with none when nothing is set", () => {
+      expect(combinationsOf(undefined)).toEqual([undefined]);
+      expect(combinationsOf({ A: [1, 2], B: ["x"] })).toEqual([
+         { A: 1, B: "x" },
+         { A: 2, B: "x" },
+      ]);
    });
 });
 

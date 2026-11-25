@@ -27,7 +27,10 @@
  * back.
  */
 
-import { contractFor } from "../../../src/test_helpers/contract_fixture";
+import {
+   describedContract,
+   storageContractFor,
+} from "../../../src/test_helpers/contract_fixture";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -272,7 +275,7 @@ async function loadAndBind(
          );
          database[entry.sourceEntityId] = {
             tableName: table,
-            contract: contractFor(),
+            contract: await describedContract(warehouse, table),
             connectionName: "duckdb",
             ...(setup.databaseStale ? STALE : {}),
          };
@@ -299,7 +302,7 @@ async function loadAndBind(
             sourceEntityId: entry.sourceEntityId,
             sourceName: entry.name,
             physicalTableName: table,
-            contract: contractFor(),
+            contract: storageContractFor(schema),
             storageDestinationName: "lake",
             ...(entry.origin === "rollup" ? { origin: "rollup" } : {}),
             ...(setup.storageStale ? STALE : {}),

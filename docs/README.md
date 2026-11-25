@@ -50,7 +50,7 @@ every doc below points back to one of them, and each example's README points bac
 | [choosing-a-surface.md](choosing-a-surface.md) | Pick between a report (and its layout, linear or grid) and an HTML data app.                       |
 | [reports.md](reports.md)                       | Build a report, linear or grid, by dragging tiles in the Console or by writing its `.malloy` file. |
 | [ai-agents.md](ai-agents.md)                   | Connect an AI agent, over MCP or (unattended) over REST, and ground it in your models.             |
-| [html-data-apps.md](html-data-apps.md)         | Ship a no-build HTML dashboard **inside a package**, hosted by Publisher.                          |
+| [html-data-apps.md](html-data-apps.md)         | Ship a no-build HTML data app **inside a package**, hosted by Publisher.                           |
 | [embedded-data-apps.md](embedded-data-apps.md) | _Advanced/internal:_ the React SDK the Console is built from.                                      |
 
 ## Model & govern

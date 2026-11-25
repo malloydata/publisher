@@ -18,6 +18,7 @@ import {
    DROP_OCCASIONS,
    KEY_CHECK_KINDS,
    KEY_CHECK_OUTCOMES,
+   recordQueryWalk,
    recordAnnotationFindings,
    recordAttributionSkipped,
    recordAutoLoadOutcome,
@@ -37,8 +38,7 @@ import {
    recordScheduledFire,
    recordSchedulerTickSkipped,
    recordSharedAddressInstructions,
-   recordStaleUpstreamEntry,
-   recordUpstreamRecompute,
+   recordUpstreamReadUnchecked,
    recordStoredColumnTypeMismatch,
    recordTableCollision,
    recordStorageTableRetained,
@@ -241,7 +241,7 @@ describe("materialization_metrics", () => {
          "failed",
          "cancelled",
       ]);
-      expect(INCREMENTAL_STEP_REASONS).toHaveLength(15);
+      expect(INCREMENTAL_STEP_REASONS).toHaveLength(19);
 
       // build_total: failure_class is none for the four other outcomes, and
       // one of the four failure classes when failed: 6 x 2 x (4 + 4) = 96.
@@ -412,6 +412,7 @@ describe("materialization_metrics", () => {
  * instrument names, so an instrument added without a case here fails.
  */
 const EMISSIONS: Record<string, () => void> = {
+   publisher_query_walks_total: () => recordQueryWalk("scope"),
    publisher_materialization_runs_total: () =>
       recordMaterializationRun("auto", "success", 1),
    publisher_materialization_run_duration_ms: () =>
@@ -475,10 +476,8 @@ const EMISSIONS: Record<string, () => void> = {
       recordStoredColumnTypeMismatch("serve", "number"),
    publisher_storage_chained_build_total: () =>
       recordChainedStorageBuild("parent_reuse"),
-   publisher_materialization_stale_upstream_entry_total: () =>
-      recordStaleUpstreamEntry("storage"),
    publisher_materialization_upstream_recompute_total: () =>
-      recordUpstreamRecompute("moved", "chained", "recomputed"),
+      recordUpstreamReadUnchecked("chained"),
 };
 
 /** Every instrument name `materialization_metrics.ts` passes to a lazy constructor. */

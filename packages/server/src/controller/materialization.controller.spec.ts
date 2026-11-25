@@ -539,6 +539,85 @@ describe("MaterializationController.createMaterialization validation", () => {
       ).toBeUndefined();
    });
 
+   it("carries a reference's ledger whole, and drops a malformed one or one naming another table or source with a warning", async () => {
+      // The upstream's entry as the publisher reported it, unknown keys too.
+      const ledger = {
+         connectionName: "wh",
+         physicalTableName: "up_v1",
+         coveredThrough: "2024-06-20",
+         coveredThroughType: "date",
+         watermark: "order_date",
+         strategy: "merge",
+         mergeKeys: ["id"],
+         sourceEntityId: "b1",
+         advancedBy: "run-2",
+         seededBy: "run-1",
+         later: { x: 1 },
+      };
+      const body = (refLedger: unknown, ref: Record<string, unknown> = {}) => ({
+         buildInstructions: {
+            sources: [
+               {
+                  sourceEntityId: "b2",
+                  materializedTableId: "mt-2",
+                  physicalTableName: "ext_v1",
+               },
+            ],
+            referenceManifest: [
+               {
+                  sourceEntityId: "b1",
+                  physicalTableName: "up_v1",
+                  connectionName: "wh",
+                  ledger: refLedger,
+                  ...ref,
+               },
+            ],
+         },
+      });
+      const refOf = async (b: Record<string, unknown>) =>
+         ((await parse(b)) as { referenceManifest: Record<string, unknown>[] })
+            .referenceManifest[0];
+      expect((await refOf(body(ledger))).ledger).toEqual(ledger);
+      // Null reads as absent.
+      expect("ledger" in (await refOf(body(null)))).toBe(false);
+      const warn = spyOn(logger, "warn");
+      try {
+         for (const [bad, ref] of [
+            [{ ...ledger, strategy: "x" }, {}],
+            ["not an entry", {}],
+            // Another table than the reference's, on each identity field.
+            [{ ...ledger, physicalTableName: "other_v1" }, {}],
+            [{ ...ledger, connectionName: "other" }, {}],
+            [{ ...ledger, storageDestinationName: "lake" }, {}],
+            [ledger, { storageDestinationName: "lake" }],
+            [ledger, { connectionName: undefined }],
+            // The same table, but another source's entry: a host whose names
+            // are stable across versions carrying the previous definition's.
+            [{ ...ledger, sourceEntityId: "b1-previous" }, {}],
+            [ledger, { sourceEntityId: "b1-next" }],
+         ] as const) {
+            warn.mockClear();
+            const parsed = await refOf(body(bad, ref));
+            // The reference itself stands; only its ledger is dropped.
+            expect(parsed.physicalTableName).toBe("up_v1");
+            expect("ledger" in parsed).toBe(false);
+            expect(
+               warn.mock.calls.some(
+                  (c) =>
+                     String(c[0]).includes(
+                        "referenceManifest entry's ledger",
+                     ) &&
+                     (c as unknown[])[1] !== undefined &&
+                     ((c as unknown[])[1] as { reasonCode?: string })
+                        .reasonCode === "reference_ledger_dropped",
+               ),
+            ).toBe(true);
+         }
+      } finally {
+         warn.mockRestore();
+      }
+   });
+
    it("drops a malformed ledger entry, keeping the rest, and warns naming the table and defect", async () => {
       // Hosts courier entries whole, so a wrong shape is a corrupted entry: it
       // is dropped (its source seeds) rather than wedging every build of the
@@ -757,41 +836,18 @@ describe("MaterializationController.createMaterialization validation", () => {
          realization: "COPY",
       };
 
-      it("accepts recompute and refuse, ignores both, and warns once per request", async () => {
-         const warn = spyOn(logger, "warn");
-         try {
-            for (const warehouseReach of ["recompute", "refuse"]) {
-               warn.mockClear();
-               const parsed = await parse({
-                  buildInstructions: {
-                     sources: [SOURCE],
-                     strictUpstreams: true,
-                     warehouseReach,
-                  },
-               });
-               expect("warehouseReach" in parsed).toBe(false);
-               expect("strictUpstreams" in parsed).toBe(false);
-               const deprecations = warn.mock.calls.filter((c) =>
-                  String(c[0]).includes("deprecated and ignored"),
-               );
-               expect(deprecations).toHaveLength(1);
-               expect((deprecations[0] as unknown[])[1]).toMatchObject({
-                  options: ["strictUpstreams", "warehouseReach"],
-               });
-            }
-            warn.mockClear();
-            await parse({ buildInstructions: { sources: [SOURCE] } });
-            expect(
-               warn.mock.calls.some((c) =>
-                  String(c[0]).includes("deprecated and ignored"),
-               ),
-            ).toBe(false);
-         } finally {
-            warn.mockRestore();
+      it("refuses any value by name with a 400: the option was removed", async () => {
+         for (const warehouseReach of ["recompute", "refuse", "skip", 1]) {
+            const { controller } = build();
+            await expect(
+               controller.createMaterialization("env", "pkg", {
+                  buildInstructions: { sources: [SOURCE], warehouseReach },
+               }),
+            ).rejects.toThrow(/buildInstructions\.warehouseReach was removed/);
          }
       });
 
-      it("reads null and absent alike, as the default", async () => {
+      it("reads null and absent alike, as absent", async () => {
          for (const buildInstructions of [
             { sources: [SOURCE], warehouseReach: null },
             { sources: [SOURCE] },
@@ -801,16 +857,22 @@ describe("MaterializationController.createMaterialization validation", () => {
          }
       });
 
-      it("rejects any other value with a 400 naming the accepted ones", async () => {
-         for (const warehouseReach of ["REFUSE", "skip", 1, true]) {
-            const { controller } = build();
-            await expect(
-               controller.createMaterialization("env", "pkg", {
-                  buildInstructions: { sources: [SOURCE], warehouseReach },
-               }),
-            ).rejects.toThrow(
-               /warehouseReach must be one of recompute \| refuse/,
+      it("still accepts strictUpstreams, ignores it, and warns once per request", async () => {
+         const warn = spyOn(logger, "warn");
+         try {
+            const parsed = await parse({
+               buildInstructions: { sources: [SOURCE], strictUpstreams: true },
+            });
+            expect("strictUpstreams" in parsed).toBe(false);
+            const deprecations = warn.mock.calls.filter((c) =>
+               String(c[0]).includes("deprecated and ignored"),
             );
+            expect(deprecations).toHaveLength(1);
+            expect((deprecations[0] as unknown[])[1]).toMatchObject({
+               options: ["strictUpstreams"],
+            });
+         } finally {
+            warn.mockRestore();
          }
       });
    });

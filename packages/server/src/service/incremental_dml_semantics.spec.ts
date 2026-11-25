@@ -29,6 +29,10 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import {
    applyDeltaScript,
    deltaStatements,
+   isMergeKeyGuardFailure,
+   planIncrementalStep,
+   probeRepeatedKeyInRange,
+   warehouseDeltaTarget,
 } from "./materialization/run/incremental_apply";
 
 let duckdb: DuckDBConnection;
@@ -262,3 +266,235 @@ describe("merge (merge_key= declared)", () => {
       ]);
    });
 });
+
+describe.each(["postgres", "duckdb"])(
+   "merge of a delta that repeats a merge key, %s spelling",
+   (dialect) => {
+      /** The merge's error, or undefined when it committed. */
+      async function failure(
+         name: string,
+         rows: [number | null, string, number][],
+      ): Promise<unknown> {
+         const statements = deltaStatements({
+            dialect,
+            quotedTablePath: `"${name}"`,
+            deltaSQL: rows
+               .map(
+                  ([id, date, revenue]) =>
+                     `SELECT CAST(${id ?? "NULL"} AS INTEGER) AS "order_id", ` +
+                     `DATE '${date}' AS "order_date", ${revenue} AS "revenue"`,
+               )
+               .join(" UNION ALL "),
+            columns: COLUMNS,
+            mergeKeys: ["order_id"],
+            watermarkName: "order_date",
+            start: { malloyType: "date", value: "2024-06-01" },
+            end: { malloyType: "date", value: "2024-07-01" },
+         });
+         try {
+            await applyDeltaScript(runner, dialect, statements);
+            return undefined;
+         } catch (err) {
+            return err;
+         }
+      }
+
+      // Each case leaves the table as it was: the delta is rolled back, and
+      // the source is rebuilt in full (incremental_reasons.spec.ts), where a
+      // merge would have stored one of the two rows, or both.
+      it.each([
+         [
+            "a stored key, at two watermarks",
+            [
+               [1, "2024-06-02", 11],
+               [1, "2024-06-03", 12],
+            ],
+         ],
+         [
+            "a new key, at two watermarks",
+            [
+               [2, "2024-06-02", 21],
+               [2, "2024-06-03", 22],
+            ],
+         ],
+         [
+            "a key at one watermark twice (a tie)",
+            [
+               [1, "2024-06-02", 11],
+               [1, "2024-06-02", 12],
+            ],
+         ],
+         [
+            "a NULL key twice, as the merge matches NULL to NULL",
+            [
+               [null, "2024-06-02", 31],
+               [null, "2024-06-03", 32],
+            ],
+         ],
+      ] as [string, [number | null, string, number][]][])(
+         "fails on %s, and leaves the table as it was",
+         async (_label, rows) => {
+            const name = await seed([[1, "2024-06-01", 10]]);
+            const err = await failure(name, rows);
+            expect(isMergeKeyGuardFailure(err)).toBe(true);
+            expect(await contents(name)).toEqual(["1|2024-06-01|10"]);
+         },
+      );
+
+      it("merges a NULL key beside a non-NULL one: they are distinct keys", async () => {
+         const name = await seed([[1, "2024-06-01", 10]]);
+         expect(
+            await failure(name, [
+               [null, "2024-06-02", 31],
+               [1, "2024-06-03", 12],
+            ]),
+         ).toBeUndefined();
+         expect(await contents(name)).toEqual([
+            "1|2024-06-03|12",
+            "null|2024-06-02|31",
+         ]);
+      });
+   },
+);
+
+describe("a DuckDB table whose source column was widened after the build", () => {
+   // DuckDB (and MotherDuck) reads the delta's types with DESCRIBE, which
+   // runs nothing. A FLOAT column given a DOUBLE rounds it with no error.
+   async function plan(storedAmt: string, sourceAmt: string) {
+      const name = `widened_${table++}`;
+      await duckdb.runSQL(
+         `CREATE TABLE "${name}" AS SELECT 1 AS "order_id", ` +
+            `DATE '2024-06-01' AS "order_date", CAST(1.5 AS ${storedAmt}) AS "revenue"`,
+      );
+      const lineage = {
+         physicalTableName: `memory.main.${name}`,
+         connectionName: "duckdb",
+         sourceEntityId: "sid",
+         watermarkName: "order_date",
+         watermarkType: "date",
+         mergeKeys: [] as string[],
+         scopeColumns: [] as string[],
+         strategy: "range_replace" as const,
+      };
+      return planIncrementalStep({
+         target: warehouseDeltaTarget({
+            dialect: "duckdb",
+            runner: (sql) => duckdb.runSQL(sql),
+            quotedTablePath: `"${name}"`,
+            lineage,
+            sourceSQL:
+               `SELECT 2 AS "order_id", DATE '2024-06-15' AS "order_date", ` +
+               `CAST(0.123456789 AS ${sourceAmt}) AS "revenue"`,
+         }),
+         lineage,
+         ledgerEntry: {
+            sourceEntityId: "sid",
+            coveredThroughValue: "2024-06-01",
+            coveredThroughType: "date",
+            watermarkDimension: "order_date",
+            mergeKeyDimensions: [],
+            derivedStrategy: "range_replace",
+            physicalTableName: lineage.physicalTableName,
+            connectionName: "duckdb",
+            storageDestinationName: undefined,
+         } as never,
+         forceRefresh: false,
+         now: new Date("2024-07-01T00:00:00Z"),
+         columns: COLUMNS,
+      });
+   }
+
+   it("rebuilds a FLOAT column the source now gives as DOUBLE", async () => {
+      const step = await plan("FLOAT", "DOUBLE");
+      expect(step).toMatchObject({
+         mode: "seed",
+         reasonCode: "shape_mismatch",
+      });
+      if (step.mode !== "seed") return;
+      expect(step.reason).toContain('"revenue" (FLOAT → DOUBLE)');
+   });
+
+   it("still deltas when the type did not move", async () => {
+      expect((await plan("DOUBLE", "DOUBLE")).mode).toBe("delta");
+   });
+});
+
+describe.each(["snowflake", "duckdb"])(
+   "the after-merge repeated-key probe, %s spelling",
+   (dialect) => {
+      // What Snowflake's unguarded merge can leave: a new key the delta read
+      // twice, inserted twice. The probe reads only keys the delta's range
+      // wrote, off the table.
+      const probe = (name: string) =>
+         probeRepeatedKeyInRange({
+            runner,
+            dialect,
+            quotedTablePath: `"${name}"`,
+            matchNames: ["order_id"],
+            watermark: "order_date",
+            start: { malloyType: "date", value: "2024-06-01" },
+            end: { malloyType: "date", value: "2024-07-01" },
+         });
+
+      it.each([
+         [
+            "a new key inserted twice in the range",
+            [
+               [1, "2024-05-01", 1],
+               [2, "2024-06-02", 2],
+               [2, "2024-06-03", 3],
+            ],
+            true,
+         ],
+         [
+            "a NULL key twice in the range",
+            [
+               [null, "2024-06-02", 2],
+               [null, "2024-06-03", 3],
+            ],
+            true,
+         ],
+         [
+            "a key once in the range and once below it",
+            [
+               [1, "2024-05-01", 1],
+               [1, "2024-06-02", 2],
+            ],
+            true,
+         ],
+         [
+            "a repeat only below the range, which no delta touched",
+            [
+               [1, "2024-05-01", 1],
+               [1, "2024-05-02", 2],
+               [2, "2024-06-02", 3],
+            ],
+            false,
+         ],
+         [
+            "each key once",
+            [
+               [1, "2024-05-01", 1],
+               [2, "2024-06-02", 2],
+            ],
+            false,
+         ],
+      ] as [string, [number | null, string, number][], boolean][])(
+         "finds %s: %p",
+         async (_label, rows, repeated) => {
+            const name = `probe_${table++}`;
+            await duckdb.runSQL(
+               `CREATE TABLE "${name}" AS ` +
+                  rows
+                     .map(
+                        ([id, date, revenue]) =>
+                           `SELECT CAST(${id ?? "NULL"} AS INTEGER) AS "order_id", ` +
+                           `DATE '${date}' AS "order_date", ${revenue} AS "revenue"`,
+                     )
+                     .join(" UNION ALL "),
+            );
+            expect(await probe(name)).toEqual({ repeated });
+         },
+      );
+   },
+);

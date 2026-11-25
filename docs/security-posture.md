@@ -229,16 +229,17 @@ Concretely:
   path the environment configures, and `PATH_ACCESS_DENIED` for a path the query or model reads
   itself. The full text, bucket and path included, is in the server
   log.
-- **A `managed` DuckLake connection reads only its catalog's `main` schema.** Its storage
-  credential reaches only `main`'s files, and because DuckLake answers some reads from catalog
-  metadata alone (columns, row counts, file statistics, listings, inlined rows), SQL on it is also
-  held to `main` before it runs: a `.table()` or `.sql()` source when the model compiles, a raw SQL
-  expression when the package loads, and raw SQL at its route. Another schema or catalog, the
+- **A `managed` DuckLake connection reads only its catalog's `main` schema and the schemas its
+  `readableSchemas` lists.** Its storage credential reaches only those schemas' files, and because
+  DuckLake answers some reads from catalog metadata alone (columns, row counts, file statistics,
+  listings, inlined rows), SQL on it is also held to those schemas before it runs: a `.table()` or
+  `.sql()` source when the model compiles, a raw SQL expression when the package loads, and raw SQL
+  at its route. Any other schema or catalog, the
   metadata catalog, DuckDB's catalog views and functions, `DESCRIBE`/`SHOW`/`SUMMARIZE`, and table
   functions other than `range`, `generate_series` and `unnest` are refused, as is a table name that is a
   path, glob or DuckDB catalog name however it is qualified; on a local data path its file allowlist
-  is `main`'s files, as its secret is scoped elsewhere; and its schema listing
-  shows only `main` (`packages/server/src/service/managed_catalog_scope.ts`). DuckDB and DuckLake
+  is those schemas' files, as its secret is scoped elsewhere; and its schema listing
+  shows only `main` and the listed schemas (`packages/server/src/service/managed_catalog_scope.ts`). DuckDB and DuckLake
   offer no attach option that hides a schema, the metadata, file statistics or inlined rows from a
   read-only attach, so this check is the control. A storage destination's own session still reads
   every schema.
@@ -406,6 +407,14 @@ A new markdown surface should go through `Prose` rather than call the library di
 (`DataAppViewer.tsx`) validate `event.source` against the iframe's `contentWindow` but never
 `event.origin`. Source-matching is the stronger of the two checks and the payload is a single
 number, so the exposure is bounded, but the check is one line.
+
+The light or dark messages make a different choice on each side. The Console's viewer takes
+`publisher:color-scheme-request` and `-applied` only from its own frame and the frame's origin, and
+sends the mode only to that origin. A page's runtime takes `publisher:color-scheme` from whatever
+window framed it, at any origin, since the mode changes only how the page looks; it answers at the
+origin the mode came from (at any origin before a mode has come, or when it came from an opaque one), and sends its request to the framing page's origin where the browser
+reports it (`location.ancestorOrigins`) and to any origin where it does not. The request carries
+nothing.
 
 **5. MCP has no tenant scoping, so a directly-reachable worker must be single-tenant.** Every
 MCP tool takes `environmentName` and `packageName` as ordinary arguments, and the two discovery

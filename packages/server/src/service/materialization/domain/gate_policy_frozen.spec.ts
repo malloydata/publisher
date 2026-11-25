@@ -74,8 +74,8 @@ const READ_FIELDS: Exactly<
    | "ownGateKept"
    | "holdsOnlyUngatedRows"
    | "gateColumnTypes"
-   | "gateColumnUpstreamTypes"
    | "gatesReadNoColumn"
+   | "gateColumnsExactRecorded"
 > = true;
 void [
    TABLE_FIELDS,
@@ -131,9 +131,10 @@ function tableRows(): string[] {
 }
 
 /** Every leg, switch setting and tables read the router lets past a gate. */
-function legRows(): string[] {
+function legRows(
+   reads: Readonly<Record<string, readonly TableRead[]>> = GATE_READS,
+): string[] {
    const out: string[] = [];
-   const reads = GATE_READS;
    for (const leg of LEGS)
       for (const sw of switches())
          for (const g3 of BOOLS) {

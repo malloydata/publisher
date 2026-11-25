@@ -56,20 +56,30 @@ import {
    storedColumnOf,
 } from "./run_plan";
 import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
-import { storageDeltaTarget } from "./incremental_storage";
-import { type StorageIncrementalRefresh } from "./materialization_build_session";
+import { stackedDeltaTarget, storageDeltaTarget } from "./incremental_storage";
+import {
+   type StackedIncrementalRefresh,
+   type StorageIncrementalRefresh,
+} from "./materialization_build_session";
 import type { QueryMetadata } from "../../query_metadata";
 import { errMessage } from "../../../utils";
 import {
    applyDeltaScript,
    countLateRows,
+   isMergeKeyGuardFailure,
    isPairGuardFailure,
+   mergeGuardedInStatement,
    isRenderableWatermarkType,
    planIncrementalStep,
+   probeRepeatedKey,
+   probeRepeatedKeyInRange,
    probeServerVersion,
+   lineageMatchColumns,
    seedCoveredThrough,
    type DeltaTarget,
+   type ExtensionParent,
    type IncrementalLineage,
+   type LedgerParent,
    type IncrementalStep,
    type RecordedBoundary,
    type SqlRunner,
@@ -78,8 +88,20 @@ import {
 import { isDecimalDeltaGuardFailure } from "./passthrough/postgres";
 import { capturedNativeSchema } from "./database_native_types";
 import {
+   coordinateWithParent,
+   ledgerParentOf,
+   type ParentStep,
+   type UnprovenGeneration,
+} from "./incremental_upstream";
+import {
    INCREMENTAL_LATE_ROWS_CODE,
+   INCREMENTAL_MERGE_KEY_NOT_UNIQUE_CODE,
+   type IncrementalCheckFinding,
+   LEDGER_ADVANCES_CAP,
+   type LedgerAdvanceChain,
+   MATERIALIZE_EXTENSION_GENERATION_UNPROVEN_CODE,
    type IncrementalDeclaration,
+   readAdvanceChain,
 } from "../domain/incremental";
 
 /**
@@ -143,6 +165,67 @@ export interface IncrementalRunContext {
     * host instructs carries what the host bound, with no field of its own.
     */
    priorLateRows?: ReadonlyMap<string, LateRows>;
+   /**
+    * Told what a refresh found of a source's checks, by content address: a
+    * `merge_key=` repeated in the source (its delta rolled back, or its
+    * rebuilt table repeating a key), a check that failed (the source is
+    * rebuilt in full every refresh until it runs), or a check passed. The
+    * package warns of the first two until the check passes.
+    */
+   noteIncrementalCheck?: (
+      sourceEntityId: string,
+      finding: IncrementalCheckFinding,
+   ) => void;
+   /**
+    * Each incremental source's step in this run, by content address, filled
+    * as it is planned: what an extension over it reads to follow it
+    * ({@link coordinateWithParent}).
+    */
+   parentSteps?: Map<string, ParentStep>;
+   /**
+    * For a standalone run: which build of each parent's table each bound
+    * entry was reached over, by the entry's address, from the manifest bound
+    * when the run started ({@link boundParentReads}). Not read when the
+    * caller supplies the ledger: a worker's bound manifest may lag the
+    * host's, and the ledger entry carries it.
+    */
+   boundParentReads?: ReadonlyMap<string, readonly LedgerParent[]>;
+   /**
+    * The extensions this run rebuilt because no record said which build of
+    * their parent's table they last read; the package warns about them.
+    */
+   unprovenGenerations?: UnprovenGeneration[];
+   /**
+    * For each source whose refresh applied nothing: the run that last
+    * changed its table, from its recorded boundary, by content address.
+    */
+   skippedAdvancedBy?: Map<string, string>;
+   /**
+    * The package's bound manifest entries' `builtAt` and `ledger`, by content
+    * address, as bound when the run started: the build an incremental
+    * source's step starts from, as its entry names it, and (standalone, where
+    * the local ledger store keeps no extension keys) its recorded history
+    * (`seededBy`, `advances`). Each is read only while the entry's
+    * `ledger.advancedBy` is the recorded boundary's, so a bound manifest
+    * that lags the ledger proves nothing.
+    */
+   boundEntries?: ReadonlyMap<
+      string,
+      Pick<ManifestEntry, "builtAt" | "ledger">
+   >;
+   /**
+    * For a standalone run: the tables its pre-run read held to their
+    * contracts for a delta to advance (deriveHoldingCarried's `advanced`),
+    * by content address. A source whose recorded boundary names any other
+    * table, or that is not here at all, is reseeded rather than advanced
+    * from its ledger (`ledger_unheld`): a ledger outlives a run that failed
+    * before it committed, and a table a source left, and nothing read
+    * either. Absent when the caller supplies the ledger.
+    */
+   heldAdvanced?: ReadonlyMap<
+      string,
+      Pick<ManifestEntry, "physicalTableName" | "storageDestinationName">
+   >;
 }
 
 /** The `LedgerEntry` keys this release reads; any other key is an extension. */
@@ -221,6 +304,8 @@ export function sourceIncrementalRefresh(
       physicalTableName: string;
       storageDestinationName?: string;
       sourceEntityId: string | undefined;
+      /** For an incremental extension table: the parent it follows. */
+      parent?: ExtensionParent;
    },
 ): { context: IncrementalRunContext; lineage: IncrementalLineage } | undefined {
    if (!context || !table.sourceEntityId) return undefined;
@@ -236,7 +321,11 @@ export function sourceIncrementalRefresh(
       storageDestinationName: table.storageDestinationName,
       sourceEntityId: table.sourceEntityId,
    });
-   return lineage ? { context, lineage } : undefined;
+   if (!lineage) return undefined;
+   return {
+      context,
+      lineage: table.parent ? { ...lineage, parent: table.parent } : lineage,
+   };
 }
 
 /**
@@ -358,6 +447,8 @@ export async function planSourceRefresh(params: {
     * `forceRefresh`, so one source can rebuild while the rest advance by delta.
     */
    reseed?: boolean;
+   /** The source's name, for what the run reports about it. */
+   sourceName?: string;
 }): Promise<IncrementalStep> {
    const { context, lineage, target } = params;
    const forceRefresh = context.forceRefresh || params.reseed === true;
@@ -393,6 +484,11 @@ export async function planSourceRefresh(params: {
          };
       }
    }
+   const unheld =
+      ledgerEntry !== null &&
+      !forceRefresh &&
+      !context.callerLedger &&
+      !heldForDelta(context, lineage);
    // Keyed on the TARGET dialect, because the version floor is about where the
    // MERGE runs (a `storage=` source reads Postgres but writes DuckDB). Probed
    // only when it can matter: the version gates MERGE alone, and with no
@@ -400,27 +496,61 @@ export async function planSourceRefresh(params: {
    const postgresVersionNum =
       lineage.strategy === "merge" &&
       capabilitiesOf(target.dialect).mergeGatedByServerVersion &&
-      ledgerEntry !== null
+      ledgerEntry !== null &&
+      !unheld
          ? await probeServerVersion(target.runner, target.dialect)
          : undefined;
-   let step: IncrementalStep;
-   try {
-      step = await planIncrementalStep({
-         target,
-         lineage,
-         ledgerEntry,
-         forceRefresh,
-         now: context.now,
-         columns: params.columns,
-         postgresVersionNum,
-      });
-   } catch (err) {
-      return {
-         mode: "seed",
-         reasonCode: "plan_error",
-         reason: `the delta could not be planned (${errMessage(err)})`,
-      };
+   const upstream = coordinateWithParent({
+      lineage,
+      recorded: ledgerEntry,
+      read: lastReadParent(context, lineage, ledgerEntry),
+      step: lineage.parent
+         ? context.parentSteps?.get(lineage.parent.address)
+         : undefined,
+   });
+   if (upstream?.reseed?.overflow && lineage.parent) {
+      logger.warn(
+         "Rebuilding an incremental extension in full: its parent was " +
+            "refreshed more often since it last read the parent's table " +
+            "than the parent's ledger lists",
+         {
+            packageName: context.packageName,
+            physicalTableName: lineage.physicalTableName,
+            parentName: lineage.parent.name,
+            listed: LEDGER_ADVANCES_CAP,
+            code: MATERIALIZE_EXTENSION_GENERATION_UNPROVEN_CODE,
+         },
+      );
    }
+   let step: IncrementalStep;
+   if (unheld) {
+      step = {
+         mode: "seed",
+         reasonCode: "ledger_unheld",
+         reason:
+            "the table its recorded boundary names was not held to its contract before the run",
+      };
+   } else {
+      try {
+         step = await planIncrementalStep({
+            target,
+            lineage,
+            ledgerEntry,
+            forceRefresh,
+            now: context.now,
+            columns: params.columns,
+            postgresVersionNum,
+            ...(upstream ? { upstream } : {}),
+         });
+      } catch (err) {
+         return {
+            mode: "seed",
+            reasonCode: "plan_error",
+            reason: `the delta could not be planned (${errMessage(err)})`,
+         };
+      }
+   }
+   noteStep(context, lineage, ledgerEntry, step, params.sourceName);
    // A caller-supplied entry that does not describe its source is the caller's
    // error: fail the run rather than seed. Reachable only when a declaration
    // moved without moving the content address, which create-time validation
@@ -439,6 +569,179 @@ export async function planSourceRefresh(params: {
       );
    }
    return step;
+}
+
+/**
+ * Whether the run's pre-run read held the table `lineage` names, the same
+ * name in the same destination, for a delta to advance
+ * ({@link IncrementalRunContext.heldAdvanced}). True when the run keeps no
+ * such set (a caller-supplied ledger, or a run that reads none).
+ */
+function heldForDelta(
+   context: IncrementalRunContext,
+   lineage: IncrementalLineage,
+): boolean {
+   if (context.heldAdvanced === undefined) return true;
+   const held = context.heldAdvanced.get(lineage.sourceEntityId);
+   return (
+      held !== undefined &&
+      held.physicalTableName === lineage.physicalTableName &&
+      (held.storageDestinationName ?? undefined) ===
+         (lineage.storageDestinationName ?? undefined)
+   );
+}
+
+/**
+ * Which build of its parent's table an extension's recorded boundary was
+ * reached over: the caller's ledger entry's `parent`; standalone, the bound
+ * manifest's record for the extension's address. Undefined for a source with
+ * no parent, or when neither records it.
+ */
+function lastReadParent(
+   context: IncrementalRunContext,
+   lineage: IncrementalLineage,
+   recorded: RecordedBoundary | null,
+): LedgerParent | undefined {
+   const parent = lineage.parent;
+   if (!parent) return undefined;
+   const echoed = recordedParent(recorded);
+   if (echoed?.sourceEntityId === parent.address) return echoed;
+   if (context.callerLedger) return undefined;
+   return context.boundParentReads
+      ?.get(lineage.sourceEntityId)
+      ?.find((read) => read.sourceEntityId === parent.address);
+}
+
+/** A string extension key of an echoed ledger entry, when it is one. */
+function stringKey(
+   extensions: Readonly<Record<string, unknown>> | undefined,
+   key: string,
+): string | undefined {
+   const value = extensions?.[key];
+   return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/**
+ * The `parent` extension key of an echoed ledger entry, when it has the
+ * shape the publisher writes; anything else reads as absent (no record).
+ */
+function recordedParent(
+   recorded: RecordedBoundary | null,
+): LedgerParent | undefined {
+   const raw = recorded?.extensions?.parent;
+   if (typeof raw !== "object" || raw === null) return undefined;
+   const p = raw as Record<string, unknown>;
+   if (typeof p.sourceEntityId !== "string") return undefined;
+   const text = (k: string) =>
+      typeof p[k] === "string" ? { [k]: p[k] as string } : {};
+   return {
+      sourceEntityId: p.sourceEntityId,
+      ...text("advancedBy"),
+      ...text("seededBy"),
+      ...text("builtAt"),
+      ...text("coveredThrough"),
+      ...text("coveredThroughType"),
+   };
+}
+
+/** The run that last changed a recorded boundary's table, when known. */
+function recordedAdvancedBy(
+   recorded: RecordedBoundary | null,
+): string | undefined {
+   if (!recorded) return undefined;
+   return (
+      stringKey(recorded.extensions, "advancedBy") ??
+      (recorded as { advancedByMaterializationId?: string })
+         .advancedByMaterializationId
+   );
+}
+
+/**
+ * The run that last changed a table its refresh left in force: this run's,
+ * for a delta or a rebuild; the recorded one, for a refresh that applied
+ * nothing. Reported on the ledger entry (`advancedBy`).
+ */
+export function advancedByOf(
+   context: IncrementalRunContext,
+   lineage: IncrementalLineage,
+   did: "delta" | "full" | "none" | undefined,
+): string | undefined {
+   if (did !== "none") return context.materializationId;
+   return context.skippedAdvancedBy?.get(lineage.sourceEntityId);
+}
+
+/**
+ * Keep a source's planned step for the extensions over it, and record an
+ * extension rebuilt because no record named its parent's build it last read
+ * (logged and warned, so a reseed on every run is not silent).
+ */
+function noteStep(
+   context: IncrementalRunContext,
+   lineage: IncrementalLineage,
+   recorded: RecordedBoundary | null,
+   step: IncrementalStep,
+   sourceName: string | undefined,
+): void {
+   const priorAdvancedBy = recordedAdvancedBy(recorded);
+   const bound = context.boundEntries?.get(lineage.sourceEntityId);
+   const boundIsPrior =
+      priorAdvancedBy !== undefined &&
+      bound?.ledger?.advancedBy === priorAdvancedBy;
+   // The caller's echoed entry carries its history; the local store keeps
+   // none, so a standalone run reads it off the bound entry.
+   const priorChain = recorded
+      ? context.callerLedger
+         ? readAdvanceChain(recorded.extensions)
+         : boundIsPrior
+           ? readAdvanceChain(bound?.ledger as Record<string, unknown>)
+           : undefined
+      : undefined;
+   context.parentSteps?.set(lineage.sourceEntityId, {
+      mode: step.mode,
+      ...(recorded
+         ? {
+              prior: {
+                 malloyType: recorded.coveredThroughType,
+                 value: recorded.coveredThroughValue,
+              },
+           }
+         : {}),
+      ...(priorAdvancedBy ? { priorAdvancedBy } : {}),
+      ...(step.mode === "delta" ? { start: step.start } : {}),
+      ...(priorChain ? { priorChain } : {}),
+      ...(boundIsPrior && bound?.builtAt
+         ? { priorBuiltAt: bound.builtAt }
+         : {}),
+   });
+   if (step.mode === "skip" && priorAdvancedBy) {
+      (context.skippedAdvancedBy ??= new Map()).set(
+         lineage.sourceEntityId,
+         priorAdvancedBy,
+      );
+   }
+   const parent = lineage.parent;
+   if (
+      parent &&
+      step.mode === "seed" &&
+      step.reasonCode === "upstream_generation_skipped" &&
+      lastReadParent(context, lineage, recorded) === undefined
+   ) {
+      logger.warn(
+         "Rebuilding an incremental extension in full: no record says which " +
+            "build of its parent's table it last read",
+         {
+            packageName: context.packageName,
+            physicalTableName: lineage.physicalTableName,
+            parentName: parent.name,
+            code: MATERIALIZE_EXTENSION_GENERATION_UNPROVEN_CODE,
+         },
+      );
+      (context.unprovenGenerations ??= []).push({
+         sourceName: sourceName ?? lineage.physicalTableName,
+         sourceEntityId: lineage.sourceEntityId,
+         parentName: parent.name,
+      });
+   }
 }
 
 /**
@@ -511,9 +814,158 @@ export async function resetLedger(
 }
 
 /**
+ * When a merge key's uniqueness is judged: after a full rebuild, after a
+ * committed delta, or when a delta's statement guard rolled it back.
+ */
+type MergeKeyPhase = "rebuild" | "delta" | "rolled_back";
+
+const MERGE_KEY_UNCHECKED: Record<
+   Exclude<MergeKeyPhase, "rolled_back">,
+   string
+> = {
+   rebuild:
+      "Could not check a merge key's uniqueness after a full rebuild; " +
+      "the next refresh will rebuild again",
+   delta:
+      "Could not check a merge key's uniqueness after a delta; the next " +
+      "refresh will rebuild in full",
+};
+
+const MERGE_KEY_REPEATED =
+   "An incremental source's merge_key= is not unique in its rows, so no " +
+   "boundary is recorded and it is rebuilt in full until it is";
+const MERGE_KEY_ROLLED_BACK =
+   "An incremental source's merge_key= is not unique in its rows, " +
+   "so its delta was rolled back and it is rebuilt in full";
+
+/**
+ * Logs and notes on the package what a merge-key check found, and answers
+ * whether the key held. A check that failed, or a repeat, is false. Only the
+ * rebuild notes a pass here: a delta's pass is noted with its other checks.
+ */
+function judgeMergeKey(
+   found: { repeated: boolean; error?: string; errorCode?: string },
+   args: {
+      context: IncrementalRunContext;
+      lineage: IncrementalLineage;
+      phase: MergeKeyPhase;
+      sourceName?: string;
+   },
+): boolean {
+   const { context, lineage, phase } = args;
+   const at = {
+      packageName: context.packageName,
+      ...(args.sourceName !== undefined ? { sourceName: args.sourceName } : {}),
+      physicalTableName: lineage.physicalTableName,
+   };
+   if (found.error !== undefined && phase !== "rolled_back") {
+      logger.warn(MERGE_KEY_UNCHECKED[phase], {
+         ...at,
+         errorCode: found.errorCode,
+      });
+      context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+         check: "merge_key",
+         outcome: "failed",
+         errorCode: found.errorCode ?? "unknown",
+      });
+      return false;
+   }
+   if (found.repeated) {
+      logger.warn(
+         phase === "rolled_back" ? MERGE_KEY_ROLLED_BACK : MERGE_KEY_REPEATED,
+         {
+            ...at,
+            code: INCREMENTAL_MERGE_KEY_NOT_UNIQUE_CODE,
+            mergeKeys: lineage.mergeKeys,
+         },
+      );
+      context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+         check: "merge_key",
+         outcome: "not_unique",
+      });
+      return false;
+   }
+   if (phase === "rebuild") {
+      context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+         check: "merge_key",
+         outcome: "passed",
+      });
+   }
+   return true;
+}
+
+/**
+ * Whether a merge source's freshly rebuilt table holds each identity once
+ * ({@link probeRepeatedKey}); always true for a range replace or a pair
+ * table, whose delta does not match rows one to one. A repeat, or a check
+ * that fails, is false: the caller records no boundary, so the source is
+ * rebuilt in full again next run rather than merged into a table where one
+ * delta row would rewrite every stored copy of its key.
+ */
+async function seededKeyIsUnique(params: {
+   context: IncrementalRunContext;
+   lineage: IncrementalLineage;
+   quotedTablePath: string;
+   runner: SqlRunner;
+   dialect: string;
+   storedColumn?: (field: string) => string;
+}): Promise<boolean> {
+   const { context, lineage } = params;
+   if (lineage.strategy !== "merge" || lineage.pair) return true;
+   const found = await probeRepeatedKey(
+      params.runner,
+      params.dialect,
+      params.quotedTablePath,
+      lineageMatchColumns(lineage, params.storedColumn),
+   );
+   return judgeMergeKey(found, { context, lineage, phase: "rebuild" });
+}
+
+/**
+ * Whether a committed merge left each identity it touched on one row, for a
+ * dialect whose merge statement carries no key guard (Snowflake; see
+ * mergeGuardedInStatement). Always true elsewhere, and for a range replace or
+ * a pair table. A repeat, or a probe that fails, is false and noted on the
+ * package, as after a full rebuild ({@link seededKeyIsUnique}).
+ */
+async function mergedKeyIsUnique(params: {
+   context: IncrementalRunContext;
+   lineage: IncrementalLineage;
+   step: Extract<IncrementalStep, { mode: "delta" }>;
+   target: DeltaTarget;
+   sourceName: string;
+}): Promise<boolean> {
+   const { context, lineage, step, target } = params;
+   if (
+      lineage.strategy !== "merge" ||
+      lineage.pair ||
+      mergeGuardedInStatement(target.dialect)
+   ) {
+      return true;
+   }
+   const stored = (field: string) => target.storedColumn?.(field) ?? field;
+   const found = await probeRepeatedKeyInRange({
+      runner: target.runner,
+      dialect: target.dialect,
+      quotedTablePath: target.quotedTablePath,
+      matchNames: lineageMatchColumns(lineage, stored),
+      watermark: stored(lineage.watermarkName),
+      start: step.start,
+      end: step.end,
+   });
+   return judgeMergeKey(found, {
+      context,
+      lineage,
+      phase: "delta",
+      sourceName: params.sourceName,
+   });
+}
+
+/**
  * Record the boundary a completed SEED reached by probing the table it wrote
  * (see {@link seedCoveredThrough}); a source with no rows records nothing, so the
- * next run seeds again.
+ * next run seeds again, and so does a merge source whose table repeats a key
+ * ({@link seededKeyIsUnique}).
  *
  * Returns the boundary (undefined when none) for the manifest entry. With a
  * caller-supplied ledger the store write is skipped and the return value is the
@@ -528,6 +980,7 @@ export async function advanceLedgerAfterSeed(params: {
    /** The column the table holds the watermark under, when renamed. */
    storedColumn?: (field: string) => string;
 }): Promise<WatermarkBound | undefined> {
+   if (!(await seededKeyIsUnique(params))) return undefined;
    const boundary = await seedCoveredThrough(
       params.runner,
       params.dialect,
@@ -597,7 +1050,15 @@ export async function applyIncrementalStep(params: {
          physicalTableName: lineage.physicalTableName,
       });
    }
-   if (step.mode === "seed") return { applied: false };
+   if (step.mode === "seed") {
+      if (step.failedCheck) {
+         context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+            ...step.failedCheck,
+            outcome: "failed",
+         });
+      }
+      return { applied: false };
+   }
    if (step.mode === "skip") {
       // No duration (reported as null, not 0, which would skew the
       // build-duration series).
@@ -622,37 +1083,50 @@ export async function applyIncrementalStep(params: {
          target.abortSignal,
       );
    } catch (err) {
-      // A pair delta whose parent-row check failed was rolled back: rebuild
-      // in full, which writes the flag over the whole table (fail safe).
-      // A delta value its DECIMAL column cannot hold exactly was refused, not
-      // rounded: rebuild in full, which widens the column to hold it.
-      const decimal = isDecimalDeltaGuardFailure(err);
-      if (!decimal && (!lineage.pair || !isPairGuardFailure(err))) throw err;
+      const rolledBack = guardedSeed(err, lineage);
+      if (!rolledBack) throw err;
       reportIncrementalStep({
-         step: decimal
-            ? {
-                 mode: "seed",
-                 // The stored column's shape cannot hold the delta: no metric
-                 // label of its own, the reason names the decimal cause.
-                 reasonCode: "shape_mismatch",
-                 reason:
-                    "a delta value needs more digits than its stored DECIMAL " +
-                    "column holds, so it was rolled back rather than rounded " +
-                    "and the table rebuilds at the wider scale",
-              }
-            : {
-                 mode: "seed",
-                 reasonCode: "pair_parent_row",
-                 reason:
-                    "the delta would leave a parent without exactly one " +
-                    "parent-row flag, so it was rolled back",
-              },
+         step: rolledBack,
          sourceName: params.sourceName,
          packageName: context.packageName,
          physicalTableName: lineage.physicalTableName,
       });
+      if (rolledBack.reasonCode === "merge_key_not_unique") {
+         judgeMergeKey(
+            { repeated: true },
+            {
+               context,
+               lineage,
+               phase: "rolled_back",
+               sourceName: params.sourceName,
+            },
+         );
+      }
       return { applied: false };
    }
+   // A merge no statement guard checks (Snowflake) is checked after it
+   // commits: a table left repeating a key records no boundary, so the next
+   // run rebuilds it in full.
+   if (!(await mergedKeyIsUnique({ ...params, step }))) {
+      await resetLedger(context, lineage);
+      return {
+         applied: true,
+         durationMs: Math.round(performance.now() - startTime),
+         refresh: "delta",
+         ...(carried ? { lateRows: carried } : {}),
+      };
+   }
+   // A committed delta passed every check its plan ran.
+   if (lineage.strategy === "merge" && !lineage.pair) {
+      context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+         check: "merge_key",
+         outcome: "passed",
+      });
+   }
+   context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+      check: "delta_types",
+      outcome: "passed",
+   });
    await advanceLedger({
       context,
       lineage,
@@ -684,6 +1158,57 @@ export async function applyIncrementalStep(params: {
       refresh: "delta",
       ...(lateRows ? { lateRows } : {}),
    };
+}
+
+/**
+ * The full rebuild a delta that a guard in its own statements rolled back
+ * calls for, or undefined when `err` is not such a guard's (and the run
+ * fails as for any error):
+ *
+ *  - a pair delta whose parent-row check failed: the rebuild writes the flag
+ *    over the whole table (fail safe);
+ *  - a delta value its DECIMAL column cannot hold exactly, refused rather
+ *    than rounded: the rebuild widens the column to hold it;
+ *  - a merge whose delta repeats an identity (mergeKeyGuard): `merge_key=`
+ *    is not unique in the source, so only a rebuild, which copies live's
+ *    rows as they are, leaves the table equal to live.
+ */
+function guardedSeed(
+   err: unknown,
+   lineage: IncrementalLineage,
+): Extract<IncrementalStep, { mode: "seed" }> | undefined {
+   if (isDecimalDeltaGuardFailure(err)) {
+      return {
+         mode: "seed",
+         // The stored column's shape cannot hold the delta: no metric
+         // label of its own, the reason names the decimal cause.
+         reasonCode: "shape_mismatch",
+         reason:
+            "a delta value needs more digits than its stored DECIMAL " +
+            "column holds, so it was rolled back rather than rounded " +
+            "and the table rebuilds at the wider scale",
+      };
+   }
+   if (lineage.pair && isPairGuardFailure(err)) {
+      return {
+         mode: "seed",
+         reasonCode: "pair_parent_row",
+         reason:
+            "the delta would leave a parent without exactly one " +
+            "parent-row flag, so it was rolled back",
+      };
+   }
+   if (lineage.strategy === "merge" && isMergeKeyGuardFailure(err)) {
+      return {
+         mode: "seed",
+         reasonCode: "merge_key_not_unique",
+         reason:
+            "the delta holds a merge_key= value more than once, so the key " +
+            "is not unique in the source and no merge can leave the table " +
+            "equal to it; the delta was rolled back",
+      };
+   }
+   return undefined;
 }
 
 /**
@@ -830,8 +1355,8 @@ export function refreshFields(
  * spread adds no key rather than an explicit undefined.
  *
  * `extensions` are publisher-owned keys beyond the ones listed here, normally
- * {@link carriedLedgerExtensions}, which a caller may amend with values it
- * computed this run. The entry is opaque to hosts, which return it whole. A
+ * {@link ledgerExtensionKeys}: the keys carried from the caller's echoed
+ * entry, amended with the ones this run computed. The entry is opaque to hosts, which return it whole. A
  * known key always wins over an extension of the same name.
  */
 export function ledgerFields(
@@ -863,13 +1388,95 @@ export function ledgerFields(
 }
 
 /**
- * The keys this release does not know on the caller's echoed entry for this
- * source's table, to carry onto the entry the run reports: a fresh object, so
- * a caller may set a key it computed this run over a carried one. Undefined
- * when the run reads the local store, the caller sent no entry for the table
- * or one with no such keys, or the source is reseeded, whose entry is ignored.
+ * The publisher's own extension keys on the ledger entry a run reports (see
+ * {@link ledgerFields}'s `extensions`), the one way they are carried:
+ *  - the keys this release does not know on the caller's echoed entry for
+ *    the table, carried as sent, except when the run reads the local store,
+ *    the caller sent no entry, or the source is reseeded (its entry ignored);
+ *  - amended with the keys this run computes, which never come from the
+ *    echoed entry: `advancedBy`, the run that last changed the table, and on
+ *    an incremental extension table `parent`, the build of its parent's
+ *    table the boundary was reached over. An echoed one is dropped when the
+ *    run computes none, so a stale value is never reported again.
+ * A host stores and returns them with the rest of the entry.
  */
-export function carriedLedgerExtensions(
+export function ledgerExtensionKeys(
+   refresh:
+      | { context: IncrementalRunContext; lineage: IncrementalLineage }
+      | undefined,
+   reseed: boolean | undefined,
+   advancedBy: string | undefined,
+   did: "delta" | "full" | "none" | undefined,
+): Record<string, unknown> | undefined {
+   const {
+      advancedBy: _carriedAdvancedBy,
+      parent: _carriedParent,
+      seededBy: _carriedSeededBy,
+      advances: _carriedAdvances,
+      ...carried
+   } = carriedLedgerExtensions(refresh, reseed) ?? {};
+   const parent = ledgerParentOf(refresh?.lineage);
+   const chain = refresh ? nextAdvanceChain(refresh, did) : undefined;
+   const keys: Record<string, unknown> = {
+      ...carried,
+      ...(advancedBy ? { advancedBy } : {}),
+      ...(parent ? { parent } : {}),
+      ...(chain ? { seededBy: chain.seededBy, advances: chain.advances } : {}),
+   };
+   return Object.keys(keys).length > 0 ? keys : undefined;
+}
+
+/**
+ * A table's history since its last full rebuild after this run's refresh
+ * (the ledger's `seededBy` and `advances`, domain/incremental.ts): a full
+ * rebuild starts it over; a refresh that applied nothing keeps it; a delta
+ * appends itself, keeping the newest {@link LEDGER_ADVANCES_CAP}. A delta
+ * over a recorded history that does not end at the build it started from
+ * (or none, an entry from before these keys) starts one anchored at that
+ * build, so an extension that read earlier rebuilds rather than trusting it.
+ * Undefined when nothing proves it.
+ */
+function nextAdvanceChain(
+   refresh: { context: IncrementalRunContext; lineage: IncrementalLineage },
+   did: "delta" | "full" | "none" | undefined,
+): LedgerAdvanceChain | undefined {
+   const { context, lineage } = refresh;
+   if (did === "full") {
+      return { seededBy: context.materializationId, advances: [] };
+   }
+   const step = context.parentSteps?.get(lineage.sourceEntityId);
+   if (did === "none") return step?.priorChain;
+   if (did !== "delta" || !step?.priorAdvancedBy || !step.start) {
+      return undefined;
+   }
+   const prior = step.priorChain;
+   const last = prior?.advances.at(-1)?.advancedBy ?? prior?.seededBy;
+   const base: LedgerAdvanceChain =
+      prior && last === step.priorAdvancedBy
+         ? prior
+         : { seededBy: step.priorAdvancedBy, advances: [] };
+   return {
+      seededBy: base.seededBy,
+      advances: [
+         ...base.advances,
+         {
+            from: step.priorAdvancedBy,
+            advancedBy: context.materializationId,
+            start: step.start.value,
+            startType: step.start.malloyType,
+         },
+      ].slice(-LEDGER_ADVANCES_CAP),
+   };
+}
+
+/**
+ * The keys this release does not know on the caller's echoed entry for this
+ * source's table, as sent: a fresh object. Undefined when the run reads the
+ * local store, the caller sent no entry for the table or one with no such
+ * keys, or the source is reseeded, whose entry is ignored. Read through
+ * {@link ledgerExtensionKeys}, which amends it.
+ */
+function carriedLedgerExtensions(
    refresh:
       | { context: IncrementalRunContext; lineage: IncrementalLineage }
       | undefined,
@@ -921,6 +1528,7 @@ export function incrementalRunContext(
    return {
       ...rest,
       declarations,
+      parentSteps: new Map(),
       ledger: localLedger,
       ...(ledger !== undefined
          ? { callerLedger: indexCallerLedger(ledger) }
@@ -958,10 +1566,7 @@ export async function refreshOneSourceIncrementally(params: {
     * {@link upstreamReuseFromManifest}). Carried on every entry, since an
     * absent field reads as "no persisted upstream".
     */
-   upstreamReuse: Pick<
-      ManifestEntry,
-      "upstreamReuse" | "upstreamRecomputeReason"
-   >;
+   upstreamReuse: Pick<ManifestEntry, "upstreamReuse">;
 }): Promise<ManifestEntry | undefined> {
    const { context, lineage, persistSource, instruction, target } = params;
    const sourceEntityId = instruction.sourceEntityId;
@@ -972,6 +1577,7 @@ export async function refreshOneSourceIncrementally(params: {
       target,
       columns: deriveColumns(persistSource).map((c) => String(c.name)),
       reseed: instruction.reseed,
+      sourceName: persistSource.name,
    });
    const outcome = await applyIncrementalStep({
       context,
@@ -1038,7 +1644,12 @@ export async function refreshOneSourceIncrementally(params: {
       ...ledgerFields(
          lineage,
          outcome.coveredThrough,
-         carriedLedgerExtensions({ context, lineage }, instruction.reseed),
+         ledgerExtensionKeys(
+            { context, lineage },
+            instruction.reseed,
+            advancedByOf(context, lineage, outcome.refresh),
+            outcome.refresh,
+         ),
       ),
       ...refreshFields(outcome.refresh),
       ...lateRowsFields(outcome.lateRows),
@@ -1110,6 +1721,7 @@ export function storageRefreshFor(params: {
             ),
             reseed:
                instruction.reseed || recast.length > 0 || doubles.length > 0,
+            sourceName: persistSource.name,
          });
          const recastOnly =
             step.mode === "seed" && step.reasonCode === "forced" && !reseeding;
@@ -1169,6 +1781,83 @@ export function storageRefreshFor(params: {
             coveredThrough: outcome.coveredThrough,
             refresh: outcome.refresh ?? "none",
             readCost: readCost(),
+            ...(outcome.lateRows ? { lateRows: outcome.lateRows } : {}),
+         };
+      },
+      afterSeed: ({ session, quotedTablePath }) =>
+         advanceLedgerAfterSeed({
+            context,
+            lineage,
+            quotedTablePath,
+            dialect: STORAGE_DIALECT,
+            runner: (sql) => session.runSQL(sql),
+            storedColumn: storedColumnOf(persistSource),
+         }),
+   };
+}
+
+/**
+ * The in-place refresh of a `storage=` extension table stacked on its
+ * parent's table in its own destination (extension chains, case 2): a delta
+ * of the extension's build over the parent's stored table, run and applied
+ * in the destination session, or a rebuild. The same planner, ledger and
+ * DML as any `storage=` table; only where the rows come from differs.
+ */
+export function stackedRefreshFor(params: {
+   context: IncrementalRunContext;
+   lineage: IncrementalLineage;
+   persistSource: PersistSource;
+   instruction: BuildInstruction;
+   destinationName: string;
+   destinationSchema?: string;
+   physicalTableName: string;
+}): StackedIncrementalRefresh {
+   const { context, lineage, persistSource, instruction } = params;
+   return {
+      plan: async ({ session, quotedTablePath, storedSQL }) => {
+         const target = stackedDeltaTarget({
+            session,
+            destinationName: params.destinationName,
+            destinationSchema: params.destinationSchema,
+            physicalTableName: params.physicalTableName,
+            quotedTablePath,
+            lineage,
+            persistSource,
+            storedSQL,
+         });
+         const recast = await columnsARebuildWouldRecast(
+            session,
+            quotedTablePath,
+            persistSource,
+         );
+         const toStored = storedColumnOf(persistSource);
+         const step = await planSourceRefresh({
+            context,
+            lineage,
+            target,
+            columns: deriveColumns(persistSource).map((c) =>
+               toStored(String(c.name)),
+            ),
+            reseed: instruction.reseed || recast.length > 0,
+            sourceName: persistSource.name,
+         });
+         const outcome = await applyIncrementalStep({
+            context,
+            lineage,
+            step,
+            target,
+            sourceName: persistSource.name,
+         });
+         if (!outcome.applied) {
+            await resetLedger(context, lineage);
+            return undefined;
+         }
+         return {
+            durationMs: outcome.durationMs,
+            coveredThrough: outcome.coveredThrough,
+            refresh: outcome.refresh ?? "none",
+            // Reads no warehouse: the parent's table is in the destination.
+            readCost: null,
             ...(outcome.lateRows ? { lateRows: outcome.lateRows } : {}),
          };
       },

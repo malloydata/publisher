@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The build-time gate of a persisted view or named query planned over a
- * `#(materialize)` pair table with its join put back (plan/pair_reroot.ts):
+ * The build-time gate of a persisted view or named query, or an extension
+ * table, planned over a `#(materialize)` pair table with its join put back
+ * (plan/pair_reroot.ts):
  * the re-root counts and sums each level of the path by that level's key, so
  * the build relies on the leaf's key being unique and never null on the leaf
  * source's rows. The build writing the pair table runs that check and
@@ -14,12 +15,15 @@
 
 import type { ManifestEntry } from "../domain/types";
 import { SchemaIncompatibleError } from "../../../errors";
-import { parseContract } from "../domain/column_contract";
+import { pairLeafCheckFailure, parseContract } from "../domain/column_contract";
 
 /**
  * Why `downstream` must not build over its pair-table upstream `upstream`,
  * whose current entry is `entry`, given the leaf checks it relies on
- * (`OverStoredBase.pairLeafKeys`), or undefined when every one passed.
+ * (`OverStoredBase.pairLeafKeys`, or an extension's `ChainMode.pair`), or
+ * undefined when every one passed. Also read at plan, over the upstream's
+ * bound contract, so a failure the bind already holds refuses the
+ * extension there rather than failing its build again.
  */
 export function pairLeafRefusal(
    downstream: string,
@@ -28,14 +32,8 @@ export function pairLeafRefusal(
    entry: ManifestEntry | undefined,
 ): string | undefined {
    if (leafKeys.length === 0) return undefined;
-   const keys = parseContract(entry?.contract)?.keys ?? {};
-   const failed = leafKeys.filter((k) => keys[k]?.unique === false);
-   const unrecorded = leafKeys.filter((k) => keys[k] === undefined);
-   if (failed.length === 0 && unrecorded.length === 0) return undefined;
-   const what =
-      failed.length > 0
-         ? `found the key ${failed.map((k) => `'${k}'`).join(", ")} held more than once or NULL`
-         : `recorded no result for the key ${unrecorded.map((k) => `'${k}'`).join(", ")}`;
+   const what = pairLeafCheckFailure(parseContract(entry?.contract), leafKeys);
+   if (what === undefined) return undefined;
    return (
       `'${downstream}' was not built over its upstream '${upstream}''s pair ` +
       `table: the leaf key check of its inlined join_many, which a build over ` +

@@ -93,6 +93,43 @@ source: daily is raw -> {
 const ROLLUP_QUERY =
    "run: daily -> { group_by: cat; aggregate: grand, rows, least }";
 
+/**
+ * A `storage=` rollup declared on a plain `extend` of a `#@ persist storage=`
+ * query source (`->`): the rollup's base is the extension, which reads the
+ * persisted source's table and adds `extra` (a dimension, a `where:`, a
+ * join to another source stored there).
+ */
+const rollupOverPersistExtendModel = (
+   extra: string,
+) => `##! experimental.persistence
+source: raw is ${RAW}
+
+#@ persist storage="${LAKE}"
+source: daily is raw -> {
+  group_by: cat, sub
+  aggregate: total is amt.sum(), n is count(), lo is amt.min()
+}
+
+#@ persist storage="${LAKE}"
+source: cats is raw -> { group_by: cat; aggregate: cat_rows is count() } extend {
+  primary_key: cat
+}
+
+source: rolled is daily extend {
+  ${extra}
+  #(rollup) grain=["cat"] storage="${LAKE}"
+  measure: grand is total.sum()
+  #(rollup) grain=["cat"] storage="${LAKE}"
+  measure: rows is n.sum()
+}
+`;
+const ROLLUP_OVER_PERSIST_EXTENDS = [
+   { label: "adds a dimension", extra: "dimension: upper_cat is upper(cat)" },
+   { label: "adds a where:", extra: "where: sub != 'y'" },
+];
+const ROLLUP_OVER_PERSIST_EXTEND_QUERY =
+   "run: rolled -> { group_by: cat; aggregate: grand, rows }";
+
 const CHAIN_FILES = {
    "a.malloy": `source: raw is ${RAW}
 
@@ -228,6 +265,42 @@ source: deals is deals_including_deleted extend {
   dimension: loud is upper(company)
 }
 `;
+/**
+ * The hammer's `an-intermediate-reaching-the-warehouse-…` shape: `rollup`
+ * groups a column of `regions`, a warehouse table `daily_regional` joins
+ * beside the stored `daily`, so no build over `daily`'s table exists.
+ */
+const WAREHOUSE_JOIN_MODEL = `##! experimental.persistence
+source: raw is ${RAW}
+source: regions is warehouse.sql("""
+  SELECT * FROM (VALUES ('a', 'east'), ('b', 'west'), ('c', 'east')) AS t(cat, region)
+""")
+
+#@ persist storage="${LAKE}"
+source: daily is raw -> { group_by: cat; aggregate: total is amt.sum() }
+
+source: daily_regional is daily extend {
+  join_one: r is regions on cat = r.cat
+}
+
+#@ persist storage="${LAKE}"
+source: rollup is daily_regional -> {
+  group_by: region is r.region
+  aggregate: grand is total.sum()
+}
+`;
+/** The same, with a `storage=` `summary` over `rollup` through a reshape. */
+const WAREHOUSE_JOIN_CHAIN_MODEL = `${WAREHOUSE_JOIN_MODEL}
+source: rollup_wide is rollup -> { select: * } extend {
+  dimension: big is grand > 2
+}
+
+#@ persist storage="${LAKE}"
+source: summary is rollup_wide -> { aggregate: total_grand is grand.sum() }
+`;
+const WAREHOUSE_JOIN_QUERY =
+   "run: rollup -> { select: region, grand; order_by: region }";
+
 const GTM_SHAPE_QUERY =
    "run: deals -> { group_by: cat, sub; aggregate: t is total.sum() }";
 const GTM_SHAPE_JOINED_QUERY =
@@ -631,6 +704,73 @@ describe.skipIf(process.platform === "win32")(
          expect(served.rows).toEqual(live.rows);
       });
 
+      it.each(ROLLUP_OVER_PERSIST_EXTENDS)(
+         "builds a storage= rollup on an extend of a #@ persist query source that $label over that source's stored table, equal to live",
+         async ({ extra }) => {
+            await setUp({ "m.malloy": rollupOverPersistExtendModel(extra) });
+            const live = await answer(
+               "m.malloy",
+               ROLLUP_OVER_PERSIST_EXTEND_QUERY,
+            );
+            expect(live.servedBy).toBe("live");
+            const m = await build();
+            expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+            const base = entryOf(m, "daily");
+            const rollup = entryOf(m, /^rolled__rollup__/);
+            expect(rollup.storageDestinationName).toBe(LAKE);
+            expect(rollup.upstreamReuse).toBe("reused");
+            expect(
+               (
+                  rollup as Entry & { builtFrom?: { sourceEntityId: string }[] }
+               ).builtFrom?.map((b) => b.sourceEntityId),
+            ).toEqual([base.sourceEntityId]);
+            expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
+            expect(await storedRows(rollup.physicalTableName)).toEqual(
+               await plannedRows(rollup),
+            );
+            const served = await answer(
+               "m.malloy",
+               ROLLUP_OVER_PERSIST_EXTEND_QUERY,
+            );
+            expect(served.servedBy).toBe("rollup");
+            expect(served.rows).toEqual(live.rows);
+         },
+      );
+
+      it("refuses at plan a storage= rollup on an extend of a #@ persist query source that joins another source stored there, and answers it live", async () => {
+         await setUp({
+            "m.malloy": rollupOverPersistExtendModel(
+               "join_one: c is cats on cat = c.cat",
+            ),
+         });
+         const live = await answer(
+            "m.malloy",
+            ROLLUP_OVER_PERSIST_EXTEND_QUERY,
+         );
+         const m = await build();
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         expect(
+            entriesOf(m).filter((e) => /^rolled__rollup__/.test(e.sourceName)),
+         ).toEqual([]);
+         const pkg = await env.getPackage(parsePackageName(PKG), false);
+         const refusals = Object.values(
+            pkg.getBuildPlan()?.refusedSources ?? {},
+         ).filter((r) => /^rolled__rollup__/.test(r.name));
+         expect(refusals.length).toBeGreaterThan(0);
+         for (const r of refusals) {
+            expect(r.reason).toBe("upstream_table_unusable");
+            expect(r.message).toContain(
+               "a downstream is never built by recomputing its upstreams from raw",
+            );
+         }
+         const served = await answer(
+            "m.malloy",
+            ROLLUP_OVER_PERSIST_EXTEND_QUERY,
+         );
+         expect(served.servedBy).not.toBe("rollup");
+         expect(served.rows).toEqual(live.rows);
+      });
+
       it("records each stored table's column contract, read back as a bind reads it", async () => {
          await setUp({ "m.malloy": ROLLUP_MODEL });
          const m = await build();
@@ -655,8 +795,8 @@ describe.skipIf(process.platform === "win32")(
             gateExact: true,
             declaredType: "string",
          });
-         // A double: no gate over it is exact, since the build does not
-         // name each column's source.
+         // A double the build computed (a sum): it copies no warehouse
+         // double, so no gate over it is exact.
          expect(column(base, "total")).toMatchObject({
             compare: "exact",
             gateExact: false,
@@ -1041,7 +1181,7 @@ source: mid is parent extend {
          );
       });
 
-      it("never stacks a storage= rollup on a gated #(materialize) base's table", async () => {
+      it("never stacks a storage= rollup on a gated #(materialize) base's table: it is refused at run, access_filter", async () => {
          await setUp({
             "m.malloy": materializeRollupModel()
                .replace(
@@ -1055,12 +1195,26 @@ source: mid is parent extend {
          });
          const m = await build();
          expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
-         // Its table holds every caller's rows: no rollup is grouped from it.
-         for (const e of entriesOf(m)) {
-            if (/^orders__rollup__/.test(e.sourceName)) {
-               expect(e.upstreamReuse).toBeUndefined();
-            }
-         }
+         // Its rollups are refused (`access_filter`) and answer live: none
+         // is built, from the base's table or from the warehouse.
+         expect(
+            entriesOf(m).filter((e) => /^orders__rollup__/.test(e.sourceName)),
+         ).toEqual([]);
+         const refused = Object.values(
+            (
+               m.metadata as {
+                  refusedSources?: Record<
+                     string,
+                     { name: string; reason: string }
+                  >;
+               } | null
+            )?.refusedSources ?? {},
+         );
+         expect(
+            refused
+               .filter((r) => /^orders__rollup__/.test(r.name))
+               .map((r) => r.reason),
+         ).toEqual(["access_filter"]);
       });
 
       it("refuses an extend-only #@ persist source named apart from its base whose base joins a stored table to the warehouse: never recomputed, answered live", async () => {
@@ -1069,13 +1223,27 @@ source: mid is parent extend {
          expect(live.servedBy).toBe("live");
          // `d_incl` joins the stored `rates` to the warehouse's `raw`: no
          // engine reads both, so it has no build over its stored upstream,
-         // and it is refused rather than recomputed from raw; `deals2`,
-         // over it, with it.
-         const m = await build({ strictUpstreams: true });
+         // and it is refused rather than recomputed from raw: at plan, its
+         // grouped strings being read from the warehouse, which the refusal
+         // names; `deals2`, over it, with it.
+         const m = await build({});
+         const pkg = await env.getPackage(parsePackageName(PKG), false);
+         const refusals = Object.values(
+            pkg.getBuildPlan()?.refusedSources ?? {},
+         );
+         const whyNot = (name: string) =>
+            refusals.find((r) => r.name === name)?.message ??
+            (
+               entriesOf(m).find((e) => e.sourceName === name) as
+                  | { error?: string }
+                  | undefined
+            )?.error ??
+            "";
+         expect(whyNot("d_incl")).toContain(
+            "it reads the source warehouse (raw) through 'd_raw'",
+         );
          for (const name of ["d_incl", "deals2"]) {
-            expect(
-               (entryOf(m, name) as { error?: string }).error ?? "",
-            ).toContain(
+            expect(whyNot(name)).toContain(
                "a downstream is never built by recomputing its upstreams from raw",
             );
          }
@@ -1119,7 +1287,6 @@ source: monthly_live is raw -> {
          // failed as a host-supplied upstream at the wrong tier.
          const host = async (
             table: string,
-            strictUpstreams: boolean,
             schema?: unknown,
             contract?: unknown,
          ) => {
@@ -1146,19 +1313,15 @@ source: monthly_live is raw -> {
                         ...(contract ? { contract } : {}),
                      },
                   ],
-                  strictUpstreams,
                },
             });
             return settled(created.id);
          };
          // A reference that carries no column list, which stacking on a
          // stored table needs (a bound manifest or this worker's own record
-         // fills it): refused, strict or not, and says why; never recomputed.
-         for (const [table, strictUpstreams] of [
-            ["host_monthly_t", false],
-            ["host_monthly_strict_t", true],
-         ] as const) {
-            const refused = await host(table, strictUpstreams);
+         // fills it): refused, and says why; never recomputed.
+         for (const table of ["host_monthly_t"]) {
+            const refused = await host(table);
             expect(refused.status).toBe("FAILED");
             expect(refused.error).toContain(
                "'daily' is materialized in destination 'lake', but by a reference that carries no column list",
@@ -1168,7 +1331,6 @@ source: monthly_live is raw -> {
          // contract, the strings `monthly` groups cannot be judged: refused.
          const unjudged = await host(
             "host_monthly_no_contract_t",
-            true,
             daily.schema,
          );
          expect(unjudged.status).toBe("FAILED");
@@ -1178,7 +1340,6 @@ source: monthly_live is raw -> {
          // With the schema and the contract the host stored, it stacks.
          const stacked = await host(
             "host_monthly_schema_t",
-            true,
             daily.schema,
             (daily as { contract?: unknown }).contract,
          );
@@ -1241,12 +1402,109 @@ source: monthly is daily -> { group_by: cat; aggregate: grand is total.sum() }
          );
       });
 
+      it("refuses at plan, bound or not, a storage= source reading a warehouse join beside its stored upstream, naming the warehouse table; a host can never instruct it into a silent success", async () => {
+         await setUp({ "m.malloy": WAREHOUSE_JOIN_MODEL });
+         const live = await answer("m.malloy", WAREHOUSE_JOIN_QUERY);
+         const refusalOf = async () => {
+            const pkg = await env.getPackage(parsePackageName(PKG), false);
+            const plan = pkg.getBuildPlan()!;
+            expect(
+               Object.values(plan.sources).map((x) => x.name),
+            ).not.toContain("rollup");
+            return Object.values(plan.refusedSources ?? {}).find(
+               (r) => r.name === "rollup",
+            );
+         };
+         const expectRefusal = (
+            refusal: Awaited<ReturnType<typeof refusalOf>>,
+         ) => {
+            expect(refusal?.reason).toBe("upstream_table_unusable");
+            // The warehouse table and the source reaching it, never framed
+            // as a string comparison the destination cannot reproduce.
+            expect(refusal?.message).toContain(
+               "it reads the source warehouse (regions) through 'daily_regional'",
+            );
+            expect(refusal?.message).not.toContain("byte-exact");
+         };
+         // Unbound: refused at plan.
+         expectRefusal(await refusalOf());
+         // A standalone run builds `daily` alone and binds it.
+         const m = await build();
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         const daily = entryOf(m, "daily");
+         expect(entriesOf(m).map((e) => e.sourceName)).not.toContain("rollup");
+         // Bound: the same refusal, so the plan a host reads and the plan a
+         // run builds from agree on it.
+         expectRefusal(await refusalOf());
+         // The host's first orchestrated build after that run, the one that
+         // reported success with nothing built or failed: every instructed
+         // source ends in entries or failures.
+         const created = await new MaterializationController(
+            service,
+         ).createMaterialization(ENV, PKG, {
+            buildInstructions: {
+               sources: [
+                  {
+                     sourceEntityId: daily.sourceEntityId,
+                     materializedTableId: "host-daily",
+                     physicalTableName: "host_daily_t",
+                     realization: "COPY",
+                     destination: LAKE,
+                  },
+               ],
+            },
+         });
+         const hosted = await settled(created.id);
+         expect([hosted.status, hosted.error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         expect(entryOf(hosted, "daily").physicalTableName).toBe(
+            "host_daily_t",
+         );
+         // `rollup` answers live, equal to live.
+         const served = await answer("m.malloy", WAREHOUSE_JOIN_QUERY);
+         expect(served.rows).toEqual(live.rows);
+      });
+
+      it("refuses at plan a downstream of a source the plan refused, naming it, so a run never fails it", async () => {
+         await setUp({ "m.malloy": WAREHOUSE_JOIN_CHAIN_MODEL });
+         const live = await answer(
+            "m.malloy",
+            "run: summary -> { select: total_grand }",
+         );
+         const pkg = await env.getPackage(parsePackageName(PKG), false);
+         const plan = pkg.getBuildPlan()!;
+         const planned = Object.values(plan.sources).map((x) => x.name);
+         expect(planned).not.toContain("rollup");
+         expect(planned).not.toContain("summary");
+         const refusals = Object.values(plan.refusedSources ?? {});
+         const summary = refusals.find((r) => r.name === "summary");
+         expect(summary?.reason).toBe("upstream_table_unusable");
+         expect(summary?.message).toContain("its upstream 'rollup'");
+         // A run builds what the plan lists, and fails nothing.
+         const m = await build();
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         expect(entriesOf(m).map((e) => e.sourceName)).toEqual(["daily"]);
+         expect(
+            Object.keys(
+               (m.manifest as { failures?: Record<string, unknown> })
+                  .failures ?? {},
+            ),
+         ).toEqual([]);
+         const served = await answer(
+            "m.malloy",
+            "run: summary -> { select: total_grand }",
+         );
+         expect(served.rows).toEqual(live.rows);
+      });
+
       it("builds gtm-funnel's shape (an include over a query stage, joins through a join, a name= on each) from the warehouse, strict, equal to live", async () => {
          await setUp({ "m.malloy": GTM_SHAPE_MODEL });
          const live = await answer("m.malloy", GTM_SHAPE_QUERY);
          const liveJoined = await answer("m.malloy", GTM_SHAPE_JOINED_QUERY);
          expect(live.servedBy).toBe("live");
-         const m = await build({ strictUpstreams: true });
+         const m = await build({});
          expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
          const base = entryOf(m, "deals_including_deleted");
          const deals = entryOf(m, "deals");
@@ -1275,7 +1533,7 @@ source: monthly is daily -> { group_by: cat; aggregate: grand is total.sum() }
       it("refuses the same shape when neither names its table: never recomputed, answered live", async () => {
          await setUp({ "m.malloy": extendOnlyModel(false) });
          const live = await answer("m.malloy", EXTEND_ONLY_QUERY);
-         const m = await build({ strictUpstreams: true });
+         const m = await build({});
          expect(
             (entryOf(m, /^(d_incl|deals2)$/) as { error?: string }).error ?? "",
          ).toContain(

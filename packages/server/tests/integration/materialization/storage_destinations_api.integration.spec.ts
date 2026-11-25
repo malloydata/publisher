@@ -27,6 +27,29 @@ function ducklakeDestination(name: string, bucketPath: string) {
    };
 }
 
+// A destination building into `materialized` and a connection on its catalog listing it: a pair readableSchemas refuses.
+const overlappingPair = () => ({
+   connections: [
+      {
+         ...ducklakeDestination("models", "models"),
+         managed: true,
+         ducklakeConnection: {
+            ...ducklakeDestination("models", "models").ducklakeConnection,
+            readableSchemas: ["materialized"],
+         },
+      },
+   ],
+   storageDestinations: [
+      {
+         ...ducklakeDestination("lake", "org_a"),
+         ducklakeConnection: {
+            ...ducklakeDestination("lake", "org_a").ducklakeConnection,
+            destinationSchema: "materialized",
+         },
+      },
+   ],
+});
+
 // The `storageDestinations` write contract, over HTTP, through the real Express
 // error handling: a list the server cannot read is refused with 400 and applies
 // none of itself, on create as well as on update. Asserted here rather than only
@@ -145,6 +168,31 @@ describe("storageDestinations write contract (REST)", () => {
       expect(body.storageDestinations).toEqual([
          { name: "lake", type: "ducklake" },
       ]);
+   });
+
+   it("refuses a create whose connection lists a schema its destination builds into, and creates nothing", async () => {
+      const res = await post({ name: "overlap-create", ...overlappingPair() });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { message?: string };
+      expect(body.message).toContain("readableSchemas");
+      const lookup = await fetch(
+         `${baseUrl}/api/v0/environments/overlap-create`,
+      );
+      expect(lookup.status).toBe(404);
+   });
+
+   it("refuses an update that makes the pair overlap, and keeps the stored environment", async () => {
+      const res = await patch({ name: PROJECT_NAME, ...overlappingPair() });
+
+      expect(res.status).toBe(400);
+      const after = await fetch(
+         `${baseUrl}/api/v0/environments/${PROJECT_NAME}`,
+      );
+      const body = (await after.json()) as {
+         connections?: { name: string }[];
+      };
+      expect(body.connections ?? []).toEqual([]);
    });
 
    it("keeps the stored config when an update echoes back what a read reported", async () => {

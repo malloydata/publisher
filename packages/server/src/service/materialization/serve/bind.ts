@@ -43,7 +43,7 @@ import {
    compatible,
    declaredMoves as contractDeclaredMoves,
    type IncompatibleCode,
-   parseContract,
+   servableContract,
 } from "../domain/column_contract";
 import {
    spelledNativeType,
@@ -61,6 +61,7 @@ import {
    type Binding,
    type BindingKind,
    deriveServeBindings,
+   primaryKeyColumnsOf,
    primaryKeysOf,
 } from "../domain/binding";
 import { groupAliasesByName, planSourceIds } from "../domain/source_aliases";
@@ -474,10 +475,12 @@ export function deriveDatabaseServeBindings(args: {
          ...(entry.freshnessFallback !== undefined
             ? { freshnessFallback: entry.freshnessFallback }
             : {}),
-         // The key checks the run that wrote the table recorded beside it
-         // (a pair table's leaf key); internal, never
-         // from a host's manifest.
+         // The key checks the table's contract records (a pair table's leaf
+         // key), as a bind read them off it; internal, never on the wire.
          ...(primaryKeysOf(entry) ? { primaryKeys: primaryKeysOf(entry) } : {}),
+         ...(primaryKeyColumnsOf(entry)
+            ? { primaryKeyColumns: primaryKeyColumnsOf(entry) }
+            : {}),
       });
    }
    return bindings;
@@ -595,43 +598,6 @@ export interface UnreadTable {
    detail?: string;
 }
 
-/** One bound database table whose warehouse columns moved since its build. */
-export interface ObservedDrift {
-   sourceEntityId: string;
-   /**
-    * Each column whose type is no longer the one its build wrote, or that is
-    * gone, or a 128-bit integer a DuckLake table holds as a DOUBLE
-    * (`storedAsDouble`).
-    */
-   columns: {
-      column: string;
-      builtType: string;
-      observedType?: string;
-      /** The table no longer has the column. */
-      gone?: true;
-      /**
-       * The bind leaves the column out of a served-copy binding, so a query
-       * reading it answers live (gone, a type Malloy reads as no basic type,
-       * or a timestamp that gained or lost its zone off DuckDB); otherwise
-       * it is read with the type it holds now.
-       */
-      leftOut?: true;
-      /** A 128-bit integer a DuckLake table holds as a DOUBLE. */
-      storedAsDouble?: true;
-      /**
-       * The table holds the type its build wrote, but its source now
-       * declares another: what the source reads changed type since the
-       * build ({@link declaredMoves}).
-       */
-      declaredMoved?: true;
-      /**
-       * Read through its faithful cast but not reported: a type a build
-       * writes for the declaration by design ({@link declaredMoves}).
-       */
-      castOnly?: true;
-   }[];
-}
-
 /**
  * One bound table that no longer matches its column contract, which the bind
  * left out (it answers live): the generation it judged (`tableName`, and the
@@ -647,54 +613,34 @@ export interface IncompatibleTable {
 
 /**
  * The database bindings and entries held to the columns the bind read from
- * each table's warehouse ({@link ObservedColumns}). A database table's types
- * are otherwise the plan's, or what its build captured, so a column altered
- * outside a build would be read with a type the table no longer holds.
+ * each table's warehouse ({@link ObservedColumns}), judged against each
+ * table's column contract, the one comparator:
  *
- * A column has drifted when the Malloy type its warehouse type reads as is
- * not the one of the type its build wrote (its captured `schema`, else the
- * binding's own): the bind compares like with like, so a warehouse that
- * stores a type of its own (a Postgres truncation as a timestamp) is never
- * drift. With no captured `schema` the binding's declared type stands in, so
- * a column whose native type is still the one its build captured is read
- * with the type it holds but is not drift: no warning, no count. Then:
+ * - a table with no contract, or one listing no column, is left out
+ *   (`contractMissing`);
+ * - a table whose read failed, or that was not read, is left out (`unread`);
+ * - a table that no longer matches its contract, or whose source now declares
+ *   another type than it was built for, is left out (`incompatible`).
  *
- * - a served-copy binding (`#(materialize)`, `#@ persist`) declares each
- *   drifted column with its observed type, and the one stored-column read
- *   plan casts it or leaves it out (a gone column is left out);
- * - an entry read by Malloy's build-manifest substitution (a rollup, a
- *   persisted view or query), which no cast reaches, records the columns its
- *   table holds now (`heldRead`) and those it left out (`leftOutColumns`):
- *   its leg then reads it through a typed source as a `storage=` table is
- *   read, each moved column cast faithfully or left out by the same rule
- *   ({@link driftedColumnRead}), so only a query reading a left-out column
- *   answers live;
- * - a table whose read failed (`unread`), or that was not read, is left out
- *   of both: it answers live (fail safe);
- * - a table whose build captured neither its columns nor their native types
- *   (`uncaptured`) is left out of both too: with no built type to compare,
- *   no alter since the build can be seen (a float, or an exact type that
- *   rounds its values), so every read of it answers live.
- *
- * With no observation (`observed` undefined) everything is returned as is.
+ * A table left out answers live until a build rebuilds it: never cast or
+ * narrowed. A kept table's columns are declared as the types it holds, and a
+ * column its engine holds as a DOUBLE (a DuckLake 128-bit integer) is left out
+ * of every read. With no observation (`observed` undefined) everything with a
+ * contract is returned as is.
  */
 export function applyObservedColumns(args: {
    entries: FreshnessManifest;
    bindings: readonly Binding[];
    observed: ReadonlyMap<string, ObservedColumns> | undefined;
    /**
-    * The columns a substituted entry's build source declares, by name, and
-    * the time zone its reader reads it in: what a drifted column must read
-    * as. Without it, each column's declared type is the one its build wrote.
+    * The columns a bound entry's build source declares now, by name, and its
+    * connection. Without it, no declared move is judged.
     */
    declared?: (sourceEntityId: string) => DriftDeclaration | undefined;
 }): {
    entries: FreshnessManifest;
    bindings: Binding[];
-   drifted: ObservedDrift[];
    unread: UnreadTable[];
-   /** The tables left out because their build captured no column types. */
-   uncaptured: string[];
    /** The tables left out because their entry carries no column contract. */
    contractMissing: string[];
    /** The tables left out because they no longer match their contract. */
@@ -702,9 +648,7 @@ export function applyObservedColumns(args: {
 } {
    const { observed } = args;
    if (!observed) return asBound(args.entries, args.bindings);
-   const uncaptured: string[] = [];
    const entries: FreshnessManifest = {};
-   const drifted: ObservedDrift[] = [];
    const unread: UnreadTable[] = [];
    const left = new Set<string>();
    const reads = new Map<
@@ -721,9 +665,10 @@ export function applyObservedColumns(args: {
    const contractMissing: string[] = [];
    const incompatible: IncompatibleTable[] = [];
    for (const [id, entry] of Object.entries(args.entries)) {
-      // A table with no contract is never served from (contract_missing):
-      // it answers live, and the next build rebuilds it in full.
-      const contract = parseContract(entry.contract);
+      // A table with no contract, or one listing no column, is never served
+      // from (contract_missing): it answers live, and the next build
+      // rebuilds it in full.
+      const contract = servableContract(entry.contract);
       if (!contract) {
          contractMissing.push(id);
          left.add(id);
@@ -857,9 +802,7 @@ export function applyObservedColumns(args: {
    return {
       entries,
       bindings,
-      drifted,
       unread,
-      uncaptured,
       contractMissing,
       incompatible,
    };
@@ -868,7 +811,8 @@ export function applyObservedColumns(args: {
 /**
  * The `storage=` bindings held to their tables' column contracts, as
  * {@link applyObservedColumns} holds a database table: a binding whose entry
- * carries no contract is left out (`contractMissing`), and, with an
+ * carries no servable contract (none, or one that lists no column) is left
+ * out (`contractMissing`), and, with an
  * observation, one whose table did not read is left out unread, and one that
  * no longer matches its contract is left out incompatible. Never cast or
  * narrowed. With no observation (a spec's bind), a binding with a contract
@@ -894,7 +838,7 @@ export function holdStorageToContracts(args: {
       if (judged.has(id)) continue;
       judged.add(id);
       const entry = args.entries[id];
-      const contract = parseContract(entry?.contract);
+      const contract = servableContract(entry?.contract);
       if (!contract) {
          contractMissing.push(id);
          left.add(id);
@@ -959,13 +903,13 @@ function asStored(
    return retyped.length === 0 ? b : { ...b, schema, retypedColumns: retyped };
 }
 
-/** With no observation, everything as bound: nothing drifted, read or left out. */
+/** With no observation, everything with a contract as bound: nothing read. */
 function asBound(
    entries: FreshnessManifest,
    bindings: readonly Binding[],
 ): ReturnType<typeof applyObservedColumns> {
    const contractMissing = Object.entries(entries)
-      .filter(([, e]) => !parseContract(e.contract))
+      .filter(([, e]) => !servableContract(e.contract))
       .map(([id]) => id);
    const missing = new Set(contractMissing);
    return {
@@ -975,20 +919,16 @@ function asBound(
       bindings: bindings.filter(
          (b) => b.tier !== "database" || !missing.has(b.virtualHandle),
       ),
-      drifted: [],
       unread: [],
-      uncaptured: [],
       contractMissing,
       incompatible: [],
    };
 }
 
-/** What a substituted table's moved columns must read as. */
+/** What a bound table's source declares now. */
 export interface DriftDeclaration {
    /** The build source's declared columns, with their Malloy types. */
    columns: readonly { name?: string; type?: string }[];
    /** The connection its table is on, when its entry does not name it. */
    connectionName?: string;
-   /** The time zone its reader reads it in ({@link BuildCastOptions}). */
-   queryTimezone?: string;
 }

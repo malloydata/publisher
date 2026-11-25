@@ -984,6 +984,42 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS"),
       },
    ],
+   "admin.memoryLimit": [
+      { name: "unset is 1.5GB", expect: value("1.5GB") },
+      {
+         name: "PUBLISHER_ADMIN_MEMORY_LIMIT",
+         env: { PUBLISHER_ADMIN_MEMORY_LIMIT: "3GB" },
+         expect: value("3GB"),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_ADMIN_MEMORY_LIMIT: "" },
+         expect: value("1.5GB"),
+      },
+      {
+         name: "not a size",
+         env: { PUBLISHER_ADMIN_MEMORY_LIMIT: "lots" },
+         expect: fails("PUBLISHER_ADMIN_MEMORY_LIMIT"),
+      },
+   ],
+   "admin.maxTempDirectorySize": [
+      { name: "unset is 6GiB", expect: value("6GiB") },
+      {
+         name: "PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE",
+         env: { PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE: "20GB" },
+         expect: value("20GB"),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE: "" },
+         expect: value("6GiB"),
+      },
+      {
+         name: "not a size",
+         env: { PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE: "lots" },
+         expect: fails("PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE"),
+      },
+   ],
    "admin.catalogDatabase": [
       { name: "unset is off", expect: value(null) },
       {
@@ -2481,17 +2517,18 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("d: "),
       },
    ],
+   // Retired: a set preset is accepted and ignored, never in force.
    "retrieval.egress.preset": [
-      { name: "unset", expect: value("default") },
+      { name: "unset", expect: value(false) },
       {
          name: "the file",
          file: { retrieval: { egress: { preset: "full" } } },
-         expect: value("full"),
+         expect: value(true),
       },
       {
          name: "PUBLISHER_RETRIEVAL_EGRESS_PRESET",
          env: { PUBLISHER_RETRIEVAL_EGRESS_PRESET: "full" },
-         expect: value("full"),
+         expect: value(true),
       },
       {
          name: "not a preset",
@@ -2516,6 +2553,27 @@ export const CONTRACT: Record<string, Case[]> = {
          name: "a string in the file is still refused",
          file: { retrieval: { dimensionValues: { enabled: "false" } } },
          expect: fails("retrieval.dimensionValues.enabled"),
+      },
+   ],
+   "retrieval.dimensionValues.givens": [
+      { name: "unset", expect: value({}) },
+      {
+         name: "the file, one value read as a list of one",
+         file: {
+            retrieval: {
+               dimensionValues: { givens: { reports: { REPORT_ID: 7 } } },
+            },
+         },
+         expect: value({ reports: { REPORT_ID: [7] } }),
+      },
+      {
+         name: "a given with no value is refused",
+         file: {
+            retrieval: {
+               dimensionValues: { givens: { reports: { REPORT_ID: [] } } },
+            },
+         },
+         expect: fails("retrieval.dimensionValues.givens.reports.REPORT_ID"),
       },
    ],
 };

@@ -224,8 +224,8 @@ for (const variant of VARIANTS) {
       /**
        * Bind the named sources' tables as a host's manifest binds them: a
        * database entry with its warehouse column types (`nativeSchema`), as
-       * a host must send them (an entry with none answers live, reason
-       * `types_unrecorded`; database_uncaptured_table_live).
+       * a host must send them (an entry with no contract answers live, reason
+       * `contract_missing`).
        */
       async function hostBind(names: string[]): Promise<void> {
          const mz = loader.pkg.materialization();

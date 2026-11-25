@@ -105,6 +105,9 @@
             },
             "url": "<hammer>/mzx/mzx.malloy"
           },
+          "mode": {
+            "tier": "same"
+          },
           "overStored": {
             "declarations": "source: us_orders is us_orders__mat extend {\n  where: region = 'US'\n}\nsource: us_big is us_orders extend {\n  where: big\n}",
             "flags": [],
@@ -212,6 +215,9 @@
               }
             },
             "url": "<hammer>/mzx/mzx.malloy"
+          },
+          "mode": {
+            "tier": "same"
           },
           "overStored": {
             "declarations": "source: orders is orders__mat extend {\n  measure: total is amount.sum()\n}\nsource: us_orders is orders extend {\n  where: region = 'US'\n  dimension: big is amount > 100\n}",

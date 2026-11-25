@@ -251,3 +251,48 @@ source: same is a -> { group_by: cat; aggregate: t is amt.sum() }
       );
    });
 });
+
+/**
+ * Its base's table is planned in the other file's model only, so the rollup
+ * has no table to group in its own: refused, on either tier, and answered
+ * live (docs/materialization.md, "Refused when the package is planned").
+ */
+describe("a rollup over an extension of a #(materialize) source in another file", () => {
+   const files = (rollup: string): Record<string, string> => ({
+      "a.malloy": `${RAW}
+#(materialize)
+source: a is raw extend { dimension: cat2 is cat }
+`,
+      "m.malloy": `##! experimental { persistence }
+import "a.malloy"
+source: rolled is a extend {
+  ${rollup}
+  measure: total is amt.sum()
+}
+`,
+   });
+
+   for (const [label, rollup, env] of [
+      ["database", `#(rollup) grain=["cat"]`, "off"],
+      ["storage=", `#(rollup) grain=["cat"] storage="lake"`, "on"],
+   ] as const) {
+      it(`is refused at plan as upstream_table_unusable, naming the base (${label})`, async () => {
+         packages.settings({
+            PUBLISHER_MATERIALIZE: "true",
+            PERSIST_STORAGE_MODE: env,
+         });
+         const { refused, kinds } = await refusedOf(files(rollup));
+         expect(kinds).not.toContain("rollup");
+         const ours = refused.filter((r) =>
+            /^rolled__rollup__cat__/.test(r.name),
+         );
+         expect(ours.map((r) => r.reason)).toEqual([
+            UPSTREAM_TABLE_UNUSABLE_REASON,
+         ]);
+         expect(ours[0].message).toContain(
+            "its #(materialize) upstream 'rolled' has no table it can build from: no #(materialize) table is planned in its model",
+         );
+         expect(ours[0].message).toContain("never built by recomputing");
+      });
+   }
+});
