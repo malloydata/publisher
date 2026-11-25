@@ -307,7 +307,7 @@ Options:
 | `token` | string | Appended to `src` as an `embed_token` query parameter for the embedded page to read |
 | `height` | number or string | Fixed height (`number` is treated as pixels). Omit it to auto-size. |
 | `allow` | string | Value for the iframe's `allow` attribute (permissions policy). Defaults to `clipboard-write; fullscreen`; pass `""` for none |
-| `sandbox` | string | Value for the iframe's `sandbox` attribute, replacing the default below. Pass `allow-scripts allow-same-origin allow-forms` to turn off downloads and new tabs |
+| `sandbox` | string | Value for the iframe's `sandbox` attribute. It replaces the whole default below, so keep `allow-scripts` (without it the frame is blank) and `allow-same-origin` (without it cookie auth fails). Pass `allow-scripts allow-same-origin allow-forms` to turn off downloads and new tabs. Do not add `allow-popups-to-escape-sandbox` or `allow-top-navigation`: either lets the page, or a tab it opens, redirect the host page |
 
 By default the iframe is sandboxed with `allow-scripts allow-same-origin allow-forms
 allow-downloads allow-popups`: the embedded page can save a file, open a link in

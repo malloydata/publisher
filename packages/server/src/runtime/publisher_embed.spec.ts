@@ -39,13 +39,14 @@ function embedFrame(options: Record<string, unknown> = {}) {
       src: "https://data.example.com/environments/e/packages/p/index.html",
       ...options,
    });
-   const sandbox = (iframe.getAttribute("sandbox") ?? "").split(/\s+/);
+   const sandboxAttribute = iframe.getAttribute("sandbox");
+   const sandbox = (sandboxAttribute ?? "").split(/\s+/);
    const allow = (iframe.getAttribute("allow") ?? "")
       .split(";")
       .map((feature: string) => feature.trim())
       .filter(Boolean);
    void window.happyDOM.close();
-   return { sandbox, allow };
+   return { sandbox, sandboxAttribute, allow };
 }
 
 describe("Publisher.embed frame permissions", () => {
@@ -99,5 +100,9 @@ describe("Publisher.embed frame permissions", () => {
       expect(embedFrame({ sandbox: null }).sandbox).toEqual(
          expect.arrayContaining(["allow-downloads", "allow-popups"]),
       );
+   });
+
+   it("keeps an empty sandbox empty, the strictest frame, rather than the default", () => {
+      expect(embedFrame({ sandbox: "" }).sandboxAttribute).toBe("");
    });
 });

@@ -46,5 +46,5 @@ Test embedded, not just standalone: the Publisher console renders a package's ap
 
 ## Guardrails (v1)
 
-- The iframe is sandboxed (`allow-scripts allow-same-origin allow-forms allow-downloads allow-popups`), with `clipboard-write` and `fullscreen` allowed. A download, a link in a new tab, a copy and full screen work; the opened tab keeps the sandbox, so its own dialogs do nothing and Chromium won't show a PDF in it: link a PDF with `download`. Top-level navigation and `alert`, `confirm`, `prompt` and `print` do not: drive dialogs in-page.
+- By default the iframe is sandboxed (`allow-scripts allow-same-origin allow-forms allow-downloads allow-popups`), with `clipboard-write` and `fullscreen` allowed. A download, a link in a new tab, a copy and full screen work; the opened tab keeps the sandbox, so its own dialogs do nothing and Chromium won't show a PDF in it: link a PDF with `download`. Top-level navigation and `alert`, `confirm`, `prompt` and `print` do not: drive dialogs in-page. A host's own `sandbox` replaces these tokens.
 - Embedded author JavaScript runs with the viewing user's data authority, so treat everything under `public/` as strictly first-party code: do not load untrusted third-party scripts, and do not move query results off to other hosts. Tighter per-embed isolation is planned.
