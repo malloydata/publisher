@@ -33,7 +33,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Fixed: every publish from a `gs://` or `s3://` `.zip` left the downloaded archive in the environment's `.staging/` folder until the next restart.** Each archive was the size of the package, and one was left per publish, whether the publish succeeded or was refused, so a long-running server's disk grew with every load from a bucket. The archive is now removed once it is extracted, and when the download or the extract fails. A folder location (a `gs://` or `s3://` prefix) and a local `.zip` never left one.
 
-## [Unreleased] — a wide manifest bind no longer holds the main thread
+## [0.18.2] — a wide manifest bind no longer holds the main thread
 
 **[fix] Binding a manifest with many `storage=` tables no longer stalls the server.** Since 0.17.3 a bind recorded every named source's scope facts for every bound table in one main-thread task. On a package with many sources and dozens of bound tables that held the event loop for seconds or longer, long enough for a health check to time out. The bind now walks each source once, reuses that walk for every bound table the source's scope does not read, and yields to the event loop as it goes. What a query reads is unchanged.
 
