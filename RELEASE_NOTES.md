@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a framed data app can save files, copy, go full screen and open new tabs
+
+The frame that the Console's data app viewer and `Publisher.embed` create now adds `allow-downloads allow-popups` to its sandbox and delegates `clipboard-write; fullscreen`, so a page can save a file, open a link in a new tab, copy text and go full screen. A tab it opens keeps the sandbox: in Firefox a tab that escaped it could redirect the host page. Hosts that call `Publisher.embed` get this on upgrade with no change of their own. A host that passes `allow` replaces the default, and `allow: ""` turns it off; `null` takes the default. A host that passes `sandbox` replaces the sandbox tokens, so `sandbox: "allow-scripts allow-same-origin allow-forms"` keeps the old frame. With the defaults, top navigation and modal dialogs stay off.
+
 ## [Unreleased] — Value search: index a report-gated model locally by listing the reports you work on
 
 **A source gated by `#(access_filter) report_id = $REPORT_ID` can now have its values indexed on a local server.** Until now any gated source was skipped, so on a per-report model like this, `dimensional_value` searches found nothing locally. List the reports to index in `publisher.config.json`:
