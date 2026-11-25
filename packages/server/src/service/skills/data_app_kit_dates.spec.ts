@@ -329,6 +329,8 @@ describe("shares of a whole", () => {
       expect(S.adds({ n: 3, s: 130, t: 100, lo: 10 })).toBe(false);
       // One part with a value and two without, as an average over parts with no rows gives.
       expect(S.adds({ n: 3, nn: 1, s: 10, t: 10, lo: 10 })).toBe(false);
+      // One part, as a field with a single value and the rest of its rows empty gives: it adds up to itself.
+      expect(S.adds({ n: 1, nn: 1, s: 10, t: 10, lo: 10 })).toBe(false);
    });
 });
 

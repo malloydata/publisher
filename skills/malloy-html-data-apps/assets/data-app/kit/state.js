@@ -305,8 +305,10 @@ export function partsQuery(field, metric, s, opts = {}) {
   // opts may carry the block's own `where` and `ignore`.
   return `${run(`{ where: ${field} is not null; group_by: f is ${field}; aggregate: m is ${metric}, t is all(${metric}) }`, s, { ...opts, which: 'current' })} -> { aggregate: n is count(), nn is count() { where: m is not null }, s is m.sum(), t is t.max(), lo is m.min() }`
 }
-/** Every part has a value, the parts add up to the whole, and none is below zero, so each is a share of it. */
-export const adds = (p) => p && Number.isFinite(p.s) && Number.isFinite(p.t) && !(p.lo < 0) && !(p.nn < p.n) && Math.abs(p.s - p.t) <= Math.abs(p.t) * 1e-6 + 1e-9
+/** At least two parts, each with a value, adding up to the whole, none below zero: so each is a share of it. One part
+ *  always adds up to itself, whatever the measure, which is how a field with one value (the rest of its rows empty)
+ *  would let an average pass. */
+export const adds = (p) => p && p.n >= 2 && Number.isFinite(p.s) && Number.isFinite(p.t) && !(p.lo < 0) && !(p.nn < p.n) && Math.abs(p.s - p.t) <= Math.abs(p.t) * 1e-6 + 1e-9
 
 /** The column name a field comes back as: the last part of its path. */
 export const colOf = (field) => field.split('.').pop()
