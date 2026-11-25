@@ -23,7 +23,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 ## [Unreleased] — a load into an existing table of an encrypted catalog no longer crashes the admin server
 
-**[fix] A merge or keyed replace into a table that already exists no longer aborts the process when the catalog is encrypted.** Catalogs are encrypted by default. Load sessions turned on DuckDB's Parquet metadata cache, and DuckDB 1.5.5 fails the second read of an encrypted Parquet file it has cached. A merge into an existing table reads its target more than once, even when it changes nothing, so the failure invalidated the database and took the whole admin server down with it. Load sessions no longer use that cache. On 0.18.0 through 0.18.2, a merge or keyed replace into an existing table of an encrypted catalog restarts the admin server, so anyone using admin loads should skip those versions.
+**[fix] A merge or replace into a table that already exists no longer aborts the process when the catalog is encrypted.** Catalogs are encrypted by default. Load sessions turned on DuckDB's Parquet metadata cache, and DuckDB 1.5.5 fails the second read of an encrypted Parquet file it has cached. A merge or a keyed replace into an existing table reads its target more than once, even when it changes nothing, and so does a keyless replace too large to compare in one pass. The failure invalidated the database and took the whole admin server down with it. Load sessions no longer use that cache. On 0.18.0 through 0.18.2, such a load into an existing table of an encrypted catalog restarts the admin server, so anyone using admin loads should skip those versions.
 
 ## [0.18.2] — a wide manifest bind no longer holds the main thread
 
