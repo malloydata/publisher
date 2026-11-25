@@ -60,7 +60,7 @@ Run CRUD tests with OpenTelemetry export:
 
 #### Comprehensive Load Test
 
-Focused on comprehensive API read operations and query execution. Tests listing, getting, and querying various resources (projects, packages, models, notebooks, connections, databases, queries, SQL sources) under normal load:
+Focused on comprehensive API read operations and query execution. Tests listing, getting, and querying various resources (projects, packages, models, connections, databases, queries, SQL sources) under normal load:
 
 ```bash
 bun run load-test               # Standard test

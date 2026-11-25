@@ -11,7 +11,7 @@
  * leaving it out does.
  *
  * modes.integration.spec.ts covers 17 routes this way. This file covers the
- * rest: reports (list and one), one dashboard, a notebook cell, skills,
+ * rest: reports (list and one), a notebook cell, skills,
  * agents and an agent's skill file, the package duckdb connection's tables
  * (and one table), the report write, a materialization's create (body),
  * get, stop and delete, and the model query with the version in its URL.
@@ -171,14 +171,9 @@ const READ_ROUTES: ReadRoute[] = [
       marker: (n) => `Overview v${n}`,
    },
    {
-      name: "GET dashboard",
-      path: "/dashboards/overview",
-      marker: (n) => `Overview v${n}`,
-   },
-   {
-      name: "GET notebook cell",
-      path: "/notebooks/notes.malloynb/cells/2",
-      marker: (n) => `SELECT ${n} AS answer`,
+      name: "GET notebook report",
+      path: "/reports/notes.malloynb",
+      marker: (n) => `Notes v${n}`,
       normalize: withoutRunIds,
    },
    { name: "GET skills", path: "/skills", marker: (n) => `House rules v${n}` },
@@ -222,11 +217,25 @@ async function expectEmptyReadsAsNone(pkg: string, n: number): Promise<void> {
    const wanted: Record<string, unknown> = {};
    for (const route of READ_ROUTES) {
       const url = `${pkgApi(pkg)}${route.path}`;
-      const none = await answerOf(await fetch(url), route.normalize);
-      const empty = await answerOf(
-         await fetch(`${url}?versionId=`),
-         route.normalize,
-      );
+      // A run reports MANIFEST_FILE_READY before it rebinds the package's
+      // loaded versions, and a rebind reloads the tree a read answers from
+      // (a new `servedRevision`). So the pair is read between two reads with
+      // no versionId, and read again when those two disagree: a reload
+      // landed between them.
+      let none: Awaited<ReturnType<typeof answerOf>>;
+      let empty: Awaited<ReturnType<typeof answerOf>>;
+      for (let attempt = 0; ; attempt++) {
+         none = await answerOf(await fetch(url), route.normalize);
+         empty = await answerOf(
+            await fetch(`${url}?versionId=`),
+            route.normalize,
+         );
+         const after = await answerOf(await fetch(url), route.normalize);
+         if (JSON.stringify(after) === JSON.stringify(none) || attempt >= 20) {
+            break;
+         }
+         await new Promise((r) => setTimeout(r, 50));
+      }
       actual[route.name] = {
          statuses: [none.status, empty.status],
          body: empty.body,
@@ -413,7 +422,7 @@ describe("an empty versionId answers as no versionId", () => {
 
          afterAll(() => setFlag("off"));
 
-         it("answers each report, dashboard, notebook cell, skill, agent and connection-table read the same with versionId= as with none", async () => {
+         it("answers each report, notebook cell, skill, agent and connection-table read the same with versionId= as with none", async () => {
             await expectEmptyReadsAsNone(kind.pkg, kind.n);
          });
 
@@ -450,7 +459,7 @@ describe("an empty versionId answers as no versionId", () => {
                   reseed: false,
                   sourceNames: null,
                   mode: "auto",
-                  trigger: "ON_DEMAND",
+                  trigger: "on_demand",
                   ...kind.runVersion,
                },
                settled: "MANIFEST_FILE_READY",

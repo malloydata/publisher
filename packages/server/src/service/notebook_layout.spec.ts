@@ -23,12 +23,12 @@ import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
+import { attachedCells } from "../test_helpers/attached_cells";
 import { Package } from "./package";
-import {
-   getDashboard,
-   listDashboards,
-   listNotebooks,
-} from "./legacy_report_views";
+
+/** The grid reports a package lists. */
+const gridReports = (pkg: Package) =>
+   pkg.listReports().filter((report) => report.layout === "grid");
 
 const SOURCE =
    `source: base is duckdb.sql("select 1 as id, 'x' as label") extend {\n` +
@@ -93,12 +93,11 @@ describe("notebooks written as tiles (worker path)", () => {
          (warning) => warning.model === model,
       );
 
-   it("serves the layout on the notebook GET: text tile body, one column, linear", async () => {
+   it("serves the layout on the report GET: text tile body, one column, linear", async () => {
       write("notebooks/tour.malloy", LAYOUT);
       await withPackage(async (pkg) => {
          expect(pkg.getReportLayout("notebooks/tour.malloy")).toBe("linear");
-         const raw = await pkg.getModel("notebooks/tour.malloy")!.getNotebook();
-         expect(raw.dashboard).toMatchObject({
+         expect(await pkg.getReport("notebooks/tour.malloy")).toMatchObject({
             layout: "linear",
             path: "notebooks/tour.malloy",
             title: "Tour",
@@ -125,8 +124,7 @@ describe("notebooks written as tiles (worker path)", () => {
       );
       await withPackage(async (pkg) => {
          expect(pkg.getReportLayout("notebooks/tour.malloy")).toBe("linear");
-         const raw = await pkg.getModel("notebooks/tour.malloy")!.getNotebook();
-         expect(raw.dashboard).toMatchObject({
+         expect(await pkg.getReport("notebooks/tour.malloy")).toMatchObject({
             layout: "linear",
             title: "Tour",
             tiles: [
@@ -141,10 +139,8 @@ describe("notebooks written as tiles (worker path)", () => {
    it("synthesizes cells from the tiles, in tile order, after the file's definitions", async () => {
       write("notebooks/tour.malloy", LAYOUT);
       await withPackage(async (pkg) => {
-         const raw = await pkg.getModel("notebooks/tour.malloy")!.getNotebook();
-         expect(
-            raw.notebookCells?.map((cell) => [cell.kind, cell.text]),
-         ).toEqual([
+         const cells = attachedCells(pkg.getModel("notebooks/tour.malloy"));
+         expect(cells.map((cell) => [cell.kind, cell.text])).toEqual([
             ["definition", SOURCE.trimEnd()],
             ["markdown", "# Welcome\n\nRead **this** first."],
             ["query", "run: base -> by_label"],
@@ -152,24 +148,29 @@ describe("notebooks written as tiles (worker path)", () => {
       });
    });
 
-   it("runs a synthesized query cell through the cell endpoint", async () => {
+   it("runs a synthesized query cell through the query endpoint", async () => {
       write("notebooks/tour.malloy", LAYOUT);
       await withPackage(async (pkg) => {
          const model = pkg.getModel("notebooks/tour.malloy")!;
-         const result = await model.executeNotebookCell(unrecordedAudit(), 2);
-         expect(result).toMatchObject({ type: "code", kind: "query" });
-         expect(JSON.parse(result.result ?? "{}")).toBeTruthy();
+         const cell = attachedCells(model)[2];
+         expect(cell?.kind).toBe("query");
+         const result = await model.runQuery(unrecordedAudit(), {
+            query: cell?.text ?? "",
+         });
+         expect(result.compactResult).toEqual([{ label: "x", n: 1 }]);
       });
    });
 
-   it("is a notebook, not a dashboard: unlisted as one, and a notebook listing carries it", async () => {
+   it("is a notebook, not a dashboard: unlisted as one, and listed as linear", async () => {
       write("notebooks/tour.malloy", LAYOUT);
       await withPackage(async (pkg) => {
-         expect(listDashboards(pkg, "env")).toEqual([]);
-         expect(await getDashboard(pkg, "env", "tour")).toBeUndefined();
-         expect((await listNotebooks(pkg, "env")).map((n) => n.path)).toEqual([
-            "notebooks/tour.malloy",
-         ]);
+         expect(gridReports(pkg)).toEqual([]);
+         expect(
+            pkg
+               .listReports()
+               .filter((report) => report.layout === "linear")
+               .map((report) => report.path),
+         ).toEqual(["notebooks/tour.malloy"]);
       });
    });
 
@@ -200,10 +201,9 @@ describe("notebooks written as tiles (worker path)", () => {
          `## artifact { layout=linear tiles=[] }\n${SOURCE}`,
       );
       await withPackage(async (pkg) => {
-         const raw = await pkg
-            .getModel("notebooks/empty.malloy")!
-            .getNotebook();
-         expect(raw.dashboard?.tiles).toEqual([]);
+         expect((await pkg.getReport("notebooks/empty.malloy"))?.tiles).toEqual(
+            [],
+         );
       });
    });
 
@@ -244,23 +244,18 @@ describe("notebooks written as tiles (worker path)", () => {
          expect(pkg.getReportLayout("notebooks/in_notebooks.malloy")).toBe(
             "grid",
          );
-         expect(listDashboards(pkg, "env").map((d) => d.path)).toEqual([
+         expect(gridReports(pkg).map((d) => d.path)).toEqual([
             "notebooks/in_notebooks.malloy",
          ]);
-         expect(await getDashboard(pkg, "env", "in_notebooks")).toMatchObject({
-            kind: "dashboard",
-         });
-         const raw = await pkg
-            .getModel("dashboards/in_dashboards.malloy")!
-            .getNotebook();
-         expect(raw.dashboard?.layout).toBe("linear");
+         expect(
+            (await pkg.getReport("dashboards/in_dashboards.malloy"))?.layout,
+         ).toBe("linear");
       });
    });
 
    // Ported from "one dashboard per name": identity is the path, so two
    // reports sharing a basename are both served, and neither shadows the
-   // other (`docs/reports-design.md` §3). Only the deprecated by-name route
-   // has to say which one it means, and it says it cannot.
+   // other (`docs/reports-design.md` §3).
    it("serves two reports that share a basename, both, by path", async () => {
       const dashboard = `## artifact { tiles=["base -> by_label"] }\n${SOURCE}`;
       write("dashboards/same.malloy", dashboard);
@@ -269,18 +264,11 @@ describe("notebooks written as tiles (worker path)", () => {
          dashboard.replace("{ tiles", "{ layout=grid tiles"),
       );
       await withPackage(async (pkg) => {
-         expect(listDashboards(pkg, "env").map((d) => d.path)).toEqual([
-            "dashboards/same.malloy",
-            "notebooks/same.malloy",
-         ]);
          expect(pkg.listReports().map((r) => r.path)).toEqual([
             "dashboards/same.malloy",
             "notebooks/same.malloy",
          ]);
          expect(warningsOf(pkg, "notebooks/same.malloy")).toEqual([]);
-         expect(getDashboard(pkg, "env", "same")).rejects.toThrow(
-            /dashboards\/same\.malloy, notebooks\/same\.malloy/,
-         );
       });
    });
 });

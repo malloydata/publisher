@@ -98,6 +98,12 @@ describe("value matching", () => {
       expect(filterStem("the Home Gardeners")).toBe("gard");
       expect(filterStem("ab")).toBeUndefined();
    });
+
+   it("cuts the stem by character, never through a surrogate pair", () => {
+      // U+20000 is one letter in two UTF-16 units; a cut by unit would leave
+      // half of it, which the value scan refuses as not a letter.
+      expect(filterStem("abc\u{20000}de")).toBe("abc\u{20000}");
+   });
 });
 
 // ---------------------------------------------------------------------------
@@ -105,7 +111,7 @@ describe("value matching", () => {
 // ---------------------------------------------------------------------------
 
 describe("retrieval.dimensionValues settings", () => {
-   it("accepts enabled, and names the one valid key on any other", () => {
+   it("accepts enabled and givens, and names the valid keys on any other", () => {
       expect(
          parseRetrievalConfig({ dimensionValues: { enabled: false } })
             ?.dimensionValues,
@@ -113,12 +119,49 @@ describe("retrieval.dimensionValues settings", () => {
       expect(() =>
          parseRetrievalConfig({ dimensionValues: { maxDimensions: 5 } }),
       ).toThrow(
-         "Invalid retrieval.dimensionValues: unknown key 'maxDimensions'. Valid keys: enabled.",
+         "Invalid retrieval.dimensionValues: unknown key 'maxDimensions'. Valid keys: enabled, givens.",
       );
       expect(() =>
          parseRetrievalConfig({ dimensionValues: { enabled: "no" } }),
       ).toThrow(
          'Invalid retrieval.dimensionValues.enabled: expected a boolean, got "no". Fix: "enabled": false',
+      );
+   });
+
+   it("reads givens per package, one value or a list, and refuses what it cannot read with", () => {
+      expect(
+         parseRetrievalConfig({
+            dimensionValues: {
+               givens: {
+                  reports: { REPORT_ID: 123, REGION: ["us", "eu", "us"] },
+               },
+            },
+         })?.dimensionValues,
+      ).toEqual({
+         givens: { reports: { REPORT_ID: [123], REGION: ["us", "eu"] } },
+      });
+      const fix = `Fix: "givens": { "<package>": { "REPORT_ID": [123, 456] } }`;
+      expect(() =>
+         parseRetrievalConfig({ dimensionValues: { givens: ["reports"] } }),
+      ).toThrow(
+         `Invalid retrieval.dimensionValues.givens: expected an object of packages, got ["reports"]. ${fix}`,
+      );
+      for (const bad of [[], [{ id: 1 }], null, Number.NaN]) {
+         expect(() =>
+            parseRetrievalConfig({
+               dimensionValues: { givens: { reports: { REPORT_ID: bad } } },
+            }),
+         ).toThrow(
+            "Invalid retrieval.dimensionValues.givens.reports.REPORT_ID: expected a string, number or boolean, or a non-empty list of them",
+         );
+      }
+      const many = Array.from({ length: 8 }, (_, i) => i);
+      expect(() =>
+         parseRetrievalConfig({
+            dimensionValues: { givens: { reports: { A: many, B: many } } },
+         }),
+      ).toThrow(
+         "Invalid retrieval.dimensionValues.givens.reports: its lists make 64 combinations, and each is one read per indexed dimension; at most 50. Fix: list fewer values",
       );
    });
 });
@@ -128,6 +171,7 @@ const REAL_MODEL = `##! experimental.givens
 given:
   role :: string
   TENANTS :: string[]
+  TENANT :: string
 
 source: seg_data is duckdb.sql("""
   select * from (values
@@ -149,6 +193,16 @@ source: locked_segments is seg_data extend {
 
 #(access_filter) tenant in $TENANTS
 source: tenant_segments is seg_data extend {
+  dimension: segment is segment_name
+}
+
+#(access_filter) tenant = $TENANT
+source: keyed_segments is seg_data extend {
+  dimension: segment is segment_name
+}
+
+source: scoped_segments is seg_data extend {
+  where: tenant = $TENANT
   dimension: segment is segment_name
 }
 `;
@@ -260,6 +314,82 @@ describe("the lookup query over a real model (gates are the query path's)", () =
          "Home Gardeners (Former)",
          "Home Gardeners (In-Season)",
       ]);
+   });
+
+   // A stem goes inside a `~` (LIKE) pattern, where `%` and `_` are wildcards
+   // and a quote would end the string. filterStem yields letters and digits;
+   // anything else is refused, so a direct caller cannot widen the match.
+   it("refuses a stem holding a LIKE wildcard or a quote, instead of widening the match", async () => {
+      for (const stem of ["%", "g_rd", "gard' or true or '"]) {
+         await expect(
+            valueFetcherFor(new RetrievalRegistry())({
+               environmentStore: store,
+               environmentName: "env",
+               packageName: "pkg",
+               modelPath: "m.malloy",
+               source: "open_segments",
+               dimension: "segment",
+               limit: 100,
+               stem,
+               timeoutMs: 10_000,
+            }),
+         ).rejects.toThrow("only letters and digits");
+      }
+   });
+
+   const keyedRead = (
+      source: string,
+      givens?: Record<string, unknown>,
+      partitionColumns?: string[],
+   ) =>
+      indexValueFetcherFor(new RetrievalRegistry())({
+         environmentStore: store,
+         environmentName: "env",
+         packageName: "pkg",
+         modelPath: "m.malloy",
+         source,
+         dimension: "segment",
+         limit: 10,
+         timeoutMs: 10_000,
+         ...(givens ? { givens } : {}),
+         ...(partitionColumns ? { partitionColumns } : {}),
+      });
+   const byKey = (r: { values: Array<{ value: string; key?: string }> }) =>
+      r.values.map((v) => `${v.key}:${v.value}`).sort();
+
+   it("never reads a keyed source without the givens that name its keys", async () => {
+      await expect(
+         keyedRead("keyed_segments", undefined, ["tenant"]),
+      ).rejects.toThrow(
+         "Only the index build reads a keyed source's values, and only with the givens that name its keys",
+      );
+   });
+
+   it("with configured givens, reads a keyed source through its gate: that key's values only", async () => {
+      expect(
+         byKey(
+            await keyedRead("keyed_segments", { TENANT: "acme" }, ["tenant"]),
+         ),
+      ).toEqual(["acme:Home Gardeners (In-Season)", "acme:Home Shoppers"]);
+   });
+
+   it("reads a source scoped by a where: on a given only when the givens name it", async () => {
+      await expect(keyedRead("scoped_segments")).rejects.toThrow(
+         "Given 'TENANT' has no value and no default",
+      );
+      expect(
+         (await keyedRead("scoped_segments", { TENANT: "acme" })).values
+            .map((v) => v.value)
+            .sort(),
+      ).toEqual(["Home Gardeners (In-Season)", "Home Shoppers"]);
+   });
+
+   it("sends the index's read only the givens its model declares", async () => {
+      // Malloy refuses a given the model does not declare; the configured
+      // givens are one set for every model in the package.
+      expect(
+         (await keyedRead("open_segments", { OTHER_MODELS_GIVEN: 1 })).values,
+      ).toHaveLength(4);
    });
 
    it("reads the index's counted values through the same query, gates included", async () => {

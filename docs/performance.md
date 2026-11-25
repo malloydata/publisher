@@ -305,10 +305,12 @@ October's in parentheses where comparable.
 ### Router
 
 `bun run perf:router --sources N` (in `packages/server`): what today's routing decision
-(`Model.runQueryResults`) costs per query, in process, on the
+(`ModelServing.run`) costs per query, in process, on the
 [R4 harness](../packages/server/tests/component/r4/harness.ts)'s real build-and-bind path. It has no
 HTTP, so it isolates the routing from transport. Materialization v2 replaces this chain with a
-variant router, and its phase 1 is held to these numbers. The script is
+variant router, and its phase 1 is held to these numbers. The numbers below were recorded on the
+storage serve shape, which the v1 cutover retired (6g); `storage=` queries are now answered by the
+served copy, so a rerun measures that path instead. The script is
 [`tests/perf/router_bench.ts`](../packages/server/tests/perf/router_bench.ts); `--rows`,
 `--iterations` and `--sources` take `--name value` or `--name=value`.
 
@@ -355,7 +357,7 @@ put warm overhead at 0.1 to 0.6 ms and cold at 1 to 6 ms. The shape of the resul
 absolute numbers here are higher mainly because of the load, so rerun on a quiet machine before
 gating phase 1 on them.
 
-Not covered yet: colocated routing (the manifest tier) and pre-aggregation rollups. They need a
+Not covered yet: database routing (the manifest tier) and pre-aggregation rollups. They need a
 package directory and the rollup companion model, so they come with the variant router itself.
 
 ### What the baseline shows

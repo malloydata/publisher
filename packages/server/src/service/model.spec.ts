@@ -2,14 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 import { unrecordedAudit } from "./access_record";
-import { API, MalloyError, Runtime } from "@malloydata/malloy";
+import {
+   API,
+   EMPTY_BUILD_MANIFEST,
+   MalloyError,
+   Runtime,
+} from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import sinon from "sinon";
 
 import {
    BadRequestError,
-   ConnectionAuthError,
    ConnectionFailedError,
    ConnectionPoolExhaustedError,
    ModelNotFoundError,
@@ -22,7 +26,9 @@ import {
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
 import { Model, ModelType } from "./model";
-import { StorageServeShape } from "./materialization/serve/model_serve_shape";
+import { ModelServing } from "./model_serving";
+import { logger } from "../logger";
+import { ServedCopyServe } from "./materialization/serve/served_copy_serve";
 import { installSettings } from "../test_helpers/settings_env";
 
 /**
@@ -180,18 +186,18 @@ describe("service/model", () => {
       });
 
       describe("getNotebook", () => {
-         it("should throw ModelCompilationError if a compilation error exists", async () => {
+         it("should throw a .malloynb's compilation error", async () => {
             const model = new Model({
                packageName,
-               modelPath: mockModelPath,
+               modelPath: "mockNotebook.malloynb",
                dataStyles: {},
                modelType: "notebook",
                compilationError: new Error("Compilation error"),
             });
 
-            await expect(async () => {
-               await model.getNotebook();
-            }).toThrowError(Error);
+            await expect(model.getNotebook()).rejects.toThrow(
+               "Compilation error",
+            );
 
             sinon.restore();
          });
@@ -420,8 +426,11 @@ describe("service/model", () => {
             ).rejects.toThrow(MalloyError);
 
             expect(preparedResultStub.calledOnce).toBe(true);
+            // Under the v1 cutover the live run reads no table: an explicit
+            // empty manifest, never the runtime's.
             expect(preparedResultStub.firstCall.args[0]).toEqual({
                givens: givensArg,
+               buildManifest: EMPTY_BUILD_MANIFEST,
             });
             expect(runStub.firstCall.args[0]).toMatchObject({
                givens: givensArg,
@@ -821,293 +830,6 @@ describe("service/model", () => {
             });
          });
       });
-
-      // DEPRECATED FEATURE COVERAGE — delete together with
-      // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
-      describe("deprecated: .malloynb — executeNotebookCell", () => {
-         it("forwards givens to runnable.getPreparedResult and .run", async () => {
-            const givensArg = { target_code: "AA" };
-            const preparedResultStub = sinon
-               .stub()
-               .resolves({ resultExplore: { limit: 10 } });
-            const runStub = sinon
-               .stub()
-               .rejects(new MalloyError("stub-stop", []));
-            const cellRunnable = {
-               getPreparedResult: preparedResultStub,
-               run: runStub,
-            };
-            const runnableCells = [
-               {
-                  type: "code" as const,
-                  text: "run: orders -> by_code",
-                  runnable: cellRunnable,
-               },
-            ];
-
-            const model = new Model({
-               packageName,
-               modelPath: "test.malloynb",
-               dataStyles: {},
-               modelType: "notebook",
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               runnableNotebookCells: runnableCells as any,
-               // Model surfaces `target_code` so filterGivensToModelSurface
-               // (see model.ts) forwards it rather than dropping it as unknown.
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               givens: [{ name: "target_code", type: "string" }] as any,
-            });
-
-            await expect(
-               model.executeNotebookCell(
-                  unrecordedAudit(),
-                  0,
-                  undefined,
-                  undefined,
-                  givensArg,
-               ),
-            ).rejects.toThrow(MalloyError);
-
-            expect(preparedResultStub.calledOnce).toBe(true);
-            expect(preparedResultStub.firstCall.args[0]).toEqual({
-               givens: givensArg,
-            });
-            expect(runStub.firstCall.args[0]).toMatchObject({
-               givens: givensArg,
-            });
-
-            sinon.restore();
-         });
-
-         it("maps a finalized-given rejection (code) to BadRequestError, not 500", async () => {
-            const finalizedErr = Object.assign(
-               new Error(
-                  "Given 'target_code' is finalized and cannot be overridden",
-               ),
-               { code: "runtime-given-finalized" },
-            );
-            const cellRunnable = {
-               getPreparedResult: sinon.stub().rejects(finalizedErr),
-               run: sinon.stub(),
-            };
-            const runnableCells = [
-               {
-                  type: "code" as const,
-                  text: "run: orders -> by_code",
-                  runnable: cellRunnable,
-               },
-            ];
-
-            const model = new Model({
-               packageName,
-               modelPath: "test.malloynb",
-               dataStyles: {},
-               modelType: "notebook",
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               runnableNotebookCells: runnableCells as any,
-            });
-
-            await expect(
-               model.executeNotebookCell(
-                  unrecordedAudit(),
-                  0,
-                  undefined,
-                  undefined,
-                  {
-                     target_code: "AA",
-                  },
-               ),
-            ).rejects.toThrow(BadRequestError);
-
-            sinon.restore();
-         });
-
-         it.each([
-            [
-               "an unreachable database as a connection failure",
-               Object.assign(new Error("connect ECONNREFUSED 10.0.0.5:5432"), {
-                  code: "ECONNREFUSED",
-               }),
-               ConnectionFailedError,
-            ],
-            [
-               "rejected credentials as a credential failure",
-               Object.assign(
-                  new Error('password authentication failed for user "x"'),
-                  { code: "28P01" },
-               ),
-               ConnectionAuthError,
-            ],
-         ])("answers %s, not a 400", async (_case, driverError, expected) => {
-            const cellRunnable = {
-               getPreparedResult: sinon
-                  .stub()
-                  .resolves({ resultExplore: { limit: 10 } }),
-               run: sinon.stub().rejects(driverError),
-            };
-            const model = new Model({
-               packageName,
-               modelPath: "test.malloynb",
-               dataStyles: {},
-               modelType: "notebook",
-               runnableNotebookCells: [
-                  {
-                     type: "code" as const,
-                     text: "run: orders -> by_code",
-                     runnable: cellRunnable,
-                  },
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               ] as any,
-            });
-
-            await expect(
-               model.executeNotebookCell(unrecordedAudit(), 0),
-            ).rejects.toThrow(expected);
-
-            sinon.restore();
-         });
-
-         it("embeds model-level givens in executed cell newSources", async () => {
-            const sourceInfo = { name: "carriers", schema: { fields: [] } };
-            const givens = [
-               {
-                  name: "region",
-                  type: "string",
-                  annotations: ["#(doc) Region"],
-               },
-            ];
-            // A source-only code cell (no runnable) still emits newSources.
-            const runnableCells = [
-               {
-                  type: "code" as const,
-                  text: "import 'carriers.malloy'",
-                  newSources: [sourceInfo],
-               },
-            ];
-
-            const model = new Model({
-               packageName,
-               modelPath: "test.malloynb",
-               dataStyles: {},
-               modelType: "notebook",
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               runnableNotebookCells: runnableCells as any,
-               givens,
-            });
-
-            const result = await model.executeNotebookCell(
-               unrecordedAudit(),
-               0,
-            );
-            const parsed = JSON.parse(result.newSources![0]);
-            expect(parsed.name).toBe("carriers");
-            expect(parsed.givens).toEqual(givens);
-         });
-
-         it("drops a given from the real query when the cell's own modelDef doesn't declare it", async () => {
-            const preparedResultStub = sinon
-               .stub()
-               .resolves({ resultExplore: { limit: 10 } });
-            const runStub = sinon
-               .stub()
-               .rejects(new MalloyError("stub-stop", []));
-            const cellRunnable = {
-               getPreparedResult: preparedResultStub,
-               run: runStub,
-            };
-            // The model surfaces GROUPS (below), so the drop is the cell's doing.
-            const runnableCells = [
-               {
-                  type: "code" as const,
-                  text: "run: plain -> by_code",
-                  runnable: cellRunnable,
-                  modelDef: { givens: {} },
-               },
-            ];
-
-            const model = new Model({
-               packageName,
-               modelPath: "test.malloynb",
-               dataStyles: {},
-               modelType: "notebook",
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               runnableNotebookCells: runnableCells as any,
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               givens: [{ name: "GROUPS", type: "number[]" }] as any,
-            });
-
-            await expect(
-               model.executeNotebookCell(
-                  unrecordedAudit(),
-                  0,
-                  undefined,
-                  undefined,
-                  {
-                     GROUPS: [1],
-                  },
-               ),
-            ).rejects.toThrow(MalloyError);
-
-            expect(preparedResultStub.firstCall.args[0]).toEqual({
-               givens: {},
-            });
-            expect(runStub.firstCall.args[0]).toMatchObject({ givens: {} });
-
-            sinon.restore();
-         });
-
-         it("forwards a given the cell's own modelDef declares", async () => {
-            const preparedResultStub = sinon
-               .stub()
-               .resolves({ resultExplore: { limit: 10 } });
-            const runStub = sinon
-               .stub()
-               .rejects(new MalloyError("stub-stop", []));
-            const cellRunnable = {
-               getPreparedResult: preparedResultStub,
-               run: runStub,
-            };
-            const runnableCells = [
-               {
-                  type: "code" as const,
-                  text: "run: gated -> by_code",
-                  runnable: cellRunnable,
-                  modelDef: { givens: { g1: { name: "GROUPS" } } },
-               },
-            ];
-
-            const model = new Model({
-               packageName,
-               modelPath: "test.malloynb",
-               dataStyles: {},
-               modelType: "notebook",
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               runnableNotebookCells: runnableCells as any,
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               givens: [{ name: "GROUPS", type: "number[]" }] as any,
-            });
-
-            const groupsArg = { GROUPS: [1] };
-            await expect(
-               model.executeNotebookCell(
-                  unrecordedAudit(),
-                  0,
-                  undefined,
-                  undefined,
-                  groupsArg,
-               ),
-            ).rejects.toThrow(MalloyError);
-
-            expect(preparedResultStub.firstCall.args[0]).toEqual({
-               givens: groupsArg,
-            });
-            expect(runStub.firstCall.args[0]).toMatchObject({
-               givens: groupsArg,
-            });
-
-            sinon.restore();
-         });
-      });
    });
 
    // A binding that declares `freshnessFallback=live` says the tier is an
@@ -1146,10 +868,10 @@ describe("service/model", () => {
 
       /**
        * A Model routed to storage, where the storage runnable fails and the live
-       * one succeeds. The `StorageServeShape` collaborator's
-       * `loadServeShapeQuery` is stubbed because the real one compiles a
-       * transient model — the logic under test is the catch, and the
-       * SHAPE'S bindings (not the package's) are what it must consult.
+       * one succeeds. The `ServedCopyServe` collaborator's `loadQuery` is
+       * stubbed because the real one compiles the author's files — the logic
+       * under test is the catch, and the ANSWER'S bindings (not the
+       * package's) are what it must consult.
        */
       /**
        * A malloy `Note`. The `at` location is required, not decoration: without
@@ -1214,12 +936,18 @@ describe("service/model", () => {
          // missing" — it is a runnable whose compile THROWS, which the
          // pre-check (correctly) treats as "cannot tell whether this entry
          // point is row-level gated" and refuses to route. `{_query: {}}` is
-         // the no-run-target shape: `structRef` is undefined, so the walk
+         // the no-run-target shape (a query with no filter): `structRef` is undefined, so the walk
          // resolves no struct, finds no gate, and routing proceeds — which is
          // what these tests are actually about.
-         const preparedQueryStub = () => sinon.stub().resolves({ _query: {} });
+         const preparedQueryStub = () =>
+            sinon.stub().resolves({ _query: { pipeline: [] } });
          const storageRunnable = {
-            getPreparedQuery: preparedQueryStub(),
+            // The served copy's compile carries its own model, which the
+            // access checks read in place of the author's.
+            getPreparedQuery: sinon.stub().resolves({
+               _query: {},
+               _modelDef: { contents: {}, exports: [], queryList: [] },
+            }),
             getPreparedResult:
                opts.storageFailsAt === "prepare"
                   ? sinon.stub().rejects(storageErr)
@@ -1364,19 +1092,17 @@ describe("service/model", () => {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             (opts.packageBindings ?? opts.shapeBindings) as any,
          );
-         // Only presence matters here: loadServeShapeQuery is stubbed below, so
+         // Only presence matters here: the served copy is stubbed below, so
          // the provider is never called.
          // eslint-disable-next-line @typescript-eslint/no-explicit-any
          model.setServeDestinationConfig((() => ({})) as any);
-         sinon
-            .stub(StorageServeShape.prototype, "loadServeShapeQuery")
-            .resolves({
-               runnable: storageRunnable,
-               virtualMap: { v: "lake.t_x" },
-               bindings: opts.shapeBindings,
-            } as unknown as Awaited<
-               ReturnType<StorageServeShape["loadServeShapeQuery"]>
-            >);
+         sinon.stub(ServedCopyServe.prototype, "hasBindings").returns(true);
+         sinon.stub(ServedCopyServe.prototype, "loadQuery").resolves({
+            runnable: storageRunnable,
+            virtualMap: { v: "lake.t_x" },
+            bindings: opts.shapeBindings,
+            tablesRead: opts.shapeBindings,
+         } as unknown as Awaited<ReturnType<ServedCopyServe["loadQuery"]>>);
          return { model, liveRun };
       }
 
@@ -1426,6 +1152,88 @@ describe("service/model", () => {
          expect(attached.tenant).toBe("acme");
          expect(attached.query_id).toBe("corr-1");
          expect(result.queryCorrelationId).toBe("corr-1");
+      });
+
+      it("meters the statement that answered with the bytes of the response it was served, and the failed one once", async () => {
+         // The stored run fails and the live retry answers: two statements on
+         // metered connections, so two records. The failure's goes out at once,
+         // with no bytes; the retry's waits for the response, and carries its
+         // exact size.
+         const { model } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+         });
+         const info = sinon.stub(logger, "info");
+
+         const result = await model.runQuery(unrecordedAudit(), {
+            query: "run: daily -> x",
+            queryMetadataInput: {
+               environment: "acme___prod",
+               meteredConnection: () => true,
+            },
+         });
+
+         const records = info
+            .getCalls()
+            .map((c) => c.args as unknown as [unknown, Record<string, unknown>])
+            .filter(([message]) => message === "statement_usage")
+            .map(([, record]) => record);
+         info.restore();
+         expect(records).toHaveLength(2);
+         expect(records[0]).toMatchObject({
+            connection: "lake",
+            surface: "serve",
+            status: "error",
+         });
+         expect(records[0]).not.toHaveProperty("bytes_out");
+         expect(records[1]).toMatchObject({
+            connection: "live_pg",
+            surface: "serve",
+            status: "ok",
+            bytes_out: Buffer.byteLength(result.serializedResult, "utf8"),
+         });
+      });
+
+      it("meters a statement whose result a cap refuses, once, without bytes_out", async () => {
+         // The answer is refused after the statement ran (report() throws, as a
+         // row or byte cap does), so no response is serialized, and the
+         // statement still has its record.
+         const { model } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "prepare",
+         });
+         const report = sinon
+            .stub(
+               ModelServing.prototype as unknown as { report: () => never },
+               "report",
+            )
+            .rejects(new Error("refused by a cap"));
+         const info = sinon.stub(logger, "info");
+
+         const outcome = await model
+            .runQuery(unrecordedAudit(), {
+               query: "run: daily -> x",
+               queryMetadataInput: {
+                  environment: "acme___prod",
+                  meteredConnection: () => true,
+               },
+            })
+            .catch((e: unknown) => e);
+
+         const records = info
+            .getCalls()
+            .map((c) => c.args as unknown as [unknown, Record<string, unknown>])
+            .filter(([message]) => message === "statement_usage")
+            .map(([, record]) => record);
+         info.restore();
+         report.restore();
+         expect(outcome).toBeInstanceOf(Error);
+         expect(records).toHaveLength(1);
+         expect(records[0]).toMatchObject({
+            connection: "live_pg",
+            status: "ok",
+         });
+         expect(records[0]).not.toHaveProperty("bytes_out");
       });
 
       it("tags the source the query RUNS, not the first one its text names", async () => {
@@ -1880,6 +1688,11 @@ describe("service/model", () => {
             .map((a) => a as Record<string, string>)
             .find((a) => a["malloy.model.query.status"] === "error");
          expect(errored).toBeDefined();
+         // The storage run failed and the live retry failed: neither is a
+         // storage-served error, so the storage tier's error rate stays clean.
+         expect(errored?.["malloy.model.query.served_from"]).toBe(
+            "live_fallback",
+         );
       });
 
       it("labels a request malformed before compiling as rejected, not error", async () => {

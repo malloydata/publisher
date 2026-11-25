@@ -424,7 +424,7 @@ describe("IncrementalLedgerRepository", () => {
             }),
          ).toBeNull();
 
-         // And the point of the new key: one source persisted colocated and
+         // And the point of the new key: one source persisted in the database tier and
          // another persisted into a destination under the same name are two
          // different tables. Under the old key these shared a row and both seeded
          // forever, each overwriting the other on the way out.

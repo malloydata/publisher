@@ -1,0 +1,12 @@
+{
+  "problems": [
+    {
+      "reason": "reroot_not_compiled",
+      "sourceName": "broken"
+    }
+  ],
+  "query": {
+    "equalToLive": true,
+    "servedFrom": null
+  }
+}

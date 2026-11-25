@@ -20,12 +20,15 @@ import {
    ConnectionNotFoundError,
    databaseAccessFailure,
    statementRejection,
+   StorageAccessDeniedError,
+   storageAccessFailure,
    InvalidArgumentError,
    PackageNotFoundError,
    PayloadTooLargeError,
    TableNotFoundError,
    UnconfiguredConnectionError,
 } from "../errors";
+import { bigIntReplacer } from "../json_utils";
 import { recordQueryCapExceeded } from "../query_cap_metrics";
 import { logger } from "../logger";
 import { assertSafePackageName } from "../path_safety";
@@ -37,11 +40,29 @@ import {
 } from "../service/access_record";
 import { testConnectionConfig } from "../service/connection";
 import {
+   connectionDialectOf,
+   registeredConnectionType,
+} from "../service/dialects";
+import {
    toPublicConnection,
    toPublicConnections,
 } from "../service/connection_public_view";
-import { validateDuckdbApiSurface } from "../service/connection_config";
+import {
+   validateConnectionSqlFields,
+   validateDuckdbApiSurface,
+} from "../service/connection_config";
+import { managedSchemas } from "../service/connection_type";
+import {
+   managedCatalogMessage,
+   managedCatalogRefusal,
+} from "../service/managed_catalog_scope";
 import { assertSingleSelect } from "../service/single_select";
+import {
+   meterStatement,
+   responseBytes,
+   usageCatalog,
+   type PendingStatementUsage,
+} from "../service/statement_usage";
 import { ConnectionService } from "../service/connection_service";
 import {
    columnsOfSchema,
@@ -212,15 +233,61 @@ function classifyDriverFailure(error: unknown): Error {
  * statement itself (400 with the driver's message, or 404 for a table it does
  * not have).
  */
-function sqlRunFailure(error: unknown): Error {
+function sqlRunFailure(
+   error: unknown,
+   subject?: string,
+   environment?: Pick<Environment, "isConfiguredStorageUrl">,
+): Error {
    // Already classified (an exhausted pool), with a message written for the
    // caller.
    if (error instanceof ConnectionError) return error;
    return (
       databaseAccessFailure(error) ??
+      // The storage behind a table refused the read: 403, as on the query
+      // route, rather than an outage's 502. Only this case changes; every
+      // other warehouse rejection keeps its status.
+      judgedStorageRefusal(
+         storageAccessFailure(error, subject, "connection"),
+         environment,
+      ) ??
       statementRejection(error) ??
       new ConnectionError((error as Error).message)
    );
+}
+
+/**
+ * Refuse raw SQL on a managed connection that names anything outside the
+ * schemas it may read (managed_catalog_scope.ts), before it runs.
+ */
+async function assertManagedCatalogScope(
+   connectionName: string,
+   sqlStatement: string,
+   schemas: ReadonlySet<string>,
+): Promise<void> {
+   const refused = await managedCatalogRefusal(
+      sqlStatement,
+      connectionName,
+      schemas,
+   );
+   if (refused) {
+      throw new BadRequestError(
+         managedCatalogMessage("Raw SQL", connectionName, refused),
+      );
+   }
+}
+
+/**
+ * `refusal` marked managed when its URL lies under a data path `environment`
+ * configures (StorageAccessDeniedError.managed).
+ */
+function judgedStorageRefusal(
+   refusal: StorageAccessDeniedError | undefined,
+   environment: Pick<Environment, "isConfiguredStorageUrl"> | undefined,
+): StorageAccessDeniedError | undefined {
+   if (refusal?.url !== undefined && environment) {
+      refusal.managed = environment.isConfiguredStorageUrl(refusal.url);
+   }
+   return refusal;
 }
 
 /**
@@ -237,20 +304,6 @@ async function withDatabaseAccessClassified<T>(
       throw databaseAccessFailure(error) ?? error;
    }
 }
-
-const CONNECTION_TYPES = new Set<string>([
-   "postgres",
-   "bigquery",
-   "snowflake",
-   "trino",
-   "databricks",
-   "mysql",
-   "sqlserver",
-   "duckdb",
-   "motherduck",
-   "ducklake",
-   "publisher",
-]);
 
 const connectionOperations = lazyCounter(
    "publisher_connection_operations_total",
@@ -272,10 +325,7 @@ async function metered<T>(
 ): Promise<T> {
    const label = {
       operation,
-      type:
-         typeof type === "string" && CONNECTION_TYPES.has(type)
-            ? type
-            : "unknown",
+      type: registeredConnectionType(type) ?? "unknown",
    };
    const startedAt = performance.now();
    const record = (outcome: string) => {
@@ -322,6 +372,49 @@ export class ConnectionController {
       return environment.getApiConnection(connectionName);
    }
 
+   /** A managed connection's DuckLake catalog, for its usage records. */
+   private managedCatalog(
+      environment: Environment,
+      connectionName: string,
+   ): string | undefined {
+      try {
+         return usageCatalog(
+            this.getApiConnectionForLookup(environment, connectionName),
+         );
+      } catch {
+         return undefined;
+      }
+   }
+
+   /**
+    * Whether caller SQL on this connection runs only as a single SELECT, and
+    * why: a managed DuckLake connection, or a locked-down DuckDB connection
+    * (the package sandbox, an environment `duckdb`, `ducklake` or
+    * `motherduck` connection; duckdb_lockdown.ts), whose confinement is
+    * read-only for raw SQL. Undefined for any other connection.
+    */
+   private singleSelectKind(
+      environment: Environment,
+      connectionName: string,
+   ): "managed database" | "locked-down DuckDB connection" | undefined {
+      if (this.isManagedConnection(environment, connectionName)) {
+         return "managed database";
+      }
+      let type: string | undefined;
+      try {
+         type = this.getApiConnectionForLookup(
+            environment,
+            connectionName,
+         ).type;
+      } catch (error) {
+         if (error instanceof ConnectionNotFoundError) return undefined;
+         throw error;
+      }
+      return connectionDialectOf(type)?.lockedDown === true
+         ? "locked-down DuckDB connection"
+         : undefined;
+   }
+
    /**
     * A managed DuckLake connection (a platform database's connection view). A
     * name the environment does not configure is not one; the lookup that
@@ -340,6 +433,17 @@ export class ConnectionController {
          if (error instanceof ConnectionNotFoundError) return false;
          throw error;
       }
+   }
+
+   /** The schemas raw SQL on a managed connection may name (managed_catalog_scope.ts). */
+   private configuredManagedSchemas(
+      environment: Environment,
+      connectionName: string,
+   ): ReadonlySet<string> {
+      return managedSchemas(
+         this.getApiConnectionForLookup(environment, connectionName)
+            .ducklakeConnection?.readableSchemas,
+      );
    }
 
    /**
@@ -664,8 +768,16 @@ export class ConnectionController {
          parseEnvironmentName(environmentName),
          false,
       );
-      if (this.isManagedConnection(environment, connectionName)) {
-         await assertSingleSelect(connectionName, sqlStatement);
+      const singleSelect = this.singleSelectKind(environment, connectionName);
+      if (singleSelect) {
+         await assertSingleSelect(connectionName, sqlStatement, singleSelect);
+      }
+      if (singleSelect === "managed database") {
+         await assertManagedCatalogScope(
+            connectionName,
+            sqlStatement,
+            this.configuredManagedSchemas(environment, connectionName),
+         );
       }
 
       const malloyConnection = await this.getMalloyConnection(
@@ -867,10 +979,56 @@ export class ConnectionController {
          );
       environmentForAdmission.assertCanAdmitQuery();
 
-      // A managed database runs one SELECT and nothing else (single_select.ts).
-      if (this.isManagedConnection(environmentForAdmission, connectionName)) {
-         await assertSingleSelect(connectionName, sqlStatement);
+      // A managed database or a locked-down DuckDB connection runs one SELECT
+      // and nothing else (single_select.ts).
+      const singleSelect = this.singleSelectKind(
+         environmentForAdmission,
+         connectionName,
+      );
+      // Metering is keyed on `managed`, not on running as a single SELECT: a
+      // locked-down DuckDB connection is the deployment's own and no meter's.
+      const managed = singleSelect === "managed database";
+      if (singleSelect) {
+         await assertSingleSelect(connectionName, sqlStatement, singleSelect);
       }
+      if (managed) {
+         await assertManagedCatalogScope(
+            connectionName,
+            sqlStatement,
+            this.configuredManagedSchemas(
+               environmentForAdmission,
+               connectionName,
+            ),
+         );
+      }
+      // A managed connection is metered (statement_usage.ts): the statement
+      // that runs below emits one usage record, whether it answers or fails.
+      // One refused above, or by a check before the run, never ran and emits
+      // none. A statement that answered emits it once its response is
+      // serialized, with the response's size; the finally below covers a
+      // response that never is (the row cap refused it).
+      let pending: PendingStatementUsage | undefined;
+      const metered = async <T extends { rows: unknown[] }>(
+         run: () => Promise<T>,
+      ): Promise<T> => {
+         if (!managed) return run();
+         const { result, usage } = await meterStatement(
+            {
+               environment: environmentName,
+               connection: connectionName,
+               surface: "sql",
+               package: packageName,
+               catalog: this.managedCatalog(
+                  environmentForAdmission,
+                  connectionName,
+               ),
+            },
+            run,
+            (answered) => answered.rows.length,
+         );
+         pending = usage;
+         return result;
+      };
 
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
@@ -964,60 +1122,77 @@ export class ConnectionController {
       //
       // runWithQueryTimeout turns a hung query into a 504, and its signal is
       // passed as abortSignal so the driver call is actually cancelled.
-      if (isStreamingConnection(malloyConnection)) {
-         const streamed = await runWithQueryTimeout(async (signal) => {
+      try {
+         if (isStreamingConnection(malloyConnection)) {
+            const streamed = await runWithQueryTimeout(async (signal) => {
+               const optionsWithSignal: RunSQLOptions = {
+                  ...runSQLOptions,
+                  abortSignal: signal,
+               };
+               try {
+                  return await metered(() =>
+                     streamSqlWithBudget(
+                        malloyConnection,
+                        sqlStatement,
+                        optionsWithSignal,
+                        { maxRows, maxBytes },
+                     ),
+                  );
+               } catch (error) {
+                  // Already classified, with a message written for the caller.
+                  if (
+                     error instanceof PayloadTooLargeError ||
+                     error instanceof ConnectionError
+                  )
+                     throw error;
+                  // If the timer fired, runWithQueryTimeout replaces this with
+                  // a QueryTimeoutError, so this matters only for real driver
+                  // failures.
+                  throw sqlRunFailure(
+                     error,
+                     connectionName,
+                     environmentForAdmission,
+                  );
+               }
+            }, getQueryTimeoutMs());
+            const data = JSON.stringify(streamed, bigIntReplacer);
+            pending?.emit(responseBytes(data));
+            return { data, queryCorrelationId };
+         }
+
+         const result = await runWithQueryTimeout(async (signal) => {
             const optionsWithSignal: RunSQLOptions = {
                ...runSQLOptions,
                abortSignal: signal,
             };
             try {
-               return await streamSqlWithBudget(
-                  malloyConnection,
-                  sqlStatement,
-                  optionsWithSignal,
-                  { maxRows, maxBytes },
+               return await metered(() =>
+                  malloyConnection.runSQL(sqlStatement, optionsWithSignal),
                );
             } catch (error) {
-               // Already classified, with a message written for the caller.
-               if (
-                  error instanceof PayloadTooLargeError ||
-                  error instanceof ConnectionError
-               )
-                  throw error;
-               // If the timer fired, runWithQueryTimeout replaces this with
-               // a QueryTimeoutError, so this matters only for real driver
-               // failures.
-               throw sqlRunFailure(error);
+               throw sqlRunFailure(
+                  error,
+                  connectionName,
+                  environmentForAdmission,
+               );
             }
          }, getQueryTimeoutMs());
-         return { data: JSON.stringify(streamed), queryCorrelationId };
-      }
 
-      const result = await runWithQueryTimeout(async (signal) => {
-         const optionsWithSignal: RunSQLOptions = {
-            ...runSQLOptions,
-            abortSignal: signal,
-         };
-         try {
-            return await malloyConnection.runSQL(
-               sqlStatement,
-               optionsWithSignal,
+         if (maxRows > 0 && result.rows.length > maxRows) {
+            // Counted on the buffered path too, so the metric covers every
+            // connector, not just streaming ones.
+            recordQueryCapExceeded("rows", "connection_sql");
+            throw new PayloadTooLargeError(
+               `Query returned more than ${maxRows} rows. Refine the query (add a LIMIT or more selective WHERE) or raise PUBLISHER_MAX_QUERY_ROWS.`,
             );
-         } catch (error) {
-            throw sqlRunFailure(error);
          }
-      }, getQueryTimeoutMs());
 
-      if (maxRows > 0 && result.rows.length > maxRows) {
-         // Counted on the buffered path too, so the metric covers every
-         // connector, not just streaming ones.
-         recordQueryCapExceeded("rows", "connection_sql");
-         throw new PayloadTooLargeError(
-            `Query returned more than ${maxRows} rows. Refine the query (add a LIMIT or more selective WHERE) or raise PUBLISHER_MAX_QUERY_ROWS.`,
-         );
+         const data = JSON.stringify(result, bigIntReplacer);
+         pending?.emit(responseBytes(data));
+         return { data, queryCorrelationId };
+      } finally {
+         pending?.emit();
       }
-
-      return { data: JSON.stringify(result), queryCorrelationId };
    }
 
    /** Raw SQL like {@link getConnectionQueryData}, so it is recorded as ungated too. */
@@ -1077,6 +1252,18 @@ export class ConnectionController {
             `'${connectionName}' is a managed database: raw SQL on it runs only as a single SELECT, so it cannot create a temporary table.`,
          );
       }
+      // On a locked-down DuckDB connection the caller's SQL is one SELECT;
+      // the CREATE around it is Publisher's own.
+      if (
+         this.singleSelectKind(environmentForAdmission, connectionName) ===
+         "locked-down DuckDB connection"
+      ) {
+         await assertSingleSelect(
+            connectionName,
+            sqlStatement,
+            "locked-down DuckDB connection",
+         );
+      }
 
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
@@ -1115,7 +1302,7 @@ export class ConnectionController {
             // The timeout wrapper converts this; do not bury it in a
             // ConnectionError.
             if (signal.aborted) throw error;
-            throw sqlRunFailure(error);
+            throw sqlRunFailure(error, connectionName, environmentForAdmission);
          }
       }, getQueryTimeoutMs());
    }
@@ -1161,11 +1348,19 @@ export class ConnectionController {
       // is a 400 rather than a failed test. Other types accept any name; an
       // empty name falls through to the service's missing-name failure.
       if (
-         (connectionConfig.type === "duckdb" ||
-            connectionConfig.type === "ducklake") &&
+         connectionDialectOf(connectionConfig.type)?.fileNamed === true &&
          connectionConfig.name
       ) {
          assertSafePackageName(connectionConfig.name);
+      }
+
+      // An attached database's name becomes a DuckDB alias and its S3 region
+      // a secret literal: either off its documented pattern is a 400, before
+      // any ATTACH is tried.
+      try {
+         validateConnectionSqlFields(connectionConfig);
+      } catch (error) {
+         throw new BadRequestError((error as Error).message);
       }
 
       try {

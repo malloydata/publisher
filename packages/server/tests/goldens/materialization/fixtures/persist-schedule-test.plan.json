@@ -1,0 +1,110 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "order_summary@<pkg>/persist_schedule_test.malloy": []
+        },
+        "order": [
+          "order_summary@<pkg>/persist_schedule_test.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "order_summary@<pkg>/persist_schedule_test.malloy": "persist"
+    },
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "order_summary@<pkg>/persist_schedule_test.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "order_summary@<pkg>/persist_schedule_test.malloy": "persist_schedule_test.malloy"
+    }
+  },
+  "loadWarnings": [
+    {
+      "message": "\"scope\" at the manifest root is deprecated: declare it as \"materialization\": { \"scope\": ... } alongside the other build knobs. The root form still works and will be removed in a future release; until then the server keeps both homes in sync when it writes the manifest, so an older publisher still reads the right value."
+    }
+  ],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "order_summary@<pkg>/persist_schedule_test.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "order_summary@<pkg>/persist_schedule_test.malloy": {
+        "annotationFields": {
+          "name": "order_summary"
+        },
+        "columns": [
+          {
+            "name": "category",
+            "type": "string"
+          },
+          {
+            "name": "total_orders",
+            "type": "number"
+          },
+          {
+            "name": "total_revenue",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "persist_schedule_test.malloy",
+        "name": "order_summary",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "duckdb",
+            "table": "'data/orders.csv'"
+          }
+        ],
+        "refresh": null,
+        "sourceEntityId": "4ab942004fa34a997237fa2e6b732c6b53cf7454f079c4345dea24a95d653bc6",
+        "sourceID": "order_summary@<pkg>/persist_schedule_test.malloy",
+        "sql": "sha256:5e69f4a7c8d758cd",
+        "upstreamSchemas": [
+          {
+            "columns": [
+              {
+                "name": "category",
+                "nativeType": "VARCHAR"
+              },
+              {
+                "name": "amount",
+                "nativeType": "BIGINT"
+              }
+            ],
+            "connectionName": "duckdb",
+            "dialect": "duckdb",
+            "table": "'data/orders.csv'"
+          }
+        ]
+      }
+    }
+  }
+}

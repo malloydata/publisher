@@ -29,6 +29,7 @@ import {
    OffSurfaceError,
    PackageVersionError,
    QueryTimeoutError,
+   ResultTruncatedError,
    ServiceUnavailableError,
 } from "../../errors";
 
@@ -137,6 +138,7 @@ function storeWhoseQueryThrows(error: unknown): Partial<EnvironmentStore> {
                getDeclaredQueryMetadata: () => null,
                getModel: () => ({
                   getType: () => "model",
+                  getCompilationError: () => undefined,
                   carriesReportTag: () => false,
                   getModel: async () => ({}),
                   runQuery: async () => {
@@ -187,6 +189,7 @@ function storeCapturingMetadata(
                getDeclaredQueryMetadata: () => null,
                getModel: () => ({
                   getType: () => "model",
+                  getCompilationError: () => undefined,
                   carriesReportTag: () => false,
                   getModel: async () => ({}),
                   runQuery: async (
@@ -333,6 +336,17 @@ describe("execute_query error classification", () => {
       expect(JSON.stringify(parsed.suggestions)).not.toContain(
          "Try the request again later",
       );
+   });
+
+   it("carries reason RESULT_TRUNCATED on BigQuery's short first page, as the REST 502 does", async () => {
+      const handler = captureHandler(
+         storeWhoseQueryThrows(new ResultTruncatedError(14000, 99000)),
+      );
+      const result = await handler(args);
+      expect(result.isError).toBe(true);
+      const parsed = parse(result);
+      expect(parsed.reason).toBe("RESULT_TRUNCATED");
+      expect(parsed.error).toContain("14000 of the 99000 rows");
    });
 
    it("reports a query-boundary denial as not-found, not as a server fault", async () => {
@@ -711,6 +725,7 @@ describe("execute_query on a package with published versions", () => {
                      getDeclaredQueryMetadata: () => null,
                      getModel: () => ({
                         getType: () => "model",
+                        getCompilationError: () => undefined,
                         carriesReportTag: () => false,
                         getModel: async () => ({}),
                         runQuery: async () => {

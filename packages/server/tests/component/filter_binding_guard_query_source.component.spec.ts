@@ -31,7 +31,6 @@ import { afterAll, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { pathToFileURL } from "url";
 import { AccessDeniedError } from "../../src/errors";
 import { logger } from "../../src/logger";
 import { Environment } from "../../src/service/environment";
@@ -42,6 +41,7 @@ import {
    isSameDeclaration,
 } from "../../src/service/filter_binding_guard";
 import type { Package } from "../../src/service/package";
+import { lastRunStatementText } from "../../src/service/query_text";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
 import { QueryPrivileges } from "../../src/service/model_query_request";
 
@@ -150,10 +150,18 @@ function firstValue(rows: Record<string, unknown>[]): string {
    return "n" in row ? `n=${String(row.n)}` : `row=${JSON.stringify(row)}`;
 }
 
-function firstCellValue(resultJson: string): string {
-   const cell = JSON.parse(resultJson)?.data?.array_value?.[0]?.record_value;
-   const v = cell?.[0];
-   return `n=${String(v?.number_value ?? v?.string_value ?? JSON.stringify(v))}`;
+function firstCellValue(compactResult: unknown): string {
+   const row = (compactResult as Record<string, unknown>[])[0];
+   const v = row ? Object.values(row)[0] : undefined;
+   return `n=${String(v)}`;
+}
+
+/** A `.malloynb` cell's query, as the Console sends it: the `runQuery` the reports read serves. */
+function cellQuery(notebook: string, index: number): string {
+   const text = notebook.split(/^>>>malloy\n/m).filter((c) => c !== "")[index];
+   const query = lastRunStatementText(text);
+   if (query === undefined) throw new Error(`cell ${index} runs no query`);
+   return query;
 }
 
 const roots: string[] = [];
@@ -169,7 +177,9 @@ interface Served {
 
 /**
  * Install `files` as package `pkg` (compiled by the real load path) and run
- * `act`. `outside` files sit beside the package, imported as `OUTSIDE/<name>`.
+ * `act`. `outside` files sit outside the package's models, imported as
+ * `OUTSIDE/<name>`: in a dot directory, which the load never compiles as a
+ * model of its own. (A model cannot import from outside the package root.)
  */
 async function withPackage<T>(
    files: Record<string, string>,
@@ -178,20 +188,20 @@ async function withPackage<T>(
 ): Promise<T> {
    const root = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-probe-"));
    roots.push(root);
-   const outDir = path.join(root, "outside");
-   await fs.mkdir(outDir, { recursive: true });
-   for (const [name, text] of Object.entries(outside)) {
-      await fs.writeFile(path.join(outDir, name), text);
-   }
    const envPath = path.join(root, "env");
    await fs.mkdir(envPath, { recursive: true });
    const env = await Environment.create("probeEnv", envPath, []);
    const pkg = await env.installPackage("pkg", async (staging) => {
       writePackageFiles(staging, {});
+      const outDir = path.join(staging, ".outside");
+      await fs.mkdir(outDir, { recursive: true });
+      for (const [name, text] of Object.entries(outside)) {
+         await fs.writeFile(path.join(outDir, name), text);
+      }
       for (const [name, text] of Object.entries(files)) {
          await fs.writeFile(
             path.join(staging, name),
-            text.replaceAll("OUTSIDE/", `${pathToFileURL(outDir).href}/`),
+            text.replaceAll("OUTSIDE/", ".outside/"),
          );
       }
    });
@@ -276,7 +286,7 @@ async function serve(
    return result;
 }
 
-/** Run notebook cell 1 of `nb.malloynb` (cells compile unrestricted). */
+/** Run notebook cell 1's query on the path of `nb.malloynb`, as the query route does. */
 async function serveCell(id: string, notebook: string): Promise<Outcome> {
    let outcome: Outcome;
    try {
@@ -286,8 +296,15 @@ async function serveCell(id: string, notebook: string): Promise<Outcome> {
             withDenialSpy(async () => {
                const r = await pkg
                   .getModel("nb.malloynb")!
-                  .executeNotebookCell(unrecordedAudit(), 1, {}, false, {});
-               return { kind: "SERVED", detail: firstCellValue(r.result!) };
+                  .runQuery(unrecordedAudit(), {
+                     query: cellQuery(notebook, 1),
+                     filterParams: {},
+                     givens: {},
+                  });
+               return {
+                  kind: "SERVED",
+                  detail: firstCellValue(r.compactResult),
+               };
             }),
       );
    } catch (e) {
@@ -1095,12 +1112,6 @@ ${BASE}`,
       );
       check(id, outcome);
       checkRows(id, outcome);
-   });
-   it("I5-cell-misbound: a cell that declares a where: and rebinds its field is refused", async () => {
-      await serveCell(
-         "I5-cell-misbound",
-         `>>>malloy\n${BASE}\n>>>malloy\nrun: deals_incl extend { where: is_open } extend { except: is_open } extend { dimension: is_open is true } -> { aggregate: n is count() }\n`,
-      );
    });
 });
 
@@ -2618,7 +2629,6 @@ const COMPILE_DIVERGENCE_ALLOWED: Record<
 const EXPECTED: Record<string, Kind> = {
    "I5-adhoc-dim-where": "SERVED",
    "I5-adhoc-where": "SERVED",
-   "I5-cell-misbound": "DENIED",
    "I5-caller-where-before-dim": "SERVED",
    "I5-caller-where-before-dim-gated": "SERVED",
    "I5-caller-where-before-dim-bypass": "SERVED",

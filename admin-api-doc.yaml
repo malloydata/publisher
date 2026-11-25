@@ -7,7 +7,7 @@ info:
   description: |
     The operator's surface. It holds two kinds of thing, neither of which a user
     of a running server should call: the DuckLake catalogs in one Postgres
-    database, as resources (a catalog, the tables in its schemas, and its
+    database, as resources (a catalog, its schemas, the tables in them, and its
     snapshots), and controls of this server's own process that only an operator
     or a local developer uses (watch mode).
 
@@ -47,6 +47,8 @@ servers:
 tags:
   - name: catalogs
     description: DuckLake catalogs and their settings
+  - name: schemas
+    description: The schemas of a catalog
   - name: tables
     description: The tables in a catalog's schemas
   - name: snapshots
@@ -86,7 +88,8 @@ paths:
         Creates a DuckLake catalog in the schema `name`, with its data under
         `dataPath`. Encryption is fixed now and cannot be changed later; the
         inlining limit and file-deletion grace are recorded in the catalog and
-        can be changed with PATCH. Each schema named is created. The schema may
+        can be changed with PATCH. With no `dataInliningRowLimit` the catalog
+        records 0, so every table is written as files. Each schema named is created. The schema may
         already exist, empty (created by whoever provisioned its owner role); the
         catalog's tables are then owned by that role. `409 CATALOG_EXISTS` when a
         catalog is already there.
@@ -165,6 +168,115 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /catalogs/{catalogName}/schemas/{schemaName}:
+    parameters:
+      - $ref: "#/components/parameters/catalogName"
+      - $ref: "#/components/parameters/schemaName"
+    put:
+      tags: [schemas]
+      operationId: put-schema
+      summary: Create a schema
+      description: |
+        Creates the schema. The name is lowercase
+        (`[a-z_][a-z0-9_]*`) and not reserved (`main`, `memory`,
+        `information_schema`, `pg_catalog`, `temp`, `system`, or a name starting
+        `__ducklake_metadata_`: `400 SCHEMA_RESERVED`). The request has
+        no body; a body is `400 INVALID_REQUEST`. `201` when the schema is new,
+        `200` when it already existed; with `If-None-Match: *` an existing
+        schema, including one a concurrent request created first, is refused
+        with `412 SCHEMA_EXISTS`.
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          description: "`*` to create only, refusing a schema that exists."
+          schema:
+            type: string
+            enum: ["*"]
+      responses:
+        "200":
+          description: The schema already existed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schema"
+        "201":
+          description: The schema, created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schema"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          description: "`If-None-Match: *` and the schema exists (`SCHEMA_EXISTS`)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      tags: [schemas]
+      operationId: delete-schema
+      summary: Drop a schema and its tables
+      description: |
+        Drops the schema and every table in it. A schema that does not exist
+        answers 204 as well, so a retried drop is free. A reserved name is `400
+        SCHEMA_RESERVED`. The schema a storage destination builds into is `409
+        SCHEMA_IS_DESTINATION`, since dropping it would remove every table the
+        build wrote (a `DELETE` of one of its tables is allowed). Data files
+        stay until a snapshot delete reclaims them, as for a dropped table.
+      responses:
+        "204":
+          description: The schema is dropped, or did not exist
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The schema is the one a storage destination of an environment on this server builds into in this catalog (`SCHEMA_IS_DESTINATION`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /catalogs/{catalogName}/tables:
+    parameters:
+      - $ref: "#/components/parameters/catalogName"
+    get:
+      tags: [tables]
+      operationId: list-catalog-tables
+      summary: List the tables in every schema of a catalog
+      description: |
+        Every table of the catalog's schemas, in schema then name order, each
+        with the bytes its live files hold. The engine's own schemas are left out.
+      responses:
+        "200":
+          description: The tables
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CatalogTableSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   /catalogs/{catalogName}/schemas/{schemaName}/tables:
     parameters:
       - $ref: "#/components/parameters/catalogName"
@@ -222,6 +334,9 @@ paths:
       operationId: put-table
       summary: Create or replace a table from a source
       description: |
+        The schema may not be the one a storage destination builds into
+        (`409 SCHEMA_IS_DESTINATION`, below); a copy's source may be in it.
+
         Writes the table from `source`: one CSV, Parquet, Excel or JSON object
         under the catalog's data path, the only location the session can read;
         or a table of a catalog in the same catalog database (a migration's
@@ -238,9 +353,19 @@ paths:
         in place and never left as rows in the catalog database, so an
         encrypted catalog stays encrypted. One DuckLake transaction:
         a reader sees the old table or the new one. A file the reader refuses
-        (not the format it claims, a value it cannot convert) is `400
-        INVALID_REQUEST` carrying the reader's own message, with the object
-        named by its file name. `201` when the table is new,
+        (not the format it claims, a value it cannot convert, an Excel `sheet`
+        the workbook lacks or a sheet with no rows) or an object that does not
+        exist is `422 OBJECT_UNREADABLE` carrying the reader's own
+        message, with the object named by its file name: the request is
+        well-formed but the named data cannot be applied, so correct the
+        object, don't retry. A table too large for the write session's memory
+        or its spill cap is `422 LOAD_TOO_LARGE`: a retry fails the same way, so
+        raise `PUBLISHER_ADMIN_MEMORY_LIMIT` and `PUBLISHER_DUCKDB_MEMORY_LIMIT`
+        (the session uses the lower) or `PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE`,
+        or write less. A `500` is a
+        failure a retry may cure (storage unavailable or throttled, a refused
+        credential, a full spill disk), and a retry is safe: it writes the whole
+        table from the same object again. `201` when the table is new,
         `200` when it replaced one; with `If-None-Match: *` an existing table is
         refused with `412 TABLE_EXISTS`. Synchronous: it answers when the table
         is written.
@@ -276,7 +401,8 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: A copy's source catalog is owned by a role the configured role cannot act as (`CATALOG_OWNER_UNSUPPORTED`)
+          description: |
+            A copy's source catalog is owned by a role the configured role cannot act as (`CATALOG_OWNER_UNSUPPORTED`), or the schema is the one a storage destination of an environment on this server builds into in this catalog (`SCHEMA_IS_DESTINATION`)
           content:
             application/json:
               schema:
@@ -287,8 +413,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "422":
+          description: The source object is missing, is not the format it claims, or holds a value its column cannot (`OBJECT_UNREADABLE`), or the write outgrew the session's memory or spill cap (`LOAD_TOO_LARGE`); nothing was written, and a retry fails the same way
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "503":
-          $ref: "#/components/responses/NotConfigured"
+          description: No catalog database is configured (`CATALOG_DATABASE_NOT_CONFIGURED`), or this server is already running a load or copy (`LOAD_BUSY`); the write was refused, not queued, so retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalServerError"
     delete:
@@ -296,7 +432,8 @@ paths:
       operationId: delete-table
       summary: Drop a table
       description: |
-        Drops the table. A table that does not exist answers 204 as well, so a
+        Drops the table, in a schema a storage destination builds into as in
+        any other, which is how a build's table is dropped. A table that does not exist answers 204 as well, so a
         retried drop is free. Its data files stay until a snapshot delete
         reclaims them, which is also the window in which the table can still be
         read at an earlier snapshot.
@@ -312,6 +449,277 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /catalogs/{catalogName}/schemas/{schemaName}/tables/{tableName}/loads:
+    parameters:
+      - $ref: "#/components/parameters/catalogName"
+      - $ref: "#/components/parameters/schemaName"
+      - $ref: "#/components/parameters/tableName"
+    post:
+      tags: [tables]
+      operationId: load-table
+      summary: Apply Parquet objects to a table by key
+      description: |
+        The schema may not be `main` (`400 SCHEMA_RESERVED`), nor the one a
+        storage destination builds into (`409 SCHEMA_IS_DESTINATION`, below).
+
+        Applies Parquet objects under the catalog's data path to the table,
+        creating it when it does not exist. `merge` upserts the objects' rows by
+        `key`; `replace` makes the table equal to the objects, by `key` when one
+        is given and as a whole table when not (a replace is the whole stream in
+        one call). A replace that would delete more rows than `maxDeletedRows`
+        is refused and writes nothing. A keyless replace compares the table's
+        rows with the objects' as a multiset, so it reads every column of both:
+        a full-width aggregate over the stored and the staged rows, on every
+        keyless replace, split into passes (by a hash of the whole row) that each
+        fit in half the session's memory; an empty extract or an empty table
+        needs no compare. A stored row with no identical row in the objects
+        counts in `rowsDeleted`, and an object row with no identical stored row
+        in `rowsInserted`; an edited row is one of each, and `maxDeletedRows`
+        guards `rowsDeleted`.
+
+        A load that changes no row and adds or widens no column, keyed or
+        keyless, writes nothing and takes no snapshot, so a load repeated after
+        it committed, with no other load of the same table committed in
+        between, finds nothing to do. It reports
+        the same `rowCount` and `cursorMax` as the first call, with every row
+        counted in `rowsUnchanged` and none inserted, replaced or deleted, and
+        answers `200` (below). A retry is safe because it finds nothing to
+        change. When some row does change, a keyed load rewrites only the rows
+        it changes, and a keyless replace rewrites the whole table, so there
+        `rowsUnchanged` counts the rows matched, not rows left in place.
+        Of two rows of one key, the later one wins: the later object in
+        `objects`, then the later row of an object. A key stored more than once
+        is rewritten once.
+
+        The objects are checked against the table's columns before anything is
+        written. A column the table lacks is added, even when no row changes.
+        A column it has keeps its type when the objects type it the same or
+        narrower, losslessly, and is widened to the objects' type when that is
+        a lossless widening of the table's: a wider integer, a decimal with no
+        fewer integer or fraction digits, an integer into a decimal or DOUBLE
+        that holds all its digits, FLOAT into DOUBLE, a longer varying text.
+        The widening is recorded in the same commit as the rows and rewrites no
+        file already written; a table's type never narrows. Objects that type one column differently
+        (BIGINT in one, DOUBLE in another) must each widen losslessly into the
+        type they are read together as. Every `key` column must be a column of
+        both; no key may be NULL; and `cursor`, when given, must be an integer,
+        DATE or TIMESTAMP column. A column of the table the objects lack is
+        written NULL for every row the load writes, whatever DEFAULT the table
+        gives it (a merge writes NULL for every key it touches), and a column
+        the table holds NOT NULL that the objects lack, or hold a NULL in, is
+        refused. A column typed NULL in every object (as a Parquet writer
+        writes an all-NULL column) is ignored, and objects that leave no column
+        are refused; as the `cursor` it reports `cursorMax: null`, and as a
+        `key` it is a NULL key. A column of the table named `__publisher_…` is
+        refused. Refusals are `422 LOAD_COLUMN_MISMATCH`, whose `detail` names
+        the column and why.
+
+        One table loads at a time, across every replica of this server (a
+        Postgres advisory lock in the catalog database), and one load runs at a
+        time on this server (the same slot a table PUT's load or copy takes). A
+        load that finds either busy is refused with `503 LOAD_BUSY` and nothing
+        written, never queued: retry it. A load whose lock is lost before it
+        commits rolls back and answers the same. The lock is checked just
+        before the commit, which narrows the window in which a lost lock goes
+        unnoticed but does not close it. The load reads the table inside
+        the transaction that writes it, so one that races a table PUT or DELETE
+        of the same table, or a schema drop, on another replica is refused by
+        DuckLake at its commit and answers `409 LOAD_CONFLICT`: nothing was
+        written, and a retry is safe. A schema dropped before that transaction
+        begins answers `404 SCHEMA_NOT_FOUND`.
+
+        A load runs in a session bounded to `PUBLISHER_ADMIN_MEMORY_LIMIT` of
+        memory (default 1.5 GB) or the operator's lower
+        `PUBLISHER_DUCKDB_MEMORY_LIMIT`, and `PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE`
+        of spill (default 6 GiB). A keyed load stays within the spill limit by
+        comparing columns in passes. A keyless replace compares in passes too,
+        each sized to half the session's memory, but every pass rereads both
+        sides, so it costs far more than a keyed load as the table grows: give a
+        large stream a `key`. A load that outgrows either limit anyway answers
+        `422 LOAD_TOO_LARGE` and writes nothing: a retry fails the same way, so
+        give it a `key`, split its objects across loads, or raise
+        `PUBLISHER_ADMIN_MEMORY_LIMIT` and `PUBLISHER_DUCKDB_MEMORY_LIMIT` (the
+        session uses the lower) or `PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE`. A full spill disk is a
+        `500`. A `500` before the commit writes nothing; one from the flush
+        after it may follow a committed load. Either way a retry after any
+        `500` is safe.
+
+        Synchronous: it answers once the rows are committed, with the counts of
+        what changed. **A load that committed is a resource**: it answers `201`
+        with its `id`, the `snapshotId` and `committedAt` of the snapshot it
+        committed (which carries the load's record, atomically with the rows),
+        and a `Location` of `loads/{id}`, which `GET` reads for as long as that
+        snapshot lasts. That includes a load that only added or widened a column.
+        A load that changed nothing committed nothing: it answers `200` with the
+        counts and `mode` alone, no `id` and no `Location`, and a `GET` finds
+        nothing of it.
+
+        **`Idempotency-Key`** makes the retry of a load that committed safe even
+        after another load of the table committed in between. A load that
+        repeats a key an earlier committed load of this table was sent under,
+        with the same body (`key` and `objects` in the order sent: the key's
+        order sets the leading columns of a table the load creates), writes
+        nothing and answers that load's `201`, `Location` and `Load` again
+        (after flushing any rows its table holds inlined in the catalog
+        database, so a retry still heals a load that failed after its commit).
+        The same key with a different body is `409 IDEMPOTENCY_KEY_REUSED`. A key
+        belongs to its table, and does not outlive a table DELETE or a PUT that
+        replaces the table. The server keeps a SHA-256 of the key, never the
+        key.
+
+        The key replays a load that committed, for as long as its snapshot is
+        kept. A load that changed nothing stores no record, and a key whose
+        snapshot a snapshot expiry removed has none, so either runs again: a
+        retry of such a load, sent after another load committed, can revert it.
+        A table with more than one writer therefore needs its loads serialized
+        by the caller. The key deviates from `Idempotency-Key` in
+        `api-doc.v1.yaml` in two further ways: a record lasts as long as its
+        snapshot, which may be shorter or longer than 24 hours (`DELETE
+        …/snapshots?olderThan` expires snapshots, and the key with them, as does
+        a storage destination's cleanup on the caller's `snapshotsOlderThan`);
+        and a duplicate that arrives while the first is running is refused `503
+        LOAD_BUSY`, not made to wait, and its retry replays.
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoadRequest"
+      responses:
+        "201":
+          description: The load committed (or is the replay of one that did), with its id, snapshot and counts
+          headers:
+            Location:
+              description: The load, as a reference relative to this request's URL, `loads/{id}`, or `{id}` when the request's path ends in a slash
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Load"
+        "200":
+          description: The load changed nothing, so committed nothing; the counts, without an `id`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoadNoOp"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            DuckLake refused the commit because another request changed the table (replaced, dropped or created it) while the load ran (`LOAD_CONFLICT`); nothing was written, retry. Or the `Idempotency-Key` was used for a different request to this table (`IDEMPOTENCY_KEY_REUSED`). Or the schema is the one a storage destination of an environment on this server builds into in this catalog (`SCHEMA_IS_DESTINATION`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: |
+            The load was refused, and nothing was written: the objects' columns do not
+            match the table's (`LOAD_COLUMN_MISMATCH`, with `detail`), a replace would delete more
+            rows than allowed (`LOAD_DELETE_LIMIT_EXCEEDED`, with `detail`), an object could
+            not be read (`OBJECT_UNREADABLE`, naming the object by its index, not its URI), or the
+            load outgrew the session's memory or spill cap (`LOAD_TOO_LARGE`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: No catalog database is configured (`CATALOG_DATABASE_NOT_CONFIGURED`), or another load of this table or on this server is running (`LOAD_BUSY`); the load was refused, not queued, so retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    get:
+      tags: [tables]
+      operationId: list-loads
+      summary: List a table's loads
+      description: |
+        The loads of the table that committed, newest first: each is the record
+        its snapshot carries, so a load is listed for as long as its snapshot is
+        kept, and one a snapshot expiry removed is gone. A load that changed
+        nothing is not listed. A table dropped and created again under the same
+        name shares one history.
+
+        This is the admin API's first list in the v1 grammar: `{items,
+        nextCursor}`, paged with `limit` and `after`, in a stable order. `nextCursor`
+        is absent on the last page. The error envelope is still this API's.
+        Only a missing catalog is a `404`: a table with no recorded loads, or
+        none yet, answers an empty list.
+      parameters:
+        - $ref: "#/components/parameters/limit"
+        - name: after
+          in: query
+          required: false
+          description: The `nextCursor` of the page before, given once; opaque
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A page of the table's loads
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoadList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No such catalog (`CATALOG_NOT_FOUND`). A missing schema or table is not a 404; it has no loads, so the list is empty
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /catalogs/{catalogName}/schemas/{schemaName}/tables/{tableName}/loads/{loadId}:
+    parameters:
+      - $ref: "#/components/parameters/catalogName"
+      - $ref: "#/components/parameters/schemaName"
+      - $ref: "#/components/parameters/tableName"
+      - name: loadId
+        in: path
+        required: true
+        description: The `id` a load answered
+        schema:
+          type: string
+    get:
+      tags: [tables]
+      operationId: get-load
+      summary: Read a load
+      description: |
+        A load that committed, as its create answered it, with the `author` and
+        `commitMessage` of its snapshot. It answers `404 LOAD_NOT_FOUND` when no
+        load of this table has that id, including a load whose snapshot has
+        been expired and a schema or table that does not exist.
+      responses:
+        "200":
+          description: The load
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoadRead"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No such catalog (`CATALOG_NOT_FOUND`), or no load of this table has that id (`LOAD_NOT_FOUND`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   /catalogs/{catalogName}/snapshots:
     parameters:
       - $ref: "#/components/parameters/catalogName"
@@ -319,17 +727,9 @@ paths:
       tags: [snapshots]
       operationId: list-snapshots
       summary: List a catalog's snapshots
-      description: The newest first, each with its time and what it changed.
+      description: The newest first, each with its time, what it changed, and its author and commit message when it has them.
       parameters:
-        - name: limit
-          in: query
-          required: false
-          description: How many, from 1 to 1000.
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 1000
-            default: 100
+        - $ref: "#/components/parameters/limit"
       responses:
         "200":
           description: The snapshots
@@ -470,6 +870,34 @@ components:
       description: A table in the schema.
       schema:
         $ref: "#/components/schemas/Identifier"
+    limit:
+      name: limit
+      in: query
+      required: false
+      description: How many, from 1 to 1000.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 100
+    idempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        Makes the retry of a load that committed safe: a load of this table
+        that repeats a key an earlier committed load was sent under, with the
+        same body, answers that load again and writes nothing; the same key with
+        another body is `409 IDEMPOTENCY_KEY_REUSED`. A load that changed
+        nothing, or whose snapshot has expired, has no record, so it runs again.
+        Use a fresh UUID per logical load. Unlike `Idempotency-Key` in the v1
+        API, a record lasts as long as its snapshot, which may be shorter or
+        longer than 24 hours, and a duplicate that arrives while the first runs
+        is `503 LOAD_BUSY` (not made to wait).
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
 
   responses:
     BadRequest:
@@ -479,7 +907,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     NotFound:
-      description: No such catalog (`CATALOG_NOT_FOUND`), schema (`SCHEMA_NOT_FOUND`) or table (`TABLE_NOT_FOUND`), or no such source for a table write (`SOURCE_NOT_FOUND`)
+      description: No such catalog (`CATALOG_NOT_FOUND`), schema (`SCHEMA_NOT_FOUND`) or table (`TABLE_NOT_FOUND`), no such source for a table write (`SOURCE_NOT_FOUND`), or no such load (`LOAD_NOT_FOUND`)
       content:
         application/json:
           schema:
@@ -566,8 +994,9 @@ components:
         schemas:
           type: array
           items:
-            $ref: "#/components/schemas/Identifier"
-          description: Schemas to create beside `main`
+            type: string
+            pattern: "^[a-z_][a-z0-9_]*$"
+          description: Schemas to create beside `main`, named as for a schema PUT (a reserved name is `400 SCHEMA_RESERVED`)
 
     CatalogUpdate:
       type: object
@@ -578,6 +1007,22 @@ components:
         fileDeletionGrace:
           type: string
           description: An interval like `1 day` or `12 hours`
+
+    Schema:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+
+    CatalogTableSummary:
+      allOf:
+        - type: object
+          required: [schema]
+          properties:
+            schema:
+              type: string
+        - $ref: "#/components/schemas/TableSummary"
 
     TableSummary:
       type: object
@@ -683,6 +1128,166 @@ components:
           $ref: "#/components/schemas/Identifier"
       additionalProperties: false
 
+    LoadRequest:
+      type: object
+      required: [mode, objects]
+      description: |
+        A merge needs `key` and refuses `maxDeletedRows`; a replace needs
+        `maxDeletedRows` and is keyless when `key` is omitted.
+      properties:
+        commitMessage:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: '^[^\u0000]*$'
+          description: |
+            The message of the snapshot the load commits, listed by
+            `GET /snapshots` beside the author `publisher-admin`. `load
+            <schema>.<table>` when absent. A load that changes nothing writes no
+            snapshot, so records nothing. A message holding Malloy's statement
+            separator (`-- hack: split on this`) is refused.
+        mode:
+          type: string
+          enum: [merge, replace]
+          description: |
+            `merge` upserts by `key`. `replace` makes the table equal to this
+            call's rows, by `key` when given, otherwise as a whole table.
+        key:
+          type: array
+          minItems: 1
+          maxItems: 16
+          uniqueItems: true
+          items:
+            type: string
+            pattern: "^[a-z_][a-z0-9_]*$"
+          description: The columns that identify a row; they are never NULL
+        objects:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          uniqueItems: true
+          items:
+            type: string
+          description: |
+            Parquet objects under the catalog's data path. Their order decides
+            which of two rows of one key is later: the later object's.
+        cursor:
+          type: string
+          pattern: "^[a-z_][a-z0-9_]*$"
+          description: An integer, DATE or TIMESTAMP column whose greatest value among the rows loaded is reported
+        maxDeletedRows:
+          type: integer
+          minimum: 0
+          description: |
+            The most stored rows a replace may delete; more is refused with
+            `LOAD_DELETE_LIMIT_EXCEEDED`. For a keyless replace these are the
+            stored rows with no identical row in the objects, so an edited row
+            counts as one deleted row
+      additionalProperties: false
+
+    LoadNoOp:
+      type: object
+      required:
+        [
+          mode,
+          rowsInserted,
+          rowsReplaced,
+          rowsUnchanged,
+          rowsDeleted,
+          rowCount,
+          cursorMax,
+        ]
+      description: |
+        What a load that changed nothing did, in rows: counts alone. It committed
+        no snapshot, so it has no `id` and is not a resource. `rowCount` is the
+        table's rows after the load, which is its rows before, plus
+        `rowsInserted`, less `rowsDeleted`.
+      properties:
+        mode:
+          type: string
+          enum: [merge, replace]
+          description: The request's `mode`
+        rowsInserted:
+          type: integer
+          format: int64
+          description: Rows of keys the table did not have; for a keyless replace, the object rows with no identical stored row
+        rowsReplaced:
+          type: integer
+          format: int64
+          description: Rows written over a stored row of the same key, because a column differed. Always 0 for a keyless replace, which has no key to match on
+        rowsUnchanged:
+          type: integer
+          format: int64
+          description: Rows the objects held that the table already held. A keyed load leaves them in place; a keyless replace that changes any row rewrites the whole table, and this counts the rows matched
+        rowsDeleted:
+          type: integer
+          format: int64
+          description: |
+            Stored rows removed: the rows of keys a replace's objects lack, and
+            the copies beyond one of a key that was stored more than once; for a
+            keyless replace, the stored rows with no identical object row
+        rowCount:
+          type: integer
+          format: int64
+        cursorMax:
+          type: ["string", "null"]
+          description: |
+            The greatest value of the request's `cursor` over the rows the load
+            kept, as text: an integer in decimal, exact past 2^53; a DATE as
+            `YYYY-MM-DD`; a TIMESTAMP as ISO 8601, in UTC with a `Z` when it has
+            a time zone. Null when no `cursor` was given or every value is NULL.
+        cursorType:
+          type: string
+          description: The cursor column's type as DuckDB names it (`BIGINT`, `DATE`, `TIMESTAMP WITH TIME ZONE`); present when a `cursor` was given, except for a cursor every object types NULL on a table's first load, which has no type
+
+    Load:
+      description: |
+        A load that committed: its counts, and the `id`, `snapshotId` and
+        `committedAt` of the snapshot that carries its record.
+      allOf:
+        - $ref: "#/components/schemas/LoadNoOp"
+        - type: object
+          required: [id, snapshotId, committedAt]
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: The load's id, for `GET …/loads/{id}`
+            snapshotId:
+              type: integer
+              format: int64
+              description: The snapshot the load committed; the one `GET /snapshots` lists with this load's `commitMessage`
+            committedAt:
+              type: string
+              format: date-time
+              description: When that snapshot was taken
+
+    LoadRead:
+      description: A load as a read answers it, with who committed its snapshot and the message it carries.
+      allOf:
+        - $ref: "#/components/schemas/Load"
+        - type: object
+          required: [author, commitMessage]
+          properties:
+            author:
+              type: ["string", "null"]
+              description: Who committed the snapshot (`publisher-admin`)
+            commitMessage:
+              type: ["string", "null"]
+              description: The message the snapshot carries, the request's `commitMessage` or `load <schema>.<table>`
+
+    LoadList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/LoadRead"
+        nextCursor:
+          type: string
+          description: Opaque position; send it back as `after` for the next page. Absent on the last page
+
     Snapshot:
       type: object
       required: [id, time, changes]
@@ -697,6 +1302,12 @@ components:
           type: object
           additionalProperties: true
           description: What it changed, as DuckLake records it (e.g. `tables_created`)
+        author:
+          type: ["string", "null"]
+          description: Who committed it, as DuckLake records it (`publisher-admin` for a load); null when none was set
+        commitMessage:
+          type: ["string", "null"]
+          description: The message the commit carried, such as a load's `commitMessage`; null when none was set
 
     SnapshotDeletion:
       type: object
@@ -745,5 +1356,130 @@ components:
             CATALOG_DATABASE_NOT_CONFIGURED, CATALOG_OWNER_UNSUPPORTED,
             CATALOG_SETTING_UNREADABLE, SCHEMA_NOT_FOUND, TABLE_NOT_FOUND,
             SOURCE_NOT_FOUND, TABLE_EXISTS, OBJECT_OUTSIDE_DATA_PATH,
-            INVALID_REQUEST. Treat an
-            unrecognized value as absent.
+            INVALID_REQUEST, SCHEMA_EXISTS, SCHEMA_RESERVED,
+            SCHEMA_IS_DESTINATION, LOAD_BUSY,
+            LOAD_CONFLICT, LOAD_COLUMN_MISMATCH, LOAD_DELETE_LIMIT_EXCEEDED,
+            LOAD_TOO_LARGE, OBJECT_UNREADABLE, LOAD_NOT_FOUND,
+            IDEMPOTENCY_KEY_REUSED.
+            `SCHEMA_EXISTS`: a create-only schema PUT found the schema.
+            `SCHEMA_RESERVED`: the schema name is one the engine owns, `main`,
+            or a name starting `__ducklake_metadata_`; also refused as the
+            target of a load, because every managed connection reads `main` and
+            a storage destination with no `destinationSchema` builds there (a
+            table PUT or DELETE may write `main`).
+            `SCHEMA_IS_DESTINATION` (409): a table PUT, a load or a schema
+            DELETE targets the schema (`destinationSchema`, or `main` when it
+            sets none) that a storage destination of an environment on this
+            server builds into in this catalog, which Publisher builds; the
+            message names the environment and the destination, and tables you
+            write belong in another schema. A table DELETE there is allowed, and
+            a copy may read its source from it. A connection's
+            `destinationSchema` is not a destination's. The check reads the
+            environments the server has loaded, so an admin-only listener, with
+            no environments, a server still loading its environments, and an
+            environment that failed to load refuse nothing. `LOAD_BUSY` (503): another load of the table, or another
+            load on this server, is running; nothing was written, retry.
+            `LOAD_CONFLICT` (409): DuckLake refused the commit because
+            another request (a table PUT or DELETE, a schema drop) changed
+            the table while the load ran; nothing was written, retry. A schema
+            dropped before the load's transaction began is `SCHEMA_NOT_FOUND` (404).
+            `LOAD_NOT_FOUND` (404): no load of the table has the id, or its
+            snapshot was expired. `IDEMPOTENCY_KEY_REUSED` (409): a load's
+            `Idempotency-Key` was used for a different request to the table.
+            `LOAD_COLUMN_MISMATCH` (422): the objects' columns do not match
+            the table's; `detail` is a `ColumnMismatchDetail`.
+            `LOAD_DELETE_LIMIT_EXCEEDED` (422): a replace would delete more rows than
+            `maxDeletedRows`; `detail` is a `DeleteLimitDetail`.
+            `LOAD_TOO_LARGE` (422, a table PUT or a load): the write ran out of
+            the session's memory or its spill cap (`admin.memoryLimit`, which a
+            lower `duckdb.memoryLimit` overrides, and
+            `admin.maxTempDirectorySize`). It is 422 because the work outgrew the
+            session, not because the request body was too large (the v1 API's
+            request-cap overrun is 413). A retry fails the same way: give the
+            load a `key`, split its objects across loads, or raise the limit.
+            `OBJECT_UNREADABLE` (422, a table PUT or a load): an object is
+            missing, not in the format it claims, or holds a value its column's
+            type cannot. The request is well-formed but the named data cannot
+            be applied: correct the object, don't retry. The message is
+            DuckDB's, with each URI replaced by `objects[i]` (a file name on a
+            PUT), and a load's `detail` is an `ObjectUnreadableDetail`.
+            A storage failure (unavailable, throttled, a refused credential)
+            or a full spill disk is a `500` instead, to retry.
+            Treat an unrecognized value as absent.
+        detail:
+          description: Present on the refusals that carry what a caller can act on; its shape is per `reason`
+          oneOf:
+            - $ref: "#/components/schemas/ColumnMismatchDetail"
+            - $ref: "#/components/schemas/DeleteLimitDetail"
+            - $ref: "#/components/schemas/ObjectUnreadableDetail"
+
+    ColumnMismatchDetail:
+      type: object
+      description: The `detail` of `LOAD_COLUMN_MISMATCH`, naming the column that breaks the table's contract and how
+      required: [column, tableType, loadType, violation]
+      properties:
+        column:
+          type: string
+          description: The offending column; the folded name for a `case_collision`, and `""` for `no_columns`
+        tableType:
+          type: ["string", "null"]
+          description: The table's type of the column; null when the table has no such column
+        loadType:
+          type: ["string", "null"]
+          description: The objects' type of the column; null when the objects have no such column
+        violation:
+          type: string
+          enum:
+            - null_key
+            - missing_key
+            - missing_cursor
+            - cursor_type
+            - type_change
+            - reserved_name
+            - case_collision
+            - no_columns
+            - not_null
+          description: |
+            `null_key`: a `key` column is NULL in a row of the objects, or
+            typed NULL in every object.
+            `missing_key`: a `key` column is not a column of the objects, or of
+            the table when it exists. `missing_cursor`:
+            the `cursor` is not a column of the objects. `cursor_type`: the
+            `cursor` is not an integer, DATE or TIMESTAMP column.
+            `type_change`: a type that does not widen losslessly, against the
+            table's column, or between two objects (`tableType` is then null).
+            `reserved_name`: a column name starting `__publisher_` (in the
+            objects, or in the table), or `file_row_number`, `rowid` or one
+            holding a NUL. `case_collision`: two names, in one object or two,
+            that differ only by case, or one name twice in an object.
+            `no_columns`: the objects leave no column. `not_null`: a column the
+            table holds NOT NULL is missing from the objects (`loadType` is
+            null) or has a NULL among the rows the load writes.
+
+    DeleteLimitDetail:
+      type: object
+      description: The `detail` of `LOAD_DELETE_LIMIT_EXCEEDED`
+      required: [wouldDelete, rowsBefore, maxDeletedRows]
+      properties:
+        wouldDelete:
+          type: integer
+          format: int64
+          description: The stored rows the replace would delete
+        rowsBefore:
+          type: integer
+          format: int64
+          description: The table's rows before the load
+        maxDeletedRows:
+          type: integer
+          format: int64
+          description: The request's limit
+
+    ObjectUnreadableDetail:
+      type: object
+      description: The `detail` of a load's `OBJECT_UNREADABLE`. Absent when the reader's message names no object of the request
+      required: [object]
+      properties:
+        object:
+          type: integer
+          minimum: 0
+          description: The index of the unreadable object in the request's `objects`

@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { AsyncLocalStorage } from "async_hooks";
 import {
    metrics,
    SpanStatusCode,
@@ -51,16 +52,57 @@ export function lazyInstrument<T>(create: () => T): () => T {
    return () => (instrument ??= create());
 }
 
+/**
+ * Set inside work no caller asked for whose metrics would count a caller's
+ * request twice: the v1 cutover's shadow comparison, which runs a query a
+ * caller already ran ({@link withoutMetrics}).
+ */
+const metricsSuppressed = new AsyncLocalStorage<true>();
+
+/**
+ * Run `fn` with every counter and histogram from this module recording
+ * nothing, through everything it awaits. For a second run of a request a
+ * caller already made (the shadow comparison): its security, governance,
+ * routing and query metrics were counted by the run that answered.
+ */
+export function withoutMetrics<T>(fn: () => Promise<T>): Promise<T> {
+   return metricsSuppressed.run(true, fn);
+}
+
+/** Whether the current async context records no metrics. */
+export function metricsAreSuppressed(): boolean {
+   return metricsSuppressed.getStore() === true;
+}
+
+/** A counter that records nothing under {@link withoutMetrics}. */
+export function suppressibleCounter(inner: Counter): Counter {
+   return {
+      add: (value, attributes, context) => {
+         if (!metricsAreSuppressed()) inner.add(value, attributes, context);
+      },
+   };
+}
+
+function suppressibleHistogram(inner: Histogram): Histogram {
+   return {
+      record: (value, attributes, context) => {
+         if (!metricsAreSuppressed()) inner.record(value, attributes, context);
+      },
+   };
+}
+
 export function lazyCounter(
    name: string,
    description: string,
    unit?: string,
 ): () => Counter {
    return lazyInstrument(() =>
-      publisherMeter().createCounter(name, {
-         description,
-         ...(unit ? { unit } : {}),
-      }),
+      suppressibleCounter(
+         publisherMeter().createCounter(name, {
+            description,
+            ...(unit ? { unit } : {}),
+         }),
+      ),
    );
 }
 
@@ -70,12 +112,16 @@ export function lazyHistogram(
    { unit = "ms", buckets }: { unit?: string; buckets?: number[] } = {},
 ): () => Histogram {
    return lazyInstrument(() =>
-      publisherMeter().createHistogram(name, {
-         description,
-         // "" means a dimensionless histogram (a count), created with no unit.
-         ...(unit ? { unit } : {}),
-         ...(buckets ? { advice: { explicitBucketBoundaries: buckets } } : {}),
-      }),
+      suppressibleHistogram(
+         publisherMeter().createHistogram(name, {
+            description,
+            // "" means a dimensionless histogram (a count), created with no unit.
+            ...(unit ? { unit } : {}),
+            ...(buckets
+               ? { advice: { explicitBucketBoundaries: buckets } }
+               : {}),
+         }),
+      ),
    );
 }
 

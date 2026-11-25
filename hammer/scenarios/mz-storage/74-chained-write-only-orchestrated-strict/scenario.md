@@ -66,7 +66,7 @@ source: rollup is daily -> {
 }
 ```
 
-## Build (orchestrated, strict, pkg=cwos)
+## Build (orchestrated, pkg=cwos)
 
 The same two instructions as the non-strict twin, under strict. `daily` is built
 here, so strict has nothing to refuse and the build must succeed at both

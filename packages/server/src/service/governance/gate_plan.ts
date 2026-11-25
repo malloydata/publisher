@@ -22,7 +22,10 @@
  *     was created from ({@link ancestorExprs});
  *  2. for a `query_source` (`Z is X -> {...}`), PLUS the base it derives from
  *     (derivation is additive, so `mine is locked -> {...}` cannot launder
- *     `locked`'s gate), walked from step 1;
+ *     `locked`'s gate), walked from step 1. Each gate records its `baseHops`,
+ *     the derivations between the entry point and the level it was read on:
+ *     a row filter read on a base filters that base's rows, before the
+ *     derivations above it run;
  *  3. for a `query_source` over a composite, PLUS the member Malloy resolved
  *     for this derivation, walked from step 1 with the base's own notes
  *     subtracted by identity (Malloy copies them onto the member).
@@ -110,7 +113,7 @@ export function modelDefGateGraph(modelDef: ModelDef | undefined): GateGraph {
 }
 
 /** Why a walk could not read a gate; the entry carries `["false"]`. */
-export type GateFailure =
+type GateFailure =
    /** A note at this level (own or ancestor) did not parse. */
    | { kind: "unreadable"; error: unknown }
    /** The `inherits` chain, or the registry chain, ran past its budget. */
@@ -121,7 +124,7 @@ export type GateFailure =
    | { kind: "base_unresolvable"; message: string };
 
 /** One gate the walk found, read at one level. */
-export interface GatePlanGate {
+interface GatePlanGate {
    kind: "gate";
    route: string;
    /** The level's label: `as ?? name`. */
@@ -134,27 +137,37 @@ export interface GatePlanGate {
    treatAsOwn: boolean;
    /** The entry point the gate applies to; absent for an unresolvable base. */
    entryPoint?: SourceDef;
+   /**
+    * How many `query_source` derivations lie between the entry point and the
+    * level the gate was read on: 0 for the entry point's own gate (and its
+    * `extend` ancestors), 1 for the base of `Z is X -> {...}`, 2 for the base
+    * of that base, and so on. A row filter applies to the rows of the struct
+    * at this depth, before every derivation above it runs.
+    */
+   baseHops: number;
+   /** The struct the gate was read on (the base snapshot at {@link baseHops}). */
+   level?: SourceDef;
    failure?: GateFailure;
 }
 
 /** A shape the walk does not descend into; only the index refuses on it. */
-export interface GatePlanUnwalked {
+interface GatePlanUnwalked {
    kind: "unwalked";
    route: string;
    reason: "sql_embed" | "unsupported_type";
    message: string;
 }
 
-export type GatePlanStep = GatePlanGate | GatePlanUnwalked;
+type GatePlanStep = GatePlanGate | GatePlanUnwalked;
 
-export interface GatePlan {
+interface GatePlan {
    /** Every step, per route in `routes` order, each in walk order. */
    steps: GatePlanStep[];
    /** The walk met a composite (any route), so which branch gates a query is unknown. */
    metComposite: boolean;
 }
 
-export interface GatePlanOptions {
+interface GatePlanOptions {
    composite: "resolved" | "anyMember";
    /** The routes to walk, in order. Default {@link CANONICAL_AUTHORIZE_ROUTES}. */
    routes?: readonly string[];
@@ -220,6 +233,7 @@ export function gatePlan(
             excludeNotes: options.excludeNotes ?? [],
             walkMembers: true,
             nameHops: 0,
+            baseHops: 0,
             ownTexts: options.ownTexts,
          }),
       );
@@ -235,6 +249,8 @@ interface Visit {
    /** False only for a `query_source`'s own base: Malloy already resolved its branch. */
    walkMembers: boolean;
    nameHops: number;
+   /** See {@link GatePlanGate.baseHops}. */
+   baseHops: number;
    ownTexts?: string[];
 }
 
@@ -269,6 +285,8 @@ function walkRoute(
          fromAncestor: level.fromAncestor,
          treatAsOwn: visit.treatAsOwn,
          entryPoint: visit.entryPoint,
+         baseHops: visit.baseHops,
+         level: struct,
          ...(level.failure ? { failure: level.failure } : {}),
       });
    }
@@ -337,6 +355,7 @@ function walkRoute(
       exprs: ["false"],
       fromAncestor: false,
       treatAsOwn: false,
+      baseHops: visit.baseHops,
       failure: { kind: "base_unresolvable", message },
    });
    const base = hop.kind === "resolved" ? hop.base : undefined;
@@ -354,6 +373,7 @@ function walkRoute(
             excludeNotes: [],
             walkMembers: false,
             nameHops: hop.byName ? visit.nameHops + 1 : visit.nameHops,
+            baseHops: visit.baseHops + 1,
          }),
       );
    } else {
@@ -372,6 +392,7 @@ function walkRoute(
             excludeNotes: base ? ownLevelNotes(base.annotations) : [],
             walkMembers: true,
             nameHops: visit.nameHops,
+            baseHops: visit.baseHops + 1,
          }),
       );
    }

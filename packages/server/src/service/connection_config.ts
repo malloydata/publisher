@@ -1,10 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { externalEnv, settings } from "../settings";
-import { boolean, Mismatch } from "../settings/types";
-import { createPrivateKey } from "crypto";
-import { existsSync } from "fs";
+import { settings } from "../settings";
 import path from "path";
 import { components } from "../api";
 import {
@@ -14,11 +11,15 @@ import {
    isDuckdbSetupSqlAllowed,
 } from "../config";
 import { BadRequestError } from "../errors";
-import { logger } from "../logger";
 import {
-   resolveCloudStorageCredentials,
-   validateS3ProviderShape,
-} from "./gcs_s3_utils";
+   postgresStatementTimeoutMs,
+   validatePostgresSslmode,
+} from "./postgres_conninfo";
+import { connectionDialectOf } from "./dialects";
+import { configBoolean } from "./dialects/bigquery";
+import type { CoreConnectionEntry, NamedConnection } from "./dialects/types";
+import { logger } from "../logger";
+import { resolveCloudStorageCredentials } from "./gcs_s3_utils";
 import {
    ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV,
    allowUnverifiedHostKey,
@@ -33,77 +34,6 @@ import {
 type ApiConnection = components["schemas"]["Connection"];
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 
-// TLS modes accepted on a postgres connection, proxied or direct. Defined here
-// (connection.ts imports this module) so config-load validation and the
-// connect-time builders share one list. Mirrors `sslmode` in api-doc.yaml.
-export const PROXIED_SSLMODES = [
-   "disable",
-   "no-verify",
-   "verify-ca",
-   "verify-full",
-] as const;
-
-/**
- * Throws unless `sslmode` is one of PROXIED_SSLMODES and, for `verify-ca`, a
- * readable CA bundle is available to pin it against. `subject` leads each
- * error message.
- */
-function validatePostgresSslmode(subject: string, sslmode: string): void {
-   if (!(PROXIED_SSLMODES as readonly string[]).includes(sslmode)) {
-      throw new Error(
-         `${subject} has unsupported sslmode '${sslmode}' ` +
-            `(expected ${PROXIED_SSLMODES.join(" | ")}).`,
-      );
-   }
-   if (sslmode === "verify-ca") {
-      const caBundle = externalEnv("NODE_EXTRA_CA_CERTS");
-      if (!caBundle || !existsSync(caBundle)) {
-         throw new Error(
-            `${subject} uses sslmode 'verify-ca' but no readable ` +
-               `CA bundle is available (NODE_EXTRA_CA_CERTS is unset or points at a missing file). ` +
-               `Add the CA bundle to the image or use sslmode 'no-verify'.`,
-         );
-      }
-   }
-}
-
-// Postgres's own ceiling for statement_timeout, which is an int in ms. A larger
-// value makes the session SET fail on every connection that applies it.
-const POSTGRES_MAX_STATEMENT_TIMEOUT_MS = 2_147_483_647;
-
-/**
- * The connection's statement timeout, validated. Returns undefined when unset.
- *
- * Every consumer interpolates this value into SQL (`SET statement_timeout`) or
- * a libpq conninfo string, so anything but an integer from 1 to
- * POSTGRES_MAX_STATEMENT_TIMEOUT_MS is rejected here rather than trusted: a JSON
- * body is not held to the schema before it reaches this code.
- */
-export function postgresStatementTimeoutMs(
-   name: string,
-   pg: components["schemas"]["PostgresConnection"],
-): number | undefined {
-   const value: unknown = pg.statementTimeoutMilliseconds;
-   if (value === undefined || value === null) return undefined;
-   if (
-      typeof value !== "number" ||
-      !Number.isInteger(value) ||
-      value < 1 ||
-      value > POSTGRES_MAX_STATEMENT_TIMEOUT_MS
-   ) {
-      throw new Error(
-         `Connection '${name}' has an invalid statementTimeoutMilliseconds ` +
-            `${JSON.stringify(value)} (expected an integer from 1 to ${POSTGRES_MAX_STATEMENT_TIMEOUT_MS}).`,
-      );
-   }
-   return value;
-}
-
-export type CoreConnectionEntry = {
-   is: string;
-   [key: string]: unknown;
-};
-
 export type CoreConnectionsPojo = {
    connections: Record<string, CoreConnectionEntry>;
 };
@@ -112,7 +42,6 @@ export type EnvironmentConnectionMetadata = {
    apiConnection: ApiConnection;
    attachedDatabases: AttachedDatabase[];
    hasAzureAttachment: boolean;
-   hasSnowflakePrivateKey: boolean;
    isDuckLake: boolean;
    databasePath?: string;
    workingDirectory: string;
@@ -131,86 +60,94 @@ const PUBLISHER_DUCKDB_API_FIELDS = new Set<string>([
 ]);
 
 /**
- * Collapse `null` to `undefined` for an optional connection field. The Malloy
- * config layer treats only `undefined` as absent: `makeDigest` reads `.length`
- * off every part and special-cases `undefined` alone, so a `null` throws.
- * `removeUndefined` does not help, since a `null` survives it.
+ * The pattern `AttachedDatabase.name` documents (api-doc.yaml): a letter or
+ * underscore, then letters, digits and underscores. The name becomes a DuckDB
+ * catalog alias and part of a secret's name, so it is held to it wherever a
+ * connection's config is accepted.
  */
-function nullToUndefined<T>(value: T | null | undefined): T | undefined {
-   return value ?? undefined;
+export const ATTACHED_DATABASE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+/**
+ * The shape an S3 region takes (`us-east-1`, an S3-compatible store's own
+ * name). The region becomes a string literal in the attach's secret, so it is
+ * held to it wherever a connection's config is accepted, as the name is.
+ */
+export const S3_REGION_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
+/** Throws unless `region`, when set, matches {@link S3_REGION_PATTERN}. */
+function assertS3Region(
+   region: unknown,
+   field: string,
+   connectionName: string | undefined,
+): void {
+   if (region === undefined || region === null || region === "") return;
+   if (typeof region === "string" && S3_REGION_PATTERN.test(region)) return;
+   throw new Error(
+      `${field} on connection "${connectionName}" is invalid: an S3 region ` +
+         `must match ${S3_REGION_PATTERN.source} (letters, digits, hyphens or ` +
+         `underscores, such as us-east-1).`,
+   );
 }
 
-export function normalizeSnowflakePrivateKey(privateKey: string): string {
-   let privateKeyContent = privateKey.trim();
-
-   if (!privateKeyContent.includes("\n")) {
-      const keyPatterns = [
-         {
-            beginRegex: /-----BEGIN\s+ENCRYPTED\s+PRIVATE\s+KEY-----/i,
-            endRegex: /-----END\s+ENCRYPTED\s+PRIVATE\s+KEY-----/i,
-            beginMarker: "-----BEGIN ENCRYPTED PRIVATE KEY-----",
-            endMarker: "-----END ENCRYPTED PRIVATE KEY-----",
-         },
-         {
-            beginRegex: /-----BEGIN\s+PRIVATE\s+KEY-----/i,
-            endRegex: /-----END\s+PRIVATE\s+KEY-----/i,
-            beginMarker: "-----BEGIN PRIVATE KEY-----",
-            endMarker: "-----END PRIVATE KEY-----",
-         },
-         {
-            beginRegex: /-----BEGIN\s+RSA\s+PRIVATE\s+KEY-----/i,
-            endRegex: /-----END\s+RSA\s+PRIVATE\s+KEY-----/i,
-            beginMarker: "-----BEGIN RSA PRIVATE KEY-----",
-            endMarker: "-----END RSA PRIVATE KEY-----",
-         },
-      ];
-
-      for (const pattern of keyPatterns) {
-         const beginMatch = privateKeyContent.match(pattern.beginRegex);
-         const endMatch = privateKeyContent.match(pattern.endRegex);
-
-         if (beginMatch && endMatch) {
-            const beginPos = beginMatch.index! + beginMatch[0].length;
-            const endPos = endMatch.index!;
-            const keyData = privateKeyContent
-               .substring(beginPos, endPos)
-               .replace(/\s+/g, "");
-
-            const lines: string[] = [];
-            for (let i = 0; i < keyData.length; i += 64) {
-               lines.push(keyData.slice(i, i + 64));
-            }
-            privateKeyContent = `${pattern.beginMarker}\n${lines.join("\n")}\n${pattern.endMarker}\n`;
-            break;
-         }
-      }
-   } else if (!privateKeyContent.endsWith("\n")) {
-      privateKeyContent += "\n";
-   }
-
-   // Snowflake's Node SDK requires PKCS#8 ("BEGIN PRIVATE KEY"). Convert
-   // PKCS#1 ("BEGIN RSA PRIVATE KEY") so users can paste either format.
-   if (/-----BEGIN\s+RSA\s+PRIVATE\s+KEY-----/i.test(privateKeyContent)) {
-      try {
-         privateKeyContent = createPrivateKey({
-            key: privateKeyContent,
-            format: "pem",
-         })
-            .export({ type: "pkcs8", format: "pem" })
-            .toString();
-      } catch (err) {
+/**
+ * Throws unless every connection field Publisher places in setup SQL holds
+ * its shape: each `attachedDatabases[]` name that is set matches
+ * {@link ATTACHED_DATABASE_NAME_PATTERN}, no `attachedDatabases[]` type names
+ * an `Object.prototype` member (`constructor`, `toString`), which a lookup by
+ * type would find on any plain object, and each S3 region that is set (an
+ * attached database's, a DuckLake connection's storage) matches
+ * {@link S3_REGION_PATTERN}. An absent value is left to the attach that reads
+ * it. The message names the field by path, not by the rejected text.
+ */
+export function validateConnectionSqlFields(
+   connection: Partial<ApiConnection>,
+): void {
+   assertS3Region(
+      (
+         connection.ducklakeConnection?.storage?.s3Connection as
+            | { region?: unknown }
+            | null
+            | undefined
+      )?.region,
+      "ducklakeConnection.storage.s3Connection.region",
+      connection.name,
+   );
+   const attached = connection.duckdbConnection?.attachedDatabases;
+   if (!Array.isArray(attached)) return;
+   attached.forEach((attachedDb, index) => {
+      const entry = attachedDb as {
+         name?: unknown;
+         type?: unknown;
+         s3Connection?: { region?: unknown } | null;
+      } | null;
+      if (typeof entry?.type === "string" && entry.type in Object.prototype) {
          throw new Error(
-            `Failed to convert Snowflake RSA private key (PKCS#1) to PKCS#8: ${
-               err instanceof Error ? err.message : String(err)
-            }`,
+            `attachedDatabases[${index}].type on connection "${connection.name}" ` +
+               `is invalid: it is not an attached database type.`,
          );
       }
-      if (!privateKeyContent.endsWith("\n")) {
-         privateKeyContent += "\n";
+      const name = entry?.name;
+      if (
+         name !== undefined &&
+         name !== null &&
+         !(
+            typeof name === "string" &&
+            ATTACHED_DATABASE_NAME_PATTERN.test(name)
+         )
+      ) {
+         throw new Error(
+            `attachedDatabases[${index}].name on connection "${connection.name}" ` +
+               `is invalid: an attached database name must match ` +
+               `${ATTACHED_DATABASE_NAME_PATTERN.source} (a letter or underscore, ` +
+               `then letters, digits or underscores).`,
+         );
       }
-   }
-
-   return privateKeyContent;
+      assertS3Region(
+         entry?.s3Connection?.region,
+         `attachedDatabases[${index}].s3Connection.region`,
+         connection.name,
+      );
+   });
 }
 
 // Narrows the environment-author API surface: rejects securityPolicy,
@@ -220,6 +157,9 @@ export function normalizeSnowflakePrivateKey(privateKey: string): string {
 // DuckDB's local-file access is unchanged. Adversarial filesystem isolation
 // (path-traversal checks, an allowlist) is not provided.
 export function validateDuckdbApiSurface(connection: ApiConnection): void {
+   // Before the type test: a PATCH may send attachedDatabases without a type,
+   // and a DuckLake connection's storage region is checked here too.
+   validateConnectionSqlFields(connection);
    if (connection.type !== "duckdb" || !connection.duckdbConnection) return;
 
    const unsupportedFields = Object.keys(connection.duckdbConnection).filter(
@@ -274,191 +214,16 @@ function cloneApiConnection(connection: ApiConnection): ApiConnection {
    return clone;
 }
 
+/**
+ * What the API reports for a connection of `type` before it is opened: the
+ * registry entry's attributes (service/dialects), as a fresh object the
+ * caller may keep. Undefined for `publisher` and an unregistered type.
+ */
 export function getStaticConnectionAttributes(
    type: ApiConnection["type"],
 ): components["schemas"]["ConnectionAttributes"] | undefined {
-   switch (type) {
-      case "postgres":
-         return {
-            dialectName: "postgres",
-            isPool: true,
-            canPersist: true,
-            canStream: true,
-         };
-      case "bigquery":
-         return {
-            dialectName: "standardsql",
-            isPool: false,
-            canPersist: true,
-            canStream: true,
-         };
-      case "snowflake":
-         return {
-            dialectName: "snowflake",
-            isPool: true,
-            canPersist: true,
-            canStream: true,
-         };
-      case "trino":
-         return {
-            dialectName: "trino",
-            isPool: false,
-            canPersist: true,
-            canStream: false,
-         };
-      case "databricks":
-         return {
-            dialectName: "databricks",
-            isPool: false,
-            canPersist: true,
-            canStream: false,
-         };
-      case "mysql":
-         return {
-            dialectName: "mysql",
-            isPool: false,
-            canPersist: true,
-            canStream: false,
-         };
-      case "sqlserver":
-         // The connector is read-only: it creates no tables and has no
-         // PersistSQLResults, so a colocated `#@ persist` on a SQL Server
-         // source is refused at load (READ_ONLY_DIALECTS in
-         // materialization_eligibility.ts) rather than failing mid-build.
-         return {
-            dialectName: "sqlserver",
-            isPool: true,
-            canPersist: false,
-            canStream: true,
-         };
-      case "duckdb":
-      case "motherduck":
-      case "ducklake":
-         return {
-            dialectName: "duckdb",
-            isPool: false,
-            canPersist: true,
-            canStream: true,
-         };
-      default:
-         return undefined;
-   }
-}
-
-// Field names follow Google's service-account key file format, so they are
-// fixed by that format and do not track Publisher's own vocabulary.
-type ServiceAccountKey = {
-   type?: string;
-   project_id?: string;
-   private_key?: string;
-   client_email?: string;
-   [key: string]: unknown;
-};
-
-export function parseServiceAccountKey(
-   json?: string,
-): ServiceAccountKey | undefined {
-   if (!json) return undefined;
-   const keyData = JSON.parse(json) as ServiceAccountKey;
-   const requiredFields = ["type", "project_id", "private_key", "client_email"];
-   for (const field of requiredFields) {
-      if (!keyData[field]) {
-         throw new Error(
-            `Invalid service account key: missing "${field}" field`,
-         );
-      }
-   }
-   if (keyData.type !== "service_account") {
-      throw new Error('Invalid service account key: incorrect "type" field');
-   }
-   return keyData;
-}
-
-/**
- * The pg connectionString query params for a direct connection's own sslmode.
- * Same meanings as the proxied query path (buildProxiedSslQuery): `no-verify`
- * encrypts without verifying, `verify-ca` pins the chain to NODE_EXTRA_CA_CERTS
- * without the hostname (libpq-compatible parsing is what makes pg honor that),
- * and `verify-full` checks the chain and the real hostname.
- */
-function directSslParams(
-   sslmode: (typeof PROXIED_SSLMODES)[number],
-): Record<string, string> {
-   switch (sslmode) {
-      case "disable":
-      case "no-verify":
-      case "verify-full":
-         return { sslmode };
-      case "verify-ca":
-         return {
-            uselibpqcompat: "true",
-            sslmode: "verify-ca",
-            sslrootcert: externalEnv("NODE_EXTRA_CA_CERTS") ?? "",
-         };
-   }
-}
-
-/**
- * The connectionString a postgres connection is opened with, or undefined when
- * the individual host/port/user/password/database fields should be used as-is.
- *
- * A raw `connectionString` always wins. Otherwise the sslmode is the
- * connection's own `sslmode` when `applySslmode` is set and the field is
- * present, else the deployment PGSSLMODE, else none. `applySslmode` is false
- * for a proxied connection, which applies its sslmode on the tunnel instead
- * and must not have it baked into a string that targets the real host.
- */
-export function buildPostgresConnectionString(
-   config: components["schemas"]["PostgresConnection"],
-   { applySslmode }: { applySslmode: boolean },
-): string | undefined {
-   if (config.connectionString) {
-      return config.connectionString;
-   }
-
-   const params = new URLSearchParams();
-   const pgSslmode = externalEnv("PGSSLMODE");
-   if (applySslmode && config.sslmode != null) {
-      for (const [key, value] of Object.entries(
-         directSslParams(config.sslmode),
-      )) {
-         params.set(key, value);
-      }
-   } else if (pgSslmode) {
-      params.set("sslmode", pgSslmode);
-   } else {
-      return undefined;
-   }
-   const auth =
-      config.userName && config.password
-         ? `${encodeURIComponent(config.userName)}:${encodeURIComponent(
-              config.password,
-           )}@`
-         : config.userName
-           ? `${encodeURIComponent(config.userName)}@`
-           : "";
-   const host = config.host ?? "localhost";
-   const port = config.port ? `:${config.port}` : "";
-   const database = config.databaseName
-      ? `/${encodeURIComponent(config.databaseName)}`
-      : "";
-   return `postgresql://${auth}${host}${port}${database}?${params.toString()}`;
-}
-
-function buildDuckdbEntry(
-   name: string,
-   environmentPath: string,
-   databaseFilename = `${name}.duckdb`,
-   setupSQL?: string,
-): CoreConnectionEntry {
-   const entry: CoreConnectionEntry = {
-      is: "duckdb",
-      databasePath: path.join(environmentPath, databaseFilename),
-   };
-   if (typeof setupSQL === "string" && setupSQL.trim().length > 0) {
-      entry.setupSQL = setupSQL;
-   }
-   return entry;
+   const attributes = connectionDialectOf(type)?.attributes;
+   return attributes === undefined ? undefined : { ...attributes };
 }
 
 /**
@@ -608,322 +373,6 @@ function validateProxyShape(
    }
 }
 
-function validateSqlServerShape(connection: ApiConnection): void {
-   const sqlserver = connection.sqlserverConnection;
-   if (!sqlserver) {
-      throw new Error("SQL Server connection configuration is missing.");
-   }
-   // The connector reads a non-numeric port as no port and dials 1433, so a
-   // typo would surface as a failure naming a port nobody configured.
-   const port: unknown = sqlserver.port;
-   if (
-      port !== undefined &&
-      port !== null &&
-      (typeof port !== "number" ||
-         !Number.isInteger(port) ||
-         port < 1 ||
-         port > 65535)
-   ) {
-      throw new Error(
-         `Connection '${connection.name}' has an invalid sqlserverConnection.port ` +
-            `${JSON.stringify(port)} (expected an integer from 1 to 65535).`,
-      );
-   }
-   // The driver takes the instance name over the port when given both.
-   if (sqlserver.instanceName && sqlserver.port) {
-      logger.warn(
-         `Connection '${connection.name}' sets both sqlserverConnection.instanceName ` +
-            `and port; the instance is located through SQL Browser and the port is not used.`,
-      );
-   }
-}
-
-function validateBigQueryShape(connection: ApiConnection): void {
-   const bigquery = connection.bigqueryConnection;
-   if (bigquery?.impersonateServiceAccount) {
-      // An authClient replaces the credential entirely, so a key alongside it
-      // would look live while the impersonated identity runs every query.
-      // Core refuses this too; refusing here makes it a load-time error.
-      if (bigquery.serviceAccountKeyJson) {
-         throw new Error(
-            `Connection '${connection.name}' sets impersonateServiceAccount ` +
-               `and serviceAccountKeyJson. Impersonation replaces the ` +
-               `credential entirely — the key would be ignored — so supply ` +
-               `one or the other.`,
-         );
-      }
-      // With an authClient the SDK resolves the project through the
-      // impersonated credential, not ADC, so auto-detection is no fallback.
-      if (!bigquery.billingProjectId) {
-         throw new Error(
-            `Connection '${connection.name}' sets impersonateServiceAccount ` +
-               `but no billingProjectId. Impersonated connections resolve ` +
-               `the project through the impersonated credential, so the ` +
-               `project that runs (and is billed for) jobs must be named ` +
-               `explicitly.`,
-         );
-      }
-   }
-}
-
-function validateDuckDBShape(connection: ApiConnection): void {
-   if (!connection.duckdbConnection) {
-      throw new Error("DuckDB connection configuration is missing.");
-   }
-   const attached = connection.duckdbConnection.attachedDatabases ?? [];
-   // AttachedDatabase reuses the BigqueryConnection schema, but the ATTACH
-   // path builds a DuckDB BIGQUERY secret from key JSON (the extension takes a
-   // key, not a token), so impersonation would be silently ignored.
-   for (const attachedDb of attached) {
-      if (
-         attachedDb.type === "bigquery" &&
-         attachedDb.bigqueryConnection?.impersonateServiceAccount
-      ) {
-         throw new Error(
-            `Attached database '${attachedDb.name}' on DuckDB connection ` +
-               `'${connection.name}' sets impersonateServiceAccount, which ` +
-               `is not supported on attached databases: DuckDB's BIGQUERY ` +
-               `secret authenticates with a service account key, not a ` +
-               `token. Use serviceAccountKeyJson for attached BigQuery ` +
-               `databases.`,
-         );
-      }
-   }
-   const setupSQL = connection.duckdbConnection.setupSQL;
-   const hasSetupSQL =
-      typeof setupSQL === "string" && setupSQL.trim().length > 0;
-   if (attached.length === 0 && !hasSetupSQL) {
-      throw new Error(
-         `DuckDB connection "${connection.name}" must provide either attachedDatabases or non-empty setupSQL.`,
-      );
-   }
-   // Shape only, deliberately not the full credential check: this throw fails
-   // the ENTIRE environment (assembleEnvironmentConnections has no
-   // per-connection recovery), so demanding a key pair here would turn a
-   // config that fails late on one attachment into one that loads nothing.
-   // Only shapes no path accepts are rejected.
-   for (const attachedDb of attached) {
-      if (attachedDb.type === "s3" && attachedDb.s3Connection) {
-         validateS3ProviderShape(
-            attachedDb.s3Connection,
-            attachedDb.name ?? connection.name,
-         );
-      }
-   }
-}
-
-function validateMotherDuckShape(connection: ApiConnection): void {
-   if (!connection.motherduckConnection) {
-      throw new Error("MotherDuck connection configuration is missing.");
-   }
-   if (!connection.motherduckConnection.accessToken) {
-      throw new Error("MotherDuck access token is required.");
-   }
-}
-
-function validateDuckLakeShape(
-   connection: ApiConnection,
-   origin: ConnectionOrigin,
-): void {
-   // Every field the ATTACH demands (see attachDuckLakeWithMode). A
-   // destination is only attached at its first BUILD, so a field missed here
-   // would surface hours after the config change that caused it.
-   if (!connection.ducklakeConnection) {
-      throw new Error("DuckLake connection configuration is missing.");
-   }
-   if (!connection.ducklakeConnection.catalog?.postgresConnection) {
-      throw new Error(
-         `PostgreSQL connection configuration is required for DuckLake catalog: ${connection.name}`,
-      );
-   }
-   // No bucketUrl is allowed: the catalog must then exist, and its recorded
-   // data path is used (connection.ts, dataPathClauses).
-   // Shape only, as in the duckdb branch: a throw here fails the ENTIRE
-   // environment. The mutual-exclusion and enum guards are safe; the key-pair
-   // requirement is NOT applied, because failing every other connection over
-   // an incomplete s3Connection is worse than reporting it when used.
-   // validateStorageDestinations rejects one destination at a time, so it
-   // applies the full check.
-   const storage = connection.ducklakeConnection.storage;
-   if (storage?.s3Connection) {
-      validateS3ProviderShape(storage.s3Connection, connection.name, origin);
-   }
-   // The attach applies the catalog's own sslmode (buildPgConnectionString) and
-   // throws on a value it cannot honor, at every query or build. An enum check,
-   // like the guards above. A connectionString carries its own sslmode and the
-   // field is ignored beside it, so it is not checked there.
-   const catalogPg = connection.ducklakeConnection.catalog.postgresConnection;
-   if (catalogPg.sslmode != null && !catalogPg.connectionString) {
-      validatePostgresSslmode(
-         `DuckLake catalog of connection '${connection.name}'`,
-         catalogPg.sslmode,
-      );
-   }
-   // metadataSchema reaches the ATTACH as a quoted string literal AND the
-   // catalog-format preflight as a quoted identifier. Rather than escape one
-   // value for two grammars, restrict it to a plain identifier.
-   //
-   // The typeof check is load-bearing: the value comes from untyped JSON and
-   // RegExp.test() coerces, so `true` or `null` would pass the pattern and
-   // reach escapeSQL as a non-string, a TypeError at the first attach.
-   if (connection.ducklakeConnection.catalog.metadataSchema !== undefined) {
-      const schema = connection.ducklakeConnection.catalog.metadataSchema;
-      if (
-         typeof schema !== "string" ||
-         !/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)
-      ) {
-         throw new Error(
-            `DuckLake catalog metadataSchema must be a plain identifier ` +
-               `([A-Za-z_][A-Za-z0-9_]*), got '${schema}' for connection: ` +
-               `${connection.name}`,
-         );
-      }
-   }
-   // destinationSchema becomes part of every stored table's path, quoted as an
-   // identifier by quoteTablePath; a plain identifier keeps that one grammar.
-   const destinationSchema = connection.ducklakeConnection.destinationSchema;
-   if (destinationSchema !== undefined && destinationSchema !== null) {
-      if (
-         typeof destinationSchema !== "string" ||
-         !/^[A-Za-z_][A-Za-z0-9_]*$/.test(destinationSchema)
-      ) {
-         throw new Error(
-            `DuckLake destinationSchema must be a plain identifier ` +
-               `([A-Za-z_][A-Za-z0-9_]*), got '${destinationSchema}' for connection: ` +
-               `${connection.name}`,
-         );
-      }
-   }
-}
-
-function validateTrinoShape(connection: ApiConnection): void {
-   if (!connection.trinoConnection) {
-      throw new Error("Trino connection configuration is missing.");
-   }
-}
-
-function validateDatabricksShape(connection: ApiConnection): void {
-   const databricks = connection.databricksConnection;
-   if (!databricks) {
-      throw new Error("Databricks connection configuration is missing.");
-   }
-   if (!databricks.host) {
-      throw new Error("Databricks host is required.");
-   }
-   if (!databricks.path) {
-      throw new Error("Databricks SQL warehouse HTTP path is required.");
-   }
-   const hasToken = !!databricks.token;
-   const hasOAuth =
-      !!databricks.oauthClientId && !!databricks.oauthClientSecret;
-   if (!hasToken && !hasOAuth) {
-      throw new Error(
-         "Databricks requires either a personal access token or OAuth M2M client ID and secret.",
-      );
-   }
-   const hasDefaultCatalog = !!databricks.defaultCatalog;
-   if (!hasDefaultCatalog) {
-      throw new Error("Databricks default catalog is required.");
-   }
-}
-
-function validateSnowflakeShape(connection: ApiConnection): void {
-   const snowflakeConnection = connection.snowflakeConnection;
-   if (!snowflakeConnection) {
-      throw new Error("Snowflake connection configuration is missing.");
-   }
-   if (!snowflakeConnection.account) {
-      throw new Error("Snowflake account is required.");
-   }
-   if (!snowflakeConnection.username) {
-      throw new Error("Snowflake username is required.");
-   }
-   if (!snowflakeConnection.password && !snowflakeConnection.privateKey) {
-      throw new Error(
-         "Snowflake password or private key or private key path is required.",
-      );
-   }
-   if (!snowflakeConnection.warehouse) {
-      throw new Error("Snowflake warehouse is required.");
-   }
-}
-
-function validatePublisherShape(connection: ApiConnection): void {
-   // SSRF gate (default-deny, fail-closed). A `publisher` connection makes
-   // THIS server issue outbound HTTP to a tenant-controlled `connectionUri`
-   // (the query path in db-publisher and the introspection path in db_utils).
-   // Intended for local `--watch-env` authoring, but an SSRF surface in a
-   // hosted multi-tenant deployment, so it needs an explicit opt-in. Every
-   // connection passes validateConnectionShape before it can be assembled,
-   // queried, or introspected, so denying here shuts off all three.
-   if (!settings.get("allow.proxyConnections")) {
-      throw new Error(
-         `Publisher proxy connection '${connection.name}' is disabled in this deployment. ` +
-            `'publisher' connections make the server issue outbound requests to a configured connectionUri, ` +
-            `which is only appropriate for local --watch-env authoring. ` +
-            `Fix: set the environment variable PUBLISHER_ALLOW_PROXY_CONNECTIONS=true to enable them.`,
-      );
-   }
-   const publisher = connection.publisherConnection;
-   if (!publisher?.connectionUri) {
-      throw new Error(
-         `Invalid publisher connection '${connection.name}': missing connectionUri. ` +
-            `Fix: { "name": "${connection.name}", "type": "publisher", ` +
-            `"publisherConnection": { "connectionUri": "https://…/connections/${connection.name}", "accessToken": "<jwt>" } }`,
-      );
-   }
-   // Reject a malformed connectionUri at config load: deep in the request
-   // path the error can echo the raw value, leaking embedded credentials
-   // (`redactUrlCredentials` returns an unparseable URI unchanged). Never
-   // include the raw connectionUri in these messages; the scheme is safe.
-   let parsedUri: URL;
-   try {
-      parsedUri = new URL(publisher.connectionUri);
-   } catch {
-      throw new Error(
-         `Invalid publisher connection '${connection.name}': connectionUri is not a valid URL. ` +
-            `Fix: set connectionUri to an absolute https URL like "https://…/connections/${connection.name}".`,
-      );
-   }
-   if (parsedUri.protocol !== "http:" && parsedUri.protocol !== "https:") {
-      throw new Error(
-         `Invalid publisher connection '${connection.name}': connectionUri must use http or https (got '${parsedUri.protocol}'). ` +
-            `Fix: set connectionUri to an absolute https URL like "https://…/connections/${connection.name}".`,
-      );
-   }
-}
-
-/**
- * Type-specific shape checks; postgres and mysql have none of their own. A
- * switch rather than a lookup table, so a caller-supplied type selects only a
- * function named here.
- */
-function validateTypeShape(
-   connection: ApiConnection,
-   origin: ConnectionOrigin,
-): void {
-   switch (connection.type) {
-      case "sqlserver":
-         return validateSqlServerShape(connection);
-      case "bigquery":
-         return validateBigQueryShape(connection);
-      case "duckdb":
-         return validateDuckDBShape(connection);
-      case "motherduck":
-         return validateMotherDuckShape(connection);
-      case "ducklake":
-         return validateDuckLakeShape(connection, origin);
-      case "trino":
-         return validateTrinoShape(connection);
-      case "databricks":
-         return validateDatabricksShape(connection);
-      case "snowflake":
-         return validateSnowflakeShape(connection);
-      case "publisher":
-         return validatePublisherShape(connection);
-   }
-}
-
 function validateConnectionShape(
    connection: ApiConnection,
    origin: ConnectionOrigin = "connection",
@@ -954,7 +403,8 @@ function validateConnectionShape(
       );
    }
 
-   validateTypeShape(connection, origin);
+   // Type-specific shape checks; postgres and mysql have none of their own.
+   connectionDialectOf(connection.type)?.validateShape?.(connection, origin);
 }
 
 /**
@@ -971,15 +421,13 @@ export const DECLARABLE_STORAGE_DESTINATION_TYPES: ReadonlySet<string> =
    new Set(["ducklake"]);
 
 /**
- * Subdirectory of the environment root holding the local DuckDB files of
- * storage destinations, keeping them out of the directory connection
- * files derive into.
+ * Subdirectory of the environment root that storage destinations use as their
+ * working directory, apart from the directory connections use.
  *
- * Not cosmetic. A DuckDB instance is pooled by `databasePath` +
- * `workingDirectory`; the share key excludes the connection name
- * (`buildDuckDBShareKey`), and both lists derive the path as
- * `<root>/<name>…duckdb`. A connection and a destination may share a name, so
- * without separate roots they would share one pooled instance, and
+ * Not cosmetic. A DuckDB instance is pooled by its share key
+ * (`buildDuckDBShareKey`), which includes `workingDirectory` but excludes the
+ * connection name. A connection and a destination may share a name and a
+ * config, so without separate roots they would share one pooled instance, and
  * `ATTACH OR REPLACE … AS <name>` would let one replace the other's attach and
  * a query read across the two. (If malloydata/malloy#3006 changes the share
  * key, re-check that it still excludes the name.)
@@ -994,9 +442,72 @@ export const DECLARABLE_STORAGE_DESTINATION_TYPES: ReadonlySet<string> =
  */
 export const STORAGE_DESTINATIONS_DIR = ".storage-destinations";
 
+/**
+ * The connection every package gets of its own: an in-memory DuckDB sandbox,
+ * so nothing built in it survives a restart. The name is reserved: a
+ * destination or environment connection may not take it.
+ */
+export const PACKAGE_SANDBOX_CONNECTION = "duckdb";
+
 /** Where {@link STORAGE_DESTINATIONS_DIR} sits for an environment. */
 export function storageDestinationRoot(environmentPath: string): string {
    return path.join(environmentPath, STORAGE_DESTINATIONS_DIR);
+}
+
+/**
+ * A plain DuckDB destination's name as a file name: letters, digits, `_`,
+ * `-` and `.`, never `..`, so it cannot leave the destinations root.
+ */
+const DESTINATION_FILE_NAME = /^(?!.*\.\.)[A-Za-z0-9_.-]+$/;
+
+/**
+ * Why `destinationName` cannot name a plain DuckDB destination's file
+ * ({@link DESTINATION_FILE_NAME}), or undefined when it can: checked where
+ * the destination list is validated, so a bad name is a config error when
+ * the list loads, and again on every path to the file.
+ */
+export function destinationFileNameRefusal(
+   destinationName: string,
+): string | undefined {
+   return DESTINATION_FILE_NAME.test(destinationName)
+      ? undefined
+      : `the name "${destinationName}" names the destination's database ` +
+           `file, so it may use only ASCII letters, digits, '_', '-' and '.', ` +
+           `never '..'.`;
+}
+
+/**
+ * A destination type whose database file is named from its name: one that is
+ * no catalog (its registry entry declares no destination dialect), as a plain
+ * DuckDB file is.
+ */
+function namesItsFile(type: string): boolean {
+   return connectionDialectOf(type)?.destination === undefined;
+}
+
+/**
+ * Where a plain DuckDB destination's database file lives, under
+ * {@link storageDestinationRoot}. Every path to that file goes through here:
+ * a name that could reach outside the root (a separator, `..`) is refused.
+ */
+export function storageDestinationFile(
+   environmentPath: string,
+   destinationName: string,
+): string {
+   const refused = destinationFileNameRefusal(destinationName);
+   if (refused !== undefined) {
+      throw new BadRequestError(`Storage destination: ${refused}`);
+   }
+   const root = path.resolve(storageDestinationRoot(environmentPath));
+   // Resolve, then require the result to sit directly under the root: the
+   // containment check a path-traversal analysis recognises as a sanitizer.
+   const file = path.resolve(root, `${destinationName}.duckdb`);
+   if (!file.startsWith(root + path.sep) || path.dirname(file) !== root) {
+      throw new BadRequestError(
+         `Storage destination name '${destinationName}' leaves its root.`,
+      );
+   }
+   return file;
 }
 
 /** An entry of a `storageDestinations` list that cannot be used, and why. */
@@ -1082,6 +593,13 @@ export function validateStorageDestinations(
             name,
             reason: "an earlier entry already uses this name.",
          });
+         continue;
+      }
+      const fileName = namesItsFile(type)
+         ? destinationFileNameRefusal(name)
+         : undefined;
+      if (fileName !== undefined) {
+         rejected.push({ name, reason: fileName });
          continue;
       }
 
@@ -1239,279 +757,44 @@ function canonicalizeJsonValue(value: unknown): unknown {
    return sorted;
 }
 
-/** An optional string field, with the empty string a form sends for "not set" read as unset. */
-function blankAsUnset(value: string | undefined): string | undefined {
-   return value === "" ? undefined : value;
-}
-
-function buildPostgresEntry(connection: NamedConnection): CoreConnectionEntry {
-   const postgresConnection = connection.postgresConnection;
-   return {
-      is: "postgres",
-      host: postgresConnection?.host,
-      port: postgresConnection?.port,
-      username: postgresConnection?.userName,
-      password: postgresConnection?.password,
-      databaseName: postgresConnection?.databaseName,
-      connectionString: postgresConnection
-         ? buildPostgresConnectionString(postgresConnection, {
-              applySslmode: !connection.proxy,
-           })
-         : undefined,
-   };
-}
-
-function buildMySQLEntry(connection: NamedConnection): CoreConnectionEntry {
-   return {
-      is: "mysql",
-      host: connection.mysqlConnection?.host,
-      port: connection.mysqlConnection?.port,
-      user: connection.mysqlConnection?.user,
-      password: connection.mysqlConnection?.password,
-      database: connection.mysqlConnection?.database,
-   };
-}
-
-function buildSqlServerEntry(connection: NamedConnection): CoreConnectionEntry {
-   // A pass-through: the API field names are the connector's own. The two
-   // optional names are read as unset when blank: the connector drops the
-   // port whenever instanceName is DEFINED, so "" would send the driver to SQL
-   // Browser for an instance called nothing, and a "" certificate name would
-   // be checked against the certificate.
-   const sqlserver = connection.sqlserverConnection;
-   return {
-      is: "sqlserver",
-      server: sqlserver?.server,
-      port: sqlserver?.port,
-      database: sqlserver?.database,
-      user: sqlserver?.user,
-      password: sqlserver?.password,
-      encrypt: sqlserver?.encrypt,
-      trustServerCertificate: sqlserver?.trustServerCertificate,
-      hostNameInCertificate: blankAsUnset(sqlserver?.hostNameInCertificate),
-      instanceName: blankAsUnset(sqlserver?.instanceName),
-   };
-}
-
-function buildBigQueryEntry(connection: NamedConnection): CoreConnectionEntry {
-   const serviceAccountKey = parseServiceAccountKey(
-      connection.bigqueryConnection?.serviceAccountKeyJson as
-         | string
-         | undefined,
-   );
-   // Impersonation rides the config-overlay mechanism: the pojo carries a
-   // plain-JSON reference, which the `gcpImpersonation` overlay registered by
-   // buildEnvironmentMalloyConfig resolves to a live auth client. The property
-   // is opaque, overlay-sourced and mustHaveValue, so a literal can never
-   // satisfy it and an unresolved reference errors instead of falling back to
-   // ambient ADC. The reference embeds the SA email, so core's connection
-   // digest (and so the BuildID) is per identity.
-   const impersonateServiceAccount =
-      connection.bigqueryConnection?.impersonateServiceAccount;
-   return {
-      is: "bigquery",
-      projectId:
-         connection.bigqueryConnection?.defaultProjectId ||
-         serviceAccountKey?.project_id,
-      serviceAccountKey,
-      // Spread rather than `authClient: x ?? undefined`: the property is
-      // mustHaveValue and core checks whether it is SET, so an undefined
-      // entry would fail every plain connection with "no value arrived".
-      ...(impersonateServiceAccount
-         ? {
-              authClient: {
-                 gcpImpersonation: impersonateServiceAccount,
-              },
-           }
-         : {}),
-      location: connection.bigqueryConnection?.location,
-      maximumBytesBilled: connection.bigqueryConnection?.maximumBytesBilled,
-      timeoutMs: connection.bigqueryConnection?.queryTimeoutMilliseconds,
-      billingProjectId: connection.bigqueryConnection?.billingProjectId,
-      dbmeta: configBoolean(
-         connection.bigqueryConnection?.dbmeta,
-         `dbmeta on BigQuery connection "${connection.name}"`,
-      ),
-   };
-}
-
-const BOOLEAN = boolean();
-
 /**
- * A boolean connection setting as a boolean. A string, as `${VAR}`
- * substitution and API clients deliver it, is read the way a boolean setting
- * is, blank as unset; anything else is refused rather than dropped.
+ * Drop keys whose value is `undefined` or `null`.
+ *
+ * The null guard for connectors Publisher builds itself, outside Malloy's
+ * registry (which strips nulls on its own path). A surviving `null` reaches
+ * `makeDigest`, which reads `.length` off each part, and throws on the first
+ * digest; the package-load worker takes that digest, so the whole package fails
+ * to load ("import reference failure") while /compile still succeeds.
+ *
+ * Nulls come from an explicit `null` in publisher.config.json or a client
+ * serializing unset optionals over POST /connections, and persist through the
+ * repository's JSON round trip. An explicit null and an omitted field produce
+ * the same digest.
  */
-function configBoolean(value: unknown, name: string): boolean | undefined {
-   if (value === undefined || value === null) return undefined;
-   if (typeof value === "boolean") return value;
-   if (typeof value === "string") {
-      if (value.trim() === "") return undefined;
-      try {
-         return BOOLEAN.fromString(value);
-      } catch (error) {
-         if (!(error instanceof Mismatch)) throw error;
-      }
-   }
-   throw new Error(
-      `Invalid value for ${name}: expected ${BOOLEAN.expected}, got ${JSON.stringify(value)}`,
-   );
-}
-
-function buildSnowflakeEntry(connection: NamedConnection): CoreConnectionEntry {
-   return {
-      is: "snowflake",
-      account: connection.snowflakeConnection?.account,
-      username: connection.snowflakeConnection?.username,
-      password: nullToUndefined(connection.snowflakeConnection?.password),
-      privateKey: connection.snowflakeConnection?.privateKey
-         ? normalizeSnowflakePrivateKey(
-              connection.snowflakeConnection.privateKey,
-           )
-         : undefined,
-      privateKeyPass: nullToUndefined(
-         connection.snowflakeConnection?.privateKeyPass,
+export function removeUndefined<T extends object>(
+   value: T,
+): { [K in keyof T]?: Exclude<T[K], null> } {
+   return Object.fromEntries(
+      Object.entries(value).filter(
+         ([, fieldValue]) => fieldValue !== undefined && fieldValue !== null,
       ),
-      warehouse: connection.snowflakeConnection?.warehouse,
-      // An explicit `null` here would throw in Malloy's `makeDigest` (see
-      // nullToUndefined). Defense in depth: Malloy's connection lookup drops
-      // nulls today, but that guard is not a contract and the dependency is a
-      // caret range. The key-pair path that bypasses the lookup is handled by
-      // `removeUndefined` in connection.ts.
-      database: nullToUndefined(connection.snowflakeConnection?.database),
-      schema: nullToUndefined(connection.snowflakeConnection?.schema),
-      role: nullToUndefined(connection.snowflakeConnection?.role),
-      timeoutMs: connection.snowflakeConnection?.responseTimeoutMilliseconds,
-      // Pool sizing is server-owned policy, not exposed through the API.
-      poolMin: 1,
-      poolMax: 20,
-   };
+   ) as { [K in keyof T]?: Exclude<T[K], null> };
 }
-
-function buildTrinoEntry(connection: NamedConnection): CoreConnectionEntry {
-   return {
-      is: "trino",
-      ...validateAndBuildTrinoCoreConfig(connection.trinoConnection),
-   };
-}
-
-function buildDatabricksEntry(
-   connection: NamedConnection,
-): CoreConnectionEntry {
-   const databricks = connection.databricksConnection;
-   return {
-      is: "databricks",
-      host: databricks?.host,
-      path: databricks?.path,
-      token: databricks?.token,
-      oauthClientId: databricks?.oauthClientId,
-      oauthClientSecret: databricks?.oauthClientSecret,
-      defaultCatalog: databricks?.defaultCatalog,
-      defaultSchema: databricks?.defaultSchema,
-      setupSQL: databricks?.setupSQL,
-   };
-}
-
-function buildDuckDBEntry(
-   connection: NamedConnection,
-   environmentPath: string,
-): CoreConnectionEntry {
-   const attachedDatabases =
-      connection.duckdbConnection?.attachedDatabases ?? [];
-   if (
-      attachedDatabases.some((database) => database.name === connection.name)
-   ) {
-      throw new Error(
-         `DuckDB attached database names cannot conflict with connection name ${connection.name}`,
-      );
-   }
-   return buildDuckdbEntry(
-      connection.name,
-      environmentPath,
-      `${connection.name}.duckdb`,
-      connection.duckdbConnection?.setupSQL,
-   );
-}
-
-function buildMotherDuckEntry(
-   connection: NamedConnection,
-): CoreConnectionEntry {
-   if (!connection.motherduckConnection?.accessToken) {
-      throw new Error("MotherDuck access token is required.");
-   }
-
-   return {
-      is: "duckdb",
-      databasePath: connection.motherduckConnection.database
-         ? `md:${connection.motherduckConnection.database}?attach_mode=single`
-         : "md:",
-      motherDuckToken: connection.motherduckConnection.accessToken,
-   };
-}
-
-function buildDuckLakeEntry(
-   connection: NamedConnection,
-   environmentPath: string,
-): CoreConnectionEntry {
-   // Shape is validated up front by validateConnectionShape.
-   return buildDuckdbEntry(
-      connection.name,
-      environmentPath,
-      `${connection.name}_ducklake.duckdb`,
-   );
-}
-
-function buildPublisherEntry(connection: NamedConnection): CoreConnectionEntry {
-   // connectionUri presence is validated by validateConnectionShape. The
-   // proxied dataplane owns auth and read-only enforcement; PublisherConnection
-   // itself does not reject writes. The dialect is the remote connection's,
-   // resolved at runtime, so getStaticConnectionAttributes returns undefined.
-   const publisher = connection.publisherConnection!;
-   return {
-      is: "publisher",
-      connectionUri: publisher.connectionUri,
-      accessToken: publisher.accessToken,
-   };
-}
-
-/** A connection past assembly's name check. */
-type NamedConnection = ApiConnection & { name: string };
 
 /**
- * The Malloy core connection entry a connection assembles into, by type. A
- * switch rather than a lookup table, so a caller-supplied type selects only a
- * builder named here.
+ * The Malloy core connection entry a connection assembles into, by its
+ * type's registry entry (looked up with `Object.hasOwn`, so a caller-supplied
+ * type selects only a registered builder).
  */
 function buildCoreEntry(
    connection: NamedConnection,
    environmentPath: string,
 ): CoreConnectionEntry {
-   switch (connection.type) {
-      case "postgres":
-         return buildPostgresEntry(connection);
-      case "mysql":
-         return buildMySQLEntry(connection);
-      case "sqlserver":
-         return buildSqlServerEntry(connection);
-      case "bigquery":
-         return buildBigQueryEntry(connection);
-      case "snowflake":
-         return buildSnowflakeEntry(connection);
-      case "trino":
-         return buildTrinoEntry(connection);
-      case "databricks":
-         return buildDatabricksEntry(connection);
-      case "duckdb":
-         return buildDuckDBEntry(connection, environmentPath);
-      case "motherduck":
-         return buildMotherDuckEntry(connection);
-      case "ducklake":
-         return buildDuckLakeEntry(connection, environmentPath);
-      case "publisher":
-         return buildPublisherEntry(connection);
-      default:
-         throw new Error(`Unsupported connection type: ${connection.type}`);
+   const dialect = connectionDialectOf(connection.type);
+   if (dialect === undefined) {
+      throw new Error(`Unsupported connection type: ${connection.type}`);
    }
+   return dialect.coreEntry(connection, environmentPath);
 }
 
 export function assembleEnvironmentConnections(
@@ -1550,11 +833,9 @@ export function assembleEnvironmentConnections(
          connection.duckdbConnection?.attachedDatabases ?? [];
       const isDuckLake = connection.type === "ducklake";
       const isDuckdb = connection.type === "duckdb";
-      const databasePath = isDuckLake
-         ? path.join(environmentPath, `${connection.name}_ducklake.duckdb`)
-         : isDuckdb
-           ? path.join(environmentPath, `${connection.name}.duckdb`)
-           : undefined;
+      const databasePath = isDuckdb
+         ? path.join(environmentPath, `${connection.name}.duckdb`)
+         : undefined;
 
       metadata.set(connection.name, {
          apiConnection,
@@ -1562,9 +843,6 @@ export function assembleEnvironmentConnections(
          hasAzureAttachment: attachedDatabases.some(
             (database) => database.type === "azure",
          ),
-         hasSnowflakePrivateKey:
-            connection.type === "snowflake" &&
-            !!connection.snowflakeConnection?.privateKey,
          isDuckLake,
          databasePath,
          workingDirectory: environmentPath,
@@ -1580,46 +858,4 @@ export function assembleEnvironmentConnections(
    }
 
    return { pojo, metadata, apiConnections };
-}
-
-function validateAndBuildTrinoCoreConfig(
-   trinoConfig: components["schemas"]["TrinoConnection"] | undefined,
-): Record<string, unknown> {
-   if (!trinoConfig) {
-      return {};
-   }
-
-   const server =
-      trinoConfig.server && trinoConfig.port
-         ? trinoConfig.server.includes(trinoConfig.port.toString())
-            ? trinoConfig.server
-            : `${trinoConfig.server}:${trinoConfig.port}`
-         : trinoConfig.server;
-
-   const baseConfig: Record<string, unknown> = {
-      server,
-      port: trinoConfig.port,
-      catalog: trinoConfig.catalog,
-      schema: trinoConfig.schema,
-      user: trinoConfig.user,
-   };
-
-   if (trinoConfig.peakaKey) {
-      baseConfig.extraCredential = {
-         peakaKey: trinoConfig.peakaKey,
-      };
-      return baseConfig;
-   }
-
-   if (server?.startsWith("https://") && trinoConfig.password) {
-      baseConfig.password = trinoConfig.password;
-   }
-
-   if (server?.startsWith("http://") || server?.startsWith("https://")) {
-      return baseConfig;
-   }
-
-   throw new Error(
-      `Invalid Trino connection: expected "http://server:port" or "https://server:port".`,
-   );
 }

@@ -64,7 +64,7 @@ but looks plausible — and the same question returns the same numbers tomorrow.
 ## Requirements
 
 Node.js 20 or newer (the server refuses to start on anything older and says so). Building from a clone
-also needs [Bun](https://bun.sh/) 1.3.13+. The Docker image carries its own runtime and needs neither.
+also needs [Bun](https://bun.sh/) 1.4.4+. The Docker image carries its own runtime and needs neither.
 
 ## Quick start
 
@@ -219,8 +219,7 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
   your own [colors, fonts, and dark mode](docs/theming.md) — [docs/console.md](docs/console.md).
 - **Your own applications.** The REST API serves any language, and the running server publishes its
   OpenAPI spec. From Python, the standard library is enough: [AGENTS.md section 7](AGENTS.md#7-working-unattended-the-rest-api)
-  has a copyable example. A generated client lives in [`packages/python-client`](packages/python-client),
-  but it is not published to PyPI.
+  has a copyable example. There is no supported Python client package.
 
 ### Govern
 

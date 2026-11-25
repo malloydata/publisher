@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { readUpstreamSchemas } from "./materialization";
 import type {
    GivenValue,
    LogMessage,
@@ -34,8 +35,24 @@ import {
 } from "../path_safety";
 import { UNCODED_REPORT_FINDING } from "../report_metrics";
 import { lazyCounter } from "../telemetry";
-import { URL_READER } from "../utils";
-import { assertNoCallerAuthorizeAnnotation } from "./authorize";
+import {
+   callerVisibleText,
+   OUTSIDE_PACKAGE,
+   packageRelativeText,
+   withPackageRelativeErrors,
+} from "../package_relative_text";
+import { packageURLReader, readPackageURL } from "../utils";
+import {
+   ANNOTATION_GATE_NEAR_MISS_CODE,
+   ANNOTATION_NEAR_MISS_CODE,
+   annotationNearMisses,
+   authoredNotes,
+} from "./annotation_near_miss";
+import {
+   findingSeverity,
+   MATERIALIZATION_NEAR_MISS_CODE,
+} from "./annotation_reader";
+import { assertNoCallerAuthorizeAnnotation, gateNearMissOf } from "./authorize";
 import type { CallerRegion } from "./caller_joins";
 import { compileDocument, type CompiledDocument } from "./compile_document";
 import {
@@ -52,6 +69,11 @@ import { VersionRef } from "./identity";
 import { Model } from "./model";
 import { ModelPolicy } from "./model_policy";
 import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
+import {
+   loadVerdictOfPlan,
+   type PackageMaterialization,
+} from "./materialization";
+import { getPersistCollisionEnforce } from "../config";
 import { Package } from "./package";
 import {
    carriesArtifactTag,
@@ -209,7 +231,9 @@ interface CompileContext extends CompileRequest {
    pkg: Package;
    gateModel: Model | undefined;
    hasExactGateModel: boolean;
-   boundManifestEntries: ReturnType<Package["getBuildManifestEntries"]>;
+   boundManifestEntries: ReturnType<
+      PackageMaterialization["getBuildManifestEntries"]
+   >;
    runtime: Runtime;
    /** Append-scope text that may be a document, gated cell by cell. */
    documentCandidate: boolean;
@@ -240,9 +264,19 @@ export async function compileSource(
    assertValidCompileRequest(request);
    const compileIn = async (versioned: Package | undefined) => {
       const ctx = await openCompileContext(host, request, versioned);
-      if (scope === "package") return compilePackageDryRun(ctx);
-      if (scope === "file") return compileFile(ctx);
-      return compileAppend(ctx);
+      // The diagnostics, and a refusal, name the package's files
+      // package-relative, never where this server keeps them.
+      const result = await withPackageRelativeErrors(ctx.packagePath, () => {
+         if (scope === "package") return compilePackageDryRun(ctx);
+         if (scope === "file") return compileFile(ctx);
+         return compileAppend(ctx);
+      });
+      return {
+         ...result,
+         problems: result.problems.map((problem) =>
+            packageRelativeProblem(problem, ctx.packagePath),
+         ),
+      };
    };
    // A published version compiles in its own folder with no lock: its files
    // never change.
@@ -256,6 +290,39 @@ export async function compileSource(
    return host.withPackageLock(packageName, async () =>
       compileIn(await host.versionedPackage(packageName, versionId, true)),
    );
+}
+
+/**
+ * `problem` as a caller may read it: its message naming the package's files
+ * package-relative, and its `at.url` a package file's path relative to the
+ * package root, decoded (`sub dir/a b.malloy`, not `sub%20dir/…`), or
+ * {@link OUTSIDE_PACKAGE} for a file outside the package.
+ */
+function packageRelativeProblem(
+   problem: TaggedLogMessage,
+   packagePath: string,
+): TaggedLogMessage {
+   const at = (problem as { at?: { url?: string } }).at;
+   return {
+      ...problem,
+      message: callerVisibleText(problem.message, packagePath),
+      ...(at?.url !== undefined && {
+         at: { ...at, url: callerVisibleUrl(at.url, packagePath) },
+      }),
+   } as TaggedLogMessage;
+}
+
+function callerVisibleUrl(url: string, packagePath: string): string {
+   if (!url.toLowerCase().startsWith("file:")) {
+      return callerVisibleText(url, packagePath);
+   }
+   const relative = packageRelativeText(url, packagePath);
+   if (relative.toLowerCase().startsWith("file:")) return OUTSIDE_PACKAGE;
+   try {
+      return decodeURIComponent(relative);
+   } catch {
+      return relative;
+   }
 }
 
 /** The argument checks every scope runs before taking the package lock. */
@@ -378,7 +445,7 @@ async function openCompileContext(
 
    const { fullSource, callerRegion } =
       scope === "append"
-         ? await appendToSavedModel(modelPath, source, virtualUri)
+         ? await appendToSavedModel(packagePath, modelPath, source, virtualUri)
          : { fullSource: source ?? "", callerRegion: undefined };
 
    // Serve the source for the virtual file, then the request's overlay, and
@@ -386,12 +453,13 @@ async function openCompileContext(
    // file is not substituted.
    const substitute = scope !== "package" || source !== undefined;
    const overlaid = overlayByUrl(packagePath, overlay);
+   const diskReader = packageURLReader(packagePath);
    const interceptingReader = {
       readURL: async (url: URL) => {
          if (substitute && url.toString() === virtualUri) {
             return fullSource;
          }
-         return overlaid.get(overlayKey(url)) ?? URL_READER.readURL(url);
+         return overlaid.get(overlayKey(url)) ?? diskReader.readURL(url);
       },
    };
 
@@ -443,15 +511,21 @@ async function openCompileContext(
    if (!documentCandidate) await runEarlyGate();
 
    // The package's MalloyConfig (borrowed; the package lifecycle releases it)
-   // and bound build manifest, so compile sees the same duckdb and the same
-   // persist routing as execution — otherwise includeSql would show
-   // base-table SQL that diverges from what runs.
-   const boundManifestEntries = pkg.getBuildManifestEntries();
+   // and its freshness-filtered build manifest, so compile sees the same
+   // duckdb and the same persist routing as execution: otherwise includeSql
+   // would show base-table SQL that diverges from what runs, or name a table
+   // past its window that execution no longer reads. The package dry-run
+   // keeps the bound entries, as the reload it mirrors does.
+   const boundManifestEntries = pkg.materialization().getBuildManifestEntries();
+   // As Malloy reads them: each also under its compiler key.
+   const freshManifestEntries = pkg
+      .materialization()
+      .getFreshCompilerManifest();
    const runtime = new Runtime({
       urlReader: interceptingReader,
       config: pkg.getMalloyConfig(),
-      buildManifest: boundManifestEntries
-         ? { entries: boundManifestEntries, strict: false }
+      buildManifest: freshManifestEntries
+         ? { entries: freshManifestEntries, strict: false }
          : undefined,
    });
 
@@ -503,13 +577,18 @@ async function openCompileContext(
  * after it, and where that text starts.
  */
 async function appendToSavedModel(
+   packagePath: string,
    modelPath: string,
    source: string | undefined,
    virtualUri: string,
 ): Promise<{ fullSource: string; callerRegion: CallerRegion }> {
    let modelContent = "";
    try {
-      modelContent = await fs.promises.readFile(modelPath, "utf8");
+      // Confined: a saved model that links out of the package is not read.
+      modelContent = await readPackageURL(
+         packagePath,
+         pathToFileURL(modelPath),
+      );
    } catch {
       // Empty content; a missing model is refused by `loadAppendBase`.
    }
@@ -563,7 +642,7 @@ async function resolveGateModel(
             modelName,
             pkg.getMalloyConfig(),
             {
-               buildManifest: pkg.getBuildManifestEntries(),
+               buildManifest: pkg.materialization().getBuildManifestEntries(),
                overlay: withTarget,
                // Built outside the Package to decide the text's gates; it
                // runs no query, and carries no Package curation.
@@ -594,7 +673,9 @@ async function resolveGateModel(
                modelName,
                pkg.getMalloyConfig(),
                {
-                  buildManifest: pkg.getBuildManifestEntries(),
+                  buildManifest: pkg
+                     .materialization()
+                     .getBuildManifestEntries(),
                   // Gates only, as for the overlay model above.
                   policy: ModelPolicy.standalone(),
                },
@@ -646,8 +727,138 @@ function gateCompiledRunnable(
  * Scope "file": the source is compiled AS the target model file. The file
  * is the author's, so its data roots are not gated (see compileAppend).
  */
-function compileFile(ctx: CompileContext): Promise<CompileSourceResult> {
-   return compileVirtualFile(ctx);
+async function compileFile(ctx: CompileContext): Promise<CompileSourceResult> {
+   const result = await compileVirtualFile(ctx);
+   if (result.problems.some((p) => p.severity === "error")) return result;
+   if (!declaresMaterialization(ctx)) return result;
+   // What the load would refuse or warn of the package with this file in
+   // it: the same plan a reload derives, so a draft the load refuses never
+   // compiles clean. Its near misses are the file's own scan's (above).
+   let outcome: Awaited<ReturnType<typeof loadPackageInWorker>>;
+   try {
+      outcome = await loadPackageInWorker(ctx);
+   } catch (error) {
+      // The file compiled on its own, but the checks did not run (a worker
+      // outage, or another file the package cannot load): say so rather
+      // than answer clean. The package scope reports another file's problem.
+      return {
+         ...result,
+         problems: [
+            ...result.problems,
+            ...ctx.tagProblems([
+               materializationCheckSkipped(
+                  error instanceof ServiceUnavailableError
+                     ? error.message
+                     : "the package did not compile with this file in it",
+               ),
+            ]),
+         ],
+      };
+   }
+   const { collect, problems } = problemCollector(ctx.tagProblems);
+   collect(result.problems);
+   collect(
+      loadVerdictProblems(ctx, outcome, {
+         withNearMiss: false,
+         compileErrorsReported: false,
+      }),
+   );
+   return { ...result, problems };
+}
+
+/** A materialization route, written anywhere in a file's text. */
+const MATERIALIZATION_ROUTE =
+   /#\(\s*(?:rollup|preaggregate|materialize)\b|#@\s*(?:persist|preaggregate)\b/;
+
+/**
+ * Whether the file-scope compile runs the load's materialization checks: the
+ * file names a route, or the package already plans a table (which another
+ * file may declare over this one's sources).
+ */
+function declaresMaterialization(ctx: CompileContext): boolean {
+   return (
+      MATERIALIZATION_ROUTE.test(ctx.fullSource) ||
+      ctx.pkg.getBuildPlan() !== null
+   );
+}
+
+/** The warning that the load's materialization checks did not run. */
+function materializationCheckSkipped(reason: string): LogMessage {
+   return {
+      severity: "warn",
+      message:
+         "The materialization checks a load runs did not run, so their " +
+         `findings are unknown rather than clean (${reason}). Compile at ` +
+         'scope "package" or reload the package to see them.',
+   } as LogMessage;
+}
+
+/**
+ * The load's verdict on the package's materialization annotations, read off
+ * the plan the dry-run's worker derived: each line the load fails with as an
+ * error, each valid annotation the load leaves unbuilt as a warning.
+ * `withNearMiss: false` leaves out the near misses a file's own scan reports.
+ */
+function loadVerdictProblems(
+   ctx: CompileContext,
+   outcome: Awaited<ReturnType<typeof loadPackageInWorker>>,
+   {
+      withNearMiss,
+      compileErrorsReported,
+   }: {
+      withNearMiss: boolean;
+      /** Whether the result carries every model's compile errors (package scope). */
+      compileErrorsReported: boolean;
+   },
+): LogMessage[] {
+   const workerPlan = outcome.buildPlan;
+   if (!workerPlan) {
+      // The worker left the plan for the main thread, which a compile skips,
+      // or a model did not compile: at package scope that model's errors are
+      // reported; at file scope another file's are not, so the skip is said.
+      if (!outcome.models.some((m) => m.compilationError)) {
+         return [materializationCheckSkipped("the compile ran out of time")];
+      }
+      return compileErrorsReported
+         ? []
+         : [
+              materializationCheckSkipped(
+                 "another file of the package does not compile",
+              ),
+           ];
+   }
+   if (!workerPlan.ok) return [materializationCheckSkipped(workerPlan.error)];
+   const plan = workerPlan.packagePlan;
+   const { refusals, warnings } = loadVerdictOfPlan(
+      withNearMiss
+         ? plan
+         : {
+              ...plan,
+              modelGateLines: { ...plan.modelGateLines, nearMiss: [] },
+           },
+      {
+         enforceCollisions: getPersistCollisionEnforce(),
+         versionScoped:
+            ctx.pkg.getPackageMetadata().scope === "version" &&
+            ctx.pkg.getVersionId() !== undefined,
+      },
+   );
+   return [
+      ...refusals.map((line) => {
+         const model = /^([^\s:]+\.malloy): /.exec(line)?.[1];
+         const code = / \[([a-z0-9-]+)\]$/.exec(line)?.[1];
+         return {
+            severity: "error",
+            message: line,
+            ...(code ? { code } : {}),
+            ...(model ? { model } : {}),
+         } as LogMessage;
+      }),
+      ...warnings.map((w) => ({
+         ...warningAsProblem(w, w.code ?? UNCODED_REPORT_FINDING),
+         ...(w.model ? { model: w.model } : {}),
+      })),
+   ];
 }
 
 /**
@@ -980,11 +1191,17 @@ async function compileVirtualFile(
          scope === "append"
             ? []
             : notebookLintProblems(modelName, fullSource, virtualUri);
+      // The near-miss scan, so the editor warns where the package will; for a
+      // whole file only, like the lint. Malloy's own `malformed-route` is
+      // already in `model.problems`.
+      const nearMissProblems: LogMessage[] =
+         scope === "append" ? [] : nearMissLogMessages(model._modelDef);
       return {
          problems: tagProblems([
             ...model.problems,
             ...(readerProblem ? [readerProblem] : []),
             ...lintProblems,
+            ...nearMissProblems,
          ]),
          sql,
       };
@@ -1084,9 +1301,10 @@ async function compilePackageDryRun(
            (compiled.modelPath === modelName && source !== undefined
               ? source
               : (overlaidText(ctx.overlay, compiled.modelPath) ??
-                (await fs.promises
-                   .readFile(path.join(packagePath, compiled.modelPath), "utf8")
-                   .catch(() => undefined)))));
+                (await readPackageURL(
+                   packagePath,
+                   pathToFileURL(path.join(packagePath, compiled.modelPath)),
+                ).catch(() => undefined)))));
       if (lintText !== undefined) {
          collect(
             notebookLintProblems(
@@ -1115,6 +1333,14 @@ async function compilePackageDryRun(
          [warningAsProblem(warning, warning.code ?? UNCODED_REPORT_FINDING)],
          warning.model,
       );
+   }
+   // What the load refuses or warns of the package's materialization
+   // annotations (an unmergeable rollup, a table name that never builds).
+   for (const problem of loadVerdictProblems(ctx, outcome, {
+      withNearMiss: true,
+      compileErrorsReported: true,
+   })) {
+      collect([problem], (problem as { model?: string }).model);
    }
    if (source !== undefined && outcome.replacementMatchedExisting === false) {
       collect(
@@ -1173,6 +1399,7 @@ async function loadPackageInWorker(ctx: CompileContext) {
    const { source, modelName } = ctx;
    try {
       return await getPackageLoadPool().loadPackage({
+         upstreamSchemas: readUpstreamSchemas,
          packagePath: ctx.packagePath,
          packageName: ctx.packageName,
          environmentName: ctx.environmentName,
@@ -1180,6 +1407,11 @@ async function loadPackageInWorker(ctx: CompileContext) {
          defaultConnectionName: "duckdb",
          buildManifest: ctx.boundManifestEntries,
          collectProblems: true,
+         // The load's materialization verdict is read off this plan.
+         computeBuildPlan: true,
+         ...(ctx.pkg.getVersionId() !== undefined
+            ? { publishedVersion: true }
+            : {}),
          // The lint below reports the entities' findings, as a reload does.
          withEntities: true,
          replacement:
@@ -1269,4 +1501,40 @@ function warningAsProblem(
          : warning.message,
       code,
    } as LogMessage;
+}
+
+/**
+ * The near-miss scan's findings on a compiled file: a misspelled gate as an
+ * error, since the load refuses it, and every other near miss as a warning.
+ */
+export function nearMissLogMessages(modelDef: ModelDef): LogMessage[] {
+   const notes = authoredNotes(modelDef);
+   const gates: LogMessage[] = notes.flatMap((note) => {
+      const message = gateNearMissOf(note.text);
+      return message === undefined
+         ? []
+         : [
+              {
+                 message,
+                 severity: "error" as const,
+                 code: ANNOTATION_GATE_NEAR_MISS_CODE,
+                 ...(note.at ? { at: note.at } : {}),
+              } as LogMessage,
+           ];
+   });
+   // A near miss of a materialization route fails the load, so the editor
+   // sees it as the error it is; any other near miss is a warning.
+   const warnings = annotationNearMisses(notes)
+      .filter(
+         (finding) =>
+            finding.code === ANNOTATION_NEAR_MISS_CODE ||
+            finding.code === MATERIALIZATION_NEAR_MISS_CODE,
+      )
+      .map((finding) => ({
+         message: `${finding.message}; ${finding.rewrite}`,
+         severity: findingSeverity(finding),
+         code: finding.code,
+         ...(finding.at ? { at: finding.at } : {}),
+      }));
+   return [...gates, ...warnings];
 }

@@ -18,10 +18,15 @@ import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../constants";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import { ModelNotFoundError } from "../errors";
 import { logger } from "../logger";
-import type { SerializedNotebookCell } from "../package_load/protocol";
+import type { SerializedNotebookCell } from "../package_load/notebook_cell_wire";
 import { safeJoinUnderRoot } from "../path_safety";
-import { BuildManifest } from "./materialization/types";
-import { URL_READER } from "../utils";
+import { BuildManifest } from "./materialization/domain/types";
+import {
+   confinedPackagePath,
+   ImportOutsidePackageError,
+   importOutsidePackageProblem,
+   packageURLReader,
+} from "../utils";
 import { parseMalloynb } from "./deprecated/malloynb";
 import { overlayKey, overlayKeyOfPath } from "./overlay_key";
 import {
@@ -72,6 +77,22 @@ export async function createModelRuntime(
    const overlaidModel =
       options?.overlay?.has(overlayKeyOfPath(fullModelPath)) === true;
    if (!overlaidModel) {
+      // A model file that is a link out of the package is refused before it
+      // is looked at, the same whether or not its target exists.
+      // A package that is not there has no models, rather than a link out.
+      try {
+         await fs.realpath(packagePath);
+      } catch {
+         throw new ModelNotFoundError(`${modelPath} does not exist.`);
+      }
+      try {
+         await confinedPackagePath(packagePath, pathToFileURL(fullModelPath));
+      } catch (error) {
+         if (error instanceof ImportOutsidePackageError) {
+            throw importOutsidePackageProblem();
+         }
+         throw error;
+      }
       try {
          if (!(await fs.stat(fullModelPath)).isFile()) {
             throw new ModelNotFoundError(`${modelPath} is not a file.`);
@@ -98,14 +119,17 @@ export async function createModelRuntime(
    const baseUrl = new URL(".", modelURL);
    const importBaseURL = baseUrl;
    const overlay = options?.overlay;
+   // Disk reads stay inside the package; the overlay's virtual files are
+   // served before the disk is asked.
+   const diskReader = packageURLReader(packagePath);
    const inner =
       overlay && overlay.size > 0
          ? {
               readURL: async (url: URL) =>
                  overlay.get(overlayKey(url)) ??
-                 (await URL_READER.readURL(url)),
+                 (await diskReader.readURL(url)),
            }
-         : URL_READER;
+         : diskReader;
    // Only the model's own text: the Runtime lives as long as the Model, and imports' text is never asked for.
    let modelText: string | undefined;
    const urlReader = new HackyDataStylesAccumulator({
@@ -143,7 +167,7 @@ export async function createModelRuntime(
    };
 }
 
-function toMalloyConfig(input: ModelConnectionInput): MalloyConfig {
+export function toMalloyConfig(input: ModelConnectionInput): MalloyConfig {
    if (input instanceof MalloyConfig) {
       return input;
    }
@@ -218,8 +242,13 @@ async function getNotebookModelMaterializer(
    let parse = undefined;
 
    try {
-      fileContents = await fs.readFile(modelURL, "utf8");
-   } catch {
+      // Through the runtime's reader: confined to the package, overlay first.
+      const read = await runtime.urlReader.readURL(modelURL);
+      fileContents = typeof read === "string" ? read : read.contents;
+   } catch (error) {
+      if (error instanceof ImportOutsidePackageError) {
+         throw importOutsidePackageProblem();
+      }
       throw new ModelNotFoundError("Model not found: " + modelPath);
    }
 
@@ -244,7 +273,6 @@ async function getNotebookModelMaterializer(
                     type: "code",
                     text: cell.text,
                     runnable: cell.query?.runnable,
-                    modelMaterializer: cell.materializer,
                     modelDef: cell.modelDef,
                     newSources: cell.newSources,
                     queryInfo: cell.queryInfo,
@@ -269,10 +297,13 @@ export type HydrationMaterializer = ModelMaterializer & {
 };
 
 export function makeHydrationRuntime(
+   packagePath: string,
    malloyConfig: ModelConnectionInput,
    buildManifest?: BuildManifest["entries"],
 ): HydrationRuntime {
-   const urlReader = new HackyDataStylesAccumulator(URL_READER);
+   const urlReader = new HackyDataStylesAccumulator(
+      packageURLReader(packagePath),
+   );
    const config = toMalloyConfig(malloyConfig);
    // Malloy substitutes a persisted source for its materialized table at
    // getSQL time only when the runtime carries the manifest; without it the
@@ -320,7 +351,6 @@ export function hydrateNotebookCells(
          type: "code",
          text: sc.text,
          runnable,
-         modelMaterializer,
          modelDef: cellModelDef,
          newSources: sc.newSources as Malloy.SourceInfo[] | undefined,
          queryInfo: sc.queryInfo as Malloy.QueryInfo | undefined,

@@ -238,6 +238,44 @@ source: s is duckdb.sql("""${COLUMNS}""") extend {
       expect(violations[0].fieldName).toBeUndefined();
    });
 
+   it("is reported by the file that declares the source, including a notebook cell", async () => {
+      const text = `##! experimental.persistence
+source: s is duckdb.sql("""${COLUMNS}""") extend {
+  #@ preaggregate grain="category"
+  dimension: cat is category
+}
+`;
+      const compiled = await loadTestModel(connections, text).getModel();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const contents = (compiled as any)._modelDef.contents;
+      const source = contents.s as { sourceID?: string };
+      const named = (url: string) => ({
+         s: { ...source, sourceID: `s@${url}` },
+      });
+      // Declared here: reported.
+      expect(
+         validateModelPreaggregation(
+            named("file:///pkg/model.malloy"),
+            "file:///pkg/model.malloy",
+         ).map((v) => v.code),
+      ).toEqual(["misplaced_on_dimension"]);
+      // Declared by another file this one imports: left to that file.
+      expect(
+         validateModelPreaggregation(
+            named("file:///pkg/model.malloy"),
+            "file:///pkg/index.malloy",
+         ),
+      ).toEqual([]);
+      // Declared in a notebook cell, which compiles as an internal://
+      // document: the notebook's own, so still reported.
+      expect(
+         validateModelPreaggregation(
+            named("internal://cell-1"),
+            "file:///pkg/report.malloynb",
+         ).map((v) => v.code),
+      ).toEqual(["misplaced_on_dimension"]);
+   });
+
    it("a dimension is told where the annotation actually goes", async () => {
       // A rejection is only useful if it says what to do instead.
       const violations = await validate(`  #@ preaggregate grain="category"
@@ -563,13 +601,13 @@ describe("placing a rollup in a storage destination", () => {
          await validate(`  #@ preaggregate grain="category" namespace="ns_a" storage=store_a
   measure: revenue is amount.sum()`);
       expect(violations.map((v) => v.code)).toEqual(["namespace_with_storage"]);
-      expect(violations[0].message).toContain('namespace="ns_a"');
+      expect(violations[0].message).toContain("`ns_a`");
       expect(violations[0].message).toContain("storage=store_a");
    });
 
    it("a namespace= beside a storage= BASE is untouched, because nothing is inherited", async () => {
       // The configuration the shipped docs describe: a `storage=` base lends
-      // nothing, so its rollups are colocated and a `namespace=` on the grain
+      // nothing, so its rollups are in the database tier and a `namespace=` on the grain
       // means exactly what it always did. No destination is in play for the
       // refusal to fire against.
       expect(
@@ -584,7 +622,7 @@ describe("placing a rollup in a storage destination", () => {
    });
 
    it("a namespace= with no storage anywhere is still fine", async () => {
-      // The colocated path must not acquire a refusal it never had.
+      // The database path must not acquire a refusal it never had.
       expect(
          await codesFor(`  #@ preaggregate grain="category" namespace="ns_a"
   measure: revenue is amount.sum()`),
@@ -618,7 +656,7 @@ describe("a rollup may not store what the source hides", () => {
    // a field hidden on the source is not hidden on the rollup — a query the live
    // path refuses is answered from the table.
    //
-   // The colocated tier does not have the hole, but only by accident: its
+   // The database tier does not have the hole, but only by accident: its
    // companion imports the author's model, so a private reference fails to compile
    // across the file boundary and no table is built. The storage tier plans from
    // the compiled contents directly, which removed the only thing enforcing access
@@ -635,15 +673,13 @@ describe("a rollup may not store what the source hides", () => {
       expect(violations[0].fieldName).toBe("revenue");
    });
 
-   it("refuses a grain naming a private dimension", async () => {
+   it("leaves a grain naming a hidden dimension to the rollup leg, which stores it unexposed", async () => {
       const violations = await validateWithAccess(
          `  #@ preaggregate grain="category"
   measure: revenue is amount.sum()`,
          "  public: revenue, amount, order_id, order_time, order_date\n  private: category",
       );
-      expect(violations.map((v) => v.code)).toEqual([
-         "grain_dimension_not_public",
-      ]);
+      expect(violations.map((v) => v.code)).toEqual([]);
    });
 
    it("a public measure at a public grain is unaffected", async () => {

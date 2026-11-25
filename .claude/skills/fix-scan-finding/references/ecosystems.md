@@ -142,11 +142,6 @@ Before accepting a finding here, confirm the fix is unreachable, not merely un-u
 forcing the fixed version through the consumer. The orval entries in `.trivyignore.yaml` are the
 worked example.
 
-## pip
-
-If a finding lands in `packages/python-client`, raise the pin in its `pyproject.toml`, re-resolve,
-and re-scan; the same rules apply.
-
 ## Dockerfile / config findings (`DS-*`, `AVD-DS-*`)
 
 These are misconfigurations, not CVEs -- fix the instruction rather than a version. Common criticals

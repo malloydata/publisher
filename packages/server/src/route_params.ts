@@ -15,8 +15,7 @@ import { LATEST_VERSION_ALIAS } from "./service/versions/version_service";
 /**
  * Read a boolean query param, keeping absent distinct from `false`, and throw
  * a {@link BadRequestError} for an unusable value. Only for params that need
- * the distinction, such as `bypass_filters`, whose Deprecation header fires on
- * `!== undefined`; otherwise use {@link booleanParam}.
+ * the distinction; otherwise use {@link booleanParam}.
  */
 export function optionalBooleanParam(
    req: Pick<Request, "query" | "path" | "method">,
@@ -57,6 +56,40 @@ export function assertNoCollectionReload(
 }
 
 /**
+ * Refuse `dropTables=true` on a materialization delete. A delete is
+ * record-only: it never drops a table, and the caller drops the tables it
+ * wants gone through the connection. Ignoring `true` would answer 204 to a
+ * caller who believes its tables went with the record. Absent and `false`
+ * (which older clients send on every delete) ask for exactly what a delete
+ * does, and pass. Any other value is refused with a 400 of its own, whose
+ * fix is to omit the parameter: the malformed-boolean message would suggest
+ * `dropTables=true`, which is refused too, and a client following it would
+ * loop.
+ */
+export function assertNoDropTables(
+   req: Pick<Request, "query" | "path" | "method">,
+): void {
+   const raw = req.query.dropTables;
+   const parsed = parseBooleanParam(raw);
+   if (!parsed.ok) {
+      throw new BadRequestError(
+         `Invalid dropTables value ${JSON.stringify(raw)}: a materialization ` +
+            `delete is record-only and takes no dropTables. Fix: ` +
+            `${req.method} ${req.path} (omit dropTables, or send ` +
+            `dropTables=false).`,
+      );
+   }
+   if (!parsed.value) return;
+   throw new BadRequestError(
+      "dropTables=true is no longer supported: deleting a materialization " +
+         "is record-only and never drops a table. Delete without dropTables, " +
+         "and drop any table you want gone yourself through its connection, " +
+         "after checking that no remaining run, of any version, names a table " +
+         "with that name in any place.",
+   );
+}
+
+/**
  * The version a package route names in its query string (`?versionId=`),
  * parsed once here; absent means `latest`. Never throws: a malformed value is
  * refused only where versions are consulted (see {@link VersionRef}).
@@ -83,12 +116,11 @@ export function assertListingTakesNoVersionId(versionId: unknown): void {
 }
 
 /**
- * The version a model query names: in the body, or in the URL as on every
- * other package route. Both may be given only if they agree.
+ * The version a request names in its body or its URL (`?versionId=`): the
+ * body's when it names one, else the URL's, else undefined. Both may be given
+ * only if they agree; an empty value names none.
  */
-export function queryVersionRefOf(
-   req: Pick<Request, "body" | "query">,
-): VersionRef {
+function bodyOrUrlVersionId(req: Pick<Request, "body" | "query">): unknown {
    const fromBody = req.body?.versionId;
    const fromUrl = req.query.versionId;
    const named = (value: unknown) =>
@@ -99,5 +131,29 @@ export function queryVersionRefOf(
          "The body and the URL name different versions; name one, or the same one.",
       );
    }
-   return VersionRef.parse(named(fromBody) ? fromBody : fromUrl);
+   if (named(fromBody)) return fromBody;
+   return named(fromUrl) ? fromUrl : undefined;
+}
+
+/**
+ * The version a model query names: in the body, or in the URL as on every
+ * other package route. Both may be given only if they agree.
+ */
+export function queryVersionRefOf(
+   req: Pick<Request, "body" | "query">,
+): VersionRef {
+   return VersionRef.parse(bodyOrUrlVersionId(req));
+}
+
+/**
+ * A materialization create's body, carrying the version its URL names when
+ * the body names none. Both may be given only if they agree, as on a model
+ * query; the controller checks the value itself.
+ */
+export function createBodyWithVersionId(
+   req: Pick<Request, "body" | "query">,
+): Record<string, unknown> {
+   const body = (req.body || {}) as Record<string, unknown>;
+   const versionId = bodyOrUrlVersionId(req);
+   return versionId === undefined ? body : { ...body, versionId };
 }

@@ -31,3 +31,12 @@ it("gives a listener ten-minute request, header and keep-alive timeouts", () => 
       server.headersTimeout,
    ]).toEqual([600_000, 600_000, 600_000]);
 });
+
+it("gives a listener the timeout it is passed instead", () => {
+   const server = longTimeouts(http.createServer(), 3_600_000);
+   expect([
+      server.timeout,
+      server.keepAliveTimeout,
+      server.headersTimeout,
+   ]).toEqual([3_600_000, 3_600_000, 3_600_000]);
+});

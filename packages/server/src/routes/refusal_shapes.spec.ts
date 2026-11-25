@@ -3,9 +3,8 @@
 
 /**
  * The exact 400 bodies the routes answer for a malformed parameter, before any
- * controller runs. Most are `{ code, message }`; two deprecated or older
- * routes keep a shape of their own, pinned here so a shared parser cannot
- * quietly change them.
+ * controller runs. Most are `{ code, message }`; one older route keeps a
+ * shape of its own, pinned here so a shared parser cannot quietly change it.
  */
 
 import { describe, expect, it, spyOn } from "bun:test";
@@ -47,16 +46,51 @@ describe("a malformed boolean query param answers { code, message }", () => {
       ["GET", `${PKG}/models/m.malloy`, "includeHiddenFilesAndSources"],
       ["GET", `${PKG}/entities`, "includeHiddenFilesAndSources"],
       ["POST", `${ENV}/packages`, "dryRun"],
-      ["DELETE", `${PKG}/materializations/m1`, "dropTables"],
       ["GET", PROJECT, "reload"],
       ["GET", LEGACY_PKG, "reload"],
-      ["DELETE", `${LEGACY_PKG}/materializations/m1`, "dropTables"],
    ])("%s %s?%s=1", async (method, path, name) => {
       const res = await request(app)
          [method.toLowerCase() as "get"](`${path}?${name}=1`)
          .send({});
       expect(res.status).toBe(400);
       expect(res.body).toEqual(invalidBoolean(name, "1", method, path));
+   });
+});
+
+describe("dropTables=true on a materialization delete answers { code, message }", () => {
+   it.each([`${PKG}/materializations/m1`, `${LEGACY_PKG}/materializations/m1`])(
+      "DELETE %s?dropTables=true",
+      async (path) => {
+         const res = await request(app).delete(`${path}?dropTables=true`);
+         expect(res.status).toBe(400);
+         expect(res.body).toEqual({
+            code: 400,
+            message:
+               "dropTables=true is no longer supported: deleting a " +
+               "materialization is record-only and never drops a table. " +
+               "Delete without dropTables, and drop any table you want gone " +
+               "yourself through its connection, after checking that no " +
+               "remaining run, of any version, names a table with that name in " +
+               "any place.",
+         });
+      },
+   );
+});
+
+describe("a malformed dropTables answers a fix that omits it", () => {
+   it.each([
+      [`${PKG}/materializations/m1`, "1"],
+      [`${LEGACY_PKG}/materializations/m1`, "yes"],
+   ])("DELETE %s?dropTables=%s", async (path, value) => {
+      const res = await request(app).delete(`${path}?dropTables=${value}`);
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({
+         code: 400,
+         message:
+            `Invalid dropTables value "${value}": a materialization delete ` +
+            `is record-only and takes no dropTables. Fix: DELETE ${path} ` +
+            `(omit dropTables, or send dropTables=false).`,
+      });
    });
 });
 
@@ -93,51 +127,6 @@ it("an agent's bad skills value answers { message } without a code", async () =>
    expect(res.body).toEqual({
       message: `'skills' must be 'full' or 'summary', got "some".`,
    });
-});
-
-describe("a notebook cell refusal answers { error }", () => {
-   const cell = (pkg: string, index: string, query = "") =>
-      `${pkg}/notebooks/n.malloynb/cells/${index}${query}`;
-
-   it.each([PKG, LEGACY_PKG])(
-      "%s: a cell index that is not a number",
-      async (pkg) => {
-         const res = await request(app).get(cell(pkg, "abc"));
-         expect(res.status).toBe(400);
-         expect(res.body).toEqual({ error: "Invalid cell index" });
-      },
-   );
-
-   it.each([PKG, LEGACY_PKG])(
-      "%s: filter_params that are not JSON",
-      async (pkg) => {
-         const res = await request(app).get(
-            cell(pkg, "0", "?filter_params=%7B"),
-         );
-         expect(res.status).toBe(400);
-         expect(res.body).toEqual({
-            error: "Invalid filter_params: must be valid JSON",
-         });
-      },
-   );
-
-   it("givens that are not JSON", async () => {
-      const res = await request(app).get(cell(PKG, "0", "?givens=%7B"));
-      expect(res.status).toBe(400);
-      expect(res.body).toEqual({ error: "Invalid givens: must be valid JSON" });
-   });
-
-   it.each([PKG, LEGACY_PKG])(
-      "%s: a bad bypass_filters keeps { code, message }",
-      async (pkg) => {
-         const path = cell(pkg, "0");
-         const res = await request(app).get(`${path}?bypass_filters=maybe`);
-         expect(res.status).toBe(400);
-         expect(res.body).toEqual(
-            invalidBoolean("bypass_filters", "maybe", "GET", path),
-         );
-      },
-   );
 });
 
 it("a malformed param is logged once as a refusal", async () => {

@@ -68,7 +68,6 @@ const getReport = mock(
       },
    }),
 );
-const getDashboard = mock(() => pending());
 const listModels = mock(async () => ({ data: [] }));
 const executeQueryModel = mock(() => pending());
 const updateModelSource = mock(
@@ -98,7 +97,6 @@ mockServerProvider(
          getReport,
          listReports: mock(async () => ({ data: [] })),
       },
-      dashboards: { getDashboard },
    },
    serverContext,
 );
@@ -137,7 +135,6 @@ beforeEach(async () => {
    serverContext.mutable = true;
    getModel.mockClear();
    getReport.mockClear();
-   getDashboard.mockClear();
    updateModelSource.mockClear();
 });
 
@@ -154,7 +151,6 @@ describe("ReportEditor as a notebook", () => {
       expect(getModel.mock.calls[0][4]).toBe(true);
       await waitFor(() => expect(getReport).toHaveBeenCalled());
       expect(getReport.mock.calls[0][2]).toBe("notebooks/tour.malloy");
-      expect(getDashboard).not.toHaveBeenCalled();
       expect(onEvent.mock.calls[0][0]).toMatchObject({
          type: "report.opened",
          surface: "edit",

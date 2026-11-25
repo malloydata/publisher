@@ -13,14 +13,56 @@ workflow owns what, and the publishing rules that bite.
 `build.yml` is the entry point (pushes and PRs). It does not run the test suites itself: it holds
 `lint` (typecheck), `lint_format` (prettier, eslint, and the DuckDB/pg version-consistency guards),
 `runtime_test` (starts the built server bin under both `npx` with the Node shebang and a direct
-`bun run` on the bundle), `docker_smoke_test`, `python_sdk_build` (calls `python-sdk.yml`),
-`python_sdk_smoke_test` (drives a server built from the PR through the built Python SDK wheel; see
-*Publishing to PyPI*), and `cross_platform_test`, which calls `cross-platform-tests.yml`.
+`bun run` on the bundle), `docker_smoke_test`, and `cross_platform_test`, which calls
+`cross-platform-tests.yml`.
 
-`cross-platform-tests.yml` is `workflow_call`-only and is where the tests actually run, across Linux,
-macOS, and Windows: the server unit and integration suites, the skills package tests, and the
-create-malloy-package tests plus its e2e suite on Linux. It is reached on every PR through
-`build.yml`.
+`cross-platform-tests.yml` is `workflow_call`-only and is where the tests actually run: the SDK and
+Console suites (plus the SDK's two time-zone runs), the server unit, component and integration
+suites, the skills, examples, scripts, CLI and create-malloy-package tests, and the Linux-only CLI
+integration and scaffolder e2e suites. Its callers pick one of two shapes with its inputs:
+
+- **`linux: true`** (`build.yml`, every PR and every push to `main`): the whole suite on Linux, split
+  into parallel jobs: `Linux: server component (1/3..3/3)`, `Linux: server unit (1/2, 2/2)`,
+  `Linux: server integration`, and `Linux: SDK, Console, skills, examples, scripts, CLI, scaffolder`. On the PR that introduced the split each ran 6-9 minutes, about 2 of them setup, and a PR waited about 12 minutes in all, against about 29 for the single Linux leg before.
+  A gate job, `Platform: (ubuntu-latest)`, needs all of them and fails unless every one passed. It
+  is the **only** required check for the suite (`Cross Platform Tests / Platform: (ubuntu-latest)`,
+  the name the single Linux leg had before the split), so regrouping or resharding never touches
+  branch protection. Do not make the individual groups required.
+- **`macos_windows: true`**: the whole suite in one job per OS, `Platform: (macos-latest)` and
+  `Platform: (windows-latest)`, as every leg ran before the split, with the Windows Defender, `D:`
+  profile and time-zone handling it needs. Not run on PRs by default: each leg took 28-32 minutes
+  median, up to 66. `cross-platform-nightly.yml` runs it nightly (05:37 UTC) against `main`, on a PR
+  that carries the `cross-platform` label (when it is added and on every push while it stays), and on
+  `workflow_dispatch` against any ref. `release.yml` runs it too, before `prepare` (below). None of
+  these is a required check, which is what lets an unlabelled PR merge without them.
+
+The setup every test job shares (Bun, a frozen install, API types, the build that also bakes the
+DuckDB extensions) is the local composite action `.github/actions/setup-workspace`. The SDK time-zone
+runs and the example tests are `scripts/ci-sdk-tests-in-zone.sh` and `scripts/ci-example-tests.sh`,
+shared by the Linux job and the macOS/Windows legs; each script's header says why it is shaped the
+way it is.
+
+**The server shards are balanced by time.** `bun test --shard=N/M --timings=…` places files by the
+per-file durations in `packages/server/tests/shard-timings.json`; a file it does not list (a new
+spec) still runs, placed without a weight. Each shard uploads what it measured as a
+`shard-timings-<suite>-<N>` artifact. When the shards drift apart, download those artifacts from a
+green run and merge them into the file:
+
+```bash
+gh run download <run-id> -p 'shard-timings-*' -D /tmp/timings
+jq -s '{version: 1, files: (map(.files) | add | to_entries | sort_by(.key) | from_entries)}' \
+  /tmp/timings/*/shard-timings.json > packages/server/tests/shard-timings.json
+```
+
+Raise a shard count (the matrix and the `/M` in the same job) when a group's slowest shard passes
+about ten minutes of tests; the build in front of it is about two more.
+
+The Postgres-gated server specs (`PUBLISHER_TEST_POSTGRES_URL` and the rest) skip in these jobs and
+run against real services in `connection-integration-tests.yml`.
+
+A nightly failure is reported the way every scheduled run is today, by GitHub's own notification of
+the failed run. Slack reporting for the nightly workflows is tracked separately and will be a step of
+its own in each of them.
 
 The two npm publish workflows below do re-run their own package's suite, against the exact ref being
 published, because a PR run proves nothing about the ref a dispatch actually targets. What they do
@@ -30,10 +72,20 @@ not repeat is the server suites and the Linux-only e2e suite.
 PR's branch included), against a server with package versioning on (playwright.config.ts starts it
 with `PUBLISHER_PACKAGE_VERSIONING=on`). The model viewer's specs get a pass of their own, against a server started
 with `PUBLISHER_MODEL_PAGE=viewer` (`EXPECT_MODEL_PAGE=viewer`),
-because the suite's server shows the default model page, the Explorer. `python-sdk.yml` is `workflow_call`-only (plus a
-manual dispatch): it builds and verifies the Python client, for `build.yml` on every PR and for
-`release.yml`, which publishes it to PyPI from a job of its own. It has published there since
-0.10.5 (2026-10-31); *Publishing to PyPI* below covers how.
+because the suite's server shows the default model page, the Explorer.
+
+The suite runs in three shards, `Playwright shard (1/3..3/3)`. Each shard is on its own runner with
+its own Publisher, and runs on one worker inside the shard, because specs share server state. The
+spec files each shard runs are listed in `packages/app/tests/playwright/shards.json`, balanced by
+measured per-file durations. Shard 2 carries the least and also runs the model viewer pass.
+`shards.mjs check` runs first in every shard. It fails the shard when a spec is in no group, is in
+two, or a group names a file that is gone, so **a new spec must be added to `shards.json`**.
+A gate job, `Playwright (packages/app)`, needs every shard and fails unless all of them passed. It is the
+**only** required check for the suite, under the name the single job had before the split, so
+regrouping never touches branch protection. Do not make the shards required, and do not give one
+that name. Chromium's headless shell is cached under `PLAYWRIGHT_BROWSERS_PATH`, keyed on the
+`@playwright/test` version. Credible's image has Chromium's system packages, so apt runs there only
+if the browser is missing a library. GitHub's image does not have them all, so it takes `--with-deps`.
 
 **Not every publish workflow is purely a publish workflow, so a red check on a PR that touches one
 package can come from its own file rather than from `build.yml`.** Know which job:
@@ -44,24 +96,97 @@ package can come from its own file rather than from `build.yml`.** Know which jo
   time* below).
 - `create-malloy-package-npm.yml` is genuinely dispatch-only: `workflow_dispatch` is its only
   trigger. Its `pull_request` trigger and `check_version` job are both gone.
-- `python-sdk.yml` has no PR trigger and no version check: the Python SDK releases in lockstep
-  with sdk/app/server, so `prepare` sets its version and there is nothing for a PR to bump.
+
+`hammer-nightly.yml` runs the hammer scenario suite (`hammer/README.md`) against a real server,
+a throwaway Postgres in the runner's Docker and a local DuckLake, nightly and on
+`workflow_dispatch`. It is not a pull-request check and nothing depends on it. Two legs, one with
+`PUBLISHER_MATERIALIZE=true` and one with `false`, each upload their logs as an artifact.
+
+`nightly.yml` holds the nightly checks of issue #1897 other than the hammer, one job each, on a
+schedule (06:41 UTC) and `workflow_dispatch`. Its `upgrade` job runs `hammer/upgrade/run.ts`: the
+latest released server builds a fixture package's materializations, then `main`'s build must serve
+them unchanged from the same server root and data. Its `mixed-version` job runs
+`hammer/mixed-version/run.ts`, the rolling-deploy direction: `main`'s build writes a manifest and the
+latest released server, bound to it, must serve every stored table from it (its in-process
+counterpart, a frozen copy of the release's manifest loader, runs on every pull request in
+`test:component`). Neither it nor `hammer-nightly.yml` holds a secret or is a pull-request check.
+Each job writes its job summary from a JSON report (`hammer-report.json`, `upgrade-report.json`,
+`mixed-version-report.json`) that is uploaded with the logs (the hammer's on every run, the others'
+when they fail); post a nightly result from that report, never from raw logs.
+
+`main-thread-regression.yml` is the main-thread regression check
+(`packages/server/tests/perf/main-thread/README.md`): a storm-lite A/B of two server builds on
+one runner, added after Publisher 0.13.1 pinned the worker's main thread
+(https://github.com/ms2data/service/issues/7795). On a PR that touches `packages/server/**`
+or `bun.lock` it compares the PR's head with its merge base; nightly, and as `release.yml`'s
+gate, it compares `main` with the anchor release in `anchor.json`. It holds no secret but stays on GitHub-hosted
+`ubuntu-latest`, where its absolute budgets were calibrated, and it is **not a required check yet**: its flake rate on PRs decides
+that. It path-filters, which is only safe because it is not required (see below).
 
 Two workflows hold real warehouse credentials, and both should be treated as such when edited:
 `connection-integration-tests.yml` (the full connection matrix) and `k6-tests.yml`, which passes
 `BQ_PRESTO_TRINO_KEY` and runs on pushes as well as on demand.
 
+Every workflow a pull request triggers shares one `concurrency:` rule: runs for a PR are grouped by
+its number and a new push cancels the one in flight, while every other event (push to `main`,
+`workflow_run`, schedule, dispatch) is grouped by its own run id, so it is never cancelled or
+replaced and every merged commit is tested. `push:` triggers are `main` only, so a PR branch runs
+once, through `pull_request`. Path filters are not used on `build.yml` or `app-playwright.yml`:
+their jobs are required status checks on `main`, and a filtered-out workflow leaves a required check
+pending forever. A docs-only skip needs an always-run gate job first.
+
+### Credible's donated runners
+
+Credible runs self-hosted Ubuntu 24.04 x64 runners for the `malloydata` organization (4 vCPU / 16 GB,
+Docker, one job at a time per machine, machines reused between jobs), which do not count against
+GitHub's 20-concurrent-job limit. A job
+opts in with:
+
+```yaml
+runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+timeout-minutes: 30
+```
+
+The organization variable `CREDIBLE_RUNNERS` is the kill switch: set it to `false` and every such job
+goes back to GitHub's runners with no PR. On them: `build.yml`'s jobs, every Linux job of
+`cross-platform-tests.yml` (seven test jobs and the gate per PR), `app-playwright.yml`, the Trivy jobs in `security-scan.yml` and
+`image-scan.yml` (amd64 build only), `release-sync.yml`, `skills-npm.yml`'s tarball check (not its publish job), and
+`hammer-nightly.yml`. `docker_smoke_test` reads a registry layer cache there and writes it only from
+`main`, through the `layer-cache-writer` identity bound to `main`'s OIDC subject.
+
+**Keep off them:** any job that uses a repository or organization secret, holds `id-token: write`
+for anything but the layer cache, publishes, or runs on `pull_request_target` (the runners refuse
+those); and macOS, Windows, and arm64 jobs. Publishing jobs, which stay on GitHub's runners, restore no
+Actions cache (setup-bun's `no-cache: true`): any `main` job, here or on GitHub's runners, can write
+`main`'s cache entries. Every job moved there needs a `timeout-minutes`. `credible-ubuntu-24.04` is spot
+(a reclaimed job fails "The operation was canceled." and a rerun covers it);
+`credible-ubuntu-24.04-ondemand` is the label for a job that must not be interrupted. Package
+installs go through pull-through caches whose credentials last an hour from job start. Jobs there
+restore no Bun install cache: its steps run only where `runner.environment == 'github-hosted'`, since on
+Credible's runners that cache downloads through the farm's NAT while `bun install` reads the npm mirror
+inside GCP.
+
+**Every `bun install` runs through `scripts/ci-install-with-retry.sh`**, in the composite action and
+in each workflow that installs on its own. The npm mirror intermittently answers a tarball GET with
+401 or 403 well inside that hour (one was seen 35 seconds after the job-started hook set it up), and
+with about seven installing jobs per PR, one such answer failed a PR or `main` often. The script
+re-runs the same command, unchanged, up to three attempts (15 s, then 45 s apart), against the same
+registry: it adds no fallback registry and touches no runner configuration, so a retried install
+resolves exactly what the first would have, which is why the publishing jobs use it too. A retry that
+rescues a job leaves a `Package install retried` warning annotation on the run, so a mirror that is
+getting worse stays visible instead of being absorbed; report a run of those to the runners' owners.
+A new install step should use the script too.
+
 ## Publishing
 
-There are three npm trains and one PyPI train. The PyPI train shares sdk/app/server's version;
-the other two npm trains each have their own.
+There are three npm trains. sdk/app/server share one version; the other two each have their own.
+Nothing publishes to PyPI (see *PyPI: currently not published*).
 
 | Packages | Registry | Version | Published by | Missing bump caught by |
 |---|---|---|---|---|
 | `@malloy-publisher/sdk`, `app`, `server` | npm | Lockstep, set by `release.yml` | `npm-sdk.yml`, called from `release.yml` | n/a — the release sets it |
 | `@malloy-publisher/skills` | npm | Decided at release time by `scripts/independent-version.mjs`; `package.json` carries a fixed `0.0.0-dev` placeholder | `skills-npm.yml` | n/a — nothing to forget, the decision reads npm itself |
 | `@malloy-publisher/create-malloy-package` | npm | Decided at release time the same way; `package.json` also carries `0.0.0-dev` | `create-malloy-package-npm.yml` | n/a, same reason |
-| `malloy-publisher-sdk` | PyPI | Lockstep with sdk/app/server, set by `release.yml` in `pyproject.toml` | `release.yml`'s `publish-python-sdk`, built by `python-sdk.yml` | n/a — the release sets it |
 
 ### The versioning policy
 
@@ -74,8 +199,7 @@ trains sharing a minor invites reading one for the other. The move needed
 `-f version=0.2.0`, because a minor bump computed from a `0.0.x` floor lands on
 `0.1.0`; on the `0.x` line an ordinary `bump=minor` gives the policy's number
 (`0.11.0` was a `bump=minor` off `0.10.7`). `skills` has always been on `0.1.x` and
-so already follows the policy, and `malloy-publisher-sdk` (Python) follows
-sdk/app/server's number.
+so already follows the policy.
 
 `create-malloy-package` does not: it is still on `0.0.x`, so `^` pins it exactly,
 the same trap the policy exists to close. Nothing moves it on its own, because the
@@ -204,24 +328,31 @@ and the root `package.json` are in the skills diff's watched paths directly (the
 they were outside `skills-npm.yml`'s `paths:` trigger and a lockfile-only PR never reached the
 check at all. A lockfile-only change now counts as "changed" and triggers a publish on its own.
 
-The Python SDK had a PR-time bump check of the same kind (`check_version` in `python-sdk.yml`),
-and it is gone for a different reason: the SDK no longer has a version of its own. `prepare`
-stamps the release version into `packages/python-client/pyproject.toml` with the three
-`package.json` files, so a PR has nothing to bump and a release always has a new number to upload.
-
 `release.yml` is `workflow_dispatch`-only and is the single place a release starts. Its `prepare` job
-bumps sdk/app/server and the Python SDK, stamps the release notes, commits both to a fresh `release/v<version>`
+bumps sdk/app/server, stamps the release notes, commits both to a fresh `release/v<version>`
 branch cut from `main`, and pushes it; `npm-sdk.yml` and `docker-image.yml` are then called with that
-ref. `build-python-sdk` calls `python-sdk.yml` with it too, and `publish-python-sdk` uploads what that
-built (see *Publishing to PyPI*). `publish-packages` triggers the two other npm trains (see below).
+ref. `publish-packages` triggers the two other npm trains (see below).
 `gh-release` cuts the tag, and
 only after npm and Docker have both succeeded.
 
+**`main-thread-check` and `cross-platform-tests` run first.** `prepare` needs both, so a release
+whose `main` fails the main-thread regression check, or fails the whole suite on macOS or Windows
+(`cross-platform-tests.yml` with `macos_windows: true`, against the commit being released), stops
+before any branch is cut or anything is published, and a re-dispatch after a fix starts clean. The
+main-thread check adds about ten minutes; the macOS and Windows legs run alongside it and add 30 to
+60, which is the price of PRs no longer running them. They run rather than look up last night's
+result because `main` usually moves between the nightly and a dispatch, so a green nightly on the
+release commit is rarely there to find. They restore no Actions cache (`restore_cache: false`), the
+rule for anything in front of a publish, and have no skip input: a release that cannot pass them
+waits for the fix. A release that must
+ship while the check itself is known to be wrong is dispatched with
+`skip_main_thread_check=true`: the job still runs and passes with a warning, rather than being
+skipped, because a skipped job would also skip every job downstream of `prepare`.
+
 **The release branch is also the post-release PR.** `prepare` rewrites every `## [Unreleased]`
 heading in `RELEASE_NOTES.md` as `## [<version>]` (`scripts/release-notes.mjs stamp`) in the same
-commit that sets the three `packages/{sdk,app,server}/package.json` versions and
-`packages/python-client/pyproject.toml`'s (`scripts/set-version.mjs`, which sets a pyproject's
-`[project]` version). `gh-release` then puts the sections headed `[<version>]` on the release
+commit that sets the three `packages/{sdk,app,server}/package.json` versions
+(`scripts/set-version.mjs`). `gh-release` then puts the sections headed `[<version>]` on the release
 page (`release-notes.mjs extract <version>`) and prints a compare link. A person opens
 `release/v<version>` into `main` as a PR, titled `chore(release): <version>`, and merges it; that
 one PR is the whole post-release step. It does **not** touch `packages/skills/package.json` or
@@ -229,6 +360,19 @@ one PR is the whole post-release step. It does **not** touch `packages/skills/pa
 their published version is decided at release time from npm's own state (see *Skills and
 create-malloy-package version at release time* above). Both halves used to be manual post-release
 steps and were reliably skipped: 0.0.243 through 0.0.247 shipped with none of their narrative.
+
+**The release page has a length limit, and the job fits the body to it.** GitHub refuses a release
+body over 125,000 characters with a 422, and `gh-release` runs after npm and Docker have
+published, so 0.13.0 (75 sections, about 136k characters) failed there and its page was made by hand.
+`gh-release` now fetches the generated PR list itself (`gh api …/releases/generate-notes`, the list
+`--generate-notes` would append) and has `release-notes.mjs fit` compose the whole body under a
+120,000-character budget. It gives up detail in order until the body fits: the narrative's full text
+becomes an index of its section titles linking `RELEASE_NOTES.md` at the tag (the form 0.13.0's page
+was made in by hand), then the PR list is truncated keeping its **Full Changelog** compare link, then
+only that link is left, then the index itself is shortened. The last step is a plain cut, so length
+cannot fail the job. Each fallback logs a notice, and the index fallback adds a line to the job
+summary. If the list cannot be fetched, the compare link stands in for it; if `fit` itself fails, the
+header goes up alone with `--generate-notes`, under the usual warning.
 
 Why this shape, and not the ones it replaced:
 
@@ -287,7 +431,8 @@ the commit, `version_taken` checks the tag as well as the branch, and the releas
 
 `scripts/release-notes.mjs` and `scripts/set-version.mjs` both have unit coverage —
 `release-notes.spec.ts` and `set-version.spec.ts` — run by `build.yml`'s `lint_format` job on every PR
-(`bun run test:scripts`). The notes spec also smoke-runs `extract` against the real
+(`bun run test:scripts`). The notes spec covers each of `fit`'s fallbacks, and that the body never
+exceeds its limit however small. The notes spec also smoke-runs `extract` against the real
 `RELEASE_NOTES.md`, so a heading it cannot read a title from fails the PR that wrote it rather than the
 release that would silently drop the narrative; the version spec does the equivalent, asserting the
 replace still finds the `"version"` field in all three real manifests at their real paths, so a
@@ -305,8 +450,9 @@ Merging the release PR cannot collide with `publish-packages`: it changes only
 wait for the run to finish before touching the PR is the release branch itself (above), not this
 guard.
 
-npm and PyPI publishing both use **GitHub Actions OIDC trusted publishing**, not a stored token.
-There is no `NPM_TOKEN` or `PYPI_TOKEN` in this repo and neither should be added back. Only the
+npm publishing uses **GitHub Actions OIDC trusted publishing**, not a stored token, as PyPI's did
+(see *PyPI: currently not published*). There is no `NPM_TOKEN` or `PYPI_TOKEN` in this repo and
+neither should be added back. Only the
 Docker path uses a secret (`DOCKERHUB_TOKEN`).
 
 ### Docker image signing
@@ -333,6 +479,12 @@ obvious from the YAML:
   but unsigned, and `gh-release` does not run. Re-run the failed jobs: `imagetools create` re-pushes
   the same list from the same platform digests and the signing steps run again. A Sigstore outage
   (Fulcio or Rekor) shows up here the same way.
+- **The verify retries "no signatures found", and only that.** Docker Hub can take a moment to
+  serve a signature it just accepted (0.15.0 and 0.16.0 both failed verify two seconds after the
+  push, and passed on a re-run), so the verify step retries that one error with backoff, 6 attempts
+  over about 2.5 minutes, logging each retry. Any other error, an identity or issuer mismatch
+  included, fails at once, and the step never re-signs: a second `cosign sign` adds a second
+  signature rather than repairing the first.
 - **The `@refs/heads/main` in the identity is what makes a branch dispatch distinguishable.**
   `release.yml` has no ref guard (see *Hardening that is not in place yet*), so a release dispatched
   from a branch is signed with that branch's ref. The in-workflow verify accepts any ref and prints
@@ -363,9 +515,8 @@ everything in this file that follows from them changes with it.
   `release.yml` and would immediately break its manual dispatch. That is a one-way door, because
   there is only one entry per package.
 - **PyPI's matching rule is the opposite of npm's.** PyPI matches the file that defines the
-  uploading job, and refuses a reusable workflow outright, so the Python SDK is not dispatched from
-  `publish-packages` but uploaded by `release.yml`'s own `publish-python-sdk` job. See *Publishing
-  to PyPI*.
+  uploading job, and refuses a reusable workflow outright, so a future PyPI upload cannot be
+  dispatched from `publish-packages`. See *PyPI: currently not published*.
 - **`timeout-minutes` on `publish-packages` tracks the package count.** It is two poll budgets plus
   margin now. Keep it above N x `POLL_BUDGET_SECONDS`, or the LAST package timing out gets killed by
   the job cap before it can print which package failed — the one diagnostic that says whether a
@@ -397,186 +548,53 @@ everything in this file that follows from them changes with it.
   scripts-disabled would ship no `dist/` at all rather than an old pin, which is why this is a footnote
   and not a check.
 
-### Publishing to PyPI
+### PyPI: currently not published
 
-`malloy-publisher-sdk` is published by two jobs in `release.yml`, at the same level as `publish-npm`
-and `publish-docker`, and not by `publish-packages`:
+Nothing in this repository publishes to PyPI. The generated Python client (`packages/python-client`),
+its build workflow (`python-sdk.yml`) and `release.yml`'s `build-python-sdk` and `publish-python-sdk`
+jobs were removed in 0.17.0. The versions of `malloy-publisher-sdk` already on PyPI (0.10.5 through
+0.16.x) stay there as published: none was yanked, and no deprecation release was made. The name is
+kept for a future client, so the setup on PyPI's side is left in place and recorded here, to be
+switched back on rather than rebuilt.
 
-- **`build-python-sdk`** calls `python-sdk.yml` on the release branch, which carries the version
-  `prepare` stamped into `pyproject.toml`. Its `build` job generates the client, runs the tests,
-  builds the wheel and sdist, verifies them and uploads `dist/` as the `python-client-dist`
-  artifact. It holds no publishing credential.
-- **`publish-python-sdk`** is a plain job in `release.yml`, with `environment: pypi` and
-  `permissions: id-token: write` and nothing else. It downloads the artifact, reads the name and
-  version from the wheel's own `METADATA`, refuses a version that is not this release's (a stamp
-  that did not reach the wheel), skips one already on PyPI (a re-run after the upload landed), and
-  otherwise uploads with `pypa/gh-action-pypi-publish`, pinned by SHA. It runs no repository code
-  and installs nothing.
-
-Both skip a prerelease or a `+build` version of sdk/app/server, by the same `[-+]` test `prepare`
-uses for the release-notes stamp; `publish-python-sdk` admits only a plain major.minor.patch.
-Neither is in `gh-release`'s `needs`, for the same reason `publish-packages` is not.
-
-**The upload waits for `publish-npm` and `publish-docker`; the build does not.** A PyPI filename
-can never be reused, so a release abandoned after a failed npm or Docker publish, in favour of the
-next version, would otherwise leave `malloy-publisher-sdk==X` on PyPI for a server `X` that never
-shipped. With the wait, PyPI only ever holds versions whose server published. The build runs beside
-npm and Docker, so the wait costs only the upload itself.
-
-**The smoke test is `build.yml`'s, on every PR, not the release's**, the same split as the Docker
-image (`build.yml`'s `docker_smoke_test` on every PR; `docker-image.yml` only builds and pushes).
-`python_sdk_build` calls `python-sdk.yml`, the same build the release runs, then
-`python_sdk_smoke_test` installs that wheel into a clean venv for every Python the package declares,
-starts a server built from the PR, and drives it through the SDK
-(`packages/python-client/scripts/smoke-test-wheel.py`): status, environments, packages, every
-model, the compiled models and a query, each answer parsed into the generated models. Every PR,
-not only SDK ones, because a server change can break the SDK's wire format without touching
-`api-doc.yaml`. So a green `main` has built, verified and exercised the same kind of artifact a
-release uploads, and the release does not wait on a server build to upload it.
-
-**Trusted publishing (OIDC), not a token.** There is no `PYPI_TOKEN`, and one should not be added
-back. The trusted publisher on PyPI is: project `malloy-publisher-sdk`, owner `malloydata`,
-repository `publisher`, workflow **`release.yml`**, environment **`pypi`**. Three things about it are
-not guessable:
-
-- **PyPI matches the file that defines the uploading job, not the top-level workflow.** Warehouse
-  looks the publisher up by the token's `job_workflow_ref` claim (`lookup_by_claims` in
-  `warehouse/oidc/models/github.py`). That is the opposite of npm's rule (see *Rules that bite*
-  below), which is why the npm entries for sdk/app/server name `release.yml` while the `npm publish`
-  runs in `npm-sdk.yml`. For PyPI, the entry names `release.yml` because the upload job is written in
-  `release.yml`. Moving `publish-python-sdk` into another file breaks publishing until the PyPI entry
-  is changed to match.
-- **The upload cannot live in a reusable workflow.** PyPI does not support trusted publishing from
-  one, which is why this is two jobs where `publish-npm` and `publish-docker` are one `uses:` each.
-  It is also why the upload is not a job in `python-sdk.yml` called from here.
-- **The split is the security model, not tidiness.** `id-token: write` lets any step in a job mint
-  an upload token. `build` runs uv, the generator, black, ruff, pyright, pytest and the wheel's
-  runtime dependencies; in a job holding id-token a compromise of any of them could upload anything
-  under the project's name. PyPI's own guidance is this shape: build in one job, publish the artifact
-  from another that does nothing else.
-
-**The environment is the boundary.** `release.yml` has no ref guard (see *Hardening that is not in
-place yet*), and PyPI does not check the ref. It does refuse a token whose `environment` claim is
-not `pypi` (case-insensitively), so a branch copy of `release.yml` that drops `environment:` cannot
-publish. Restrict the `pypi` environment's deployment branches to `main`, with no required
-reviewers, and a release dispatched from any other branch never starts the job either. GitHub
-creates the environment on first use if it does not exist, with no restrictions at all, so **create
-it, restricted, before registering the pending publisher**. In the other order, anyone with write
-access could dispatch `release.yml` from a branch, have GitHub create `pypi` unrestricted on the
-spot, and publish without review on `main`. An admin creates it with:
+**The trusted publisher (OIDC, no token).** Project `malloy-publisher-sdk`, owner `malloydata`,
+repository `publisher`, workflow **`release.yml`**, environment **`pypi`**. There is no
+`PYPI_TOKEN`, and one should not be added. The `pypi` environment exists, with its deployment
+branches restricted to `main` by a custom policy (created 2026-10-29). To check it:
 
 ```bash
-gh api -X PUT repos/malloydata/publisher/environments/pypi \
-  -F 'deployment_branch_policy[protected_branches]=false' \
-  -F 'deployment_branch_policy[custom_branch_policies]=true'
-gh api -X POST repos/malloydata/publisher/environments/pypi/deployment-branch-policies \
-  -f name=main -f type=branch
 # Expect one policy, `main`:
 gh api repos/malloydata/publisher/environments/pypi/deployment-branch-policies \
   --jq '.branch_policies[].name'
 ```
 
-A custom policy naming `main`, not "protected branches": that option admits every branch with a
-protection rule, which is wider than `main`.
+**What a new client has to match, because none of it is guessable:**
 
-#### What the first publish needed, and why it took this long
+- **PyPI matches the file that defines the uploading job, not the top-level workflow.** Warehouse
+  looks the publisher up by the token's `job_workflow_ref` claim. That is the opposite of npm's
+  rule (see *Rules that bite* above), so the upload has to be a job written in `release.yml` itself,
+  or the PyPI entry has to be changed to name the file that holds it.
+- **The upload cannot live in a reusable workflow.** PyPI does not support trusted publishing from
+  one, so the shape is two jobs: a build job (it may call a reusable workflow) that uploads `dist/`
+  as an artifact and holds no `id-token`, and a plain publish job in `release.yml` with
+  `environment: pypi` and `permissions: id-token: write` and nothing else, which downloads the
+  artifact and hands it to `pypa/gh-action-pypi-publish` pinned by SHA. Keeping the build out of the
+  job that can mint a token is the security model, not tidiness.
+- **The environment is the boundary.** `release.yml` has no ref guard (see *Hardening that is not
+  in place yet*), and PyPI does not check the ref, but it refuses a token whose `environment` claim
+  is not `pypi`. Keep `environment: pypi` on the publish job and the environment restricted to
+  `main`. If the environment is ever deleted, recreate it, restricted, **before** anything on PyPI
+  names it: GitHub creates a missing environment on first use with no restrictions.
+- **Check the wheel's project name before uploading.** A token minted for the entry uploads only to
+  `malloy-publisher-sdk`; anything else fails with "Non-user identities cannot create new projects".
+- **Upload after `publish-npm` and `publish-docker`, outside `gh-release`'s `needs`.** A PyPI
+  filename can never be reused, so an upload that ran before a failed npm or Docker publish would
+  leave a client version for a server that never shipped; and a failed upload must not block the
+  tag, for the reason `publish-packages` is outside it.
+- **Skip a version already on PyPI**, so "Re-run failed jobs" after an upload that landed is a no-op.
 
-The first three attempts (September 2026, under the old dispatched `python-sdk.yml` publish job)
-failed with `403 Forbidden from https://upload.pypi.org/legacy/`. #1257 paused the publish and
-listed token scope as the likely cause. The log says otherwise: the step's environment shows
-`TWINE_PASSWORD:` **empty**, where a set secret prints as `***`, and the repository has no
-`PYPI_TOKEN` secret at all. twine sent an empty password. Trusted publishing removes the secret
-entirely.
-
-The first upload landed with 0.10.5 on 2026-10-31, so every precondition below is met and the list
-is kept as history. It matters again only if the project or its trusted publisher is ever recreated.
-
-Preconditions CI could not check, for the release that carried the first upload, in this order:
-
-- **The `pypi` environment, restricted to `main`**, created as above before anything on PyPI
-  names it.
-- **A pending publisher whose project name matches exactly**: `malloy-publisher-sdk`, `malloydata`,
-  `publisher`, `release.yml`, `pypi`, with the environment named rather than left as "(Any)", which
-  would make the restriction above irrelevant. A pending publisher creates the
-  project on first upload, under the name it was registered with. A pending publisher registered as
-  `malloy-publisher` mints a token without complaint and the upload then fails with "Non-user
-  identities cannot create new projects". `publish-python-sdk` checks the wheel's name before
-  uploading for that reason.
-- **The name is not reserved by the pending publisher.** PyPI: a pending publisher "does not create
-  a project or reserve a project's name until it is actually used to publish". Until 0.10.5 landed,
-  `malloy-publisher-sdk` 404'd and anyone could have taken it.
-- **The first upload is the release's version**, because `prepare` stamps it into
-  `pyproject.toml` (lockstep with sdk/app/server). `main` declares the last released version, as
-  the three `package.json` files do, and the release PR merges each new one back. `Release sync`
-  (`release-sync.yml`) fails a PR whose `pyproject.toml` version differs from
-  `packages/sdk/package.json`'s, so the two cannot drift apart on `main` the way they did when
-  #1496 moved sdk/app/server to 0.10.3 while this file still said 0.10.2.
-
-#### Packaging traps the guards exist for
-
-**The publish path did not build a usable package, and that was invisible because it could never
-run.** Two independent reasons, both fixed, both worth knowing because either one alone ships a
-wheel that installs cleanly and cannot be imported:
-
-- The old job did `pip install build && python -m build` on a checkout. Almost none of this package
-  is in git — `packages/python-client/.gitignore` is `malloy_publisher_sdk/*` with
-  `!malloy_publisher_sdk/__init__.py` — so a checkout holds exactly one tracked python file, and that
-  file's line 6 imports `.client`, which is generated from `api-doc.yaml` and never committed.
-  `build` runs `scripts/build-python-sdk.sh` with `BUILD_PACKAGE=true`, which is the one script that
-  knows how to produce this package.
-- **Running the generator is still not enough**, which is the part that is easy to miss. The build
-  backend is hatchling, and hatchling's default file selection *consults `.gitignore`* — so the
-  generated client was excluded from the artifacts even when sitting on disk. Measured: a build with
-  `client.py` and `api/` present shipped a wheel containing exactly `__init__.py`. `pyproject.toml`
-  sets `[tool.hatch.build] ignore-vcs = true`, plus explicit `packages`/`include` for the wheel and
-  sdist targets so that switching the ignore rules off does not start packing `.venv/`, `dist/` and
-  `__pycache__`. An explicit `packages` **alone does not fix it** — the ignore rules still apply.
-
-Two more, found by the smoke test the first time it ran:
-
-- **`requires-python` said `>=3.9`, and the wheel cannot be imported on 3.9.** The generated client
-  annotates with PEP 604 unions (`Error | list[Package] | None`) and no
-  `from __future__ import annotations`, so 3.9 raises `TypeError: unsupported operand type(s) for |`
-  on the first import, after pip installed it without complaint. Every job here ran 3.11. The floor
-  is now 3.10, and the smoke test runs the floor plus every `Programming Language :: Python :: 3.N`
-  classifier, read from `pyproject.toml`, so the metadata cannot claim a version nothing ran.
-- **`__version__` was never set.** `build-python-sdk.sh` step 5 was a sed replacing an existing
-  `__version__ = "..."` line in the generated `__init__.py`, which has none; sed matched nothing and
-  exited 0. It now appends the line and asserts it, and the smoke script checks `__version__` against
-  the installed distribution's metadata.
-
-**More tools read `.gitignore` here, and it is worth knowing before you trust a green build.**
-`build-python-sdk.sh` runs `black`, `ruff` and `pyright` over the generated client at steps 6 and 7,
-and **two of the three silently skip all of it** inside a git checkout, because both honour
-`.gitignore`:
-
-- **ruff.** Measured on one tree with one ruff (0.16.4): **929 errors outside a git repo, `All checks
-  passed!` inside one**, nothing else changed.
-- **black.** Its own line in any green run of this workflow is `7 files left unchanged` — which is
-  exactly the tracked set (`malloy_publisher_sdk/__init__.py` plus the six files under `tests/`) and
-  **zero** files from the generated tree.
-- **pyright is the exception**: it resolves into the generated code regardless, and reports against
-  its types (`list[Connection] | Unset`) from `tests/`. Note step 7 ends in `|| true`, so those
-  findings never fail the build either — a green run here has four outstanding pyright errors.
-
-CI is a checkout, so it reports the clean numbers and the release is not at risk; but "lint and format
-ran" does not mean the generated client was linted or formatted. Left as-is deliberately — turning it
-on surfaces ~929 findings and is a separate decision — and recorded because it is the same trap as the
-packaging bug above, one directory that is deliberately gitignored while being the package's entire
-content, and now three independent tools quietly deciding what that means.
-
-The guards against all of this run in `python-sdk.yml`'s `build` and `build.yml`'s smoke test, before
-the artifact can reach
-`publish-python-sdk`: `Verify the wheel is importable before uploading it` installs the built wheel
-into a throwaway venv and imports it from `/tmp`, and checks the sdist contains the generated client;
-the smoke test, on every PR, uses it against a real server on every declared Python. They assert the
-artifact rather than the intent, because "we remembered to regenerate" is what failed, and they run
-before the upload — a check afterwards would only name the version you had burned.
-
-**Running `build-python-sdk.sh` locally edits tracked files.** It regenerates
-`malloy_publisher_sdk/__init__.py` without its license header, black and ruff may reformat `tests/`
-with a different local version, and step 9's `rm -rf build/` deletes the tracked
-`build/lib/mcp_client.py`. Restore those before committing (`git checkout --` on the three paths).
+The removed jobs, with their guards, are in the history of `release.yml` and of
+`.github/workflows/python-sdk.yml` (`git log -- .github/workflows/python-sdk.yml`).
 
 ### One package that looks publishable and is not
 
@@ -585,7 +603,7 @@ scope (`@malloydata`, not `@malloy-publisher`) and no workflow publishes it, so 
 while nothing ships it. Decide separately whether to mark it `private: true` or bring it into
 `publish-packages` — and if the latter, it needs the whole *Adding a published package* dance below,
 plus a version-decision path like skills and create-malloy-package's, or a place in `prepare`'s
-lockstep stamp like `malloy-publisher-sdk`'s.
+lockstep stamp beside sdk/app/server.
 
 For completeness: `api-doc.yaml`'s `info.version: v0` is the REST API version behind the `/api/v0`
 path prefix, not a package version. It is unrelated to any of this and should not be bumped with a
@@ -598,11 +616,6 @@ exists. Then add the `repository` field, register the trusted publisher naming t
 workflow file, and wire it into `release.yml`'s `publish-packages` so a release picks it up.
 
 ### Recovering a failed release
-
-**A red `build-python-sdk` or `publish-python-sdk` is retried with "Re-run failed jobs"**, never by
-re-running the release. The publish job asks PyPI first and skips a version that is already there,
-so a retry after an upload that did land is a no-op; a retry of the publish job alone reuses the
-verified artifact (`python-client-dist`, kept 7 days).
 
 The two independently-versioned npm packages are safe to retry **through `publish-packages`**: that job
 asks the registry first and skips a version that is already published, so re-running it republishes
@@ -685,8 +698,8 @@ exact line it wrote. Without that it exits 0 announcing `SERVER_VERSION <unreada
 the new server still honours `--host`", and deriving the pin removes that prompt. Nothing else covers
 the thing that matters here, which is the **published** server this scaffolder is about to pin. The
 scaffolder's e2e suite does boot a server with `--host 127.0.0.1` and assert no LAN address answers
-(`packages/create-malloy-package/tests/e2e/scaffold.e2e.spec.ts:350-395`), run on every PR through
-`cross-platform-tests.yml` — but against the **repo's own build**, which is the one place the flag
+(`packages/create-malloy-package/tests/e2e/scaffold.e2e.spec.ts:350-395`), run on every PR in
+`cross-platform-tests.yml`'s Linux client job — but against the **repo's own build**, which is the one place the flag
 could not regress unnoticed anyway. The server itself has no unit test asserting the flag is parsed
 (`server.ts:112`), only the usage text at `:157`. The flag is not arbitrary — the server accepts an unknown flag without a word and falls back
 to binding `0.0.0.0`, so a release that renames or drops it does not fail a generated workspace, it
@@ -735,9 +748,9 @@ repair beyond moving forward.
 
 There are **three** npm trusted-publisher entries, not two: `release.yml` (for sdk, app, and server),
 `skills-npm.yml`, and `create-malloy-package-npm.yml`. Any hardening has to cover all three.
-PyPI's one entry (`release.yml`, for `malloy-publisher-sdk`) is bound to the `pypi` environment,
-and that environment's deployment branches are restricted to `main` (created 2026-10-29, ahead of
-the PyPI pending publisher; see *Publishing to PyPI* for why that order matters).
+PyPI's one entry (`release.yml`, for `malloy-publisher-sdk`) is unused while nothing publishes
+there, and stays bound to the `pypi` environment, whose deployment branches are restricted to `main`
+(see *PyPI: currently not published*).
 
 The `github.ref == 'refs/heads/main'` guards on the two child publish jobs are a guardrail, not a
 boundary: npm matches repo plus filename and never a ref, so anyone who can dispatch can push a

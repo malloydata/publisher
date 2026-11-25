@@ -1,0 +1,226 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "month@<pkg>/m.malloy": [],
+          "order@<pkg>/m.malloy": []
+        },
+        "order": [
+          "month@<pkg>/m.malloy",
+          "order@<pkg>/m.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "month@<pkg>/m.malloy": "materialize",
+      "order@<pkg>/m.malloy": "materialize"
+    },
+    "materializePlans": {
+      "month@<pkg>/m.malloy": {
+        "buildSourceName": "month__mat",
+        "columns": [
+          {
+            "column": "month",
+            "computed": false,
+            "dimension": "month"
+          },
+          {
+            "column": "group",
+            "computed": false,
+            "dimension": "group"
+          },
+          {
+            "column": "total",
+            "computed": false,
+            "dimension": "total"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "month",
+          "storage": "lake"
+        },
+        "sourceID": "month@<pkg>/m.malloy",
+        "sourceName": "month",
+        "storedColumns": [
+          {
+            "name": "month",
+            "type": "BIGINT"
+          },
+          {
+            "name": "group",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "total",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      },
+      "order@<pkg>/m.malloy": {
+        "buildSourceName": "order__mat",
+        "columns": [
+          {
+            "column": "order",
+            "computed": false,
+            "dimension": "order"
+          },
+          {
+            "column": "select",
+            "computed": false,
+            "dimension": "select"
+          },
+          {
+            "column": "count",
+            "computed": false,
+            "dimension": "count"
+          },
+          {
+            "column": "amt",
+            "computed": false,
+            "dimension": "amt"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "order",
+          "storage": "lake"
+        },
+        "sourceID": "order@<pkg>/m.malloy",
+        "sourceName": "order",
+        "storedColumns": [
+          {
+            "name": "order",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "select",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "count",
+            "type": "BIGINT"
+          },
+          {
+            "name": "amt",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "month@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "order@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "month@<pkg>/m.malloy": "m.malloy",
+      "order@<pkg>/m.malloy": "m.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "month@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "order@<pkg>/m.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "month@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "month",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "month",
+            "type": "number"
+          },
+          {
+            "name": "group",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "month",
+        "origin": "materialize",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "506790f386a062d41ddcf1ebc52dcb1313c9a71c07ed5b97cbdc1a72c7067220",
+        "sourceID": "month@<pkg>/m.malloy",
+        "sql": "sha256:ee4f1d30ea772a7f"
+      },
+      "order@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "order",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order",
+            "type": "number"
+          },
+          {
+            "name": "select",
+            "type": "string"
+          },
+          {
+            "name": "count",
+            "type": "number"
+          },
+          {
+            "name": "amt",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "order",
+        "origin": "materialize",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "f4c625d477b98206d172cedd4c593f384037d09cbe230405a47b44a43fa84627",
+        "sourceID": "order@<pkg>/m.malloy",
+        "sql": "sha256:d84ffbefd6d50b38"
+      }
+    }
+  }
+}

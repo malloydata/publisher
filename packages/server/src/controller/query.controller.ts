@@ -79,6 +79,7 @@ export class QueryController {
                rowLimitSource,
                queryCorrelationId,
                servedFrom,
+               path,
                executionTimeMs,
                queryCostBytes,
                renderLogs,
@@ -97,10 +98,12 @@ export class QueryController {
                queryRowLimit: rowLimit,
                queryRowLimitSource: rowLimitSource,
                queryCorrelationId,
-               // Reports only the `storage=` tier: a colocated `#@ persist` hit and
+               // Reports only the `storage=` tier: a database `#@ persist` hit and
                // a declined transform both read `null`, like a live query. See the
                // field's description in `api-doc.yaml`.
                servedFrom,
+               // What answered and why, every tier included (D1).
+               ...(path ? { path } : {}),
                executionTimeMs,
                queryCostBytes,
             }) as ApiQuery,

@@ -43,12 +43,18 @@ permissions:
   security-events: write
   actions: read
 
-# Keyed on the event as well as the ref: a push to main shares the scheduled run's
-# ref, and without the event in the key it would cancel the weekly run, which is the
-# only run that executes `published-image`.
+# One run per pull request: a new push to a PR cancels that PR's run still in
+# flight, since only its newest commit can merge. Every other event (a push to
+# main, workflow_run, schedule, workflow_dispatch) gets a group of its own
+# keyed on the run id, so it is never cancelled and never replaced while it
+# waits: every merged commit is tested. (Keying those on github.ref with
+# cancel-in-progress off would still drop runs, because a group holds only one
+# pending run and a newer one cancels it.) The weekly scheduled run, the only
+# run that executes `published-image`, has its own group like any non-PR run,
+# so a push to main cannot cancel it.
 concurrency:
-  group: image-scan-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   image:
@@ -63,7 +69,7 @@ jobs:
         include:
           - platform: linux/amd64
             arch: amd64
-            runner: ubuntu-latest
+            runner: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
           - platform: linux/arm64
             arch: arm64
             runner: ubuntu-24.04-arm
@@ -81,7 +87,11 @@ jobs:
       # the scanned image bakes the same DuckDB CLI and extensions as a release.
       - name: Resolve DuckDB version from Malloy
         id: duckdb
-        run: echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
+        # And the runner's DuckDB extension mirror, which the Dockerfile's bake reads:
+        # set on Credible's runners, empty elsewhere.
+        run: |
+          echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
+          echo "extension_mirror=${CI_DUCKDB_EXTENSION_MIRROR:-}" >> "$GITHUB_OUTPUT"
         shell: bash
 
       # The UTC date, passed as APT_REFRESH so the Dockerfile's `apt-get upgrade`
@@ -102,6 +112,7 @@ jobs:
           build-args: |
             DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
             APT_REFRESH=${{ steps.day.outputs.value }}
+            CI_DUCKDB_EXTENSION_MIRROR=${{ steps.duckdb.outputs.extension_mirror }}
           tags: malloy-publisher:scan
           # Read-only: build.yml's docker_smoke_test builds the same amd64 image with the
           # same arguments and writes this cache. Writing it again here would store a

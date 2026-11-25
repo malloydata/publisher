@@ -8,27 +8,26 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# strictUpstreams: refuse the recompute-from-raw fallback
+# A downstream whose upstream is not built is refused, whatever `strictUpstreams` says
 
-A chained build whose parent isn't available to reuse has two documented
-outcomes, chosen by the orchestrated build's `strictUpstreams` flag: **without**
-strict, the parent is recomputed from raw and the child builds; **with**
-strict, that live recompute is forbidden, so the build refuses loudly rather than
-silently recomputing an upstream the orchestrator meant to pin.
+A chained build reads its upstream's stored table or is not built at all: no
+run recomputes an upstream from raw. `strictUpstreams` used to choose between
+those two outcomes; it is now accepted and ignored, so the same inputs give the
+same refusal with the flag on and off.
 
-This scenario is the discriminating pair — the SAME build inputs, the flag flips
-the outcome. `rollup` depends on `daily`; we build `rollup` ALONE (no
-`reference:` to `daily`, and `daily` was never materialized), so the only way to
-satisfy the upstream is a recompute from raw:
+`rollup` depends on `daily`; we build `rollup` ALONE (no `reference:` to
+`daily`, and `daily` was never materialized), so the only way to satisfy the
+upstream would be a recompute from raw:
 
-- **strict** → refused (the upstream can't be resolved and strict forbids the
-  recompute fallback).
-- **non-strict** → succeeds (daily is recomputed from raw, rollup materializes),
-  and the result serves routed.
+- **strict** → refused (the upstream can't be resolved).
+- **non-strict** → refused the same way: the flag no longer licenses the
+  recompute.
+
+Building `daily` first and then `rollup` over it is the way to a stored
+`rollup`, and that serves routed.
 
 Contrast with `cross-worker-reference-isolation`, which refuses a build whose
-*reference* can't resolve at all (fails regardless of strict); here the same
-inputs succeed once strict is off.
+*reference* can't resolve at all.
 
 ## Publisher
 
@@ -61,11 +60,20 @@ source: rollup is daily -> {
 }
 ```
 
-## Build refused (orchestrated, strict, pkg=su)
+## Build refused (orchestrated, pkg=su)
 
 Build `rollup` alone under `strictUpstreams`, with `daily` neither built nor
-referenced. Strict forbids recomputing the upstream live, so the build refuses
+referenced. The upstream has no table to read, so the build refuses
 (runtime-manifest-strict-miss) instead of silently recomputing.
+
+- rollup -> su_rollup__g1 @ lake
+
+cites: manifest
+
+## Build refused (orchestrated, pkg=su)
+
+The SAME build without strict: refused the same way, since no build
+recomputes an upstream from raw.
 
 - rollup -> su_rollup__g1 @ lake
 
@@ -73,19 +81,20 @@ cites: manifest
 
 ## Build (orchestrated, pkg=su)
 
-The SAME build without strict: `daily` is recomputed from raw and
-`rollup` materializes into the lake at the caller-assigned name.
+`daily` and `rollup` together: `rollup` is built over the `daily` table this
+run writes, and says so.
 
-- rollup -> su_rollup__g1 @ lake
+- daily -> su_daily__g1 @ lake
+- rollup -> su_rollup__g1 @ lake (reused)
 
 ## Bind su
 
-Distribute the (non-strict) build's manifest so the serve routes `rollup` to its
+Distribute the build's manifest so the serve routes `rollup` to its
 materialized table.
 
 ## Query rollup
 
-The non-strict recompute produced the right rollup, served from storage.
+The stacked build produced the right rollup, served from storage.
 
 ```malloy
 run: rollup -> { select: grand_total }

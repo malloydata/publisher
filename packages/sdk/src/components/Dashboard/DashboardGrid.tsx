@@ -185,7 +185,7 @@ export const readingOrder = (tile: GridTile) =>
  * The composite dashboard's grid: the column track, and each tile's place on
  * it.
  *
- * Shared by the READER ({@link Dashboard}) and the BUILDER, which is the whole
+ * Shared by the READER (`DashboardView`) and the BUILDER, which is the whole
  * point of it being a component rather than a rule each surface applies. An
  * author arranging a dashboard is arranging the thing a reader will open, so
  * the two cannot be allowed to lay tiles out even slightly differently; a

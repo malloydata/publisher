@@ -11,6 +11,8 @@ import {
    isTerminalStatus,
    parseMetadata,
    refusedSourcesOf,
+   runColor,
+   runLabel,
    sourcesSummary,
    statusColor,
    statusLabel,
@@ -103,6 +105,27 @@ describe("statusColor", () => {
    });
 });
 
+describe("runLabel and runColor", () => {
+   const run = (metadata: Record<string, unknown>) =>
+      ({
+         status: MaterializationStatus.ManifestFileReady,
+         metadata,
+      }) as unknown as Materialization;
+
+   it("reads a run whose manifest did not load as built, not served, a warning", () => {
+      const failed = run({ autoLoad: "failed", autoLoadError: "boom" });
+      expect(runLabel(failed)).toBe("Built, not served");
+      expect(runColor(failed)).toBe("warning");
+   });
+
+   it("reads a served run, or one with no load recorded, as done", () => {
+      for (const m of [run({ autoLoad: "loaded" }), run({})]) {
+         expect(runLabel(m)).toBe("Done");
+         expect(runColor(m)).toBe("success");
+      }
+   });
+});
+
 describe("parseMetadata and triggerLabel", () => {
    const run = (metadata: unknown) =>
       ({ metadata }) as unknown as Materialization;
@@ -123,9 +146,14 @@ describe("parseMetadata and triggerLabel", () => {
    });
 
    it("calls a run manual unless the scheduler says otherwise", () => {
+      expect(triggerLabel({ trigger: "scheduler" })).toBe("Scheduled");
+      expect(triggerLabel({ trigger: "on_demand" })).toBe("Manual");
+      expect(triggerLabel({})).toBe("Manual");
+   });
+
+   it("reads an older server's upper-case trigger the same", () => {
       expect(triggerLabel({ trigger: "SCHEDULER" })).toBe("Scheduled");
       expect(triggerLabel({ trigger: "ON_DEMAND" })).toBe("Manual");
-      expect(triggerLabel({})).toBe("Manual");
    });
 });
 

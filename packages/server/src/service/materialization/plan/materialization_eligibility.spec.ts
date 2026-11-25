@@ -14,18 +14,23 @@ import {
    InMemoryURLReader,
    Runtime,
 } from "@malloydata/malloy";
-import { beforeAll, describe, expect, it } from "bun:test";
+import { beforeAll, describe, expect, it, spyOn } from "bun:test";
+import * as gatePolicy from "../domain/gate_policy";
 import { MaterializationEligibilityError } from "../../../errors";
 import { deriveAnnotationFields, plannedSources } from "./build_plan";
 import {
-   assertColocatedPersistNotAuthorizeGated,
+   assertDatabasePersistNotAuthorizeGated,
    assertMaterializationEligible,
    assertTierEligible,
+   gateEnforcedAtRead,
    READ_ONLY_DIALECTS,
 } from "./materialization_eligibility";
+import { collectSourceEligibility } from "./eligibility_collect";
+import { installSettings } from "../../../test_helpers/settings_env";
+import type { PersistSourceGateOutcome } from "../domain/table_plans";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import {
-   classifyDynamicTerms,
+   admitGivenPositions,
    readTimeDynamicTerms,
 } from "./persist_dynamic_terms";
 
@@ -149,26 +154,14 @@ source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
 #@ persist name="mz_given_outside" storage=lake
 source: mz_given_outside is base -> { select: * } extend { where: tenant = $tenant }`);
       expect(sources.mz_given_outside).toBeDefined();
-      const plan = assertMaterializationEligible(
+      assertMaterializationEligible(
          sources.mz_given_outside,
          deriveAnnotationFields(sources.mz_given_outside),
       );
-      expect(plan.terms).toEqual([
+      const admitted = admitGivenPositions(sources.mz_given_outside);
+      expect(admitted.ok && admitted.terms).toEqual([
          { code: "tenant = $tenant", givens: ["tenant"], columns: ["tenant"] },
       ]);
-      expect(plan.partitionColumns).toEqual([]);
-   });
-
-   it("resolves partition= into the plan the build lays the table out with", async () => {
-      const sources = await persistSources(`##! experimental.persistence
-source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#@ persist name="mz_part" storage=lake partition="region"
-source: mz_part is base -> { select: * }`);
-      const plan = assertMaterializationEligible(
-         sources.mz_part,
-         deriveAnnotationFields(sources.mz_part),
-      );
-      expect(plan.partitionColumns).toEqual(["region"]);
    });
 
    it("refuses a source protected by its own #(authorize) gate", async () => {
@@ -380,7 +373,7 @@ source: orders__preagg__category is orders -> {
 }`);
       expect(sources.orders__preagg__category).toBeDefined();
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(
+         assertDatabasePersistNotAuthorizeGated(
             sources.orders__preagg__category,
          ),
       ).toThrow(/authorize/i);
@@ -411,7 +404,7 @@ source: orders__preagg__dim_category is orders -> {
 }`);
       expect(sources.orders__preagg__dim_category).toBeDefined();
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(
+         assertDatabasePersistNotAuthorizeGated(
             sources.orders__preagg__dim_category,
          ),
       ).toThrow(/authorize/i);
@@ -442,10 +435,10 @@ source: orders__preagg__category is orders -> {
 }`);
       let message = "";
       try {
-         assertColocatedPersistNotAuthorizeGated(
+         assertDatabasePersistNotAuthorizeGated(
             sources.orders__preagg__category,
             sources.orders__preagg__category.name,
-            "preaggregate",
+            "rollup",
          );
       } catch (err) {
          message = (err as Error).message;
@@ -457,7 +450,7 @@ source: orders__preagg__category is orders -> {
    });
 
    it("scopes a merge off the source's own terms, not off the classification", async () => {
-      // The two gates refuse different sets: the colocated one deliberately
+      // The two gates refuse different sets: the database one deliberately
       // admits the positional cases (a given in a declared `dimension:`, a
       // join's `on:`, a given-scoped join) that the storage gate refuses. A
       // merge scope taken from the classification is therefore EMPTY for a
@@ -474,7 +467,7 @@ source: mixed is raw -> { select: * } extend {
   where: org_id = $ORG_ID
   dimension: flagged is org_id = $ORG_ID
 }`);
-      expect(classifyDynamicTerms(sources.mixed).ok).toBe(false);
+      expect(admitGivenPositions(sources.mixed).ok).toBe(false);
       // Still names the column the source is actually scoped by.
       expect(
          readTimeDynamicTerms(sources.mixed).flatMap((t) => t.columns),
@@ -513,11 +506,11 @@ source: mixed is raw -> { select: * } extend {
       } catch (err) {
          storageReason = (err as MaterializationEligibilityError).reason ?? "";
       }
-      // Colocated gate, which does not refuse the positional cases and so is the
+      // Database gate, which does not refuse the positional cases and so is the
       // one that would otherwise let this through.
-      let colocatedReason = "";
+      let databaseReason = "";
       try {
-         assertColocatedPersistNotAuthorizeGated(
+         assertDatabasePersistNotAuthorizeGated(
             sources.mixed,
             "mixed",
             "persist",
@@ -525,20 +518,17 @@ source: mixed is raw -> { select: * } extend {
             fields,
          );
       } catch (err) {
-         colocatedReason =
-            (err as MaterializationEligibilityError).reason ?? "";
+         databaseReason = (err as MaterializationEligibilityError).reason ?? "";
       }
-      expect([storageReason, colocatedReason]).toEqual([
+      expect([storageReason, databaseReason]).toEqual([
          "merge_key_scope_unresolved",
          "merge_key_scope_unresolved",
       ]);
    });
 
-   it("refuses a rollup over a caller-scoped source on its own named grounds", async () => {
-      // The outcome does not change — such a rollup already refused, as a
-      // `given_in_persisted_query`. Two things do. The reason names the rollup
-      // case, so it survives a change to the one it used to ride on; and the
-      // advice is followable. The old message told the author to move the given
+   it("refuses a rollup over a caller-scoped source with followable advice", async () => {
+      // Under the one reason every mechanism gives a build that reads a given,
+      // with a rollup's own advice. The old message told the author to move the given
       // into the source's extend block, where for a rollup it ALREADY is: it is
       // the rollup READING the source that applies that `where:` and bakes the
       // value.
@@ -555,15 +545,17 @@ source: scoped__preagg__category is scoped -> {
 }`);
       let err: MaterializationEligibilityError | undefined;
       try {
-         assertColocatedPersistNotAuthorizeGated(
+         assertDatabasePersistNotAuthorizeGated(
             sources.scoped__preagg__category,
             sources.scoped__preagg__category.name,
-            "preaggregate",
+            "rollup",
          );
       } catch (caught) {
          err = caught as MaterializationEligibilityError;
       }
-      expect(err?.reason).toBe("preaggregate_over_dynamic_source");
+      // The one reason every mechanism gives a build that reads a given;
+      // `preaggregate_over_dynamic_source` is retained, no longer produced.
+      expect(err?.reason).toBe("reads_given");
       // Not the advice that leads nowhere.
       expect(err?.message).not.toContain("extend block");
       expect(err?.message).toContain("no read-time re-application");
@@ -613,11 +605,12 @@ source: mz_joined_unread is joiner extend {
       // Unread: the join is pruned, so nothing given-derived reaches the
       // artifact and there is nothing to strip or re-apply.
       expect(await sources.mz_joined_unread.getSQL()).not.toContain("JOIN");
-      const plan = assertMaterializationEligible(
+      assertMaterializationEligible(
          sources.mz_joined_unread,
          deriveAnnotationFields(sources.mz_joined_unread),
       );
-      expect(plan.terms).toEqual([]);
+      const admitted = admitGivenPositions(sources.mz_joined_unread);
+      expect(admitted.ok && admitted.terms).toEqual([]);
    });
 });
 
@@ -641,17 +634,430 @@ source: by_category is orders -> {
       throw new Error("expected a refusal");
    };
 
-   it("runs the colocated gate for a colocated source, naming the annotation the plan says the author wrote", async () => {
+   it("runs the database gate for a database source, naming the annotation the plan says the author wrote", async () => {
       const source = (await persistSources(gatedModel)).by_category;
       const asPersist = refusal(() => assertTierEligible(source, false, {}));
       expect(asPersist).toBeInstanceOf(MaterializationEligibilityError);
       expect(asPersist.message).toContain("#@ persist");
       const asRollup = refusal(() =>
          assertTierEligible(source, false, {
-            preaggregatePlans: { [source.sourceID]: {} },
+            tables: {
+               [source.sourceID]: { kind: "rollup", rollup: {} as never },
+            },
          }),
       );
       expect(asRollup.message).toContain("#@ preaggregate");
+   });
+
+   describe("a gate enforced at read (R3)", () => {
+      const R3_ON = {
+         PUBLISHER_MATERIALIZE: "true",
+         PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+      };
+      const withEnv = <T>(env: Record<string, string>, run: () => T): T => {
+         const { restore } = installSettings({ env });
+         try {
+            return run();
+         } finally {
+            restore();
+         }
+      };
+      const inputs = (
+         sourceID: string,
+         outcome: PersistSourceGateOutcome = {
+            classification: "row_level",
+            attributed: true,
+         },
+         materialized = true,
+      ) => ({
+         tables: {
+            [sourceID]: materialized
+               ? {
+                    kind: "materialize" as const,
+                    materialize: {} as never,
+                    gate: outcome,
+                 }
+               : { kind: "persist" as const, gate: outcome },
+         },
+      });
+
+      it("admits a #(materialize) source's own row-level gate to the storage tier with the gated-sources switch on or off (G3), and only with v2's switch", async () => {
+         const source = (await persistSources(gatedModel)).by_category;
+         for (const env of [
+            R3_ON,
+            {
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+            },
+         ]) {
+            withEnv(env, () =>
+               assertTierEligible(source, true, inputs(source.sourceID)),
+            );
+         }
+         const envs: Record<string, string>[] = [
+            // A `#(materialize)` plan is v2's: without v2's switch it keeps
+            // no gate, whatever the gated switch says.
+            {
+               PUBLISHER_MATERIALIZE: "false",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+            },
+            {
+               PUBLISHER_MATERIALIZE: "false",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+            },
+         ];
+         for (const env of envs) {
+            const refused = withEnv(env, () =>
+               refusal(() =>
+                  assertTierEligible(source, true, inputs(source.sourceID)),
+               ),
+            );
+            expect(refused.reason).toBe("access_filter");
+         }
+      });
+
+      it("keeps refusing what the served copy cannot enforce: an unproven or joined gate", async () => {
+         const source = (await persistSources(gatedModel)).by_category;
+         const id = source.sourceID;
+         for (const plan of [
+            inputs(id, { classification: "rejected", attributed: true }),
+            // A gate reached only through a join is not the entry point's.
+            inputs(id, { classification: "row_level", attributed: false }),
+            {
+               tables: {
+                  [id]: {
+                     kind: "materialize" as const,
+                     materialize: {} as never,
+                  },
+               },
+            },
+         ]) {
+            expect(withEnv(R3_ON, () => gateEnforcedAtRead(id, plan))).toBe(
+               false,
+            );
+            const refused = withEnv(R3_ON, () =>
+               refusal(() => assertTierEligible(source, true, plan)),
+            );
+            expect(refused.reason).toBe("access_filter");
+         }
+      });
+
+      it("admits a database #(materialize) source's own row-level gate with the gated-sources switch off (G3), and nothing more", async () => {
+         const source = (await persistSources(gatedModel)).by_category;
+         const id = source.sourceID;
+         const G3_ONLY = {
+            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+         };
+         expect(
+            withEnv(G3_ONLY, () => gateEnforcedAtRead(id, inputs(id))),
+         ).toBe(true);
+         withEnv(G3_ONLY, () => assertTierEligible(source, false, inputs(id)));
+         // Asked as storage, by the caller or by the plan, it is admitted on
+         // the same conditions: G3 keeps the gate on both tiers.
+         expect(
+            withEnv(G3_ONLY, () => gateEnforcedAtRead(id, inputs(id), true)),
+         ).toBe(true);
+         expect(
+            withEnv(G3_ONLY, () =>
+               gateEnforcedAtRead(id, {
+                  tables: {
+                     [id]: {
+                        ...inputs(id).tables[id],
+                        materialize: {
+                           persist: { storage: "lake" },
+                        } as never,
+                     },
+                  },
+               }),
+            ),
+         ).toBe(true);
+         // G3's other conditions hold as for v1: an inherited, unproven or
+         // joined gate, a #@ persist source asked as database (the database
+         // tier check's), and v2's switch off.
+         for (const plan of [
+            inputs(id, {
+               classification: "row_level",
+               attributed: true,
+               inheritedRowFilter: true,
+            }),
+            inputs(id, { classification: "rejected", attributed: true }),
+            inputs(id, { classification: "row_level", attributed: false }),
+            inputs(id, undefined, false),
+         ]) {
+            expect(withEnv(G3_ONLY, () => gateEnforcedAtRead(id, plan))).toBe(
+               false,
+            );
+         }
+         expect(
+            withEnv({ ...G3_ONLY, PUBLISHER_MATERIALIZE: "false" }, () =>
+               gateEnforcedAtRead(id, inputs(id)),
+            ),
+         ).toBe(false);
+      });
+
+      it("refuses a database #(materialize) source's own row-level gate with v2's switch off, naming the served copy and the #@ persist alternative", async () => {
+         const source = (await persistSources(gatedModel)).by_category;
+         const id = source.sourceID;
+         for (const gated of ["true", "false"]) {
+            const env = {
+               PUBLISHER_MATERIALIZE: "false",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: gated,
+            };
+            expect(withEnv(env, () => gateEnforcedAtRead(id, inputs(id)))).toBe(
+               false,
+            );
+            const refused = withEnv(env, () =>
+               refusal(() => assertTierEligible(source, false, inputs(id))),
+            );
+            expect(refused).toBeInstanceOf(MaterializationEligibilityError);
+            expect(refused.reason).toBe("access_filter");
+            expect(refused.message).toContain("(database '#(materialize)')");
+            expect(refused.message).toContain("PUBLISHER_MATERIALIZE on");
+            expect(refused.message).toContain("'#@ persist'");
+         }
+      });
+
+      it("builds the same gated source database as a #@ persist, whose own gate the served copy keeps (G3)", async () => {
+         const source = (await persistSources(gatedModel)).by_category;
+         const id = source.sourceID;
+         withEnv(
+            {
+               PUBLISHER_MATERIALIZE: "false",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+            },
+            () =>
+               assertTierEligible(source, false, inputs(id, undefined, false)),
+         );
+      });
+
+      it("admits a v1 #@ persist storage= source's own row-level gate under G3, whatever the switches, and nothing more", async () => {
+         const source = (await persistSources(gatedModel)).by_category;
+         const id = source.sourceID;
+         const v1 = (outcome?: PersistSourceGateOutcome) =>
+            inputs(id, outcome, false);
+         for (const env of [
+            R3_ON,
+            {
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+            },
+            {
+               PUBLISHER_MATERIALIZE: "false",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+            },
+         ]) {
+            expect(withEnv(env, () => gateEnforcedAtRead(id, v1(), true))).toBe(
+               true,
+            );
+            withEnv(env, () => assertTierEligible(source, true, v1()));
+            // Asked as database, it is the database tier check's to decide.
+            expect(withEnv(env, () => gateEnforcedAtRead(id, v1()))).toBe(
+               false,
+            );
+            for (const plan of [
+               v1({ classification: "rejected", attributed: true }),
+               v1({ classification: "row_level", attributed: false }),
+               { tables: {} },
+            ]) {
+               expect(
+                  withEnv(env, () => gateEnforcedAtRead(id, plan, true)),
+               ).toBe(false);
+               const refused = withEnv(env, () =>
+                  refusal(() => assertTierEligible(source, true, plan)),
+               );
+               expect(refused.reason).toBe("access_filter");
+            }
+            const inherited = withEnv(env, () =>
+               refusal(() =>
+                  assertTierEligible(
+                     source,
+                     true,
+                     v1({
+                        classification: "row_level",
+                        attributed: true,
+                        inheritedRowFilter: true,
+                     }),
+                  ),
+               ),
+            );
+            expect(inherited.message).toContain(
+               "reads an #(access_filter) row-level gate from a source it derives from",
+            );
+            // A persisted view's or query's build is not a v1 source: its
+            // leg passes a gate only with the gated-sources switch.
+            const view =
+               "v__by_x__view@file:///elig/m.malloy.persist-view.malloy";
+            expect(
+               withEnv(env, () =>
+                  gateEnforcedAtRead(
+                     view,
+                     inputs(view, undefined, false),
+                     true,
+                  ),
+               ),
+            ).toBe(false);
+         }
+      });
+
+      it("collectSourceEligibility asks as storage: a database-planned gated #(materialize) table is admitted for a storage= bind under G3, and marked kept past its own gate", async () => {
+         // The storage bind (admitStorage / refusedAtBind) reads this record,
+         // and marks a binding kept past its own gate from `gateKept`.
+         const source = (await persistSources(gatedModel)).by_category;
+         const id = source.sourceID;
+         const G3_ONLY = {
+            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+         };
+         const plan = {
+            connectionDigests: {},
+            tables: { [id]: { ...inputs(id).tables[id], source } },
+         } as unknown as Parameters<typeof collectSourceEligibility>[0];
+         // Database, the plan admits it (the precondition for the guard).
+         expect(withEnv(G3_ONLY, () => gateEnforcedAtRead(id, plan))).toBe(
+            true,
+         );
+         const { eligible, refused, gateKept } = withEnv(G3_ONLY, () =>
+            collectSourceEligibility(plan),
+         );
+         expect(eligible).toEqual([id]);
+         expect(gateKept).toEqual([id]);
+         expect(refused).toEqual({});
+         // Not admitted past its gate (here, a gate not its own): refused,
+         // and never marked kept.
+         const joined = withEnv(G3_ONLY, () =>
+            collectSourceEligibility({
+               ...plan,
+               tables: {
+                  [id]: {
+                     ...inputs(id, {
+                        classification: "row_level",
+                        attributed: false,
+                     }).tables[id],
+                     source,
+                  },
+               },
+            } as unknown as Parameters<typeof collectSourceEligibility>[0]),
+         );
+         expect(joined.eligible).toEqual([]);
+         expect(joined.gateKept).toEqual([]);
+         expect(joined.refused[id]).toMatch(/authorize|access_filter/i);
+      });
+
+      it("collectSourceEligibility never marks an ungated source kept past a gate, so its table keeps a gated answer off G3", async () => {
+         const source = (
+            await persistSources(`##! experimental { persistence }
+source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category")
+
+#@ persist storage="lake"
+source: by_category is orders -> {
+  group_by: category
+  aggregate: total is amount.sum()
+}`)
+         ).by_category;
+         const id = source.sourceID;
+         for (const env of [
+            R3_ON,
+            {
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+            },
+         ]) {
+            // An ungated source classifies as row-level and attributed (no
+            // gate to reject): only the gate walk tells it from a gated one.
+            for (const materialized of [true, false]) {
+               const { eligible, gateKept } = withEnv(env, () =>
+                  collectSourceEligibility({
+                     connectionDigests: {},
+                     tables: {
+                        [id]: {
+                           ...inputs(id, undefined, materialized).tables[id],
+                           source,
+                        },
+                     },
+                  } as unknown as Parameters<
+                     typeof collectSourceEligibility
+                  >[0]),
+               );
+               expect(eligible).toEqual([id]);
+               expect(gateKept).toEqual([]);
+            }
+         }
+      });
+
+      it("never admits a row filter the source inherits: the served copy cannot graft it", async () => {
+         const source = (await persistSources(gatedModel)).by_category;
+         const id = source.sourceID;
+         const plan = inputs(id, {
+            classification: "row_level",
+            attributed: true,
+            inheritedRowFilter: true,
+         });
+         // Asked by the build, the serve bind and the host-instructed build.
+         expect(withEnv(R3_ON, () => gateEnforcedAtRead(id, plan))).toBe(false);
+         const refused = withEnv(R3_ON, () =>
+            refusal(() => assertTierEligible(source, true, plan)),
+         );
+         expect(refused.reason).toBe("access_filter");
+         expect(refused.message).toContain(
+            "reads an #(access_filter) row-level gate from a source it derives from",
+         );
+      });
+
+      it("refuses a database persisted view's build over a gated source with the gated-sources switch off, as storage= does, and builds it with the switch on", async () => {
+         const author = (await persistSources(gatedModel)).by_category;
+         // The same compiled source, as a persisted view's companion build.
+         const viewID =
+            "by_category__v__view@file:///elig/m.malloy.persist-view.malloy";
+         const view = new Proxy(author, {
+            get: (target, key) =>
+               key === "sourceID" ? viewID : Reflect.get(target, key, target),
+         });
+         const plan = inputs(view.sourceID, undefined, false);
+         const off = withEnv(
+            {
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+            },
+            () => refusal(() => assertTierEligible(view, false, plan)),
+         );
+         expect(off.reason).toBe("access_filter");
+         expect(off.message).toContain("PUBLISHER_MATERIALIZE_GATED_SOURCES");
+         withEnv(R3_ON, () => assertTierEligible(view, false, plan));
+         // A v1 source of the same shape is the database tier check's, as
+         // before: admitted with the switch off.
+         withEnv(
+            {
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+            },
+            () =>
+               assertTierEligible(
+                  author,
+                  false,
+                  inputs(author.sourceID, undefined, false),
+               ),
+         );
+      });
+
+      it("lifts only the gate refusal: every other storage check still runs", async () => {
+         const source = (
+            await persistSources(`##! experimental { persistence givens }
+given: GROUPS :: number[]
+given: REGION :: string
+#(access_filter) org_id in $GROUPS
+source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id")
+
+#@ persist storage="lake"
+source: mine is orders -> { select: * } extend { dimension: r is $REGION }`)
+         ).mine;
+         const refused = withEnv(R3_ON, () =>
+            refusal(() =>
+               assertTierEligible(source, true, inputs(source.sourceID)),
+            ),
+         );
+         expect(refused.reason).not.toBe("authorize");
+      });
    });
 
    it("runs the storage gate for a storage source", async () => {
@@ -666,36 +1072,36 @@ source: by_category is orders -> {
    });
 });
 
-describe("assertColocatedPersistNotAuthorizeGated", () => {
-   it("refuses a colocated persist source protected by its own #(authorize) gate", async () => {
+describe("assertDatabasePersistNotAuthorizeGated", () => {
+   it("refuses a database persist source protected by its own #(authorize) gate", async () => {
       const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
 given: role :: string
 source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
 #(authorize) $role = 'analyst'
-#@ persist name="mz_colocated_authz"
-source: mz_colocated_authz is base -> { aggregate: c is count() }`);
-      expect(sources.mz_colocated_authz).toBeDefined();
+#@ persist name="mz_database_authz"
+source: mz_database_authz is base -> { aggregate: c is count() }`);
+      expect(sources.mz_database_authz).toBeDefined();
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_authz),
+         assertDatabasePersistNotAuthorizeGated(sources.mz_database_authz),
       ).toThrow(MaterializationEligibilityError);
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_authz),
+         assertDatabasePersistNotAuthorizeGated(sources.mz_database_authz),
       ).toThrow(/authorize/i);
    });
 
-   it("accepts an ungated colocated persist source", async () => {
+   it("accepts an ungated database persist source", async () => {
       const sources = await persistSources(`##! experimental.persistence
 source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#@ persist name="mz_colocated_plain"
-source: mz_colocated_plain is base -> { aggregate: c is count() }`);
-      expect(sources.mz_colocated_plain).toBeDefined();
+#@ persist name="mz_database_plain"
+source: mz_database_plain is base -> { aggregate: c is count() }`);
+      expect(sources.mz_database_plain).toBeDefined();
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_plain),
+         assertDatabasePersistNotAuthorizeGated(sources.mz_database_plain),
       ).not.toThrow();
    });
 
-   it("accepts a colocated persist source that references a given but carries no gate, and so does the storage gate", async () => {
+   it("accepts a database persist source that references a given but carries no gate, and so does the storage gate", async () => {
       // The given sits in the source's extend block, so it is absent from the
       // build and applied over the artifact at read with each caller's value.
       // Previously written with the given INSIDE the persisted query, which is
@@ -706,32 +1112,33 @@ source: mz_colocated_plain is base -> { aggregate: c is count() }`);
 ##! experimental.givens
 given: tenant :: string is 'acme'
 source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
-#@ persist name="mz_colocated_given"
-source: mz_colocated_given is base -> { select: * } extend { where: tenant = $tenant }`);
-      expect(sources.mz_colocated_given).toBeDefined();
+#@ persist name="mz_database_given"
+source: mz_database_given is base -> { select: * } extend { where: tenant = $tenant }`);
+      expect(sources.mz_database_given).toBeDefined();
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_given),
+         assertDatabasePersistNotAuthorizeGated(sources.mz_database_given),
       ).not.toThrow();
 
       // The two gates AGREE on this shape, and the agreement is the point. This
       // assertion used to be the contrast — the storage gate refused a given
-      // wherever it sat, and that difference was what "the colocated check is
+      // wherever it sat, and that difference was what "the database check is
       // narrower" meant. The storage gate now asks the same question both do:
       // does the BUILD substitute a value? Here it does not, so both admit it,
       // and the storage side additionally reports the term it will re-apply at
       // read. What still separates the tiers is what they do with that term,
       // not whether they tolerate it.
-      const plan = assertMaterializationEligible(
-         sources.mz_colocated_given,
-         deriveAnnotationFields(sources.mz_colocated_given),
+      assertMaterializationEligible(
+         sources.mz_database_given,
+         deriveAnnotationFields(sources.mz_database_given),
       );
-      expect(plan.terms).toEqual([
+      const admitted = admitGivenPositions(sources.mz_database_given);
+      expect(admitted.ok && admitted.terms).toEqual([
          { code: "tenant = $tenant", givens: ["tenant"], columns: ["tenant"] },
       ]);
    });
 
    describe("row-level relaxation (gateOutcome)", () => {
-      it("admits a gated colocated source given a proven row_level + attributed outcome", async () => {
+      it("admits a gated database source given a proven row_level + attributed outcome", async () => {
          const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
 given: role :: string
@@ -741,7 +1148,7 @@ source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
 source: mz_relaxed is base -> { aggregate: c is count() }`);
          expect(sources.mz_relaxed).toBeDefined();
          expect(() =>
-            assertColocatedPersistNotAuthorizeGated(
+            assertDatabasePersistNotAuthorizeGated(
                sources.mz_relaxed,
                sources.mz_relaxed.name,
                "persist",
@@ -759,7 +1166,7 @@ source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
 #@ persist name="mz_unattributed"
 source: mz_unattributed is base -> { aggregate: c is count() }`);
          expect(() =>
-            assertColocatedPersistNotAuthorizeGated(
+            assertDatabasePersistNotAuthorizeGated(
                sources.mz_unattributed,
                sources.mz_unattributed.name,
                "persist",
@@ -777,7 +1184,7 @@ source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
 #@ persist name="mz_rejected_outcome"
 source: mz_rejected_outcome is base -> { aggregate: c is count() }`);
          expect(() =>
-            assertColocatedPersistNotAuthorizeGated(
+            assertDatabasePersistNotAuthorizeGated(
                sources.mz_rejected_outcome,
                sources.mz_rejected_outcome.name,
                "persist",
@@ -789,7 +1196,7 @@ source: mz_rejected_outcome is base -> { aggregate: c is count() }`);
       it("keeps refusing a pre-aggregation rollup UNCONDITIONALLY, even with a row_level + attributed outcome", async () => {
          // A rollup groups across the gated column by construction, so there is
          // no row left to filter afterward — the relaxation must never reach
-         // `origin === "preaggregate"` no matter what the outcome says.
+         // `origin === "rollup"` no matter what the outcome says.
          const sources =
             await persistSources(`##! experimental { persistence composite_sources givens }
 given: GROUPS :: number[]
@@ -802,10 +1209,10 @@ source: orders__preagg__category is orders -> {
   aggregate: total__partial is amount.sum()
 }`);
          expect(() =>
-            assertColocatedPersistNotAuthorizeGated(
+            assertDatabasePersistNotAuthorizeGated(
                sources.orders__preagg__category,
                sources.orders__preagg__category.name,
-               "preaggregate",
+               "rollup",
                { classification: "row_level", attributed: true },
             ),
          ).toThrow(/authorize/i);
@@ -813,7 +1220,7 @@ source: orders__preagg__category is orders -> {
    });
 });
 
-describe("a given inside the persisted query (colocated)", () => {
+describe("a given inside the persisted query (database)", () => {
    const MODEL = `##! experimental { persistence givens }
 given: ORG_ID :: number is 1
 source: raw is duckdb.sql("SELECT 1 AS org_id, 7 AS user_id")
@@ -833,20 +1240,20 @@ source: clean is raw -> { select: * }`;
       const sources = await persistSources(MODEL);
       expect(sources.inside).toBeDefined();
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.inside),
+         assertDatabasePersistNotAuthorizeGated(sources.inside),
       ).toThrow(MaterializationEligibilityError);
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.inside),
+         assertDatabasePersistNotAuthorizeGated(sources.inside),
       ).toThrow(/persisted query references a given/i);
       // The message has to name the remedy, since the safe shape is one move of
       // placement away from the refused one — and name it as the RULE rather
       // than one spelling of it, because a given applied at read is equally
       // correct written as a dimension, a measure or a join.
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.inside),
+         assertDatabasePersistNotAuthorizeGated(sources.inside),
       ).toThrow(/out of the persisted query/i);
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.inside),
+         assertDatabasePersistNotAuthorizeGated(sources.inside),
       ).toThrow(/dimension, measure or join/i);
    });
 
@@ -857,7 +1264,7 @@ source: clean is raw -> { select: * }`;
       const sources = await persistSources(MODEL);
       expect(sources.outside).toBeDefined();
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.outside),
+         assertDatabasePersistNotAuthorizeGated(sources.outside),
       ).not.toThrow();
    });
 
@@ -890,7 +1297,7 @@ source: via_extend_only is raw extend {
       for (const name of ["via_dimension", "via_measure", "via_extend_only"]) {
          expect(sources[name]).toBeDefined();
          expect(() =>
-            assertColocatedPersistNotAuthorizeGated(sources[name]),
+            assertDatabasePersistNotAuthorizeGated(sources[name]),
          ).not.toThrow();
       }
    });
@@ -918,7 +1325,7 @@ source: given_in_group_by is raw -> {
       for (const name of ["used_in_query", "given_in_group_by"]) {
          expect(sources[name]).toBeDefined();
          expect(() =>
-            assertColocatedPersistNotAuthorizeGated(sources[name]),
+            assertDatabasePersistNotAuthorizeGated(sources[name]),
          ).toThrow(MaterializationEligibilityError);
       }
    });
@@ -960,7 +1367,7 @@ source: unused_measure is offers_measure -> {
       ]) {
          expect(sources[name]).toBeDefined();
          expect(() =>
-            assertColocatedPersistNotAuthorizeGated(sources[name]),
+            assertDatabasePersistNotAuthorizeGated(sources[name]),
          ).not.toThrow();
       }
    });
@@ -1000,7 +1407,7 @@ source: reads_measure is offers_measure -> {
       for (const name of ["reads_join", "reads_dimension", "reads_measure"]) {
          expect(sources[name]).toBeDefined();
          expect(() =>
-            assertColocatedPersistNotAuthorizeGated(sources[name]),
+            assertDatabasePersistNotAuthorizeGated(sources[name]),
          ).toThrow(MaterializationEligibilityError);
       }
    });
@@ -1026,23 +1433,68 @@ source: reads_measure is offers_measure -> {
             },
          },
       } as unknown as PersistSource;
-      expect(() => assertColocatedPersistNotAuthorizeGated(noMarker)).toThrow(
+      expect(() => assertDatabasePersistNotAuthorizeGated(noMarker)).toThrow(
          MaterializationEligibilityError,
       );
 
-      // And the same shape with the given only where it is applied at read stays
-      // admitted, so the fallback is not a blanket refusal.
-      const readTimeOnly = {
-         name: "read_time_only",
-         _sourceDef: {
-            query: { pipeline: [{}] },
-            filterList: [{ node: "filterCondition", e: { node: "given" } }],
-            fields: [{ name: "d", e: { node: "given" } }],
+      // And the same shape with the given only where it is applied at read
+      // (a term the source's own statement writes) stays admitted, so the
+      // fallback is not a blanket refusal.
+      const url = "file:///m.malloy";
+      const at = (line: number) => ({
+         url,
+         range: {
+            start: { line, character: 0 },
+            end: { line, character: 5 },
          },
-      } as unknown as PersistSource;
+      });
+      const readTimeOnly = (located: boolean) =>
+         ({
+            name: "read_time_only",
+            _sourceDef: {
+               ...(located
+                  ? {
+                       location: {
+                          url,
+                          range: {
+                             start: { line: 0, character: 0 },
+                             end: { line: 5, character: 0 },
+                          },
+                       },
+                    }
+                  : {}),
+               query: { pipeline: [{}] },
+               filterList: [
+                  {
+                     node: "filterCondition",
+                     e: { node: "given" },
+                     ...(located
+                        ? {
+                             refSummary: {
+                                givenUsage: [{ id: "G", at: at(2) }],
+                             },
+                          }
+                        : {}),
+                  },
+               ],
+               fields: [{ name: "d", e: { node: "given" } }],
+            },
+         }) as unknown as PersistSource;
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(readTimeOnly),
+         assertDatabasePersistNotAuthorizeGated(readTimeOnly(true)),
       ).not.toThrow();
+      // A read-time term that cannot be placed in the source's own statement
+      // fails closed: it may be inherited, which the read would not re-apply.
+      let refusal: unknown;
+      try {
+         assertDatabasePersistNotAuthorizeGated(readTimeOnly(false));
+      } catch (error) {
+         refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(MaterializationEligibilityError);
+      expect((refusal as { reason?: string }).reason).toBe(
+         "inherited_where_with_given",
+      );
    });
 
    it("refuses when the compiled definition cannot be read at all", () => {
@@ -1050,7 +1502,7 @@ source: reads_measure is offers_measure -> {
          name: "unreadable",
          _sourceDef: null,
       } as unknown as PersistSource;
-      expect(() => assertColocatedPersistNotAuthorizeGated(unreadable)).toThrow(
+      expect(() => assertDatabasePersistNotAuthorizeGated(unreadable)).toThrow(
          MaterializationEligibilityError,
       );
    });
@@ -1076,10 +1528,10 @@ source: arg_given is pp(x is $ORG_ID) -> { select: * }
 #@ persist name="arg_constant"
 source: arg_constant is pp(x is 1) -> { select: * }`);
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.arg_given),
+         assertDatabasePersistNotAuthorizeGated(sources.arg_given),
       ).toThrow(MaterializationEligibilityError);
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.arg_constant),
+         assertDatabasePersistNotAuthorizeGated(sources.arg_constant),
       ).not.toThrow();
    });
 
@@ -1107,36 +1559,36 @@ source: withjoin is raw extend { join_one: j is J(x is $ORG_ID) on org_id = j.or
 source: join_arg_read is withjoin -> { group_by: n is j.nm }`);
       expect(sources.join_arg_read).toBeDefined();
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.join_arg_read),
+         assertDatabasePersistNotAuthorizeGated(sources.join_arg_read),
       ).toThrow(MaterializationEligibilityError);
    });
 
    it("admits a persisted query that references no given", async () => {
       const sources = await persistSources(MODEL);
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(sources.clean),
+         assertDatabasePersistNotAuthorizeGated(sources.clean),
       ).not.toThrow();
    });
 
    it("names a rollup by the annotation its author wrote", async () => {
       const sources = await persistSources(MODEL);
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(
+         assertDatabasePersistNotAuthorizeGated(
             sources.inside,
             "orders__preagg__category",
-            "preaggregate",
+            "rollup",
          ),
       ).toThrow(/Pre-aggregation rollup/i);
    });
 });
 
-describe("read-only dialect (colocated persist)", () => {
-   // The SQL Server connector creates no tables, so a colocated build has
+describe("read-only dialect (database persist)", () => {
+   // The SQL Server connector creates no tables, so a database build has
    // nowhere in the source warehouse to write. Refused at load, naming the
    // connection and the dialect, so the author reads it from the package's
    // warnings rather than from a build's first DDL. A faked source, because
    // the gate reads only the dialect name; no SQL Server is needed.
-   it("refuses a colocated #@ persist on a sqlserver source, naming connection and dialect", () => {
+   it("refuses a database #@ persist on a sqlserver source, naming connection and dialect", () => {
       const source = fakeSource({
          name: "orders",
          sourceEntityId: "orders@x",
@@ -1145,13 +1597,13 @@ describe("read-only dialect (colocated persist)", () => {
       });
       let caught: unknown;
       try {
-         assertColocatedPersistNotAuthorizeGated(source);
+         assertDatabasePersistNotAuthorizeGated(source);
       } catch (err) {
          caught = err;
       }
       expect(caught).toBeInstanceOf(MaterializationEligibilityError);
       expect((caught as MaterializationEligibilityError).reason).toBe(
-         "read_only_dialect",
+         "connection_cannot_hold_table",
       );
       expect((caught as Error).message).toContain("'mssql'");
       expect((caught as Error).message).toContain("'sqlserver'");
@@ -1165,11 +1617,7 @@ describe("read-only dialect (colocated persist)", () => {
          dialectName: "sqlserver",
       });
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(
-            source,
-            source.name,
-            "preaggregate",
-         ),
+         assertDatabasePersistNotAuthorizeGated(source, source.name, "rollup"),
       ).toThrow(
          /Pre-aggregation rollup 'orders__preagg' cannot be materialized/,
       );
@@ -1178,7 +1626,7 @@ describe("read-only dialect (colocated persist)", () => {
    it("leaves a rollup that declares a storage destination to the storage gate", () => {
       // The rollup branch runs this gate before the storage one for every
       // rollup, so a `storage=` rollup over a SQL Server base must not be
-      // refused here as colocated: the storage build names the source types
+      // refused here as database: the storage build names the source types
       // it can read, and this gate's doc says storage is not its question.
       const source = fakeSource({
          name: "orders__preagg",
@@ -1187,10 +1635,10 @@ describe("read-only dialect (colocated persist)", () => {
          annotationFields: { storage: "lake" },
       });
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(
+         assertDatabasePersistNotAuthorizeGated(
             source,
             source.name,
-            "preaggregate",
+            "rollup",
             undefined,
             { storage: "lake" },
          ),
@@ -1244,7 +1692,189 @@ describe("read-only dialect (colocated persist)", () => {
          dialectName: "postgres",
       });
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(source),
+         assertDatabasePersistNotAuthorizeGated(source),
       ).not.toThrow();
+   });
+});
+
+describe("gateEnforcedAtRead's tier", () => {
+   // The policy's materialize row does not read the tier today, so a wrong
+   // tier would pass every table test; this pins what the predicate asks.
+   it("asks the gate policy for a #(materialize) table's own tier", () => {
+      const spy = spyOn(gatePolicy, "tableKeepsGates");
+      try {
+         const id = "s@m.malloy";
+         const gate = { classification: "row_level", attributed: true };
+         for (const [persist, tier] of [
+            [{ storage: "lake" }, "storage"],
+            [{}, "database"],
+            [undefined, "database"],
+         ] as const) {
+            spy.mockClear();
+            gateEnforcedAtRead(id, {
+               tables: {
+                  [id]: { kind: "materialize", materialize: { persist }, gate },
+               },
+            } as never);
+            expect(spy).toHaveBeenCalledTimes(1);
+            expect(spy.mock.calls[0][0]).toMatchObject({
+               kind: "materialize",
+               tier,
+            });
+         }
+      } finally {
+         spy.mockRestore();
+      }
+   });
+});
+
+describe("a storage= source on a connection the build cannot read", () => {
+   // The build passes a query through to Postgres, BigQuery or Snowflake, or
+   // builds a DuckLake source into its own catalog; the package's DuckDB
+   // sandbox it cannot read at all. Decided from the connection's recorded
+   // type, never its name.
+   const model = `##! experimental.persistence
+source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
+#@ persist storage="lake"
+source: stored is base -> { group_by: region; aggregate: c is count() }`;
+   const refusalOf = (run: () => void): MaterializationEligibilityError => {
+      try {
+         run();
+      } catch (err) {
+         return err as MaterializationEligibilityError;
+      }
+      throw new Error("expected a refusal");
+   };
+
+   it("refuses a sandbox source, naming the connection and the remedy", async () => {
+      const source = (await persistSources(model)).stored;
+      const err = refusalOf(() =>
+         assertTierEligible(source, true, {
+            connectionTypes: { duckdb: "duckdb" },
+         }),
+      );
+      expect(err).toBeInstanceOf(MaterializationEligibilityError);
+      expect(err.reason).toBe("storage_source_unsupported");
+      expect(err.message).toContain("connection 'duckdb'");
+      expect(err.message).toContain("cannot be passed through");
+      expect(err.message).toContain("Drop 'storage='");
+      expect(err.message).toContain("warehouse connection");
+   });
+
+   it("decides by the recorded type, not the connection's name", async () => {
+      const source = (await persistSources(model)).stored;
+      for (const type of ["postgres", "bigquery", "snowflake"]) {
+         expect(() =>
+            assertTierEligible(source, true, {
+               connectionTypes: { duckdb: type },
+            }),
+         ).not.toThrow();
+      }
+      for (const type of ["motherduck", "mysql", "trino", "sqlserver"]) {
+         expect(
+            refusalOf(() =>
+               assertTierEligible(source, true, {
+                  connectionTypes: { duckdb: type },
+               }),
+            ).reason,
+         ).toBe("storage_source_unsupported");
+      }
+   });
+
+   it("refuses a DuckLake source that carries author SQL, which its catalog's build never runs", async () => {
+      const source = (await persistSources(model)).stored;
+      const err = refusalOf(() =>
+         assertTierEligible(source, true, {
+            connectionTypes: { duckdb: "ducklake" },
+         }),
+      );
+      expect(err.reason).toBe("storage_source_unsupported");
+      expect(err.message).toContain(
+         "connection 'duckdb' is a DuckLake catalog",
+      );
+      expect(err.message).toContain(
+         "cannot be materialized: it reads source 'base', which is an .sql() source, and its connection 'duckdb'",
+      );
+   });
+
+   it("admits a DuckLake source over the catalog's own tables", async () => {
+      const duckdb = connections.lookupConnection("duckdb");
+      await (
+         await duckdb
+      ).runSQL(
+         "CREATE TABLE IF NOT EXISTS lake_orders AS SELECT 1 AS amount, 'US' AS region",
+      );
+      const source = (
+         await persistSources(`##! experimental.persistence
+source: base is duckdb.table('lake_orders')
+#@ persist storage="lake"
+source: stored is base -> { group_by: region; aggregate: c is count() }`)
+      ).stored;
+      expect(() =>
+         assertTierEligible(source, true, {
+            connectionTypes: { duckdb: "ducklake" },
+         }),
+      ).not.toThrow();
+   });
+
+   it("refuses a database-tier source over author SQL on a managed connection only", async () => {
+      const source = (await persistSources(model)).stored;
+      const err = refusalOf(() =>
+         assertTierEligible(source, false, { managedConnections: ["duckdb"] }),
+      );
+      expect(err.reason).toBe("storage_source_unsupported");
+      expect(err.message).toContain("is a managed database");
+      expect(() =>
+         assertTierEligible(source, false, { managedConnections: ["other"] }),
+      ).not.toThrow();
+   });
+
+   it("names a joined .sql() source, not every possible cause, on a managed connection", async () => {
+      const duckdb = await connections.lookupConnection("duckdb");
+      await duckdb.runSQL(
+         "CREATE TABLE IF NOT EXISTS lab AS SELECT 'A' AS category",
+      );
+      const source = (
+         await persistSources(`##! experimental.persistence
+source: status_names is duckdb.sql("SELECT 'A' AS category, 'Alpha' AS label")
+#@ persist name="j"
+source: stored is duckdb.table('lab') extend {
+   join_one: sn is status_names on category = sn.category
+} -> { group_by: category, sn.label }`)
+      ).stored;
+      const err = refusalOf(() =>
+         assertTierEligible(source, false, { managedConnections: ["duckdb"] }),
+      );
+      expect(err.message).toContain(
+         "Source 'stored' cannot be materialized: its join 'sn' reads source 'status_names', which is an .sql() source, and its connection 'duckdb' is a managed database",
+      );
+   });
+
+   it("leaves a connection with no recorded type to the build", async () => {
+      const source = (await persistSources(model)).stored;
+      expect(() => assertTierEligible(source, true, {})).not.toThrow();
+   });
+
+   it("does not refuse the same source built in the database tier", async () => {
+      const source = (await persistSources(model)).stored;
+      expect(() =>
+         assertTierEligible(source, false, {
+            connectionTypes: { duckdb: "duckdb" },
+         }),
+      ).not.toThrow();
+   });
+
+   it("is refused by the serve side's storage eligibility too", async () => {
+      const source = (await persistSources(model)).stored;
+      const out = collectSourceEligibility({
+         tables: { [source.sourceID]: { source, kind: "persist" } as never },
+         connectionDigests: {},
+         connectionTypes: { duckdb: "duckdb" },
+         addresses: {},
+      });
+      expect(out.eligible).toEqual([]);
+      expect(out.refused[source.sourceID]).toContain(
+         "cannot be passed through",
+      );
    });
 });

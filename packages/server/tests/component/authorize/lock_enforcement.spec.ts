@@ -523,36 +523,25 @@ query: secret is gated -> { aggregate: c }
 run: secret
 `,
          );
-         const model = await loadModel("rt_nb.malloynb");
-         // Cell 1 is `run: secret` — the lock refuses a mismatched given.
+         // Cell 1 is `run: secret`, sent to the notebook's own path. The lock
+         // refuses a mismatched given.
          await expect(
-            model.executeNotebookCell(unrecordedAudit(), 1, undefined, false, {
-               ROLE: "intern",
-            }),
+            runGated("rt_nb.malloynb", "run: secret", { ROLE: "intern" }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
          // ...and allowed when the gate passes.
-         const ok = await model.executeNotebookCell(
-            unrecordedAudit(),
-            1,
-            undefined,
-            false,
-            {
-               ROLE: "analyst",
-            },
-         );
+         const ok = await runGated("rt_nb.malloynb", "run: secret", {
+            ROLE: "analyst",
+         });
          expect(ok.result).toBeDefined();
       });
 
       // Q21's third door, pinned deliberately. The guard covers REQUEST text; a
-      // notebook cell is PACKAGE content and is intentionally left unguarded (it
-      // also compiles unrestricted, via `loadQuery` rather than
-      // `loadRestrictedQuery`). The asymmetry is structural, not an oversight:
-      // `executeNotebookCell` takes a cell INDEX and no query text, so a caller
-      // cannot author a cell — only choose one the package author already wrote.
+      // notebook cell is PACKAGE content, compiled into the notebook's model.
       // The bytes below are byte-for-byte the first attack shape in the describe
-      // above; through the notebook channel they are the author's own curated
-      // extension and must still run. Do not "fix" this by extending the guard to
-      // notebook cells: that would break authors declaring gates in notebooks.
+      // above; written by the package author they are a curated extension, and
+      // a caller who runs `mine` on the notebook's path meets the author's gate.
+      // Do not "fix" this by extending the guard to notebook content: that would
+      // break authors declaring gates in notebooks.
       it("does NOT reject an authorize annotation in a NOTEBOOK cell (author content, not request text)", async () => {
          await writeModel(
             "rt_nb_authorize.malloynb",
@@ -566,25 +555,17 @@ source: mine is base_locked extend {
 run: mine -> { aggregate: cc }
 `,
          );
-         const model = await loadModel("rt_nb_authorize.malloynb");
+         const cell = "run: mine -> { aggregate: cc }";
          // Not rejected as forged caller policy — the author's gate is honored, so
          // it grants on the satisfying given...
-         const ok = await model.executeNotebookCell(
-            unrecordedAudit(),
-            1,
-            undefined,
-            false,
-            {
-               ROLE: "analyst",
-            },
-         );
+         const ok = await runGated("rt_nb_authorize.malloynb", cell, {
+            ROLE: "analyst",
+         });
          expect(ok.result).toBeDefined();
          // ...and still DENIES on a non-satisfying one. The cell's gate is
          // really enforced, not merely tolerated — this is a gate, not a hole.
          await expect(
-            model.executeNotebookCell(unrecordedAudit(), 1, undefined, false, {
-               ROLE: "nobody",
-            }),
+            runGated("rt_nb_authorize.malloynb", cell, { ROLE: "nobody" }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       });
 
@@ -601,12 +582,9 @@ query: secret_join is joiner -> { aggregate: c }
 run: secret_join
 `,
          );
-         const model = await loadModel("rt_locked_join.malloynb");
-         const ok = await model.executeNotebookCell(
-            unrecordedAudit(),
-            1,
-            undefined,
-            false,
+         const ok = await runGated(
+            "rt_locked_join.malloynb",
+            "run: secret_join",
             {},
          );
          expect(ok.result).toBeDefined();
@@ -3661,6 +3639,34 @@ source: dm_mixed is duckdb.table('customers') extend {
          const result = await runGated(
             "dm_gated.malloy",
             "run: dm_gated -> { aggregate: c }",
+            {},
+            undefined,
+            readBypassAuthorize({
+               headers: { [BYPASS_AUTHORIZE_HEADER]: BYPASS_SECRET },
+            }),
+         );
+         expect(countOf(result.compactResult)).toBe(2);
+      });
+
+      // A `.malloynb` cell runs as a query on the notebook's path, so the
+      // header reaches it as it reaches any query. The removed cell route
+      // accepted no bypass.
+      it("honours the bypass on a .malloynb cell sent to the notebook's path", async () => {
+         await writeModel(
+            "dm_gated_nb.malloynb",
+            `>>>malloy
+${GATED}
+>>>malloy
+run: dm_gated -> { aggregate: c }
+`,
+         );
+         const cell = "run: dm_gated -> { aggregate: c }";
+         await expect(
+            runGated("dm_gated_nb.malloynb", cell, {}),
+         ).rejects.toThrow();
+         const result = await runGated(
+            "dm_gated_nb.malloynb",
+            cell,
             {},
             undefined,
             readBypassAuthorize({

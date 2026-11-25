@@ -1,0 +1,164 @@
+{
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "orders_base@<pkg>/multi_level.malloy": [],
+          "orders_rollup@<pkg>/multi_level.malloy": [
+            "orders_base@<pkg>/multi_level.malloy"
+          ]
+        },
+        "order": [
+          "orders_base@<pkg>/multi_level.malloy",
+          "orders_rollup@<pkg>/multi_level.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "orders_base@<pkg>/multi_level.malloy": "persist",
+      "orders_rollup@<pkg>/multi_level.malloy": "persist"
+    },
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "orders_base@<pkg>/multi_level.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "orders_rollup@<pkg>/multi_level.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "orders_base@<pkg>/multi_level.malloy": "multi_level.malloy",
+      "orders_rollup@<pkg>/multi_level.malloy": "multi_level.malloy"
+    }
+  },
+  "loadWarnings": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "orders_base@<pkg>/multi_level.malloy"
+            },
+            {
+              "dependsOn": [
+                "orders_base@<pkg>/multi_level.malloy"
+              ],
+              "sourceID": "orders_rollup@<pkg>/multi_level.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "orders_base@<pkg>/multi_level.malloy": {
+        "annotationFields": {
+          "name": "orders_base"
+        },
+        "columns": [
+          {
+            "name": "category",
+            "type": "string"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "multi_level.malloy",
+        "name": "orders_base",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "duckdb",
+            "table": "'data/orders.csv'"
+          }
+        ],
+        "refresh": null,
+        "sourceEntityId": "1bb28858164cefd3a2649fb9cb621d7d9f68d5389410c61e7701a3b891f6d911",
+        "sourceID": "orders_base@<pkg>/multi_level.malloy",
+        "sql": "sha256:9ef1424a8fa233c7",
+        "upstreamSchemas": [
+          {
+            "columns": [
+              {
+                "name": "category",
+                "nativeType": "VARCHAR"
+              },
+              {
+                "name": "amount",
+                "nativeType": "BIGINT"
+              }
+            ],
+            "connectionName": "duckdb",
+            "dialect": "duckdb",
+            "table": "'data/orders.csv'"
+          }
+        ]
+      },
+      "orders_rollup@<pkg>/multi_level.malloy": {
+        "annotationFields": {
+          "name": "orders_rollup"
+        },
+        "columns": [
+          {
+            "name": "category_count",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "multi_level.malloy",
+        "name": "orders_rollup",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "duckdb",
+            "table": "'data/orders.csv'"
+          }
+        ],
+        "refresh": null,
+        "sourceEntityId": "ae2e931a995f7c0422af9e9930b2a6012974e4ba5ae5ce6bb59261c6c6f0cdd2",
+        "sourceID": "orders_rollup@<pkg>/multi_level.malloy",
+        "sql": "sha256:a64e6c9f91637058",
+        "upstreamSchemas": [
+          {
+            "columns": [
+              {
+                "name": "category",
+                "nativeType": "VARCHAR"
+              },
+              {
+                "name": "amount",
+                "nativeType": "BIGINT"
+              }
+            ],
+            "connectionName": "duckdb",
+            "dialect": "duckdb",
+            "table": "'data/orders.csv'"
+          }
+        ]
+      }
+    }
+  }
+}

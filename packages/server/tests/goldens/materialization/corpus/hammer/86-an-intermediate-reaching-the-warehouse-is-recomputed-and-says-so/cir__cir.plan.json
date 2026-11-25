@@ -1,0 +1,166 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [
+      {
+        "code": "persist-not-built",
+        "message": "#@ persist source \"rollup\" is not built, so it is answered live: it reads the source warehouse (regions) through 'daily_regional', which no stored table can stand in for; a downstream is never built by recomputing its upstreams from raw.",
+        "model": "cir.malloy",
+        "refused": {
+          "name": "rollup",
+          "reason": "upstream_table_unusable",
+          "sourceID": "rollup@<hammer>/cir/cir.malloy",
+          "tier": "storage"
+        },
+        "route": "@",
+        "subject": "rollup",
+        "tier": "unservable"
+      }
+    ],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/cir/cir.malloy": [],
+          "daily_regional@<hammer>/cir/cir.malloy": []
+        },
+        "order": [
+          "daily@<hammer>/cir/cir.malloy",
+          "daily_regional@<hammer>/cir/cir.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "daily@<hammer>/cir/cir.malloy": "persist",
+      "daily_regional@<hammer>/cir/cir.malloy": "persist"
+    },
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/cir/cir.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "daily_regional@<hammer>/cir/cir.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/cir/cir.malloy": "cir.malloy",
+      "daily_regional@<hammer>/cir/cir.malloy": "cir.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/cir/cir.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "daily_regional@<hammer>/cir/cir.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {
+      "rollup@<hammer>/cir/cir.malloy": {
+        "message": "#@ persist source \"rollup\" is not built, so it is answered live: it reads the source warehouse (regions) through 'daily_regional', which no stored table can stand in for; a downstream is never built by recomputing its upstreams from raw.",
+        "modelPath": "cir.malloy",
+        "name": "rollup",
+        "origin": "persist",
+        "reason": "upstream_table_unusable",
+        "sourceID": "rollup@<hammer>/cir/cir.malloy",
+        "tier": "storage"
+      }
+    },
+    "sources": {
+      "daily@<hammer>/cir/cir.malloy": {
+        "annotationFields": {
+          "name": "cir_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "region_id",
+            "type": "number"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "cir.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cir_orders"
+          }
+        ],
+        "refresh": null,
+        "sourceEntityId": "33320394f8188366ea042c3ac0534847d382e4269c7996535f2af388271ab36c",
+        "sourceID": "daily@<hammer>/cir/cir.malloy",
+        "sql": "sha256:79e05e76a35210d4"
+      },
+      "daily_regional@<hammer>/cir/cir.malloy": {
+        "annotationFields": {
+          "name": "cir_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "region_id",
+            "type": "number"
+          },
+          {
+            "name": "total_amount",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "cir.malloy",
+        "name": "daily_regional",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cir_orders"
+          }
+        ],
+        "refresh": null,
+        "sourceEntityId": "33320394f8188366ea042c3ac0534847d382e4269c7996535f2af388271ab36c",
+        "sourceID": "daily_regional@<hammer>/cir/cir.malloy",
+        "sql": "sha256:79e05e76a35210d4"
+      }
+    }
+  }
+}

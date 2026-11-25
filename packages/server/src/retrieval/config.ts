@@ -8,20 +8,37 @@
  * ../service/package_retrieval_settings.ts.
  */
 
+import { logger } from "../logger";
 import {
    EMBEDDING_PROVIDER_NAMES,
    PROVIDER_NAMES,
    type ProviderName,
 } from "./llm/types";
 
-/** What may leave the machine for an LLM. See {@link RetrievalConfig.egress}. */
-export type EgressPreset = "default" | "full";
-export const EGRESS_PRESETS: readonly EgressPreset[] = ["default", "full"];
+import {
+   DEFAULT_LLM_CONCURRENCY,
+   DEFAULT_LLM_MAX_CALLS_PER_REQUEST,
+   DEFAULT_LLM_MAX_CALLS_PER_SYNC,
+   DEFAULT_LLM_TIMEOUT_MS,
+   DIMENSION_VALUE_DEFAULTS,
+} from "./defaults";
 
-export const DEFAULT_LLM_TIMEOUT_MS = 30_000;
-export const DEFAULT_LLM_CONCURRENCY = 4;
-export const DEFAULT_LLM_MAX_CALLS_PER_SYNC = 300;
-export const DEFAULT_LLM_MAX_CALLS_PER_REQUEST = 20;
+/**
+ * Logged when a config still carries `retrieval.egress`. The block chose
+ * whether `#(index)` values could reach the embedding provider and the LLM;
+ * now the `#(index)` tag decides, as it does on a hosted index, so the block
+ * loads and does nothing.
+ */
+export const RETIRED_EGRESS_WARNING =
+   "retrieval.egress is no longer read and is ignored. The values of #(index) dimensions are now sent to the configured embedding provider and LLM whenever one is configured. To keep them on this machine, set retrieval.dimensionValues.enabled to false in publisher.config.json. Leaving EMBEDDING_API_KEY unset, or setting retrieval.fcj.valueEmbeddings to false, only stops values being embedded: a configured LLM still sees them. Remove the egress block to silence this warning.";
+
+export {
+   DEFAULT_LLM_CONCURRENCY,
+   DEFAULT_LLM_MAX_CALLS_PER_REQUEST,
+   DEFAULT_LLM_MAX_CALLS_PER_SYNC,
+   DEFAULT_LLM_TIMEOUT_MS,
+   DIMENSION_VALUE_DEFAULTS,
+};
 
 export type RetrievalLlmConfig = {
    provider: ProviderName;
@@ -57,9 +74,9 @@ export type RetrievalEmbeddingConfig = {
 };
 
 /**
- * The `retrieval` block of publisher.config.json. Keys not listed here are
- * ignored at this level so the block can grow; inside `llm`, `embedding` and
- * `egress` an unknown key is an error naming the valid ones.
+ * The `retrieval` block of publisher.config.json. An unknown key, here or in
+ * a nested block, is an error naming the valid ones. `egress` is the one
+ * exception: it is accepted and ignored with {@link RETIRED_EGRESS_WARNING}.
  */
 export type RetrievalConfig = {
    indexing?: {
@@ -73,14 +90,8 @@ export type RetrievalConfig = {
    /** Present only when `provider` is set; otherwise every LLM feature is off. */
    llm?: RetrievalLlmConfig;
    embedding?: RetrievalEmbeddingConfig;
-   /**
-    * What may be sent to the LLM. `default`: entity names, doc text (`#(doc)`,
-    * `#"`, and the database's descriptions on a connection with `dbmeta` on)
-    * and schema context. `full`: also code and dimension values. Access
-    * predicates (`#(access_filter)`, `#(authorize)`) never leave, whatever
-    * this says; there is no switch for that.
-    */
-   egress?: { preset: EgressPreset };
+   /** The file still carries the retired `egress` block: {@link setRetrievalConfig} warns. */
+   egressIgnored?: true;
    /**
     * Value search: how `get_context` answers a `dimensional_value` target.
     * Every key is optional; see {@link DIMENSION_VALUE_DEFAULTS}.
@@ -96,10 +107,27 @@ export type DimensionValuesConfig = {
     * the "No index" warning.
     */
    enabled?: boolean;
+   /**
+    * For local development against a large model: per package, the givens
+    * the value index reads with, each one value or a list. A source gated by
+    * `column = $GIVEN` is then read only for the listed values, up to the cap
+    * for each, instead of once across every value; any other source that
+    * reads a listed given is read with it. Lives in the local server's config
+    * so publishing a package never carries it.
+    */
+   givens?: Readonly<
+      Record<string, Readonly<Record<string, readonly GivenValue[]>>>
+   >;
 };
 
-/** What each `retrieval.dimensionValues` key means when the operator leaves it out. */
-export const DIMENSION_VALUE_DEFAULTS = { enabled: true } as const;
+/** A value `retrieval.dimensionValues.givens` may name. */
+export type GivenValue = string | number | boolean;
+
+/**
+ * Most reads one dimension may take under `retrieval.dimensionValues.givens`:
+ * each combination of the listed values is one read.
+ */
+export const MAX_GIVEN_COMBINATIONS = 50;
 
 /**
  * Default for `retrieval.indexing.maxEntities`. A package past this is not
@@ -231,6 +259,8 @@ function parseLlm(raw: unknown): RetrievalLlmConfig | undefined {
       "concurrency",
       "maxCallsPerSync",
       "maxCallsPerRequest",
+      // Read by the settings registry (retrieval.llm.apiKey), not here.
+      "apiKey",
    ];
    const fix = `"llm": { "provider": "anthropic", "model": "<model name>" }`;
    const obj = block(raw, "retrieval.llm", keys, fix);
@@ -328,6 +358,10 @@ function parseEmbedding(raw: unknown): RetrievalEmbeddingConfig | undefined {
       "location",
       "queryPrefix",
       "documentPrefix",
+      // Read by the settings registry (retrieval.embedding.*), not here.
+      "apiKey",
+      "minSimilarity",
+      "connectionSchemaIndexingEnabled",
    ];
    const fix = `"embedding": { "provider": "openai", "model": "text-embedding-3-small" }`;
    const obj = block(raw, "retrieval.embedding", keys, fix);
@@ -411,27 +445,53 @@ function parseEmbedding(raw: unknown): RetrievalEmbeddingConfig | undefined {
    };
 }
 
-function parseEgress(raw: unknown): { preset: EgressPreset } | undefined {
-   const obj = block(
-      raw,
-      "retrieval.egress",
-      ["preset"],
-      `"egress": { "preset": "default" }`,
-   );
-   if (obj.preset === undefined || obj.preset === null) return undefined;
-   if (
-      typeof obj.preset !== "string" ||
-      !EGRESS_PRESETS.includes(obj.preset as EgressPreset)
-   ) {
+const DIMENSION_VALUE_KEYS = ["enabled", "givens"] as const;
+
+const GIVENS_FIX = `"givens": { "<package>": { "REPORT_ID": [123, 456] } }`;
+
+function parseValueGivens(
+   raw: unknown,
+): Record<string, Record<string, GivenValue[]>> {
+   const isObject = (v: unknown): v is Record<string, unknown> =>
+      typeof v === "object" && v !== null && !Array.isArray(v);
+   const isValue = (v: unknown): v is GivenValue =>
+      typeof v === "string" ||
+      typeof v === "boolean" ||
+      (typeof v === "number" && Number.isFinite(v));
+   if (!isObject(raw)) {
       throw new Error(
-         `Invalid retrieval.egress.preset: expected one of ${EGRESS_PRESETS.join(", ")}, got ${describe(obj.preset)}. ` +
-            `Fix: "preset": "default" (names, doc text and schema context) or "full" (also code and dimension values).`,
+         `Invalid retrieval.dimensionValues.givens: expected an object of packages, got ${describe(raw)}. Fix: ${GIVENS_FIX}`,
       );
    }
-   return { preset: obj.preset as EgressPreset };
+   const out: Record<string, Record<string, GivenValue[]>> = {};
+   for (const [pkg, givens] of Object.entries(raw)) {
+      const at = `retrieval.dimensionValues.givens.${pkg}`;
+      if (!isObject(givens)) {
+         throw new Error(
+            `Invalid ${at}: expected an object of givens, got ${describe(givens)}. Fix: ${GIVENS_FIX}`,
+         );
+      }
+      const parsed: Record<string, GivenValue[]> = {};
+      let combinations = 1;
+      for (const [name, value] of Object.entries(givens)) {
+         const list = Array.isArray(value) ? value : [value];
+         if (list.length === 0 || !list.every(isValue)) {
+            throw new Error(
+               `Invalid ${at}.${name}: expected a string, number or boolean, or a non-empty list of them, got ${describe(value)}. Fix: ${GIVENS_FIX}`,
+            );
+         }
+         parsed[name] = [...new Set(list)];
+         combinations *= parsed[name].length;
+      }
+      if (combinations > MAX_GIVEN_COMBINATIONS) {
+         throw new Error(
+            `Invalid ${at}: its lists make ${combinations} combinations, and each is one read per indexed dimension; at most ${MAX_GIVEN_COMBINATIONS}. Fix: list fewer values`,
+         );
+      }
+      out[pkg] = parsed;
+   }
+   return out;
 }
-
-const DIMENSION_VALUE_KEYS = ["enabled"] as const;
 
 function parseDimensionValues(raw: unknown): DimensionValuesConfig {
    const fields = block(
@@ -448,6 +508,9 @@ function parseDimensionValues(raw: unknown): DimensionValuesConfig {
          );
       }
       out.enabled = fields.enabled;
+   }
+   if (fields.givens !== undefined && fields.givens !== null) {
+      out.givens = parseValueGivens(fields.givens);
    }
    return out;
 }
@@ -501,10 +564,7 @@ export function parseRetrievalConfig(
       const embedding = parseEmbedding(input.embedding);
       if (embedding) out.embedding = embedding;
    }
-   if (input.egress !== undefined && input.egress !== null) {
-      const egress = parseEgress(input.egress);
-      if (egress) out.egress = egress;
-   }
+   if (input.egress !== undefined) out.egressIgnored = true;
    if (input.dimensionValues !== undefined && input.dimensionValues !== null) {
       out.dimensionValues = parseDimensionValues(input.dimensionValues);
    }
@@ -515,6 +575,8 @@ export function parseRetrievalConfig(
 let loaded: RetrievalConfig | undefined;
 
 export function setRetrievalConfig(config: RetrievalConfig | undefined): void {
+   // Installed once at boot, though the file is parsed more than once.
+   if (config?.egressIgnored) logger.warn(RETIRED_EGRESS_WARNING);
    loaded = config;
 }
 
@@ -525,9 +587,4 @@ export function loadedRetrievalConfig(): RetrievalConfig | undefined {
 /** The `retrieval.dimensionValues` settings in force, defaults filled in. */
 export function getDimensionValueSettings(): Required<DimensionValuesConfig> {
    return { ...DIMENSION_VALUE_DEFAULTS, ...loaded?.dimensionValues };
-}
-
-/** The egress preset in force: `default` unless the operator chose `full`. */
-export function getEgressPreset(): EgressPreset {
-   return loaded?.egress?.preset ?? "default";
 }

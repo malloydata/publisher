@@ -18,6 +18,7 @@ import type {
 } from "@malloydata/malloy";
 
 import { PayloadTooLargeError } from "./errors";
+import { bigIntReplacer } from "./json_utils";
 import { recordQueryCapExceeded } from "./query_cap_metrics";
 
 /** Runtime check and type narrow for streaming-capable connections. */
@@ -78,7 +79,10 @@ export async function streamSqlWithBudget(
          if (maxBytes > 0) {
             // Duplicates the final stringify per row; the early abort on
             // overflow is worth it.
-            byteTotal += Buffer.byteLength(JSON.stringify(row), "utf8");
+            byteTotal += Buffer.byteLength(
+               JSON.stringify(row, bigIntReplacer),
+               "utf8",
+            );
             if (byteTotal > maxBytes) {
                recordQueryCapExceeded("bytes", "connection_sql");
                overflowMessage = `Query response exceeded ${maxBytes} bytes (had at least ${byteTotal}). Refine the query (project fewer columns, add a LIMIT, or filter wide values) or raise PUBLISHER_MAX_RESPONSE_BYTES.`;
@@ -101,6 +105,9 @@ export async function streamSqlWithBudget(
    }
 
    if (overflowMessage) throw new PayloadTooLargeError(overflowMessage);
+   // A driver ends quietly on abort; without this a timed-out query answers 200 with the rows it had.
+   // A quiet end can't be told from an abort cut, so a stream that finished as the timer fired also gets the 504, despite runWithQueryTimeout's "a completed query beats a 504".
+   externalSignal?.throwIfAborted();
 
    return { rows, totalRows: rows.length };
 }

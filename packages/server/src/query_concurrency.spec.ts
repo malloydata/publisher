@@ -7,6 +7,7 @@ import type { NextFunction, Request, Response } from "express";
 
 import { ServiceUnavailableError } from "./errors";
 import {
+   LoadSlots,
    meterQuerySlots,
    QuerySlots,
    resetQueryConcurrencyTelemetryForTesting,
@@ -304,5 +305,28 @@ describe("QuerySlots.middleware", () => {
             0,
          );
       });
+   });
+});
+
+describe("LoadSlots", () => {
+   it("hands out its capacity and then refuses without queueing", () => {
+      const pool = new LoadSlots(1);
+      const first = pool.tryAcquire();
+      expect(first).toBeDefined();
+      expect(pool.active).toBe(1);
+      expect(pool.tryAcquire()).toBeUndefined();
+      expect(pool.active).toBe(1);
+   });
+
+   it("frees the slot on release, once however often release is called", () => {
+      const pool = new LoadSlots(1);
+      const first = pool.tryAcquire()!;
+      first.release();
+      first.release();
+      expect(pool.active).toBe(0);
+      const second = pool.tryAcquire();
+      expect(second).toBeDefined();
+      first.release();
+      expect(pool.active).toBe(1);
    });
 });

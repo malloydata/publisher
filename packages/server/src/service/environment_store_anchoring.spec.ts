@@ -3,6 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { randomUUID } from "crypto";
 import * as path from "path";
 import { PUBLISHER_CONFIG_NAME, TEMP_DIR_PATH } from "../constants";
 import { installSettings } from "../test_helpers/settings_env";
@@ -23,8 +24,13 @@ import { startedStore } from "../test_helpers/started_store";
  * `--config` flag, so this exercises the actual resolution rather than a stub
  * of it.
  */
-const serverRootPath = path.join(TEMP_DIR_PATH, "anchoring-server-root");
-const configDirPath = path.join(TEMP_DIR_PATH, "anchoring-config-dir");
+// Unique per run, so two runs at once cannot delete each other's directories.
+const runId = randomUUID();
+const serverRootPath = path.join(
+   TEMP_DIR_PATH,
+   `anchoring-server-root-${runId}`,
+);
+const configDirPath = path.join(TEMP_DIR_PATH, `anchoring-config-dir-${runId}`);
 
 const storageManager = stubStorageManager({
    getRepository: () => emptyRepository(),

@@ -1,0 +1,66 @@
+// feature: hidden fields: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { givens access_modifiers }
+##! experimental { virtual_source access_modifiers }
+type: wide__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number
+}
+type: orders__served is {
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number,
+   region_code::string,
+   north::boolean
+}
+
+given: GROUPS :: string[]
+
+source: base is duckdb.table('data/orders.csv') include { private: id; internal: customer_id; public: * } extend {
+  internal dimension: region_code is upper(region)
+}
+
+#(access_filter) region in $GROUPS
+#(materialize) storage="lake"
+source: orders is __served_copy_alias_of_lake.virtual('e3123e46ca09ab86ce28636d7ffe05042025dc5cda562c3786bcf0b9c4ad9ca6')::orders__served extend {
+  rename:
+    customer_id__stored is customer_id
+    order__stored is order
+} include { public: *; private: customer_id__stored, order__stored; internal: region_code } extend {
+  dimension:
+    order is order__stored::"HUGEINT"
+  internal dimension:
+    customer_id is customer_id__stored::"HUGEINT"
+  private dimension: secret is amount * 2
+  measure:
+    total is amount.sum()
+    n is count()
+    secret_total is secret.sum()
+}
+
+#(materialize) storage="lake"
+source: wide is __served_copy_alias_of_lake.virtual('096ef4223a870d93cbadb8d536e5ec94269c97c6aef6b62e8b89622774d48605')::wide__served extend {
+  rename:
+    id__stored is id
+    customer_id__stored is customer_id
+    order__stored is order
+} include { public: *; private: amount, id__stored, customer_id__stored, order__stored } extend {
+  dimension:
+    id is id__stored::"HUGEINT"
+    customer_id is customer_id__stored::"HUGEINT"
+    order is order__stored::"HUGEINT"
+  measure: amt is amount.sum()
+}

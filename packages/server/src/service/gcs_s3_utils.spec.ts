@@ -8,6 +8,7 @@ import {
    s3ConnectionToCredentials,
    validateS3ProviderShape,
 } from "./gcs_s3_utils";
+import { BadRequestError } from "../errors";
 import { installSettings } from "../test_helpers/settings_env";
 
 // The SDK's default chain reads the environment first, so seeding it keeps these
@@ -277,5 +278,32 @@ describe("S3_CREDENTIAL_CHAIN_POLICY", () => {
       expect(() => validateS3ProviderShape(chainConn(), "c")).toThrow(
          'allow.s3CredentialChain from S3_CREDENTIAL_CHAIN_POLICY: expected one of "any", "destinations-only" or "off", got "destinations_only"',
       );
+   });
+});
+
+describe("validateS3ProviderShape's refusals are 400s", () => {
+   it.each([
+      ["a provider that is not one of the list", { provider: "nope" }],
+      ["a chain that is not a string", { chain: 1 }],
+      ["a chain under key-based auth", { chain: "env" }],
+      [
+         "static keys beside credential_chain",
+         { provider: "credential_chain", accessKeyId: "AK" },
+      ],
+   ])("answers %s as a BadRequestError", (_label, s3) => {
+      installEnv({});
+      expect(() => validateS3ProviderShape(s3 as never, "c")).toThrow(
+         BadRequestError,
+      );
+   });
+
+   it("answers a policy refusal of credential_chain as a BadRequestError", () => {
+      installEnv({ S3_CREDENTIAL_CHAIN_POLICY: "off" });
+      expect(() =>
+         validateS3ProviderShape(
+            { provider: "credential_chain" } as never,
+            "c",
+         ),
+      ).toThrow(BadRequestError);
    });
 });

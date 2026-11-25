@@ -1,6 +1,20 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * A host-computed build manifest, fetched and split by tier
+ * ({@link fetchManifestEntries}, {@link splitManifestEntries}): database
+ * entries become the same-connection `tableName` substitution, `storage=`
+ * entries are kept whole for their serve bindings. Read by environment.ts when
+ * it binds a package's manifest, and by the manifest committer.
+ *
+ * Reads the manifest from a file, GCS or S3 location; logs and skips an entry
+ * that recorded a failed source or names no table. Never filters on freshness,
+ * which the serve path does per query.
+ */
+
+import { boundNativeSchemaOf, boundSchemaOf } from "../stored_column_types";
+import { isUsableTableName as quotingIsUsableTableName } from "../../quoting";
 import { GetObjectCommand, S3 } from "@aws-sdk/client-s3";
 import { Storage } from "@google-cloud/storage";
 import * as fs from "fs/promises";
@@ -11,7 +25,7 @@ import {
    FreshnessManifest,
    isLegacyFailedEntry,
    ManifestEntry,
-} from "../types";
+} from "../domain/types";
 
 type WireBuildManifest = components["schemas"]["BuildManifest"];
 
@@ -22,11 +36,57 @@ type WireBuildManifest = components["schemas"]["BuildManifest"];
  * same-connection `tableName` substitution.
  */
 export interface FetchedManifest {
-   /** Colocated entries: same-connection `tableName` substitution. */
+   /** Database entries: same-connection `tableName` substitution. */
    tableNameManifest: FreshnessManifest;
    /** `storage=` entries by sourceEntityId, kept whole for serve bindings. */
    storageEntries: Record<string, ManifestEntry>;
 }
+
+/**
+ * A manifest location that holds no usable build manifest: nothing is there
+ * (`not_found`), or what is there does not parse or is not a manifest
+ * (`invalid`). The caller named it, so retrying unchanged fails the same way;
+ * every other failure (a timeout, refused credentials, a network error) is
+ * the server's to settle.
+ */
+export class ManifestUnusableError extends Error {
+   constructor(
+      readonly problem: "not_found" | "invalid",
+      message: string,
+      options?: { cause?: unknown },
+   ) {
+      super(message, options);
+      this.name = "ManifestUnusableError";
+   }
+}
+
+/**
+ * Whether a read failed because nothing is at the location: a missing file
+ * or directory, or an object store's 404 (no such object or bucket). An
+ * object store that refuses access answers 403 even for a missing object
+ * when the caller may not list the bucket, so a refusal is not read as one.
+ */
+export function isManifestNotFound(error: unknown): boolean {
+   if (typeof error !== "object" || error === null) return false;
+   const e = error as {
+      code?: unknown;
+      name?: unknown;
+      $metadata?: { httpStatusCode?: unknown };
+   };
+   return (
+      e.code === "ENOENT" ||
+      e.code === "ENOTDIR" ||
+      // @google-cloud/storage's ApiError
+      e.code === 404 ||
+      // @aws-sdk/client-s3
+      e.name === "NoSuchKey" ||
+      e.name === "NoSuchBucket" ||
+      e.$metadata?.httpStatusCode === 404
+   );
+}
+
+const isJsonObject = (value: unknown): value is Record<string, unknown> =>
+   typeof value === "object" && value !== null && !Array.isArray(value);
 
 // Lazily created; both use the ambient credential chain, as the package
 // downloader does.
@@ -76,36 +136,88 @@ async function readManifestBytes(uri: string): Promise<string> {
 /**
  * Fetch and parse the host-computed build manifest at `uri`, split by tier
  * (see {@link splitManifestEntries}). Does not filter on freshness; the serve
- * path does that per query. Throws if the URI can't be read or parsed.
+ * path does that per query. Throws if the URI can't be read or parsed: a
+ * {@link ManifestUnusableError} when nothing is there, or what is there is
+ * not a JSON object whose `entries`, if any, is an object.
  */
 export async function fetchManifestEntries(
    uri: string,
 ): Promise<FetchedManifest> {
-   const raw = await readManifestBytes(uri);
-
-   let parsed: WireBuildManifest;
+   let raw: string;
    try {
-      parsed = JSON.parse(raw) as WireBuildManifest;
+      raw = await readManifestBytes(uri);
    } catch (err) {
-      throw new Error(
+      if (isManifestNotFound(err)) {
+         throw new ManifestUnusableError(
+            "not_found",
+            `No build manifest at ${uri}`,
+            { cause: err },
+         );
+      }
+      if ((err as { code?: unknown } | null)?.code === "EISDIR") {
+         throw new ManifestUnusableError(
+            "invalid",
+            `The build manifest location ${uri} is a directory, not a file`,
+            { cause: err },
+         );
+      }
+      throw err;
+   }
+
+   let parsed: unknown;
+   try {
+      parsed = JSON.parse(raw);
+   } catch (err) {
+      throw new ManifestUnusableError(
+         "invalid",
          `Failed to parse build manifest at ${uri}: ${
             err instanceof Error ? err.message : String(err)
          }`,
+         { cause: err },
+      );
+   }
+   if (!isJsonObject(parsed)) {
+      throw new ManifestUnusableError(
+         "invalid",
+         `The build manifest at ${uri} is not a JSON object`,
+      );
+   }
+   const entries = (parsed as WireBuildManifest).entries;
+   if (entries !== undefined && entries !== null && !isJsonObject(entries)) {
+      throw new ManifestUnusableError(
+         "invalid",
+         `The build manifest at ${uri} has an "entries" that is not an object`,
       );
    }
 
-   return splitManifestEntries(parsed.entries ?? {}, uri);
+   return splitManifestEntries(entries ?? {}, uri);
 }
 
 /**
- * Split a manifest entry map by tier into {@link FetchedManifest}. A colocated
+ * Whether a table name a host or the run store supplies (a manifest entry,
+ * a build instruction, a reference, a ledger entry) is one this server puts
+ * in SQL, in whatever dialect its connection turns out to be: the one
+ * predicate for the build route and the bind, so neither accepts a name the
+ * other refuses. A quoted name has real writers: an author's own
+ * `manifestLocation` manifest, whose entries no `name=` rule checks, and the
+ * manifests of Publisher v0.0.229 to v0.2.4. The control plane never sends
+ * one. See {@link quotingIsUsableTableName}.
+ */
+export function isUsableTableName(name: string): boolean {
+   return quotingIsUsableTableName(name);
+}
+
+/**
+ * Split a manifest entry map by tier into {@link FetchedManifest}. A database
  * entry's wire `physicalTableName` becomes the runtime's `tableName`, keeping
  * the freshness fields (gated per query) and `connectionName` (for
- * dialect-specific quoting). Pure; `source` labels the skip log.
+ * dialect-specific quoting). Pure; `source` labels the skip log, which
+ * `quiet` leaves out for a split that only compares and binds nothing.
  */
 export function splitManifestEntries(
    entries: Record<string, ManifestEntry>,
    source: string,
+   { quiet = false }: { quiet?: boolean } = {},
 ): FetchedManifest {
    const tableNameManifest: FreshnessManifest = {};
    const storageEntries: Record<string, ManifestEntry> = {};
@@ -114,22 +226,44 @@ export function splitManifestEntries(
       // never created; binding it would serve the prior generation as fresh.
       // Removable together with `ManifestEntry.error`.
       if (isLegacyFailedEntry(entry)) {
-         logger.warn("Manifest entry records a failed source; skipping", {
-            source,
-            sourceEntityId,
-         });
+         if (!quiet) {
+            logger.warn("Manifest entry records a failed source; skipping", {
+               source,
+               sourceEntityId,
+            });
+         }
          continue;
       }
       const physicalTableName = entry?.physicalTableName;
       if (!physicalTableName) {
-         logger.warn("Manifest entry has no physicalTableName; skipping", {
-            source,
-            sourceEntityId,
-         });
+         if (!quiet) {
+            logger.warn("Manifest entry has no physicalTableName; skipping", {
+               source,
+               sourceEntityId,
+            });
+         }
+         continue;
+      }
+      // A name this server would not put in SQL (isUsableTableName): a
+      // backslash or control character, quotes that do not form whole quoted
+      // parts, or an empty part. A quoted name that parses (an author's own manifestLocation
+      // manifest, or a legacy one) is kept.
+      if (!isUsableTableName(physicalTableName)) {
+         if (!quiet) {
+            logger.warn(
+               "Manifest entry names a table this server cannot read safely (a backslash or control character, quotes that do not parse, or an empty part); skipping, so its source answers live",
+               { source, sourceEntityId },
+            );
+         }
          continue;
       }
       if (entry.storageDestinationName) {
-         storageEntries[sourceEntityId] = entry;
+         // A key check is read off the table's contract when it is bound
+         // (package_materialization.ts), never off a record an entry carries.
+         const { keyUniqueness: _unread, ...plain } = entry as ManifestEntry & {
+            keyUniqueness?: unknown;
+         };
+         storageEntries[sourceEntityId] = plain;
          continue;
       }
       tableNameManifest[sourceEntityId] = {
@@ -138,6 +272,16 @@ export function splitManifestEntries(
          dataAsOf: entry.dataAsOf,
          freshnessWindowSeconds: entry.freshnessWindowSeconds,
          freshnessFallback: entry.freshnessFallback,
+         ...boundSchemaOf(entry.schema),
+         ...boundNativeSchemaOf(entry.nativeSchema),
+         ...(entry.lateRows ? { lateRows: entry.lateRows } : {}),
+         // Every incremental entry's: which build of its table it describes
+         // (`advancedBy`, `seededBy`, `advances`), what an extension over it
+         // compares with the build it last read (incremental_upstream.ts).
+         ...(entry.ledger ? { ledger: entry.ledger } : {}),
+         ...(entry.builtFrom?.length ? { builtFrom: entry.builtFrom } : {}),
+         ...(entry.contract !== undefined ? { contract: entry.contract } : {}),
+         ...(entry.builtAt ? { builtAt: entry.builtAt } : {}),
       };
    }
    return { tableNameManifest, storageEntries };

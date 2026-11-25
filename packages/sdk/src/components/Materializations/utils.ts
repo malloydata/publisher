@@ -5,8 +5,9 @@ import { Materialization, MaterializationStatus } from "../../client";
 
 /**
  * Non-terminal phases of a build: PENDING (building) -> MANIFEST_ROWS_READY
- * (tables built) -> MANIFEST_FILE_READY (terminal). Any non-terminal phase may
- * be polled and stopped.
+ * (tables built, manifest recorded, and an auto-run's manifest loading into
+ * its package) -> MANIFEST_FILE_READY (terminal: an auto-run's package serves
+ * the new tables). Any non-terminal phase may be polled and stopped.
  */
 export function isActiveStatus(status?: MaterializationStatus): boolean {
    return (
@@ -64,6 +65,32 @@ export function statusColor(status?: MaterializationStatus): ChipColor {
 }
 
 /**
+ * Whether an auto-run built its tables but its manifest did not load into the
+ * package (`metadata.autoLoad: "failed"`): it reached MANIFEST_FILE_READY, but
+ * queries are not answered from the new tables.
+ */
+export function builtNotServed(materialization: Materialization): boolean {
+   return (
+      materialization.status === MaterializationStatus.ManifestFileReady &&
+      parseMetadata(materialization).autoLoad === "failed"
+   );
+}
+
+/** {@link statusLabel} for a run, which reads a built-but-not-served run apart. */
+export function runLabel(materialization: Materialization): string {
+   return builtNotServed(materialization)
+      ? "Built, not served"
+      : statusLabel(materialization.status);
+}
+
+/** {@link statusColor} for a run: a built-but-not-served run is a warning. */
+export function runColor(materialization: Materialization): ChipColor {
+   return builtNotServed(materialization)
+      ? "warning"
+      : statusColor(materialization.status);
+}
+
+/**
  * Shape of Materialization.metadata. The generated client types it as
  * `object | null`, so callers must read it through parseMetadata(), which
  * narrows defensively and tolerates a missing or differently-shaped object.
@@ -73,12 +100,13 @@ export interface MaterializationMetadata {
    sourceNames?: string[];
    mode?: "auto" | "orchestrated";
    /**
-    * What initiated the run. `SCHEDULER` = the standalone scheduler fired the
-    * package's `materialization.schedule` cron; `ON_DEMAND` (default) = an
+    * What initiated the run. `scheduler` = the standalone scheduler fired the
+    * package's `materialization.schedule` cron; `on_demand` (default) = an
     * explicit API/UI create. Recorded on the run so a scheduled rebuild is
-    * distinguishable from a manual one.
+    * distinguishable from a manual one. Servers before 0.15 wrote
+    * `SCHEDULER` and `ON_DEMAND`; read with {@link isScheduledRun}.
     */
-   trigger?: "ON_DEMAND" | "SCHEDULER";
+   trigger?: "on_demand" | "scheduler" | "ON_DEMAND" | "SCHEDULER";
    sourcesBuilt?: number;
    sourcesReused?: number;
    /**
@@ -93,6 +121,14 @@ export interface MaterializationMetadata {
     * `refused`; {@link refusedSourcesOf} reads both.
     */
    refusedSources?: Record<string, { name: string; message: string }>;
+   /**
+    * An auto-run's manifest load, recorded when it reaches MANIFEST_FILE_READY:
+    * `loaded`, or `failed` with the step and error. Absent on an orchestrated
+    * run, which loads nothing.
+    */
+   autoLoad?: "loaded" | "failed";
+   autoLoadStep?: string;
+   autoLoadError?: string;
 }
 
 /** One source a run did not build because the eligibility gate refused it. */
@@ -145,11 +181,16 @@ export function parseMetadata(
    return (materialization.metadata ?? {}) as MaterializationMetadata;
 }
 
+/** Whether the scheduler fired the run, in either spelling a server wrote. */
+export function isScheduledRun(meta: MaterializationMetadata): boolean {
+   return meta.trigger === "scheduler" || meta.trigger === "SCHEDULER";
+}
+
 /** Human label for how a run was initiated. */
 export function triggerLabel(
    meta: MaterializationMetadata,
 ): "Scheduled" | "Manual" {
-   return meta.trigger === "SCHEDULER" ? "Scheduled" : "Manual";
+   return isScheduledRun(meta) ? "Scheduled" : "Manual";
 }
 
 /** Human-readable elapsed time between two ISO timestamps (to now if open). */

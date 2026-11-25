@@ -17,7 +17,7 @@ import {
    cleanupStorageFiles,
    dropStorageTable,
    listStorageTables,
-} from "./materialization/run/materialization_build_session";
+} from "./materialization/run/storage_admin";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -246,7 +246,7 @@ describe("storage destination attach under destinations-only (DuckLake)", () => 
       } finally {
          await session.close();
       }
-      expect(secretStatements[0]).toContain("SCOPE 's3://bucket/prefix/'");
+      expect(secretStatements[0]).toContain("SCOPE ['s3://bucket/prefix/']");
    });
 
    it("reads a chain-auth catalog past the policy gate", async () => {
@@ -298,7 +298,7 @@ describe("storage destination attach under destinations-only (DuckLake)", () => 
             secretStatements.length = 0;
             await attach(lakeAt(url));
             expect(secretStatements).toHaveLength(1);
-            expect(secretStatements[0]).toContain(`SCOPE '${scope}'`);
+            expect(secretStatements[0]).toContain(`SCOPE ['${scope}']`);
          }
       });
 
@@ -306,7 +306,7 @@ describe("storage destination attach under destinations-only (DuckLake)", () => 
          await attach(lakeAt("gs://bucket/prefix", true));
          expect(secretStatements).toHaveLength(1);
          expect(secretStatements[0]).toContain("TYPE gcs");
-         expect(secretStatements[0]).toContain("SCOPE 'gs://bucket/prefix/'");
+         expect(secretStatements[0]).toContain("SCOPE ['gs://bucket/prefix/']");
       });
 
       it("turns off the env-seeded global S3 config before anything reaches S3", async () => {
@@ -355,10 +355,12 @@ describe("storage destination attach under destinations-only (DuckLake)", () => 
          }
       });
 
-      it("does not touch the global S3 config for GCS storage", async () => {
+      it("turns the global S3 config off for GCS storage too, once httpfs loads", async () => {
+         // Every httpfs load blanks the env-seeded S3 keys and turns the
+         // fallback off (duckdb_lockdown.ts), whatever the storage.
          await attach(lakeAt("gs://bucket/prefix", true));
-         expect(allStatements.join("\n")).not.toContain(
-            "enable_global_s3_configuration",
+         expect(allStatements.join("\n")).toContain(
+            "SET GLOBAL enable_global_s3_configuration=false",
          );
       });
 
@@ -395,7 +397,7 @@ describe("storage destination attach under destinations-only (DuckLake)", () => 
             delete proto.setStorageSecretRenewer;
          }
          expect(secretStatements).toHaveLength(1);
-         expect(secretStatements[0]).toContain("SCOPE 's3://bucket/prefix/'");
+         expect(secretStatements[0]).toContain("SCOPE ['s3://bucket/prefix/']");
       });
    });
 });

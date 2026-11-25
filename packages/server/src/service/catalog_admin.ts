@@ -18,32 +18,63 @@
 
 import { settings } from "../settings";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
+import { createHash, randomUUID } from "crypto";
+import { Client } from "pg";
 import type { components } from "../api";
 import { BadRequestError, ConflictError } from "../errors";
 import { logger } from "../logger";
+import { countLoadRejection, loadSlots } from "../query_concurrency";
 import {
-   applySessionResourceLimits,
    attachDuckLakeForCreate,
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
-   escapeSQL,
-   tablePartitionKeys,
-   type PartitionKey,
 } from "./connection";
 import {
+   isDuckLakeInitRace,
+   READABLE_SCHEMA_NAME,
+   RESERVED_SCHEMA_NAMES,
+   SYSTEM_SCHEMAS,
+} from "./dialects/ducklake";
+import {
+   METADATA_CATALOG_PREFIX,
+   metadataCatalogRef,
+   type PartitionKey,
+   tablePartitionKeys,
+} from "./dialects/ducklake_catalog";
+import { destinationOverlaps } from "./destination_overlap";
+import { applySessionResourceLimits, escapeSQL } from "./duckdb_session_setup";
+import type { LoadedEnvironmentsReader } from "./environment_ports";
+import {
+   connectPgClient,
+   createPgAttachSecret,
+   pgClientConfig,
+} from "./postgres_conninfo";
+import { createIsolatedBuildSession } from "./materialization/run/materialization_build_session";
+import {
    cleanupStorageFiles,
-   createIsolatedBuildSession,
    dropStorageTable,
-} from "./materialization/run/materialization_build_session";
+} from "./materialization/run/storage_admin";
 import { parseS3Endpoint } from "./gcs_s3_utils";
+import { canonicalSha } from "./package_revision";
 import { redactPgSecrets } from "../pg_helpers";
+import { errMessage } from "../utils";
 import { quoteIdentifier } from "./quoting";
+import { containsStatementSeparator } from "./single_select";
 import { withStatementUsage } from "./statement_usage";
 import {
+   LOAD_COMMIT_AUTHOR,
    type LoadFormat,
    type LoadOptions,
+   type LoadRecord,
+   type LoadResult,
+   CommittedLoadError,
+   LoadRefusalError,
+   PostApplyError,
    copyStorageTable,
+   flushStorageTable,
    loadStorageTable,
+   mergeStorageTable,
+   quotedList,
 } from "./materialization/run/storage_table_load";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -54,17 +85,25 @@ type DucklakeStorage = NonNullable<
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** A role name safe in a libpq `options=-crole=` value, hyphens included (`<prefix>-ducklake`). */
 const ROLE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+/** Refused on a schema create or drop and on a load; `main` is DuckLake's default and cannot be dropped. */
+const RESERVED_SCHEMAS = ["main", ...RESERVED_SCHEMA_NAMES];
 /** DuckLake's interval spelling for `delete_older_than`, e.g. `1 day`, `12 hours`. */
 const INTERVAL = /^(\d+) (second|minute|hour|day|week)s?$/;
 /** Used by a snapshot delete when the catalog records no file-deletion grace. */
 const DEFAULT_FILE_DELETION_GRACE = "1 day";
+/** The longest `Idempotency-Key`, as the v1 API allows. */
+const MAX_IDEMPOTENCY_KEY = 255;
+/** A load's id: the UUID this server minted, which a read matches before it asks the catalog database. */
+const LOAD_ID =
+   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/** An admin refusal: its HTTP status and the machine-readable `reason`. */
+/** An admin refusal: its HTTP status, the machine-readable `reason`, and the `detail` a caller can act on. */
 export class CatalogAdminError extends Error {
    constructor(
       readonly status: number,
       readonly reason: string,
       message: string,
+      readonly detail?: Record<string, unknown>,
    ) {
       super(message);
    }
@@ -78,12 +117,66 @@ const notFound = (name: string) =>
    );
 const badRequest = (message: string) =>
    new CatalogAdminError(400, "INVALID_REQUEST", message);
+/** A refusal to start or finish a load (503 `LOAD_BUSY`), counted by what was busy. */
+const loadBusy = (cause: "slot" | "lock" | "lost", message: string) => {
+   countLoadRejection(cause);
+   return new CatalogAdminError(503, "LOAD_BUSY", message);
+};
+
+/**
+ * Runs one heavy load or copy: this process holds one slot for them, and a busy
+ * slot is refused (503 `LOAD_BUSY`), not queued, so the caller retries, possibly
+ * on another replica.
+ */
+export async function withLoadSlot<T>(fn: () => Promise<T>): Promise<T> {
+   const slot = loadSlots.tryAcquire();
+   if (!slot) {
+      throw loadBusy(
+         "slot",
+         "This server is already running a load; retry shortly.",
+      );
+   }
+   try {
+      return await fn();
+   } finally {
+      slot.release();
+   }
+}
+
+/** A read of the catalog database, rows out. */
+type CatalogQuery = (sql: string) => Promise<Record<string, unknown>[]>;
+
+/** What {@link CatalogAdmin.withTableLock} hands its callback. */
+export interface TableLock {
+   /** Reads the catalog database on the lock's own connection. */
+   pg: CatalogQuery;
+   /** Reads as `pg` does, for after a commit: a failure stays the plain error, since a 503 `LOAD_BUSY` would say nothing was written. */
+   pgAfterCommit: CatalogQuery;
+   /**
+    * Throws 503 `LOAD_BUSY` when the lock's connection is gone. A session lock
+    * dies with its connection, so call it right before the commit it guards.
+    */
+   assertLockHeld: () => Promise<void>;
+}
+
+/** Postgres's advisory-lock key for a table's name, as {@link tableLockName} spells it. */
+const TABLE_LOCK_KEY = "hashtextextended($1, 0)";
+
+/** A table's name within a catalog, folded as the engine folds it: how a load's record and the table's lock name it. */
+const foldedTableName = (schema: string, table: string) =>
+   `${schema.toLowerCase()}.${table.toLowerCase()}`;
+
+/** A table's lock name: the folded table name under the catalog as given. */
+const tableLockName = (catalog: string, schema: string, table: string) =>
+   `${catalog}.${foldedTableName(schema, table)}`;
 
 export interface CatalogAdminConfig {
    /** A libpq connection string (keyword or URI form) for the catalog database. */
    catalogDatabase: string;
    /** The storage credential every catalog's data path is read and written with. */
    storage?: Omit<DucklakeStorage, "bucketUrl">;
+   /** Internal: bounds a query on a table lock's connection (default 30 s); specs shorten it. */
+   lockQueryTimeoutMillis?: number;
 }
 
 /**
@@ -102,6 +195,8 @@ export function catalogAdminConfig(): CatalogAdminConfig | null {
          "PUBLISHER_ADMIN_CATALOG_DATABASE must not set `options`: the admin API sets the session role per catalog. Set server parameters on the role or database instead (ALTER ROLE … SET).",
       );
    }
+   // The load lock's client reads this string too; a form it cannot use fails startup, not every load.
+   pgClientConfig("PUBLISHER_ADMIN_CATALOG_DATABASE", catalogDatabase);
    const provider = settings.get("admin.storage.provider");
    const keyId = settings.get("admin.storage.keyId");
    const secret = settings.get("admin.storage.secret");
@@ -175,6 +270,11 @@ export interface CatalogTableSummary {
    sizeBytes: number;
 }
 
+/** A table of a catalog-wide listing, which names each table's schema. */
+export interface CatalogTableListing extends CatalogTableSummary {
+   schema: string;
+}
+
 export interface CatalogTable {
    schema: string;
    name: string;
@@ -188,6 +288,27 @@ export interface CatalogSnapshot {
    id: number;
    time: string;
    changes: Record<string, unknown>;
+   /** Who committed it, as DuckLake records it; null when none was set. */
+   author: string | null;
+   commitMessage: string | null;
+}
+
+/** A load that changed nothing: its counts and mode. It commits no snapshot, so it has no id. */
+export interface LoadNoOp extends LoadResult {
+   mode: "merge" | "replace";
+}
+
+/** A load that committed: also its id and its snapshot's number and time. */
+export interface Load extends LoadNoOp {
+   id: string;
+   snapshotId: number;
+   committedAt: string;
+}
+
+/** A load as a read answers it: also who committed its snapshot, and the message. */
+export interface LoadRead extends Load {
+   author: string | null;
+   commitMessage: string | null;
 }
 
 /** Appends a libpq `options` setting that makes the session act as `role`. */
@@ -221,7 +342,11 @@ const pgLiteral = (value: string) => `'${value.replace(/'/g, "''")}'`;
 const pgIdent = (name: string) => `"${name.replace(/"/g, '""')}"`;
 
 export class CatalogAdmin {
-   constructor(private readonly config: CatalogAdminConfig) {}
+   /** `environments` is read at each write for the destinations whose build schema is refused; a standalone admin listener has none. */
+   constructor(
+      private readonly config: CatalogAdminConfig,
+      private readonly environments?: LoadedEnvironmentsReader,
+   ) {}
 
    async listCatalogs(): Promise<Catalog[]> {
       return this.withCatalogDatabase(async (pg) => {
@@ -295,7 +420,7 @@ export class CatalogAdmin {
       if (!Array.isArray(schemas)) {
          throw badRequest("'schemas' must be a list of names.");
       }
-      const schemaNames = schemas.map((s) => identifier(s, "schemas[]"));
+      const schemaNames = schemas.map((s) => schemaName(s, "schemas[]"));
 
       const owner = await this.withCatalogDatabase(async (pg) => {
          if (await this.catalogExists(pg, name)) {
@@ -325,6 +450,15 @@ export class CatalogAdmin {
             );
          }
       } catch (error) {
+         // Another create of this catalog, begun after the check above, made it
+         // first.
+         if (isDuckLakeInitRace(error)) {
+            throw new CatalogAdminError(
+               409,
+               "CATALOG_EXISTS",
+               `A DuckLake catalog named '${name}' already exists.`,
+            );
+         }
          throw this.redacted(error);
       } finally {
          await dispose();
@@ -345,34 +479,111 @@ export class CatalogAdmin {
       return this.getCatalog(name);
    }
 
+   /**
+    * Creates a schema. Returns whether it is new: a schema that exists, or one
+    * another request created first, is not an error.
+    */
+   async createSchema(
+      name: string,
+      schema: string,
+      request: unknown,
+      ifAbsent: boolean,
+   ): Promise<{ schema: { name: string }; created: boolean }> {
+      if (request && Object.keys(request).length > 0) {
+         throw badRequest("The request takes no body.");
+      }
+      schemaName(schema, "schema");
+      const created = await this.withAttached(name, "write", async (s) => {
+         if (await schemaExists(s, name, schema)) return false;
+         try {
+            await s.runSQL(`CREATE SCHEMA ${q(name)}.${q(schema)}`);
+         } catch (error) {
+            // Another create of this schema won: in one session it is "already
+            // exists", across sessions DuckLake's "Transaction conflict ... created".
+            const message = errMessage(error);
+            if (
+               /already exists/i.test(message) ||
+               (/Transaction conflict/i.test(message) &&
+                  /created/i.test(message))
+            ) {
+               return false;
+            }
+            throw error;
+         }
+         return true;
+      });
+      if (!created && ifAbsent) {
+         throw new CatalogAdminError(
+            412,
+            "SCHEMA_EXISTS",
+            `Schema '${schema}' already exists in catalog '${name}'.`,
+         );
+      }
+      logger.info("Created a schema in a DuckLake catalog", {
+         catalog: name,
+         schema,
+         created,
+      });
+      return { schema: { name: schema }, created };
+   }
+
+   /** Drops a schema and every table in it. A schema that does not exist is not an error. */
+   async deleteSchema(name: string, schema: string): Promise<void> {
+      identifier(schema, "schema");
+      refuseReserved(schema);
+      this.refuseDestinationSchema(name, schema);
+      await this.withAttached(name, "write", (s) =>
+         s.runSQL(`DROP SCHEMA IF EXISTS ${q(name)}.${q(schema)} CASCADE`),
+      );
+      logger.info("Dropped a schema from a DuckLake catalog", {
+         catalog: name,
+         schema,
+      });
+   }
+
+   /** A schema's tables, or with no schema every table of the catalog's schemas. */
    async listTables(
       name: string,
       schema: string,
-   ): Promise<CatalogTableSummary[]> {
-      identifier(schema, "schema");
+   ): Promise<CatalogTableSummary[]>;
+   async listTables(name: string): Promise<CatalogTableListing[]>;
+   async listTables(
+      name: string,
+      schema?: string,
+   ): Promise<(CatalogTableSummary | CatalogTableListing)[]> {
+      if (schema !== undefined) identifier(schema, "schema");
       return this.withAttached(name, "read", async (s) => {
-         await requireSchema(s, name, schema);
+         if (schema !== undefined) await requireSchema(s, name, schema);
          const tables = (await rows(
             s,
-            `SELECT table_name FROM duckdb_tables() WHERE database_name = '${escapeSQL(name)}' ` +
-               `AND schema_name = '${escapeSQL(schema)}' ORDER BY 1`,
-         )) as { table_name: string }[];
+            `SELECT schema_name, table_name FROM duckdb_tables() WHERE database_name = '${escapeSQL(name)}' AND ` +
+               (schema === undefined
+                  ? `schema_name NOT IN (${quotedList(SYSTEM_SCHEMAS)}) ORDER BY 1, 2`
+                  : `schema_name = '${escapeSQL(schema)}' ORDER BY 2`),
+         )) as { schema_name: string; table_name: string }[];
          // ducklake_table_info names a table's schema by id; the catalog's own
          // schema table maps the name to it (the live row, end_snapshot null).
-         const meta = `${q(`__ducklake_metadata_${name}`)}.${q(name)}`;
+         const meta = metadataCatalogRef(name, name);
          const sizes = new Map<string, number>();
          for (const r of (await rows(
             s,
-            `SELECT i.table_name, i.file_size_bytes + i.delete_file_size_bytes AS bytes ` +
+            `SELECT m.schema_name, i.table_name, i.file_size_bytes + i.delete_file_size_bytes AS bytes ` +
                `FROM ducklake_table_info('${escapeSQL(name)}') i ` +
                `JOIN ${meta}.ducklake_schema m ON m.schema_id = CAST(i.schema_id AS BIGINT) ` +
-               `AND m.end_snapshot IS NULL WHERE m.schema_name = '${escapeSQL(schema)}'`,
-         )) as { table_name: string; bytes: unknown }[]) {
-            sizes.set(r.table_name, Number(r.bytes ?? 0));
+               `AND m.end_snapshot IS NULL` +
+               (schema === undefined
+                  ? ""
+                  : ` WHERE m.schema_name = '${escapeSQL(schema)}'`),
+         )) as { schema_name: string; table_name: string; bytes: unknown }[]) {
+            sizes.set(
+               `${r.schema_name}\u0000${r.table_name}`,
+               Number(r.bytes ?? 0),
+            );
          }
          return tables.map((t) => ({
+            ...(schema === undefined ? { schema: t.schema_name } : {}),
             name: t.table_name,
-            sizeBytes: sizes.get(t.table_name) ?? 0,
+            sizeBytes: sizes.get(`${t.schema_name}\u0000${t.table_name}`) ?? 0,
          }));
       });
    }
@@ -438,100 +649,108 @@ export class CatalogAdmin {
    ): Promise<{ table: CatalogTable; created: boolean }> {
       identifier(schema, "schema");
       identifier(table, "table");
+      this.refuseDestinationSchema(name, schema);
       const source = tableSource(request.source);
-      const { owner, sourceOwner } = await this.withCatalogDatabase(
-         async (pg) => {
-            await this.requireCatalog(pg, name);
-            const owner = await this.schemaOwner(pg, name);
-            if (source.kind !== "table")
-               return { owner, sourceOwner: undefined };
-            return {
-               owner,
-               sourceOwner: await this.copySource(pg, name, owner, source),
-            };
-         },
-      );
-      // A schema that does not exist answers 404 (SCHEMA_NOT_FOUND) here,
-      // before anything is read.
-      const existing = await this.listTables(name, schema);
-      const exists = existing.some((t) => t.name === table);
-      if (exists && ifAbsent) {
-         throw new CatalogAdminError(
-            412,
-            "TABLE_EXISTS",
-            `Table '${schema}.${table}' already exists in catalog '${name}'.`,
-         );
-      }
-      const mode = ifAbsent ? "create" : "replace";
-      try {
-         await withStatementUsage(
-            {
-               environment: "",
-               connection: name,
-               surface: source.kind === "table" ? "copy" : "load",
+      // Taken first, as a load takes it, so a busy server refuses before reading anything.
+      const created = await withLoadSlot(async () => {
+         const { owner, sourceOwner } = await this.withCatalogDatabase(
+            async (pg) => {
+               await this.requireCatalog(pg, name);
+               const owner = await this.schemaOwner(pg, name);
+               if (source.kind !== "table")
+                  return { owner, sourceOwner: undefined };
+               return {
+                  owner,
+                  sourceOwner: await this.copySource(pg, name, owner, source),
+               };
             },
-            () =>
-               source.kind === "table"
-                  ? copyStorageTable({
-                       destinationName: name,
-                       destinationConnection: this.connection(name, owner),
-                       schemaName: schema,
-                       tableName: table,
-                       source: {
-                          catalogName: source.catalog,
-                          connection: this.connection(
-                             source.catalog,
-                             sourceOwner,
-                          ),
-                          schemaName: source.schema,
-                          tableName: source.table,
-                       },
-                       mode,
-                    })
-                  : loadStorageTable({
-                       destinationName: name,
-                       destinationConnection: this.connection(name, owner),
-                       schemaName: schema,
-                       tableName: table,
-                       uri: source.uri,
-                       format: source.format,
-                       options: source.options,
-                       mode,
-                    }),
-            (r) => r.rowCount,
          );
-      } catch (error) {
-         // Another create-only PUT won the race between the existence check
-         // and the load: the same answer as if it had come first.
-         if (ifAbsent && error instanceof ConflictError) {
+         // A schema that does not exist answers 404 (SCHEMA_NOT_FOUND) here,
+         // before anything is read.
+         const existing = await this.listTables(name, schema);
+         const exists = existing.some((t) => t.name === table);
+         if (exists && ifAbsent) {
             throw new CatalogAdminError(
                412,
                "TABLE_EXISTS",
                `Table '${schema}.${table}' already exists in catalog '${name}'.`,
             );
          }
-         throw this.redacted(error);
-      }
-      logger.info(
-         source.kind === "table"
-            ? "Copied a table into a DuckLake catalog"
-            : "Loaded a table into a DuckLake catalog",
-         {
-            catalog: name,
-            schema,
-            table,
-            ...(source.kind === "table"
-               ? {
-                    source: `${source.catalog}.${source.schema}.${source.table}`,
-                 }
-               : { format: source.format }),
-            created: !exists,
-         },
-      );
-      return {
-         table: await this.getTable(name, schema, table),
-         created: !exists,
-      };
+         const mode = ifAbsent ? "create" : "replace";
+         try {
+            await withStatementUsage(
+               {
+                  environment: "",
+                  connection: name,
+                  // The admin API addresses a catalog by its own name.
+                  catalog: name,
+                  surface: source.kind === "table" ? "copy" : "load",
+               },
+               () =>
+                  source.kind === "table"
+                     ? copyStorageTable({
+                          destinationName: name,
+                          destinationConnection: this.connection(name, owner),
+                          schemaName: schema,
+                          tableName: table,
+                          source: {
+                             catalogName: source.catalog,
+                             connection: this.connection(
+                                source.catalog,
+                                sourceOwner,
+                             ),
+                             schemaName: source.schema,
+                             tableName: source.table,
+                          },
+                          mode,
+                       })
+                     : loadStorageTable({
+                          destinationName: name,
+                          destinationConnection: this.connection(name, owner),
+                          schemaName: schema,
+                          tableName: table,
+                          uri: source.uri,
+                          format: source.format,
+                          options: source.options,
+                          mode,
+                       }),
+               (r) => r.rowCount,
+            );
+         } catch (error) {
+            // Another create-only PUT won the race between the existence check
+            // and the load: the same answer as if it had come first.
+            if (ifAbsent && error instanceof ConflictError) {
+               throw new CatalogAdminError(
+                  412,
+                  "TABLE_EXISTS",
+                  `Table '${schema}.${table}' already exists in catalog '${name}'.`,
+               );
+            }
+            const mapped = this.redacted(error);
+            // Once the table is committed, "nothing was written" would mislead.
+            throw error instanceof CommittedLoadError
+               ? mapped
+               : (this.tooLarge(mapped, "Write less") ?? mapped);
+         }
+         logger.info(
+            source.kind === "table"
+               ? "Copied a table into a DuckLake catalog"
+               : "Loaded a table into a DuckLake catalog",
+            {
+               catalog: name,
+               schema,
+               table,
+               ...(source.kind === "table"
+                  ? {
+                       source: `${source.catalog}.${source.schema}.${source.table}`,
+                    }
+                  : { format: source.format }),
+               created: !exists,
+            },
+         );
+         return !exists;
+      });
+      return { table: await this.getTable(name, schema, table), created };
    }
 
    /** Drops a table. A table that does not exist is not an error. */
@@ -566,17 +785,22 @@ export class CatalogAdmin {
          (
             (await rows(
                s,
-               `SELECT snapshot_id, snapshot_time, changes FROM ${q(name)}.snapshots() ` +
+               `SELECT snapshot_id, snapshot_time, changes, author, commit_message FROM ${q(name)}.snapshots() ` +
                   `ORDER BY snapshot_id DESC LIMIT ${Math.max(1, Math.min(limit, 1000))}`,
             )) as {
                snapshot_id: unknown;
                snapshot_time: unknown;
                changes: unknown;
+               author: unknown;
+               commit_message: unknown;
             }[]
          ).map((r) => ({
             id: Number(r.snapshot_id),
             time: new Date(String(r.snapshot_time)).toISOString(),
             changes: (r.changes ?? {}) as Record<string, unknown>,
+            author: r.author == null ? null : String(r.author),
+            commitMessage:
+               r.commit_message == null ? null : String(r.commit_message),
          })),
       );
    }
@@ -631,7 +855,385 @@ export class CatalogAdmin {
       }
    }
 
+   /**
+    * Runs `fn` holding a Postgres advisory lock on the table, taken in the
+    * catalog database so every replica contends for the same one. DuckLake
+    * tracks commit conflicts per table and operation, not per key, so it cannot
+    * stop two loads inserting the same new keys (see
+    * ducklake_commit_conflict.integration.spec.ts). A held lock is refused (503
+    * `LOAD_BUSY`), never waited on.
+    */
+   async withTableLock<T>(
+      catalog: string,
+      schema: string,
+      table: string,
+      fn: (lock: TableLock) => Promise<T>,
+   ): Promise<T> {
+      const key = tableLockName(catalog, schema, table);
+      let lost = false;
+      let client: Client;
+      try {
+         client = await connectPgClient(
+            "The catalog database",
+            this.config.catalogDatabase,
+            () => {
+               lost = true;
+            },
+            this.config.lockQueryTimeoutMillis,
+         );
+      } catch (error) {
+         throw this.redacted(error);
+      }
+      const query = async (sql: string, values?: string[]) => {
+         try {
+            return (await client.query(sql, values)).rows;
+         } catch (error) {
+            // A query that gets no answer leaves the connection in doubt: it is dropped, not used again.
+            if (/Query read timeout/i.test(errMessage(error))) lost = true;
+            throw error;
+         }
+      };
+      try {
+         const locked = await query(
+            `SELECT pg_try_advisory_lock(${TABLE_LOCK_KEY}) AS locked`,
+            [key],
+         ).catch((error: unknown) => {
+            lost = true;
+            logger.warn("Could not take a table load lock", {
+               table: key,
+               error: errMessage(error),
+            });
+            throw loadBusy(
+               "lost",
+               `The lock on '${key}' could not be taken; retry the load.`,
+            );
+         });
+         if (locked[0]?.locked !== true) {
+            throw loadBusy("lock", `A load of '${key}' is already running.`);
+         }
+         try {
+            return await fn({
+               pg: async (sql) => {
+                  try {
+                     return await query(sql);
+                  } catch (error) {
+                     // A read cut off by the lock's connection dying is a lost lock.
+                     if (!lost) throw error;
+                     throw loadBusy(
+                        "lost",
+                        `The lock on '${key}' was lost; retry the load.`,
+                     );
+                  }
+               },
+               pgAfterCommit: (sql) => query(sql),
+               assertLockHeld: async () => {
+                  try {
+                     if (lost) throw new Error("connection lost");
+                     await query("SELECT 1");
+                  } catch {
+                     lost = true;
+                     throw loadBusy(
+                        "lost",
+                        `The lock on '${key}' was lost; retry the load.`,
+                     );
+                  }
+               },
+            });
+         } finally {
+            if (!lost) {
+               await query(`SELECT pg_advisory_unlock(${TABLE_LOCK_KEY})`, [
+                  key,
+               ]).catch(() => {
+                  lost = true;
+               });
+            }
+         }
+      } finally {
+         // end() on a connection that has stopped answering never settles: its socket is destroyed instead.
+         if (lost) destroyConnection(client);
+         else await client.end().catch(() => undefined);
+      }
+   }
+
+   /**
+    * Applies Parquet objects under the catalog's data path to a table by key
+    * (see {@link mergeStorageTable}), creating the table when it does not
+    * exist. Takes this process's load slot, then holds the table's lock for the
+    * whole load: either busy is refused (503 `LOAD_BUSY`), not waited on, so
+    * neither order can deadlock, and a refusal by a busy slot opens no
+    * connection to the catalog database.
+    *
+    * A load that committed has an id and its snapshot (`created`). An
+    * `idempotencyKey` that an earlier load of this table with the same body
+    * committed under replays that load, and the same key with another body is
+    * refused (409 `IDEMPOTENCY_KEY_REUSED`).
+    */
+   async loadTable(
+      name: string,
+      schema: string,
+      table: string,
+      body: unknown,
+      idempotencyKey?: string,
+   ): Promise<
+      { load: Load; created: true } | { load: LoadNoOp; created: false }
+   > {
+      identifier(name, "catalog");
+      identifier(schema, "schema");
+      identifier(table, "table");
+      refuseReserved(schema, TABLE_SCHEMA_HINT);
+      this.refuseDestinationSchema(name, schema);
+      const request = loadRequest(body);
+      const keyDigest = idempotencyKeyDigest(idempotencyKey);
+      const record = {
+         id: randomUUID(),
+         table: foldedTableName(schema, table),
+         ...(keyDigest ? { keyDigest } : {}),
+         requestDigest: canonicalSha(request),
+      };
+      return withLoadSlot(() =>
+         this.withTableLock(
+            name,
+            schema,
+            table,
+            async ({ pg, pgAfterCommit, assertLockHeld }) => {
+               await this.requireCatalog(pg, name);
+               await requireRecordedSchema(pg, name, schema);
+               const [earlier] = keyDigest
+                  ? await readLoads(pg, name, schema, table, {
+                       keyDigest,
+                       limit: 1,
+                    })
+                  : [];
+               if (earlier && earlier.requestDigest !== record.requestDigest) {
+                  throw new CatalogAdminError(
+                     409,
+                     "IDEMPOTENCY_KEY_REUSED",
+                     "The Idempotency-Key was used for a different request to this table; send a new key for a new request.",
+                  );
+               }
+               const destinationConnection = this.connection(
+                  name,
+                  await this.schemaOwner(pg, name),
+               );
+               if (earlier) {
+                  try {
+                     await flushStorageTable({
+                        destinationName: name,
+                        destinationConnection,
+                        schemaName: schema,
+                        tableName: table,
+                     });
+                  } catch (error) {
+                     throw this.loadFailure(error);
+                  }
+                  return { load: earlier.load, created: true };
+               }
+               let outcome: Awaited<ReturnType<typeof mergeStorageTable>>;
+               try {
+                  outcome = await withStatementUsage(
+                     {
+                        environment: "",
+                        connection: name,
+                        catalog: name,
+                        surface: "load",
+                     },
+                     () =>
+                        mergeStorageTable({
+                           ...request,
+                           destinationName: name,
+                           destinationConnection,
+                           schemaName: schema,
+                           tableName: table,
+                           record,
+                           assertLockHeld,
+                        }),
+                     (r) => r.result.rowsInserted + r.result.rowsReplaced,
+                  );
+               } catch (error) {
+                  throw this.loadFailure(error, request.key.length > 0);
+               }
+               const { result, committedAfter } = outcome;
+               logger.info("Loaded rows into a DuckLake table", {
+                  catalog: name,
+                  schema,
+                  table,
+                  mode: request.mode,
+                  objects: request.objects.length,
+                  rowsInserted: result.rowsInserted,
+                  rowsReplaced: result.rowsReplaced,
+                  rowsDeleted: result.rowsDeleted,
+               });
+               if (committedAfter === undefined) {
+                  return {
+                     load: { mode: request.mode, ...result },
+                     created: false,
+                  };
+               }
+               const unread = (cause?: unknown) =>
+                  new Error(
+                     `Load ${record.id} committed, but its record could not be read back; ${
+                        keyDigest
+                           ? "retrying with the same Idempotency-Key replays it"
+                           : "a retry runs the load again"
+                     }.`,
+                     { cause },
+                  );
+               const [stored] = await readLoads(
+                  pgAfterCommit,
+                  name,
+                  schema,
+                  table,
+                  { id: record.id, above: committedAfter, limit: 1 },
+               ).catch((error: unknown) => {
+                  throw unread(error);
+               });
+               if (!stored) throw unread();
+               return { load: stored.load, created: true };
+            },
+         ),
+      );
+   }
+
+   /** One load of a table, by the id its create answered. */
+   async getLoad(
+      name: string,
+      schema: string,
+      table: string,
+      id: string,
+   ): Promise<LoadRead> {
+      identifier(name, "catalog");
+      identifier(schema, "schema");
+      identifier(table, "table");
+      const wanted = id.toLowerCase();
+      const [stored] = await this.withCatalogDatabase(async (pg) => {
+         await this.requireCatalog(pg, name);
+         return LOAD_ID.test(wanted)
+            ? readLoads(pg, name, schema, table, { id: wanted, limit: 1 })
+            : [];
+      });
+      if (!stored) {
+         throw new CatalogAdminError(
+            404,
+            "LOAD_NOT_FOUND",
+            `No load '${id}' of table '${schema}.${table}' in catalog '${name}', or its snapshot has been expired.`,
+         );
+      }
+      return withAuthor(stored);
+   }
+
+   /**
+    * A table's loads, newest first, `limit` at a time. `after` is the
+    * `nextCursor` of the page before. A table dropped and created again under
+    * its name shares one history.
+    */
+   async listLoads(
+      name: string,
+      schema: string,
+      table: string,
+      limit: number,
+      after?: string,
+   ): Promise<{ items: LoadRead[]; nextCursor?: string }> {
+      identifier(name, "catalog");
+      identifier(schema, "schema");
+      identifier(table, "table");
+      const below = after === undefined ? undefined : decodeCursor(after);
+      const size = Math.max(1, Math.min(limit, 1000));
+      const found = await this.withCatalogDatabase(async (pg) => {
+         await this.requireCatalog(pg, name);
+         return readLoadRows(pg, name, schema, table, {
+            below,
+            limit: size + 1,
+         });
+      });
+      // The page is the window's rows, whether or not each held a load, so a skipped record cannot end the pages early.
+      const page = found.slice(0, size);
+      return {
+         items: page.flatMap((r) => (r.stored ? [withAuthor(r.stored)] : [])),
+         ...(found.length > size
+            ? { nextCursor: encodeCursor(page[page.length - 1].snapshotId) }
+            : {}),
+      };
+   }
+
    // ---- internals ----
+
+   /** A load's failure as an admin refusal: DuckLake's commit conflict, or a table another request created first, as a 409; a memory or spill failure before the commit as a 422; the load's own 422s come through {@link redacted}. */
+   private loadFailure(error: unknown, keyed = false): unknown {
+      const mapped = this.redacted(error);
+      // Past the apply, a 409 or 422 with this load's advice would mislead: the rows are written, or the flush after a no-op is sized by earlier loads.
+      if (error instanceof PostApplyError) return mapped;
+      if (
+         mapped instanceof Error &&
+         !(mapped instanceof CatalogAdminError) &&
+         /Transaction conflict|Table with name .* already exists/i.test(
+            mapped.message,
+         )
+      ) {
+         return new CatalogAdminError(409, "LOAD_CONFLICT", mapped.message);
+      }
+      // A schema dropped before the load's transaction began fails at DuckDB's bind; once begun, it is the conflict above.
+      if (
+         mapped instanceof Error &&
+         !(mapped instanceof CatalogAdminError) &&
+         /Schema ".*" not found in DuckLakeCatalog/.test(mapped.message)
+      ) {
+         return new CatalogAdminError(
+            404,
+            "SCHEMA_NOT_FOUND",
+            "The schema was dropped before the load began.",
+         );
+      }
+      return (
+         this.tooLarge(
+            mapped,
+            keyed
+               ? "Split the load's objects across loads"
+               : "Give the load a key, split its objects across loads",
+         ) ?? mapped
+      );
+   }
+
+   /** A write that outgrew the session's memory or spill cap as a 422 with `advice`; a full disk stays a 500, and `redacted()` leaves it so for the reads that share it. */
+   private tooLarge(mapped: unknown, advice: string): CatalogAdminError | null {
+      if (
+         !(mapped instanceof Error) ||
+         mapped instanceof CatalogAdminError ||
+         !/Out of Memory Error|failed to offload|failed to pin block|max_temp_directory_size/.test(
+            mapped.message,
+         )
+      ) {
+         return null;
+      }
+      // DuckDB goes on to advise PRAGMA and SET statements a caller cannot run.
+      const said = mapped.message.split("\n")[0].replace(/\.$/, "");
+      return new CatalogAdminError(
+         422,
+         "LOAD_TOO_LARGE",
+         `The write exceeded the session's memory or spill limit (${said}). ${advice}, or raise admin.memoryLimit (and duckdb.memoryLimit when it is lower) or admin.maxTempDirectorySize.`,
+      );
+   }
+
+   /** A person's table in a destination's build schema would feed the incompatible-table rebuild and be served as the build's, and dropping the schema would remove every build table. */
+   private refuseDestinationSchema(catalog: string, schema: string): void {
+      const lake = this.connection(catalog, undefined);
+      for (const environment of this.environments?.getLoadedEnvironments() ??
+         []) {
+         const built = destinationOverlaps(
+            [lake],
+            environment.listStorageDestinations(),
+         ).find(
+            (o) =>
+               o.sameCatalog && o.schema.toLowerCase() === schema.toLowerCase(),
+         );
+         if (built) {
+            throw new CatalogAdminError(
+               409,
+               "SCHEMA_IS_DESTINATION",
+               `'${schema}' is built by Publisher: storage destination '${built.destination}' of environment '${environment.getEnvironmentName()}' materializes into it, so tables you write belong in another schema, created with PUT /catalogs/{catalog}/schemas/{schema}.`,
+            );
+         }
+      }
+   }
 
    /** The catalog as a DuckLake config with no data path: its recorded one is used. */
    private ducklake(
@@ -709,8 +1311,13 @@ export class CatalogAdmin {
       try {
          await applySessionResourceLimits(session, { tempDirectory: workDir });
          await session.runSQL("INSTALL postgres; LOAD postgres;");
+         const { path, secret } = await createPgAttachSecret(
+            session,
+            "admin_pg",
+            this.config.catalogDatabase,
+         );
          await session.runSQL(
-            `ATTACH '${escapeSQL(this.config.catalogDatabase)}' AS admin_pg (TYPE postgres, READ_ONLY)`,
+            `ATTACH '${escapeSQL(path)}' AS admin_pg (TYPE postgres, READ_ONLY${secret ? `, SECRET ${secret}` : ""})`,
          );
          return await fn((sql) =>
             rows(
@@ -892,6 +1499,9 @@ export class CatalogAdmin {
       if (error instanceof CatalogAdminError) return error;
       const message = error instanceof Error ? error.message : String(error);
       const safe = redactPgSecrets(message);
+      if (error instanceof LoadRefusalError) {
+         return new CatalogAdminError(422, error.reason, safe, error.detail);
+      }
       if (
          /Existing DuckLake at metadata catalog .* does not exist/i.test(safe)
       ) {
@@ -900,10 +1510,7 @@ export class CatalogAdmin {
       if (/must sit under the catalog's data path/.test(safe)) {
          return new CatalogAdminError(400, "OBJECT_OUTSIDE_DATA_PATH", safe);
       }
-      // A request the load path refused -- a reader option it cannot use, or a
-      // file the reader refused (not the format it claims, a value it cannot
-      // convert; storage_table_load.ts's readerRefusal): a 400 with a reason,
-      // like every other admin refusal.
+      // A request the load path refused (a reader option it cannot use): a 400 with a reason, like every other admin refusal.
       if (error instanceof BadRequestError) {
          return new CatalogAdminError(400, "INVALID_REQUEST", safe);
       }
@@ -981,13 +1588,306 @@ function tableSource(value: unknown): TableSource {
    };
 }
 
-/** A source may carry only its own shape's keys, as the spec's `additionalProperties: false` says. */
-function onlyKeys(source: Record<string, unknown>, allowed: string[]): void {
+/** An object may carry only its own shape's keys, as the spec's `additionalProperties: false` says; `prefix` is the path the refusal names them under. */
+function onlyKeys(
+   source: Record<string, unknown>,
+   allowed: string[],
+   prefix = "source.",
+): void {
    for (const key of Object.keys(source)) {
       if (!allowed.includes(key)) {
-         throw badRequest(`Unknown key 'source.${key}'.`);
+         throw badRequest(`Unknown key '${prefix}${key}'.`);
       }
    }
+}
+
+const MAX_COMMIT_MESSAGE = 1024;
+/** Key and cursor columns are lowercase identifiers; the load matches them to the objects' columns by name, ignoring case. */
+const LOAD_COLUMN = /^[a-z_][a-z0-9_]*$/;
+const MAX_LOAD_OBJECTS = 1000;
+const MAX_LOAD_KEYS = 16;
+
+interface LoadRequest {
+   commitMessage?: string;
+   mode: "merge" | "replace";
+   /** Empty for a keyless replace. */
+   key: string[];
+   objects: string[];
+   cursor?: string;
+   maxDeletedRows?: number;
+}
+
+/** A load's request body, validated: every key allowed, a `merge` keyed and never guarded, a `replace` guarded. */
+function loadRequest(value: unknown): LoadRequest {
+   const body = value as Record<string, unknown> | undefined;
+   if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw badRequest("The request body must be a JSON object.");
+   }
+   onlyKeys(
+      body,
+      ["commitMessage", "mode", "key", "objects", "cursor", "maxDeletedRows"],
+      "",
+   );
+   const { commitMessage, mode, cursor, maxDeletedRows } = body;
+   if (commitMessage !== undefined) {
+      if (
+         typeof commitMessage !== "string" ||
+         commitMessage === "" ||
+         [...commitMessage].length > MAX_COMMIT_MESSAGE ||
+         commitMessage.includes("\0")
+      ) {
+         throw badRequest(
+            `'commitMessage' must be 1 to ${MAX_COMMIT_MESSAGE} characters, with no NUL.`,
+         );
+      }
+      // runSQL splits on the separator even inside a literal, so such a message would fail every retry with a 500.
+      if (containsStatementSeparator(commitMessage)) {
+         throw badRequest(
+            "'commitMessage' may not contain a statement separator.",
+         );
+      }
+   }
+   if (mode !== "merge" && mode !== "replace") {
+      throw badRequest("'mode' must be 'merge' or 'replace'.");
+   }
+   const key = stringList(body.key, "key", MAX_LOAD_KEYS, LOAD_COLUMN) ?? [];
+   if (body.key !== undefined && key.length === 0) {
+      throw badRequest("'key' must list at least one column.");
+   }
+   if (mode === "merge" && key.length === 0) {
+      throw badRequest("A merge needs a 'key'.");
+   }
+   if (mode === "merge" && maxDeletedRows !== undefined) {
+      throw badRequest("'maxDeletedRows' applies only to a replace.");
+   }
+   if (mode === "replace" && maxDeletedRows === undefined) {
+      throw badRequest("A replace needs 'maxDeletedRows'.");
+   }
+   if (
+      maxDeletedRows !== undefined &&
+      (typeof maxDeletedRows !== "number" ||
+         !Number.isSafeInteger(maxDeletedRows) ||
+         maxDeletedRows < 0)
+   ) {
+      throw badRequest("'maxDeletedRows' must be a non-negative integer.");
+   }
+   if (
+      cursor !== undefined &&
+      (typeof cursor !== "string" || !LOAD_COLUMN.test(cursor))
+   ) {
+      throw badRequest(
+         "'cursor' must be a lowercase column name ([a-z_][a-z0-9_]*).",
+      );
+   }
+   const objects = stringList(body.objects, "objects", MAX_LOAD_OBJECTS);
+   if (!objects || objects.length === 0) {
+      throw badRequest("'objects' must list at least one object.");
+   }
+   return {
+      ...(commitMessage !== undefined
+         ? { commitMessage: commitMessage as string }
+         : {}),
+      mode,
+      key,
+      objects,
+      ...(cursor !== undefined ? { cursor: cursor as string } : {}),
+      ...(maxDeletedRows !== undefined
+         ? { maxDeletedRows: maxDeletedRows as number }
+         : {}),
+   };
+}
+
+/** An optional list of distinct strings, at most `max` long, each matching `pattern` when given. */
+function stringList(
+   value: unknown,
+   what: string,
+   max: number,
+   pattern?: RegExp,
+): string[] | undefined {
+   if (value === undefined) return undefined;
+   if (
+      !Array.isArray(value) ||
+      value.length > max ||
+      value.some(
+         (v) =>
+            typeof v !== "string" || v === "" || (pattern && !pattern.test(v)),
+      ) ||
+      new Set(value).size !== value.length
+   ) {
+      throw badRequest(
+         `'${what}' must be a list of at most ${max} distinct ${pattern ? "lowercase column names ([a-z_][a-z0-9_]*)" : "object URIs"}.`,
+      );
+   }
+   return value as string[];
+}
+
+/** Refuses a schema the catalog does not record, read on the catalog database itself. */
+async function requireRecordedSchema(
+   pg: CatalogQuery,
+   catalog: string,
+   schema: string,
+): Promise<void> {
+   const found = await pg(
+      `SELECT 1 FROM ${pgIdent(catalog)}.ducklake_schema WHERE schema_name = ${pgLiteral(schema)} AND end_snapshot IS NULL`,
+   );
+   if (found.length === 0) {
+      throw new CatalogAdminError(
+         404,
+         "SCHEMA_NOT_FOUND",
+         `No schema '${schema}' in catalog '${catalog}'.`,
+      );
+   }
+}
+
+/** The SHA-256 of an `Idempotency-Key`, which is all a load's record keeps of it: the key itself never reaches SQL text. */
+function idempotencyKeyDigest(key: string | undefined): string | undefined {
+   if (key === undefined) return undefined;
+   if (key === "" || key.length > MAX_IDEMPOTENCY_KEY) {
+      throw badRequest(
+         `'Idempotency-Key' must be 1 to ${MAX_IDEMPOTENCY_KEY} characters.`,
+      );
+   }
+   return createHash("sha256").update(key).digest("hex");
+}
+
+/** A page position as a list's `after`: opaque to the caller, a snapshot id to this server. */
+const encodeCursor = (snapshotId: number) =>
+   Buffer.from(String(snapshotId)).toString("base64url");
+
+function decodeCursor(after: string): number {
+   const id = /^[A-Za-z0-9_-]+$/.test(after)
+      ? Buffer.from(after, "base64url").toString()
+      : "";
+   if (!/^\d{1,15}$/.test(id)) {
+      throw badRequest("'after' is not a cursor this server returned.");
+   }
+   return Number(id);
+}
+
+/** A load recorded in a snapshot, with what a read adds to it. */
+interface StoredLoad {
+   load: Load;
+   requestDigest: string;
+   author: string | null;
+   commitMessage: string | null;
+}
+
+const withAuthor = ({ load, author, commitMessage }: StoredLoad): LoadRead => ({
+   ...load,
+   author,
+   commitMessage,
+});
+
+/** Which of a table's loads {@link readLoads} selects. */
+interface LoadFilter {
+   limit: number;
+   /** The load with this id. */
+   id?: string;
+   /** Loads sent under this key digest, since the table now live was created: a key does not outlive a DELETE or a PUT replace. */
+   keyDigest?: string;
+   /** Snapshots below, and above, these ids. */
+   below?: number;
+   above?: number;
+}
+
+/** The loads {@link readLoadRows} found, without the rows that held none. */
+async function readLoads(
+   pg: CatalogQuery,
+   catalog: string,
+   schema: string,
+   table: string,
+   filter: LoadFilter,
+): Promise<StoredLoad[]> {
+   const found = await readLoadRows(pg, catalog, schema, table, filter);
+   return found.flatMap((r) => (r.stored ? [r.stored] : []));
+}
+
+/**
+ * A table's recorded loads, newest first, read on the catalog database itself
+ * (one query) from the snapshots their records are the `extra_info` of. The
+ * record is matched as text, then parsed and checked against the selection
+ * here, never cast in SQL: a snapshot another writer annotated is a row with
+ * no load, not an error.
+ */
+async function readLoadRows(
+   pg: CatalogQuery,
+   catalog: string,
+   schema: string,
+   table: string,
+   filter: LoadFilter,
+): Promise<{ snapshotId: number; stored?: StoredLoad }[]> {
+   const meta = pgIdent(catalog);
+   const has = (field: string, value: string) =>
+      `position(${pgLiteral(`"${field}":${JSON.stringify(value)}`)} in c.commit_extra_info) > 0`;
+   const where = [
+      `c.author = ${pgLiteral(LOAD_COMMIT_AUTHOR)}`,
+      `c.commit_extra_info LIKE '{"publisherLoad":1,%'`,
+      has("table", foldedTableName(schema, table)),
+   ];
+   if (filter.id) where.push(has("id", filter.id));
+   if (filter.keyDigest) {
+      where.push(
+         has("keyDigest", filter.keyDigest),
+         `c.snapshot_id >= (SELECT t.begin_snapshot FROM ${meta}.ducklake_table t JOIN ${meta}.ducklake_schema sc ` +
+            "ON t.schema_id = sc.schema_id " +
+            `WHERE sc.schema_name = ${pgLiteral(schema)} AND lower(t.table_name) = ${pgLiteral(table.toLowerCase())} ` +
+            "AND sc.end_snapshot IS NULL AND t.end_snapshot IS NULL)",
+      );
+   }
+   if (filter.below !== undefined) {
+      where.push(`c.snapshot_id < ${filter.below}`);
+   }
+   if (filter.above !== undefined) {
+      where.push(`c.snapshot_id > ${filter.above}`);
+   }
+   const found = await pg(
+      "SELECT c.snapshot_id, " +
+         `to_char(s.snapshot_time AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS committed_at, ` +
+         "c.author, c.commit_message, c.commit_extra_info " +
+         `FROM ${meta}.ducklake_snapshot_changes c JOIN ${meta}.ducklake_snapshot s ON s.snapshot_id = c.snapshot_id ` +
+         `WHERE ${where.join(" AND ")} ORDER BY c.snapshot_id DESC LIMIT ${filter.limit}`,
+   );
+   const folded = foldedTableName(schema, table);
+   return found.map((row) => {
+      const snapshotId = Number(row.snapshot_id);
+      let record: LoadRecord;
+      try {
+         record = JSON.parse(String(row.commit_extra_info));
+      } catch {
+         return { snapshotId };
+      }
+      if (
+         record?.publisherLoad !== 1 ||
+         record.table !== folded ||
+         (filter.id && record.id !== filter.id) ||
+         (filter.keyDigest && record.keyDigest !== filter.keyDigest)
+      ) {
+         return { snapshotId };
+      }
+      return {
+         snapshotId,
+         stored: {
+            load: {
+               id: record.id,
+               snapshotId,
+               committedAt: String(row.committed_at),
+               mode: record.mode,
+               ...record.result,
+            },
+            requestDigest: record.requestDigest,
+            author: row.author == null ? null : String(row.author),
+            commitMessage:
+               row.commit_message == null ? null : String(row.commit_message),
+         },
+      };
+   });
+}
+
+/** Drops a connection that has stopped answering by destroying its socket: node-pg has no public destroy, and `end()` waits for an `end` event a dead socket may never emit. */
+function destroyConnection(client: Client): void {
+   (
+      client as unknown as { connection?: { stream?: { destroy(): void } } }
+   ).connection?.stream?.destroy();
 }
 
 function sourceNotFound(message: string): CatalogAdminError {
@@ -1003,17 +1903,55 @@ function identifier(value: unknown, what: string): string {
    return value;
 }
 
-async function requireSchema(
+/** A schema name the admin API may create: lowercase and not reserved. */
+function schemaName(value: unknown, what: string): string {
+   if (typeof value !== "string" || !READABLE_SCHEMA_NAME.test(value)) {
+      throw badRequest(
+         `'${what}' must be a lowercase name ([a-z_][a-z0-9_]*).`,
+      );
+   }
+   refuseReserved(value);
+   return value;
+}
+
+/** Appended to a load's refusal, so it says where tables go. */
+const TABLE_SCHEMA_HINT =
+   "; tables go in a schema created with PUT /catalogs/{catalog}/schemas/{schema}";
+
+/** Refuses a name the engine owns or DuckLake needs, whatever its case, and the metadata catalogs' prefix, as `readableSchemas` does. */
+function refuseReserved(schema: string, hint = ""): void {
+   const folded = schema.toLowerCase();
+   if (
+      RESERVED_SCHEMAS.includes(folded) ||
+      folded.startsWith(METADATA_CATALOG_PREFIX)
+   ) {
+      throw new CatalogAdminError(
+         400,
+         "SCHEMA_RESERVED",
+         `'${schema}' is a reserved schema name${hint}.`,
+      );
+   }
+}
+
+async function schemaExists(
    session: DuckDBConnection,
    catalog: string,
    schema: string,
-): Promise<void> {
+): Promise<boolean> {
    const found = await rows(
       session,
       `SELECT 1 FROM duckdb_schemas() WHERE database_name = '${escapeSQL(catalog)}' ` +
          `AND schema_name = '${escapeSQL(schema)}'`,
    );
-   if (found.length === 0) {
+   return found.length > 0;
+}
+
+async function requireSchema(
+   session: DuckDBConnection,
+   catalog: string,
+   schema: string,
+): Promise<void> {
+   if (!(await schemaExists(session, catalog, schema))) {
       throw new CatalogAdminError(
          404,
          "SCHEMA_NOT_FOUND",

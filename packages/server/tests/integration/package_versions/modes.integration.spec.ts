@@ -5,7 +5,7 @@
 
 /**
  * Package versions on 17 routes that read a `versionId`: package, models,
- * model, query, compile, dashboards, notebooks, one notebook, data apps,
+ * model, query, compile, reports, notebooks, one notebook, data apps,
  * databases, the package-scoped connection (schemas, sqlQuery, sqlSource,
  * sqlTemporaryTable), materializations, events and static files. Each handler
  * reads the version itself, so each is probed, for each kind of package: one
@@ -19,7 +19,7 @@
  * page says it. So a route whose answer can say which tree served it is
  * checked on that answer, not only on its status: one that resolved the
  * version and then read `latest` fails. Routes whose answer is the same for
- * every tree (dashboards, notebooks, connection schemas, materializations,
+ * every tree (reports, notebooks, connection schemas, materializations,
  * events) are checked on status alone.
  */
 
@@ -27,7 +27,11 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   deleteLeftoverEnvironment,
+   RestE2EEnv,
+   startRestE2E,
+} from "../../harness/rest_e2e";
 import { installVariables } from "../../../src/test_helpers/settings_env";
 
 const ENV_NAME = "versioning-modes-env";
@@ -136,12 +140,8 @@ const ROUTES: Route[] = [
          }).then((res) => probe(res, marker(/SELECT (\d+) as n/))),
    },
    {
-      name: "GET dashboards",
-      call: (base, v) => get(`${base}/dashboards${query(v)}`),
-   },
-   {
-      name: "GET notebooks",
-      call: (base, v) => get(`${base}/notebooks${query(v)}`),
+      name: "GET reports",
+      call: (base, v) => get(`${base}/reports${query(v)}`),
    },
    {
       name: "GET data-apps",
@@ -166,7 +166,7 @@ const ROUTES: Route[] = [
             method: "POST",
             headers: json,
             body: JSON.stringify({
-               sqlStatement: "SELECT n FROM read_csv_auto('data_*.csv')",
+               sqlStatement: "SELECT n FROM read_csv_auto('data/data_*.csv')",
             }),
          }).then((res) => probe(res, marker(/\\?"n\\?":\s*\\?"?(\d+)/))),
    },
@@ -179,7 +179,7 @@ const ROUTES: Route[] = [
             method: "POST",
             headers: json,
             body: JSON.stringify({
-               sqlStatement: "SELECT n FROM read_csv_auto('data_*.csv')",
+               sqlStatement: "SELECT n FROM read_csv_auto('data/data_*.csv')",
             }),
          }).then((res) => probe(res)),
    },
@@ -190,15 +190,15 @@ const ROUTES: Route[] = [
             method: "POST",
             headers: json,
             body: JSON.stringify({
-               sqlStatement: "SELECT n FROM read_csv_auto('data_*.csv')",
+               sqlStatement: "SELECT n FROM read_csv_auto('data/data_*.csv')",
             }),
          }).then((res) => probe(res)),
    },
    {
-      name: "GET notebook",
+      name: "GET notebook report",
       call: (base, v) =>
          get(
-            `${base}/notebooks/notes.malloynb${query(v)}`,
+            `${base}/reports/notes.malloynb${query(v)}`,
             marker(/notebook answers (\d+)/),
          ),
    },
@@ -243,7 +243,7 @@ const ANSWERING = new Set([
    "GET data-apps",
    "GET databases",
    "POST connection sqlQuery",
-   "GET notebook",
+   "GET notebook report",
    "GET static page",
 ]);
 
@@ -297,7 +297,10 @@ describe("package versions across promotion modes and package kinds", () => {
          path.join(dir, `marker_${n}.malloy`),
          `source: marker is duckdb.sql("SELECT ${n} as m")\n`,
       );
-      await fs.writeFile(path.join(dir, `data_${n}.csv`), `n\n${n}\n`);
+      // In a subdirectory: the sandbox refuses a relative glob over the
+      // package's top level (duckdb_lockdown.ts, relativeReadEntries).
+      await fs.mkdir(path.join(dir, "data"));
+      await fs.writeFile(path.join(dir, "data", `data_${n}.csv`), `n\n${n}\n`);
       await fs.writeFile(
          path.join(dir, "notes.malloynb"),
          `>>>markdown\n# notebook answers ${n}\n`,
@@ -389,6 +392,9 @@ describe("package versions across promotion modes and package kinds", () => {
       env = await startRestE2E();
       baseUrl = env.baseUrl;
       scratch = await fs.mkdtemp(path.join(os.tmpdir(), "versioning-modes-"));
+      for (const name of [ENV_NAME, PLAIN_ENV]) {
+         await deleteLeftoverEnvironment(baseUrl, name);
+      }
       const created = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: json,
@@ -559,7 +565,6 @@ describe("package versions across promotion modes and package kinds", () => {
             "GET models",
             "GET model",
             "POST query",
-            "GET notebooks",
             "GET databases",
             "GET connection schemas",
          ];

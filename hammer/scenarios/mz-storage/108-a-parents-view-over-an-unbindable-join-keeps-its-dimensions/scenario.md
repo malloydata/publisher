@@ -92,7 +92,7 @@ Expect:
 | ------------ | --------------- | ------------- | ---------- |
 | 99           | 2026-01-03      | 10            | 1000       |
 
-## Build (orchestrated, strict, pkg=pvd)
+## Build (orchestrated, pkg=pvd)
 
 - rollup -> pvd_rollup__g2 @ lake (reused)
   reference: daily

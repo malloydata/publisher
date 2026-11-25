@@ -1,0 +1,133 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "order_summary",
+        "tier": "database"
+      }
+    ],
+    "verdicts": [
+      "order_summary:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "5aafe698909bda8d",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()"
+          ],
+          "source": "order_summary",
+          "stages": 1
+        },
+        "source": "order_summary"
+      },
+      "equalToLive": true,
+      "malloy": "run: order_summary -> { aggregate: n is count() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "4ab942004fa34a997237fa2e6b732c6b53cf7454f079c4345dea24a95d653bc6"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [],
+          "measures": [],
+          "sourceName": "order_summary"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "4ab942004fa34a997237fa2e6b732c6b53cf7454f079c4345dea24a95d653bc6",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "count order_summary",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "5aafe698909bda8d",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()"
+          ],
+          "source": "order_summary",
+          "stages": 1
+        },
+        "source": "order_summary"
+      },
+      "equalToLive": true,
+      "malloy": "run: order_summary -> { aggregate: n is count() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "4ab942004fa34a997237fa2e6b732c6b53cf7454f079c4345dea24a95d653bc6"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [],
+          "measures": [],
+          "sourceName": "order_summary"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "4ab942004fa34a997237fa2e6b732c6b53cf7454f079c4345dea24a95d653bc6",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "count order_summary",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "on"
+    }
+  ]
+}

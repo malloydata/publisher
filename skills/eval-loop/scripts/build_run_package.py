@@ -32,6 +32,7 @@ import pathlib
 import shlex
 import shutil
 import sys
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -555,6 +556,7 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
     for name in ("publisher.json", "eval_run.malloy"):
         if (TEMPLATE / name).exists():
             shutil.copy(TEMPLATE / name, out / name)
+    stamp_version(out / "publisher.json")
     if (TEMPLATE / "notebooks").exists():
         shutil.copytree(TEMPLATE / "notebooks", out / "notebooks", dirs_exist_ok=True)
     if (TEMPLATE / "public").exists():
@@ -564,6 +566,27 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
             "scores": len(scores), "calls": len(calls), "entities": len(ents),
             "clusters": len(cluster_rows), "issues": len(issues),
             "steps": len(steps_rows)}
+
+
+def stamp_version(manifest: pathlib.Path) -> None:
+    """Give this build a version of its own, higher than any earlier build's.
+
+    Publisher publishes a package from its location as the version its
+    publisher.json declares, and refuses different content under a version it
+    already holds (409). A version per build lets a rebuilt report replace the
+    one served: the highest version becomes `latest`. The patch is the time in
+    milliseconds, and above any version already in the file, so a second stamp
+    in the same millisecond still rises. Builds from different machines rely
+    on their clocks: one whose clock runs behind publishes a lower version,
+    which does not become `latest`.
+    """
+    if not manifest.exists():
+        return
+    body = json.loads(manifest.read_text())
+    previous = str(body.get("version", "")).rsplit(".", 1)[-1]
+    floor = int(previous) + 1 if previous.isdigit() else 0
+    body["version"] = f"1.0.{max(time.time_ns() // 1_000_000, floor)}"
+    manifest.write_text(json.dumps(body, indent=4) + "\n")
 
 
 def serving_lines(cfg: config.Config, run_dirs: list[pathlib.Path],
@@ -605,8 +628,10 @@ def serving_lines(cfg: config.Config, run_dirs: list[pathlib.Path],
 def register(base: str, env: str, out: pathlib.Path) -> str | None:
     """Register the built package on `base`, or return why it could not be.
 
-    A POST for a name the server already has re-copies the package, so a
-    rebuilt report replaces the one it served; no delete is needed first.
+    A POST publishes the build as the version stamp_version gave it, so a
+    rebuilt report becomes the package's `latest` and replaces the one it
+    served; no delete is needed first. (A server with versioning off
+    re-copies the package instead, to the same effect.)
     """
     body = json.dumps({"name": out.name, "location": str(out.resolve())}).encode()
     req = urllib.request.Request(

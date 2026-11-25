@@ -1,0 +1,154 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * The stored relations an access decision reads: every source a gated or
+ * caller-scoped definition of the package depends on, at any depth.
+ *
+ * A table stored as of its build (its relation reads the current time) holds
+ * the rows its build saw. When such a table feeds an access decision (a gate,
+ * or a value a caller's given selects), a frozen clock is a grant that
+ * outlives its time, so the eligibility gate refuses it (`current_time`).
+ * This module finds which relations feed one, fail closed, across every model
+ * of the package and what each imports.
+ *
+ * An ACCESS DEFINITION is a source or query of any model's contents that
+ * carries an `#(authorize)` or `#(access_filter)` gate anywhere beneath it
+ * (its own, inherited, joined), or reads a given anywhere (a `where:`, a
+ * dimension, a measure, a join's `on`, a view). Its DEPENDENCIES are every
+ * source its compiled definition names: the base it extends (`extends`), the
+ * source a `->` query reads (`structRef.sourceID`), each join, each composite
+ * member, each `#(materialize)` or rollup base, each persisted view's or
+ * query's source, and transitively, each of theirs.
+ */
+
+import { readsAGiven } from "../../probe_compiler";
+import { EVERY_SOURCE } from "../domain/compiled_build_plan";
+import { irCarriesAGate } from "./materialization_eligibility";
+
+/** Max IR depth to walk for names; deep enough for real models. */
+const MAX_WALK_DEPTH = 200;
+
+/**
+ * Keys whose string value is another source's sourceID a definition depends
+ * on: a source's own (`sourceID`), the base it extends (`extends`), and the
+ * source a plain alias renames (`referenceID`, `source: a is b`).
+ */
+const DEPENDENCY_KEYS: ReadonlySet<string> = new Set([
+   "sourceID",
+   "extends",
+   "referenceID",
+]);
+
+/**
+ * Keys whose string value is a source's NAME in the model's contents: a
+ * model `query:`'s run target (`structRef: "vis"`), which a query, its
+ * refinements and the views it runs compile against.
+ */
+const NAME_KEYS: ReadonlySet<string> = new Set(["structRef"]);
+
+/** The key a model `query:` is followed by, which no stored source has. */
+const QUERY_KEY = "query:";
+
+/** Keys that carry no dependency: locations and annotations. */
+const SKIPPED_KEYS: ReadonlySet<string> = new Set([
+   "at",
+   "location",
+   "annotations",
+   "blockNotes",
+   "notes",
+]);
+
+/**
+ * Add to `out` the sourceID of every source an access definition of
+ * `contents` (a compiled model's `_modelDef.contents`) depends on,
+ * transitively, through the other definitions of `contents`. A model's
+ * contents hold what it imports, so imported sources are walked as their own
+ * definitions. Fails closed: a definition whose walk cannot finish counts as
+ * an access definition, and every name it reaches is added.
+ */
+export function collectAccessReads(contents: unknown, out: Set<string>): void {
+   if (contents === null || typeof contents !== "object") return;
+   const entries = Object.entries(contents as Record<string, unknown>).filter(
+      (e): e is [string, Record<string, unknown>] =>
+         e[1] !== null && typeof e[1] === "object",
+   );
+   // A definition's key: its sourceID, or for a model `query:` (which has
+   // none) its name in the contents.
+   const keyOf = (name: string, def: Record<string, unknown>): string =>
+      typeof def.sourceID === "string" ? def.sourceID : `${QUERY_KEY}${name}`;
+   const keys = new Map(entries.map(([name, def]) => [name, keyOf(name, def)]));
+   // A name the contents do not hold cannot be followed: fail closed.
+   const byName = (name: string): string => keys.get(name) ?? EVERY_SOURCE;
+   // Each definition's direct dependencies, by its key.
+   const direct = new Map<string, Set<string>>();
+   const access: Set<string>[] = [];
+   for (const [name, def] of entries) {
+      const own = typeof def.sourceID === "string" ? def.sourceID : undefined;
+      const deps = new Set<string>();
+      namesIn(def, deps, own, byName, new WeakSet(), 0);
+      direct.set(keyOf(name, def), deps);
+      if (isAccessDefinition(def)) access.push(deps);
+   }
+   for (const deps of access) {
+      const queue = [...deps];
+      while (queue.length > 0) {
+         const id = queue.pop()!;
+         if (out.has(id)) continue;
+         // A query's key matches no stored source; it is kept only so the
+         // walk does not follow it twice.
+         out.add(id);
+         for (const next of direct.get(id) ?? []) {
+            if (!out.has(next)) queue.push(next);
+         }
+      }
+   }
+}
+
+/** Whether a definition carries a gate or reads a given, anywhere. Fails closed. */
+function isAccessDefinition(def: unknown): boolean {
+   if (irCarriesAGate(def)) return true;
+   try {
+      return readsAGiven(def);
+   } catch {
+      return true;
+   }
+}
+
+/** Every source name a slice of IR names, but `self`'s own top-level name. */
+function namesIn(
+   node: unknown,
+   out: Set<string>,
+   self: string | undefined,
+   byName: (name: string) => string,
+   seen: WeakSet<object>,
+   depth: number,
+): void {
+   if (node === null || typeof node !== "object") return;
+   if (depth > MAX_WALK_DEPTH) {
+      out.add(EVERY_SOURCE);
+      return;
+   }
+   if (seen.has(node)) return;
+   seen.add(node);
+   if (Array.isArray(node)) {
+      for (const item of node) {
+         namesIn(item, out, self, byName, seen, depth + 1);
+      }
+      return;
+   }
+   for (const [key, value] of Object.entries(node)) {
+      if (SKIPPED_KEYS.has(key)) continue;
+      if (DEPENDENCY_KEYS.has(key) && typeof value === "string") {
+         if (!(depth === 0 && key === "sourceID" && value === self)) {
+            out.add(value);
+         }
+         continue;
+      }
+      if (NAME_KEYS.has(key) && typeof value === "string") {
+         out.add(byName(value));
+         continue;
+      }
+      namesIn(value, out, self, byName, seen, depth + 1);
+   }
+}

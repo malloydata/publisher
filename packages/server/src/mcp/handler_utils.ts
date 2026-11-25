@@ -5,6 +5,7 @@ import type { PackageLookup } from "../service/environment_ports";
 import {
    EnvironmentNotFoundError,
    errorMapping,
+   errorReason,
    logInternalFailure,
    ModelNotFoundError,
    type ErrorMapping,
@@ -48,6 +49,16 @@ export function classifyToolError(
    identifier: string,
    error: unknown,
 ): ErrorDetails {
+   const details = toolErrorDetails(operation, identifier, error);
+   const reason = errorReason(error);
+   return reason ? { ...details, reason } : details;
+}
+
+function toolErrorDetails(
+   operation: string,
+   identifier: string,
+   error: unknown,
+): ErrorDetails {
    const { mcp } = errorMapping(error) as ErrorMapping<unknown>;
    switch (mcp.advice) {
       case "fixed":
@@ -63,7 +74,11 @@ export function classifyToolError(
             message: mcp.message
                ? mcp.message(error, { operation, identifier })
                : (error as Error).message,
-            suggestions: [...mcp.suggestions],
+            suggestions: [
+               ...(typeof mcp.suggestions === "function"
+                  ? mcp.suggestions(error)
+                  : mcp.suggestions),
+            ],
          };
       case "environment_not_found":
          if (error instanceof EnvironmentNotFoundError && error.lookup) {

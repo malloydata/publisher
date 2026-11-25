@@ -335,7 +335,7 @@ export function registerExecuteQueryTool(
             }
 
             return jsonToolError("error://executeQuery/queryExecution", {
-               message: errorDetails.message,
+               ...errorDetails,
                suggestions,
             });
          }

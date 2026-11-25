@@ -1,0 +1,93 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "events@<hammer>/ivl/ivl.malloy": []
+        },
+        "order": [
+          "events@<hammer>/ivl/ivl.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "events@<hammer>/ivl/ivl.malloy": "persist"
+    },
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "events@<hammer>/ivl/ivl.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "events@<hammer>/ivl/ivl.malloy": "ivl.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "events@<hammer>/ivl/ivl.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "events@<hammer>/ivl/ivl.malloy": {
+        "annotationFields": {
+          "merge_key": "id",
+          "name": "ivl_rows",
+          "refresh": "incremental",
+          "watermark": "loaded_at"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "loaded_at",
+            "type": "timestamp"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "ivl.malloy",
+        "name": "events",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.ivl_events"
+          }
+        ],
+        "refresh": "incremental",
+        "sourceEntityId": "5f853126c98e0bbbf7adcd993bc8d647ba38b72889f448af72cdc21a79ef89fb",
+        "sourceID": "events@<hammer>/ivl/ivl.malloy",
+        "sql": "sha256:6b4b0ec0393ff105"
+      }
+    }
+  }
+}

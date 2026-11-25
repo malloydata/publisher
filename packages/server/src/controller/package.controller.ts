@@ -307,12 +307,22 @@ export class PackageController {
          packageName,
          versionId,
       );
+      // A connection edit re-derives the plan; never hand out the old one.
+      await pkg.whenBuildPlanCurrent();
       if (pkg.isBuildPlanUnavailable()) {
          throw new BuildPlanUnavailableError(
-            `The build plan of package ${packageName} could not be derived at load. Reload the package to derive it again; retrying the read does not.`,
+            `The build plan of package ${packageName} could not be derived (at load, or after a connection change). Reload the package to derive it again; retrying the read does not.`,
          );
       }
-      return pkg.getBuildPlan() ?? { graphs: [], sources: {} };
+      return (
+         pkg.getBuildPlan() ?? {
+            graphs: [],
+            sources: {},
+            refusedSources: {},
+            omittedSources: [],
+            omittedFiles: [],
+         }
+      );
    }
 
    /**
@@ -479,9 +489,12 @@ export class PackageController {
             mode: "reinstalled",
          };
       }
+      // An explicit reload reads its tables' columns as the warehouse holds
+      // them now; a watch-mode reload keeps the cached ones.
       const _package = await environment.getPackage(
          parsePackageName(packageName),
          true,
+         { refreshSchemas: true },
       );
       return {
          metadata: _package.getPackageMetadata(),
@@ -541,11 +554,19 @@ export class PackageController {
                validate: (loaded) => formatPublishRejections(loaded),
                // A versioned publish refuses a tree with no valid version.
                readVersion: versioned,
-               describe: (pkg, versionId) => ({
-                  ...pkg.getPackageMetadata(),
-                  location: bodyLocation,
-                  ...(versionId !== undefined && { versionId }),
-               }),
+               describe: async (pkg, versionId) => {
+                  // What a publish would build and serve (#7090): the
+                  // verdicts, views checked, and the plan they come from.
+                  const serveVerdicts = await pkg.previewServeVerdicts();
+                  const buildPlan = pkg.getBuildPlan();
+                  return {
+                     ...pkg.getPackageMetadata(),
+                     location: bodyLocation,
+                     ...(versionId !== undefined && { versionId }),
+                     ...(buildPlan && { buildPlan }),
+                     ...(serveVerdicts.length > 0 && { serveVerdicts }),
+                  };
+               },
             },
          );
       } catch (error) {
@@ -628,7 +649,7 @@ export class PackageController {
                   body,
                );
             }
-            // Versioning off, the transition default: installed in
+            // Versioning off (PUBLISHER_PACKAGE_VERSIONING=off): installed in
             // place, as every publish from a location was before versions,
             // whatever its publisher.json declares. Versions already published
             // are not replaced.
@@ -664,7 +685,9 @@ export class PackageController {
                },
             );
          } else {
-            result = await environment.addPackage(packageName);
+            result = await environment.addPackage(packageName, {
+               refreshSchemas: true,
+            });
          }
       } catch (error) {
          // A 5xx is an operator's problem the caller may never show one, so
@@ -729,6 +752,7 @@ export class PackageController {
          description: body.description ?? undefined,
          promotion: getVersionPromotionMode(),
          validate: (pkg) => formatPublishRejections(pkg),
+         refreshSchemas: true,
       });
       return published.loaded;
    }

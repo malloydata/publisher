@@ -20,6 +20,9 @@ import * as fs from "fs";
 import * as path from "path";
 import { PackageManifestError } from "../errors";
 import { stepsOutside } from "../path_safety";
+import { confinedPackagePath, ImportOutsidePackageError } from "../utils";
+import { pathToFileURL } from "url";
+import { callerVisibleText } from "../package_relative_text";
 
 /**
  * The variants of the prompt the fcj index build sends to write a node's
@@ -126,9 +129,9 @@ export interface FcjSettings {
     * PROVISIONAL, on by default. With `values` on, the stored values are also
     * embedded at index time (`value_embeddings`), and the find stage ranks
     * dimensions by the meaning of a target's value phrases as a fourth list,
-    * beside the spelling match. Only under `egress.preset: "full"`: values
-    * are data. Gated sources' values are never embedded.
-    * Off: spelling only, as before.
+    * beside the spelling match. A gated source's values are embedded only
+    * when it is keyed by the givens `retrieval.dimensionValues.givens` lists
+    * (CatalogSource.partitionKey). Off: spelling only, as before.
     */
    valueEmbeddings: boolean;
    /** One LLM call per cluster that picks the fields to return. */
@@ -160,7 +163,7 @@ export interface FcjSettings {
     * PROVISIONAL, `questions` by default. Which wording of llm/prompts/questions.ts
     * writes the index-time rows of a field: questions a person asks, the
     * search phrases an agent types, or questions that use the field's values
-    * (its stored values only under `egress.preset: "full"`).
+    * (its doc's value list, then its stored values).
     * A package prompt file (`retrieval.prompts.questions`) wins over it.
     */
    questionsPrompt: QuestionsPrompt;
@@ -314,7 +317,7 @@ export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    questions: "auto",
    docParts: "auto",
    values: true,
-   valueCap: 50_000,
+   valueCap: 5_000,
    valueEmbeddings: true,
    judge: "auto",
    contenderShare: 0,
@@ -718,15 +721,15 @@ async function readPromptFile(
    const at = `retrieval.prompts.${key}`;
    let text: string;
    try {
-      // The real path must also be inside the real package directory: a
-      // symlink in the package can point anywhere.
-      const [realRoot, realFile] = await Promise.all([
-         fs.promises.realpath(packageRoot),
-         fs.promises.realpath(file),
-      ]);
-      const within = path.relative(realRoot, realFile);
-      if (stepsOutside(within)) {
-         fail(
+      // Resolved by the package's own walk, which never looks outside it: a
+      // symlink in the package can point anywhere, and one that leads out is
+      // refused the same whether or not what it names exists.
+      let realFile: string;
+      try {
+         realFile = await confinedPackagePath(packageRoot, pathToFileURL(file));
+      } catch (error) {
+         if (!(error instanceof ImportOutsidePackageError)) throw error;
+         return fail(
             `Invalid publisher.json ${at}: ${describe(rel)} resolves outside the package directory through a link. ` +
                `Fix: copy the file into the package.`,
          );
@@ -735,7 +738,7 @@ async function readPromptFile(
    } catch (error) {
       if (error instanceof PackageManifestError) throw error;
       return fail(
-         `Invalid publisher.json ${at}: cannot read ${describe(rel)} (${(error as Error).message}). ` +
+         `Invalid publisher.json ${at}: cannot read ${describe(rel)} (${callerVisibleText((error as Error).message, packageRoot)}). ` +
             `Fix: create the file inside the package or remove the key.`,
       );
    }

@@ -1,0 +1,4 @@
+import "hidden.malloy"
+
+// A named query over a source index.malloy hides.
+query: hq is hidden -> { aggregate: secret_total }

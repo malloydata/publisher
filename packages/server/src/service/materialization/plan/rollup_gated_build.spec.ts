@@ -1,0 +1,138 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * Rows 1 and 21 on the build side: a `#(rollup)` rollup over a gated
+ * base is planned and built (not refused by the database tier's `authorize`
+ * check) only when a query can read it past the gate, which is
+ * `rollupGateEnforcedAtRead`: database, with `materialize.gatedSources` on,
+ * or off under G3 when every gate is the base's own (as here), on either
+ * tier. Drives `Package.create` on the worker path, as the
+ * package warnings specs do.
+ */
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import * as fs from "fs";
+import * as path from "path";
+import {
+   PackageLoadPool,
+   __setPackageLoadPoolForTests,
+} from "../../../package_load/package_load_pool";
+import { installSettings } from "../../../test_helpers/settings_env";
+import { writeTempPackage } from "../../../test_helpers/temp_package";
+import { Package } from "../../package";
+
+const ROWS = `duckdb.sql("select * from (values (1,'east','A',10.0),(2,'west','B',20.0)) as t(id, region, category, amount)")`;
+
+const MODEL = `##! experimental { givens access_modifiers }
+given: REGION :: string
+
+#(access_filter) region = $REGION
+source: gated is ${ROWS} extend {
+  #(rollup) grain=["category", "region"]
+  measure: total is amount.sum()
+  #(rollup) grain=["category", "region"] storage="lake"
+  measure: stored_total is amount.sum()
+}
+
+#(access_filter) tenant = $REGION
+source: hidden is ${ROWS} extend {
+  internal dimension: tenant is region
+  #(rollup) grain=["category", "tenant"]
+  measure: total is amount.sum()
+}
+`;
+
+for (const gated of [true, false]) {
+   describe(`#(rollup) over a gated base, gated sources ${gated ? "on" : "off (G3)"} (rows 1, 21)`, () => {
+      let tempDir: string;
+      let pool: PackageLoadPool;
+      let duckdb: DuckDBConnection;
+      let restore: () => void;
+      let pkg: Package;
+
+      beforeAll(async () => {
+         pool = new PackageLoadPool(1);
+         await __setPackageLoadPoolForTests(pool);
+         restore = installSettings({
+            env: {
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: gated ? "true" : "false",
+            },
+         }).restore;
+         tempDir = writeTempPackage(
+            {},
+            {
+               prefix: "publisher-rollup-gated-build-",
+               manifest: { name: "pkg", description: "gated rollups" },
+            },
+         ).dir;
+         fs.writeFileSync(path.join(tempDir, "m.malloy"), MODEL);
+         duckdb = new DuckDBConnection("duckdb", ":memory:");
+         const config = new MalloyConfig({ connections: {} });
+         config.wrapConnections(
+            () =>
+               new FixedConnectionMap(new Map([["duckdb", duckdb]]), "duckdb"),
+         );
+         pkg = await Package.create("env", "pkg", tempDir, config);
+      });
+
+      afterAll(async () => {
+         restore();
+         await duckdb.close();
+         await __setPackageLoadPoolForTests(null);
+         fs.rmSync(tempDir, { recursive: true, force: true });
+      });
+
+      const planned = () =>
+         Object.values(pkg.getBuildPlan()?.sources ?? {}).map((s) => s.name);
+      const refused = () =>
+         Object.values(pkg.getBuildPlan()?.refusedSources ?? {}).map(
+            (s) => s.name,
+         );
+      const warned = () =>
+         Object.values(pkg.getBuildPlan()?.refusedSources ?? {})
+            .filter((r) => r.reason === "access_filter")
+            .map((r) => r.name);
+
+      it("plans the database rollup, and refuses the storage= one for its gate on neither tier", () => {
+         // The storage= one is refused for its DuckDB connection, which a
+         // storage build cannot read through, never for its gate.
+         const rollups = planned().filter((n) =>
+            n.startsWith("gated__rollup__"),
+         );
+         expect(rollups.length).toBe(1);
+         const reasons = Object.values(pkg.getBuildPlan()?.refusedSources ?? {})
+            .filter((r) => r.name.startsWith("gated__rollup__"))
+            .map((r) => r.reason);
+         expect(reasons).toEqual(["storage_source_unsupported"]);
+         expect(warned()).toEqual([]);
+      });
+
+      it("reports the gated rollup's serve verdict without a gate veto (row 1)", () => {
+         const verdicts = (
+            pkg.materialization() as unknown as {
+               serveVerdicts(): { sourceName: string; reason?: string }[];
+            }
+         )
+            .serveVerdicts()
+            .filter((v) => v.sourceName.startsWith("gated__rollup__"));
+         // The database rollup's, and the storage= one refused for its
+         // connection.
+         expect(verdicts.length).toBe(2);
+         for (const v of verdicts) {
+            expect(v.reason).not.toBe("row_level_gate");
+         }
+      });
+
+      it("plans a rollup whose grain stores an internal gate field", () => {
+         expect(planned().some((n) => n.startsWith("hidden__rollup__"))).toBe(
+            true,
+         );
+         expect(refused().some((n) => n.startsWith("hidden__rollup__"))).toBe(
+            false,
+         );
+      });
+   });
+}

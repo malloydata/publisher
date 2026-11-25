@@ -8,19 +8,18 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# The serve-shape ladder thins refinements, never a source's filter
+# Leaving a join out of the served copy keeps a source's filter
 
-The ladder drops the riskiest refinement category and retries (full → drop views
-→ drop views+joins → base-only) so that one un-reproducible refinement cannot
-cost the whole package its tier. A source's `where:` must not be thinned that
-way: dropping a view costs the tier for queries that use it, while dropping a
-filter answers with rows the source excludes.
+When Malloy refuses a join across connections in the served copy, the served copy
+leaves out that join and each definition that reads it, so that one definition
+the stored table cannot answer does not cost the source its table. A source's
+`where:` must not be lost that way: leaving out a view costs the tier for queries
+that use it, while losing a filter answers with rows the source excludes.
 
-`serve-shape-drops-view` pins the view rung on an unfiltered source. This is the
-same arrangement with a filter added, so the ladder is forced to thin a source
-that has one: the view traverses a join to a NON-materialized source and cannot
-be reproduced, so the view category is dropped — and the filter has to survive
-that drop.
+`serve-shape-drops-view` pins the left-out view on an unfiltered source. This is
+the same arrangement with a filter added: the view traverses a join to a
+NON-materialized source on another connection, so the join and the view are left
+out — and the filter, which reads only the stored columns, has to stay.
 
 Without the filter, this source's rows total 375. With it, 300.
 
@@ -47,7 +46,7 @@ Without the filter, this source's rows total 375. With it, 300.
 ## Model fsl.malloy
 
 Only `orders` persists. `by_region` reaches `regions`, which does not, so the
-view cannot be reproduced over the stored columns and the ladder must thin it.
+served copy leaves the join and the view out.
 
 ```malloy
 ##! experimental.persistence
@@ -73,9 +72,8 @@ expect binding: orders -> lake
 
 ## Query fact total
 
-The source's own fields, so this is the query the ladder's surviving tier serves.
-300 rather than 375 ⇒ the filter is still on the shape after the view was
-dropped.
+The source's own fields, so the served copy answers it from the table. 300 rather
+than 375 ⇒ the filter is still applied after the join and the view were left out.
 
 ```malloy
 run: orders -> { aggregate: total is amount.sum() }
@@ -114,7 +112,7 @@ A qualifying order, so it moves both answers if both are live.
 ## Query fact total (again)
 
 Still 300 ⇒ answered from the materialized table, with the filter applied. A
-1300 here would mean live; a 375 or 1375 would mean the filter was thinned away
+1300 here would mean live; a 375 or 1375 would mean the filter was left out
 with the view.
 
 ```malloy
@@ -129,8 +127,8 @@ Expect:
 
 ## Query via view (again)
 
-Fresh 1100 for North ⇒ the view category really was dropped and this query fell
-back live, which is what forces the filter to have survived on the tier above.
+Fresh 1100 for North ⇒ the view really was left out and this query was answered
+live, which is what makes the stored answer above a test of the filter staying.
 
 ```malloy
 run: orders -> by_region

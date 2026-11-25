@@ -4,10 +4,22 @@
 import { Manifest } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
-import { BuildInstruction, LedgerEntry } from "../types";
+import {
+   BuildInstruction,
+   LedgerEntry,
+   type MalformedLedgerEntry,
+} from "../domain/types";
+import { NATIVE_SCHEMA_ROW_LIMIT } from "./database_native_types";
 import { indexCallerLedger } from "./incremental_build";
+import { logger } from "../../../logger";
+import { MaterializationController } from "../../../controller/materialization.controller";
+import type { MaterializationService } from "./materialization_service";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import { createMocks } from "../../../test_helpers/materialization_service_harness";
+import { fakeContractReads } from "../../../test_helpers/contract_fixture";
+
+// Builds over fake connections, which answer no catalog query.
+fakeContractReads();
 
 // ── Incremental dispatch inside buildOneSource ────────────────────────────
 //
@@ -74,6 +86,12 @@ describe("buildOneSource: incremental refresh", () => {
          if (sql.includes("LIMIT 1")) {
             return { rows: nonEmpty ? [{ present: 1 }] : [] };
          }
+         // The newest stored watermark at or below the recorded boundary: a
+         // table holding rows right up to it, so a delta starts there.
+         if (/ <= (DATE|TIMESTAMP) '/.test(sql)) {
+            const atOrBelow = /<= DATE '([^']+)'/.exec(sql)?.[1];
+            return { rows: [{ watermark_max: atOrBelow ?? null }] };
+         }
          if (sql.includes("watermark_max")) {
             return { rows: [{ watermark_max: "2024-06-20" }] };
          }
@@ -90,6 +108,8 @@ describe("buildOneSource: incremental refresh", () => {
        * caller-ledger mode, replacing the local store; absent reads the store.
        */
       ledger?: LedgerEntry[];
+      /** The caller's entries the controller dropped as malformed. */
+      malformedLedger?: MalformedLedgerEntry[];
       now?: Date;
    }) {
       const upsert = sinon.stub().resolves();
@@ -110,6 +130,16 @@ describe("buildOneSource: incremental refresh", () => {
          declarations: { orders: DECLARATION },
          ...(overrides.ledger !== undefined
             ? { callerLedger: indexCallerLedger(overrides.ledger) }
+            : {}),
+         ...(overrides.malformedLedger
+            ? {
+                 malformedCallerLedger: new Map(
+                    overrides.malformedLedger.map((m) => [
+                       m.physicalTableName,
+                       m.defect,
+                    ]),
+                 ),
+              }
             : {}),
          ledger: {
             getIncrementalLedgerEntry: read,
@@ -152,7 +182,7 @@ describe("buildOneSource: incremental refresh", () => {
          ...(params.reseed === undefined ? {} : { reseed: params.reseed }),
       } as BuildInstruction;
       return (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             buildOneSource: (...args: unknown[]) => Promise<{
                sourceEntityId: string;
                physicalTableName: string;
@@ -160,24 +190,23 @@ describe("buildOneSource: incremental refresh", () => {
                ledger?: LedgerEntry;
             }>;
          }
-      ).buildOneSource(
-         source,
+      ).buildOneSource({
+         persistSource: source,
          instruction,
-         { runSQL: params.runSQL },
-         { wh: "dig" },
-         params.manifest ?? new Manifest(),
-         {
+         connection: { runSQL: params.runSQL },
+         manifest: params.manifest ?? new Manifest(),
+         environment: {
             getApiConnection: () => {
                throw new Error("no connection config in this test");
             },
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/tmp/env",
          },
-         {},
-         undefined,
-         params.context,
+         builtEntries: {},
+         incremental: params.context,
          // The content address, which is the ledger's key.
-         "abcdef1234567890",
-      );
+         contentSourceEntityId: "abcdef1234567890",
+      });
    }
 
    it("applies the delta INSTEAD of the CTAS, and advances the boundary", async () => {
@@ -228,7 +257,23 @@ describe("buildOneSource: incremental refresh", () => {
          watermark: "order_date",
          strategy: "range_replace",
          sourceEntityId: "abcdef1234567890",
+         // The run that changed the table.
+         advancedBy: "run-1",
       });
+   });
+
+   it("reads a delta's table types past runSQL's default row limit, as a full build does", async () => {
+      // DuckDB's runSQL returns ten rows unless told otherwise, so a catalog
+      // read under it records a wide table's first ten columns only, and the
+      // rest of its big-integer columns would answer live after every delta.
+      const runSQL = probeAwareRunSQL();
+      const { context } = incrementalContext({});
+      await callBuildOneSource({ runSQL, context });
+      const read = runSQL
+         .getCalls()
+         .find((c) => String(c.args[0]).includes("pg_attribute"));
+      expect(read).toBeDefined();
+      expect(read?.args[1]?.rowLimit).toBe(NATIVE_SCHEMA_ROW_LIMIT);
    });
 
    it("re-seeds the ONE source whose instruction says so", async () => {
@@ -393,6 +438,8 @@ describe("buildOneSource: incremental refresh", () => {
          'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
          // Postgres: the swap is one implicit transaction in one call.
          'DROP TABLE IF EXISTS "orders_v1";\nALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1";',
+         // Then the built table's column types (database_native_types.ts).
+         "SELECT row_to_json(c) AS row FROM (SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type, a.attnum FROM pg_attribute a WHERE a.attrelid = to_regclass('\"orders_v1\"') AND a.attnum > 0 AND NOT a.attisdropped) c ORDER BY c.attnum",
       ]);
       expect(upsert.called).toBe(false);
       expect(remove.called).toBe(false);
@@ -411,33 +458,33 @@ describe("buildOneSource: incremental refresh", () => {
          dialectName: "duckdb",
       });
       await (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             buildOneSource: (...args: unknown[]) => Promise<unknown>;
          }
-      ).buildOneSource(
-         source,
-         {
+      ).buildOneSource({
+         persistSource: source,
+         instruction: {
             sourceEntityId: "abcdef1234567890",
             materializedTableId: "mt-1",
             physicalTableName: "orders_v1",
             realization: "COPY",
          } as BuildInstruction,
-         { runSQL },
-         { duckdb: "dig" },
-         new Manifest(),
-         {
+         connection: { runSQL },
+         manifest: new Manifest(),
+         environment: {
             getApiConnection: () => {
                throw new Error("no connection config in this test");
             },
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/tmp/env",
          },
-         {},
-         undefined,
-         context,
-         "abcdef1234567890",
-      );
-      // The staging drop, the CTAS and the one-transaction swap.
-      expect(runSQL.getCalls().map((c) => c.args[0])).toHaveLength(3);
+         builtEntries: {},
+         incremental: context,
+         contentSourceEntityId: "abcdef1234567890",
+      });
+      // The staging drop, the CTAS, the one-transaction swap, and the read of
+      // the built table's column types.
+      expect(runSQL.getCalls().map((c) => c.args[0])).toHaveLength(4);
       expect(upsert.called).toBe(false);
    });
 
@@ -524,6 +571,7 @@ describe("buildOneSource: incremental refresh", () => {
          expect(entry.ledger).toEqual({
             ...ENTRY,
             coveredThrough: "2024-07-01",
+            advancedBy: "run-1",
          });
       });
 
@@ -665,6 +713,142 @@ describe("buildOneSource: incremental refresh", () => {
             expect(remove.called).toBe(false);
          });
       }
+
+      it("carries keys it does not know on an entry to the build, and still deltas", async () => {
+         const extended = {
+            ...ENTRY,
+            parentGeneration: { sourceEntityId: "p1", coveredThrough: "x" },
+         } as LedgerEntry;
+         const { context } = incrementalContext({ ledger: [extended] });
+         const boundary = [...context.callerLedger!.values()][0];
+         expect(boundary?.extensions).toEqual({
+            parentGeneration: { sourceEntityId: "p1", coveredThrough: "x" },
+         });
+         const entry = await callBuildOneSource({
+            runSQL: probeAwareRunSQL(),
+            context,
+         });
+         expect(entry.refresh).toBe("delta");
+      });
+
+      // The entry is opaque to hosts, so a key this release does not know
+      // reaches the NEXT entry unchanged, whichever path built the table. A
+      // known field is the publisher's own and always wins.
+      const EXTENDED = {
+         ...ENTRY,
+         futureKey: { sourceEntityId: "p1", coveredThrough: "x" },
+         coveredThrough: "2024-06-20",
+      } as LedgerEntry;
+      const carried: [string, boolean, string][] = [
+         ["a delta", true, "delta"],
+         // An emptied table seeds through the database build's CTAS.
+         ["a seed", false, "full"],
+      ];
+      for (const [what, nonEmpty, refresh] of carried) {
+         it(`reports a carried key on the next entry after ${what}`, async () => {
+            const entry = await callBuildOneSource({
+               runSQL: probeAwareRunSQL(nonEmpty),
+               context: incrementalContext({ ledger: [EXTENDED] }).context,
+            });
+            expect(entry.refresh).toBe(refresh);
+            expect(entry.ledger).toMatchObject({
+               futureKey: { sourceEntityId: "p1", coveredThrough: "x" },
+               coveredThrough: "2024-07-01",
+            });
+         });
+      }
+
+      it("does not carry the keys of an entry a reseed ignores", async () => {
+         const entry = await callBuildOneSource({
+            runSQL: probeAwareRunSQL(),
+            context: incrementalContext({ ledger: [EXTENDED] }).context,
+            reseed: true,
+         });
+         expect(entry.refresh).toBe("full");
+         expect(entry.ledger).toBeDefined();
+         expect(entry.ledger).not.toHaveProperty("futureKey");
+      });
+
+      // The controller drops a malformed entry rather than refusing the
+      // request: the source it described seeds, and every other entry in the
+      // same ledger still applies.
+      it("seeds the source whose echoed entry is malformed, while another's entry still deltas", async () => {
+         async function ledgerOf(entries: unknown[]): Promise<{
+            ledger: LedgerEntry[];
+            malformedLedger?: MalformedLedgerEntry[];
+         }> {
+            const create = sinon.stub().resolves({ id: "m1" });
+            await new MaterializationController({
+               createMaterialization: create,
+            } as unknown as MaterializationService).createMaterialization(
+               "env",
+               "pkg",
+               {
+                  buildInstructions: {
+                     sources: [
+                        {
+                           sourceEntityId: "abcdef1234567890",
+                           materializedTableId: "mt-1",
+                           physicalTableName: "orders_v1",
+                        },
+                     ],
+                     ledger: entries,
+                  },
+               },
+            );
+            const { ledger, malformedLedger } = create.firstCall.args[2];
+            return { ledger, malformedLedger };
+         }
+         const OTHER = { ...ENTRY, physicalTableName: "events_v1" };
+
+         // orders' entry is sound; a neighbour's is corrupted: orders deltas.
+         const sound = await ledgerOf([
+            ENTRY,
+            { ...OTHER, strategy: "upsert" },
+         ]);
+         expect(sound.ledger).toEqual([ENTRY]);
+         const delta = await callBuildOneSource({
+            runSQL: probeAwareRunSQL(),
+            context: incrementalContext(sound).context,
+         });
+         expect(delta.refresh).toBe("delta");
+
+         // orders' entry is corrupted; the neighbour's is sound: orders seeds.
+         const corrupted = await ledgerOf([
+            { ...ENTRY, mergeKeys: "x" },
+            OTHER,
+         ]);
+         expect(corrupted.ledger).toEqual([OTHER]);
+         const runSQL = probeAwareRunSQL();
+         const warn = sinon.spy(logger, "warn");
+         let seeded: Awaited<ReturnType<typeof callBuildOneSource>>;
+         try {
+            seeded = await callBuildOneSource({
+               runSQL,
+               context: incrementalContext(corrupted).context,
+            });
+            // Told apart from a source the caller sent no entry for.
+            const rebuilt = (
+               warn.getCalls().map((c) => c.args) as unknown[][]
+            ).find(
+               ([message]) =>
+                  message === "Rebuilding an incremental source in full",
+            );
+            expect(rebuilt?.[1]).toMatchObject({
+               reasonCode: "ledger_entry_malformed",
+            });
+         } finally {
+            warn.restore();
+         }
+         expect(seeded.refresh).toBe("full");
+         const statements = runSQL.getCalls().map((c) => c.args[0] as string);
+         expect(statements.some((s) => s.startsWith("CREATE TABLE"))).toBe(
+            true,
+         );
+         expect(statements.some((s) => s.startsWith("BEGIN;"))).toBe(false);
+         // And reports a fresh, well-formed entry for the host to store.
+         expect(seeded.ledger?.strategy).toBe("range_replace");
+      });
 
       it("still seeds on a fact about the TABLE, exactly as local mode does", async () => {
          // The entry is fine; the table is empty. That is not the caller's

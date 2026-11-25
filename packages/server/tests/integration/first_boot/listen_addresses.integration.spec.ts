@@ -27,8 +27,14 @@ describe("listener bind addresses", () => {
    });
 
    async function boot(env: Record<string, string | undefined>) {
+      // The "listening at" lines are info, whatever LOG_LEVEL the shell exports.
       server = await spawnServer({
-         env: { PUBLISHER_HOST: undefined, MCP_HOST: undefined, ...env },
+         env: {
+            PUBLISHER_HOST: undefined,
+            MCP_HOST: undefined,
+            LOG_LEVEL: "info",
+            ...env,
+         },
       });
       const s = server;
       const up = await pollUntil(

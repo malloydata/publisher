@@ -8,10 +8,8 @@
 import type { FixedConnectionMap, PersistSource } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { deriveAnnotationFields } from "./build_plan";
-import {
-   resolveIncrementalDeclaration,
-   type IncrementalDeclaration,
-} from "./incremental_declaration";
+import { resolveIncrementalDeclaration } from "./incremental_declaration";
+import type { IncrementalDeclaration } from "../domain/incremental";
 import {
    compilePersistSources,
    duckdbTestConnections,
@@ -87,6 +85,25 @@ describe("resolveIncrementalDeclaration", () => {
             { name: "region", kind: "dimension", malloyType: "string" },
          ]);
          expect(declaration.watermarkInMergeKeys).toBe(false);
+      });
+
+      it("reads lookback= as written and in seconds", async () => {
+         const declaration = await resolve(
+            `${RAW}#@ persist name="t" refresh="incremental" watermark="order_date" merge_key="order_id" lookback="2 days"\n${ROLLUP}`,
+         );
+         expect(declaration.declaredLookback).toBe(true);
+         expect(declaration.lookback).toEqual({
+            text: "2 days",
+            seconds: 172_800,
+         });
+         expect(declaration.unknownKeys).toEqual([]);
+      });
+
+      it("keeps a lookback= that is not a duration, without seconds", async () => {
+         const declaration = await resolve(
+            `${RAW}#@ persist name="t" refresh="incremental" watermark="order_date" merge_key="order_id" lookback="2 months"\n${ROLLUP}`,
+         );
+         expect(declaration.lookback).toEqual({ text: "2 months" });
       });
 
       it("records a name that resolves to an aggregate: column", async () => {

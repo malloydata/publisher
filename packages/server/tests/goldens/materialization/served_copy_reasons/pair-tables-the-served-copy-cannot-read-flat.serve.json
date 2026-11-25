@@ -1,0 +1,16 @@
+{
+  "problems": [
+    {
+      "reason": "pair_join_not_found",
+      "sourceName": "shared_statement"
+    },
+    {
+      "reason": "pair_not_compiled",
+      "sourceName": "reads_child_measure"
+    }
+  ],
+  "query": {
+    "equalToLive": true,
+    "servedFrom": null
+  }
+}

@@ -12,9 +12,9 @@ SPDX-License-Identifier: MIT
 
 | Tool | Version | Required for |
 | --- | --- | --- |
-| [Bun](https://bun.sh/) | ≥ 1.3.13 | Primary runtime + package manager |
+| [Bun](https://bun.sh/) | ≥ 1.4.4 | Primary runtime + package manager |
 | [Node.js](https://nodejs.org/) | ≥ 20 | DuckDB postinstall scripts and the `npx @malloy-publisher/server` bin shebang |
-| [Python](https://www.python.org/) | ≥ 3.12 | Only if you build the Python client (`packages/python-client`) |
+| [Python](https://www.python.org/) | ≥ 3.12 | Only to run the skills' Python tests (`bun run test:skills-python`) |
 | Java | ≥ 21 (Corretto recommended) | Only if you regenerate API clients via `bun run generate-api-types` |
 
 The repo ships a `.tool-versions` file compatible with [mise](https://mise.jdx.dev/) and
@@ -137,4 +137,4 @@ After that, `bun run typecheck` works on its own as long as the SDK build artifa
 ## Contributing
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for committers, the Developer Certificate of Origin
-sign-off, code-review process, and the Python SDK regeneration workflow.
+sign-off, and code-review process.

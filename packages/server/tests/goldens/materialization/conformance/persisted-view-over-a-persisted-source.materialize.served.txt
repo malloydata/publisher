@@ -1,0 +1,24 @@
+// conformance: persisted view over a persisted source [materialize]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: pv_base__served is {
+   id::number,
+   region::string,
+   status::string,
+   amount::number
+}
+
+import "raw.malloy"
+
+#(materialize) storage="lake"
+source: pv_base is __served_copy_alias_of_lake.virtual('cca1df00b9373e067e5ea94d46dc1396e1ca1d6841cf3b625670efbda19b4da2')::pv_base__served extend {
+  private rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"HUGEINT"
+  measure: total is amount.sum()
+  #@ persist name="pv_base_by_region"
+  view: by_region is { group_by: region; aggregate: total }
+}

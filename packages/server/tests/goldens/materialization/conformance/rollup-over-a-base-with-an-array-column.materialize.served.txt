@@ -1,0 +1,30 @@
+// conformance: rollup over a base with an array column [materialize]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { access_modifiers persistence virtual_source }
+
+type: listed__rollup__g__ab53ae01__type is {
+   g::string,
+   total__partial::number
+}
+source: listed__rollup__g__ab53ae01__served is __served_copy_alias_of_lake.virtual('b906e0e0262575336fd7818bd022af2ec363e5c343e122a47563845a657351bd')::listed__rollup__g__ab53ae01__type extend {
+  measure:
+    #(rollup) grain=["g"] storage="lake"
+    total is total__partial.sum()
+}
+source: listed is listed__rollup__g__ab53ae01__served include { internal: total__partial public: * }
+
+// ==== <pkg>/m.malloy.rollup-author.malloy
+##! experimental { persistence }
+
+source: listed is duckdb.sql("""
+  SELECT * FROM (VALUES ('a', 1.5, [1, 2]), ('a', 2.0, [3]), ('b', 4.0, []))
+    AS t(g, amount, lst)
+""") extend {
+  #(rollup) grain=["g"] storage="lake"
+  measure: total is amount.sum()
+}
+
+// ==== <pkg>/m.malloy.rollup.malloy
+##! experimental { access_modifiers persistence virtual_source }
+import { listed } from "m.malloy"

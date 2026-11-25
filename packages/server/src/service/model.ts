@@ -2,71 +2,78 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   EMPTY_BUILD_MANIFEST,
    GivenValue,
    isSourceDef,
    MalloyConfig,
    MalloyError,
    Annotations,
+   type Connection,
    ModelDef,
    ModelMaterializer,
-   NamedQueryDef,
-   QueryData,
    QueryMaterializer,
-   type VirtualMap,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import { DataStyles } from "@malloydata/render";
-import { lazyCounter, lazyHistogram, withSpan } from "../telemetry";
-import { recordStorageServeRouting } from "../materialization_metrics";
-import * as fs from "fs/promises";
+import { withSpan } from "../telemetry";
+import {
+   recordServedCopyOutcome,
+   recordStoredColumnTypeMismatch,
+} from "../materialization_metrics";
+import type { QueryServingHost } from "./query_serving";
+import { makeLegs, PersistedQueryServe } from "./materialization/serve/leg";
+import {
+   ModelServing,
+   settledCompileError,
+   type ModelQueryResults,
+   type ModelServingHost,
+} from "./model_serving";
 import { createRequire } from "module";
 import * as path from "path";
+import { fileURLToPath, pathToFileURL } from "url";
 import { components } from "../api";
-import {
-   getMaxQueryRows,
-   getMaxResponseBytes,
-   getQueryMetadataMode,
-} from "../config";
+import { getQueryMetadataMode } from "../config";
 import {
    GIVENS_DOCS_URL,
    INDEX_MODEL_NAME,
    NOTEBOOK_FILE_SUFFIX,
 } from "../constants";
 import {
-   AccessDeniedError,
    BadRequestError,
-   InvalidQueryRequestError,
-   ConnectionError,
    DeclaredElsewhereError,
    ModelCompilationError,
    ModelNotFoundError,
    NotQueryableError,
    OffSurfaceError,
-   PayloadTooLargeError,
 } from "../errors";
-import { getPersistStorageMode } from "../config";
+import { getMaterializeEnabled, getPersistStorageMode } from "../config";
+import { storageServes } from "./materialization/domain/placement";
 import {
-   planModelPreaggregation,
-   type RollupPlan,
-} from "./materialization/plan/preaggregation_synthesis";
-import { tryCompileSynthesizedPreaggregation } from "./materialization/plan/preaggregation_compile";
-import {
-   RollupCoverageError,
-   rollupCoverageViolation,
-   rollupMeasuresByMember,
-} from "./materialization/plan/preaggregation_coverage";
+   renderTagFindingsCache,
+   renderTagFindingsKey,
+} from "./render_tag_findings_cache";
 import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { logger } from "../logger";
-import { summarizeQueryAccess, type QueryAudit } from "./access_record";
+import { readPackageURL } from "../utils";
+import { type QueryAudit } from "./access_record";
 import {
-   type ServeBinding,
-   serveShapeDiagnostics,
-} from "./materialization/serve/materialization_serve_transform";
-import { deserializeError } from "../package_load/package_load_pool";
+   type Binding,
+   EMPTY_SNAPSHOT,
+   makeSnapshot,
+   pin,
+   type Pinned,
+   type Snapshot,
+} from "./materialization/domain/binding";
+import { servedCopyOutcomes } from "./materialization/domain/source_decline";
+import {
+   currentPackageLoadPool,
+   deserializeError,
+} from "../package_load/package_load_pool";
+import { compileServedCopyOnWorker } from "../package_load/served_copy_compile";
 import type { SerializedModel } from "../package_load/protocol";
 import { decodeSerializedModel } from "../package_load/protocol_decode";
-import { BuildManifest } from "./materialization/types";
+import { BuildManifest } from "./materialization/domain/types";
 import {
    ownModelAnnotations,
    ownModelNoteObjects,
@@ -76,11 +83,6 @@ import {
    composeDeclaredQueryMetadata,
    type ReadableTag,
 } from "./materialization/plan/build_plan";
-import {
-   assertNoAuthorizeTagLike,
-   assertNoCallerAuthorizeAnnotation,
-   assertNoCallerClassificationAnnotation,
-} from "./authorize";
 import {
    buildReportManifest,
    compileTileGivens,
@@ -97,20 +99,12 @@ import {
    readNotebookCells,
    type NotebookReaderError,
 } from "./notebook";
-import {
-   recordNotebookCellExecution,
-   type NotebookFormat,
-} from "../notebook_metrics";
-import {
-   buildFilterClause,
-   FILTER_ANNOTATION_PREFIX,
-   filterHasValue,
-   FilterValidationError,
-   injectFilterRefinement,
-   type FilterDefinition,
-   type FilterParams,
-} from "./filter";
+import { FILTER_ANNOTATION_PREFIX, type FilterDefinition } from "./filter";
 import { assertFilterGivensParse, gateGivenSource } from "./given";
+import {
+   deprecatedPersistAnnotations,
+   type DeprecatedPersistAnnotation,
+} from "./deprecated/persist_annotations";
 import { filterPublisherOwnedRenderLogs } from "./report_manifest";
 import {
    docCommentTitleAndDescription,
@@ -120,28 +114,27 @@ import {
    readStartingGivens,
    tagText,
 } from "./motly";
+import { onlyParseFailures, restrictedRejections } from "./compile_restriction";
+import { isMalloynbPath } from "./deprecated/malloynb";
 import {
-   assertWithinModelRowLimit,
-   type QueryRowLimitSource,
-} from "./model_limits";
+   assertNoCallerAuthorizeAnnotation,
+   assertNoCallerClassificationAnnotation,
+   hasCallerAuthorizeAnnotation,
+} from "./authorize";
+import { buildFilterClause, FilterValidationError } from "./filter";
+import { compileErrorOf } from "./model_query_compile";
 import {
-   isGivenBindingFailure,
-   mapRunError,
-   prepareAndRun,
-   serializeWithinCaps,
-   type PreparedRun,
-} from "./query_execution";
-import { onlyParseFailures } from "./compile_restriction";
-import { createEventLoopYielder } from "./event_loop_yield";
+   createEventLoopYielder,
+   type EventLoopYielder,
+} from "./event_loop_yield";
 import {
    buildDerivationBaseMap,
    buildJoinBaseMap,
-   extractRunTargetSourceName,
    extractRunTargetSourceNames,
+   lastRunStatementText,
    malloyIdentifiers,
    stripMalloyCommentsAndLiterals,
 } from "./query_text";
-import { type CallerRegion } from "./caller_joins";
 import {
    mergeQueryMetadata,
    type ModelQueryMetadataInput,
@@ -155,18 +148,12 @@ import {
    QueryGovernor,
    REQUEST_CHAIN_MAX_NAMES,
    type GovernorHost,
-   type GovernRequest,
 } from "./governance/query_governor";
 import { type SiblingModelDefResolver } from "./filter_binding_guard";
 // Aliased with an `Impl` suffix because `Model` declares private wrapper
 // methods of the same names; without the alias, converting one of them to an
 // arrow-function property would recurse instead of delegating.
-import { extractCheckedModel } from "./model_load_checks";
-import {
-   recordAuthorizeGuardRejection,
-   recordRowLevelGateDecision,
-   type AuthorizeGuardField,
-} from "../authorize_metrics";
+import { extractCheckedModel, type GateLoadWarning } from "./model_load_checks";
 import { translatorMalloyError } from "./translator_error";
 import {
    createModelMaterializer,
@@ -179,27 +166,49 @@ import {
    type ModelType,
 } from "./model_runtime";
 import {
-   declaredGivensPerCell,
    tileQueryInfo,
-   type CellDeclaredGivens,
    type RunnableNotebookCell,
-   type NotebookCellRunResult,
 } from "./model_notebook_cell";
-import {
-   compileErrorOf,
-   multipleRunStatementsError,
-   queryCompileError,
-   quoteMalloyIdentifier,
-   runStatementCount,
-} from "./model_query_compile";
+import { quotedIdentifier } from "./malloy_text";
 import { runReadsPublished, scrubHiddenIds } from "./model_projection";
-import { StorageServeShape } from "./materialization/serve/model_serve_shape";
+import { compileOnlyDestinationConfig } from "./connection";
+import {
+   modelStorageTables,
+   ownBindings,
+   type SourceTypeMismatches,
+   STORED_COLUMN_TYPE_MISMATCH_CODE,
+} from "./materialization/serve/storage_bindings";
+import type { MaterializePlan } from "./materialization/domain/table_plans";
+import { RollupVariantServe } from "./materialization/serve/rollup_variants";
+import {
+   planSourceRollups,
+   rollupGateEnforcedAtRead,
+} from "./materialization/plan/rollup_plan";
+import {
+   planModelPersistedQueries,
+   planModelPersistedViews,
+} from "./materialization/plan/persisted_view";
+import {
+   chainBuildText,
+   resultShapeOf,
+   ServedCopyServe,
+   type ServedCopyProblem,
+} from "./materialization/serve/served_copy_serve";
+import type {
+   ChainBuildRequest,
+   ChainBuildText,
+} from "./materialization/domain/chain_build";
+
+import { PersistedViewServe } from "./materialization/serve/view_variants";
+import { sourceChain } from "./materialization/text/source_map";
+import type {
+   PersistedResultOf,
+   ViewServeVerdict,
+} from "./materialization/serve/serve_verdict";
 
 export type { ModelConnectionInput, ModelType } from "./model_runtime";
-export type {
-   NotebookCellRunResult,
-   RunnableNotebookCell,
-} from "./model_notebook_cell";
+export type { ModelQueryResults } from "./model_serving";
+export type { RunnableNotebookCell } from "./model_notebook_cell";
 
 export type { ModelQueryMetadataInput } from "./query_metadata";
 import {
@@ -209,15 +218,48 @@ import {
    type QueryBoundaryPolicy,
 } from "./model_policy";
 import { QueryPrivileges, type QueryRequest } from "./model_query_request";
+import { annotationNearMisses, authoredNotes } from "./annotation_near_miss";
+import {
+   type ColumnContract,
+   parseContract,
+} from "./materialization/domain/column_contract";
+import { type AnnotationFinding } from "./annotation_reader";
 export { QueryPrivileges } from "./model_query_request";
 export type { QueryRequest } from "./model_query_request";
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];
-type ApiRawNotebook = components["schemas"]["RawNotebook"];
+type ApiReportCells = components["schemas"]["ReportCells"];
 type ApiSource = components["schemas"]["Source"];
 type ApiGiven = components["schemas"]["Given"];
 type ApiQuery = components["schemas"]["Query"];
+/**
+ * Why the query route refuses a query for every caller that sends it as the
+ * Console sends a `.malloynb` cell ({@link Model.consoleCellRefusal}):
+ * `off_surface` is the boundary's 404; `caller_annotation` an annotation only
+ * the model author may write (400); `required_filter` a required `#(filter)`
+ * with no value (400); `restricted_mode` a construct restricted mode refuses
+ * (400); and `compile_error` any other compile failure of the text on its own
+ * (400).
+ */
+export interface QueryTextRefusal {
+   status: 400 | 404;
+   reason:
+      | "off_surface"
+      | "caller_annotation"
+      | "required_filter"
+      | "restricted_mode"
+      | "compile_error";
+   /** The compiler's message; on a 404, restricted mode's, when it also refused the text. */
+   problem?: string;
+   /** The refused source, only where the query route's refusal names it. */
+   source?: string;
+   /** Whether a `.malloynb`'s own cells declare {@link source}. */
+   declared?: boolean;
+   /** The named query the text runs, when the refused source is the one it reads. */
+   via?: string;
+}
+
 export type ApiConnection = components["schemas"]["Connection"];
 export type SnowflakeConnection = components["schemas"]["SnowflakeConnection"];
 export type PostgresConnection = components["schemas"]["PostgresConnection"];
@@ -238,60 +280,6 @@ export type {
 export { ModelPolicy, PackageModelPolicy } from "./model_policy";
 
 /**
- * How a query's answer was ultimately produced, once it reached the storage
- * routing decision at all. `storage` = served from the materialized table via
- * the virtual-source transform. `live_fallback` = it routed, then a run-time
- * store failure degraded it to the live warehouse — a success the caller cannot
- * distinguish from a storage hit, which is exactly why it is reported
- * separately. Absent means the query never had a storage binding to consider.
- */
-type ServedFrom = "storage" | "live_fallback";
-
-/** What {@link Model.runQuery} answers. */
-export interface ModelQueryResults {
-   result: Malloy.Result;
-   /**
-    * The JSON of the `responseShape` asked for, built once. Callers should
-    * send this string: it is the bytes the byte cap measured, and a payload
-    * too large to serialize surfaces here as a 413 rather than a bare 500.
-    */
-   serializedResult: string;
-   compactResult: QueryData;
-   modelInfo: Malloy.ModelInfo;
-   dataStyles: DataStyles;
-   /** Row cap pushed into the SQL: the query's own LIMIT, else the default. */
-   rowLimit: number;
-   /** Which of those two the cap came from. */
-   rowLimitSource: QueryRowLimitSource;
-   /**
-    * The `query_id` property attached to this query's statements, which is the
-    * caller's join key into the backend's own query record. Null when no
-    * metadata was attached.
-    */
-   queryCorrelationId: string | null;
-   /**
-    * How the answer was produced once the query reached the storage routing
-    * decision; null when it never had a storage binding to consider. See
-    * {@link ServedFrom} — `live_fallback` is a SUCCESS answered by the live
-    * warehouse, so a caller must not read it as a storage hit.
-    */
-   servedFrom: ServedFrom | null;
-   /**
-    * Wall-clock ms from query handling through execution, excluding
-    * serialization and transport; the span the query histogram records.
-    */
-   executionTimeMs: number;
-   /**
-    * Warehouse bytes this query SCANNED, when the backend reports it
-    * (BigQuery today) — not bytes billed. Null means "not reported",
-    * including a storage-served query; never read it as zero cost without
-    * checking `servedFrom`. Named after Malloy's `runStats.queryCostBytes`,
-    * which it carries verbatim.
-    */
-   queryCostBytes: number | null;
-}
-
-/**
  * A non-fatal render-tag finding from {@link Model.validateRenderTags}: an issue
  * that affects only how a field renders, never whether the model compiles or a
  * query runs. `subject` is the query or view it sits on (e.g. `by_carrier` or
@@ -305,52 +293,10 @@ export interface RenderTagWarning {
    severity: "error" | "warn";
 }
 
-/**
- * Whether a run-time store failure may be retried against the live warehouse,
- * decided from the bindings that produced the serve shape. Exported for tests.
- *
- * An authored binding declaring anything but `live` vetoes for the whole shape
- * (deliberately coarse). A rollup binding never vetoes and never enables on its
- * own: pre-aggregation has no correctness dimension (docs/preaggregation.md: a
- * stale rollup recomputes from the base with the same answer), so a rollup must
- * not error on a store failure. A rollup must also not be filtered out, or a
- * rollup-only package could never degrade. Empty is false: nothing routed.
- */
-export function bindingsAllowDegradeToLive(
-   bindings: readonly ServeBinding[],
-): boolean {
-   return (
-      bindings.length > 0 &&
-      bindings.every(
-         (b) => b.origin === "preaggregate" || b.freshnessFallback === "live",
-      )
-   );
-}
-
 /** The one empty result {@link Model.preaggregateViolations} hands back, so its
  *  identity contract holds on the branch that never reaches the memo. */
 const NO_PREAGGREGATE_VIOLATIONS: readonly Readonly<PreaggregateViolation>[] =
    Object.freeze([]);
-
-const queryExecutionHistogram = lazyHistogram(
-   "malloy_model_query_duration",
-   "How long it takes to execute a Malloy model query",
-);
-/**
- * Warehouse bytes SCANNED by model queries, summed — not bytes billed (BigQuery
- * bills a 10MB minimum per query). A counter because the question is a sum over
- * a period; a histogram would need buckets spanning KB to TB.
- *
- * Only advances for backends that report the figure inline — today BigQuery
- * (`totalBytesProcessed`). Absent is not zero: Snowflake has bytes only in
- * `QUERY_HISTORY` (an extra round trip) and Postgres has none, so a sum across
- * connections understates every non-BigQuery one.
- */
-const queryScannedBytesCounter = lazyCounter(
-   "malloy_model_query_scanned_bytes",
-   "Warehouse bytes scanned by Malloy model queries, where the backend reports them. NOT bytes billed: BigQuery bills a 10MB minimum per query, so spend exceeds this on small reads.",
-   "By",
-);
 
 /** What a {@link Model} is built from; only the first four are always known. */
 export interface ModelState {
@@ -383,6 +329,11 @@ export interface ModelState {
     * row-level gate denies.
     */
    gateRuntime?: HydrationRuntime;
+   /**
+    * The model file's absolute path, which tells a source this file declares
+    * from one an import brought in. Absent: no source counts as declared here.
+    */
+   modelFile?: string;
 }
 
 export class Model {
@@ -392,44 +343,154 @@ export class Model {
    private modelType: ModelType;
    private modelMaterializer: ModelMaterializer | undefined;
    private modelDef: ModelDef | undefined;
+   /** See {@link ModelState.modelFile}. */
+   private modelFile: string | undefined;
+   /** See {@link declaredDeprecatedPersistAnnotations}. */
+   private deprecatedPersistAnnotationsMemo:
+      | DeprecatedPersistAnnotation[]
+      | undefined;
    private modelInfo: Malloy.ModelInfo | undefined;
-   private storageServe = new StorageServeShape({
+   /**
+    * The connections a stored table resolves against: this environment's
+    * storage destinations, resolved on each use so a list change takes
+    * effect without a reload. Deliberately NOT the config this model itself
+    * compiles against, so a destination is never resolvable from the
+    * author's model, a notebook cell or a query. Absent: nothing serves from
+    * storage.
+    */
+   private serveDestinationConfig?: () => MalloyConfig;
+   /**
+    * Bindings this model serves in place of its package's (see
+    * {@link setServeBindings}): a model driven outside a package.
+    */
+   private bindingsOverride:
+      | { bindings: readonly Binding[]; over?: Snapshot; snapshot?: Snapshot }
+      | undefined;
+   /**
+    * What reads and keeps this model's string capabilities
+    * (`serve/source_capability.ts`), set by the package beside the served
+    * copy's context; absent, {@link refreshStringCapabilities} reads none.
+    */
+   private stringCapabilityReader:
+      | ((
+           runtime: object,
+           args: {
+              modelDef: ModelDef;
+              load: (query: string) => QueryMaterializer;
+              connection: (name: string) => Promise<Connection>;
+              givens?: Record<string, unknown>;
+           },
+        ) => Promise<void>)
+      | undefined;
+
+   /** Set what {@link refreshStringCapabilities} reads through. */
+   public setStringCapabilityReader(
+      reader: NonNullable<Model["stringCapabilityReader"]>,
+   ): void {
+      this.stringCapabilityReader = reader;
+   }
+
+   /**
+    * What records this model's scope facts for read admission
+    * (`serve/scope_facts.ts`), set by the package beside the string
+    * capability reader; absent, {@link recordScopeFactsOver} records none.
+    */
+   private scopeFactsRecorder:
+      | ((
+           runtime: object,
+           args: {
+              modelDef: ModelDef;
+              snapshot: Snapshot;
+              lane?: ReturnType<ServedCopyServe["scopeLane"]>;
+           },
+        ) => void)
+      | undefined;
+
+   /** Set what {@link recordScopeFactsOver} records through. */
+   public setScopeFactsRecorder(
+      recorder: NonNullable<Model["scopeFactsRecorder"]>,
+   ): void {
+      this.scopeFactsRecorder = recorder;
+   }
+
+   /** The contracts of the tables set directly ({@link setServeBindings}). */
+   private contractsOverride: ReadonlyMap<string, ColumnContract> | undefined;
+   /** {@link storageTables}, for the snapshot bindings it was read from. */
+   private storageTablesMemo:
+      | {
+           bindings: readonly Binding[];
+           modelDef: ModelDef | undefined;
+           tables: ReturnType<typeof modelStorageTables>;
+        }
+      | undefined;
+   /** Tables already reported for a stored column type mismatch. */
+   private readonly typeMismatchesLogged = new Set<string>();
+   /** Sources already reported as served live for a name clash. */
+   private readonly shadowedSourcesLogged = new Set<string>();
+   /**
+    * The `#@ persist` view leg: a router candidate only when
+    * `materialize.enabled` is on and a source this model sees persists a
+    * view.
+    */
+   private persistedViews = new PersistedViewServe({
       modelPath: () => this.modelPath,
       modelDef: () => this.modelDef,
-      givens: () => this.givens,
-      rollupPlans: () => this.preaggregateRollupPlans,
-      rollupPlansVersion: () => this.preaggregatePlansVersion,
-      ensureSharedQueryModel: (materializer) =>
-         this.ensureSharedQueryModel(materializer),
+      modelMaterializer: () => this.modelMaterializer,
+      serveDestinationConfig: () => this.servingDestinationConfig(),
+      catalog: () => this.policy.materializedTables(),
+      planModelPersistedViews,
+      planModelPersistedQueries,
    });
    /**
-    * The synthesized pre-aggregation model for this model, compiled once per load
-    * by the owning Package (see Package.pushPreaggregateServeModels) and reused by
-    * every query. Undefined when the model declares no usable `#@ preaggregate`
-    * or when synthesis failed — in both cases the serve path is untouched.
-    *
-    * Per load rather than per query: rollup freshness is handled underneath by
-    * the per-query build manifest (a stale rollup recomputes from the base with
-    * the same answer), so nothing per-query keys it.
+    * The `#@ persist` named-query leg: a router candidate only when
+    * `materialize.enabled` is on and this model sees a persisted query.
     */
-   private preaggregateServeMaterializer?: ModelMaterializer;
+   private persistedQueries = new PersistedQueryServe(
+      {
+         modelPath: () => this.modelPath,
+         modelDef: () => this.modelDef,
+         modelMaterializer: () => this.modelMaterializer,
+         serveDestinationConfig: () => this.servingDestinationConfig(),
+         planModelPersistedViews,
+         planModelPersistedQueries,
+      },
+      this.persistedViews,
+   );
    /**
-    * The rollups this model's `#@ preaggregate` declarations describe.
-    *
-    * Held apart from {@link preaggregateServeMaterializer} because storage-tier
-    * rollup serving needs only these plans, so a companion that fails to
-    * compile must not also disable lake serving.
+    * The served copy on `virtual`: the author's own files with each stored
+    * source re-rooted on its table.
     */
-   private preaggregateRollupPlans: RollupPlan[] = [];
+   private servedCopy = this.newServedCopy();
+   /** What {@link setServedCopyContext} last set, for a dry-run copy. */
+   private servedCopyContext:
+      | Parameters<ServedCopyServe["setContext"]>
+      | undefined;
    /**
-    * Bumped whenever {@link preaggregateRollupPlans} is replaced, and folded into
-    * the serve-shape cache key.
-    *
-    * Clearing the cache is not enough: an in-flight query that read the old
-    * (possibly empty) plans can write its shape after the clear. Keying on the
-    * version means such a write is never read again.
+    * The rollup leg: a router candidate when this model sees a rollup; a
+    * `#(rollup)` one is read only with `materialize.enabled` on, a v1
+    * `#@ preaggregate` one either way.
     */
-   private preaggregatePlansVersion = 0;
+   private rollupVariants = new RollupVariantServe({
+      modelPath: () => this.modelPath,
+      modelDef: () => this.modelDef,
+      serveDestinationConfig: () => this.servingDestinationConfig(),
+      catalog: () => this.policy.materializedTables(),
+      // A joined source's `storage=` rollup is read through a join only from
+      // a query source the served copy reads in the same destination.
+      joinRollupBasis: async (pinned) =>
+         this.servedCopyEnabled()
+            ? this.servedCopy.joinRollupBasis(pinned)
+            : undefined,
+      planSourceRollups,
+      rollupGateEnforcedAtRead,
+   });
+   /** {@link sourceChains}, keyed by the model it was read from. */
+   private sourceChainCache:
+      | {
+           modelDef: ModelDef | undefined;
+           chains: ReadonlyMap<string, readonly string[]>;
+        }
+      | undefined;
    /**
     * The model file's text as the compile that produced {@link modelDef} read
     * it: shipped by the worker on a package load, read by `Model.create`
@@ -440,6 +501,11 @@ export class Model {
     * on disk is newer than the served IR.
     */
    private compiledSourceText: string | undefined;
+   /**
+    * The non-fatal gate findings this model's load made, which the package
+    * carries as warnings (`row-level-gate-*`).
+    */
+   private gateLoadWarningList: readonly GateLoadWarning[] = [];
    /** {@link getReportModelFacts}, once read; boxed so `undefined` is cached too. */
    private reportModelFacts:
       | { value: ReportModelFacts | undefined }
@@ -462,18 +528,12 @@ export class Model {
    private sourceInfos: Malloy.SourceInfo[] | undefined;
    private runnableNotebookCells: RunnableNotebookCell[] | undefined;
    private compilationError: MalloyError | Error | undefined;
-   /** Why the reader refused this served notebook's cells; the model itself still compiled and serves. */
+   /** Why the reader refused this linear report's cells; the model itself still compiled and serves. */
    private notebookReaderRefusal: NotebookReaderError | undefined;
-   /** A served notebook's own notes as the reader collected them (see `NotebookReadResult.annotations`). */
-   private notebookAnnotations: string[] | undefined;
-   /** The tile layout of a served linear `.malloy` report; undefined for a `.malloynb`. */
-   private notebookLayout: ServedReportManifest | undefined;
    /** Parsed #(filter) definitions keyed by source name. */
    private filterMap: Map<string, FilterDefinition[]>;
    /** Givens declared on the model, in declaration order. */
    private givens: ApiGiven[] | undefined;
-   /** Indexed like {@link runnableNotebookCells}; `undefined` = no modelDef, filter as before. */
-   private notebookCellDeclaredGivens: (CellDeclaredGivens | undefined)[] = [];
    /**
     * Memo for {@link getDeclaredQueryMetadata}. `undefined` = not yet computed,
     * `null` = computed and nothing declared.
@@ -515,6 +575,9 @@ export class Model {
       discoveryCuration: boolean;
       ownCuratedSourceNames: ReadonlySet<string>;
       curatedBasesOf: Map<string, ReadonlySet<string> | undefined>;
+      /** {@link showsCellQueryInfo}'s verdict per notebook cell, which a
+       *  `.malloynb` reaches through a compile of the cell's `run:`. */
+      cellQueryInfoShown: WeakMap<RunnableNotebookCell, Promise<boolean>>;
    };
    /** Whether discovery accessors curate to the `export {}` closure: true
     *  only when the owning package declares `explores` in publisher.json. */
@@ -568,6 +631,7 @@ export class Model {
          discoveryCuration,
          ownCuratedSourceNames,
          curatedBasesOf: new Map(),
+         cellQueryInfoShown: new WeakMap(),
       };
       return this.curationMemo;
    }
@@ -591,6 +655,7 @@ export class Model {
       this.dataStyles = state.dataStyles;
       this.modelType = state.modelType;
       this.modelDef = state.modelDef;
+      this.modelFile = state.modelFile;
       this.modelMaterializer = state.modelMaterializer;
       this.sources = state.sources;
       this.queries = state.queries;
@@ -601,9 +666,6 @@ export class Model {
       this.givens = state.givens;
       this.policy = state.policy ?? ModelPolicy.standalone();
       this.governor = new QueryGovernor(this.governorHost(state.gateRuntime));
-      this.notebookCellDeclaredGivens = declaredGivensPerCell(
-         this.runnableNotebookCells ?? [],
-      );
       this.modelInfo =
          state.modelInfo ??
          (this.modelDef ? modelInfoOf(this.modelDef) : undefined);
@@ -630,15 +692,6 @@ export class Model {
     */
    public declaredFilterSourceNames(): string[] {
       if (!this.modelDef) return [];
-      const ownFile = (url: string): boolean => {
-         try {
-            return decodeURIComponent(new URL(url).pathname).endsWith(
-               `/${this.modelPath}`,
-            );
-         } catch {
-            return false;
-         }
-      };
       const names: string[] = [];
       for (const entry of Object.values(this.modelDef.contents)) {
          if (!isSourceDef(entry)) continue;
@@ -647,11 +700,38 @@ export class Model {
             (note) =>
                note.text.trim().startsWith(FILTER_ANNOTATION_PREFIX) &&
                note.at !== undefined &&
-               ownFile(note.at.url),
+               this.declaredHere(note.at.url),
          );
          if (declares) names.push(entry.as || entry.name);
       }
       return names.sort();
+   }
+
+   /**
+    * Whether a document URL is this model's own file. Compared as resolved
+    * paths: a suffix match on {@link modelPath} would take
+    * `sub/models/a.malloy`, imported here, for `models/a.malloy`.
+    */
+   private declaredHere(url: string): boolean {
+      if (this.modelFile === undefined) return false;
+      try {
+         return path.resolve(fileURLToPath(url)) === this.modelFile;
+      } catch {
+         return false;
+      }
+   }
+
+   /**
+    * The deprecated v1 `#@ preaggregate` annotations THIS file declares, each
+    * once, at the measure it is written on.
+    */
+   public declaredDeprecatedPersistAnnotations(): DeprecatedPersistAnnotation[] {
+      if (!this.modelDef) return [];
+      // Read per package request, and the model never changes: walk it once.
+      return (this.deprecatedPersistAnnotationsMemo ??=
+         deprecatedPersistAnnotations(this.modelDef, (url) =>
+            this.declaredHere(url),
+         ));
    }
 
    /** The parsed filter definitions for a source; empty when none. */
@@ -723,11 +803,8 @@ export class Model {
          queries: () => this.queries,
          givens: () => this.givens,
          filterMap: () => this.filterMap,
-         runnableNotebookCells: () => this.runnableNotebookCells,
          siblingModelDefResolver: () => this.siblingModelDefResolver,
          queryBoundary: () => this.queryBoundary,
-         isNotebook: () => this.isNotebook(),
-         notebookFormat: () => this.notebookFormat(),
          isCuratedSource: (name) => this.isCuratedSource(name),
          isCuratedQuery: (name) => this.isCuratedQuery(name),
          derivesFromCurated: (name, query, derivationContext) =>
@@ -851,14 +928,14 @@ export class Model {
       );
 
       try {
-         const { modelMaterializer, runnableNotebookCells } =
-            await Model.getModelMaterializer(
-               runtime,
-               importBaseURL,
-               modelURL,
-               modelPath,
-            );
-
+         const loadedModel = await Model.getModelMaterializer(
+            runtime,
+            importBaseURL,
+            modelURL,
+            modelPath,
+         );
+         const modelMaterializer = loadedModel.modelMaterializer;
+         const runnableNotebookCells = loadedModel.runnableNotebookCells;
          const compiled = await modelMaterializer?.getModel();
          const checked =
             modelMaterializer && compiled
@@ -877,6 +954,7 @@ export class Model {
                packageName,
                modelPath,
                sourceName: warning.sourceName,
+               code: warning.code,
             });
          }
          const modelDef = compiled?._modelDef;
@@ -893,6 +971,7 @@ export class Model {
             modelType,
             modelMaterializer,
             modelDef,
+            modelFile: path.resolve(packagePath, modelPath),
             sources,
             queries,
             sourceInfos,
@@ -905,6 +984,7 @@ export class Model {
             gateRuntime: runtime as HydrationRuntime,
          });
          model.compiledSourceText = compiledTextFor(modelURL);
+         model.gateLoadWarningList = checked?.warnings ?? [];
          return model;
       } catch (thrown) {
          if (thrown instanceof Error && thrown.stack) {
@@ -942,7 +1022,7 @@ export class Model {
     */
    public static fromSerialized(
       packageName: string,
-      _packagePath: string,
+      packagePath: string,
       malloyConfig: ModelConnectionInput,
       data: SerializedModel,
       options: {
@@ -968,11 +1048,17 @@ export class Model {
          ? new Map(data.filterMap as Array<[string, FilterDefinition[]]>)
          : undefined;
 
-      // Non-fatal `#(authorize)` findings from the worker, which has no logger.
+      // Non-fatal gate findings from the worker, which has no logger.
+      const gateWarnings = (data.gateWarnings ?? []) as GateLoadWarning[];
       for (const warning of options.skipAuthorizeWarningLog
          ? []
-         : (data.authorizeWarnings ?? [])) {
-         logger.warn(warning, { packageName, modelPath: data.modelPath });
+         : gateWarnings) {
+         logger.warn(warning.message, {
+            packageName,
+            modelPath: data.modelPath,
+            sourceName: warning.sourceName,
+            code: warning.code,
+         });
       }
 
       // No modelDef: an empty notebook or a corrupt payload. Queries throw a
@@ -998,7 +1084,11 @@ export class Model {
          });
       }
 
-      const runtime = makeHydrationRuntime(malloyConfig, options.buildManifest);
+      const runtime = makeHydrationRuntime(
+         packagePath,
+         malloyConfig,
+         options.buildManifest,
+      );
       const modelMaterializer = runtime._loadModelFromModelDef(modelDef);
       const runnableNotebookCells =
          data.modelType === "notebook"
@@ -1012,6 +1102,7 @@ export class Model {
          modelType: data.modelType,
          modelMaterializer,
          modelDef,
+         modelFile: path.resolve(packagePath, data.modelPath),
          sources,
          queries,
          sourceInfos,
@@ -1033,9 +1124,8 @@ export class Model {
       model.preparedRenderTagResults = data.renderTagResults as
          | { label: string; result?: Malloy.Result }[]
          | undefined;
-      model.preparedPreaggregateCompanion = data.preaggregateCompanion as
-         | { modelDef?: ModelDef }
-         | undefined;
+      model.preparedRenderTagResultsDigest = data.renderTagResultsDigest;
+      model.gateLoadWarningList = gateWarnings;
       return model;
    }
 
@@ -1198,21 +1288,15 @@ export class Model {
    }
 
    /**
-    * The freshness-filtered build manifest for this query, or undefined (no
-    * override; serves live). Evaluated per call so a table that crosses its
-    * window is gated on the very next query.
-    */
-   private resolveFreshBuildManifest(): BuildManifest | undefined {
-      const entries = this.policy.freshBuildManifestEntries();
-      return entries ? { entries, strict: false } : undefined;
-   }
-
-   /**
-    * `manifest` with pre-aggregation's own rollup entries removed: only the
-    * companion model sees rollups. Malloy refuses a non-empty `buildManifest`
-    * against a model without `##! experimental.persistence`, which a
-    * `#@ preaggregate` model need not carry, so passing rollup entries to the
-    * author's model would 400 every query. Undefined when nothing survives.
+    * `manifest` with the rollups' own entries removed, for a run that reads
+    * the author's model rather than a rollup variant: the persisted-view
+    * leg's variant. Malloy refuses a non-empty `buildManifest` against a model
+    * without `##! experimental.persistence`, which a model declaring only
+    * rollups need not carry, so a rollup entry there would 400 every query
+    * (guard 3 of the plan's D3 list, kept past 6g for this reader).
+    * Undefined when nothing survives, which `prepareAndRun` hands Malloy as
+    * EMPTY_BUILD_MANIFEST, never as undefined (that would substitute from the
+    * Runtime's unfiltered manifest, #1721).
     */
    private withoutPreaggregateEntries(
       manifest: BuildManifest | undefined,
@@ -1259,8 +1343,30 @@ export class Model {
     * Deliberately NOT curated: callers should join onto the curated
     * `getSourceInfos()` and use this only to look up fields it admitted.
     */
+   /** The non-fatal gate findings this model's load made (`row-level-gate-*`). */
+   public gateLoadWarnings(): readonly GateLoadWarning[] {
+      return this.gateLoadWarningList;
+   }
+
    public getModelDef(): ModelDef | undefined {
       return this.modelDef;
+   }
+
+   /** Memo for {@link annotationNearMisses}; a model's IR never changes. */
+   private nearMissFindings: AnnotationFinding[] | undefined;
+
+   /**
+    * The annotations this model file wrote that do nothing: near misses of a
+    * route Publisher owns, and prefixes Malloy cannot route (see
+    * `annotation_near_miss.ts`). Empty when the model did not compile.
+    */
+   public annotationNearMisses(): AnnotationFinding[] {
+      if (this.nearMissFindings === undefined) {
+         this.nearMissFindings = this.modelDef
+            ? annotationNearMisses(authoredNotes(this.modelDef))
+            : [];
+      }
+      return this.nearMissFindings;
    }
 
    /** The compiled query of each notebook cell that runs one, with the model state its query compiled in. */
@@ -1968,37 +2074,131 @@ export class Model {
    }
 
    /**
-    * The query boundary for one notebook cell: the same two checks as the
-    * query route, with every code cell up to this one as derivation context,
-    * so `source: big is orders extend {...}` in an earlier cell still counts
-    * as derived from `orders`. Inert with no surface and under `"all"`.
+    * The query boundary for one notebook cell, as the query route would
+    * decide it. A `.malloynb` cell runs as its `runQuery` alone, the text
+    * the reports read serves and the SDK sends, so that text is put through
+    * the route's boundary checks: see {@link assertMalloynbRunOnSurface}.
+    * Inert with no surface and under `"all"`.
     */
-   private async assertNotebookCellOnSurface(
-      cellIndex: number,
-      runnable: { getPreparedQuery(): Promise<unknown> },
-   ): Promise<void> {
+   private async assertNotebookCellOnSurface(cellIndex: number): Promise<void> {
       const { mode, exploresDeclared } = this.queryBoundary;
       if (mode === "all" || !exploresDeclared) return;
       const cells = this.runnableNotebookCells ?? [];
-      const cellText = cells[cellIndex]?.text ?? "";
-      const context = cells
-         .slice(0, cellIndex + 1)
-         .filter((c) => c.type === "code")
-         .map((c) => c.text)
-         .join("\n");
-      const early = this.assertQueryBoundaryEarly(
-         undefined,
-         undefined,
-         cellText,
-         context,
+      await this.assertMalloynbRunOnSurface(malloynbRunQuery(cells[cellIndex]));
+   }
+
+   /**
+    * The boundary checks the query route runs on a `.malloynb` cell's `run:`
+    * sent as `query` on the notebook's path: the early check on its text, the
+    * boundary for the joins it writes, then, on its restricted compile, the
+    * compiled run target and those joins again. So a source the cells declare
+    * is not on the surface, and neither is a run that joins a hidden source,
+    * in its source or in its own `-> { … }`. A run that does not compile there
+    * is refused, since the route does not run it either. The stages are
+    * {@link malloynbRunStages}, which the load-time cell check shares.
+    */
+   private async assertMalloynbRunOnSurface(
+      query: string | undefined,
+   ): Promise<void> {
+      const refusal = () =>
+         this.notQueryable("Query target is not queryable.", true, "source");
+      if (!query || !this.modelMaterializer) throw refusal();
+      const outcome = await this.malloynbRunStages(
+         this.modelMaterializer,
+         query,
       );
-      if (early === "deferred") {
-         this.assertQueryBoundaryCompiled(
-            await this.governor.resolveAuthorizeSourceFromRunnable(runnable),
-            cellText,
-            context,
-         );
+      if (outcome.stage === "boundary") throw outcome.error;
+      if (outcome.stage === "compile") {
+         if (
+            outcome.error instanceof MalloyError ||
+            outcome.error instanceof ModelCompilationError
+         ) {
+            throw refusal();
+         }
+         throw outcome.error;
       }
+   }
+
+   /**
+    * DEPRECATED (`.malloynb` only; deleted with the format). The query
+    * route's stages for a `.malloynb` cell's `run:` sent as `query` on this
+    * file, in the route's order (`ModelServing.run`), stopping at the first
+    * that refuses: the boundary on the text and the joins it writes, the
+    * joins skipped as the route skips them for text with an `authorize`
+    * spelling when `beforeCompile` models the stage that refuses it; then
+    * `beforeCompile`, the route's prepare-stage checks for a caller that wants
+    * them; then the restricted compile; then, when the early check deferred,
+    * the boundary on the compiled run target and those joins again. A
+    * boundary refusal comes back as its error, with the compiled run target
+    * when that check refused it. Shared by the reports read
+    * ({@link assertMalloynbRunOnSurface}) and the load-time cell check
+    * ({@link consoleCellRefusal}), so the two ask in one order. With
+    * `shareQueryModel`, the compile builds the materializer's shared
+    * QueryModel first ({@link ensureSharedQueryModel}), which the model then
+    * keeps; the load-time check passes false, so a notebook nobody opens
+    * keeps none. A compile without it still reuses one already built.
+    */
+   private async malloynbRunStages<T>(
+      materializer: ModelMaterializer,
+      query: string,
+      beforeCompile?: () => T | undefined,
+      shareQueryModel = true,
+   ): Promise<
+      | { stage: "boundary"; error: NotQueryableError; compiledSource?: string }
+      | { stage: "prepare"; value: T }
+      | {
+           stage: "compile";
+           error: unknown;
+           runnable: QueryMaterializer;
+           boundary: "cleared" | "deferred";
+        }
+      | { stage: "admitted" }
+   > {
+      let boundary: "cleared" | "deferred";
+      try {
+         boundary = this.assertQueryBoundaryEarly(undefined, undefined, query);
+         // The route reads the joins of text that carries an `authorize`
+         // spelling only after the prepare stage has refused it
+         // (`OracleGuard.beforeQueryCompile`), so a caller modeling that stage
+         // skips them here, and hears the annotation's 400 as the route does.
+         if (!(beforeCompile && hasCallerAuthorizeAnnotation(query))) {
+            await this.governor.assertDocumentJoinsQueryable(query);
+         }
+      } catch (error) {
+         if (error instanceof NotQueryableError) {
+            return { stage: "boundary", error };
+         }
+         throw error;
+      }
+      const prepared = beforeCompile?.();
+      if (prepared !== undefined) return { stage: "prepare", value: prepared };
+      if (shareQueryModel) await this.ensureSharedQueryModel(materializer);
+      const runnable = materializer.loadRestrictedQuery("\n" + query);
+      try {
+         await runnable.getPreparedQuery();
+      } catch (error) {
+         return { stage: "compile", error, runnable, boundary };
+      }
+      if (boundary !== "deferred") return { stage: "admitted" };
+      const compiledSource =
+         await this.governor.resolveAuthorizeSourceFromRunnable(runnable);
+      try {
+         this.assertQueryBoundaryCompiled(compiledSource, query);
+      } catch (error) {
+         if (error instanceof NotQueryableError) {
+            return { stage: "boundary", error, compiledSource };
+         }
+         throw error;
+      }
+      try {
+         await this.governor.assertDocumentJoinsQueryable(query, runnable);
+      } catch (error) {
+         if (error instanceof NotQueryableError) {
+            return { stage: "boundary", error };
+         }
+         throw error;
+      }
+      return { stage: "admitted" };
    }
 
    /**
@@ -2021,7 +2221,7 @@ export class Model {
       const text =
          request.query ??
          (request.queryName
-            ? `run: ${quoteMalloyIdentifier(request.queryName)}`
+            ? `run: ${quotedIdentifier(request.queryName)}`
             : undefined);
       if (!text || !this.modelMaterializer) return undefined;
       let compiledSource: string | undefined;
@@ -2067,6 +2267,201 @@ export class Model {
    }
 
    /**
+    * DEPRECATED (`.malloynb` only; deleted with the format). Each code cell
+    * the query route refuses for every reader in the Console, sent as the
+    * SDK's `Report` sends it, the `runQuery` the reports read serves
+    * ({@link malloynbRunQuery}): its 1-based
+    * position among the notebook's cells, markdown included, and the refusal
+    * ({@link consoleCellRefusal}). Empty for any other file, and for a
+    * notebook with no compiled model. Hands the event loop a turn between
+    * cells through `yielder`, which a caller checking several notebooks
+    * shares.
+    */
+   public async malloynbCellRefusals(
+      yielder: EventLoopYielder = createEventLoopYielder(),
+   ): Promise<({ cell: number } & QueryTextRefusal)[]> {
+      if (!isMalloynbPath(this.modelPath)) return [];
+      const refusals: ({ cell: number } & QueryTextRefusal)[] = [];
+      let declared: ReadonlySet<string> | undefined;
+      const declaredNames = () => (declared ??= this.notebookDeclaredNames());
+      for (const [index, cell] of (
+         this.runnableNotebookCells ?? []
+      ).entries()) {
+         // The Console runs code cells only (the SDK's `cellRuns`); a markdown
+         // cell keeps its place in the count, and has no `runQuery`.
+         const query = malloynbRunQuery(cell);
+         if (query === undefined) continue;
+         await yielder.maybeYield();
+         const refusal = await this.consoleCellRefusal(query, declaredNames);
+         if (refusal) refusals.push({ cell: index + 1, ...refusal });
+      }
+      return refusals;
+   }
+
+   /**
+    * How the query route answers ad-hoc `query` on this file for every caller
+    * that sends it as the Console sends a `.malloynb` cell: no privilege such
+    * as `includeHiddenFilesAndSources`, and no `filterParams`. Undefined when
+    * some such caller could get rows. It runs the route's checks that read
+    * only the text and the model, in the route's order (`ModelServing.run`),
+    * through the stages the reports read shares ({@link malloynbRunStages}):
+    * the boundary on the text and its joins (404); the caller-annotation
+    * guards (400); a required `#(filter)` left without a value (400); the
+    * restricted compile, settled by the route's own
+    * {@link settledCompileError} (400, or the boundary's 404); then the
+    * boundary on the compiled run target and its joins (404). The checks that
+    * read a caller's givens (`#(authorize)`, row-level gates) are left out:
+    * their answer is the caller's. Undefined, too, for a file with no
+    * compiled model. `declaredNames` gives the sources the notebook's cells
+    * declare, which a caller checking every cell builds once.
+    */
+   public async consoleCellRefusal(
+      query: string,
+      declaredNames: () => ReadonlySet<string> = () =>
+         this.notebookDeclaredNames(),
+   ): Promise<QueryTextRefusal | undefined> {
+      const materializer = this.modelMaterializer;
+      if (this.compilationError || !materializer || !this.modelDef) {
+         return undefined;
+      }
+      const outcome = await this.malloynbRunStages(
+         materializer,
+         query,
+         () => this.preparedRefusal(query),
+         false,
+      );
+      if (outcome.stage === "boundary") {
+         return this.offSurfaceRefusal(
+            outcome.error,
+            query,
+            declaredNames,
+            outcome.compiledSource,
+         );
+      }
+      if (outcome.stage === "prepare") return outcome.value;
+      if (outcome.stage === "admitted") return undefined;
+      const settled = await settledCompileError(
+         outcome.runnable,
+         query,
+         outcome.boundary,
+         (text, compileError) =>
+            this.unqueryableTextRefusal(text, compileError),
+      );
+      if (!settled) {
+         // An unbound given is the run path's, and so the reader's. Anything
+         // that is not a compile failure at all is not this check's to judge.
+         if (await compileErrorOf(outcome.runnable)) return undefined;
+         throw outcome.error;
+      }
+      const errors = settled.compileError.problems.filter(
+         (problem) => problem.severity === "error",
+      );
+      const restricted = restrictedRejections(errors);
+      if (settled.offSurface) {
+         return {
+            ...this.offSurfaceRefusal(settled.refusal, query, declaredNames),
+            ...(restricted.length > 0
+               ? { problem: restricted[0].message }
+               : {}),
+         };
+      }
+      return {
+         status: 400,
+         reason: restricted.length > 0 ? "restricted_mode" : "compile_error",
+         problem:
+            (restricted[0] ?? errors[0])?.message ??
+            firstLine(settled.compileError.message),
+      };
+   }
+
+   /**
+    * `ModelServing.prepare`'s refusals of `query` before it compiles: the
+    * guards `assertNoCallerAnnotations` runs on query text, then `#(filter)`
+    * injection with no `filterParams`, as the Console sends a cell.
+    */
+   private preparedRefusal(query: string): QueryTextRefusal | undefined {
+      try {
+         assertNoCallerAuthorizeAnnotation(query);
+         assertNoCallerClassificationAnnotation(query);
+      } catch (error) {
+         if (!(error instanceof BadRequestError)) throw error;
+         return {
+            status: 400,
+            reason: "caller_annotation",
+            problem: firstSentence(error.message),
+         };
+      }
+      const filterSource = this.governor.resolveFilterSource(query);
+      if (!filterSource) return undefined;
+      try {
+         buildFilterClause(this.getFilters(filterSource), {});
+      } catch (error) {
+         if (!(error instanceof FilterValidationError)) throw error;
+         return {
+            status: 400,
+            reason: "required_filter",
+            problem: error.message,
+         };
+      }
+      return undefined;
+   }
+
+   /** Every source a `source:` statement in one of the notebook's code cells declares. */
+   private notebookDeclaredNames(): ReadonlySet<string> {
+      const names = new Set<string>();
+      for (const cell of this.runnableNotebookCells ?? []) {
+         if (cell.type !== "code") continue;
+         for (const name of buildDerivationBaseMap(cell.text).keys()) {
+            names.add(name);
+         }
+      }
+      return names;
+   }
+
+   /**
+    * A boundary refusal as a {@link QueryTextRefusal}, naming the source only
+    * where the query route's own refusal does (an {@link OffSurfaceError}),
+    * so a gated model's 404 gives nothing away here either. `compiledSource`
+    * is the run target the compiled check refused, which a named query
+    * reaches through its own name: then that query is `via`. Rethrows
+    * anything else.
+    */
+   private offSurfaceRefusal(
+      error: unknown,
+      query: string,
+      declaredNames: () => ReadonlySet<string>,
+      compiledSource?: string,
+   ): QueryTextRefusal {
+      if (!(error instanceof NotQueryableError)) throw error;
+      if (!(error instanceof OffSurfaceError)) {
+         return { status: 404, reason: "off_surface" };
+      }
+      const named = extractRunTargetSourceNames(query).find(
+         (name) =>
+            !this.isCuratedSource(name) &&
+            !this.derivesFromCurated(name, query),
+      );
+      const source = compiledSource ?? named;
+      if (source === undefined) return { status: 404, reason: "off_surface" };
+      const declared = declaredNames().has(source);
+      const target = extractRunTargetSourceNames(query)[0];
+      const via =
+         compiledSource !== undefined &&
+         target !== undefined &&
+         target !== compiledSource &&
+         !this.declaresSource(target)
+            ? target
+            : undefined;
+      return {
+         status: 404,
+         reason: "off_surface",
+         source,
+         declared,
+         ...(via ? { via } : {}),
+      };
+   }
+
+   /**
     * The source to name in a refusal's fix. For a source this dashboard
     * declares (`source: staged is orders_staging extend {...}`), exporting it
     * from index.malloy is impossible, so follow its declared bases to the one
@@ -2087,19 +2482,12 @@ export class Model {
       return current;
    }
 
-   /** A `.malloynb`, or a `.malloy` the package discovered as a served notebook. */
+   /** A `.malloynb`, or a linear `.malloy` report. */
    public isNotebook(): boolean {
       return (
          this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX) ||
          this.queryBoundary.layout === "linear"
       );
-   }
-
-   /** The file format this notebook is written in; `malloy` for a served notebook. */
-   private notebookFormat(): NotebookFormat {
-      return this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)
-         ? "malloynb"
-         : "malloy";
    }
 
    /**
@@ -2263,67 +2651,11 @@ export class Model {
       if (this.preaggregateViolationsMemo === undefined) {
          this.preaggregateViolationsMemo = validateModelPreaggregation(
             this.modelDef.contents as Record<string, unknown>,
+            this.modelDef.modelID,
          );
       }
       return this.preaggregateViolationsMemo;
    }
-
-   /**
-    * Compile this model's synthesized pre-aggregation companion and keep it for
-    * the serve path, or clear it when there is nothing to synthesize.
-    *
-    * Called by the owning Package. Never throws: a failure leaves the serve
-    * path serving live. Notebooks are skipped.
-    */
-   public async buildPreaggregateServeModel(
-      packagePath: string,
-      malloyConfig: ModelConnectionInput,
-      buildManifest?: BuildManifest["entries"],
-   ): Promise<void> {
-      this.preaggregateServeMaterializer = undefined;
-      this.preaggregateRollupPlans = [];
-      // The serve shape embeds these plans but is keyed on bindings, which a
-      // model edit need not change, so it must be dropped explicitly.
-      this.storageServe.invalidateServeShapeCache();
-      if (!this.modelDef || this.modelType !== "model") return;
-      // Planned independently of the compile below, so a companion that fails
-      // to compile still leaves the storage tier able to serve these rollups.
-      this.preaggregateRollupPlans = planModelPreaggregation(
-         this.modelDef.contents as Record<string, unknown>,
-      );
-      this.preaggregatePlansVersion += 1;
-      // The first build after hydration loads the worker-compiled companion
-      // (the manifest is read only at prepare time, so this is equivalent).
-      // Taken once; later rebuilds compile here.
-      const prepared = this.preparedPreaggregateCompanion;
-      this.preparedPreaggregateCompanion = undefined;
-      if (prepared) {
-         this.preaggregateServeMaterializer = prepared.modelDef
-            ? makeHydrationRuntime(
-                 malloyConfig,
-                 buildManifest,
-              )._loadModelFromModelDef(prepared.modelDef)
-            : undefined;
-         return;
-      }
-      const synthesized = await tryCompileSynthesizedPreaggregation({
-         packagePath,
-         modelPath: this.modelPath,
-         contents: this.modelDef.contents as Record<string, unknown>,
-         getRuntime: (overlay) =>
-            Model.getModelRuntime(packagePath, this.modelPath, malloyConfig, {
-               buildManifest,
-               overlay,
-            }),
-      });
-      this.preaggregateServeMaterializer = synthesized?.materializer;
-   }
-
-   /**
-    * The pre-aggregation companion the package-load worker compiled for this
-    * model, held until {@link buildPreaggregateServeModel} reads it.
-    */
-   private preparedPreaggregateCompanion: { modelDef?: ModelDef } | undefined;
 
    /**
     * Compile-time renderer-tag validation, run on the main thread: the
@@ -2344,18 +2676,28 @@ export class Model {
       if (!mm) {
          return [];
       }
+      // The worker prepares targets in order up to its soft deadline; the rest
+      // are prepared here. Taken once.
+      const fromWorker = this.preparedRenderTagResults ?? [];
+      this.preparedRenderTagResults = undefined;
+      const digest = this.preparedRenderTagResultsDigest;
+      this.preparedRenderTagResultsDigest = undefined;
+      const targets = renderTagTargets(this.queries, this.sources);
+      // Only a digest of every target's result says what the findings are.
+      const cacheKey =
+         digest !== undefined && fromWorker.length === targets.length
+            ? renderTagFindingsKey(digest)
+            : undefined;
+      if (cacheKey !== undefined) {
+         const cached = renderTagFindingsCache.get(cacheKey);
+         if (cached !== undefined) return cached;
+      }
       // Dynamic import: the validator is heavy, so load it only when needed.
       const { validateRenderTags } = await import(
          "@malloydata/render-validator"
       );
 
-      // The worker prepares targets in order up to its soft deadline; the rest
-      // are prepared here. Taken once.
-      const fromWorker = this.preparedRenderTagResults ?? [];
-      this.preparedRenderTagResults = undefined;
-      const remaining = renderTagTargets(this.queries, this.sources).slice(
-         fromWorker.length,
-      );
+      const remaining = targets.slice(fromWorker.length);
       const prepared = [
          ...fromWorker.filter(
             (entry): entry is { label: string; result: Malloy.Result } =>
@@ -2395,6 +2737,9 @@ export class Model {
             });
          }
       }
+      if (cacheKey !== undefined) {
+         renderTagFindingsCache.set(cacheKey, findings);
+      }
       return findings;
    }
 
@@ -2405,6 +2750,9 @@ export class Model {
    private preparedRenderTagResults:
       | { label: string; result?: Malloy.Result }[]
       | undefined;
+
+   /** SerializedModel.renderTagResultsDigest, taken with the results. */
+   private preparedRenderTagResultsDigest: string | undefined;
 
    /**
     * Prepare render-tag targets compile-only: the ones the worker did not
@@ -2490,7 +2838,7 @@ export class Model {
    }
 
    /**
-    * A served notebook's listing: `title` in the artifact tag, then the first
+    * A linear report's listing: `title` in the artifact tag, then the first
     * line of the `"` notes above the artifact line, then the first markdown
     * heading when no prose precedes it. Notes below the tag are cells, not
     * description.
@@ -2514,16 +2862,15 @@ export class Model {
    }
 
    /**
-    * Attach the cells of a served notebook, which is only known to be one after
-    * discovery, and recompute the givens each cell may name.
+    * Attach the cells of a linear report, which is only known to be one after
+    * discovery.
     */
    public setNotebookCells(cells: RunnableNotebookCell[]): void {
       this.runnableNotebookCells = cells;
-      this.notebookCellDeclaredGivens = declaredGivensPerCell(cells);
    }
 
    /**
-    * Read a served notebook's cells out of `text`, the text this model compiled,
+    * Read a linear report's cells out of `text`, the text this model compiled,
     * and attach them. A reader refusal becomes this notebook's error and leaves
     * it with no cells; the model itself keeps serving. `ok` when its cells were
     * read, `refused` when the reader refused them, `broken` when it did not
@@ -2531,8 +2878,6 @@ export class Model {
     */
    public attachServedNotebookCells(text: string): "ok" | "refused" | "broken" {
       this.notebookReaderRefusal = undefined;
-      this.notebookAnnotations = undefined;
-      this.notebookLayout = undefined;
       const modelDef = this.modelDef;
       const materializer = this.modelMaterializer;
       if (this.compilationError || !modelDef || !materializer) {
@@ -2548,9 +2893,7 @@ export class Model {
       if (isNotebookReaderError(parse)) return refuse(parse);
       const read = readNotebookCells(parse, modelDef, text);
       if (read.error) return refuse(read.error);
-      this.notebookAnnotations = read.annotations;
       const layout = this.readNotebookLayout();
-      this.notebookLayout = layout;
       // A linear report's prose and queries are its tiles, in tile order; the
       // file's own cells are only its definitions (`report.ts`).
       const cells: RunnableNotebookCell[] = read.cells
@@ -2577,6 +2920,7 @@ export class Model {
                });
                continue;
             }
+            // malloy-text: a report tile's query, the author's Malloy, run as written
             const text = `run: ${tile.query}`;
             let queryInfo: Promise<Malloy.QueryInfo | undefined> | undefined;
             cells.push({
@@ -2585,7 +2929,6 @@ export class Model {
                text,
                proseLines: [],
                runnable: materializer.loadQuery(text),
-               modelMaterializer: materializer,
                modelDef,
                deriveQueryInfo: () =>
                   (queryInfo ??= tileQueryInfo(materializer, text)),
@@ -2607,7 +2950,7 @@ export class Model {
          : undefined;
    }
 
-   /** Why the reader refused this served notebook's cells, if it did. */
+   /** Why the reader refused this linear report's cells, if it did. */
    public getNotebookReaderRefusal(): NotebookReaderError | undefined {
       return this.notebookReaderRefusal;
    }
@@ -2640,34 +2983,665 @@ export class Model {
       return undefined;
    }
 
-   public async getNotebook(): Promise<ApiRawNotebook> {
+   /**
+    * A `.malloynb` read as cells, for the reports read. Anything else is
+    * refused: a `.malloy` report's tiles are in its manifest.
+    */
+   public async getNotebook(): Promise<ApiReportCells> {
+      if (!this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
+         throw new ModelNotFoundError(
+            `${this.modelPath} is not a .malloynb. Only a .malloynb is read as cells; a .malloy report's tiles are in its manifest.`,
+         );
+      }
       if (this.compilationError) {
          throw this.compilationError;
       }
-      if (this.isNotebook()) {
-         const readerError = this.notebookReaderError();
-         if (readerError) throw readerError;
-         return this.getNotebookModel();
-      } else {
-         throw new ModelNotFoundError(
-            `${this.modelPath} is not a valid notebook name.  Notebook files must end in .malloynb, or be a .malloy report with a model-level ## artifact { layout=linear tiles=[…] } tag.`,
+      return this.getNotebookModel();
+   }
+
+   /** The served copy reading this model's state. */
+   private newServedCopy(): ServedCopyServe {
+      return new ServedCopyServe({
+         // The author's compile of a query, reading no table: what a query
+         // over a table with a column left out is checked against.
+         authorResultShape: async (queryString, givens) => {
+            const materializer = this.modelMaterializer;
+            if (!materializer) return undefined;
+            return resultShapeOf(
+               await materializer
+                  .loadRestrictedQuery(queryString)
+                  .getPreparedResult({
+                     buildManifest: EMPTY_BUILD_MANIFEST,
+                     givens: givens as never,
+                  }),
+            );
+         },
+         ensureSharedQueryModel: (materializer) =>
+            this.ensureSharedQueryModel(materializer),
+         modelPath: () => this.modelPath,
+         modelDef: () => this.modelDef,
+         // Database tables (on the source's own connection) need no
+         // destination.
+         serveDestinationConfig: () => this.servingDestinationConfig(),
+         pinned: () => this.pinNow(),
+         // Off this thread when a load worker is free; inline otherwise.
+         compileElsewhere: (args) =>
+            compileServedCopyOnWorker(currentPackageLoadPool(), args),
+      });
+   }
+
+   /**
+    * Every table this model serves now: its package's snapshot, or the
+    * bindings set on it directly ({@link setServeBindings}) beside the
+    * package's database entries. Replaced by reference, never edited.
+    */
+   private servingSnapshot(): Snapshot {
+      const pkg = this.policy.snapshot() ?? EMPTY_SNAPSHOT;
+      const override = this.bindingsOverride;
+      if (!override) return pkg;
+      if (override.over !== pkg || !override.snapshot) {
+         override.over = pkg;
+         // Each table's contract: the package's, the database entries',
+         // and those set beside the bindings.
+         const contracts = new Map(pkg.contracts ?? []);
+         for (const [id, entry] of Object.entries(pkg.entries)) {
+            const contract = parseContract(entry.contract);
+            if (contract && !contracts.has(id)) contracts.set(id, contract);
+         }
+         for (const [id, c] of this.contractsOverride ?? []) {
+            contracts.set(id, c);
+         }
+         override.snapshot = makeSnapshot(
+            override.bindings,
+            pkg.entries,
+            undefined,
+            undefined,
+            contracts,
+         );
+      }
+      return override.snapshot;
+   }
+
+   /** This model's tables pinned now, for a caller outside a query. */
+   private pinNow(): Pinned {
+      return pin(this.servingSnapshot(), new Date());
+   }
+
+   /**
+    * The storage destinations a leg may read through: none unless the
+    * storage tier serves (`PERSIST_STORAGE_MODE=on`). Every leg (served
+    * copy, rollup, persisted view, persisted query) reads it here, so under
+    * `write-only` and `off` none answers from a storage table.
+    */
+   private servingDestinationConfig(): (() => MalloyConfig) | undefined {
+      return storageServes(getPersistStorageMode())
+         ? this.serveDestinationConfig
+         : undefined;
+   }
+
+   /** Set the storage destinations, pushed by the owning package. */
+   public setServeDestinationConfig(provider: () => MalloyConfig): void {
+      // The same provider again changes nothing: it is read live, and a
+      // destination list swap invalidates explicitly (invalidateCompiledLegs).
+      if (provider === this.serveDestinationConfig) return;
+      // Replaced, not first set (a reload's new model): what failed over the
+      // old destinations may compile over these.
+      if (this.serveDestinationConfig) this.servedCopy.forgetFailures();
+      this.serveDestinationConfig = provider;
+      this.servedCopy.invalidate();
+      this.rollupVariants.invalidate();
+      this.persistedViews.invalidate();
+      this.persistedQueries.invalidate();
+   }
+
+   /**
+    * The package directory and connections this model's served copy compiles
+    * with. Set by the owning package with its bindings.
+    */
+   public setServedCopyContext(
+      packagePath: string,
+      malloyConfig: ModelConnectionInput,
+      materializePlans: Readonly<Record<string, MaterializePlan>> = {},
+      declarationOf?: (sourceID: string) => unknown,
+   ): void {
+      // The same context again (a rebind, a republish) keeps the served
+      // copy: its compile is keyed on its bindings, and this model's own text
+      // never changes. The other legs are reset as before, since their caches
+      // are not keyed on the database entries a bind can change alone.
+      const current = this.servedCopyContext;
+      const unchanged =
+         !!current &&
+         current[0] === packagePath &&
+         current[1] === malloyConfig &&
+         current[2] === materializePlans &&
+         current[3] === declarationOf;
+      this.servedCopyContext = [
+         packagePath,
+         malloyConfig,
+         materializePlans,
+         declarationOf,
+      ];
+      if (!unchanged) this.servedCopy.setContext(...this.servedCopyContext);
+      this.persistedViews.setContext(packagePath, malloyConfig);
+      this.persistedQueries.setContext(packagePath, malloyConfig);
+      this.rollupVariants.setContext(packagePath, malloyConfig);
+   }
+
+   /**
+    * Whether the router may try the persisted-view leg: a model file, the
+    * materialize switch on, and a persisted view on a source it sees.
+    */
+   private persistedViewsEnabled(): boolean {
+      return (
+         this.modelType === "model" &&
+         !this.isNotebook() &&
+         getMaterializeEnabled() &&
+         this.persistedViews.hasViews()
+      );
+   }
+
+   /**
+    * Whether the router may try the persisted-query leg: as for views, with
+    * a persisted named query this model sees.
+    */
+   private persistedQueriesEnabled(): boolean {
+      return (
+         this.modelType === "model" &&
+         !this.isNotebook() &&
+         getMaterializeEnabled() &&
+         this.persistedQueries.hasQueries()
+      );
+   }
+
+   /**
+    * The persisted views' generated build sources this model can see, by
+    * `sourceID`, with the source and view each stores, and the persisted
+    * named queries' with the query (and its run target): the package's serve
+    * verdict reads a view's reach through its source.
+    */
+   public persistedViewBuilds(): (PersistedResultOf & {
+      buildSourceID: string;
+   })[] {
+      if (!getMaterializeEnabled()) return [];
+      return [
+         ...this.persistedViews.plans().map((p) => ({
+            buildSourceID: p.buildSourceID,
+            sourceID: p.sourceID,
+            sourceName: p.sourceName,
+            viewName: p.viewName,
+         })),
+         ...this.persistedQueries.plans().map((p) => ({
+            buildSourceID: p.buildSourceID,
+            queryName: p.queryName,
+            ...(p.sourceID !== undefined ? { sourceID: p.sourceID } : {}),
+            ...(p.sourceName !== undefined ? { sourceName: p.sourceName } : {}),
+         })),
+      ];
+   }
+
+   /**
+    * Whether the router may try the served copy: a model file. It reads a
+    * database table on the source's own connection, and a storage table
+    * only while `PERSIST_STORAGE_MODE=on` (its host withholds the
+    * destinations otherwise). Warnings and the compile at bind follow the
+    * same rule, so a package never warns about a copy that is not routed.
+    */
+   private servedCopyEnabled(): boolean {
+      // A notebook or report is not a model file the served copy can load.
+      return this.modelType === "model" && !this.isNotebook();
+   }
+
+   /**
+    * Whether the router may try the `#(rollup)` rollup leg: a model file
+    * and a rollup declared on a source it sees.
+    */
+   private rollupVariantsEnabled(): boolean {
+      return (
+         this.modelType === "model" &&
+         !this.isNotebook() &&
+         // v1 `#@ preaggregate` rollups are read here too.
+         this.rollupVariants.hasRollups()
+      );
+   }
+
+   /**
+    * Read this model's tables now, so their warnings exist before any query:
+    * the stored columns' types, and, when it is enabled, the served copy's
+    * compile.
+    */
+   public async prepareServedCopy(): Promise<void> {
+      // Each source's chain, for the path report: recorded once per
+      // compile, so a query looks its source's up.
+      this.sourceChains();
+      await this.refreshStringCapabilities();
+      const snapshot = this.servingSnapshot();
+      await this.prepareServedCopyOver(snapshot);
+      this.recordScopeFactsOver(snapshot);
+   }
+
+   /**
+    * The runtime this model's string capabilities are kept with
+    * (`serve/source_capability.ts`), or undefined with no compile.
+    */
+   public stringCapabilityRuntime(): object | undefined {
+      return (
+         this.modelMaterializer as unknown as { runtime?: object } | undefined
+      )?.runtime;
+   }
+
+   /**
+    * Read how each of this model's sources compares its strings live, and
+    * keep it with the model's runtime, for read admission's lookups
+    * (`serve/source_capability.ts`). Every bind commit calls it, so a
+    * collation altered in the warehouse is seen at the next bind. Never
+    * throws; a model with no compile reads nothing.
+    */
+   public async refreshStringCapabilities(): Promise<void> {
+      const refresh = this.stringCapabilityReader;
+      const materializer = this.modelMaterializer;
+      const load =
+         this.modelType === "model" && !this.isNotebook() && materializer
+            ? (query: string) => materializer.loadQuery(query)
+            : undefined;
+      const modelDef = this.modelDef;
+      const runtime = this.stringCapabilityRuntime() as
+         | {
+              connections: {
+                 lookupConnection(name?: string): Promise<Connection>;
+              };
+           }
+         | undefined;
+      if (!refresh || !load || !modelDef || !runtime) return;
+      try {
+         await refresh(runtime, {
+            modelDef,
+            load,
+            connection: (name) => runtime.connections.lookupConnection(name),
+            givens: placeholderGivens(this.givens),
+         });
+      } catch (err) {
+         logger.warn(
+            "Could not read how this model's sources compare strings",
+            {
+               modelPath: this.modelPath,
+               error: err instanceof Error ? err.message : String(err),
+            },
          );
       }
    }
 
-   /** See {@link StorageServeShape.setServeDestinationConfig}. */
-   public setServeDestinationConfig(provider: () => MalloyConfig): void {
-      this.storageServe.setServeDestinationConfig(provider);
+   /**
+    * Record, for read admission's lookups, what each named source's gates
+    * and row scope read over the tables `snapshot` binds, and its gate and
+    * composite flags (`serve/scope_facts.ts`): every bind commit, so a
+    * query pinned to `snapshot` walks none of it. The served copy's lane is
+    * the one compiled last, over the same bindings when its compile ran.
+    */
+   public recordScopeFactsOver(
+      snapshot: Snapshot = this.servingSnapshot(),
+   ): void {
+      const lane = this.servedCopyEnabled()
+         ? this.servedCopy.scopeLane()
+         : undefined;
+      const runtime = (
+         this.modelMaterializer as unknown as { runtime?: object } | undefined
+      )?.runtime;
+      const modelDef = this.modelDef;
+      const record = this.scopeFactsRecorder;
+      if (!record || !runtime || !modelDef || this.modelType !== "model") {
+         return;
+      }
+      try {
+         record(runtime, {
+            modelDef,
+            snapshot,
+            ...(lane ? { lane } : {}),
+         });
+      } catch (err) {
+         logger.warn("Could not record this model's scope facts", {
+            modelPath: this.modelPath,
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
    }
 
-   /** See {@link StorageServeShape.invalidateServeShapeCache}. */
-   public invalidateServeShapeCache(): void {
-      this.storageServe.invalidateServeShapeCache();
+   /**
+    * {@link prepareServedCopy} over `snapshot`, the tables a bind is about
+    * to swap in (`PackageMaterialization.bindCompiled`): the copy is then
+    * current the moment the swap makes `snapshot` the one this model reads.
+    */
+   public async prepareServedCopyOver(snapshot: Snapshot): Promise<void> {
+      const pinned = pin(snapshot, new Date());
+      this.storageTables(pinned.snapshot);
+      if (!this.servedCopyEnabled()) return;
+      await this.servedCopy.prepare(pinned);
+      // Once per source per model per snapshot it compiles (a load or a
+      // rebind): each source the copy does not serve whole, `declined`
+      // beating `partial`, and `partial` only while it is still re-rooted.
+      for (const { outcome, reason } of servedCopyOutcomes(
+         // A storage table dropped for its database twin serves the source.
+         this.servedCopy.problems().filter((p) => !p.servedFromDatabase),
+         this.servedCopy.rerootedSourceIDs() ?? new Set(),
+      )) {
+         recordServedCopyOutcome(outcome, reason);
+      }
    }
 
-   /** See {@link StorageServeShape.setServeBindings}. */
-   public setServeBindings(bindings: ServeBinding[]): void {
-      this.storageServe.setServeBindings(bindings);
+   /**
+    * The sources this model's served copy answers from storage, by author
+    * `sourceID`, as its last committed compile left them: undefined when the
+    * served copy is off for this model, and `uncompiled` before its first
+    * compile. A bind's commit compiles the copy before the tables it reads
+    * are swapped in, so the last compile is the copy queries read; past a
+    * freshness edge, until the commit at that edge recompiles it, a table
+    * whose window lapsed is left out by its recorded window.
+    */
+   public servedCopySourceIDs():
+      | ReadonlySet<string>
+      | "uncompiled"
+      | undefined {
+      if (!this.servedCopyEnabled()) return undefined;
+      return this.servedCopy.rerootedSourceIDs(Date.now()) ?? "uncompiled";
+   }
+
+   /**
+    * The sources this model's served copy re-rooted on a database table and
+    * on no storage table, by author `sourceID`: undefined when the served
+    * copy is off for this model or has yet to compile.
+    */
+   public servedCopyDatabaseOnlyIDs(): ReadonlySet<string> | undefined {
+      if (!this.servedCopyEnabled()) return undefined;
+      return this.servedCopy.rerootedOnDatabaseOnly(Date.now());
+   }
+
+   /**
+    * The sources this model's served copy leaves as written because they
+    * extend a source it re-rooted, by author `sourceID` (empty when off or
+    * not yet compiled).
+    */
+   public servedCopyThroughBaseIDs(): ReadonlySet<string> {
+      if (!this.servedCopyEnabled()) return new Set();
+      return this.servedCopy.servedThroughBaseSourceIDs(Date.now());
+   }
+
+   /**
+    * Why this model's served copy leaves sources unserved, as its last
+    * committed compile found: empty when off.
+    */
+   public servedCopyProblems(): readonly ServedCopyProblem[] {
+      if (!this.servedCopyEnabled()) return [];
+      return this.servedCopy.problems();
+   }
+
+   /** Drop every compiled leg (the destinations or the model changed). */
+   public invalidateCompiledLegs(): void {
+      this.servedCopy.forgetFailures();
+      this.servedCopy.invalidate();
+      this.rollupVariants.invalidate();
+      this.persistedViews.invalidate();
+      this.persistedQueries.invalidate();
+   }
+
+   /**
+    * Serve this model from `bindings` in place of its package's (the
+    * package's database entries still apply): a model driven outside a
+    * package, as a test or a tool drives one. A copy is taken, so a caller
+    * that edits a binding and sets it again compiles over the edit.
+    */
+   public setServeBindings(
+      bindings: readonly Binding[],
+      /** Their tables' column contracts, by content address; kept when absent. */
+      contracts?: ReadonlyMap<string, ColumnContract>,
+   ): void {
+      this.bindingsOverride = { bindings: Object.freeze([...bindings]) };
+      if (contracts) this.contractsOverride = contracts;
+   }
+
+   /**
+    * This model's own `#@ persist` `storage=` tables in `snapshot`, read once
+    * per snapshot: a binding that stores a same-named source declared
+    * elsewhere is dropped (that source serves live here,
+    * malloydata/publisher#1001), and the stored columns whose type does not
+    * serve as declared are found, each logged once per table per model.
+    */
+   private storageTables(
+      snapshot: Snapshot = this.servingSnapshot(),
+   ): ReturnType<typeof modelStorageTables> {
+      const memo = this.storageTablesMemo;
+      if (
+         memo &&
+         memo.bindings === snapshot.bindings &&
+         memo.modelDef === this.modelDef
+      ) {
+         return memo.tables;
+      }
+      const tables = modelStorageTables(
+         snapshot.bindings,
+         this.modelDef,
+         this.servedCopyContext?.[0],
+      );
+      this.storageTablesMemo = {
+         bindings: snapshot.bindings,
+         modelDef: this.modelDef,
+         tables,
+      };
+      if (tables.checkFailed !== undefined) {
+         // Reporting only: the served copy decides each column on its own.
+         logger.debug("Could not check stored column types", {
+            modelPath: this.modelPath,
+            error: tables.checkFailed,
+         });
+      }
+      for (const source of tables.shadowed) {
+         if (this.shadowedSourcesLogged.has(source)) continue;
+         this.shadowedSourcesLogged.add(source);
+         logger.info(
+            "Serving a source live: its storage table materializes a same-named source declared elsewhere",
+            { modelPath: this.modelPath, source },
+         );
+      }
+      for (const finding of tables.findings) {
+         const key = `${finding.binding.sourceName}\u0000${finding.binding.virtualHandle}`;
+         if (this.typeMismatchesLogged.has(key)) continue;
+         this.typeMismatchesLogged.add(key);
+         for (const m of finding.mismatches) {
+            recordStoredColumnTypeMismatch("serve", m.declaredType);
+         }
+         logger.warn(
+            "Stored column types do not match the declared Malloy types; casting where faithful, serving the rest live",
+            {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               modelPath: this.modelPath,
+               source: finding.binding.sourceName,
+               cast: finding.casts,
+               live: finding.unservable,
+            },
+         );
+      }
+      return tables;
+   }
+
+   /** The stored columns of this model's tables that do not serve as declared. */
+   public storedColumnTypeMismatches(): readonly SourceTypeMismatches[] {
+      return this.storageTables().mismatches;
+   }
+
+   /**
+    * The source names this model serves a `storage=` table for: its own
+    * `#@ persist` sources' (see {@link storageTables}) and its persisted
+    * views'.
+    */
+   public servedStorageSourceNames(): string[] {
+      const pinned = this.pinNow();
+      return [
+         ...this.storageTables(pinned.snapshot).kept,
+         ...this.persistedViews.viewBindings(pinned, "bound"),
+         ...this.persistedQueries.queryBindings(pinned, "bound"),
+      ].map((b) => b.sourceName);
+   }
+
+   /**
+    * The text a chained `storage=` build of a downstream this model declares
+    * compiles from, with each stored upstream the request carries re-rooted
+    * as this model's served copy re-roots it (`chainBuildText` in
+    * serve/served_copy_serve.ts).
+    * Undefined when this model has no served copy or does not declare the
+    * downstream.
+    */
+   public chainBuildText(
+      request: ChainBuildRequest,
+   ): ChainBuildText | undefined {
+      if (
+         this.modelType !== "model" ||
+         this.isNotebook() ||
+         !this.modelDef ||
+         !this.servedCopyContext
+      ) {
+         return undefined;
+      }
+      return chainBuildText(request, {
+         modelPath: this.modelPath,
+         modelDef: this.modelDef,
+         context: this.servedCopyContext,
+      });
+   }
+
+   /**
+    * The v1 cutover's preview (dry run): the sources this model's served copy
+    * would re-root over `bindings` (declared from the plan's output columns,
+    * so no table is read), and why it leaves the others as written. Compiled
+    * in a served copy of its own, with the cutover's per-column types, and
+    * discarded. Undefined when this model has no served copy to compile.
+    */
+   public async previewServedCopy(bindings: Binding[]): Promise<
+      | {
+           rerooted: ReadonlySet<string>;
+           throughBase: ReadonlySet<string>;
+           gateDeclined: ReadonlySet<string>;
+           problems: readonly ServedCopyProblem[];
+        }
+      | undefined
+   > {
+      if (
+         this.modelType !== "model" ||
+         this.isNotebook() ||
+         !this.modelDef ||
+         !this.servedCopyContext ||
+         bindings.length === 0
+      ) {
+         return undefined;
+      }
+      const destinations = this.serveDestinationConfig;
+      // Declared from the plan, never read, so no window applies.
+      const pinned = pin(makeSnapshot(bindings), new Date(0));
+      const copy = new ServedCopyServe({
+         modelPath: () => this.modelPath,
+         modelDef: () => this.modelDef,
+         // Compile-only, as the view preview: a destination's catalog need
+         // not exist before the first build.
+         serveDestinationConfig: () =>
+            destinations && storageServes(getPersistStorageMode())
+               ? () => compileOnlyDestinationConfig(destinations())
+               : undefined,
+         pinned: () => pinned,
+      });
+      copy.setContext(...this.servedCopyContext);
+      await copy.prepare();
+      return {
+         rerooted: copy.rerootedSourceIDs() ?? new Set<string>(),
+         throughBase: copy.servedThroughBaseSourceIDs(),
+         gateDeclined: copy.gateDeclinedSourceIDs(),
+         problems: copy.problems(),
+      };
+   }
+
+   public async previewStorageViews(
+      bindings: Binding[],
+   ): Promise<Map<string, ViewServeVerdict[]>> {
+      const out = new Map<string, ViewServeVerdict[]>();
+      const destinations = this.serveDestinationConfig;
+      if (
+         !destinations ||
+         bindings.length === 0 ||
+         !this.modelDef ||
+         !this.servedCopyContext ||
+         !this.servedCopyEnabled()
+      ) {
+         return out;
+      }
+      // The same identity filter the model's own bindings pass (#1001).
+      const stored = ownBindings(
+         bindings.filter((b) => b.kind !== "rollup"),
+         this.modelDef,
+         this.servedCopyContext[0],
+      ).kept;
+      if (stored.length === 0) return out;
+      const pinned = pin(makeSnapshot(stored), new Date(0));
+      // A throwaway served copy over these bindings, compile-only: before the
+      // first build a DuckLake destination's catalog does not exist yet, and
+      // the dialect must not depend on reaching it.
+      const copy = new ServedCopyServe({
+         modelPath: () => this.modelPath,
+         modelDef: () => this.modelDef,
+         quiet: true,
+         serveDestinationConfig: () => () =>
+            compileOnlyDestinationConfig(destinations()),
+         pinned: () => pinned,
+      });
+      copy.setContext(...this.servedCopyContext);
+      await copy.prepare();
+      const problems = copy.problems();
+      // A view reading a given with no default serves once the caller
+      // supplies it; the preview compiles with a placeholder in its place, so
+      // it judges the stored columns, not the request.
+      const placeholders = placeholderGivens(this.givens);
+      for (const binding of stored) {
+         const def = this.modelDef.contents?.[binding.sourceName] as
+            | {
+                 fields?: readonly {
+                    name?: string;
+                    as?: string;
+                    type?: string;
+                 }[];
+              }
+            | undefined;
+         const views = (def?.fields ?? [])
+            .filter((f) => f.type === "turtle")
+            .map((f) => f.as ?? f.name)
+            .filter((name): name is string => typeof name === "string");
+         // Why the copy left this source as written, when it did.
+         const left = problems.find(
+            (p) =>
+               p.sourceName === binding.sourceName &&
+               (p.sourceID === undefined ||
+                  (binding.sourceIDs ?? [p.sourceID]).includes(p.sourceID)),
+         );
+         const verdicts: ViewServeVerdict[] = [];
+         for (const view of views) {
+            try {
+               await copy.loadQuery(
+                  `run: ${quotedIdentifier(binding.sourceName)} -> ${quotedIdentifier(view)}`,
+                  placeholders,
+               );
+               verdicts.push({ view, verdict: "serves" });
+            } catch (error) {
+               verdicts.push({
+                  view,
+                  verdict: "live",
+                  detail: compileErrorLine(
+                     left?.detail ??
+                        (error instanceof Error
+                           ? error.message
+                           : String(error)),
+                  ),
+               });
+            }
+         }
+         // By the plan's sourceID: two models' same-named stored sources are
+         // different sources with different views.
+         out.set(binding.sourceIDs?.[0] ?? binding.sourceName, verdicts);
+      }
+      return out;
    }
 
    /**
@@ -2705,7 +3679,7 @@ export class Model {
          async (span) => {
             let result: ModelQueryResults;
             try {
-               result = await this.runQueryResults(audit, request, privileges);
+               result = await this.serving.run(audit, request, privileges);
             } catch (error) {
                throw (
                   this.pointToDeclaringFile(
@@ -2723,851 +3697,133 @@ export class Model {
       );
    }
 
-   private async runQueryResults(
-      audit: QueryAudit,
-      request: QueryRequest,
-      privileges: QueryPrivileges,
-   ): Promise<ModelQueryResults> {
-      const {
-         sourceName,
-         queryName,
-         query,
-         filterParams,
-         givens,
-         abortSignal,
-         queryMetadataInput,
-      } = request;
-      const responseShape = request.responseShape ?? "full";
-      const { bypassFilters, bypassAuthorize, includeHiddenFilesAndSources } =
-         privileges;
-      const startTime = performance.now();
-      if (this.compilationError) {
-         // Re-throw MalloyError and ModelCompilationError as-is (they map to 400/424)
-         if (
-            this.compilationError instanceof MalloyError ||
-            this.compilationError instanceof ModelCompilationError
-         ) {
-            throw this.compilationError;
-         }
-         // For other compilation errors, wrap as BadRequestError (400)
-         throw new BadRequestError(
-            `Model compilation failed: ${this.compilationError.message}`,
-         );
-      }
+   /** This model's query pipeline (model_serving.ts), made on first use. */
+   private get serving(): ModelServing {
+      this.servingMemo ??= new ModelServing(this.servingPort());
+      return this.servingMemo;
+   }
+   private servingMemo: ModelServing | undefined;
 
-      let runnable: QueryMaterializer;
-      let liveRunnable: QueryMaterializer | undefined;
-      // Hoisted so the row-level recompile after the try block reuses the
-      // SAME caller text.
-      let queryString: string;
-      // Set when this query is routed through the `storage=` serve-shape
-      // transform; threaded into prepare + run so the virtual sources resolve to
-      // their physical tables. Undefined ⇒ served live (the default path).
-      let serveVirtualMap: VirtualMap | undefined;
-      // The bindings that actually PRODUCED the serve shape. Per-binding
-      // decisions must read this, not the package-wide set, or a sibling
-      // source's value would decide this query's behavior.
-      let serveShapeBindings: ServeBinding[] = [];
-      // How the answer was produced, for the query histogram. `live_fallback`
-      // must NOT count as a storage hit, or the hit rate would rise while the
-      // tier is down.
-      let servedFrom: ServedFrom | undefined;
-      // Set when the query runs against the pre-aggregation companion, the only
-      // runnable that may see rollup manifest entries.
-      let preaggRouted = false;
-      if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
-         throw new BadRequestError("Model has no queryable entities.");
-
-      // Resolved once, before routing, so prepare, the pre-aggregation probe
-      // and run all agree on the same freshness substitution.
-      const buildManifest = this.resolveFreshBuildManifest();
-      // Without rollup entries, for every runnable that is NOT the companion.
-      const liveBuildManifest = this.withoutPreaggregateEntries(buildManifest);
-      // See filterGivensToModelSurface. Resolved from the caller's own compiled
-      // query, before routing or any graft replaces it.
-      let querySurfaceGivens: Record<string, GivenValue> | undefined;
-
-      // Query boundary FIRST (404), before authorize and compilation, so a
-      // non-queryable source's schema cannot be probed. "deferred" is settled
-      // by the compiled backstop below.
-      const boundary = includeHiddenFilesAndSources
-         ? "cleared"
-         : this.assertQueryBoundaryEarly(sourceName, queryName, query);
-      // The caller's own text; its joins are checked as extra run targets.
-      // Text carrying an annotation is left to the forgery rejecter below.
-      const callerRegion: CallerRegion | undefined =
-         !sourceName && !queryName && query
-            ? { kind: "query", text: query }
-            : undefined;
-      // The advisory pre-compile checks (`OracleGuard`): a refused caller hears
-      // the gate's 403 or the boundary's 404 before any compile error could
-      // describe the source. Never the authority; `govern` below is.
-      const { earlySource } = await this.governor.oracle.beforeQueryCompile({
-         sourceName,
-         queryName,
-         query,
-         givens,
-         bypassAuthorize,
-         includeHiddenFilesAndSources,
-         callerRegion,
-      });
-
-      // Wrap loadQuery calls in try-catch to handle query parsing errors
-      try {
-         // Before any compile: caller text may not declare an authorize gate
-         // (it would override the author's). Names are also quoted below;
-         // checking them too is defence in depth.
-         for (const [field, callerText] of [
-            ["query", query],
-            ["source_name", sourceName],
-            ["query_name", queryName],
-         ] as const satisfies readonly (readonly [
-            AuthorizeGuardField,
-            string | undefined,
-         ])[]) {
-            if (!callerText) continue;
-            try {
-               // A name is interpolated mid-line, so it is never lexed as text of its own.
-               if (field === "query")
-                  assertNoCallerAuthorizeAnnotation(callerText);
-               else assertNoAuthorizeTagLike(callerText);
-            } catch (err) {
-               // The only signal a rejection emits: the catch below skips the
-               // query histogram for a BadRequestError.
-               recordAuthorizeGuardRejection(field);
-               throw err;
-            }
-         }
-         if (query) assertNoCallerClassificationAnnotation(query);
-         if (!sourceName && !queryName && query) {
-            queryString = "\n" + query;
-         } else if (queryName && !query) {
-            // NAMES, not Malloy text: quoted so each lexes as one identifier.
-            // Unquoted, a newline would open a second statement (Malloy runs
-            // the LAST `run:`), and getFilters() would miss the raw name and
-            // inject no filter.
-            queryString = `\nrun: ${
-               sourceName ? `${quoteMalloyIdentifier(sourceName)} -> ` : ""
-            }${quoteMalloyIdentifier(queryName)}`;
-         } else {
-            const endTime = performance.now();
-            const executionTime = endTime - startTime;
-            queryExecutionHistogram().record(
-               executionTime,
-               this.queryMetricAttributes({
-                  environment: queryMetadataInput?.environment,
-                  queryName,
-                  sourceName,
-                  status: "rejected",
-               }),
-            );
-            throw new InvalidQueryRequestError(
-               "Invalid query request. (Query AND !sourceName) OR (queryName AND sourceName) must be defined.",
-            );
-         }
-
-         // Only controls how the protected source is resolved for filter
-         // injection; both forms are untrusted and compile restricted.
-         const isAdHocQuery = !sourceName && !queryName && !!query;
-
-         // Inject source filter predicates unless bypassed. For ad-hoc queries
-         // resolve the run target through any alias/extend/chain so a protected
-         // source can't be read unfiltered under a different name.
-         let injectedFilters: FilterDefinition[] | undefined;
-         let injectedFilterSourceName: string | undefined;
-         if (!bypassFilters) {
-            const effectiveSource = isAdHocQuery
-               ? this.governor.resolveFilterSource(query)
-               : sourceName;
-            if (effectiveSource) {
-               const filters = this.getFilters(effectiveSource);
-               if (filters.length > 0) {
-                  const filterClause = buildFilterClause(
-                     filters,
-                     filterParams ?? {},
-                  );
-                  queryString = injectFilterRefinement(
-                     queryString,
-                     filterClause,
-                  );
-                  // Only filters with a value were injected; checking the
-                  // others would deny a derived source that legitimately
-                  // `except:`s an unused filter's dimension.
-                  injectedFilters = filters.filter((f) =>
-                     filterHasValue(f, filterParams ?? {}),
-                  );
-                  injectedFilterSourceName = effectiveSource;
-               }
-            }
-         }
-
-         // Restricted mode keeps untrusted text inside the model's surface: it
-         // rejects `import`, raw `connection.table(...)`/`.sql(...)`, raw-SQL
-         // functions, and `##!` flags. Only author notebook cells use the
-         // unrestricted `loadQuery`.
-         await this.ensureSharedQueryModel(this.modelMaterializer);
-         runnable = this.modelMaterializer.loadRestrictedQuery(queryString);
-         // Kept for the run-time freshnessFallback retry below.
-         liveRunnable = runnable;
-         querySurfaceGivens = this.governor.filterGivensToModelSurface(
-            givens,
-            await this.governor.givenNamesReadByQuery(runnable, givens),
-         );
-
-         // An injected `#(filter)` reads its dimension by NAME, so a caller's
-         // own `rename:`/`except:` can rebind it to another column; check
-         // against the struct actually compiled.
-         if (
-            injectedFilters &&
-            injectedFilters.length > 0 &&
-            injectedFilterSourceName
-         ) {
-            // Prepare first, unguarded, so a genuine compile failure surfaces
-            // as itself rather than as the bind check's fail-closed 403.
-            await runnable.getPreparedQuery();
-            await this.governor.assertFilterAnnotationsBindToDeclaringSource(
-               runnable,
-               injectedFilterSourceName,
-               injectedFilters,
-            );
-         }
-
-         // Routing eligibility is decided BEFORE routing: the serve shape
-         // carries no annotation bytes, so once `runnable` is swapped nothing
-         // downstream can discover a gate this pre-check missed (see
-         // `queryEntryPointHasRowLevelGate`). It IS the gate keeping a gated
-         // query off the storage tier.
-         //
-         // Skipped under `bypassAuthorize` (no filter to lose; never settable
-         // from ingress) and when routing is impossible anyway, since it costs
-         // an entry-point walk and possibly a probe compile.
-         const storageRoutingPossible =
-            getPersistStorageMode() === "on" &&
-            this.storageServe.serveBindings.length > 0 &&
-            !!this.storageServe.serveDestinationConfig;
-         // Captured once so the guard and the use below see the same companion.
-         const preaggServeMaterializer = this.preaggregateServeMaterializer;
-         const routingBlockedByRowLevelGate =
-            (storageRoutingPossible || !!preaggServeMaterializer) &&
-            !bypassAuthorize &&
-            // Cheap short-circuit for gate-free models. Safe, unlike
-            // `hasAuthorize()`: see `hasAnyAuthorizeNote`.
-            this.governor.hasAnyAuthorizeNote() &&
-            (await this.governor.queryEntryPointHasRowLevelGate(
-               runnable,
-               callerRegion,
-            ));
-         // Recorded once here, for the decision that blocks both tiers.
-         if (routingBlockedByRowLevelGate) {
-            recordStorageServeRouting("blocked_by_row_level_gate");
-         }
-
-         // storage= serve routing: try compiling against the serve-shape model
-         // (materialized sources rebound to virtual sources). If it does not
-         // compile, keep the original runnable and serve live.
-         if (storageRoutingPossible && !routingBlockedByRowLevelGate) {
-            try {
-               const shaped = await this.storageServe.loadServeShapeQuery(
-                  queryString,
-                  querySurfaceGivens,
-               );
-               runnable = shaped.runnable;
-               serveVirtualMap = shaped.virtualMap;
-               serveShapeBindings = shaped.bindings;
-               servedFrom = "storage";
-               // `servedFrom` names the TIER, so a lake-served rollup is
-               // "storage"; its origin rides the metric (a new enum value would
-               // break generated clients).
-               recordStorageServeRouting("storage", shaped.origin);
-               logger.debug(
-                  "Serving query from storage tier (virtual-source)",
-                  {
-                     modelPath: this.modelPath,
-                     origin: shaped.origin,
-                     // The shape's sources (stale bindings are dropped).
-                     storageSources: shaped.bindings.map((b) => b.sourceName),
-                  },
-               );
-            } catch (shapeErr) {
-               recordStorageServeRouting("live_fallback");
-               // A rollup refused for this query's aggregates is per-query and
-               // expected, not a reason the package never serves from storage.
-               if (shapeErr instanceof RollupCoverageError) {
-                  logger.debug(
-                     "storage rollup cannot answer this query; serving live",
-                     { modelPath: this.modelPath, error: shapeErr.message },
-                  );
-               } else {
-                  // info, not debug: a fallback is otherwise silent (the query
-                  // succeeds), so this is how an operator learns why a package
-                  // never serves from storage. The compiler's "undefined
-                  // object" reads the same for an unpersisted and a stale
-                  // source, so both sets are reported.
-                  const { shapeSources, staleSources } = serveShapeDiagnostics(
-                     this.storageServe.serveBindings,
-                     this.storageServe.freshServeBindings(Date.now()),
-                  );
-                  logger.info(
-                     "storage serve-shape ineligible for this query; serving live",
-                     {
-                        modelPath: this.modelPath,
-                        error:
-                           shapeErr instanceof Error
-                              ? shapeErr.message
-                              : String(shapeErr),
-                        // A name absent from both sets is not materialized at all.
-                        shapeSources,
-                        // Bound, but withheld by the freshness gate for this query.
-                        staleSources,
-                     },
-                  );
-               }
-            }
-         }
-
-         // Pre-aggregation serve routing: compile against the synthesized model,
-         // where each annotated source is a composite of its rollups and itself.
-         // Malloy picks a rollup when one covers the query, so this only offers
-         // the choice. Skipped when storage already routed (that runnable
-         // resolves through `virtualMap`).
-         //
-         // Blocked for a row-level-gated entry point as defence in depth: today
-         // the build gates refuse to materialize a rollup over a gated base, but
-         // that refusal (`referencesAuthorize`) has partial join reach, and a
-         // rollup that did build would serve rows pre-aggregated across every
-         // tenant. Blocking here keeps the invariant local to this decision.
-         //
-         // Also skipped when EVERY rollup is storage-bound: storage rollups are
-         // not companion members, so the composite degenerates to the base and
-         // the probe would succeed for no gain. A mixed model keeps its
-         // colocated members.
-         const everyRollupIsStorageBound =
-            this.preaggregateRollupPlans.length > 0 &&
-            this.preaggregateRollupPlans.every((plan) => !!plan.storage);
-         if (
-            preaggServeMaterializer &&
-            !routingBlockedByRowLevelGate &&
-            !serveVirtualMap &&
-            !everyRollupIsStorageBound
-         ) {
-            try {
-               const candidate =
-                  preaggServeMaterializer.loadRestrictedQuery(queryString);
-               // Compile eagerly (Malloy compiles lazily), so a failure falls to
-               // live here instead of escaping as a 400 at prepare/run. Probe
-               // with exactly what the run uses: the build manifest and the
-               // givens. A model `given:` does not cross the companion's
-               // `import`, so a given-supplying query must fail HERE and serve
-               // live (see preaggregation_seams.spec.ts).
-               await candidate.getSQL({
-                  givens: querySurfaceGivens,
-                  buildManifest,
-               });
-               // Compiling proves only that the chosen member DEFINES every
-               // field used; `count()` uses none and resolves to a rollup.
-               const uncovered = rollupCoverageViolation(
-                  (await candidate.getPreparedQuery())._query,
-                  rollupMeasuresByMember(this.preaggregateRollupPlans),
-               );
-               if (uncovered) throw new RollupCoverageError(uncovered);
-               runnable = candidate;
-               preaggRouted = true;
-            } catch (preaggErr) {
-               // Expected and common: the companion imports only the sources it
-               // rolls up, and a rollup stores only its declared measures.
-               logger.debug(
-                  "query cannot be served from the pre-aggregation model; serving live",
-                  {
-                     modelPath: this.modelPath,
-                     error:
-                        preaggErr instanceof Error
-                           ? preaggErr.message
-                           : String(preaggErr),
-                  },
-               );
-            }
-         }
-      } catch (error) {
-         // Re-throw BadRequestError as-is
-         if (error instanceof BadRequestError) {
-            throw error;
-         }
-         // Re-throw AccessDeniedError as-is (403), e.g. from the `#(filter)`
-         // binding check inside this block.
-         if (error instanceof AccessDeniedError) {
-            throw error;
-         }
-         // Source filter validation errors are client errors (400)
-         if (error instanceof FilterValidationError) {
-            throw new BadRequestError(error.message);
-         }
-         // Re-throw MalloyError as-is (maps to 400)
-         if (error instanceof MalloyError) {
-            throw error;
-         }
-         // For other query parsing errors, wrap as BadRequestError
-         const errorMessage =
-            error instanceof Error ? error.message : String(error);
-         logger.warn("Query parsing error", {
-            error,
-            errorMessage,
-            packageName: this.packageName,
-            modelPath: this.modelPath,
-            query,
-            queryName,
-            sourceName,
-         });
-         throw new BadRequestError(`Invalid query: ${errorMessage}`);
-      }
-
-      // Caller text that does not compile is settled here, before the compiled
-      // backstop turns an unresolved target into a bare 404. Every pre-compile
-      // gate has already run, so when every source the text names is queryable
-      // the caller gets the compiler's problems as a 400; otherwise the 404
-      // (except a grammar-only failure naming nothing in an ungated model, see
-      // parseFailureNamesNothing). An unbound given is left to the run path,
-      // which answers opaquely when a gate reads it. Skipped when routed (same
-      // text, a second compile).
-      if (
-         !sourceName &&
-         !queryName &&
-         query &&
-         liveRunnable &&
-         runnable === liveRunnable
-      ) {
-         const compileError = await compileErrorOf(liveRunnable);
-         if (compileError && !isGivenBindingFailure(compileError)) {
-            if (
-               boundary === "deferred" &&
-               !this.queryTextSourcesQueryable(query) &&
-               !this.parseFailureNamesNothing(query, compileError)
-            ) {
-               // Explain the refusal (`OffSurfaceError`, ungated only) when a
-               // run target is a real model source off the surface; anything
-               // else keeps the plain form.
-               const offSurface = extractRunTargetSourceNames(query).find(
-                  (t) =>
-                     this.declaresSource(t) &&
-                     !this.isCuratedSource(t) &&
-                     !this.derivesFromCurated(t, query),
-               );
-               throw this.notQueryable(
-                  "Query target is not queryable.",
-                  offSurface !== undefined,
-                  "source",
-                  offSurface,
-               );
-            }
-            queryExecutionHistogram().record(
-               performance.now() - startTime,
-               this.queryMetricAttributes({
-                  environment: queryMetadataInput?.environment,
-                  queryName,
-                  sourceName,
-                  status: "error",
-                  servedFrom,
-               }),
-            );
-            throw queryCompileError(compileError, query);
-         }
-      }
-
-      // Counted off the compile in hand, but refused only after every gate, so
-      // the count cannot reveal whether a hidden or locked source exists.
-      const runCount =
-         !sourceName && !queryName && query
-            ? await runStatementCount(runnable)
-            : undefined;
-
-      const compiledSource =
-         await this.governor.resolveAuthorizeSourceFromRunnable(runnable);
-
-      // The AUTHORITATIVE governance, on the compiled run target (the early
-      // checks cannot resolve named-query, multi-statement or caller-declared
-      // forms): the compiled boundary backstop (404) for a "deferred"
-      // admission (see assertQueryBoundaryEarly), then every gate (403), the
-      // row-level graft, the bind guards and the ceiling. MUST run
-      // unconditionally and its runnable MUST replace `runnable`: for a
-      // row-level gate the replacement IS the enforcement.
-      //
-      // Do NOT guard on hasAuthorize(): it misses inherited gates. The recompile
-      // stays restricted, as the original compile was.
-      const governRequest: GovernRequest = {
-         givens,
-         bypassAuthorize,
-         boundary:
-            boundary === "deferred" ? { compiledSource, query } : undefined,
-         callerRegion,
-         recompile: (mm: ModelMaterializer) =>
-            mm.loadRestrictedQuery(queryString),
-         // The caller's OWN text, not the synthesized/injected `queryString`.
-         callerQueryText: query,
-         ceiling: { audit, source: () => compiledSource ?? sourceName },
-      };
-      const { runnable: governed, decision } = await this.governor.govern(
-         governRequest,
-         // The LIVE compile keeps the caller's joins; a routed one does not.
-         { runnable, live: liveRunnable },
-      );
-      runnable = governed;
-      if (runCount !== undefined && runCount > 1) {
-         queryExecutionHistogram().record(
-            performance.now() - startTime,
-            this.queryMetricAttributes({
-               environment: queryMetadataInput?.environment,
-               queryName,
-               sourceName,
-               status: "error",
-               servedFrom,
-            }),
-         );
-         // An unsupplied row-level gate given denies at prepare; the count must
-         // not answer first.
-         throw (
-            this.governor.unboundGateDenial(
-               runnable,
-               givens,
-               compiledSource ?? sourceName ?? "unknown",
-               decision.grafts.flatMap((graft) => graft.givenNames),
-            ) ?? multipleRunStatementsError(runCount)
-         );
-      }
-      // After the gate, so a denied caller gets its 403 rather than a 400 about
-      // a value; before prepare, which is where Malloy would parse it.
-      this.assertFilterGivens(givens);
-      // No post-hoc gate check is possible on a routed runnable (the serve
-      // shape carries no annotations): storage routing's correctness rests
-      // entirely on `queryEntryPointHasRowLevelGate`.
-
-      const maxRows = getMaxQueryRows();
-      const maxBytes = getMaxResponseBytes();
-      // The serve shape resolves through `virtualMap` and lacks `##!
-      // experimental.persistence`, so it gets no manifest. Only the companion
-      // sees the FULL manifest (rollup entries).
-      const effectiveBuildManifest = serveVirtualMap
-         ? undefined
-         : preaggRouted
-           ? buildManifest
-           : liveBuildManifest;
-
-      // Prepare INSIDE the run try/catch, so a given-binding throw at prepare
-      // gets the same error mapping as run instead of escaping as a 500.
-      let executionTime = 0;
-      let run: PreparedRun;
-      // Passed whether or not the query routes. The serve shape declares this
-      // model's given surface (`serveShapeGivens`), and the givens MUST be
-      // passed: a materialized source's re-emitted `where:` may read one, and
-      // dropping it would read the artifact unfiltered (every caller's rows).
-      const effectiveGivens = querySurfaceGivens;
-      try {
-         // Prepare yields the connection name, so its metadata layer resolves
-         // before the statement is issued.
-         run = await prepareAndRun(
-            governed,
-            {
-               givens: effectiveGivens,
-               buildManifest: effectiveBuildManifest,
-               virtualMap: serveVirtualMap,
-            },
-            {
-               abortSignal,
-               maxRows,
-               usage: Model.statementUsage(
-                  queryMetadataInput,
-                  this.packageName,
-               ),
-               queryMetadata: (connectionName) =>
-                  this.resolveQueryMetadata(
-                     queryMetadataInput,
-                     connectionName,
-                     // The gate's run-target answer (compiled, else surface), so
-                     // a `queryName` or derived query is tagged with the source
-                     // it actually reads.
-                     compiledSource ?? earlySource,
-                  ),
-            },
-         );
-         // AFTER run(), so it includes the warehouse round trip.
-         executionTime = performance.now() - startTime;
-      } catch (error) {
-         // `freshnessFallback=live` marks the tier as an optimisation, not a
-         // dependency, so a store failing UNDER a routed query degrades to live.
-         // Deliberately narrow:
-         //  - only when the query actually routed to storage;
-         //  - only per {@link bindingsAllowDegradeToLive} over the bindings that
-         //    produced THIS shape (a sibling source must not decide);
-         //  - never for a client error (bad given) or an abort;
-         //  - the retry re-supplies the REAL givens, or the live source could
-         //    serve unfiltered rows.
-         const canDegradeToLive =
-            !!serveVirtualMap &&
-            !!liveRunnable &&
-            !abortSignal?.aborted &&
-            !String((error as { code?: string })?.code ?? "").startsWith(
-               "runtime-given-",
-            ) &&
-            bindingsAllowDegradeToLive(serveShapeBindings);
-         // Both the original failure and a failure OF THE RETRY end here, so a
-         // retry failure still gets the error metric and mapping. Typed on the
-         // CONST: control-flow narrowing of `never` requires an explicit
-         // annotation.
-         const failQuery: (err: unknown) => never = (err) => {
-            const errorEndTime = performance.now();
-            const errorExecutionTime = errorEndTime - startTime;
-            queryExecutionHistogram().record(
-               errorExecutionTime,
-               this.queryMetricAttributes({
-                  environment: queryMetadataInput?.environment,
-                  queryName,
-                  sourceName,
-                  status: "error",
-                  servedFrom,
-               }),
-            );
-
-            // Bad givens surface as Malloy `runtime-given-*` errors, mapped to
-            // a 400 (the prefix is a pinned coupling to Malloy's error codes;
-            // also in environment.ts). But a grafted gate's givens bind in the
-            // same prepare/run, and Malloy's message names the missing one,
-            // which `docs/authorize.md` promises a denied caller never sees. So
-            // when a gate applied and a name it reads went unsupplied, refuse
-            // with the opaque 403, ahead of the `MalloyError` rethrow.
-            const gateDenial = isGivenBindingFailure(err)
-               ? this.governor.unboundGateDenial(
-                    runnable,
-                    givens,
-                    compiledSource ?? sourceName ?? "unknown",
-                    this.governor.authorizeReferencedGivenNames,
-                 )
-               : undefined;
-            if (gateDenial) {
-               logger.debug("Gate given unbound; denying opaquely", {
-                  packageName: this.packageName,
-                  modelPath: this.modelPath,
-                  error: err instanceof Error ? err.message : String(err),
-               });
-               throw gateDenial;
-            }
-
-            return mapRunError(err, {
-               packageName: this.packageName,
-               modelPath: this.modelPath,
-               failurePrefix: "Query execution failed",
-               // A connection-classified failure (exhausted pool) keeps its own
-               // status rather than reading as a bad query.
-               passThrough: [ConnectionError],
-               logFailure: (errorMessage) =>
-                  logger.error("Query execution error", {
-                     error: err,
-                     errorMessage,
-                     packageName: this.packageName,
-                     modelPath: this.modelPath,
-                     query,
-                     queryName,
-                     sourceName,
-                  }),
-            });
-         };
-         if (!canDegradeToLive) failQuery(error);
-         logger.warn(
-            "Storage-served query failed at run time; falling back to live (freshnessFallback=live)",
-            {
-               modelPath: this.modelPath,
-               error: error instanceof Error ? error.message : String(error),
-            },
-         );
-         recordStorageServeRouting("runtime_live_fallback");
-         // The retry runs the LIVE compile, which `governed` is not (it is the
-         // serve shape), so it is governed in its own right here: the same
-         // bind, on the runnable that will execute. Today routing already
-         // refuses any gated entry point (`queryEntryPointHasRowLevelGate`),
-         // so this decides nothing new; it is what keeps an ungoverned live
-         // runnable from ever running if that refusal narrows. Outside the
-         // retry's try, so a denial answers 403, not a mapped run error.
-         const { runnable: governedLive } = await this.governor.govern(
-            {
-               ...governRequest,
-               boundary: undefined,
-               ceiling: undefined,
-               bypassAlreadyNoted: true,
-            },
-            { runnable: liveRunnable!, live: liveRunnable },
-         );
-         try {
-            // A fresh prepare re-derives the row cap from the live shape (a
-            // failure at storage prepare would leave it 0, an EMPTY answer).
-            // `liveBuildManifest`: this runs on the author's model.
-            run = await prepareAndRun(
-               governedLive,
-               { givens: querySurfaceGivens, buildManifest: liveBuildManifest },
-               {
-                  abortSignal,
-                  maxRows,
-                  usage: Model.statementUsage(
-                     queryMetadataInput,
-                     this.packageName,
-                  ),
-                  // Re-resolved: the first bag was for the STORAGE connection.
-                  // The correlation id rides in the input, so it is kept.
-                  queryMetadata: (connectionName) =>
-                     this.resolveQueryMetadata(
-                        queryMetadataInput,
-                        connectionName,
-                        compiledSource ?? earlySource,
-                     ),
-               },
-            );
-         } catch (retryError) {
-            failQuery(retryError);
-         }
-         // NOT a storage hit.
-         servedFrom = "live_fallback";
-         executionTime = performance.now() - startTime;
-      }
-      const {
-         result: queryResults,
-         rowLimit,
-         rowLimitSource,
-         queryMetadata: appliedQueryMetadata,
-      } = run;
-
-      // A gate that matched nothing is a normal 200 with zero rows,
-      // indistinguishable from an empty source, so record it.
-      if (decision.grafts.length > 0 && queryResults.totalRows === 0) {
-         const first = decision.grafts[0];
-         recordRowLevelGateDecision(
-            "empty_after_filter",
-            first?.callerJoinPath ? "caller_join" : "entry_point",
-         );
-      }
-      // Row cap checked before wrapping (an overflow is maxRows+1 rows, and the
-      // wrap builds a larger object graph); then ONE serialization of the shape
-      // the caller asked for, measured against the byte cap and returned so
-      // nothing stringifies it again. The byte check is best-effort (a clean
-      // 413), not OOM prevention; the row cap is. Known gap: MCP's own
-      // envelope (mcp/query_envelope.ts) re-stringifies the compact rows
-      // unguarded.
-      const { wrapped: wrappedResult, serialized: serializedResult } =
-         serializeWithinCaps(queryResults, {
-            maxRows,
-            maxBytes,
-            source: "model_query",
-            compact: responseShape === "compact",
-         });
-      const metricAttributes = this.queryMetricAttributes({
-         environment: queryMetadataInput?.environment,
-         queryName,
-         sourceName,
-         status: "success",
-         connection: queryResults.connectionName,
-         servedFrom,
-      });
-      queryExecutionHistogram().record(executionTime, metricAttributes);
-      // Only when reported, so the counter is absent rather than a false zero.
-      const queryCostBytes = queryResults.runStats?.queryCostBytes;
-      if (queryCostBytes !== undefined) {
-         queryScannedBytesCounter().add(queryCostBytes, metricAttributes);
-      }
-      // Never fails the query: an unreadable prepared query yields a record
-      // with no fields, and a thrown summary yields none.
-      try {
-         audit.summary = await summarizeQueryAccess({
-            // The storage serve shape carries no annotations; the live one does.
-            runnable: liveRunnable ?? runnable,
-            modelDef: this.modelDef,
-            enforced: decision.enforced,
-            apiSources: this.sources,
-            modelGivens: this.givens,
-            source: compiledSource ?? sourceName,
-            givens,
-            bypassAuthorize,
-            grafts: decision.grafts,
-            rowCount: queryResults.totalRows,
-         });
-      } catch (err) {
-         logger.debug("Access summary unavailable", {
-            modelPath: this.modelPath,
-            error: (err as Error).message,
-         });
-      }
-      audit.servedFrom = servedFrom ?? null;
-      audit.executionTimeMs = Math.round(executionTime);
+   /** What the query pipeline reads from this model; each read is live. */
+   private servingPort(): ModelServingHost {
       return {
-         result: wrappedResult,
-         serializedResult,
-         compactResult: queryResults.data.value,
-         modelInfo: this.modelInfo,
-         dataStyles: this.dataStyles,
-         // The cap pushed into the SQL, so a caller can tell a complete result
-         // from one silently cut at DEFAULT_QUERY_ROW_LIMIT.
-         rowLimit,
-         // The author's own limit, or the silent default (only the latter
-         // suggests rows were left behind).
-         rowLimitSource,
-         // From the bag actually attached, not the one supplied.
-         queryCorrelationId: appliedQueryMetadata?.query_id ?? null,
-         // Per-query attribution the aggregate histogram cannot give;
-         // `servedFrom` is the only way to tell a storage answer from a live one.
-         servedFrom: servedFrom ?? null,
-         executionTimeMs: Math.round(executionTime),
-         // Null is "not reported", not zero.
-         queryCostBytes: queryCostBytes ?? null,
+         packageName: this.packageName,
+         modelPath: this.modelPath,
+         governor: this.governor,
+         compilationError: () => this.compilationError,
+         modelMaterializer: () => this.modelMaterializer,
+         modelDef: () => this.modelDef,
+         modelInfo: () => this.modelInfo,
+         dataStyles: () => this.dataStyles,
+         sources: () => this.sources,
+         givens: () => this.givens,
+         snapshot: () => this.servingSnapshot(),
+         reportIncompatible: (handles) =>
+            this.policy.reportIncompatible?.(handles),
+         servedCopy: () => this.servedCopy,
+         legs: (pinned, servedCopy) =>
+            makeLegs(pinned, {
+               ...(this.servedCopyEnabled() ? { servedCopy } : {}),
+               ...(this.rollupVariantsEnabled()
+                  ? { rollupVariants: this.rollupVariants }
+                  : {}),
+               ...(this.persistedViewsEnabled()
+                  ? { persistedViews: this.persistedViews }
+                  : {}),
+               ...(this.persistedQueriesEnabled()
+                  ? { persistedQueries: this.persistedQueries }
+                  : {}),
+            }),
+         servingHost: (servedCopy) => this.servingHost(servedCopy),
+         persistedViewsEnabled: () =>
+            this.persistedViewsEnabled() || this.persistedQueriesEnabled(),
+         withoutPreaggregateEntries: (manifest) =>
+            this.withoutPreaggregateEntries(manifest),
+         ensureSharedQueryModel: (materializer) =>
+            this.ensureSharedQueryModel(materializer),
+         getFilters: (sourceName) => this.getFilters(sourceName),
+         assertFilterGivens: (givens) => this.assertFilterGivens(givens),
+         assertQueryBoundaryEarly: (sourceName, queryName, query) =>
+            this.assertQueryBoundaryEarly(sourceName, queryName, query),
+         unqueryableTextRefusal: (query, compileError) =>
+            this.unqueryableTextRefusal(query, compileError),
+         resolveQueryMetadata: (input, connectionName, sourceName) =>
+            this.resolveQueryMetadata(input, connectionName, sourceName),
       };
    }
 
    /**
-    * The label set for `queryExecutionHistogram`, shared by every recording
-    * site so success and error paths cannot drift.
-    *
-    * Query text, row count and row limit are deliberately absent: each is
-    * unbounded, or chosen by the caller (a cardinality leak); they stay on the
-    * request log.
+    * Caller text that did not compile, under a "deferred" boundary: when a
+    * source it names is not queryable (and the failure is not a grammar-only
+    * one naming nothing in an ungated model, see parseFailureNamesNothing),
+    * the boundary's 404, explained (`OffSurfaceError`, ungated only) when a
+    * run target is a real model source off the surface; anything else keeps
+    * the plain form. Undefined when the compiler's problems may be shown.
     */
-   private queryMetricAttributes(args: {
-      environment?: string;
-      queryName?: string;
-      sourceName?: string;
-      /** `rejected`: a request malformed before anything compiled, kept out of `error` so the error rate means failed queries. */
-      status: "success" | "error" | "rejected";
-      connection?: string;
-      servedFrom?: ServedFrom;
-   }): Record<string, string | number | undefined> {
+   private unqueryableTextRefusal(
+      query: string,
+      compileError: MalloyError,
+   ): Error | undefined {
+      if (
+         this.queryTextSourcesQueryable(query) ||
+         this.parseFailureNamesNothing(query, compileError)
+      ) {
+         return undefined;
+      }
+      const offSurface = extractRunTargetSourceNames(query).find(
+         (t) =>
+            this.declaresSource(t) &&
+            !this.isCuratedSource(t) &&
+            !this.derivesFromCurated(t, query),
+      );
+      return this.notQueryable(
+         "Query target is not queryable.",
+         offSurface !== undefined,
+         "source",
+         offSurface,
+      );
+   }
+
+   /**
+    * What serving (query_serving.ts) reads from this model: its own storage
+    * tables, its legs, its catalog and discovery surface. Built per call so
+    * it always reads the current state.
+    */
+   private servingHost(
+      servedCopy: ServedCopyServe = this.servedCopy,
+   ): QueryServingHost {
       return {
-         "malloy.model.path": this.modelPath,
-         "malloy.package": this.packageName,
-         "malloy.model.query.name": args.queryName,
-         "malloy.model.query.source": args.sourceName,
-         "malloy.model.query.status": args.status,
-         ...(args.environment
-            ? { "malloy.environment": args.environment }
-            : {}),
-         ...(args.connection
-            ? { "malloy.model.query.connection": args.connection }
-            : {}),
-         // Only for queries that reached the storage routing decision.
-         ...(args.servedFrom
-            ? { "malloy.model.query.served_from": args.servedFrom }
-            : {}),
+         modelPath: this.modelPath,
+         storageTables: (snapshot) => this.storageTables(snapshot).kept,
+         servedCopy,
+         rollupVariants: this.rollupVariants,
+         persistedViews: this.persistedViews,
+         persistedQueries: this.persistedQueries,
+         modelDef: () => this.modelDef,
+         materializedTables: () => this.policy.materializedTables(),
+         publishedNames: () => this.publishedNames(),
+         admitsSourceByName: (name) => this.admitsSourceByName(name),
+         sourceChains: () => this.sourceChains(),
       };
    }
 
-   /** The usage hook for a statement, when its caller says which connections are metered. */
-   private static statementUsage(
-      input: ModelQueryMetadataInput | undefined,
-      packageName: string,
-   ):
-      | {
-           metered: (connectionName: string) => boolean;
-           environment: string;
-           package: string;
-        }
-      | undefined {
-      if (!input?.meteredConnection || !input.environment) return undefined;
-      return {
-         metered: input.meteredConnection,
-         environment: input.environment,
-         package: packageName,
-      };
+   /**
+    * Every source's `sourceID` chain in this model, by the source's own: the
+    * queried source's chain and the path report's `notConsidered`. Read once
+    * per compile ({@link prepareServedCopy} reads it at load).
+    */
+   private sourceChains(): ReadonlyMap<string, readonly string[]> {
+      const modelDef = this.modelDef;
+      const cached = this.sourceChainCache;
+      if (cached && cached.modelDef === modelDef) return cached.chains;
+      const chains = new Map<string, readonly string[]>();
+      for (const entry of Object.values(modelDef?.contents ?? {})) {
+         if (!isSourceDef(entry)) continue;
+         const chain = sourceChain(entry, modelDef);
+         if (chain[0] && !chains.has(chain[0])) chains.set(chain[0], chain);
+      }
+      this.sourceChainCache = { modelDef, chains };
+      return chains;
    }
 
    /**
@@ -3716,7 +3972,7 @@ export class Model {
     * curates nothing (then every name is public).
     *
     * For an ordinary file, its export closure, the same set
-    * {@link curateForDiscovery} lists. For a dashboard or a served notebook,
+    * {@link curateForDiscovery} lists. For a dashboard or a linear report,
     * only the exported names that trace to the package surface: a source it
     * may read, including one it builds on a surface source, or a query over
     * one. A declaration that does not trace there is not shown.
@@ -3845,8 +4101,8 @@ export class Model {
       cellIndex: number,
    ): string[] | undefined {
       // An import cell reports every source it brings in, schema and all, so
-      // under a surface only the ones this notebook may read are shown.
-      const readable = this.notebookReadable(cellIndex);
+      // under a surface only the ones a query on this notebook may name are shown.
+      const readable = this.notebookQueryable(cellIndex);
       return newSources
          ?.filter((source) => !readable || readable(source.name))
          .map((source) =>
@@ -3880,19 +4136,55 @@ export class Model {
    }
 
    /**
-    * Whether the notebook GET may show a cell's `queryInfo`. Its schema lists
-    * every column the cell's query returns, so a cell the query route would
-    * refuse (`run: secret -> { select: * }`) would otherwise describe the
-    * hidden source here. Asks the same check running the cell does.
+    * Under an active surface, a predicate for the source names the reports
+    * read lists with their schema for a `.malloynb`: the ones a query on its
+    * path may name. A cell runs as its `run:` statement alone, which the query
+    * route admits only over what the surface publishes, so a source its cells
+    * declare is withheld, as a hidden one is. Undefined when nothing is
+    * curated.
     */
-   private async showsCellQueryInfo(
+   private notebookQueryable(
+      cellIndex?: number,
+   ): ((name: string) => boolean) | undefined {
+      const readable = this.notebookReadable(cellIndex);
+      if (!readable) return readable;
+      return (name) => this.admitsSourceByName(name);
+   }
+
+   /**
+    * Whether the reports read may show a `.malloynb` cell's `queryInfo`. Its
+    * schema lists every column the cell's query returns, so a cell the query
+    * route would refuse (`run: secret -> { select: * }`) would otherwise
+    * describe the hidden source here. Asks {@link assertNotebookCellOnSurface},
+    * which runs the query route's own boundary checks on the cell's `run:`,
+    * its joins included. Decided once per cell for the boundary in force,
+    * since the cells and the model are fixed for this Model's life; a read
+    * that fails is not remembered.
+    */
+   private showsCellQueryInfo(
+      cellIndex: number,
+      cell: RunnableNotebookCell,
+   ): Promise<boolean> {
+      const memo = this.curation.cellQueryInfoShown;
+      const known = memo.get(cell);
+      if (known) return known;
+      const shown = this.decideCellQueryInfo(cellIndex, cell);
+      memo.set(cell, shown);
+      shown.catch(() => {
+         if (memo.get(cell) === shown) memo.delete(cell);
+      });
+      return shown;
+   }
+
+   /** {@link showsCellQueryInfo}, decided afresh. */
+   private async decideCellQueryInfo(
       cellIndex: number,
       cell: RunnableNotebookCell,
    ): Promise<boolean> {
       // Nothing to check an unhydrated cell against, so under a surface it shows nothing.
       if (!cell.runnable) return this.notebookReadable(cellIndex) === undefined;
       try {
-         await this.assertNotebookCellOnSurface(cellIndex, cell.runnable);
+         await this.assertNotebookCellOnSurface(cellIndex);
          return true;
       } catch (error) {
          if (error instanceof NotQueryableError) return false;
@@ -3902,22 +4194,15 @@ export class Model {
 
    /**
     * Which of `modelInfo.anonymous_queries` a cell whose `queryInfo` is shown
-    * describes. A served notebook's query cell names its run; a `.malloynb`'s
-    * model info is its last code cell's compile, whose final run is that cell's
-    * `queryInfo`. A run no shown cell describes is withheld.
+    * describes. A `.malloynb`'s model info is its last code cell's compile,
+    * whose final run is that cell's `queryInfo`. A run no shown cell
+    * describes is withheld.
     */
    private shownRunIndexes(
       cells: readonly RunnableNotebookCell[],
       shownCells: ReadonlySet<number>,
    ): Set<number> {
       const shown = new Set<number>();
-      if (this.notebookFormat() === "malloy") {
-         cells.forEach((cell, index) => {
-            if (cell.queryIndex !== undefined && shownCells.has(index))
-               shown.add(cell.queryIndex);
-         });
-         return shown;
-      }
       const last = cells.findLastIndex(
          (cell) => cell.type === "code" && cell.modelDef !== undefined,
       );
@@ -3933,7 +4218,7 @@ export class Model {
       return shown;
    }
 
-   private async getNotebookModel(): Promise<ApiRawNotebook> {
+   private async getNotebookModel(): Promise<ApiReportCells> {
       // Return raw cell contents without executing them
       const cells = this.runnableNotebookCells ?? [];
       const notebookCells: ApiNotebookCell[] = [];
@@ -3957,35 +4242,30 @@ export class Model {
             caption: cell.caption,
             newSources: this.serializeNewSources(cell.newSources, index),
             queryInfo: queryInfo ? JSON.stringify(queryInfo) : undefined,
+            runQuery: isMalloynbPath(this.modelPath)
+               ? malloynbRunQuery(cell)
+               : undefined,
          } as ApiNotebookCell);
       }
 
       // The notebook's own `##` tags, not its imports' (a shared include must
-      // not configure every importer). A served notebook's `"` notes below the
-      // tag are its markdown cells, not annotations.
-      const served = this.notebookFormat() === "malloy";
-      const allAnnotations = served
-         ? (this.notebookAnnotations ?? [])
-         : this.modelDef
-           ? ownModelNotes(this.modelDef)
-           : [];
+      // not configure every importer).
+      const allAnnotations = this.modelDef ? ownModelNotes(this.modelDef) : [];
 
-      // A served notebook declares `title`/`autorun`/`givens` in its artifact tag.
-      const ownTag = motlyTag(allAnnotations);
-      const notebookTag = served ? ownTag?.tag("artifact") : ownTag;
+      const notebookTag = motlyTag(allAnnotations);
 
       // No `as` cast, so a field rename in `api-doc.yaml` fails to typecheck.
       // Not export-curated (a notebook cannot be imported), but under a surface
-      // it shows only what its cells may read.
-      const readable = this.notebookReadable(notebookCells.length - 1);
+      // it shows only what a query on it may name.
+      const readable = this.notebookQueryable(notebookCells.length - 1);
       const shownSource = (name: string | undefined) =>
          !readable || (name !== undefined && readable(name));
       const shownRuns = readable
          ? this.shownRunIndexes(cells, shownCells)
          : undefined;
-      const notebook: ApiRawNotebook = {
+      const notebook: ApiReportCells = {
          type: "notebook",
-         format: this.notebookFormat(),
+         format: "malloynb",
          packageName: this.packageName,
          modelPath: this.modelPath,
          malloyVersion: MALLOY_VERSION,
@@ -4024,383 +4304,8 @@ export class Model {
             (name) => (this.givens ?? []).find((g) => g.name === name)?.type,
          ),
          notebookCells,
-         ...(this.notebookLayout && {
-            dashboard: {
-               packageName: this.packageName,
-               name: this.notebookLayout.name,
-               path: this.modelPath,
-               layout: this.notebookLayout.layout,
-               title: this.notebookLayout.title,
-               description: this.notebookLayout.description,
-               tiles: this.notebookLayout.tiles,
-               dashboardColumns: this.notebookLayout.dashboardColumns,
-               startingGivens: this.notebookLayout.startingGivens,
-               autorun: this.notebookLayout.autorun,
-               givens: this.notebookLayout.givens,
-            },
-         }),
       };
       return notebook;
-   }
-
-   public async executeNotebookCell(
-      audit: QueryAudit,
-      cellIndex: number,
-      filterParams?: FilterParams,
-      bypassFilters?: boolean,
-      givens?: Record<string, GivenValue>,
-      // Cancels the query on timeout (see `runQuery`).
-      abortSignal?: AbortSignal,
-      // Tagged like any query, but with no correlation id: the cell response
-      // has no field to return it on.
-      queryMetadataInput?: ModelQueryMetadataInput,
-   ): Promise<NotebookCellRunResult> {
-      const started = performance.now();
-      const cell = this.runnableNotebookCells?.[cellIndex];
-      // A served run that names no cell (out of range, or refused by the reader) is `none`, never `.malloynb`'s `code`.
-      const kind =
-         this.notebookFormat() === "malloy"
-            ? (cell?.kind ?? "none")
-            : cell?.type === "markdown"
-              ? "markdown"
-              : "code";
-      try {
-         const result = await this.runNotebookCell(
-            audit,
-            cellIndex,
-            filterParams,
-            bypassFilters,
-            givens,
-            abortSignal,
-            queryMetadataInput,
-         );
-         recordNotebookCellExecution(
-            this.notebookFormat(),
-            kind,
-            "ok",
-            performance.now() - started,
-         );
-         return result;
-      } catch (error) {
-         recordNotebookCellExecution(
-            this.notebookFormat(),
-            kind,
-            error instanceof AccessDeniedError
-               ? "denied"
-               : error instanceof NotQueryableError
-                 ? "not_queryable"
-                 : error instanceof BadRequestError ||
-                     error instanceof MalloyError
-                   ? "bad_request"
-                   : "error",
-            performance.now() - started,
-         );
-         throw error;
-      }
-   }
-
-   private async runNotebookCell(
-      audit: QueryAudit,
-      cellIndex: number,
-      filterParams: FilterParams | undefined,
-      bypassFilters: boolean | undefined,
-      givens: Record<string, GivenValue> | undefined,
-      abortSignal: AbortSignal | undefined,
-      queryMetadataInput: ModelQueryMetadataInput | undefined,
-   ): Promise<NotebookCellRunResult> {
-      if (this.compilationError) {
-         throw this.compilationError;
-      }
-      const readerError = this.notebookReaderError();
-      if (readerError) throw readerError;
-
-      if (!this.runnableNotebookCells) {
-         throw new BadRequestError("No notebook cells available");
-      }
-
-      if (cellIndex < 0 || cellIndex >= this.runnableNotebookCells.length) {
-         throw new BadRequestError(
-            `Cell index ${cellIndex} out of range (0-${this.runnableNotebookCells.length - 1})`,
-         );
-      }
-
-      const cell = this.runnableNotebookCells[cellIndex];
-
-      if (cell.type === "markdown") {
-         return {
-            type: cell.type,
-            kind: cell.kind,
-            text: cell.text,
-         };
-      }
-
-      let queryName: string | undefined = undefined;
-      let queryResult: string | undefined = undefined;
-
-      if (cell.runnable) {
-         // The package surface first (a hidden gated source must 404, not 403)
-         // and outside the try (whose catch would turn the 404 into a 400).
-         await this.assertNotebookCellOnSurface(cellIndex, cell.runnable);
-         try {
-            let runnableToExecute = cell.runnable;
-            // The text the executing runnable was built from, updated if a
-            // `#(filter)` refinement rebuilds it.
-            let textToExecute = cell.text;
-
-            // See `resolveNotebookCellGraftScope`.
-            const { graftScope, usesOwnScope } =
-               await this.governor.resolveNotebookCellGraftScope(
-                  cellIndex,
-                  cell.runnable,
-               );
-            if (!graftScope) {
-               // Lets an operator tell "nowhere to attach a graft" from "the
-               // gate's condition failed" behind the same 403.
-               logger.debug(
-                  "Notebook cell has no graft scope to attach a row-level gate against (no earlier code cell, and this cell has no compiled model of its own)",
-                  { modelPath: this.modelPath, cellIndex },
-               );
-            }
-
-            // Whether a `#(filter)` refinement will rebuild the runnable,
-            // computed up front (no compile) to decide the pre-refinement gate.
-            const effectiveSource =
-               !bypassFilters && cell.modelMaterializer
-                  ? extractRunTargetSourceName(cell.text)
-                  : undefined;
-            const cellFilters = effectiveSource
-               ? this.getFilters(effectiveSource)
-               : [];
-
-            // Pre-refinement gate on the UNREFINED runnable, so a denied
-            // caller gets the 403 rather than a 400 from a broken refinement
-            // or bad `filterParams` (`buildFilterClause` throws, so this runs
-            // before it). Row-level gates are deferred to the authoritative
-            // bind below. Skipped with no refinement: the bind would see the
-            // same runnable.
-            if (cell.modelMaterializer && cellFilters.length > 0) {
-               await this.governor.oracle.beforeCellRefinement(
-                  cell.runnable,
-                  givens ?? {},
-                  graftScope,
-               );
-            }
-
-            const filterClause =
-               cellFilters.length > 0
-                  ? buildFilterClause(cellFilters, filterParams ?? {})
-                  : undefined;
-
-            if (filterClause && cell.modelMaterializer) {
-               textToExecute = injectFilterRefinement(cell.text, filterClause);
-               runnableToExecute =
-                  cell.modelMaterializer.loadQuery(textToExecute);
-               // The same fail-closed `#(filter)` bind check as
-               // `runQuery`, over the injected filters only.
-               const injectedCellFilters = cellFilters.filter((f) =>
-                  filterHasValue(f, filterParams ?? {}),
-               );
-               if (injectedCellFilters.length > 0 && effectiveSource) {
-                  // Prepare first so a compile failure surfaces as itself,
-                  // not as the bind check's fail-closed 403.
-                  await runnableToExecute.getPreparedQuery();
-                  await this.governor.assertFilterAnnotationsBindToDeclaringSource(
-                     runnableToExecute,
-                     effectiveSource,
-                     injectedCellFilters,
-                  );
-               }
-            }
-
-            // Read before the bind below grafts gates onto the runnable.
-            const cellReadGivenNames =
-               await this.governor.givenNamesReadByQuery(
-                  runnableToExecute,
-                  givens,
-               );
-
-            // The AUTHORITATIVE governance, on the runnable that actually
-            // executes (after refinement, so the graft composes with the
-            // `#(filter)` refinement instead of dropping it). Cells are
-            // author-curated, so the recompile uses `loadQuery`, not
-            // `loadRestrictedQuery`. The boundary was settled above
-            // (`assertNotebookCellOnSurface`), and a cell has no caller text.
-            // What governance returned is the only thing this cell may run.
-            const textForRecompile = textToExecute;
-            // Own scope: graft the compiled queryDef (read off
-            // `runnableToExecute`, so the refinement survives) with its
-            // paired proof; see `ownScopeQueryDefBinder`.
-            const ownScopeBinder =
-               cell.modelMaterializer && usesOwnScope
-                  ? this.governor.ownScopeQueryDefBinder(
-                       (
-                          (await runnableToExecute.getPreparedQuery()) as {
-                             _query: unknown;
-                          }
-                       )._query,
-                       graftScope!,
-                    )
-                  : undefined;
-            const { runnable: cellGoverned, decision: cellDecision } =
-               await this.governor.govern(
-                  {
-                     givens,
-                     ...(cell.modelMaterializer
-                        ? {
-                             recompile: ownScopeBinder
-                                ? ownScopeBinder.recompile
-                                : (mm: ModelMaterializer) =>
-                                     mm.loadQuery(textForRecompile),
-                             proveGraft: ownScopeBinder?.prove,
-                             graftScope,
-                          }
-                        : // No materializer to recompile against, so a
-                          // row-level gate denies.
-                          { bypassAuthorize: false }),
-                     ceiling: {
-                        audit,
-                        source: async (governed) =>
-                           (await this.governor.resolveAuthorizeSourceFromRunnable(
-                              governed,
-                           )) ?? extractRunTargetSourceName(cell.text),
-                     },
-                  },
-                  { runnable: runnableToExecute },
-               );
-            runnableToExecute = cellGoverned;
-            // After the gate, as on the query path; before prepare.
-            this.assertFilterGivens(givens);
-
-            const cellMaxRows = getMaxQueryRows();
-            const cellMaxBytes = getMaxResponseBytes();
-            // The freshness-filtered manifest minus rollups (a notebook has no
-            // companion).
-            const buildManifest = this.withoutPreaggregateEntries(
-               this.resolveFreshBuildManifest(),
-            );
-            // See filterGivensToModelSurface.
-            const cellSurfaceGivens = this.governor.filterGivensToModelSurface(
-               givens,
-               cellReadGivenNames,
-               this.notebookCellDeclaredGivens[cellIndex],
-            );
-            const cellRunnable = cellGoverned;
-            const { result } = await prepareAndRun(
-               cellRunnable,
-               { givens: cellSurfaceGivens, buildManifest },
-               {
-                  abortSignal,
-                  maxRows: cellMaxRows,
-                  usage: Model.statementUsage(
-                     queryMetadataInput,
-                     this.packageName,
-                  ),
-                  queryMetadata: async (connectionName) => {
-                     // The compiled run target, as in runQuery.
-                     const cellCompiledSource =
-                        await this.governor.resolveAuthorizeSourceFromRunnable(
-                           cellRunnable,
-                        );
-                     return this.resolveQueryMetadata(
-                        queryMetadataInput,
-                        connectionName,
-                        cellCompiledSource ??
-                           extractRunTargetSourceName(cell.text),
-                     );
-                  },
-               },
-            );
-            const query = (await runnableToExecute.getPreparedQuery())._query;
-            queryName = (query as NamedQueryDef).as || query.name;
-            try {
-               audit.summary = await summarizeQueryAccess({
-                  runnable: cellRunnable,
-                  modelDef: this.modelDef,
-                  enforced: cellDecision.enforced,
-                  apiSources: this.sources,
-                  modelGivens: this.givens,
-                  source:
-                     (await this.governor.resolveAuthorizeSourceFromRunnable(
-                        cellRunnable,
-                     )) ?? extractRunTargetSourceName(cell.text),
-                  givens,
-                  bypassAuthorize: false,
-                  grafts: cellDecision.grafts,
-                  rowCount: result?.totalRows ?? 0,
-               });
-            } catch (err) {
-               logger.debug("Access summary unavailable", {
-                  modelPath: this.modelPath,
-                  error: (err as Error).message,
-               });
-            }
-            // As in runQuery.
-            if (
-               result?._queryResult &&
-               result.totalRows === 0 &&
-               cellDecision.grafts.length > 0
-            ) {
-               recordRowLevelGateDecision("empty_after_filter");
-            }
-            // Same caps and ordering as runQuery.
-            if (result?._queryResult) {
-               if (this.modelInfo) {
-                  queryResult = serializeWithinCaps(result, {
-                     maxRows: cellMaxRows,
-                     maxBytes: cellMaxBytes,
-                     source: "notebook_cell",
-                  }).serialized;
-               } else {
-                  assertWithinModelRowLimit(
-                     result.totalRows,
-                     cellMaxRows,
-                     "notebook_cell",
-                  );
-               }
-            }
-         } catch (error) {
-            // The gate runs inside this try; keep its 403 from becoming a 400.
-            if (error instanceof AccessDeniedError) {
-               throw error;
-            }
-            if (error instanceof FilterValidationError) {
-               throw new BadRequestError(error.message);
-            }
-            // Same error mapping as runQuery.
-            mapRunError(error, {
-               packageName: this.packageName,
-               modelPath: this.modelPath,
-               failurePrefix: "Cell execution failed",
-               // Keep the 413.
-               passThrough: [PayloadTooLargeError],
-               benignMessage: "Model has no queries.",
-               logFailure: (errorMessage) =>
-                  logger.error("Error message: ", errorMessage),
-            });
-            return {
-               type: "code",
-               kind: cell.kind,
-               text: cell.text,
-               markdown: cell.markdown,
-               proseLines: cell.proseLines,
-               codeLine: cell.codeLine,
-               caption: cell.caption,
-            };
-         }
-      }
-
-      return {
-         type: cell.type,
-         kind: cell.kind,
-         text: cell.text,
-         markdown: cell.markdown,
-         proseLines: cell.proseLines,
-         codeLine: cell.codeLine,
-         caption: cell.caption,
-         queryName: queryName,
-         result: queryResult,
-         newSources: this.serializeNewSources(cell.newSources, cellIndex),
-      };
    }
 
    /** See {@link createModelRuntime}. */
@@ -4420,11 +4325,72 @@ export class Model {
    public async getFileText(packagePath: string): Promise<string> {
       const fullPath = path.join(packagePath, this.modelPath);
       try {
-         return await fs.readFile(fullPath, "utf8");
+         return await readPackageURL(packagePath, pathToFileURL(fullPath));
       } catch {
          throw new ModelNotFoundError(
             `Model file not found: ${this.modelPath}`,
          );
       }
    }
+}
+
+/**
+ * A value for each given with no default, for a compile that only asks
+ * whether a query compiles: `null`, or an empty filter for a `filter<T>`
+ * given, whose SQL needs a filter literal (as model_info.ts does for the same
+ * reason).
+ */
+function placeholderGivens(
+   givens:
+      | readonly { name?: string; type?: string; default?: unknown }[]
+      | undefined,
+): Record<string, GivenValue> {
+   const out: Record<string, GivenValue> = {};
+   for (const given of givens ?? []) {
+      if (!given.name || given.default !== undefined) continue;
+      out[given.name] = /^filter\b/i.test(given.type ?? "") ? "" : null;
+   }
+   return out;
+}
+
+/** The first sentence of a message, up to its first ". ". */
+function firstSentence(message: string): string {
+   const end = message.indexOf(". ");
+   return end < 0 ? message : message.slice(0, end + 1);
+}
+
+/** The first line of an error message, which is where Malloy says what failed. */
+function firstLine(message: string): string {
+   return message.split("\n")[0].trim();
+}
+
+/**
+ * The line of a compile error that says what is wrong: past Malloy's
+ * "Error(s) compiling model:" and "FILE:" header lines, without the `line N:`
+ * prefix. The whole first line when there is no such line.
+ */
+function compileErrorLine(message: string): string {
+   const said = message
+      .split("\n")
+      .map((l) => l.trim())
+      .find(
+         (l) =>
+            l !== "" &&
+            !l.startsWith("Error(s) compiling model") &&
+            !l.startsWith("FILE:"),
+      );
+   return said ? said.replace(/^line \d+: /, "") : firstLine(message);
+}
+
+/**
+ * What a `.malloynb` code cell runs: the `runQuery` the reports read serves,
+ * which the SDK sends as `query` on the notebook's path, and the text the
+ * cell's `queryInfo` screen and the load-time cell check
+ * ({@link Model.malloynbCellRefusals}) check. Undefined for a markdown cell
+ * and for a code cell with no `run:`.
+ */
+function malloynbRunQuery(
+   cell: Pick<RunnableNotebookCell, "type" | "text"> | undefined,
+): string | undefined {
+   return cell?.type === "code" ? lastRunStatementText(cell.text) : undefined;
 }

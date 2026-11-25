@@ -589,9 +589,11 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
    assertWithinWorkspace(dataDir, options.cwd, `${name}/data`);
    fs.mkdirSync(dataDir, { recursive: true });
 
+   // A version, because a server outside watch mode publishes the package
+   // as the version its publisher.json declares, and refuses one with none.
    writeFile(
       path.join(packageDir, "publisher.json"),
-      JSON.stringify({ name }, null, 2) + "\n",
+      JSON.stringify({ name, version: "0.1.0" }, null, 2) + "\n",
       options.cwd,
    );
 
@@ -1586,19 +1588,93 @@ function isSingleServerInvocation(script: string): boolean {
  * `flagsTakingAValue()` in `packages/server/src/settings/settings.ts`: every
  * setting's flag but a boolean's. `--init` and `--help` take no value and so
  * are deliberately absent.
+ *
+ * This is the in-tree server's list, so it also holds the derived names
+ * (`--mcp-port`) that a SERVER_VERSION from before them does not read. That
+ * direction is the safe one: a flag listed here that the pinned server skips
+ * can only hide a --host it would bind, which warns about an exposure there is
+ * not, while a flag missing here could take the --host it swallows for a bind.
  */
 export const SERVER_VALUE_FLAGS = new Set([
    "--port",
    "--host",
+   "--rate-limit",
+   "--frame-ancestors",
+   "--caller-header",
+   "--version-promotion",
+   "--root",
    "--server_root",
    "--config",
-   "--mcp_port",
-   "--mcp_host",
-   "--admin_port",
-   "--admin_host",
-   "--shutdown_drain_duration_seconds",
-   "--shutdown_graceful_close_timeout_seconds",
+   "--watch-environments",
    "--watch-env",
+   "--mcp-port",
+   "--mcp_port",
+   "--mcp-host",
+   "--mcp_host",
+   "--mcp-cors-origins",
+   "--mcp-trace",
+   "--admin-port",
+   "--admin_port",
+   "--admin-host",
+   "--admin_host",
+   "--admin-request-timeout-ms",
+   "--admin-memory-limit",
+   "--admin-max-temp-directory-size",
+   "--admin-storage-provider",
+   "--admin-storage-key-id",
+   "--admin-storage-region",
+   "--admin-storage-endpoint",
+   "--query-max-rows",
+   "--query-max-response-bytes",
+   "--query-default-row-limit",
+   "--query-timeout-ms",
+   "--query-max-concurrent",
+   "--postgres-pool-max",
+   "--memory-max-bytes",
+   "--memory-high-water-fraction",
+   "--memory-low-water-fraction",
+   "--memory-check-interval-ms",
+   "--package-load-workers",
+   "--package-load-job-timeout-ms",
+   "--package-load-schema-cache-bytes",
+   "--duckdb-extension-fetch-policy",
+   "--duckdb-memory-limit",
+   "--duckdb-temp-directory",
+   "--ducklake-row-group-size-bytes",
+   "--ducklake-target-file-size-bytes",
+   "--persist-storage-mode",
+   "--materialization-scheduler-interval-ms",
+   "--materialization-scheduler-max-fires-per-tick",
+   "--allow-s3-credential-chain",
+   "--logging-level",
+   "--shutdown-drain-duration-seconds",
+   "--shutdown_drain_duration_seconds",
+   "--shutdown-graceful-close-timeout-seconds",
+   "--shutdown_graceful_close_timeout_seconds",
+   "--retrieval-embedding-model",
+   "--retrieval-embedding-base-url",
+   "--retrieval-embedding-dimensions",
+   "--retrieval-embedding-min-similarity",
+   "--retrieval-llm-provider",
+   "--retrieval-llm-model",
+   "--retrieval-llm-base-url",
+   "--retrieval-llm-project-id",
+   "--retrieval-llm-location",
+   "--retrieval-llm-timeout-ms",
+   "--retrieval-llm-concurrency",
+   "--retrieval-llm-max-calls-per-sync",
+   "--retrieval-llm-max-calls-per-request",
+   "--retrieval-embedding-provider",
+   "--retrieval-embedding-project-id",
+   "--retrieval-embedding-location",
+   "--retrieval-embedding-query-prefix",
+   "--retrieval-embedding-document-prefix",
+   "--retrieval-egress-preset",
+   "--mcp-app-origin",
+   "--duckdb-threads",
+   "--workload-log-store",
+   "--workload-log-retention-days",
+   "--workload-log-max-rows",
 ]);
 
 /** True when a quote is left open, which sh refuses to run at all. */
@@ -2176,6 +2252,9 @@ function workspaceGitignoreEntries(): string[] {
       // machine, which reads as every table failing to resolve rather than as a
       // missing file.
       "malloy-config.json",
+      // docs/configuration.md tells users to keep API keys and passwords here.
+      ".env",
+      "*.env",
    ];
 }
 

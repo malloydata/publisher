@@ -7,7 +7,7 @@ import { Settings } from "./settings";
 /**
  * The one way code reads a setting: `settings.get("mcp.port")`, typed by the
  * registry, from the settings this process started with. See
- * docs/configuration-design.md.
+ * docs/publisher-v1.md, Appendix C.
  */
 export const settings = {
    get: <K extends SettingKey>(key: K): SettingValue<K> =>
@@ -17,8 +17,18 @@ export const settings = {
    shadowed: (key: SettingKey) => Settings.current().shadowed(key),
 };
 
-export { SettingError, SettingsError, type SettingSource } from "./errors";
-export { externalEnv, referencedVariable } from "./external";
+export {
+   describeSource,
+   RetrievalSettingsError,
+   SettingError,
+   SettingsError,
+   type SettingSource,
+} from "./errors";
+export {
+   externalEnv,
+   referencedVariable,
+   type ExternalVariable,
+} from "./external";
 export { REGISTRY, type SettingKey, type SettingValue } from "./registry";
 export { derivedEnvName, derivedFlagName } from "./setting";
 export {

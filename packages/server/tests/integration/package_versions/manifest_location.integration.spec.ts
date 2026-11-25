@@ -17,17 +17,29 @@
  * its base data.
  */
 
+import { withNativeSchema } from "../../../src/test_helpers/host_manifest";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
 import { pathToFileURL } from "url";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   deleteLeftoverEnvironment,
+   RestE2EEnv,
+   startRestE2E,
+} from "../../harness/rest_e2e";
 
 const ENV_NAME = "manifest-location-env";
 const PKG = "persist-test";
 const FIXTURE = path.resolve(__dirname, "../../fixtures/persist-test");
-const BOUND_TABLE = "order_summary_from_manifest";
+/**
+ * The table every manifest here binds: a temporary table on the version's
+ * sandbox, made from one SELECT (raw SQL on the sandbox runs only as a single
+ * SELECT, duckdb_lockdown.ts), so its name is the one the route returns.
+ */
+let BOUND_TABLE = "";
+/** The rows BOUND_TABLE holds: a count no live answer gives. */
+const BOUND_ROWS = 13;
 
 let env: (RestE2EEnv & { stop(): Promise<void> }) | undefined;
 let baseUrl = "";
@@ -75,12 +87,21 @@ function writeManifest(name: string, sourceEntityId: string): string {
          builtAt: new Date().toISOString(),
          strict: false,
          entries: {
-            [sourceEntityId]: {
-               sourceEntityId,
-               sourceName: "order_summary",
-               physicalTableName: BOUND_TABLE,
-               connectionName: "duckdb",
-            },
+            // With the column types its build would record, as a host
+            // sends them (host_manifest.ts).
+            [sourceEntityId]: withNativeSchema(
+               {
+                  sourceEntityId,
+                  sourceName: "order_summary",
+                  physicalTableName: BOUND_TABLE,
+                  connectionName: "duckdb",
+               },
+               [
+                  { name: "category", type: "VARCHAR" },
+                  { name: "total_orders", type: "BIGINT" },
+                  { name: "total_revenue", type: "BIGINT" },
+               ],
+            ),
          },
       }),
    );
@@ -88,9 +109,8 @@ function writeManifest(name: string, sourceEntityId: string): string {
 }
 
 /**
- * Run the persisted source. Live, it computes from the package's CSV and
- * answers 200; bound, it reads BOUND_TABLE, which does not exist, so the
- * answer names that table.
+ * Run the persisted source: live, from the package's CSV; bound, from
+ * BOUND_TABLE's BOUND_ROWS rows.
  */
 async function runOrderSummary(): Promise<{ status: number; text: string }> {
    const res = await fetch(
@@ -100,6 +120,7 @@ async function runOrderSummary(): Promise<{ status: number; text: string }> {
          headers: { "content-type": "application/json" },
          body: JSON.stringify({
             query: "run: order_summary -> { aggregate: c is count() }",
+            compactJson: true,
          }),
       },
    );
@@ -109,13 +130,23 @@ async function runOrderSummary(): Promise<{ status: number; text: string }> {
 async function expectBoundTo(location: string): Promise<void> {
    const version = await call("GET", `/${PKG}/versions/1.0.0`);
    expect(version.json.manifestLocation).toBe(location);
+   // Served from the bound table: its BOUND_ROWS rows, not live's.
    const served = await runOrderSummary();
-   expect(served.status).not.toBe(200);
-   expect(served.text).toContain(BOUND_TABLE);
+   expect(served.status).toBe(200);
+   expect(countOf(served.text)).toBe(BOUND_ROWS);
+}
+
+/** The `c` a run of the persisted source answered. */
+function countOf(text: string): number {
+   const body = JSON.parse(text) as { result?: string };
+   const rows = JSON.parse(body.result ?? "[]") as { c: number }[];
+   return Number(rows[0]?.c);
 }
 
 async function expectLive(): Promise<void> {
-   expect((await runOrderSummary()).status).toBe(200);
+   const live = await runOrderSummary();
+   expect(live.status).toBe(200);
+   expect(countOf(live.text)).not.toBe(BOUND_ROWS);
 }
 
 describe("a version bound to a manifest on this server's disk", () => {
@@ -127,6 +158,7 @@ describe("a version bound to a manifest on this server's disk", () => {
       );
       env = await startRestE2E();
       baseUrl = env.baseUrl;
+      await deleteLeftoverEnvironment(baseUrl, ENV_NAME);
       const created = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "content-type": "application/json" },
@@ -147,6 +179,21 @@ describe("a version bound to a manifest on this server's disk", () => {
          "1.0.0",
       ]);
       sourceEntityId = await orderSummarySourceEntityId();
+      // The table every manifest here binds, in the version's own DuckDB:
+      // BOUND_ROWS rows, so an answer read from it is told from live's.
+      const created_ = await fetch(
+         `${api(`/${PKG}/connections/duckdb/sqlTemporaryTable`)}?versionId=1.0.0`,
+         {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+               sqlStatement: `SELECT 'c' || i AS category, 1::BIGINT AS total_orders, 1::BIGINT AS total_revenue FROM range(${BOUND_ROWS}) t(i)`,
+            }),
+         },
+      );
+      expect(created_.status).toBeLessThan(300);
+      BOUND_TABLE = ((await created_.json()) as { table?: string }).table ?? "";
+      expect(BOUND_TABLE).not.toBe("");
    }, 180_000);
 
    afterAll(async () => {
@@ -183,6 +230,69 @@ describe("a version bound to a manifest on this server's disk", () => {
       });
       expect(cleared.status).toBe(200);
       await expectLive();
+   });
+
+   it("clears a binding with an empty body, as a client that drops null fields sends it", async () => {
+      const file = writeManifest("then-empty.json", sourceEntityId);
+      const bound = await call("PUT", `/${PKG}/versions/1.0.0/manifest`, {
+         manifestLocation: file,
+      });
+      expect(bound.status).toBe(200);
+      await expectBoundTo(file);
+
+      // A typo is refused and leaves the binding as it was.
+      const typo = await call("PUT", `/${PKG}/versions/1.0.0/manifest`, {
+         manifestUri: file,
+      });
+      expect(typo.status).toBe(400);
+      await expectBoundTo(file);
+
+      const cleared = await call("PUT", `/${PKG}/versions/1.0.0/manifest`, {});
+      expect(cleared.status).toBe(200);
+      await expectLive();
+   });
+
+   it("binds and clears through the legacy combined-name PATCH, whose body carries other fields", async () => {
+      // `PATCH …/packages/<pkg>___<version>` is rewritten to this PUT with
+      // the old package-update body, plus the `versionId` the legacy body
+      // middleware adds; only `manifestLocation` is read from it.
+      const file = writeManifest("by-legacy-patch.json", sourceEntityId);
+      const bound = await call("PATCH", `/${PKG}___1.0.0`, {
+         name: `${PKG}___1.0.0`,
+         description: "an orchestrator's full package body",
+         location: "ignored",
+         manifestLocation: file,
+      });
+      expect(bound.status).toBe(200);
+      await expectBoundTo(file);
+
+      const cleared = await call("PATCH", `/${PKG}___1.0.0`, {
+         name: `${PKG}___1.0.0`,
+         manifestLocation: null,
+      });
+      expect(cleared.status).toBe(200);
+      await expectLive();
+
+      // As before: the field must be present on this path.
+      const missing = await call("PATCH", `/${PKG}___1.0.0`, {
+         name: `${PKG}___1.0.0`,
+      });
+      expect(missing.status).toBe(400);
+   });
+
+   it("refuses a PUT not sent as JSON, rather than reading it as a clear", async () => {
+      const file = writeManifest("then-text.json", sourceEntityId);
+      await call("PUT", `/${PKG}/versions/1.0.0/manifest`, {
+         manifestLocation: file,
+      });
+      await expectBoundTo(file);
+      const res = await fetch(api(`/${PKG}/versions/1.0.0/manifest`), {
+         method: "PUT",
+         body: JSON.stringify({ manifestLocation: file }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("application/json");
+      await expectBoundTo(file);
    });
 
    it("binds an absolute path through the deprecated PATCH, which binds latest", async () => {

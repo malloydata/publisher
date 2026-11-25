@@ -1,0 +1,497 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "注文",
+        "tier": "storage"
+      },
+      {
+        "name": "café",
+        "tier": "storage"
+      },
+      {
+        "name": "via_sql",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "注文:serves",
+      "café:serves",
+      "via_sql:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "summe"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "c66418bdb4e46d0b",
+          "kind": "reduce",
+          "measures": [
+            "summe"
+          ],
+          "source": "café",
+          "stages": 1
+        },
+        "source": "café"
+      },
+      "equalToLive": true,
+      "malloy": "run: café -> { group_by: region; aggregate: summe }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "906722090c9ae623e7254ab13cf1d687ac6d844df492f8397cdae8f437d09bbe"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "materialize",
+            "relationship": "sibling",
+            "sourceName": "注文",
+            "tableId": "f82b7a7c65d7a942ab50f90ce47c7d11515bc1234214e9c8e799d4dfe78ac652"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "summe"
+          ],
+          "sourceName": "café"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "906722090c9ae623e7254ab13cf1d687ac6d844df492f8397cdae8f437d09bbe",
+          "tier": "storage",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a non-ASCII source and field",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "件数"
+          },
+          {
+            "classifications": [],
+            "path": "地域"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "地域"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "be4c76ec8e054d3c",
+          "kind": "reduce",
+          "measures": [
+            "件数"
+          ],
+          "source": "注文",
+          "stages": 1
+        },
+        "source": "注文"
+      },
+      "equalToLive": true,
+      "malloy": "run: 注文 -> { group_by: 地域; aggregate: 件数 }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "f82b7a7c65d7a942ab50f90ce47c7d11515bc1234214e9c8e799d4dfe78ac652"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "café",
+            "tableId": "906722090c9ae623e7254ab13cf1d687ac6d844df492f8397cdae8f437d09bbe"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "地域"
+          ],
+          "measures": [
+            "件数"
+          ],
+          "sourceName": "注文"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "f82b7a7c65d7a942ab50f90ce47c7d11515bc1234214e9c8e799d4dfe78ac652",
+          "tier": "storage",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a CJK source, dimension and measure",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region",
+            "total"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "97d96320f992b849",
+          "kind": "project",
+          "measures": [],
+          "source": "via_sql",
+          "stages": 1
+        },
+        "source": "via_sql"
+      },
+      "equalToLive": true,
+      "malloy": "run: via_sql -> { select: * }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "2405df3b7488da9e3e7d9cdeedb73b54628640971bb8f1bb5af19c95e29c6ede"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region",
+            "total"
+          ],
+          "measures": [],
+          "sourceName": "via_sql"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "2405df3b7488da9e3e7d9cdeedb73b54628640971bb8f1bb5af19c95e29c6ede",
+          "tier": "storage",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a source over a SQL block with Malloy in it",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "summe"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "c66418bdb4e46d0b",
+          "kind": "reduce",
+          "measures": [
+            "summe"
+          ],
+          "source": "café",
+          "stages": 1
+        },
+        "source": "café"
+      },
+      "equalToLive": true,
+      "malloy": "run: café -> { group_by: region; aggregate: summe }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "906722090c9ae623e7254ab13cf1d687ac6d844df492f8397cdae8f437d09bbe"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "materialize",
+            "relationship": "sibling",
+            "sourceName": "注文",
+            "tableId": "f82b7a7c65d7a942ab50f90ce47c7d11515bc1234214e9c8e799d4dfe78ac652"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "summe"
+          ],
+          "sourceName": "café"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "906722090c9ae623e7254ab13cf1d687ac6d844df492f8397cdae8f437d09bbe",
+          "tier": "storage",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a non-ASCII source and field",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "件数"
+          },
+          {
+            "classifications": [],
+            "path": "地域"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "地域"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "be4c76ec8e054d3c",
+          "kind": "reduce",
+          "measures": [
+            "件数"
+          ],
+          "source": "注文",
+          "stages": 1
+        },
+        "source": "注文"
+      },
+      "equalToLive": true,
+      "malloy": "run: 注文 -> { group_by: 地域; aggregate: 件数 }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "f82b7a7c65d7a942ab50f90ce47c7d11515bc1234214e9c8e799d4dfe78ac652"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "café",
+            "tableId": "906722090c9ae623e7254ab13cf1d687ac6d844df492f8397cdae8f437d09bbe"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "地域"
+          ],
+          "measures": [
+            "件数"
+          ],
+          "sourceName": "注文"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "f82b7a7c65d7a942ab50f90ce47c7d11515bc1234214e9c8e799d4dfe78ac652",
+          "tier": "storage",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a CJK source, dimension and measure",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region",
+            "total"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "97d96320f992b849",
+          "kind": "project",
+          "measures": [],
+          "source": "via_sql",
+          "stages": 1
+        },
+        "source": "via_sql"
+      },
+      "equalToLive": true,
+      "malloy": "run: via_sql -> { select: * }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "2405df3b7488da9e3e7d9cdeedb73b54628640971bb8f1bb5af19c95e29c6ede"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region",
+            "total"
+          ],
+          "measures": [],
+          "sourceName": "via_sql"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "2405df3b7488da9e3e7d9cdeedb73b54628640971bb8f1bb5af19c95e29c6ede",
+          "tier": "storage",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "a source over a SQL block with Malloy in it",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    }
+  ]
+}

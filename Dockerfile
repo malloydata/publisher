@@ -5,7 +5,7 @@
 # Java for generate-api-types scripts
 FROM amazoncorretto:21.0.8 AS java-base
 
-FROM oven/bun:1.3.13-slim AS base-deps
+FROM oven/bun:1.4.4-slim AS base-deps
 
 # `apt-get upgrade` because the Debian packages in oven/bun's layer are frozen at
 # the date that tag was published. Without it every image built from the same tag
@@ -81,7 +81,7 @@ RUN DUCKDB_VERSION=${DUCKDB_VERSION} HOME=/home/bun bash -c "curl -L https://ins
 # the shim at runtime, where only smoke-test 4b would notice. Change both or
 # neither -- including the `apt-get upgrade`, which is why this stage reads
 # APT_REFRESH too.
-FROM oven/bun:1.3.13-slim AS adbc-driver
+FROM oven/bun:1.4.4-slim AS adbc-driver
 ARG ADBC_SNOWFLAKE_VERSION=1.12.0
 ARG ADBC_SNOWFLAKE_SHA256_AMD64=9f3b44bd2c5d1a84acd1dadf7b9995e47bad78ca37f799c9e8460ac196fd319c
 ARG ADBC_SNOWFLAKE_SHA256_ARM64=7648311005788d9576ee06ced1efd0f4f5849a5e70ef9946abad08588e312283
@@ -124,7 +124,7 @@ RUN echo "${ADBC_HEADER_SHA256}  /src/adbc-shim/adbc.h" | sha256sum -c - && \
 # straight into prod-deps would change its cache key there, before any step
 # could pin them. The workspaces listed here match the builder's and the final
 # stage's lists.
-FROM oven/bun:1.3.13-slim AS prod-manifests
+FROM oven/bun:1.4.4-slim AS prod-manifests
 WORKDIR /publisher
 COPY packages/server/package.json ./packages/server/package.json
 COPY packages/app/package.json ./packages/app/package.json
@@ -140,7 +140,7 @@ RUN bun scripts/set-version.mjs 0.0.0 packages/*/package.json
 # sit after the dist/ copies and on top of base-deps (which APT_REFRESH rebuilds
 # daily), so it would rerun, and its layer re-ship, on every release. The final
 # stage ships the real package.json files from the builder.
-FROM oven/bun:1.3.13-slim AS prod-deps
+FROM oven/bun:1.4.4-slim AS prod-deps
 WORKDIR /publisher
 COPY package.json bun.lock ./
 COPY patches/ ./patches/
@@ -175,10 +175,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     rm -rf /var/lib/apt/lists/*
 COPY packages/server/scripts/bake-duckdb-extensions.js ./packages/server/scripts/
 WORKDIR /publisher/packages/server
+# Empty unless the build passes it: CI on Credible's runners passes their mirror of
+# DuckDB's extension repositories (the bake script's header), and a release passes none.
+ARG CI_DUCKDB_EXTENSION_MIRROR=""
 RUN HOME=/root DUCKDB_BAKE_STRICT=1 bun scripts/bake-duckdb-extensions.js
 
 # Builder stage
-FROM oven/bun:1.3.13-slim AS builder
+FROM oven/bun:1.4.4-slim AS builder
 COPY --from=java-base /usr/lib/jvm /usr/lib/jvm
 ENV JAVA_HOME=/usr/lib/jvm/java-21-amazon-corretto
 ENV PATH=$JAVA_HOME/bin:$PATH
@@ -363,11 +366,12 @@ ENV NODE_ENV=production
 # tree guard that would normally cover /publisher cannot fire here, because
 # .dockerignore excludes .git from the image. Left on, every boot would write a
 # file into it, which matters to anyone bind-mounting a project at /publisher.
-# Pass -e PUBLISHER_NO_MCP_CONFIG= to opt back in. Note the same emptiness is
-# reachable by accident: `docker run -e PUBLISHER_NO_MCP_CONFIG` with no value,
-# or a Compose `environment:` entry with none, deletes this ENV when the host
-# does not have the variable, which re-enables the write.
-ENV PUBLISHER_NO_MCP_CONFIG=1
+# Pass -e PUBLISHER_MCP_CONFIG_FILE_ENABLED=true to opt back in. Note the same
+# effect is reachable by accident: `docker run -e PUBLISHER_MCP_CONFIG_FILE_ENABLED`
+# with no value, or a Compose `environment:` entry with none, deletes this ENV
+# when the host does not have the variable, which re-enables the write. The
+# image uses the current names, so a plain boot logs no deprecation warning.
+ENV PUBLISHER_MCP_CONFIG_FILE_ENABLED=false
 ENV PATH="/home/bun/.duckdb/cli/${DUCKDB_VERSION}:$PATH"
 # Set rather than left to USER, which derives HOME from /etc/passwd: run as
 # `--user 0`, the server would otherwise resolve ~/.duckdb under /root and find
@@ -390,7 +394,20 @@ ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/rds-global-bundle.pem
 # 4040); this just makes them discoverable.
 EXPOSE 4000 4040
 
-# Pass --server_root explicitly so the zero-arg bundled-default trigger
+# Healthy while the server answers queries: `serving`, or `throttled`, where
+# memory back-pressure refuses new package loads but queries are still
+# answered. `initializing` and `draining` are not healthy. start-period covers a
+# first boot that loads every configured package (the same 90 s as
+# docker-compose.example.yml), so a slow start reads as "starting", not
+# "unhealthy". The port follows PUBLISHER_PORT; a `--port` passed by overriding
+# CMD is not seen here, so set PUBLISHER_PORT instead, or override the check.
+# Docker and Compose act on this; Kubernetes ignores it and uses its own probes,
+# which should hit the same endpoint.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${PUBLISHER_PORT:-4000}/api/v0/status" \
+        | grep -Eq '"operationalState":"(serving|throttled)"' || exit 1
+
+# Pass --root explicitly so the zero-arg bundled-default trigger
 # in server.ts (added for `npx @malloy-publisher/server` UX) does NOT fire
 # inside the production container. Without this, a Docker image launched
 # with no mounted config would try to clone the bundled DuckDB samples
@@ -402,4 +419,4 @@ EXPOSE 4000 4040
 # and refuses to start an image whose USER is a name unless the pod also sets
 # runAsUser.
 USER 1000:1000
-CMD ["bun", "run", "./packages/server/dist/server.mjs", "--server_root", "/publisher"]
+CMD ["bun", "run", "./packages/server/dist/server.mjs", "--root", "/publisher"]

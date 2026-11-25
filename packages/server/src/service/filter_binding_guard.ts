@@ -14,6 +14,16 @@
  * `#(filter)` injection (`Model.assertFilterAnnotationsBindToDeclaringSource`).
  * All reuse {@link assertFilterConditionBindsToDeclaringSource}.
  *
+ * Also the bind guard: the served copy re-roots an author's source on its
+ * stored table, and serves the re-root only with {@link proveReroot}'s proof
+ * that it still reads what it was written against: every field the author's
+ * has (the lost-fields check), each exactly as hidden ({@link keepsAccess}),
+ * every given-reading `where:` term ({@link keepsGivenTerms}), every term the
+ * re-root left as written ({@link keepsTermsAsWritten}), and no filtered
+ * source held only as a join. {@link classificationNotKept} is its
+ * `#(carries)` ceiling: no class the compile of record does not leak. A
+ * failed proof leaves the source as written, answered live.
+ *
  * "Identical field" means same `name`, `type`, and deep-equal `e`, ignoring
  * `annotations`, `accessModifier`, and `location`/`at`/`referencedAt` when the
  * value is a real `DocumentLocation` (all are also legal author names), and a
@@ -56,6 +66,7 @@ import { fileURLToPath, pathToFileURL } from "url";
 import { findSourceByOwnAnnotationIdentity } from "./gate_classification";
 import { parseAuthorizeAnnotation } from "./authorize";
 import { sameNotePosition } from "./annotations";
+import { hiddenAccess } from "./governance/ir/compiled_model";
 
 /**
  * The next struct back in a derivation chain, trying the same links the gate
@@ -852,6 +863,20 @@ function findAnnotationDeclaringSource(
    return findCompositeMemberDeclaringSource(struct, modelDef);
 }
 
+/**
+ * Whether the struct that declared `struct`'s gate can be resolved in
+ * `modelDef`, without a sibling compile: the check
+ * {@link assertGraftedGateBindsToDeclaringSource} makes before it grafts, so a
+ * candidate compile (the served copy) can decline a query whose gate would
+ * deny there, and the next candidate answers it.
+ */
+export function gateDeclaringSourceResolves(
+   struct: SourceDef,
+   modelDef: ModelDef,
+): boolean {
+   return findAnnotationDeclaringSource(struct, modelDef) !== undefined;
+}
+
 /** Whether `struct` itself, not an ancestor, carries a gate note. */
 function ownsGateNote(struct: SourceDef): boolean {
    return ownLevelNotes(struct.annotations).some(isGateNote);
@@ -1227,6 +1252,23 @@ function findFilterOrigin(
          );
       // Ahead of the sibling-owner leg, which would settle for the struct's own twin in the sibling compile.
       if (inlineBase) return { origin: inlineBase, inlineBase: true };
+      // The executed compile's own declaration of the condition, when it
+      // compiled the condition's file, ahead of another compile's: a served
+      // copy compiles an importing file over its re-rooted base, whose stored
+      // column may be a redefinition (a native big-integer read), so the
+      // author's compile of the same file binds the name to a different field
+      // (P2-22). When that declaration is `struct` itself, the condition is
+      // its own `where:`, compiled against its own fields, and is checked as
+      // fresh. Another struct there (the declaration a caller's inline
+      // `extend` derives from) is the origin, so a rebinding is still denied.
+      const at = firstFieldUsageLocation(condition);
+      const local =
+         modelDef && at
+            ? findConditionOriginByLocation(modelDef, at)
+            : undefined;
+      if (local && siblingCandidateOwnsCondition(local, condition)) {
+         return { origin: local, inlineBase: false };
+      }
       const sibling = findSiblingDeclaringSource(
          firstFieldUsageLocation(condition),
          resolveSibling,
@@ -1235,7 +1277,6 @@ function findFilterOrigin(
          return { origin: sibling, inlineBase: false };
       }
       // A twin is only a same-named struct, not the declaration, so it stands in only where no sibling compile can exist: a model with no resolver, or the /compile text compiled for this request alone.
-      const at = firstFieldUsageLocation(condition);
       const inVirtualFile =
          !!at &&
          !!virtualUrl &&
@@ -1508,3 +1549,252 @@ export function stageJoins(
 
 /** Exported for tests. */
 export { fieldPathIdentical };
+
+// ---------------------------------------------------------------------------
+// The bind guard: a re-rooted source still reads what it was written against.
+// ---------------------------------------------------------------------------
+
+/**
+ * Why a re-rooted source does not keep what its author's source keeps, in
+ * the order {@link proveReroot} checks:
+ *
+ * - `fields`: a field the author's source has is missing from the served
+ *   source (one it inherited from a base the re-root replaced), and its
+ *   absence is not excused;
+ * - `access`: a field is less hidden than the author's of that name (P3), or
+ *   a field only the re-root has is public, or less hidden than the author's
+ *   field it stores;
+ * - `given_terms`: a `where:` term that reads a given (re-applied per caller
+ *   at read, never in the table) is not in the served source's own compiled
+ *   filters, so the copy would answer every caller with every caller's rows;
+ * - `terms_as_written`: a term the re-root leaves to the kept text (a rolling
+ *   window over a hidden dimension computed at read) is not in the served
+ *   source's compiled filters as the author wrote it;
+ * - `filtered_join`: the served compile holds the source only as a join and
+ *   the source applies a `where:`, which the governor would prove against its
+ *   declaring file's live compile, whose text the re-root changed.
+ */
+export type RerootLoss =
+   | "fields"
+   | "access"
+   | "given_terms"
+   | "terms_as_written"
+   | "filtered_join";
+
+/** What {@link proveReroot} compares for one re-rooted source. */
+export interface RerootProofInput {
+   /** The author's compiled source definition. */
+   author: unknown;
+   /**
+    * The served compile's definition of the same declaration: its node, or
+    * the joined definition a join holds when the compile has it only as a
+    * join. Undefined reads as everything lost.
+    */
+   served: unknown;
+   /** Whether the served compile holds the source as a node with fields of its own. */
+   servedHasOwnNode: boolean;
+   /**
+    * Fields the source may lack, by name: what a left-out join took with it,
+    * and the columns the re-root left out of its table.
+    */
+   excused: ReadonlySet<string>;
+   /** The author's text of each term the re-root left to the kept text. */
+   termsKeptAsWritten: readonly string[];
+   /**
+    * The given-reading `where:` terms a compiled source applies, as text and
+    * the givens each reads. A throw fails the proof closed.
+    */
+   givenTerms(def: unknown): { code: string; givens: string[] }[];
+}
+
+/**
+ * Prove a re-rooted source still reads what its author's source reads: the
+ * same fields, each as hidden, and every filter the author's applies at read.
+ * Returns the first loss found, or undefined when the re-root keeps them all.
+ * Fails closed: an unreadable definition is a loss.
+ */
+export function proveReroot(input: RerootProofInput): RerootLoss | undefined {
+   const authorFields = fieldNamesOf(input.author);
+   const servedFields = fieldNamesOf(input.served);
+   // A private field the table does not hold (one private on a source this
+   // one extends, which the build never selects) cannot be read by the
+   // source, its extensions or a caller, so its absence changes no answer.
+   const unreadable = privateFieldNamesOf(input.author);
+   if (
+      [...authorFields].some(
+         (name) =>
+            !servedFields.has(name) &&
+            !input.excused.has(name) &&
+            !unreadable.has(name),
+      )
+   ) {
+      return "fields";
+   }
+   if (!keepsAccess(input.author, input.served)) return "access";
+   if (!keepsGivenTerms(input.author, input.served, input.givenTerms)) {
+      return "given_terms";
+   }
+   if (!keepsTermsAsWritten(input.served, input.termsKeptAsWritten)) {
+      return "terms_as_written";
+   }
+   if (!input.servedHasOwnNode && appliesFilters(input.author)) {
+      return "filtered_join";
+   }
+   return undefined;
+}
+
+/**
+ * Whether the served source applies every given-reading `where:` term the
+ * author's applies: the same text, reading the same givens, in its own
+ * compiled filters (so a term in a comment, a string or another source never
+ * counts). Unreadable or unrecorded terms fail closed.
+ */
+export function keepsGivenTerms(
+   author: unknown,
+   served: unknown,
+   givenTerms: RerootProofInput["givenTerms"],
+): boolean {
+   if (!author || !served) return false;
+   try {
+      const key = (t: { code: string; givens: string[] }) =>
+         `${t.code.replace(/\s+/g, " ").trim()}\u0000${t.givens.join(",")}`;
+      const kept = new Set(givenTerms(served).map(key));
+      return givenTerms(author).every(
+         (t) => t.code.trim() !== "" && kept.has(key(t)),
+      );
+   } catch {
+      return false;
+   }
+}
+
+/**
+ * Whether the served source's compiled filters hold each of `codes` (the
+ * author's text of a `where:` term), whitespace aside. True for none;
+ * unreadable filters fail closed.
+ */
+export function keepsTermsAsWritten(
+   served: unknown,
+   codes: readonly string[],
+): boolean {
+   if (codes.length === 0) return true;
+   const filters = (served as { filterList?: unknown } | undefined)?.filterList;
+   if (!Array.isArray(filters)) return false;
+   const norm = (code: string) => code.replace(/\s+/g, " ").trim();
+   const held = new Set(
+      (filters as { code?: unknown }[])
+         .map((f) => (typeof f?.code === "string" ? norm(f.code) : ""))
+         .filter((c) => c !== ""),
+   );
+   return codes.every((c) => norm(c) !== "" && held.has(norm(c)));
+}
+
+/**
+ * Whether every field of the served source has the access modifier the
+ * author's field of that name has (P3): `public` and none read alike, and a
+ * modifier it does not know reads as private, so it never matches a public
+ * one. A field only the served copy has (a timeframe column's internal
+ * rename, `order_month__stored`; an inlined join's stored column,
+ * `carriers__name__stored`) is the re-root's own and must not be public, so a
+ * stored column never surfaces under a name the author's source lacks. Nor
+ * may it be less hidden than the author's field it is named after (`<field>__…`,
+ * the field a timeframe column or an inlined join's column stores): a private
+ * field's stored column renamed only `internal` would let a caller's own
+ * `extend` read it. Unreadable sources fail closed.
+ */
+export function keepsAccess(author: unknown, served: unknown): boolean {
+   const accessByName = (def: unknown) => {
+      const fields = (def as { fields?: unknown } | undefined)?.fields;
+      if (!Array.isArray(fields)) return undefined;
+      const out = new Map<string, string>();
+      for (const f of fields as {
+         name?: unknown;
+         as?: unknown;
+         accessModifier?: unknown;
+      }[]) {
+         const name = typeof f.as === "string" ? f.as : f.name;
+         if (typeof name !== "string") continue;
+         out.set(name, hiddenAccess(f) ?? "public");
+      }
+      return out;
+   };
+   const before = accessByName(author);
+   const after = accessByName(served);
+   if (!before || !after) return false;
+   const rank = (access: string) =>
+      access === "public" ? 0 : access === "internal" ? 1 : 2;
+   for (const [name, access] of after) {
+      const was = before.get(name);
+      if (was !== undefined) {
+         if (was !== access) return false;
+         continue;
+      }
+      // The re-root's own: hidden, and at least as hidden as every author
+      // field whose stored column it could be.
+      let floor = 1;
+      for (const [field, fieldAccess] of before) {
+         if (name.startsWith(`${field}__`)) {
+            floor = Math.max(floor, rank(fieldAccess));
+         }
+      }
+      if (rank(access) < floor) return false;
+   }
+   return true;
+}
+
+/**
+ * The `#(carries)` ceiling on a re-rooted compile: per source, the load's
+ * classification findings (a `#(carries)` leak, an unclassified field) the
+ * served compile has and the compile of record does not. The served compile
+ * may reach fields the compile of record never had (a join left out across
+ * connections, answered once both sides are built); a source with any such
+ * finding is never served from it. A source only the served compile has (a
+ * re-rooted base's generated one) is reached only through the author's
+ * sources, which are checked, so it is skipped.
+ */
+export function classificationNotKept(
+   record: ReadonlyMap<string, { leaks: string[]; coverage: string[] }>,
+   served: ReadonlyMap<string, { leaks: string[]; coverage: string[] }>,
+): Map<string, { leaks: string[]; coverage: string[] }> {
+   const out = new Map<string, { leaks: string[]; coverage: string[] }>();
+   for (const [source, found] of served) {
+      const was = record.get(source);
+      if (!was) continue;
+      const leaks = found.leaks.filter((m) => !was.leaks.includes(m));
+      const coverage = found.coverage.filter((m) => !was.coverage.includes(m));
+      if (leaks.length === 0 && coverage.length === 0) continue;
+      out.set(source, { leaks, coverage });
+   }
+   return out;
+}
+
+/** Whether a source definition applies any `where:` term. */
+function appliesFilters(def: unknown): boolean {
+   const filters = (def as { filterList?: unknown[] } | undefined)?.filterList;
+   return Array.isArray(filters) && filters.length > 0;
+}
+
+/** The names of a compiled source's fields (`as`, else `name`). */
+function fieldNamesOf(def: unknown): Set<string> {
+   const fields = (def as { fields?: { name?: unknown; as?: unknown }[] })
+      ?.fields;
+   return new Set(
+      (fields ?? [])
+         .map((f) => (typeof f.as === "string" ? f.as : f.name))
+         .filter((n): n is string => typeof n === "string"),
+   );
+}
+
+/** The names of a compiled source's private fields. */
+function privateFieldNamesOf(def: unknown): Set<string> {
+   const fields = (
+      def as {
+         fields?: { name?: unknown; as?: unknown; accessModifier?: unknown }[];
+      }
+   )?.fields;
+   return new Set(
+      (fields ?? [])
+         .filter((f) => hiddenAccess(f) === "private")
+         .map((f) => (typeof f.as === "string" ? f.as : f.name))
+         .filter((n): n is string => typeof n === "string"),
+   );
+}

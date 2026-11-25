@@ -157,9 +157,7 @@ is a Console convenience.
   that cannot store, or on a pinned version of a package. Below 600px wide the Console hides **Edit**
   and **+ Report**, and an editor opened by URL asks for **Edit anyway** first.
 - **Explore, no code** — open a source in the [Explorer](explorer.md), the visual query builder;
-  every action generates Malloy, and you can view the Malloy and SQL behind any result. The
-  Explorer writes a drilled value into that Malloy unescaped, so a value holding a double quote
-  rewrites its query.
+  every action generates Malloy, and you can view the Malloy and SQL behind any result.
 - **Browse a model** — on a server started with `PUBLISHER_MODEL_PAGE=viewer` (see
   [configuration](configuration.md)), the model page is the model viewer instead, which builds no
   query: open a `.malloy` file to see one source at a time, picked from its "N sources" pill: the

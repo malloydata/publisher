@@ -27,7 +27,7 @@ regression here invisible in the rows. The proof is staleness — once the rollu
 built, changing the underlying data and asking again must return the answer that was
 stored.
 
-Colocated on Postgres, where the catalog can be asked which schema actually received
+Database on Postgres, where the catalog can be asked which schema actually received
 the table. A dialect that requires qualification cannot create an unqualified rollup at
 all; Postgres accepts either, which is what makes it able to tell the two apart.
 
@@ -81,19 +81,19 @@ neighbour's.
 
 Which grain landed where, not merely which schemas were used: the set alone passes
 whichever rollup went to which, so it would read as green if the two were swapped. The
-rollup's name carries its grain — `<base>__preagg__<grain>__<digest>` — so the catalog
-can be asked for the pairing without knowing the digest.
+rollup's name carries its grain — `<pkg>__<file>__<base>_by_<grain>__p<hash>` — so the
+catalog can be asked for the pairing with only the hash masked.
 
 ```sql
-SELECT table_schema, split_part(table_name, '__', 3) AS grain FROM information_schema.tables WHERE table_name LIKE '%__preagg__%' ORDER BY table_schema
+SELECT table_schema, regexp_replace(table_name, '__p[0-9a-f]{8}$', '__p<hash>') AS table_name FROM information_schema.tables WHERE table_name LIKE '%\_by\_%' ESCAPE '\' ORDER BY table_schema
 ```
 
 Expect:
 
-| table_schema | grain    |
-| ------------ | -------- |
-| analytics    | category |
-| rollups      | region   |
+| table_schema | table_name                          |
+| ------------ | ----------------------------------- |
+| analytics    | pa__pa__orders_by_category__p<hash> |
+| rollups      | pa__pa__orders_by_region__p<hash>   |
 
 ## Query by category
 
@@ -172,7 +172,7 @@ rejects an unqualified `CREATE` outright — pre-aggregation could not build the
 Nothing in `#@ preaggregate` or `#@ persist` offered a way to supply a dataset, which is
 what `namespace=` now does.
 
-The placement half is why this runs colocated rather than into a storage destination: a
+The placement half is why this runs database rather than into a storage destination: a
 synthesized rollup is written to the source warehouse today regardless of the base's
 `storage=`, so that is where the table can be found. Letting a rollup follow its base
 into a `storage=` destination is separate work.

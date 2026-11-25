@@ -11,10 +11,12 @@ SPDX-License-Identifier: MIT
 # Join to a non-persisted source: base routes, the join falls back to live
 
 A persisted fact (`orders`) carries a `join_one` to a dimension (`regions`) that
-is NOT persisted. This exercises the serve fallback ladder on ONE source: a query
-over the fact's own fields must route to the materialized table, but a query that
-traverses the join to the non-materialized dimension cannot compile against the
-serve shape and must fall back to live — without disabling base serving.
+is NOT persisted. In the served copy `orders` is re-rooted on its lake table while
+`regions` stays on `orders_pg`, so Malloy refuses the join across connections, and
+the served copy leaves the join out along with whatever reads it. A query over the
+fact's own fields must route to the materialized table, but a query that traverses
+the join reads what was left out, so the served copy declines it
+(`cross_connection`) and it is answered live — without disabling base serving.
 
 The proof is one mutation, two re-runs. After publishing we append a large order.
 The fact-only aggregate stays stale (served from storage); the join-traversing

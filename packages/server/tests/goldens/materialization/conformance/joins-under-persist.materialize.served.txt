@@ -1,0 +1,75 @@
+// conformance: joins under persist [materialize]: files generated while serving
+
+// ==== <pkg>/m.malloy (text 1 of 2)
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: with_lines__served is {
+   id::number,
+   region::string,
+   amount::number
+}
+type: segment_totals__served is {
+   segment::string,
+   t::number
+}
+type: line_totals__served is {
+   region::string,
+   lines::number,
+   avg_qty::number,
+   n::number
+}
+
+import "raw.malloy"
+
+#(materialize) storage="lake"
+source: line_totals is __served_copy_alias_of_lake.virtual('31a18323a69306c9fbffb933cc967780fa76d52875d8acf21548991c45f31816')::line_totals__served
+
+#(materialize) storage="lake"
+source: segment_totals is __served_copy_alias_of_lake.virtual('b23aac1dbb6d26baf32516b16ab8c3292dc0d6095ffb4bdb354ebf614eb8e206')::segment_totals__served
+
+#(materialize) storage="lake"
+source: with_lines is __served_copy_alias_of_lake.virtual('4fdc1f71fde2e75f144819b490bd3b432a0253f77143d86000817fe0bcaeab0e')::with_lines__served extend {
+  private rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"HUGEINT"
+  join_many: l is lines_raw on l.order_id = id
+  measure: total is amount.sum()
+}
+
+// ==== <pkg>/m.malloy (text 2 of 2)
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: with_lines__served is {
+   id::number,
+   region::string,
+   amount::number
+}
+type: segment_totals__served is {
+   segment::string,
+   t::number
+}
+type: line_totals__served is {
+   region::string,
+   lines::number,
+   avg_qty::number,
+   n::number
+}
+
+import "raw.malloy"
+
+#(materialize) storage="lake"
+source: line_totals is __served_copy_alias_of_lake.virtual('31a18323a69306c9fbffb933cc967780fa76d52875d8acf21548991c45f31816')::line_totals__served
+
+#(materialize) storage="lake"
+source: segment_totals is __served_copy_alias_of_lake.virtual('b23aac1dbb6d26baf32516b16ab8c3292dc0d6095ffb4bdb354ebf614eb8e206')::segment_totals__served
+
+#(materialize) storage="lake"
+source: with_lines is __served_copy_alias_of_lake.virtual('4fdc1f71fde2e75f144819b490bd3b432a0253f77143d86000817fe0bcaeab0e')::with_lines__served extend {
+  private rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"HUGEINT"
+                                              
+  measure: total is amount.sum()
+}

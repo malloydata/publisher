@@ -13,7 +13,7 @@ import type * as Malloy from "@malloydata/malloy-interfaces";
  * A client builds those rows as
  * `run: <source> -> { where: <each dimension's code> = <its value>; select: * }`,
  * reading each dimension's code from `drill_expression.code` and whether a
- * level can be drilled at all from `drillable`. Malloy 0.0.436 gets three of
+ * level can be drilled at all from `drillable`. Malloy 0.0.438 gets three of
  * those wrong, and only the server still holds what it needs to fix them:
  *
  * - The root of a pipeline of more than one stage is marked `drillable`.
@@ -117,6 +117,18 @@ function drillCode(
    meta: NonNullable<ResultField["resultMetadata"]>,
 ): string | null | undefined {
    const { sourceField, sourceExpression, drillExpression } = meta;
+   // A field the served copy redefines over its stored column (a stored
+   // timeframe truncated again, a column an older build typed cast on read:
+   // `order_month is order_month__stored.month`) would name that internal
+   // column, which no live compile has; the field's own name filters the
+   // same rows in both.
+   if (
+      sourceExpression &&
+      sourceField &&
+      !sourceField.includes(".") &&
+      storedInternalName(sourceField).test(sourceExpression)
+   )
+      return sourceField;
    // A dotted source field is a field declared in a join. Its declaration
    // text names the join's fields, so its path is the code.
    if (sourceExpression)
@@ -134,4 +146,14 @@ function drillCode(
          drillExpression.truncation,
       ].join(".");
    return null;
+}
+
+/**
+ * The served copy's internal name for `field`'s stored column
+ * (`<field>__stored`, or `<field>__stored_<n>` past a collision), as the
+ * start of an expression, quoted or not.
+ */
+function storedInternalName(field: string): RegExp {
+   const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+   return new RegExp(`^\\(?\\s*\`?${escaped}__stored(_\\d+)?\\b`);
 }

@@ -88,6 +88,8 @@ One query per tile, and remember a chart renders only the **first** aggregate in
 
 A `.malloynb` (cells delimited by `>>>markdown` and `>>>malloy`) is a deprecated format, served read-only as a linear report. **Do not create one.** When maintaining one: its compile errors show only when cells run, so test queries in the model first; imports belong in a setup cell at the top, never inside a `run:` cell; and it reads `## autorun=false` and `## givens { … }` as file-level lines, where a `.malloy` report takes them inside its artifact tag.
 
+Each code cell runs its `run:` statement as query text on the notebook's path, over REST with `POST …/models/{path}/query` and in the `show_report` panel. MCP `execute_query` does not take a `.malloynb` path and answers that the model is not found, so to check a cell's query there, run it against the `model_path` that `get_context` returns, which is `index.malloy` when the package has one; a model file the surface does not publish answers not found. The `run:` runs in restricted mode: it may not call a `sql_*` function or read a table directly, such as `duckdb.table(…)`; put either in a source in a cell and run that source. A join written in the `run:` is the caller's join, so a gate on the joined source applies to it. On a package with an `index.malloy`, a source the cells declare is not queryable, even over a published source; declare it in a model file and export it from `index.malloy`.
+
 ### Converting a `.malloynb` to a `.malloy` report
 
 The builder cannot edit a `.malloynb` (`?edit` on one says so), so convert it to edit it. Write a new `.malloy` file beside it, check it loads, then delete the `.malloynb`.
@@ -122,18 +124,18 @@ query: by_carrier is flights -> {
 
 ## Common mistakes
 
-| Mistake                                                                    | Fix                                                                                             |
-| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| A tile list without `layout=linear`                                        | Read as a grid. Write `layout=linear`.                                                          |
-| A linear tag with no `tiles=[…]`                                           | The retired cell format: no report (`report-cells-removed`). List the tiles.                    |
-| `view_name { limit: 10 }`                                                  | Use `+`: `view_name + { limit: 10 }`                                                            |
-| Floating `##(markdown)` prose in a tiled report                            | Never shown (`notebook-markdown-block-unnamed`). Make it a named text tile and list it.         |
-| `## Heading` for a section title                                           | That line is model tags, not prose. Write the heading inside a `##\|(markdown) name` text tile. |
-| `##\| markdown` or `##\|markdown` (no parentheses)                         | Write `##\|(markdown) name`.                                                                    |
-| Text on the opener line after `##\|(markdown)`                             | Only the tile's name may follow it. Put the text on the next line.                              |
-| `run:` in a report that lists `tiles=[…]`                                  | Never shown. List `"source -> view"` in `tiles` (or a `query:` by name), delete the `run:`.     |
-| `tiles=[intro { kind=text }, orders -> headline]` (entry not quoted)       | Every `source -> view` entry is a quoted string. Unquoted, the tag does not parse.              |
-| A bare `intro` in `tiles` for a `##\|(markdown) intro` block               | A bare name is the query-tile form for a `query:`. Write `intro { kind=text }`.                 |
-| `colspan` or `break` on a linear report's tile entry                       | Ignored and reported (`notebook-tile-layout-ignored`). Remove them, or switch to `layout=grid`. |
-| `#(filter)` in any form                                                    | Deprecated. Declare a `given:` on the model's source instead.                                   |
-| Data-specific insights in a text tile                                      | Frame questions instead.                                                                        |
+| Mistake                                                              | Fix                                                                                             |
+| -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| A tile list without `layout=linear`                                  | Read as a grid. Write `layout=linear`.                                                          |
+| A linear tag with no `tiles=[…]`                                     | The retired cell format: no report (`report-cells-removed`). List the tiles.                    |
+| `view_name { limit: 10 }`                                            | Use `+`: `view_name + { limit: 10 }`                                                            |
+| Floating `##(markdown)` prose in a tiled report                      | Never shown (`notebook-markdown-block-unnamed`). Make it a named text tile and list it.         |
+| `## Heading` for a section title                                     | That line is model tags, not prose. Write the heading inside a `##\|(markdown) name` text tile. |
+| `##\| markdown` or `##\|markdown` (no parentheses)                   | Write `##\|(markdown) name`.                                                                    |
+| Text on the opener line after `##\|(markdown)`                       | Only the tile's name may follow it. Put the text on the next line.                              |
+| `run:` in a report that lists `tiles=[…]`                            | Never shown. List `"source -> view"` in `tiles` (or a `query:` by name), delete the `run:`.     |
+| `tiles=[intro { kind=text }, orders -> headline]` (entry not quoted) | Every `source -> view` entry is a quoted string. Unquoted, the tag does not parse.              |
+| A bare `intro` in `tiles` for a `##\|(markdown) intro` block         | A bare name is the query-tile form for a `query:`. Write `intro { kind=text }`.                 |
+| `colspan` or `break` on a linear report's tile entry                 | Ignored and reported (`notebook-tile-layout-ignored`). Remove them, or switch to `layout=grid`. |
+| `#(filter)` in any form                                              | Deprecated. Declare a `given:` on the model's source instead.                                   |
+| Data-specific insights in a text tile                                | Frame questions instead.                                                                        |

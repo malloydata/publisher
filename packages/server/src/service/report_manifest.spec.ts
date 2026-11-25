@@ -11,7 +11,6 @@ import {
    docCommentText,
    docCommentTitleAndDescription,
    filterPublisherOwnedRenderLogs,
-   matchesDocumentedReportName,
    lintReport,
    lintDrillTargets,
    lintGivenTags,
@@ -1872,30 +1871,6 @@ describe("service/report_manifest multi-line doc comment as a title", () => {
       // comment here is what pinned the duplicate: the first line was published
       // twice, as the heading and again under it.
       expect(m?.description).toBe("Updated nightly.");
-   });
-});
-
-describe("service/report_manifest name matches the documented pattern", () => {
-   // This predicate no longer gates anything. Curation still can withhold a
-   // dashboard; what this settles is that a NAME is never the reason, and a
-   // served one has its name percent-encoded into the published URL. An earlier
-   // version of this comment said "every dashboard is served", which the
-   // curation tests in this same suite falsify. What it decides is whether
-   // the name matches the pattern the API documents, which is what a client
-   // generated from the spec will accept, so a mismatch is advisory only.
-   it("reports a name outside the documented pattern", () => {
-      expect(
-         matchesDocumentedReportName(reportName("dashboards/v1.2.malloy")),
-      ).toBe(false);
-      expect(matchesDocumentedReportName("has space")).toBe(false);
-      expect(matchesDocumentedReportName("has/slash")).toBe(false);
-      expect(matchesDocumentedReportName("")).toBe(false);
-      expect(matchesDocumentedReportName("..")).toBe(false);
-   });
-
-   it("accepts the names the path parameter declares", () => {
-      expect(matchesDocumentedReportName("overview")).toBe(true);
-      expect(matchesDocumentedReportName("q3-2026_v2")).toBe(true);
    });
 });
 

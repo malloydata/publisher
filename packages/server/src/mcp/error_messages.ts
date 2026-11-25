@@ -7,6 +7,7 @@ import {
    InvalidQueryRequestError,
    logInternalFailure,
 } from "../errors";
+import { redactStorageUrls } from "../pg_helpers";
 import {
    isRestrictedByMessage,
    matchMalloyErrorText,
@@ -16,6 +17,8 @@ import {
 export interface ErrorDetails {
    message: string;
    suggestions: string[];
+   /** The `reason` the same error's REST body carries, for a client that branches on it. */
+   reason?: string;
 }
 
 /**
@@ -92,7 +95,10 @@ export function getInternalError(
          suggestions,
       };
    }
-   const errorMessage = error instanceof Error ? error.message : String(error);
+   // Driver text can quote a storage URL: never in an answer.
+   const errorMessage = redactStorageUrls(
+      error instanceof Error ? error.message : String(error),
+   );
    return {
       message: error ? `${baseMessage}: ${errorMessage}` : baseMessage,
       suggestions,
@@ -158,16 +164,19 @@ export function getMalloyErrorDetails(
          };
       }
 
-      baseMessage = `Error during ${operation} for resource '${modelIdentifier}': ${error.message}`;
+      // Driver text can quote a storage URL (bucket, organization and
+      // database paths): never in an answer.
+      baseMessage = `Error during ${operation} for resource '${modelIdentifier}': ${redactStorageUrls(error.message)}`;
 
       // What Publisher's own errors say they are, read as data; then what a
       // Malloy message says, read as text (malloy_error_text.ts).
       if (error instanceof AccessDeniedError && error.source !== undefined) {
-         // `#(authorize)` denial: the error names only the source (gate logic
-         // is never leaked), and the advice is about access, not syntax.
+         // A gate's denial (`reason: ACCESS_DENIED`): the error names only the
+         // source (gate logic is never leaked, nor which gate refused), and the
+         // advice is about access, not syntax.
          refined = true;
          suggestions = [
-            `Suggestion: Access to source '${error.source}' is restricted by an authorize gate. Supply the givens its authorize expression requires (e.g. a role/region given) and retry. This is an authorization denial, not a syntax error.`,
+            `Suggestion: Access to source '${error.source}' is restricted by a gate (#(authorize) or #(access_filter)). Supply the givens the gate reads (e.g. a role/region given; get_context lists them under the source's authorize and givens) and retry. This is an authorization denial, not a syntax error.`,
          ];
       } else if (error instanceof InvalidQueryRequestError) {
          refined = true;

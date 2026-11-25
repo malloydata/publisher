@@ -34,6 +34,7 @@ import type {
 import type { Tag } from "@malloydata/malloy-tag";
 import { ownModelNoteObjects } from "./annotations";
 import { referencedGivenNames } from "./authorize";
+import { queryGivenUsageIds } from "./governance/ir/prepared_query";
 import {
    dashboardDescriptionNotes,
    isMarkdownNote,
@@ -203,7 +204,7 @@ export interface ReportTileLayout {
 }
 
 export interface ServedReportManifest {
-   /** The filename basename: a display label, and the deprecated `…/dashboards/{name}` segment. Never the identity, which is `entryFile`. */
+   /** The filename basename: a display label. Never the identity, which is `entryFile`. */
    name: string;
    /** How the tiles are placed (`report.ts`, §2); a linear report lays out as one column. */
    layout: ReportLayout;
@@ -405,21 +406,6 @@ function themeIsPublisherOwned(result: unknown): boolean {
          ),
       )
    );
-}
-
-/**
- * Whether a name matches the naming convention `api-doc.yaml` describes in
- * prose. Advisory only: every tagged dashboard is served whatever its name
- * (the name is percent-encoded into its URL, and the spec deliberately has no
- * pattern because the name comes from a filename). Worth reporting because a
- * name outside it must be percent-encoded by a caller building the URL by hand.
- *
- * Not a gate: an empty name cannot occur (`listPackageFiles` ignores
- * dotfiles), a dot mid-name does not break routing, and the lookup is a `Map`,
- * so there is no traversal risk.
- */
-export function matchesDocumentedReportName(slug: string): boolean {
-   return /^[a-zA-Z0-9_-]+$/.test(slug);
 }
 
 /**
@@ -1461,6 +1447,7 @@ export function lintReport(
             !(property === "kind" && (kind === "text" || kind === "query")),
       );
       if (carried.length > 0) {
+         // malloy-text: markdown code formatting in a lint message, not Malloy
          const named = carried.map((property) => `\`${property}\``).join(", ");
          add(
             `\`${label}\` in \`tiles=[…]\` carries ${named}, which Publisher does not read: ` +
@@ -1473,6 +1460,7 @@ export function lintReport(
                     `(\`# label\`, \`# subtitle\`, \`# borderless\`).`),
          );
       }
+      // malloy-text: markdown code formatting in a lint message, not Malloy
       const tile = kind === "text" ? `text tile \`${label}\`` : `\`${label}\``;
       // A dimension the tile's view does not output never gets a click, so its
       // drill is inert. Checked only on a plain one-stage `source -> view`,
@@ -2179,6 +2167,7 @@ export async function compileTileGivens(
       };
       try {
          prepared = (await materializer
+            // malloy-text: a report tile's query, the author's Malloy, run as written
             .loadQuery(`run: ${tile}`)
             .getPreparedQuery()) as typeof prepared;
       } catch (error) {
@@ -2186,11 +2175,11 @@ export async function compileTileGivens(
          continue;
       }
       await onPrepared?.(tile, prepared);
-      const usage = prepared._query?.givenUsage;
+      const usage = queryGivenUsageIds(prepared);
       if (!usage) continue;
       const registry = prepared._modelDef?.givens ?? fallbackRegistry ?? {};
       const reads = usage
-         .map((given) => registry[given.id]?.name)
+         .map((id) => registry[id]?.name)
          .filter((name): name is string => name !== undefined);
       const sourceName = structRefSourceName(prepared._query?.structRef);
       const gateReads = new Set<string>();

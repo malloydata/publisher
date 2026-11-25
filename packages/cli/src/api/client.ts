@@ -12,7 +12,6 @@ import {
   MaterializationActionActionEnum,
   MaterializationsApi,
   ModelsApi,
-  NotebooksApi,
   PackageMaterializationConfig,
   PackageScopeEnum,
   PackagesApi,
@@ -24,7 +23,6 @@ export class PublisherClient {
   private connectionsApi: ConnectionsApi;
   private materializationsApi: MaterializationsApi;
   private modelsApi: ModelsApi;
-  private notebooksApi: NotebooksApi;
   private databasesApi: DatabasesApi;
   private baseURL: string;
 
@@ -40,7 +38,6 @@ export class PublisherClient {
     this.connectionsApi = new ConnectionsApi(config);
     this.materializationsApi = new MaterializationsApi(config);
     this.modelsApi = new ModelsApi(config);
-    this.notebooksApi = new NotebooksApi(config);
     this.databasesApi = new DatabasesApi(config);
   }
 
@@ -336,14 +333,12 @@ export class PublisherClient {
     environmentName: string,
     packageName: string,
     materializationId: string,
-    dropTables?: boolean,
   ): Promise<void> {
     try {
       await this.materializationsApi.deleteMaterialization(
         environmentName,
         packageName,
         materializationId,
-        dropTables,
       );
     } catch (error) {
       throw this.handleError(error as AxiosError);
@@ -383,39 +378,6 @@ export class PublisherClient {
     }
   }
 
-  // Notebooks (read-only)
-  async listNotebooks(
-    environmentName: string,
-    packageName: string,
-  ): Promise<any[]> {
-    try {
-      const response = await this.notebooksApi.listNotebooks(
-        environmentName,
-        packageName,
-      );
-      return response.data;
-    } catch (error) {
-      throw this.handleError(error as AxiosError);
-    }
-  }
-
-  async getNotebook(
-    environmentName: string,
-    packageName: string,
-    path: string,
-  ): Promise<any> {
-    try {
-      const response = await this.notebooksApi.getNotebook(
-        environmentName,
-        packageName,
-        path,
-      );
-      return response.data;
-    } catch (error) {
-      throw this.handleError(error as AxiosError);
-    }
-  }
-
   // Databases (read-only)
   async listDatabases(
     environmentName: string,
@@ -435,9 +397,11 @@ export class PublisherClient {
   private handleError(error: AxiosError): Error {
     logAxiosError(error);
     if (error.response) {
-      const message =
-        (error.response.data as any)?.message || error.response.statusText;
-      return new Error(
+      const data = error.response.data as any;
+      const message = data?.message || error.response.statusText;
+      return new PublisherApiError(
+        error.response.status,
+        typeof data?.reason === "string" ? data.reason : undefined,
         `Publisher API Error (${error.response.status}): ${message}`,
       );
     } else if (error.request) {
@@ -447,5 +411,21 @@ export class PublisherClient {
     } else {
       return new Error(`Request error: ${error.message}`);
     }
+  }
+}
+
+/**
+ * An error the server answered, with its HTTP status and, when the body
+ * carries one, its machine-readable `reason` (e.g. `PACKAGE_IS_VERSIONED`), so
+ * a command can add advice to a refusal without matching on its message.
+ */
+export class PublisherApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly reason: string | undefined,
+    message: string,
+  ) {
+    super(message);
+    this.name = "PublisherApiError";
   }
 }

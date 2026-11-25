@@ -19,8 +19,8 @@
 //   ## Model [<pkg>/]<path.malloy>      + a ```malloy block                  -> write model
 //   ## Publish [<pkg>] [(forceRefresh, sources=a[+b])]  [body: `expect binding: src -> conn`]
 //   ## Delete [<pkg>]                    -> unload + DELETE the package from serving
-//   ## Reclaim [<pkg>]                   -> DELETE the latest materialization with dropTables
-//                                        (destination-aware physical-table drop / GC)
+//   ## Forget [<pkg>]                    -> DELETE the latest successful materialization's
+//                                        record (record-only: its tables stay)
 //   ## Destination tables|files|drop <table>|cleanup [(dest=lake, schema=main, snapshots=7d, files=1d)]
 //                                        -> the storage-destination table routes; `tables` and
 //                                        `files` take an Expect: table (`name` / `table`),
@@ -31,6 +31,9 @@
 //                                        redaction check can name a secret only the harness knows]
 //   ## Compile <label> (pkg=P[, refused]) + ```malloy (appended source) + `cites:` -> /compile
 //   ## Warns [<pkg>]                     [body: `cites: <substring>`]  -> package warning
+//   ## Preview [<pkg>]                   + `- <source>[.<view>]: serves|live|awaiting_build` lines ->
+//                                        POST /packages?dryRun=true on the package's own tree,
+//                                        asserting each source's serve verdict, or one view's
 //   ## Republish [refused] [<pkg>]       [body: `cites: <substring>`]  -> POST /packages (the
 //                                        author-in-the-loop publish gate); `refused` asserts a 4xx
 //   ## Bind [<pkg>] [(empty|clear|bad|from=<publisher>)]  -> orchestrator manifestLocation PATCH
@@ -42,7 +45,7 @@
 //                                        `(failed)` = instructed but expected to FAIL, asserted
 //                                        against the manifest's `failures`. An unmarked source is
 //                                        asserted built AND absent from `failures`.
-//   ## Build refusals [(pkg=P)]          + GFM table `source [| tier | reason]` -> assert the
+//   ## Build refusals [(pkg=P)]          + GFM table `source [| tier | reason | origin]` -> assert the
 //                                        compiled build plan's REFUSED sources (examined and
 //                                        refused, as opposed to never present). An EMPTY table
 //                                        asserts nothing was refused. Runs nothing.
@@ -145,7 +148,6 @@ type Step =
         pkg: string;
         mode: PersistStorageMode;
         refused: boolean;
-        strict: boolean;
         sources: {
            src: string;
            name: string;
@@ -170,7 +172,7 @@ type Step =
         mode: PersistStorageMode;
      }
    | {
-        kind: "reclaim";
+        kind: "forget";
         pub?: string;
         env: string;
         pkg: string;
@@ -190,6 +192,11 @@ type Step =
         deleted?: number;
         /** `tables` only: an expected non-200 status, in place of an `Expect:` table. */
         status?: number;
+        /**
+         * `tables` only: how long the listing may take to settle. Re-read until
+         * it matches `expect` or the time is up; the last listing is compared.
+         */
+        withinMs?: number;
         expect?: Table;
      }
    | {
@@ -313,6 +320,15 @@ type Step =
         extraEnv?: Record<string, string>;
      }
    | {
+        /** `## Preview <pkg>`: a dry-run publish and the verdicts it predicts. */
+        kind: "preview";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+        expects: { source: string; view?: string; verdict: string }[];
+     }
+   | {
         kind: "republish";
         pub?: string;
         env: string;
@@ -402,13 +418,13 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    },
    await: { attrs: ["label"] },
    delete: {},
-   reclaim: {},
+   forget: {},
    destination: {
-      attrs: ["dest", "schema", "snapshots", "files"],
+      attrs: ["dest", "schema", "snapshots", "files", "within"],
       keys: ["deleted", "status"],
    },
    build: {
-      attrs: ["orchestrated", "strict", "pkg", "version"],
+      attrs: ["orchestrated", "pkg", "version"],
       // `reference:` is an orchestrated-build body line, not an assertion key.
       keys: ["cites", "excludes", "reference"],
    },
@@ -732,9 +748,9 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             });
             break;
          }
-         case "reclaim": {
+         case "forget": {
             steps.push({
-               kind: "reclaim",
+               kind: "forget",
                pub,
                env,
                pkg: arg.trim() || defaultPackage,
@@ -754,6 +770,14 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                schema: (attrs.schema as string) || "main",
             };
             const status = firstKey(sec.body, "status");
+            if (attrs.within !== undefined && action !== "tables")
+               throw new Error(
+                  `## Destination ${action}: (within=) applies only to ## Destination tables`,
+               );
+            if (attrs.within !== undefined && status !== undefined)
+               throw new Error(
+                  `## Destination tables: (within=) waits for an Expect: table, not a status:`,
+               );
             if (status !== undefined && action !== "tables")
                throw new Error(
                   `## Destination ${action}: status: applies only to ## Destination tables`,
@@ -774,6 +798,9 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                steps.push({
                   ...base,
                   action,
+                  ...(attrs.within !== undefined
+                     ? { withinMs: parseWithin(attrs.within) }
+                     : {}),
                   expect: requireExpectTable(sec.body, sec.header),
                });
             } else if (action === "drop") {
@@ -868,7 +895,6 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   pkg,
                   mode,
                   refused,
-                  strict: !!attrs.strict,
                   sources,
                   references,
                   cites: firstKey(sec.body, "cites"),
@@ -1074,6 +1100,42 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                pkg: arg.trim() || defaultPackage,
                mode,
                cites: firstKey(sec.body, "cites") ?? "",
+            });
+            break;
+         }
+         case "preview": {
+            // A dry-run publish of the package's own tree, asserting the serve
+            // verdict it predicts for each source, or for one source's view.
+            const expects: {
+               source: string;
+               view?: string;
+               verdict: string;
+            }[] = [];
+            for (const line of sec.body) {
+               const m =
+                  /^\s*-\s*([A-Za-z_][\w]*)(?:\.([A-Za-z_][\w]*))?\s*:\s*(serves|live|awaiting_build)\s*$/.exec(
+                     line,
+                  );
+               if (m) {
+                  expects.push({
+                     source: m[1],
+                     ...(m[2] ? { view: m[2] } : {}),
+                     verdict: m[3],
+                  });
+               }
+            }
+            if (expects.length === 0) {
+               throw new Error(
+                  `## Preview ${arg}: expected at least one \`- <source>[.<view>]: serves|live|awaiting_build\` line`,
+               );
+            }
+            steps.push({
+               kind: "preview",
+               pub,
+               env,
+               pkg: arg.trim() || defaultPackage,
+               mode,
+               expects,
             });
             break;
          }
@@ -1364,6 +1426,18 @@ function parseAge(raw: string | boolean | undefined, what: string): number {
       m[2] as "s" | "m" | "h" | "d"
    ];
    return Number(m[1]) * unit;
+}
+
+/** `(within=<n>s)` -> milliseconds: a bound of a minute at most, so a listing
+ * that never settles fails in seconds rather than hanging the run. */
+function parseWithin(raw: string | boolean | undefined): number {
+   const m = typeof raw === "string" ? raw.match(/^(\d+)s$/) : null;
+   const ms = m ? Number(m[1]) * 1e3 : NaN;
+   if (!(ms > 0 && ms <= 60_000))
+      throw new Error(
+         `## Destination tables: (within=<n>s) takes 1s to 60s, got ${String(raw)}`,
+      );
+   return ms;
 }
 
 function splitConnTable(arg: string): [string, string] {
@@ -1885,28 +1959,39 @@ function compareRows(
    expect: Table,
    actual: Record<string, unknown>[],
 ): void {
+   const mismatch = rowsMismatch(expect, actual);
+   if (mismatch) {
+      assert.fail(`${label}: ${mismatch.check}`, mismatch.detail);
+      return;
+   }
+   assert.ok(`${label}: ${expect.rows.length} row(s) match`, true);
+}
+
+/** The first way `actual` differs from `expect`, or undefined when it matches. */
+function rowsMismatch(
+   expect: Table,
+   actual: Record<string, unknown>[],
+): { check: string; detail: string } | undefined {
    const cols = expect.cols.map((c) => c.name);
    if (expect.rows.length !== actual.length) {
-      assert.fail(
-         `${label}: row count`,
-         `expected ${expect.rows.length} rows, got ${actual.length}: ${JSON.stringify(actual).slice(0, 200)}`,
-      );
-      return;
+      return {
+         check: "row count",
+         detail: `expected ${expect.rows.length} rows, got ${actual.length}: ${JSON.stringify(actual).slice(0, 200)}`,
+      };
    }
    for (let r = 0; r < expect.rows.length; r++) {
       for (let c = 0; c < cols.length; c++) {
          const exp = normalizeCell(expect.rows[r][c]);
          const act = normalizeCell(actual[r]?.[cols[c]]);
          if (JSON.stringify(exp) !== JSON.stringify(act)) {
-            assert.fail(
-               `${label}: row ${r + 1} col ${cols[c]}`,
-               `expected ${JSON.stringify(exp)}, got ${JSON.stringify(act)}`,
-            );
-            return;
+            return {
+               check: `row ${r + 1} col ${cols[c]}`,
+               detail: `expected ${JSON.stringify(exp)}, got ${JSON.stringify(act)}`,
+            };
          }
       }
    }
-   assert.ok(`${label}: ${expect.rows.length} row(s) match`, true);
+   return undefined;
 }
 
 // ─────────────────────────── build helpers ───────────────────────────
@@ -1925,7 +2010,6 @@ interface OrchestratedBody {
          sourceEntityId: string;
          physicalTableName: string;
       }[];
-      strictUpstreams: boolean;
    };
 }
 
@@ -1940,7 +2024,6 @@ async function buildOrchestratedBody(
    rest: Rest,
    step: {
       pkg: string;
-      strict: boolean;
       sources: {
          src: string;
          name: string;
@@ -2003,7 +2086,6 @@ async function buildOrchestratedBody(
          buildInstructions: {
             sources,
             ...(referenceManifest.length ? { referenceManifest } : {}),
-            strictUpstreams: step.strict,
          },
       },
       failedEids,
@@ -2527,7 +2609,12 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   buildPlan?: {
                      refusedSources?: Record<
                         string,
-                        { name?: string; tier?: string; reason?: string }
+                        {
+                           name?: string;
+                           tier?: string;
+                           reason?: string;
+                           origin?: string;
+                        }
                      >;
                   };
                };
@@ -2542,8 +2629,8 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                );
                // One row per DISTINCT source name, sorted both sides so the
                // comparison is order-independent — plan iteration order is not a
-               // contract. `tier` and `reason` are opt-in columns, the same way
-               // `## Build targets` treats `entity`.
+               // contract. `tier`, `reason` and `origin` are opt-in columns, the
+               // same way `## Build targets` treats `entity`.
                const actual = [
                   ...new Map(
                      refused
@@ -2554,6 +2641,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                               source: r.name!,
                               tier: r.tier ?? "",
                               reason: r.reason ?? "",
+                              origin: r.origin ?? "",
                            },
                         ]),
                   ).values(),
@@ -2837,11 +2925,12 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                break;
             }
             case "manifest": {
-               // Author the manifest a host would send, and bind it. The schema is
-               // copied from whichever CAPTURED entry already describes that
-               // physical table — a real build has to have produced it, which is
-               // what keeps the forged entry honest about the table's shape while
-               // being dishonest about which source may be served from it.
+               // Author the manifest a host would send, and bind it. The schema and
+               // column contract are copied from whichever CAPTURED entry already
+               // describes that physical table — a real build has to have produced
+               // them, which is what keeps the forged entry honest about the table's
+               // shape while being dishonest about which source may be served from
+               // it. (A bound entry without a contract is never served from.)
                const rest = await serverFor(step.pub, step.env);
                const captured = await rest.latestManifestEntries(step.pkg);
                const ids = await rest.sourceEntityIds(step.pkg);
@@ -2868,7 +2957,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      (c) =>
                         (c as { physicalTableName?: string })
                            .physicalTableName === e.table,
-                  ) as { schema?: unknown } | undefined;
+                  ) as { schema?: unknown; contract?: unknown } | undefined;
                   if (!schemaOf?.schema) {
                      throw new Error(
                         `## Manifest: no captured schema for table "${e.table}" — ` +
@@ -2881,6 +2970,9 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      physicalTableName: e.table,
                      storageDestinationName: e.dest,
                      schema: schemaOf.schema,
+                     ...(schemaOf.contract
+                        ? { contract: schemaOf.contract }
+                        : {}),
                      ...(e.fallback ? { freshnessFallback: e.fallback } : {}),
                      ...(e.asof ? { dataAsOf: e.asof } : {}),
                      ...(e.fresh !== undefined
@@ -2900,7 +2992,9 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                if (step.variant === "clear") {
                   // manifestLocation:null → drop the orchestrator binding; the publisher
                   // reverts to its own local-store rebind (from the latest build).
-                  await rest.patchPackage(step.pkg, { manifestLocation: null });
+                  // A versioned package clears through its version's manifest
+                  // route (see RestClient.clearManifest).
+                  await rest.clearManifest(step.pkg);
                } else if (step.variant === "bad") {
                   // Bind an unreachable manifestLocation (a file:// URI that does
                   // not exist). The publisher must fetch-fail and fall back to
@@ -2974,16 +3068,26 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      body,
                   );
                } else if (step.action === "tables") {
-                  const names = await rest.listDestinationTables(
-                     step.dest,
-                     step.schema,
-                  );
-                  compareRows(
-                     assert,
-                     label,
-                     step.expect!,
-                     names.map((name) => ({ name })),
-                  );
+                  const list = async () =>
+                     (
+                        await rest.listDestinationTables(step.dest, step.schema)
+                     ).map((name) => ({ name }));
+                  let names = await list();
+                  // A bounded wait for work the server finishes just after it
+                  // reports a run terminal: re-read until the listing matches
+                  // or the time is up, then compare the last one, so a listing
+                  // that never settles still fails with what it held.
+                  if (step.withinMs !== undefined) {
+                     const deadline = Date.now() + step.withinMs;
+                     while (
+                        rowsMismatch(step.expect!, names) &&
+                        Date.now() < deadline
+                     ) {
+                        await sleep(100);
+                        names = await list();
+                     }
+                  }
+                  compareRows(assert, label, step.expect!, names);
                } else if (step.action === "drop") {
                   const status = await rest.dropDestinationTable(
                      step.dest,
@@ -3016,14 +3120,14 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                }
                break;
             }
-            case "reclaim": {
-               // Reclaim the latest successful materialization: DELETE it with
-               // dropTables (the destination-aware read-write drop of the physical
-               // table). A following `## Restart` re-establishes serving from the
-               // store — now empty for this source — so it reverts to live.
+            case "forget": {
+               // Delete the latest successful materialization's record
+               // (record-only: its tables stay). The post-delete rebind, or a
+               // following `## Restart`, re-establishes serving from the store,
+               // now empty for this source, so it reverts to live.
                const rest = await serverFor(step.pub, step.env);
-               const id = await rest.reclaimLatest(step.pkg);
-               assert.ok(`reclaim ${step.pkg}`, !!id, `reclaimed ${id}`);
+               const id = await rest.forgetLatest(step.pkg);
+               assert.ok(`forget ${step.pkg}`, !!id, `deleted ${id}`);
                break;
             }
             case "delete": {
@@ -3056,6 +3160,50 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                activeRest = await ctx.usePublisher(activeName, activeMode, {
                   extraEnv: step.extraEnv,
                });
+               break;
+            }
+            case "preview": {
+               // POST /packages?dryRun=true on the package's own tree: what a
+               // publish would build and serve, with nothing installed.
+               const rest = await serverFor(step.pub, step.env);
+               const location = ctx.packageDir(step.pkg, step.env);
+               const res = await rest.dryRunFrom(step.pkg, location);
+               assert.ok(
+                  `preview ${step.pkg}: answered`,
+                  res.ok,
+                  res.ok
+                     ? undefined
+                     : `expected the dry run to answer 200, got ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}`,
+               );
+               const verdicts = (res.body.serveVerdicts ?? []) as {
+                  sourceName?: string;
+                  verdict?: string;
+                  reason?: string;
+                  views?: { view: string; verdict: string; detail?: string }[];
+               }[];
+               for (const want of step.expects) {
+                  const source = verdicts.find(
+                     (v) => v.sourceName === want.source,
+                  );
+                  if (want.view === undefined) {
+                     assert.ok(
+                        `preview ${want.source}: ${want.verdict}`,
+                        source?.verdict === want.verdict,
+                        source?.verdict === want.verdict
+                           ? undefined
+                           : `got ${source ? `${source.verdict}${source.reason ? ` (${source.reason})` : ""}` : "no verdict"}`,
+                     );
+                     continue;
+                  }
+                  const view = source?.views?.find((v) => v.view === want.view);
+                  assert.ok(
+                     `preview ${want.source}.${want.view}: ${want.verdict}`,
+                     view?.verdict === want.verdict,
+                     view?.verdict === want.verdict
+                        ? undefined
+                        : `got ${view ? `${view.verdict}${view.detail ? `: ${view.detail}` : ""}` : "no view verdict"}`,
+                  );
+               }
                break;
             }
             case "republish": {

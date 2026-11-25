@@ -105,13 +105,13 @@ describe("PERSIST_STORAGE_MODE", () => {
    });
 });
 
-// The transition flag: off unless set to on, so a server that sets nothing
-// publishes as it did before versions.
+// The transition flag: on unless set to off, so a server that sets nothing
+// publishes versions.
 describe("PUBLISHER_PACKAGE_VERSIONING", () => {
-   it("is off when unset or blank", () => {
-      withSettings({}, () => expect(isVersioningEnabled()).toBe(false));
+   it("is on when unset or blank", () => {
+      withSettings({}, () => expect(isVersioningEnabled()).toBe(true));
       withSettings({ env: { PUBLISHER_PACKAGE_VERSIONING: " " } }, () =>
-         expect(isVersioningEnabled()).toBe(false),
+         expect(isVersioningEnabled()).toBe(true),
       );
    });
 

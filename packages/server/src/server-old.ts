@@ -21,7 +21,6 @@ import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
 import { DatabaseController } from "./controller/database.controller";
 import { MaterializationController } from "./controller/materialization.controller";
-import { LegacyReportController } from "./controller/legacy_report.controller";
 import { ModelController } from "./controller/model.controller";
 import {
    PackageController,
@@ -31,7 +30,6 @@ import { QueryController } from "./controller/query.controller";
 import { BadRequestError } from "./errors";
 import { logger, redactSensitive } from "./logger";
 import { accessIdentityOf } from "./service/access_record";
-import { notebookCellHandlers } from "./routes/deprecated";
 import {
    apiRoute,
    recordGateRefusal,
@@ -44,6 +42,7 @@ import {
    booleanParam,
    queryVersionRefOf,
    assertNoCollectionReload,
+   assertNoDropTables,
    versionRefOf,
 } from "./route_params";
 import { processStorageDestinationsOrThrow } from "./service/connection_config";
@@ -98,7 +97,6 @@ export function registerLegacyRoutes(
       materializationController,
       querySlots,
    } = controllers;
-   const legacyReportController = new LegacyReportController(environmentStore);
    // ── projects (== environments) ──────────────────────────────────────────
    app.get(
       `${LEGACY_API_PREFIX}/projects`,
@@ -444,41 +442,6 @@ export function registerLegacyRoutes(
       }),
    );
 
-   // ── notebooks ───────────────────────────────────────────────────────────
-   app.get(
-      `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/notebooks`,
-      apiRoute(async (req) => {
-         return legacyReportController.listNotebooks(
-            req.params.projectName,
-            req.params.packageName,
-            versionRefOf(req),
-         );
-      }),
-   );
-
-   // Before the general getNotebook wildcard, so it does not swallow `/cells/{i}`.
-   app.get(
-      `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/notebooks/*/cells/:cellIndex`,
-      ...notebookCellHandlers(legacyReportController, {
-         environmentParam: "projectName",
-         legacy: true,
-         querySlots,
-      }),
-   );
-
-   app.get(
-      `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/notebooks/*?`,
-      apiRoute(async (req) => {
-         const notebookPath = wildcardParam(req);
-         return legacyReportController.getNotebook(
-            req.params.projectName,
-            req.params.packageName,
-            notebookPath,
-            versionRefOf(req),
-         );
-      }),
-   );
-
    // ── databases ───────────────────────────────────────────────────────────
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/databases`,
@@ -559,12 +522,11 @@ export function registerLegacyRoutes(
    app.delete(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
       apiRoute(async (req, res) => {
-         const dropTables = booleanParam(req, "dropTables");
+         assertNoDropTables(req);
          await materializationController.deleteMaterialization(
             req.params.projectName,
             req.params.packageName,
             req.params.materializationId,
-            { dropTables },
          );
          res.status(204).send();
       }),

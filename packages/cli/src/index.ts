@@ -22,7 +22,6 @@ import * as connectionCommands from "./commands/connections.js";
 import * as materializationCommands from "./commands/materializations.js";
 import * as scheduleCommands from "./commands/schedule.js";
 import * as modelCommands from "./commands/models.js";
-import * as notebookCommands from "./commands/notebooks.js";
 import * as databaseCommands from "./commands/databases.js";
 
 const program = new Command();
@@ -69,7 +68,7 @@ function parseOptionalCount(
 program
   .command("list <resource>")
   .description(
-    "List resources (environment, package, connection, materialization, model, notebook, database)",
+    "List resources (environment, package, connection, materialization, model, database)",
   )
   .option(
     "--environment <n>",
@@ -77,7 +76,7 @@ program
   )
   .option(
     "--package <n>",
-    "Package name (required for model, notebook, database and materialization)",
+    "Package name (required for model, database and materialization)",
   )
   .option("--limit <n>", "Max materializations to return")
   .option("--offset <n>", "Materializations to skip")
@@ -132,17 +131,6 @@ program
             options.package,
           );
           break;
-        case "notebook":
-          if (!options.environment || !options.package) {
-            logError("--environment and --package are required");
-            process.exit(1);
-          }
-          await notebookCommands.listNotebooks(
-            client,
-            options.environment,
-            options.package,
-          );
-          break;
         case "database":
           if (!options.environment || !options.package) {
             logError("--environment and --package are required");
@@ -157,7 +145,7 @@ program
         default:
           logError(`Unknown resource: ${resource}`);
           logOutput(
-            "Valid types: environment, package, connection, materialization, model, notebook, database",
+            "Valid types: environment, package, connection, materialization, model, database",
           );
           process.exit(1);
       }
@@ -230,22 +218,10 @@ program
             name,
           );
           break;
-        case "notebook":
-          if (!options.environment || !options.package) {
-            logError("--environment and --package are required");
-            process.exit(1);
-          }
-          await notebookCommands.getNotebook(
-            client,
-            options.environment,
-            options.package,
-            name,
-          );
-          break;
         default:
           logError(`Unknown resource: ${resource}`);
           logOutput(
-            "Valid types: environment, package, connection, materialization, model, notebook",
+            "Valid types: environment, package, connection, materialization, model",
           );
           process.exit(1);
       }
@@ -374,10 +350,6 @@ program
     "Environment name (required for package/connection)",
   )
   .option("--package <n>", "Package name")
-  .option(
-    "--drop-tables",
-    "Also drop the materialized tables (materialization only)",
-  )
   .action(async (resource, name, options) => {
     try {
       const client = getClient();
@@ -418,7 +390,6 @@ program
             options.environment,
             options.package,
             name,
-            options.dropTables === true,
           );
           break;
         default:
@@ -451,7 +422,10 @@ program
     "--reseed",
     "Rebuild incremental sources from scratch, discarding their covered_through boundary (--force-refresh does NOT do this)",
   )
-  .option("--wait", "Poll until the run settles (build complete or failed)")
+  .option(
+    "--wait",
+    "Poll until the run settles (built and served, built but not served (exit 2), or failed)",
+  )
   .option(
     "--timeout <seconds>",
     "With --wait, seconds to wait before giving up (default 120)",
@@ -468,7 +442,7 @@ program
         options.pollInterval,
         "--poll-interval",
       );
-      await materializationCommands.materialize(
+      process.exitCode = await materializationCommands.materialize(
         client,
         options.environment,
         options.package,
@@ -533,7 +507,8 @@ schedule
 schedule
   .command("set <cron>")
   .description(
-    'Set the schedule (5-field UNIX cron in UTC, e.g. "0 6 * * *"); also sets scope: version',
+    'Set the schedule (5-field UNIX cron in UTC, e.g. "0 6 * * *"); also sets scope: version. ' +
+      "A published version refuses it (409): set materialization.schedule in its publisher.json and publish a new version",
   )
   .requiredOption("--environment <n>", "Environment name")
   .requiredOption("--package <n>", "Package name")
@@ -553,7 +528,10 @@ schedule
 
 schedule
   .command("clear")
-  .description("Clear the schedule (revert to publish / on-demand only)")
+  .description(
+    "Clear the schedule (revert to publish / on-demand only). " +
+      "A published version refuses it (409): remove materialization.schedule from its publisher.json and publish a new version",
+  )
   .requiredOption("--environment <n>", "Environment name")
   .requiredOption("--package <n>", "Package name")
   .action(async (options) => {

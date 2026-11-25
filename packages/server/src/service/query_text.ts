@@ -23,6 +23,19 @@
 
 import { ParseUtil } from "@malloydata/malloy-tag";
 import type { LogMessage } from "@malloydata/malloy";
+import {
+   isNameCode,
+   isSpaceCode,
+   statementAnnotationsFrom,
+   StringScan,
+   stripMalloyCommentsAndLiterals,
+   unitsAt,
+} from "./malloy_lexer_core";
+
+export {
+   closesBlock,
+   stripMalloyCommentsAndLiterals,
+} from "./malloy_lexer_core";
 
 /**
  * The base recorded for `NAME is …` when what follows cannot be read, so the
@@ -80,6 +93,328 @@ export function extractRunTargetSourceNames(query?: string): string[] {
    return [];
 }
 
+/** The words that open a top-level statement when a `:` follows them. */
+const COLON_STATEMENTS = ["run", "source", "query", "given", "sql", "type"];
+
+/**
+ * The last top-level `run:` statement of `text`, as written, up to the next
+ * top-level statement or `;`, with the `#` render tags written above it, or
+ * undefined when there is none. The tags are the `#` lines and `#|` … `|#`
+ * blocks between the statement before it and the `run:`, with any comment
+ * among them; a `##` line or `##|` block ends them, being the notebook's own.
+ *
+ * The reports read serves it as a `.malloynb` code cell's `runQuery`, which
+ * the SDK's `Report` sends as `query` unchanged, and the cell's `queryInfo`
+ * screen checks the same text.
+ */
+export function lastRunStatementText(text: string): string | undefined {
+   const tokens = tokenize(stripMalloyCommentsAndLiterals(text));
+   const colonStatement = (k: number, words: readonly string[]): boolean =>
+      words.some((word) => isWord(tokens, k, word)) &&
+      textIs(tokens, k + 1, ":");
+   let depth = 0;
+   let open = -1;
+   let last = -1;
+   let found: [number, number] | undefined;
+   for (let k = 0; k < tokens.count; k++) {
+      const opens =
+         depth === 0 &&
+         (textIs(tokens, k, ";") ||
+            isWord(tokens, k, "import") ||
+            isWord(tokens, k, "export") ||
+            colonStatement(k, COLON_STATEMENTS));
+      if (opens) {
+         if (open >= 0) found = [open, last];
+         open = colonStatement(k, ["run"]) ? k : -1;
+         last = k + 1;
+         if (open >= 0) k++;
+         continue;
+      }
+      last = k;
+      if (tokens.kind[k] !== PUNCT) continue;
+      const code = tokens.source.charCodeAt(tokens.start[k]);
+      if (code === 40 || code === 91 || code === 123) depth++;
+      else if (code === 41 || code === 93 || code === 125)
+         depth = Math.max(0, depth - 1);
+   }
+   if (open >= 0) found = [open, last];
+   if (!found) return undefined;
+   const [run, end] = found;
+   const from = statementAnnotationsFrom(
+      text,
+      run > 0 ? rawEnd(tokens, run - 1) : 0,
+      tokens.start[run],
+   );
+   return text.slice(from, rawEnd(tokens, end));
+}
+
+/** Where token `k` ends in the text: past a backtick name's closing backtick. */
+function rawEnd(tokens: Tokens, k: number): number {
+   return tokens.end[k] + (tokens.kind[k] === QUOTED ? 1 : 0);
+}
+
+/**
+ * A query that starts from a named view, read from its text: `run: ops ->
+ * by_carrier`, refined (`ops -> by_carrier + { limit: 3 }`), or with later
+ * stages (`ops -> by_carrier -> { … }`). The names are as written; whether
+ * `source` is a source and `view` one of its views is the model's to say.
+ */
+export interface RunViewCall {
+   source: string;
+   view: string;
+   /** A `+ { … }` refinement follows the view. */
+   refined: boolean;
+   /** How many `-> …` stages follow the view's own. */
+   laterStages: number;
+   /**
+    * Every name the text spells outside the call's head, backticks removed
+    * (a preamble's, a refinement's, a later stage's).
+    */
+   otherNames: ReadonlySet<string>;
+}
+
+/**
+ * Every name the caller's text spells outside the call's own head (the
+ * source and view of `src -> v`, or the query of `run: q`), backticks
+ * removed: a preamble statement's, a refinement's and a later stage's. A
+ * stored result's variant redeclares the run target's name over the stored
+ * result, so the leg reads this to decline a text that names it again (a
+ * join back to the source, a preamble source built over it).
+ */
+function namesOutside(
+   tokens: Tokens,
+   headFrom: number,
+   headTo: number,
+): ReadonlySet<string> {
+   const names = new Set<string>();
+   for (let k = 0; k < tokens.count; k++) {
+      if (k >= headFrom && k <= headTo) continue;
+      if (isName(tokens, k)) names.add(textOf(tokens, k));
+   }
+   return names;
+}
+
+/**
+ * The view the LAST run statement starts from (Malloy runs the last), or
+ * undefined when its first stage is not a bare view name: a hand-written
+ * stage (`-> { … }`), a source with arguments or a refinement of its own
+ * (`ops extend { … } -> …`), or anything this reader does not follow.
+ *
+ * An exact call (`ops -> by_carrier`, nothing after it) is also recognized
+ * from the compiled result schema (`resultExplore.name`); this reader is the
+ * half the schema cannot give, a query that only starts from the view
+ * (materialization v2 plan, Ownership, P14). Strips its own input.
+ */
+export function extractRunViewCall(query?: string): RunViewCall | undefined {
+   if (!query) return undefined;
+   const tokens = tokenize(stripMalloyCommentsAndLiterals(query));
+   let start = -1;
+   for (let k = 0; k + 1 < tokens.count; k++) {
+      if (isWord(tokens, k, "run") && textIs(tokens, k + 1, ":")) start = k + 2;
+   }
+   if (start < 0) {
+      // The bare form, as extractRunTargetSourceNames reads it.
+      for (let k = 0; k + 2 < tokens.count; k++) {
+         if (
+            isName(tokens, k) &&
+            arrowAt(tokens, k + 1) &&
+            opensLine(tokens, k)
+         ) {
+            start = k;
+            break;
+         }
+      }
+   }
+   if (start < 0 || !isName(tokens, start) || !arrowAt(tokens, start + 1)) {
+      return undefined;
+   }
+   const viewAt = start + 3;
+   if (!isName(tokens, viewAt)) return undefined;
+   let k = viewAt + 1;
+   let refined = false;
+   if (textIs(tokens, k, "+") && tokens.kind[k] === PUNCT) {
+      if (!textIs(tokens, k + 1, "{") || tokens.partner[k + 1] < 0) {
+         return undefined;
+      }
+      refined = true;
+      k = tokens.partner[k + 1] + 1;
+   }
+   let laterStages = 0;
+   while (arrowAt(tokens, k)) {
+      const stage = k + 2;
+      if (textIs(tokens, stage, "{") && tokens.partner[stage] >= 0) {
+         k = tokens.partner[stage] + 1;
+      } else if (isName(tokens, stage)) {
+         k = stage + 1;
+      } else {
+         return undefined;
+      }
+      laterStages++;
+   }
+   // The statement must end here: the next statement, or the text's end.
+   if (k < tokens.count && !(isName(tokens, k) && textIs(tokens, k + 1, ":"))) {
+      return undefined;
+   }
+   return {
+      source: textOf(tokens, start),
+      view: textOf(tokens, viewAt),
+      refined,
+      laterStages,
+      otherNames: namesOutside(tokens, start, viewAt),
+   };
+}
+
+/**
+ * A query that starts from a named query, read from its text: `run: q`,
+ * refined (`run: q + { limit: 3 }`), or with later stages (`run: q -> { … }`).
+ * The name is as written; whether it names a query is the model's to say.
+ */
+export interface RunQueryCall {
+   query: string;
+   /** A `+ { … }` refinement follows the name. */
+   refined: boolean;
+   /** How many `-> …` stages follow the query's own. */
+   laterStages: number;
+   /**
+    * Every name the text spells outside the call's head, backticks removed
+    * (a preamble's, a refinement's, a later stage's).
+    */
+   otherNames: ReadonlySet<string>;
+}
+
+/**
+ * The named query the LAST run statement starts from (Malloy runs the last),
+ * or undefined when it does not read as one: `run: NAME` (backticked or not),
+ * `run: NAME + { … }`, `run: NAME -> …` with any number of later stages, or a
+ * bare `NAME -> …` line with no `run:`. Anything else this reader does not
+ * follow (a parenthesized name, `NAME + other`, an `extend`) is undefined, so
+ * the caller answers it as written. Strips its own input.
+ *
+ * The persisted-query leg's half of an exact call's recognition: the compiled
+ * result schema cannot tell `run: q` from `run: q + { … }` (both are named
+ * `q`), so the text decides, and the compiled query's name and declaring file
+ * confirm it (materialization, persisted named queries).
+ */
+export function extractRunQueryCall(query?: string): RunQueryCall | undefined {
+   if (!query) return undefined;
+   const tokens = tokenize(stripMalloyCommentsAndLiterals(query));
+   let start = -1;
+   for (let k = 0; k + 1 < tokens.count; k++) {
+      if (isWord(tokens, k, "run") && textIs(tokens, k + 1, ":")) start = k + 2;
+   }
+   if (start < 0) {
+      // The bare form, as extractRunTargetSourceNames reads it.
+      for (let k = 0; k + 2 < tokens.count; k++) {
+         if (
+            isName(tokens, k) &&
+            arrowAt(tokens, k + 1) &&
+            opensLine(tokens, k)
+         ) {
+            start = k;
+            break;
+         }
+      }
+   }
+   if (start < 0 || !isName(tokens, start)) return undefined;
+   let k = start + 1;
+   let refined = false;
+   if (textIs(tokens, k, "+") && tokens.kind[k] === PUNCT) {
+      if (!textIs(tokens, k + 1, "{") || tokens.partner[k + 1] < 0) {
+         return undefined;
+      }
+      refined = true;
+      k = tokens.partner[k + 1] + 1;
+   }
+   let laterStages = 0;
+   while (arrowAt(tokens, k)) {
+      const stage = k + 2;
+      if (textIs(tokens, stage, "{") && tokens.partner[stage] >= 0) {
+         k = tokens.partner[stage] + 1;
+      } else if (isName(tokens, stage)) {
+         k = stage + 1;
+      } else {
+         return undefined;
+      }
+      laterStages++;
+   }
+   // The statement must end here: the next statement, or the text's end.
+   if (k < tokens.count && !(isName(tokens, k) && textIs(tokens, k + 1, ":"))) {
+      return undefined;
+   }
+   return {
+      query: textOf(tokens, start),
+      refined,
+      laterStages,
+      otherNames: namesOutside(tokens, start, start),
+   };
+}
+
+/** A compiled object's location in its file: zero-based lines and UTF-16 columns. */
+export interface TextRange {
+   start: { line: number; character: number };
+   end: { line: number; character: number };
+}
+
+/**
+ * The text of the definition `name is …` that `range` spans in `fileText`, as
+ * written, or undefined unless it reads as exactly that: the name (backticked
+ * or not), `is`, then a body whose every bracket pairs inside the span. For a
+ * compiled field whose location is its definition (`view: v is { … }` spans
+ * `v is { … }`), so the definition can be compiled again elsewhere.
+ */
+export function definitionTextAt(
+   fileText: string,
+   range: TextRange,
+   name: string,
+): string | undefined {
+   const offsetOf = (at: { line: number; character: number }) => {
+      let offset = 0;
+      for (let line = 0; line < at.line; line++) {
+         const next = fileText.indexOf("\n", offset);
+         if (next < 0) return -1;
+         offset = next + 1;
+      }
+      return offset + at.character;
+   };
+   const from = offsetOf(range.start);
+   const to = offsetOf(range.end);
+   if (from < 0 || to <= from || to > fileText.length) return undefined;
+   const text = fileText.slice(from, to);
+   const tokens = tokenize(stripMalloyCommentsAndLiterals(text));
+   if (
+      tokens.count < 3 ||
+      !isName(tokens, 0) ||
+      textOf(tokens, 0) !== name ||
+      !isWord(tokens, 1, "is")
+   ) {
+      return undefined;
+   }
+   for (let k = 0; k < tokens.count; k++) {
+      if (tokens.kind[k] !== PUNCT) continue;
+      const code = tokens.source.charCodeAt(tokens.start[k]);
+      const bracket =
+         code === 40 ||
+         code === 41 ||
+         code === 91 ||
+         code === 93 ||
+         code === 123 ||
+         code === 125;
+      if (bracket && tokens.partner[k] < 0) return undefined;
+   }
+   return text;
+}
+
+/** Whether tokens `k` and `k + 1` are an adjacent `->`. */
+function arrowAt(tokens: Tokens, k: number): boolean {
+   return (
+      textIs(tokens, k, "-") &&
+      tokens.kind[k] === PUNCT &&
+      textIs(tokens, k + 1, ">") &&
+      tokens.kind[k + 1] === PUNCT &&
+      tokens.start[k + 1] === tokens.start[k] + 1
+   );
+}
+
 /** Whether token `k` is the first on its line. */
 function opensLine(tokens: Tokens, k: number): boolean {
    if (k === 0) return true;
@@ -124,516 +459,6 @@ export function buildSourceAliasMap(query: string): Map<string, string> {
       }
    });
    return aliasOf;
-}
-
-/**
- * `text` with every comment and every STRING-LITERAL BODY blanked out, so a
- * pattern scan over caller-authored Malloy sees only real syntax.
- *
- * Both halves are security-relevant, in opposite directions:
- *  - **Comments** can HIDE a declaration from a scan that a compiler still
- *    reads around (`source: mine is -- c\n X extend { … }`), or plant a decoy
- *    one that never compiles at all (`-- run: bogus`).
- *  - **String literals** can FORGE a declaration: a scan reading inside them
- *    lets `where: note = 'source: mine is open_src'` inject an alias edge
- *    that could relabel a derivation's base in a last-wins map.
- *
- * One left-to-right pass that follows `MalloyLexer.g4`, so a `--` inside a
- * string is not a comment and a `'` inside a comment does not open a string:
- *  - `--` / `//` comments and `#` / `##` annotations run to the line's end;
- *    a block comment (slash-star) to its close, or to end of input when
- *    unterminated.
- *  - A `#|` / `##|` block annotation consumes its opener's line and every line
- *    after it until one whose closer (`|#` / `|##`) sits in the opener's
- *    column with only spaces or tabs before it; `|##` does not close `#|`.
- *  - A `'`, `"` or backtick string cannot contain a raw newline or control
- *    character; one that does not close is a single stray character to the
- *    lexer, and what follows it is syntax. A backslash escapes the next
- *    character.
- *  - `f` / `s` / `r` prefixed literals (`f'…'`, `f'''…'''`, `f"""…"""`,
- *    `` f`…` ``, `s'…'`, `r'…'`, `/'…'`) are the lexer's filter, raw and regex
- *    strings; the body is blanked and the prefix letter kept, so it can read
- *    as a stray name. A plain `'''` is `''` followed by an ordinary string.
- *  - A triple-quoted `"""` SQL block runs to its own closing `"""`, and the
- *    Malloy inside a `%{ … }` in it is read as Malloy.
- *
- * Backtick-quoted identifiers are PRESERVED and SKIPPED WHOLE: unlike
- * `'…'`/`"…"` they carry real names (`` source: `my-src` is X ``) that the scan
- * must see, and Malloy lexes the span as a single token, so nothing inside it
- * can open a comment or a literal (scanning into `` `q'` `` would open a
- * phantom literal blanking every declaration after it).
- *
- * Replacement is character-for-character (a space, or `~` where a space would
- * let a second pass read a delimiter differently), so every offset, line, and
- * token boundary in the result matches the input, and a second pass is a no-op.
- */
-export function stripMalloyCommentsAndLiterals(text: string): string {
-   // Request bodies are JSON, so the type annotation alone doesn't bound the loops below.
-   if (typeof text !== "string")
-      throw new TypeError("query text must be a string");
-   // Unblanked text is copied in slices between blanked spans, never per char.
-   const parts: string[] = [];
-   let copied = 0;
-   // Control characters are kept, with the backslashes that escape them: they
-   // end a string, so blanking one would let a later reader close a string or
-   // backtick name the lexer never closed, or leave open one it did close.
-   const blank = (from: number, to: number): void => {
-      const end = Math.min(to, text.length);
-      if (from >= end) return;
-      parts.push(text.slice(copied, from));
-      let run = from;
-      for (let k = from; k < end; k++) {
-         if (text.charCodeAt(k) < 32) {
-            let slashes = k;
-            while (slashes > run && text.charCodeAt(slashes - 1) === 92)
-               slashes--;
-            parts.push(" ".repeat(slashes - run), text.slice(slashes, k + 1));
-            run = k + 1;
-         }
-      }
-      let tail = end;
-      if (end < text.length && text.charCodeAt(end) < 32) {
-         while (tail > run && text.charCodeAt(tail - 1) === 92) tail--;
-      }
-      parts.push(" ".repeat(tail - run), text.slice(tail, end));
-      copied = end;
-   };
-   const inert = (from: number, to: number): void => {
-      parts.push(text.slice(copied, from), "~".repeat(to - from));
-      copied = to;
-   };
-   const scan = new StringScan(text);
-   // Brace depths at which a `%{ … }` returns to its enclosing SQL block.
-   const sqlResume: number[] = [];
-   let depth = 0;
-   // Blanks SQL from `from`; returns where code resumes.
-   const sql = (from: number): number => {
-      const stop = sqlStop(text, from);
-      blank(from, stop.bodyEnd);
-      if (stop.opensCode) {
-         sqlResume.push(depth);
-         depth++;
-      }
-      return stop.end;
-   };
-   // An `f` / `s` that opened no literal, and the last character blanked since.
-   // Blanked trivia becomes spaces a second pass would read as the prefix's
-   // own, so a quote after it gets an inert mark in the last blanked position.
-   let prefixAt = -1;
-   let blankedSince = -1;
-   const marks: number[] = [];
-   const trivia = (from: number, to: number): void => {
-      blank(from, to);
-      if (prefixAt < 0) return;
-      for (let k = Math.min(to, text.length) - 1; k >= from; k--) {
-         if (text.charCodeAt(k) >= 32) {
-            blankedSince = k;
-            break;
-         }
-      }
-   };
-   // startsWith rather than a per-char slice: a 1MB body must not allocate a string per character.
-   let i = 0;
-   while (i < text.length) {
-      const code = text.charCodeAt(i);
-      if (text.startsWith("--", i) || text.startsWith("//", i) || code === 35) {
-         const end =
-            code === 35
-               ? skipAnnotation(text, i, trivia)
-               : lineTrivia(text, i, trivia);
-         if (end >= 0) {
-            i = end;
-            continue;
-         }
-      } else if (text.startsWith("/*", i)) {
-         const close = text.indexOf("*/", i + 2);
-         const end = close === -1 ? text.length : close + 2;
-         trivia(i, end);
-         i = end;
-         continue;
-      }
-      if (prefixAt >= 0 && !isLexerSpace(code)) {
-         if ((code === 39 || code === 34 || code === 96) && blankedSince >= 0) {
-            marks.push(blankedSince);
-         }
-         prefixAt = -1;
-         blankedSince = -1;
-      }
-      if (code === 123) {
-         depth++;
-         i++;
-         continue;
-      }
-      if (code === 125) {
-         depth--;
-         i++;
-         if (
-            sqlResume.length > 0 &&
-            sqlResume[sqlResume.length - 1] === depth
-         ) {
-            sqlResume.pop();
-            i = sql(i);
-         }
-         continue;
-      }
-      if (text.startsWith('"""', i)) {
-         i = sql(i + 3);
-         continue;
-      }
-      if (code === 39 || code === 34 || code === 96) {
-         const close = scan.stringClose(i);
-         if (close < 0) {
-            i++;
-            continue;
-         }
-         // A backtick span is a name, kept whole; a quote's body is blanked.
-         if (code !== 96) blank(i + 1, close);
-         i = close + 1;
-         continue;
-      }
-      const prefixed = scan.prefixedLiteral(i);
-      if (prefixed) {
-         const { open, quote, bodyEnd, end } = prefixed;
-         // The prefix stays: without it a second pass could fuse the quotes
-         // with a neighbor's (`s""` + `"` reading as `"""`).
-         // A backtick delimiter left in place would pair with a later one and
-         // read as a name, so it is written as a character nothing reads.
-         const tick = text.charCodeAt(open) === 96;
-         if (tick) inert(open, open + quote);
-         blank(open + quote, bodyEnd);
-         if (tick && text.charCodeAt(bodyEnd) === 96) inert(bodyEnd, end);
-         i = end;
-         continue;
-      }
-      const letter = code | 32;
-      if ((letter === 102 || letter === 115) && !continuesToken(text, i)) {
-         prefixAt = i;
-      }
-      i++;
-   }
-   parts.push(text.slice(copied));
-   let out = parts.join("");
-   for (const at of marks) out = `${out.slice(0, at)}~${out.slice(at + 1)}`;
-   return out;
-}
-
-/** Blanks the `--` / `//` comment at `i`, returning the index after it, or -1. */
-function lineTrivia(
-   text: string,
-   i: number,
-   blank: (from: number, to: number) => void,
-): number {
-   const end = toEndOfLine(text, i);
-   if (end >= 0) blank(i, end);
-   return end;
-}
-
-/** The index of the `\n` or `\r` ending the line `i` is on, or the text's end. */
-function lineEnd(text: string, i: number): number {
-   let at = i;
-   while (at < text.length) {
-      const code = text.charCodeAt(at);
-      if (code === 10 || code === 13) return at;
-      at++;
-   }
-   return at;
-}
-
-/**
- * The lexer's `F_TO_EOL` from `i`: where the line's terminator starts, or -1
- * when a lone `\r` ends it, which no to-end-of-line token can consume — the
- * lexer then reads the opening character on its own and the rest as syntax.
- */
-function toEndOfLine(text: string, i: number): number {
-   const end = lineEnd(text, i);
-   if (text.charCodeAt(end) === 13 && text.charCodeAt(end + 1) !== 10) {
-      return -1;
-   }
-   return end;
-}
-
-/** The index after the line terminator of the line `i` is on. */
-function nextLine(text: string, i: number): number {
-   const end = lineEnd(text, i);
-   if (text.charCodeAt(end) === 13 && text.charCodeAt(end + 1) === 10) {
-      return end + 2;
-   }
-   return Math.min(end + 1, text.length);
-}
-
-/** Blanks the annotation at `i` (a `#`), returning the index after it, or -1. */
-function skipAnnotation(
-   text: string,
-   i: number,
-   blank: (from: number, to: number) => void,
-): number {
-   const end = toEndOfLine(text, i);
-   if (end < 0) return -1;
-   const closer = text.startsWith("##|", i)
-      ? "|##"
-      : text.startsWith("#|", i)
-        ? "|#"
-        : undefined;
-   if (!closer) {
-      blank(i, end);
-      return end;
-   }
-   // The lexer counts the opener's column in code points from the last `\n`.
-   let column = 0;
-   for (let at = text.lastIndexOf("\n", i - 1) + 1; at < i; at++) {
-      if ((text.charCodeAt(at) & 0xfc00) !== 0xdc00) column++;
-   }
-   let at = nextLine(text, i);
-   blank(i, at);
-   while (at < text.length) {
-      const closes = closesBlock(text, at, column, closer);
-      const after = nextLine(text, at);
-      blank(at, after);
-      at = after;
-      if (closes) break;
-   }
-   return at;
-}
-
-/** Whether the line starting at `at` closes a block annotation opened in `column`. */
-export function closesBlock(
-   text: string,
-   at: number,
-   column: number,
-   closer: string,
-): boolean {
-   for (let c = 0; c < column; c++) {
-      const code = text.charCodeAt(at + c);
-      if (code !== 32 && code !== 9) return false;
-   }
-   const from = at + column;
-   if (!text.startsWith(closer, from)) return false;
-   return closer !== "|#" || text.charCodeAt(from + 2) !== 35;
-}
-
-/**
- * Where a SQL block's body starting at `from` stops: before its closing `"""`
- * (`end` after it) or a `%{` that opens Malloy (`end` after it), else the end
- * of text. `SQL_CHAR` is ambiguous — a backslash is read alone or with the
- * next character — so every reading is followed at once, as the lexer's ATN
- * does, and the terminator furthest along any reading wins, as the lexer's
- * longest match does. A reading continues past a terminator only through a
- * pair that swallows its first character, so the scan ends where the block
- * does.
- */
-function sqlStop(
-   text: string,
-   from: number,
-): { bodyEnd: number; end: number; opensCode: boolean } {
-   // Reachable offsets; a reading advances at most three, so four slots do.
-   const reach = [false, false, false, false];
-   let furthest = from;
-   const mark = (at: number): void => {
-      reach[at & 3] = true;
-      furthest = Math.max(furthest, at);
-   };
-   mark(from);
-   let stop: { bodyEnd: number; end: number; opensCode: boolean } = {
-      bodyEnd: text.length,
-      end: text.length,
-      opensCode: false,
-   };
-   let found = false;
-   for (let j = from; j < text.length && j <= furthest; j++) {
-      if (!reach[j & 3]) continue;
-      reach[j & 3] = false;
-      const code = text.charCodeAt(j);
-      const next = text.charCodeAt(j + 1);
-      if (code === 34 && next === 34 && text.charCodeAt(j + 2) === 34) {
-         if (!found || j + 3 > stop.end) {
-            stop = { bodyEnd: j, end: j + 3, opensCode: false };
-         }
-         found = true;
-         continue;
-      }
-      if (code === 37 && next === 123) {
-         if (!found || j + 2 > stop.end) {
-            stop = { bodyEnd: j, end: j + 2, opensCode: true };
-         }
-         found = true;
-         continue;
-      }
-      if (code === 92) {
-         mark(j + 1);
-         mark(j + 2);
-      } else if (code === 34) {
-         mark(next === 34 ? j + 3 : j + 2);
-      } else if (code === 37) {
-         mark(j + 2);
-      } else {
-         mark(j + 1);
-      }
-   }
-   return stop;
-}
-
-/** The lexer's `SPACE_CHAR`, which may sit between a literal's prefix and its quote. */
-function isLexerSpace(code: number): boolean {
-   return (
-      code === 32 ||
-      code === 9 ||
-      code === 10 ||
-      code === 11 ||
-      code === 13 ||
-      code === 160
-   );
-}
-
-/**
- * String scans over one text. A scan that fails records where it failed, so a
- * later opener of the same kind inside that span fails without rescanning:
- * any such opener was an escaped character of the failed scan, which leaves
- * both scans in step from there. That keeps a 1MB body linear.
- */
-class StringScan {
-   private stringFailedAt = [-1, -1, -1];
-   private tripleUnclosedFrom = [Infinity, Infinity, Infinity];
-
-   constructor(private readonly text: string) {}
-
-   /**
-    * The closing quote of the `'`, `"` or backtick string opening at `i`, as
-    * the lexer's `SQ_STRING` / `DQ_STRING` / `BQ_STRING`, or -1.
-    */
-   stringClose(i: number): number {
-      const text = this.text;
-      const quote = text.charCodeAt(i);
-      const slot = quoteSlot(quote);
-      if (i < this.stringFailedAt[slot]) return -1;
-      let j = i + 1;
-      while (j < text.length) {
-         const code = text.charCodeAt(j);
-         if (code === quote) return j;
-         if (code === 92) {
-            if (j + 1 >= text.length || text.charCodeAt(j + 1) === 10) break;
-            j += 2;
-            continue;
-         }
-         if (code < 32 && code !== 9) break;
-         j++;
-      }
-      this.stringFailedAt[slot] = j;
-      return -1;
-   }
-
-   /**
-    * A prefixed literal starting at `i`: an `f` / `s` / `r` letter (or a `/`
-    * before `'`) that opens a token, then its quote. `open` is the first quote,
-    * `quote` its length, `bodyEnd` where the body stops, `end` after the token.
-    */
-   prefixedLiteral(
-      i: number,
-   ):
-      | { open: number; quote: number; bodyEnd: number; end: number }
-      | undefined {
-      const text = this.text;
-      const code = text.charCodeAt(i);
-      if (code === 47) {
-         if (text.charCodeAt(i + 1) !== 39) return undefined;
-         return this.raw(i + 1, 39, false);
-      }
-      const letter = code | 32;
-      if (letter !== 102 && letter !== 114 && letter !== 115) return undefined;
-      if (continuesToken(text, i)) return undefined;
-      if (letter === 114) {
-         return text.charCodeAt(i + 1) === 39
-            ? this.raw(i + 1, 39, false)
-            : undefined;
-      }
-      let open = i + 1;
-      while (open < text.length && isLexerSpace(text.charCodeAt(open))) open++;
-      const quote = text.charCodeAt(open);
-      if (letter === 115) {
-         return quote === 39 || quote === 34
-            ? this.raw(open, quote, true)
-            : undefined;
-      }
-      if (quote !== 39 && quote !== 34 && quote !== 96) return undefined;
-      if (
-         text.charCodeAt(open + 1) === quote &&
-         text.charCodeAt(open + 2) === quote
-      ) {
-         const close = this.tripleClose(open + 3, quote);
-         if (close >= 0) {
-            return { open, quote: 3, bodyEnd: close, end: close + 3 };
-         }
-      }
-      return this.raw(open, quote, true);
-   }
-
-   /** `RAW_CHAR*?` then the quote, or (with `endsAtNewline`) a consumed `\n`. */
-   private raw(
-      open: number,
-      quote: number,
-      endsAtNewline: boolean,
-   ):
-      | { open: number; quote: number; bodyEnd: number; end: number }
-      | undefined {
-      const text = this.text;
-      let j = open + 1;
-      while (j < text.length) {
-         const code = text.charCodeAt(j);
-         if (code === 10) {
-            return endsAtNewline
-               ? { open, quote: 1, bodyEnd: j, end: j + 1 }
-               : undefined;
-         }
-         if (code === 92) {
-            if (j + 1 >= text.length || text.charCodeAt(j + 1) === 10) {
-               return undefined;
-            }
-            j += 2;
-            continue;
-         }
-         if (code === quote) return { open, quote: 1, bodyEnd: j, end: j + 1 };
-         j++;
-      }
-      return undefined;
-   }
-
-   /** The first index of the closing triple for a body starting at `body`, or -1. */
-   private tripleClose(body: number, quote: number): number {
-      const text = this.text;
-      const slot = quoteSlot(quote);
-      if (body >= this.tripleUnclosedFrom[slot]) return -1;
-      let j = body;
-      while (j < text.length) {
-         const code = text.charCodeAt(j);
-         if (code === 92) {
-            j += 2;
-            continue;
-         }
-         if (
-            code === quote &&
-            text.charCodeAt(j + 1) === quote &&
-            text.charCodeAt(j + 2) === quote
-         ) {
-            return j;
-         }
-         j++;
-      }
-      this.tripleUnclosedFrom[slot] = body;
-      return -1;
-   }
-}
-
-function quoteSlot(quote: number): number {
-   return quote === 39 ? 0 : quote === 34 ? 1 : 2;
-}
-
-/** Whether the character before `i` is part of a token that `i` would continue. */
-function continuesToken(text: string, i: number): boolean {
-   if (i === 0) return false;
-   let at = i - 1;
-   if ((text.charCodeAt(at) & 0xfc00) === 0xdc00 && at > 0) at--;
-   const code = text.charCodeAt(at);
-   // `$name` is one given reference.
-   return code === 36 || isNameCode(code, text, at);
 }
 
 /**
@@ -717,33 +542,6 @@ interface Tokens {
    /** A bracket's partner index; -1 for anything else or an unbalanced one. */
    partner: Int32Array;
    decoded: Map<number, string>;
-}
-
-/** `ID_CHAR` beyond ASCII; a name continues with it, `_` or an ASCII digit. */
-const NAME_CHAR = /\p{Alphabetic}/u;
-const SPACE_CHAR = /\s/u;
-
-/** ASCII is decided by code; only a non-ASCII character pays for the regex. */
-function isNameCode(code: number, text: string, at: number): boolean {
-   if (code < 128) {
-      return (
-         (code >= 48 && code <= 57) ||
-         (code >= 65 && code <= 90) ||
-         (code >= 97 && code <= 122) ||
-         code === 95
-      );
-   }
-   return NAME_CHAR.test(String.fromCodePoint(text.codePointAt(at)!));
-}
-
-function isSpaceCode(code: number, text: string, at: number): boolean {
-   if (code < 128) return code === 32 || (code >= 9 && code <= 13);
-   return SPACE_CHAR.test(String.fromCodePoint(text.codePointAt(at)!));
-}
-
-/** UTF-16 units in the character at `at`. */
-function unitsAt(text: string, at: number): number {
-   return text.codePointAt(at)! > 0xffff ? 2 : 1;
 }
 
 /**

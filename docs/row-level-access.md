@@ -135,6 +135,81 @@ expression language `where:` accepts.
 > [authorize.md § Security model](authorize.md#security-model) for the full deployment contract.
 > Identity-bound givens (values the caller cannot override) are a planned milestone.
 
+## Where a gate is evaluated
+
+A row-level gate is grafted into the query it scopes and evaluated with that query. Two
+consequences follow for an author choosing what to gate on. Neither is a defect: for both of these
+live behaviours, Publisher's served answer matches a live run, because this is how gates are
+evaluated.
+
+### A time-based gate is evaluated in the query's time zone
+
+> **Know this.** A gate on a field computed from a timestamp is evaluated in the query's
+> `timezone:`, and a query may choose its own zone.
+
+```malloy
+##! experimental.givens
+
+#(secure)
+given: ON_DAY :: date
+
+#(access_filter) dday = $ON_DAY
+source: events is duckdb.table('events.parquet') extend {
+  dimension: dday is ts.day
+}
+```
+
+Malloy computes `ts.day`, and the `where:` the gate grafts, in the query's time zone. A query that
+sets a different `timezone:` moves the day boundary, so the rows the gate admits for one `ON_DAY`
+shift by that zone's offset: up to 14 hours either side of midnight.
+
+When the gate is an access boundary:
+
+- Gate on a column that already holds the date or key (a `date`-typed column or a `tenant_id`),
+  not a timestamp truncated in a query stage or an `extend` dimension.
+- Or make sure the rows either side of the boundary, within that window, belong to the same tenant,
+  so a shifted day admits nothing the caller could not already see.
+
+### An inherited gate filters a derivation's input
+
+A `->` derivation over a gated source carries the base's gate (see
+[authorize.md § The entry point](authorize.md#the-entry-point-and-only-the-entry-point)), and that
+gate filters the base's rows before the derivation runs. Everything the derivation computes, it
+computes over only the rows the gate admits for the caller.
+
+```malloy
+##! experimental.givens
+
+#(secure)
+given: REGION :: string
+
+#(access_filter) region = $REGION
+source: sales is duckdb.table('sales.parquet') extend {
+  measure: total is amount.sum()
+}
+
+source: shares is sales -> {
+  group_by: region, category
+  aggregate:
+    total
+    share is total / all(total)
+}
+```
+
+A caller of `shares` sees their own region's rows, and `share` is each row's share of their region's
+total. The same holds for `exclude()`, window functions, `calculate:` and `limit`: a top-N ranks the
+caller's rows. A derivation that renames a column to the gate's field name
+(`group_by: region is category`) does not change what the gate reads: it reads the base's `region`.
+A derivation need not keep the gate's column at all; the rows are filtered before it groups them.
+Chains are the same: in `y is shares -> { … }`, the gate filters `sales` inside `shares` inside `y`.
+
+A gate the derivation declares on itself (`#(access_filter) region = $REGION` above `source: shares
+is sales -> { … }`) filters the derivation's own output, after its query has run over every row of
+its base. Use it only when that is the intent: its `all()`, windows and `limit` see every row.
+
+A derivation whose base hides the gate's column (`sales extend { except: region } -> { … }`) gives
+the gate nothing to filter, so every query against it is denied.
+
 ## Runnable example
 
 [`examples/governed-analytics`](../examples/governed-analytics) implements the row-level authorize

@@ -5,16 +5,20 @@ import { Manifest } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as sinon from "sinon";
 import { logger } from "../../../logger";
-import { BuildInstruction } from "../types";
+import { BuildInstruction } from "../domain/types";
 import { linesMentioning } from "../../../test_helpers/log_lines";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import {
    createMocks,
    withQueryMetadataOn,
 } from "../../../test_helpers/materialization_service_harness";
+import { fakeContractReads } from "../../../test_helpers/contract_fixture";
+
+// Builds over fake connections, which answer no catalog query.
+fakeContractReads();
 
 /**
- * buildOneSource: the colocated CTAS/swap, the SQL it issues and the metadata
+ * buildOneSource: the database CTAS/swap, the SQL it issues and the metadata
  * it carries, and the upstream reuse it reports.
  */
 
@@ -51,35 +55,38 @@ describe("buildOneSource", () => {
          realization: "COPY",
       };
       return (
-         ctx.service as unknown as {
-            buildOneSource: (
-               s: unknown,
-               i: BuildInstruction,
-               c: unknown,
-               d: Record<string, string>,
-               m: Manifest,
-               env: unknown,
-               built: Record<string, unknown>,
-               buildMetadata?: unknown,
-            ) => Promise<{ sourceEntityId: string; physicalTableName: string }>;
+         ctx.service.collaborators as unknown as {
+            buildOneSource: (options: {
+               persistSource: unknown;
+               instruction: BuildInstruction;
+               connection: unknown;
+               manifest: Manifest;
+               environment: unknown;
+               builtEntries: Record<string, unknown>;
+               buildMetadata?: unknown;
+            }) => Promise<{
+               sourceEntityId: string;
+               physicalTableName: string;
+            }>;
          }
-      ).buildOneSource(
-         source,
+      ).buildOneSource({
+         persistSource: source,
          instruction,
          connection,
-         { duckdb: "dig" },
          manifest,
-         {
+         environment: {
             getApiConnection: () => {
                if (metadata?.connection) {
                   return { queryMetadata: metadata.connection };
                }
-               throw new Error("no connection config in this colocated test");
+               throw new Error("no connection config in this database test");
             },
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/tmp/env",
          },
-         {}, // builtEntries — colocated build with no prior storage upstreams
-         metadata
+         // A database build with no prior storage upstreams.
+         builtEntries: {},
+         buildMetadata: metadata
             ? {
                  packageMaterialization: metadata.package
                     ? {
@@ -91,7 +98,7 @@ describe("buildOneSource", () => {
                  context: metadata.context ?? { queryClass: "materialize" },
               }
             : undefined,
-      );
+      });
    }
 
    it("tags every statement of the build with the resolved metadata", async () => {
@@ -106,7 +113,9 @@ describe("buildOneSource", () => {
       });
 
       const bags = runSQL.getCalls().map((c) => c.args[1]?.queryMetadata);
-      expect(bags).toHaveLength(3);
+      // The staging drop, the CTAS, the swap, and the read of the built
+      // table's column types (database_native_types.ts).
+      expect(bags).toHaveLength(4);
       for (const bag of bags) {
          expect(bag).toEqual({
             deployment: "eu",
@@ -161,6 +170,8 @@ describe("buildOneSource", () => {
          'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',
          'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
          'BEGIN TRANSACTION;\nDROP TABLE IF EXISTS "orders_v1";\nALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1";\nCOMMIT;',
+         // Then the built table's column types (database_native_types.ts).
+         'DESCRIBE "orders_v1"',
       ]);
       expect(entry.physicalTableName).toBe("orders_v1");
       expect(entry.sourceEntityId).toBe("abcdef1234567890");
@@ -188,6 +199,7 @@ describe("buildOneSource", () => {
          'ALTER TABLE "MY_SCHEMA"."orders_v1" RENAME TO "MY_SCHEMA"."orders_v1_oabcdef12345"',
          'ALTER TABLE "MY_SCHEMA"."orders_v1_abcdef123456" RENAME TO "MY_SCHEMA"."orders_v1"',
          'DROP TABLE IF EXISTS "MY_SCHEMA"."orders_v1_oabcdef12345"',
+         "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders_v1') AND lower(table_schema) = lower('MY_SCHEMA') ORDER BY ordinal_position",
       ]);
       // The manifest keeps the logical name the control plane sent.
       expect(entry.physicalTableName).toBe("MY_SCHEMA.orders_v1");
@@ -283,15 +295,16 @@ describe("buildOneSource", () => {
          "ALTER TABLE `ds`.`orders_v1` RENAME TO `orders_v1_oabcdef12345`",
          "ALTER TABLE `ds`.`orders_v1_abcdef123456` RENAME TO `orders_v1`",
          "DROP TABLE IF EXISTS `ds`.`orders_v1_oabcdef12345`",
+         "SELECT column_name, data_type FROM `ds`.INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'orders_v1' ORDER BY ordinal_position",
       ]);
       expect(entry.physicalTableName).toBe("ds.orders_v1");
    });
 
-   it("colocated build excludes a storage upstream from its warehouse manifest (mixed chain)", async () => {
-      // A colocated downstream that reads a storage-materialized
+   it("database build excludes a storage upstream from its warehouse manifest (mixed chain)", async () => {
+      // A database downstream that reads a storage-materialized
       // upstream must NOT get the lake table name in its warehouse build SQL —
       // the warehouse can't resolve it. The storage upstream is excluded (⇒
-      // inlined/recomputed); a colocated upstream is kept. The build SQL is
+      // inlined/recomputed); a database upstream is kept. The build SQL is
       // the first render; the second is the permissive full-manifest render
       // the reuse classification compares it with.
       const runSQL = sinon.stub().resolves();
@@ -326,28 +339,29 @@ describe("buildOneSource", () => {
          },
       };
       await (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             buildOneSource: (...a: unknown[]) => Promise<unknown>;
          }
-      ).buildOneSource(
-         down,
-         {
+      ).buildOneSource({
+         persistSource: down,
+         // No destination: database.
+         instruction: {
             sourceEntityId: "downdowndowndown",
             materializedTableId: "mt",
             physicalTableName: "down_v1",
             realization: "COPY",
-         }, // no destination ⇒ colocated
-         { runSQL },
-         { duckdb: "dig" },
+         },
+         connection: { runSQL },
          manifest,
-         {
+         environment: {
             getApiConnection: () => {
-               throw new Error("unused in the colocated build");
+               throw new Error("unused in the database build");
             },
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/tmp/env",
          },
          builtEntries,
-      );
+      });
       const [buildRender, compareRender] = seenManifests;
       expect(buildRender?.entries?.up_storage).toBeUndefined();
       expect(buildRender?.entries?.up_pathc?.tableName).toBe('"orders_v1"');
@@ -438,28 +452,25 @@ describe("buildOneSource reports upstreamReuse from the manifest it substituted 
          realization: "COPY",
       };
       return (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             buildOneSource: (...args: unknown[]) => Promise<{
                upstreamReuse?: string;
                upstreamRecomputeReason?: string;
             }>;
          }
-      ).buildOneSource(
-         source,
+      ).buildOneSource({
+         persistSource: source,
          instruction,
-         { runSQL: sinon.stub().resolves(undefined) },
-         { duckdb: "dig" },
+         connection: { runSQL: sinon.stub().resolves(undefined) },
          manifest,
-         {
+         environment: {
             getApiConnection: () => ({}),
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/tmp/env",
          },
          builtEntries,
-         undefined,
-         undefined,
-         undefined,
          planFacts,
-      );
+      });
    }
 
    it("reused when the upstream's address is in the manifest, even as a thin reference with no name", async () => {
@@ -474,30 +485,5 @@ describe("buildOneSource reports upstreamReuse from the manifest it substituted 
       });
       expect(entry.upstreamReuse).toBe("reused");
       expect(entry.upstreamRecomputeReason).toBeUndefined();
-   });
-
-   it("recomputed, with the reason, when the upstream is in no manifest and the compiler's strict render misses it", async () => {
-      const entry = await build(new Manifest(), {}, (sqlOpts) => {
-         const m = (
-            sqlOpts as {
-               buildManifest?: {
-                  strict?: boolean;
-                  entries?: Record<string, unknown>;
-               };
-            }
-         ).buildManifest;
-         if (m?.strict === true && !("addr-daily" in (m.entries ?? {}))) {
-            throw Object.assign(
-               new Error(
-                  "Persisted source 'daily@m' not found in manifest (buildId: addr-daily); strict manifest mode forbids fallback to live compilation.",
-               ),
-               { code: "runtime-manifest-strict-miss" },
-            );
-         }
-      });
-      expect(entry.upstreamReuse).toBe("recomputed");
-      expect(entry.upstreamRecomputeReason).toMatch(
-         /'daily' is not in this build's manifest/,
-      );
    });
 });

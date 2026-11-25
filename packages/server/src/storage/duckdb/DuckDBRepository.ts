@@ -98,6 +98,8 @@ export function createDuckDBRepository(
             versionId,
             manifestPath,
          ),
+      markVersionHostOwned: (environmentId, packageName, versionId) =>
+         versions.markHostOwned(environmentId, packageName, versionId),
       deleteVersion: (environmentId, packageName, versionId) =>
          versions.delete(environmentId, packageName, versionId),
       deletePackageIfNoVersions: (environmentId, packageName) =>
@@ -153,6 +155,8 @@ export function createDuckDBRepository(
          ),
       updateMaterialization: (id, updates) =>
          materializations.update(id, updates),
+      updateMaterializationFrom: (id, updates, fromStatuses) =>
+         materializations.updateFrom(id, updates, fromStatuses),
       deleteMaterialization: (id) => materializations.deleteById(id),
 
       getIncrementalLedgerEntry: (environmentId, table) =>

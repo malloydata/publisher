@@ -12,7 +12,7 @@ export async function initializeSchema(
 
    if (force) {
       logger.info(
-         "Reinitializing database schema dropping and recreating all tables",
+         "Reinitializing database schema: dropping and recreating every table but the retrieval caches",
       );
       await dropAllTables(db);
    } else if (!initialized) {
@@ -41,10 +41,40 @@ export async function initializeSchema(
    if (initialized) {
       await reconcileDeclaredColumns(db);
    }
+   await backfillVersionHostOwned(db);
 
    // After the reconcile, so an index over a newly added column can be created
    // in the same boot.
    await createDeclaredIndexes(db);
+}
+
+/**
+ * Fill `versions.host_owned` on rows written before the column existed (NULL),
+ * once: a row is host-owned when it names a manifest, or when a host has
+ * built it (an orchestrated run of that version), since a host that built a
+ * version and then cleared its manifest left no other trace. Every row
+ * written since sets the column, so this touches nothing after the first
+ * boot. Best-effort, like the reconcile: a failure is logged, and the rows
+ * stay NULL, which reads as not host-owned.
+ */
+async function backfillVersionHostOwned(db: DuckDBConnection): Promise<void> {
+   try {
+      await db.run(
+         `UPDATE versions SET host_owned = (
+            manifest_path IS NOT NULL OR EXISTS (
+               SELECT 1 FROM materializations m
+               WHERE m.environment_id = versions.environment_id
+                 AND m.package_name = versions.package_name
+                 AND m.version = versions.version_id
+                 AND coalesce(json_extract_string(m.metadata, '$.mode'), '') = 'orchestrated'
+            )
+         ) WHERE host_owned IS NULL`,
+      );
+   } catch (err) {
+      logger.warn("Could not mark which package versions a host owns", {
+         error: err instanceof Error ? err.message : String(err),
+      });
+   }
 }
 
 /**
@@ -106,6 +136,15 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
    // version's own publisher.json description. `git_commit_sha` and `git_ref`
    // are reserved for publish provenance; nothing writes them yet.
    //
+   // `host_owned` says a host has bound the version (a manifest it named
+   // bound) or built it (its instructed run committed): from then on its
+   // binding is the host's, so a clear serves live and a load with no
+   // manifest serves live, never this server's own run store. Set by that
+   // bind or run, never by recording a manifest alone, and never cleared.
+   // Declared last and nullable, so `reconcileDeclaredColumns` adds it to a
+   // store that predates it; `backfillVersionHostOwned` fills the rows it
+   // was added under.
+   //
    // Keyed on the package's NAME, like `materializations`, and deleted with the
    // package by hand (DuckDBRepository), since nothing here cascades.
    //
@@ -132,6 +171,7 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
       git_ref VARCHAR,
       created_at TIMESTAMP NOT NULL,
       updated_at TIMESTAMP NOT NULL,
+      host_owned BOOLEAN,
       PRIMARY KEY (environment_id, package_name, version_id)
     )
   `);
@@ -229,15 +269,15 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
       physical_table_name VARCHAR NOT NULL,
       connection_name VARCHAR NOT NULL,
       -- The storage destination the table lives in, or '' when it lives in
-      -- connection_name's own warehouse (the colocated default). Part of the
+      -- connection_name's own warehouse (the database default). Part of the
       -- table's IDENTITY, not a description of it: a destination and a connection
       -- are separate namespaces that may share a name, and a source's physical
       -- name does not change when it moves between them, so without this a
       -- boundary measured on a stored table is indistinguishable from one
-      -- measured on a colocated table of the same name.
+      -- measured on a database table of the same name.
       --
       -- In the KEY, because two such tables coexist legitimately. A source
-      -- persisted colocated and another persisted into a destination under the
+      -- persisted in the database tier and another persisted into a destination under the
       -- same name are two different tables and neither is a misconfiguration —
       -- the within-package collision check keys on the destination too, so it
       -- correctly says nothing about the pair. Sharing one row between them makes
@@ -246,7 +286,7 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
       -- never advances.
       --
       -- '' rather than NULL, and that is what makes it keyable. A NULL in the key
-      -- defeats ON CONFLICT (NULL never equals NULL, so two colocated rows both
+      -- defeats ON CONFLICT (NULL never equals NULL, so two database rows both
       -- insert) and forces every read to compare with IS NOT DISTINCT FROM. The
       -- sentinel keeps the key a plain equality on every path.
       storage_destination_name VARCHAR NOT NULL DEFAULT '',
@@ -269,6 +309,27 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
       payload JSON NOT NULL,
       created_at TIMESTAMP NOT NULL,
       updated_at TIMESTAMP NOT NULL
+    )
+  `);
+
+   // The workload log's local store (materialization v2, T1): one access
+   // record per row, written only when PUBLISHER_WORKLOAD_LOG_STORE=on, pruned by
+   // age and row count (service/workload_log_store.ts). The columns are what
+   // the log is read by; `record` holds the whole record.
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS workload_log (
+      recorded_at TIMESTAMP NOT NULL,
+      environment VARCHAR NOT NULL,
+      package VARCHAR NOT NULL,
+      model_path VARCHAR,
+      source VARCHAR,
+      shape_key VARCHAR,
+      served_from VARCHAR,
+      outcome VARCHAR NOT NULL,
+      duration_ms BIGINT NOT NULL,
+      row_count BIGINT,
+      scanned_bytes BIGINT,
+      record JSON NOT NULL
     )
   `);
 
@@ -831,7 +892,8 @@ export async function createCatalogTables(db: DuckDBConnection): Promise<void> {
     )
   `);
    // The engine's value index (retrieval/index/values_index.ts): stored values of
-   // `#(index)` dimensions on ungated sources, and value lists from docs.
+   // `#(index)` dimensions on ungated sources and on sources keyed by the
+   // configured givens, and value lists from docs.
    // Rewritten at each load; the engine searches its in-memory copy.
    await db.run(`
     CREATE TABLE IF NOT EXISTS dimension_values (
@@ -848,7 +910,8 @@ export async function createCatalogTables(db: DuckDBConnection): Promise<void> {
    // The embeddings of those values (`retrieval.fcj.valueEmbeddings`): one row
    // per distinct value string (node_key is the value, facet is "value"), the
    // same columns and sync rule as catalog_embeddings, so a reload embeds only
-   // values it has not seen. A gated source's values are never here.
+   // values it has not seen. A gated source's values are here only when its
+   // gate is keyed and its keys are configured.
    await db.run(`
     CREATE TABLE IF NOT EXISTS value_embeddings (
       environment_name VARCHAR NOT NULL,
@@ -861,6 +924,24 @@ export async function createCatalogTables(db: DuckDBConnection): Promise<void> {
       embedding FLOAT[] NOT NULL,
       updated_at TIMESTAMP NOT NULL,
       PRIMARY KEY (environment_name, package_name, node_key, facet)
+    )
+  `);
+   // Each read of an `#(index)` dimension, once per combination of the
+   // configured givens (`givens` is that combination as JSON, "" with none),
+   // so a later build reuses it while `read_key` matches and it is younger
+   // than the reuse limit (values_index.ts). `read_values` is a JSON list of
+   // [value, count] or [value, count, key].
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS dimension_value_reads (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      dimension_key VARCHAR NOT NULL,
+      givens VARCHAR NOT NULL,
+      read_key VARCHAR NOT NULL,
+      truncated BOOLEAN NOT NULL,
+      read_values VARCHAR NOT NULL,
+      read_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (environment_name, package_name, dimension_key, givens)
     )
   `);
 }
@@ -896,6 +977,56 @@ async function dropLegacyProjectSchema(db: DuckDBConnection): Promise<void> {
    }
 }
 
+/**
+ * What retrieval derived from the models and the warehouse: value reads,
+ * embeddings and LLM output. `--init` keeps them. Each row is reused only
+ * while what it was built from is unchanged (a source's definition hash, the
+ * embedded text, an LLM input hash), so a kept row is never served stale, and
+ * dropping them would only repeat the warehouse reads and provider calls.
+ * Holds every table in ENGINE_TABLES (retrieval/index/catalog_store.ts).
+ */
+export const RETRIEVAL_CACHE_TABLES = [
+   "catalog_nodes",
+   "catalog_edges",
+   "doc_parts",
+   "node_questions",
+   "catalog_embeddings",
+   "dimension_values",
+   "value_embeddings",
+   "dimension_value_reads",
+   "source_summaries",
+] as const;
+
+/**
+ * After `--init`, delete the retrieval rows of every package the config no
+ * longer serves. A package removed from the config is never deleted through
+ * the API, so nothing else would remove them, and some hold warehouse values.
+ */
+export async function deleteUnconfiguredRetrievalRows(
+   db: DuckDBConnection,
+   configured: { environment: string; packages: string[] }[],
+): Promise<void> {
+   const pairs = configured.flatMap((e) =>
+      e.packages.map((p) => [e.environment, p]),
+   );
+   const keep =
+      pairs.length === 0
+         ? "FALSE"
+         : `(environment_name, package_name) IN (${pairs.map(() => "(?, ?)").join(", ")})`;
+   for (const table of RETRIEVAL_CACHE_TABLES) {
+      try {
+         await db.run(`DELETE FROM ${table} WHERE NOT ${keep}`, pairs.flat());
+      } catch (err) {
+         // Empty the table rather than keep a removed package's values.
+         logger.warn(
+            `Could not delete the rows of unconfigured packages from ${table}; emptying it`,
+            err,
+         );
+         await db.run(`DELETE FROM ${table}`);
+      }
+   }
+}
+
 async function dropAllTables(db: DuckDBConnection): Promise<void> {
    const tables = [
       "build_manifests",
@@ -907,16 +1038,10 @@ async function dropAllTables(db: DuckDBConnection): Promise<void> {
       "storage_destinations",
       "environments",
       "themes",
+      "workload_log",
+      // Written by an earlier release's index; nothing reads them now.
       "entity_embeddings",
       "entity_keyphrases",
-      "source_summaries",
-      "catalog_nodes",
-      "catalog_edges",
-      "doc_parts",
-      "node_questions",
-      "catalog_embeddings",
-      "dimension_values",
-      "value_embeddings",
    ];
 
    logger.info("Dropping tables:", tables.join(", "));

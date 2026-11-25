@@ -1,0 +1,464 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * End to end, through the real package and environment: a database-tier
+ * `#@ persist` and `#(materialize)` table storing `day`, `week`, `month`,
+ * `quarter` and `year` truncations of a date (and of a timestamp) holds each
+ * as the warehouse returned it, often a timestamp where Malloy declares a
+ * `date`. That is the type its build wrote, so the bind's column read is no
+ * drift: no `storage-column-type-mismatch` warning, no
+ * `publisher_storage_column_type_mismatch_total` count, and every answer is
+ * live's, in UTC and under a caller `timezone:`. A truncation column altered
+ * after its build no longer matches the table's contract: the table answers
+ * live, `incompatible`.
+ *
+ * A timestamp truncation a query-shaped source's query computed in a zone
+ * (`raw extend { timezone: … } -> { … }`) is served to a query that reads it
+ * in that same zone, which truncates the stored value again to itself, and
+ * answered live in any other, across daylight-saving changes in two zones.
+ *
+ * On DuckDB, on a DuckLake a DuckDB connection attached and USEd, and on
+ * Postgres when `PUBLISHER_TEST_POSTGRES_URL` names one (whose build reads no
+ * schema back from an unqualified table, so only native types are captured:
+ * the shape that raised the false warning).
+ */
+
+import { PostgresConnection } from "@malloydata/db-postgres";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { resetMaterializationTelemetryForTesting } from "../../src/materialization_metrics";
+import { unrecordedAudit } from "../../src/service/access_record";
+import { Environment } from "../../src/service/environment";
+import { parsePackageName } from "../../src/service/identity";
+import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
+import { QueryPrivileges } from "../../src/service/model_query_request";
+import type { Package } from "../../src/service/package";
+import type {
+   Materialization,
+   ResourceRepository,
+} from "../../src/storage/DatabaseInterface";
+import { DuckDBConnection } from "../../src/storage/duckdb/DuckDBConnection";
+import { createDuckDBRepository } from "../../src/storage/duckdb/DuckDBRepository";
+import { initializeSchema } from "../../src/storage/duckdb/schema";
+import { freshLoadPool } from "../../src/test_helpers/conformance/package_runner";
+import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "../../src/test_helpers/metrics_harness";
+import { installSettings } from "../../src/test_helpers/settings_env";
+import { writePackageFiles } from "../../src/test_helpers/temp_package";
+
+const ENV = "e1";
+const ENV_ID = "env-1";
+const PKG = "pkg";
+const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
+const MISMATCH = "database-column-type-mismatch";
+const METRIC = "publisher_storage_column_type_mismatch_total";
+
+const OUTPUT = `{
+  group_by:
+    d_day is d.day, d_week is d.week, d_month is d.month,
+    d_quarter is d.quarter, d_year is d.year,
+    t_hour is ts.hour, t_day is ts.day, t_week is ts.week, t_month is ts.month,
+    t_quarter is ts.quarter, t_year is ts.year
+  aggregate: total is n.sum()
+}`;
+
+/**
+ * The model: its tables at `name=` under `prefix` (a schema, so a Postgres
+ * build's schema read succeeds and captures its columns), its rows read in
+ * `timezone` when given.
+ */
+const modelOf = (
+   prefix = "",
+   timezone?: string,
+) => `##! experimental { persistence }
+source: raw is warehouse.sql("""
+  SELECT * FROM (VALUES
+    (CAST('2024-01-15' AS DATE), CAST('2024-01-15 23:30:00' AS TIMESTAMP), 1),
+    (CAST('2024-02-29' AS DATE), CAST('2024-02-29 00:30:00' AS TIMESTAMP), 2),
+    (CAST('2024-12-31' AS DATE), CAST('2024-12-31 23:59:00' AS TIMESTAMP), 4),
+    -- Either side of each daylight-saving change in Denver (UTC instants)...
+    (CAST('2024-03-10' AS DATE), CAST('2024-03-10 08:30:00' AS TIMESTAMP), 8),
+    (CAST('2024-03-10' AS DATE), CAST('2024-03-10 09:30:00' AS TIMESTAMP), 16),
+    (CAST('2024-11-03' AS DATE), CAST('2024-11-03 07:30:00' AS TIMESTAMP), 32),
+    (CAST('2024-11-03' AS DATE), CAST('2024-11-03 08:30:00' AS TIMESTAMP), 64),
+    -- ...and in Sydney.
+    (CAST('2024-04-06' AS DATE), CAST('2024-04-06 15:30:00' AS TIMESTAMP), 128),
+    (CAST('2024-04-06' AS DATE), CAST('2024-04-06 16:30:00' AS TIMESTAMP), 256),
+    (CAST('2024-10-05' AS DATE), CAST('2024-10-05 15:30:00' AS TIMESTAMP), 512),
+    (CAST('2024-10-05' AS DATE), CAST('2024-10-05 16:30:00' AS TIMESTAMP), 1024)
+  ) AS t(d, ts, n)
+""")${timezone ? ` extend { timezone: '${timezone}' }` : ""}
+
+#(materialize) name="${prefix}trunc_mat"
+source: mat is raw -> ${OUTPUT}
+
+#@ persist name="${prefix}trunc_v1"
+source: v1 is raw -> ${OUTPUT}
+
+source: live is raw -> ${OUTPUT}
+`;
+
+const COLUMNS =
+   "d_day, d_week, d_month, d_quarter, d_year, " +
+   "t_hour, t_day, t_week, t_month, t_quarter, t_year, total";
+
+/** The timestamp truncations alone, with the measure. */
+const TIMESTAMP_COLUMNS =
+   "t_hour, t_day, t_week, t_month, t_quarter, t_year, total";
+
+interface Fixture {
+   env: Environment;
+   pkg: Package;
+   repo: ResourceRepository;
+   db: DuckDBConnection;
+   service: MaterializationService;
+}
+
+async function fixture(
+   root: string,
+   warehouse: unknown,
+   model: string,
+): Promise<Fixture> {
+   const envPath = path.join(root, "env");
+   fs.mkdirSync(envPath, { recursive: true });
+   writePackageFiles(
+      path.join(envPath, PKG),
+      { "m.malloy": model },
+      { manifest: { name: PKG, description: "fixture" } },
+   );
+   const db = new DuckDBConnection(":memory:");
+   await db.initialize();
+   await initializeSchema(db);
+   await db.run(
+      "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
+      [ENV_ID, ENV, envPath],
+   );
+   const repo = createDuckDBRepository(db);
+   const env = await Environment.create(ENV, envPath, [warehouse as never], []);
+   await env.addPackage(PKG);
+   const pkg = await env.getPackage(parsePackageName(PKG), false);
+   const service = serviceOverEnvironment(
+      () => repo,
+      () => env,
+   );
+   return { env, pkg, repo, db, service };
+}
+
+/** One auto-run, to its settled record. */
+async function build(f: Fixture): Promise<Materialization> {
+   const created = await f.service.createMaterialization(ENV, PKG, {});
+   const running = (
+      f.service as unknown as { runningAbortControllers: Map<string, unknown> }
+   ).runningAbortControllers;
+   const deadline = Date.now() + 120_000;
+   for (;;) {
+      const m = await f.repo.getMaterializationById(created.id);
+      if (
+         m &&
+         ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"].includes(m.status)
+      ) {
+         while (running.has(created.id)) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+         }
+         return (await f.repo.getMaterializationById(created.id)) ?? m;
+      }
+      if (Date.now() > deadline) throw new Error("run never settled");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+   }
+}
+
+/** The answer to `source`'s columns, with what served it, and why not a table. */
+async function ask(
+   f: Fixture,
+   source: string,
+   timezone?: string,
+   columns = COLUMNS,
+): Promise<{ rows: unknown[]; kind?: string; reasons: unknown[] }> {
+   const tz = timezone ? `timezone: '${timezone}'\n` : "";
+   const result = await f.pkg.getModel("m.malloy")!.runQuery(
+      unrecordedAudit(),
+      {
+         query: `run: ${source} -> { ${tz}select: ${columns}\norder_by: total }`,
+      } as never,
+      QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+   );
+   return {
+      rows: asStrings(result.compactResult as Record<string, unknown>[]),
+      kind: result.path?.servedBy?.kind,
+      reasons: (result.path?.considered ?? []).map((c) => c.reason),
+   };
+}
+
+/** Rows with every value an exact string: never read back through a double. */
+function asStrings(rows: Record<string, unknown>[]): Record<string, string>[] {
+   return rows.map((r) =>
+      Object.fromEntries(
+         Object.entries(r).map(([k, v]) => [
+            k,
+            v instanceof Date ? v.toISOString() : String(v),
+         ]),
+      ),
+   );
+}
+
+function mismatches(f: Fixture): { subject?: string; message: string }[] {
+   return (f.pkg.getPackageMetadata().warnings ?? []).filter(
+      (w) => w.code === MISMATCH,
+   ) as { subject?: string; message: string }[];
+}
+
+const tiers: {
+   label: string;
+   /** The model's table prefix and source time zone ({@link modelOf}). */
+   prefix?: string;
+   timezone?: string;
+   warehouse: (
+      root: string,
+   ) => Promise<{ config: unknown; drop?: () => Promise<void> }>;
+   /** Changes `column`'s type (or removes it) after the build. */
+   alter: (table: string, column: string) => string;
+}[] = [
+   ...[undefined, "America/Denver"].map((timezone) => ({
+      label: timezone ? `DuckDB, rows in ${timezone}` : "DuckDB",
+      timezone,
+      warehouse: async () => ({
+         config: {
+            name: "warehouse",
+            type: "duckdb",
+            duckdbConnection: { setupSQL: "SELECT 1" },
+         },
+      }),
+      alter: (table: string, column: string) =>
+         `ALTER TABLE ${table} ALTER "${column}" TYPE VARCHAR`,
+   })),
+   ...(process.platform === "win32"
+      ? []
+      : [undefined, "Australia/Sydney"].map((timezone) => ({
+           label: timezone ? `DuckLake, rows in ${timezone}` : "DuckLake",
+           timezone,
+           warehouse: async (root: string) => {
+              // Inside the environment directory, the only place an env
+              // connection's setupSQL reaches (duckdb_lockdown.ts).
+              const lake = path.join(root, "env", "lake");
+              fs.mkdirSync(path.join(lake, "data"), { recursive: true });
+              const setupSQL = [
+                 // No INSTALL: setupSQL runs confined (duckdb_lockdown.ts),
+                 // with `ducklake` loaded beforehand.
+                 "LOAD ducklake",
+                 `ATTACH IF NOT EXISTS 'ducklake:${path.join(lake, "origin.ducklake")}' AS origin_lake (DATA_PATH '${path.join(lake, "data")}/')`,
+                 "USE origin_lake",
+              ].join(";\n");
+              return {
+                 config: {
+                    name: "warehouse",
+                    type: "duckdb",
+                    duckdbConnection: { setupSQL },
+                 },
+              };
+           },
+           // DuckLake alters a type only to a wider one: drop it instead.
+           alter: (table: string, column: string) =>
+              `ALTER TABLE ${table} DROP COLUMN "${column}"`,
+        }))),
+   ...(POSTGRES_URL
+      ? (
+           [
+              // An unqualified name: the build reads no schema back, so only
+              // native types are captured.
+              ["Postgres", undefined, undefined],
+              // A schema-qualified name: the build captures its columns, a
+              // date truncation as the timestamptz Postgres returns.
+              ["Postgres, a schema-qualified name=", "public.", undefined],
+              [
+                 "Postgres, a schema-qualified name=, rows in a query time zone",
+                 "public.",
+                 "America/Denver",
+              ],
+              [
+                 "Postgres, a schema-qualified name=, rows in another query time zone",
+                 "public.",
+                 "Australia/Sydney",
+              ],
+           ] as const
+        ).map(([label, prefix, timezone]) => ({
+           label,
+           prefix,
+           timezone,
+           warehouse: async () => {
+              const db = `trunc_${process.pid}_${Date.now()}`;
+              const admin = new PostgresConnection({
+                 name: "admin",
+                 connectionString: POSTGRES_URL,
+              });
+              await admin.runSQL(`CREATE DATABASE ${db}`);
+              const parsed = new URL(POSTGRES_URL);
+              return {
+                 config: {
+                    name: "warehouse",
+                    type: "postgres",
+                    postgresConnection: {
+                       host: parsed.hostname,
+                       port: Number(parsed.port || 5432),
+                       userName: decodeURIComponent(parsed.username),
+                       password: decodeURIComponent(parsed.password),
+                       databaseName: db,
+                    },
+                 },
+                 drop: async () => {
+                    await admin
+                       .runSQL(`DROP DATABASE IF EXISTS ${db} WITH (FORCE)`)
+                       .catch(() => undefined);
+                    await admin.close();
+                 },
+              };
+           },
+           alter: (table: string, column: string) =>
+              `ALTER TABLE ${table} ALTER COLUMN "${column}" TYPE VARCHAR USING "${column}"::varchar`,
+        }))
+      : []),
+];
+
+for (const tier of tiers) {
+   describe(`a stored time truncation's own type is not drift (${tier.label})`, () => {
+      let restore: () => void;
+      let root: string;
+      let f: Fixture;
+      let run: Materialization;
+      let drop: (() => Promise<void>) | undefined;
+      let harness: MetricsHarness;
+      beforeAll(async () => {
+         restore = installSettings({
+            env: {
+               PUBLISHER_MATERIALIZE: "true",
+               PERSIST_STORAGE_MODE: "off",
+               PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
+            },
+         }).restore;
+         await freshLoadPool();
+         harness = await startMetricsHarness();
+         resetMaterializationTelemetryForTesting();
+         root = fs.realpathSync(
+            fs.mkdtempSync(path.join(os.tmpdir(), "database-truncation-")),
+         );
+         const w = await tier.warehouse(root);
+         drop = w.drop;
+         f = await fixture(root, w.config, modelOf(tier.prefix, tier.timezone));
+         run = await build(f);
+         expect(run.status).toBe("MANIFEST_FILE_READY");
+      }, 240_000);
+      afterAll(async () => {
+         await f?.env.closeAllConnections().catch(() => undefined);
+         await f?.db.close();
+         await drop?.();
+         fs.rmSync(root, { recursive: true, force: true });
+         await harness?.shutdown();
+         resetMaterializationTelemetryForTesting();
+         restore();
+         await freshLoadPool();
+      });
+
+      it("raises no type warning and counts no mismatch for the table its build wrote", async () => {
+         expect(mismatches(f)).toEqual([]);
+         expect(await harness.collectCounter(METRIC)).toBe(0);
+      });
+
+      it("serves each truncation from its table, as live answers it", async () => {
+         const live = await ask(f, "live");
+         for (const source of ["mat", "v1"]) {
+            const served = await ask(f, source);
+            // Rows computed in a zone and read in UTC: a timestamp truncation
+            // truncated again in UTC is not the stored value (and, on
+            // Postgres, a date stored as a timestamptz has no exact cast back),
+            // so the query answers live.
+            expect(served.kind).toBe(tier.timezone ? "live" : "materialized");
+            expect(served.rows).toEqual(live.rows);
+         }
+      });
+
+      it("serves a query reading none of the date truncations from its table", async () => {
+         // Read in the zone the rows were computed in, which truncates each
+         // stored timestamp truncation again to itself.
+         const live = await ask(f, "live", tier.timezone, TIMESTAMP_COLUMNS);
+         for (const source of ["mat", "v1"]) {
+            const served = await ask(
+               f,
+               source,
+               tier.timezone,
+               TIMESTAMP_COLUMNS,
+            );
+            expect(served.kind).toBe("materialized");
+            expect(served.rows).toEqual(live.rows);
+         }
+      });
+
+      it("answers a timestamp truncation live in another zone than its rows were computed in", async () => {
+         const others = tier.timezone
+            ? [undefined, "UTC", "America/Los_Angeles", "Asia/Kolkata"].filter(
+                 (z) => z !== tier.timezone,
+              )
+            : ["America/Los_Angeles", "Asia/Kolkata"];
+         for (const tz of others) {
+            const live = await ask(f, "live", tz, TIMESTAMP_COLUMNS);
+            for (const source of ["mat", "v1"]) {
+               const served = await ask(f, source, tz, TIMESTAMP_COLUMNS);
+               expect(served.kind, `${source} in ${tz}`).toBe("live");
+               expect(served.rows, `${source} in ${tz}`).toEqual(live.rows);
+            }
+            const mat = await ask(f, "mat", tz, TIMESTAMP_COLUMNS);
+            expect(mat.reasons, `mat in ${tz}`).toEqual(["TIME_ZONE"]);
+         }
+      });
+
+      it("answers as live under a caller time zone", async () => {
+         const tz = "America/Los_Angeles";
+         const live = await ask(f, "live", tz);
+         for (const source of ["mat", "v1"]) {
+            expect((await ask(f, source, tz)).rows).toEqual(live.rows);
+         }
+      });
+
+      it("finds a truncation column changed after its build incompatible with its contract, and answers live", async () => {
+         const warehouse = await f.env.getMalloyConnection("warehouse");
+         const entries = Object.values(
+            (
+               run.manifest as {
+                  entries: Record<string, { physicalTableName: string }>;
+               }
+            ).entries,
+         );
+         expect(entries).toHaveLength(2);
+         for (const { physicalTableName } of entries) {
+            await warehouse.runSQL(tier.alter(physicalTableName, "d_month"));
+         }
+         await f.pkg.reloadAllModels(
+            f.pkg.materialization().boundDatabaseEntries() ?? {},
+         );
+         const incompatible = f.pkg
+            .materialization()
+            .serveVerdicts()
+            .filter((v) => v.reason === "incompatible");
+         expect(incompatible.map((v) => v.sourceName).sort()).toEqual([
+            "mat",
+            "v1",
+         ]);
+         for (const v of incompatible) {
+            // DuckDB retypes in place; DuckLake drops and adds the column.
+            expect(["column_retyped", "column_gone"]).toContain(
+               v.incompatibility?.code ?? "",
+            );
+            expect(v.incompatibility?.columns).toEqual(["d_month"]);
+         }
+         // And the changed column answers live's value, never the text.
+         const live = await ask(f, "live");
+         for (const source of ["mat", "v1"]) {
+            expect((await ask(f, source)).rows).toEqual(live.rows);
+         }
+      });
+   });
+}

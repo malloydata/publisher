@@ -151,9 +151,9 @@ Run a local Publisher from the directory that holds your `publisher.config.json`
 npx @malloy-publisher/server --server_root . --port 4000 --watch-env <env>
 ```
 
-**`--watch-env` is not optional if you are adding `public/` to a package that is already loaded.** Without it the server COPIES each package into `publisher_data/<env>/<pkg>/` at load time and serves static files from that copy, so a `public/` directory you create afterwards is never seen: every file in it 404s while the rest of the app serves normally. This is the most expensive mistake in this skill, because it looks like your page is broken rather than like the server is stale,.
+**`--watch-env` is not optional if you are adding `public/` to a package that is already loaded.** Without it the server publishes each package at load time as an immutable version under `publisher_data/<env>/<pkg>/<version>/` and serves static files from that version, so a `public/` directory you create afterwards is never seen: every file in it 404s while the rest of the app serves normally. This is the most expensive mistake in this skill, because it looks like your page is broken rather than like the server is stale.
 
-If you did not start the server (someone handed you a running one), **probe before you build**: write a throwaway file into the package's `public/`, request it, and see whether you get 200 or 404. If it 404s, either restart with `--watch-env <env>` or mirror your files into the served copy after every edit.
+If you did not start the server (someone handed you a running one), **probe before you build**: write a throwaway file into the package's `public/`, request it, and see whether you get 200 or 404. If it 404s, either restart with `--watch-env <env>`, or ship your files as a new version: bump the `version` in `publisher.json` and publish the package again. Never write into `publisher_data/`, which holds the published versions.
 
 `--watch-env <env>` (or `PUBLISHER_WATCH=<env>`) mounts that environment's local-dir packages in place (a symlink, not a copy) and watches them: editing a `.malloy` recompiles the package, and editing a `public/` file live-reloads any open page over an SSE stream. Nothing to wire in the page. The app is served at `http://localhost:4000/environments/<env>/packages/<pkg>/index.html`.
 

@@ -49,7 +49,7 @@ import {
    sourceFilterNotes,
    type FilterDefinition,
 } from "./filter";
-import { gateExprsForRoute } from "./gate_registry_walk";
+import { gateGroupsForRoute } from "./gate_registry_walk";
 import { derivedStructsReachable } from "./governance/ir/source_graph";
 
 /** A `#(filter)` definition enriched with the dimension's Malloy type. */
@@ -329,9 +329,23 @@ export function extractSourcesFromModelDef(
       }
       nearMissAuthorize.push(
          ...collectAuthorizeNearMissesAllRoutes(
-            ownLevelNotes((entry as StructDef).annotations).map(
-               (note) => note.text,
-            ),
+            [
+               ...ownLevelNotes((entry as StructDef).annotations),
+               ...(entry as StructDef).fields.flatMap((field) =>
+                  ownLevelNotes(field.annotations),
+               ),
+            ].map((note) => note.text),
+         ),
+      );
+   }
+   // A named query's own notes: a gate is never read there, so a misspelled
+   // one is as unenforced as anywhere, and the near-miss scan leaves every
+   // gate spelling to this refusal.
+   for (const obj of Object.values(modelDef.contents)) {
+      if (obj.type !== "query") continue;
+      nearMissAuthorize.push(
+         ...collectAuthorizeNearMissesAllRoutes(
+            ownLevelNotes(obj.annotations).map((note) => note.text),
          ),
       );
    }
@@ -455,15 +469,22 @@ export function extractSourcesFromModelDef(
          // Per route, so each wire field reports only its own route.
          const routeGroupsByRoute = new Map<string, string[][]>();
          for (const route of CANONICAL_AUTHORIZE_ROUTES) {
-            const groupsForRoute = gateExprsForRoute(
+            const groupsForRoute = gateGroupsForRoute(
                struct as SourceDef,
                modelDef,
                route,
             );
-            for (const exprs of groupsForRoute) {
-               groupsForSource.push({ route, exprs });
+            for (const { exprs, fromBase } of groupsForRoute) {
+               groupsForSource.push({
+                  route,
+                  exprs,
+                  ...(fromBase ? { fromBase: true as const } : {}),
+               });
             }
-            routeGroupsByRoute.set(route, groupsForRoute);
+            routeGroupsByRoute.set(
+               route,
+               groupsForRoute.map((g) => g.exprs),
+            );
          }
          if (groupsForSource.length > 0) {
             authorizeMap.set(sourceName, groupsForSource);

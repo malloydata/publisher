@@ -8,12 +8,12 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# Freshness window on the colocated serve path — ENFORCED
+# Freshness window on the database serve path — ENFORCED
 
 The companion to `freshness-window` (the `storage=` tier, which serves stale by
 design + a demand trigger). This path is different: a plain `#@ persist name=`
 source with **no `storage=`** materializes
-into its own warehouse (colocated, the v0 path) and is served by substituting the
+into its own warehouse (database, the v0 path) and is served by substituting the
 table name at compile time. That path DOES enforce freshness: a per-query resolver
 (`Package.getFreshBuildManifest` → `evaluateManifestFreshness`) drops a stale entry
 whose `fallback` is `live`, so the query recomputes live.
@@ -50,7 +50,7 @@ source: daily is orders -> {
 
 ## Publish
 
-colocated build — materialized into the Postgres source warehouse and
+database build — materialized into the Postgres source warehouse and
 served by table-name substitution.
 
 ## Query base
@@ -85,7 +85,7 @@ Expect:
 
 ## Bind pcf (asof=2000-01-01T00:00:00Z, fresh=1, fallback=live)
 
-Stamp the colocated entry stale-past-window (`dataAsOf` = year 2000, 1s window) with
+Stamp the database entry stale-past-window (`dataAsOf` = year 2000, 1s window) with
 `fallback: live`.
 
 ## Query base (again)

@@ -5,7 +5,7 @@
  * A publisher.config.json the server cannot parse fails startup, with the
  * cause and PUBLISHER_INIT_FAILED on stderr, before anything binds: no
  * setting may fall back to its default because the file could not be read
- * (docs/configuration-design.md, Validation). The Docker smoke script checks
+ * (docs/publisher-v1.md, Appendix C, Validation). The Docker smoke script checks
  * the unreadable-file case (S7); this runs the real entry point with a
  * malformed file so the same contract is held without Docker.
  *
@@ -54,30 +54,20 @@ describe("server with an unusable publisher.config.json", () => {
    }
 
    /**
-    * Boot on `configText` and wait for /status to name the init error. The
-    * ports are probed free and only bound seconds later by the child, so a
-    * suite running alongside can take one in between; the server then exits
-    * with "Port N in use", and that boot is retried on new ports. Any other
-    * exit fails with the server's output.
+    * Boot on `configText` and wait for /status to name the init error. Any
+    * exit fails with the server's output. (A free port lost before the server
+    * bound it is retried by `spawnServer`.)
     */
    async function bootUntilInitError(configText: string) {
-      const root = tempDir("publisher-bad-config-");
-      cleanups.push(root.cleanup);
-      writeFileSync(join(root.dir, "publisher.config.json"), configText);
-      for (let attempt = 1; ; attempt++) {
-         const server = await spawnServer({ serverRoot: root.dir });
-         cleanups.push(() => server.stop());
-         const status = await statusWithin(server, 60_000);
-         if (status) return { server, status };
-         if (attempt < 3 && server.output().includes(" in use; pass --")) {
-            continue;
-         }
-         throw new Error(
-            `server exited before /status answered\n--- server log tail ---\n${server
-               .output()
-               .slice(-4000)}`,
-         );
-      }
+      const server = await spawnServer({ configText });
+      cleanups.push(() => server.stop());
+      const status = await statusWithin(server, 60_000);
+      if (status) return { server, status };
+      throw new Error(
+         `server exited before /status answered\n--- server log tail ---\n${server
+            .output()
+            .slice(-4000)}`,
+      );
    }
 
    it("fails startup, naming the file and the cause, with PUBLISHER_INIT_FAILED", async () => {

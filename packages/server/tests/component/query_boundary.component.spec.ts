@@ -43,10 +43,6 @@ import {
    duckdbMalloyConfig,
    usePackageLoadPool,
 } from "../../src/test_helpers/temp_package";
-import {
-   getDashboard,
-   listDashboards,
-} from "../../src/service/legacy_report_views";
 
 describe("Query Boundary via worker pool", () => {
    let tempDir: string;
@@ -1139,36 +1135,45 @@ export { \`customer-orders\` }`,
             });
             expect(published.result.data).toBeDefined();
 
-            // The author's own cell is held to the surface too: it reads
-            // base_source, which the surface does not publish.
+            // The author's own cell is held to the surface too: its query
+            // reads base_source, which the surface does not publish.
             await expect(
-               notebook.executeNotebookCell(unrecordedAudit(), 1),
+               notebook.runQuery(unrecordedAudit(), {
+                  query: "run: base_source -> v",
+               }),
             ).rejects.toThrow(NotQueryableError);
-            // A cell over what the surface publishes runs, and so does one over a
-            // source an EARLIER cell derives from it.
+            // A cell over what the surface publishes runs.
             expect(
-               (await notebook.executeNotebookCell(unrecordedAudit(), 4))
-                  .result,
+               (
+                  await notebook.runQuery(unrecordedAudit(), {
+                     query: "run: customers -> v",
+                  })
+               ).result.data,
             ).toBeDefined();
-            expect(
-               (await notebook.executeNotebookCell(unrecordedAudit(), 3))
-                  .result,
-            ).toBeDefined();
+            // A source an earlier cell derives from a published one is not on
+            // the surface, so its cell answers 404 on the query route.
+            await expect(
+               notebook.runQuery(unrecordedAudit(), {
+                  query: "run: mine -> v",
+               }),
+            ).rejects.toThrow(NotQueryableError);
 
-            // And the notebook does not show what it may not read: the import
-            // cell's newSources and the notebook's sources leave base_source out.
+            // And the notebook does not show what a query on it may not name:
+            // the import cell's newSources and the notebook's sources leave
+            // base_source out, and mine with it.
             const raw = await notebook.getNotebook();
             const shown = JSON.stringify(raw);
             expect(shown).not.toContain('"base_source"');
             expect(
                (raw.sources ?? []).map((source) => source.name).sort(),
-            ).toEqual(["customers", "mine"]);
+            ).toEqual(["customers"]);
+            expect(raw.notebookCells?.[2]?.newSources ?? []).toEqual([]);
             // Nor a refused cell's queryInfo, whose schema lists the columns its
-            // query returns. The cells that run keep theirs.
+            // query returns. The cell that runs keeps its own.
             const queryInfo = (raw.notebookCells ?? []).map(
                (cell) => cell.queryInfo !== undefined,
             );
-            expect(queryInfo).toEqual([false, false, false, true, true]);
+            expect(queryInfo).toEqual([false, false, false, false, true]);
          } finally {
             await duckdb.close();
          }
@@ -1204,10 +1209,14 @@ export { \`customer-orders\` }`,
             );
             const notebook = pkg.getModel("report.malloynb")!;
             await expect(
-               notebook.executeNotebookCell(unrecordedAudit(), 1),
+               notebook.runQuery(unrecordedAudit(), {
+                  query: "run: base_locked -> { aggregate: c is count() }",
+               }),
             ).rejects.toThrow(NotQueryableError);
             await expect(
-               notebook.executeNotebookCell(unrecordedAudit(), 3),
+               notebook.runQuery(unrecordedAudit(), {
+                  query: "run: raw -> { aggregate: c is count() }",
+               }),
             ).rejects.toThrow(NotQueryableError);
          } finally {
             await duckdb.close();
@@ -1458,7 +1467,7 @@ import { customers } from "../index.malloy"`,
          writeManifest({});
          writeIndex("customers");
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         expect(await getDashboard(pkg, "env", "dash")).toBeDefined();
+         expect(await pkg.getReport("dashboards/dash.malloy")).toBeDefined();
          const dash = pkg.getModel("dashboards/dash.malloy")!;
          const found = tileWarnings(pkg);
          expect(found).toEqual([
@@ -1597,6 +1606,51 @@ query: dash is customers -> {
                `index.malloy doesn't export, so it won't load. Fix: add the ` +
                `source it reads to the export { ... } in index.malloy.`,
          ]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: warns for a filter suggest over a hidden source whose name needs quoting", async () => {
+      // Emitted bare, the check's probe query failed to compile, which reads
+      // as "loads fine", so a hidden source with such a name was never flagged.
+      fs.writeFileSync(
+         path.join(tempDir, "raw.malloy"),
+         `source: \`order-facts\` is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+}
+export { \`order-facts\` }`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `source: customers is duckdb.sql("select 1 as id") extend {
+  measure: k is count()
+}
+export { customers }`,
+      );
+      fs.mkdirSync(path.join(tempDir, "dashboards"));
+      fs.writeFileSync(
+         path.join(tempDir, "dashboards", "dash.malloy"),
+         `##! experimental.givens
+import "../raw.malloy"
+import { customers } from "../index.malloy"
+# label="Id" control=select suggest { source="order-facts" dimension=id }
+given: BY_SOURCE :: filter<number> is f''
+## artifact { layout=grid title="Dash" tiles=["dash"] }
+query: dash is customers -> {
+  where: id ~ $BY_SOURCE
+  group_by: id
+}`,
+      );
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         writeManifest({});
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const suggestWarnings = (pkg.getPackageMetadata().warnings ?? [])
+            .map((w) => w.message ?? "")
+            .filter((m) => m.includes("suggests from"));
+         expect(suggestWarnings).toHaveLength(1);
+         expect(suggestWarnings[0]).toContain("order-facts");
       } finally {
          await duckdb.close();
       }
@@ -2015,6 +2069,93 @@ query: raw_t is ${RAW}`,
                await expect(run(queryName, query, org1)).rejects.toBeInstanceOf(
                   NotQueryableError,
                );
+         } finally {
+            await duckdb.close();
+         }
+      });
+
+      it("holds a linear report's own sources to the gates and the surface of their bases", async () => {
+         // The same rule as a grid report's, for a linear one: its sources
+         // over served bases run, under the gates those bases carry; one over
+         // a hidden file, and a raw SQL query, are off the surface.
+         writeManifest();
+         fs.writeFileSync(
+            path.join(tempDir, "secured.malloy"),
+            `##! experimental.givens
+#(secure)
+given: GROUPS :: number[]
+#(secure)
+given: ROLES :: string[]
+
+#(access_filter) id in $GROUPS
+source: gated is duckdb.sql("select 1 as id union all select 2 union all select 3") extend {
+  measure: n is count()
+}
+
+#(authorize) 'admin' in $ROLES
+source: locked is duckdb.sql("select 1 as id union all select 2") extend {
+  measure: n is count()
+}`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "hidden.malloy"),
+            `source: hidden is duckdb.sql("select 1 as id")`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `##! experimental.givens\nimport "secured.malloy"\nexport { gated, locked }`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "story.malloy"),
+            `##! experimental.givens
+## artifact { layout=linear title="Story" tiles=["derived -> { aggregate: m }", "derived_locked -> { aggregate: m }", "from_hidden -> { aggregate: c }"] }
+import "secured.malloy"
+import "hidden.malloy"
+source: derived is gated extend { measure: m is count() }
+source: derived_locked is locked extend { measure: m is count() }
+source: from_hidden is hidden extend { measure: c is count() }`,
+         );
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const story = pkg.getModel("story.malloy")!;
+            const run = (
+               query: string,
+               givens: Record<string, number[] | string[]> = {},
+            ) =>
+               story
+                  .runQuery(unrecordedAudit(), { query, givens })
+                  .then((answer) => answer.compactResult);
+
+            expect(
+               await run("run: derived -> { aggregate: m }", {
+                  GROUPS: [1, 2],
+               }),
+            ).toEqual([{ m: 2 }]);
+            await expect(
+               run("run: derived -> { aggregate: m }"),
+            ).rejects.toBeInstanceOf(AccessDeniedError);
+            expect(
+               await run("run: derived_locked -> { aggregate: m }", {
+                  ROLES: ["admin"],
+               }),
+            ).toEqual([{ m: 2 }]);
+            await expect(
+               run("run: derived_locked -> { aggregate: m }", {
+                  ROLES: ["viewer"],
+               }),
+            ).rejects.toBeInstanceOf(AccessDeniedError);
+            await expect(
+               run("run: from_hidden -> { aggregate: c }"),
+            ).rejects.toBeInstanceOf(NotQueryableError);
+            await expect(
+               run("run: duckdb.sql('select 1 as one') -> { select: one }"),
+            ).rejects.toBeInstanceOf(NotQueryableError);
          } finally {
             await duckdb.close();
          }
@@ -2623,7 +2764,7 @@ export { listed }`,
                tempDir,
                malloyConfig,
             );
-            expect(listDashboards(pkg, "env")).toEqual([]);
+            expect(pkg.listReports()).toEqual([]);
             const models = (await pkg.listModels()).map((m) => m.path).sort();
             expect(models).toEqual(["dashboards/old.malloy", "index.malloy"]);
             const old = pkg.getModel("dashboards/old.malloy")!;

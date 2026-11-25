@@ -8,10 +8,10 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# A binding declaring `fallback=live` degrades to live when the store fails mid-query
+# A store that fails under a bound source degrades to live, not to an error
 
-The freshness contract's `fallback` is honoured on the compile-time ladder and by
-the per-query freshness gate. It was not honoured at RUN time: once a query routed
+The freshness contract's `fallback` is honoured when a query pins the tables it
+may read. It was not honoured at RUN time: once a query routed
 to storage, a missing or unreadable table surfaced as an error even for a binding
 that had explicitly declared `fallback=live`.
 
@@ -22,7 +22,9 @@ is still pointing at.
 
 This builds a source, binds it with `fallback=live`, proves it serves from the
 snapshot, then drops the physical table out-of-band and queries again. The answer
-must come back live and correct, not as an error.
+must come back live and correct, not as an error. A table that is gone answers
+live whatever the binding's `freshnessFallback` says, `fail` included, so
+rebinding with `fail` changes nothing.
 
 ## Publisher
 
@@ -116,12 +118,18 @@ Expect:
 
 ## Bind rtf (fallback=fail)
 
-The other half of the contract. The same broken store, but the host now declares
-the tier mandatory for this source.
+The other half. The same broken store, but the host now declares the tier
+mandatory for this source.
 
-## Query daily (again, refused)
+## Query daily (again)
 
-`fail` means exactly that: a source marked fail-closed must not be quietly
-answered from somewhere else. The error surfaces even though a live answer was
-available a moment ago — the difference is the declared policy, not the state of
-the store.
+A bind reads every bound table against the column contract its build recorded,
+and a table it cannot read is not served from; its sources answer live,
+whatever their `freshnessFallback`. A table that is gone is therefore answered
+live under `fail` too, rather than failing: 1150 is the correct live answer.
+
+Expect:
+
+| order_date | total |
+| ---------- | ----- |
+| 2026-01-01 | 1150  |

@@ -59,7 +59,11 @@ describe("settings in a running server", () => {
 
    describe("rateLimit", () => {
       it("answers 429 past the limit", async () => {
-         const server = await boot({ env: { PUBLISHER_RATE_LIMIT: "2" } });
+         // A quiet log leaves out the listening lines, so the harness always
+         // probes both ports before returning: the limit must not count those.
+         const server = await boot({
+            env: { PUBLISHER_RATE_LIMIT: "2", LOG_LEVEL: "warn" },
+         });
          const statuses: number[] = [];
          for (let i = 0; i < 3; i++) {
             statuses.push(
@@ -208,8 +212,9 @@ describe("settings in a running server", () => {
 
    describe("packageInlineFields", () => {
       it("is logged at startup, in any case", async () => {
+         // An info line, whatever LOG_LEVEL the shell exports.
          const server = await boot({
-            env: { PUBLISHER_PACKAGE_INLINE_FIELDS: "Off" },
+            env: { PUBLISHER_PACKAGE_INLINE_FIELDS: "Off", LOG_LEVEL: "info" },
          });
          expect(server.output()).toContain(
             "Package inline fields (PUBLISHER_PACKAGE_INLINE_FIELDS): off",
@@ -258,7 +263,8 @@ describe("settings in a running server", () => {
                name: "callers",
                location: pkg.dir,
             }),
-            env,
+            // The access record is info, whatever LOG_LEVEL the shell exports.
+            env: { LOG_LEVEL: "info", ...env },
          });
          await server.waitUntilServing();
          const res = await fetch(

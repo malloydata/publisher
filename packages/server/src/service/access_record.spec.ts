@@ -15,12 +15,16 @@ import {
    BadRequestError,
    ConnectionError,
    ConnectionPoolExhaustedError,
+   FrozenConfigError,
    ModelNotFoundError,
+   NotQueryableError,
+   OffSurfaceError,
 } from "../errors";
 import { logger } from "../logger";
 import { withAuthorizeModel } from "../test_helpers/authorize_fixture";
 import { withSettings } from "../test_helpers/settings_env";
 import {
+   accessPathOf,
    callerHeaderName,
    emitAccessRecord,
    outcomeOf,
@@ -298,14 +302,31 @@ describe("enforcedGatesOf", () => {
 describe("outcomeOf", () => {
    it("maps a refusal to the gate's view of it", () => {
       expect(outcomeOf(new AccessDeniedError("x"), 403)).toBe("denied_lock");
-      expect(outcomeOf(new ModelNotFoundError("x"), 404)).toBe(
+      expect(outcomeOf(new NotQueryableError("x"), 404)).toBe(
          "refused_surface",
       );
-      expect(outcomeOf(new Error("not queryable"), 404)).toBe(
-         "refused_surface",
-      );
+      expect(outcomeOf(new OffSurfaceError("x"), 404)).toBe("refused_surface");
       expect(outcomeOf(new BadRequestError("x"), 400)).toBe("bad_request");
       expect(outcomeOf(new Error("boom"), 500)).toBe("error");
+   });
+
+   it("tells a lock's denial from a row filter's", () => {
+      expect(outcomeOf(AccessDeniedError.forSource("s", "lock"), 403)).toBe(
+         "denied_lock",
+      );
+      expect(
+         outcomeOf(AccessDeniedError.forSource("s", "row_filter"), 403),
+      ).toBe("denied_filter");
+   });
+
+   it("tells a curation refusal from a missing resource", () => {
+      expect(outcomeOf(new ModelNotFoundError("x"), 404)).toBe("not_found");
+      expect(outcomeOf(new Error("gone"), 404)).toBe("not_found");
+   });
+
+   it("reads a 403 that is not a gate's as an error", () => {
+      expect(outcomeOf(new FrozenConfigError(), 403)).toBe("error");
+      expect(outcomeOf(new Error("forbidden"), 403)).toBe("error");
    });
 });
 
@@ -402,6 +423,26 @@ describe("withAccessRecord", () => {
       }
    });
 
+   it("marks a record whose path report could not be assembled, and only that one", async () => {
+      const { info, records } = emitted();
+      try {
+         await withAccessRecord(base, undefined, async (audit) => {
+            audit.pathUnavailable = true;
+         });
+         await withAccessRecord(base, undefined, async () => undefined);
+         const [unavailable, live] = records() as {
+            pathUnavailable?: boolean;
+            path?: unknown;
+         }[];
+         expect(unavailable.pathUnavailable).toBe(true);
+         expect(unavailable.path).toBeUndefined();
+         expect(live.pathUnavailable).toBeUndefined();
+         expect(live.path).toBeUndefined();
+      } finally {
+         info.mockRestore();
+      }
+   });
+
    it("records a server-authored connection message as written", async () => {
       const { info, records } = emitted();
       try {
@@ -446,5 +487,151 @@ describe("withAccessRecord", () => {
       } finally {
          info.mockRestore();
       }
+   });
+});
+
+describe("accessPathOf", () => {
+   it("keeps which table answered and each table considered, and nothing else", () => {
+      const path = accessPathOf({
+         servedBy: { kind: "materialized", tableId: "abc123" },
+         considered: [
+            { tableId: "abc123", kind: "materialized", outcome: "used" },
+            {
+               tableId: "def456",
+               kind: "rollup",
+               outcome: "skipped",
+               reason: "GRAIN_TOO_COARSE",
+            },
+         ],
+         // A full report carries more; the record keeps only the two above.
+         ...({ notConsidered: [{ sourceName: "x" }], query: {} } as object),
+      } as Parameters<typeof accessPathOf>[0]);
+      expect(path).toEqual({
+         servedBy: { kind: "materialized", tableId: "abc123" },
+         considered: [
+            { tableId: "abc123", kind: "materialized", outcome: "used" },
+            {
+               tableId: "def456",
+               kind: "rollup",
+               outcome: "skipped",
+               reason: "GRAIN_TOO_COARSE",
+            },
+         ],
+      });
+   });
+
+   it("leaves out a tableId, reason or code the report does not have, and keeps a code it does", () => {
+      expect(
+         accessPathOf({
+            servedBy: { kind: "live" },
+            considered: [
+               { tableId: "abc", kind: "materialized", outcome: "skipped" },
+               {
+                  tableId: "def",
+                  kind: "materialized",
+                  outcome: "skipped",
+                  reason: "NOT_SERVED",
+                  code: "unreachable",
+               },
+            ],
+         }),
+      ).toEqual({
+         servedBy: { kind: "live" },
+         considered: [
+            { tableId: "abc", kind: "materialized", outcome: "skipped" },
+            {
+               tableId: "def",
+               kind: "materialized",
+               outcome: "skipped",
+               reason: "NOT_SERVED",
+               code: "unreachable",
+            },
+         ],
+      });
+   });
+
+   it("keeps the answering table's origin and tier, and only known values", () => {
+      const of = (origin: string, tier: string) =>
+         accessPathOf({
+            servedBy: { kind: "materialized", origin, tier, tableId: "abc" },
+            considered: [
+               { tableId: "abc", kind: "materialized", outcome: "used" },
+            ],
+         })?.servedBy;
+      expect(of("materialize", "database")).toEqual({
+         kind: "materialized",
+         origin: "materialize",
+         tier: "database",
+         tableId: "abc",
+      });
+      expect(of("rollup", "storage")).toMatchObject({
+         origin: "rollup",
+         tier: "storage",
+      });
+      expect(of("free text", "elsewhere")).toEqual({
+         kind: "materialized",
+         tableId: "abc",
+      });
+   });
+
+   it("keeps that the served copy answered, and no other via", () => {
+      const of = (via: string) =>
+         accessPathOf({
+            servedBy: { kind: "materialized", tableId: "abc", via },
+            considered: [
+               { tableId: "abc", kind: "materialized", outcome: "used" },
+            ],
+         })?.servedBy;
+      expect(of("served_copy")).toEqual({
+         kind: "materialized",
+         tableId: "abc",
+         via: "served_copy",
+      });
+      expect(of("anything else")).toEqual({
+         kind: "materialized",
+         tableId: "abc",
+      });
+   });
+
+   it("drops a code that is not a plain lower-case code, so free text never reaches the record", () => {
+      const path = accessPathOf({
+         servedBy: { kind: "live" },
+         considered: [
+            {
+               tableId: "abc",
+               kind: "materialized",
+               outcome: "skipped",
+               reason: "NOT_SERVED",
+               code: 'relation "secret_schema.t" does not exist',
+            },
+            {
+               tableId: "def",
+               kind: "materialized",
+               outcome: "skipped",
+               reason: "NOT_SERVED",
+               code: "Storage_Mode",
+            },
+         ],
+      });
+      expect(path?.considered).toEqual([
+         {
+            tableId: "abc",
+            kind: "materialized",
+            outcome: "skipped",
+            reason: "NOT_SERVED",
+         },
+         {
+            tableId: "def",
+            kind: "materialized",
+            outcome: "skipped",
+            reason: "NOT_SERVED",
+         },
+      ]);
+   });
+
+   it("records nothing for a live answer with nothing considered", () => {
+      expect(
+         accessPathOf({ servedBy: { kind: "live" }, considered: [] }),
+      ).toBeUndefined();
    });
 });

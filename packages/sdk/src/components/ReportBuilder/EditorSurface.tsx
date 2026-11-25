@@ -73,9 +73,9 @@ import type { BuilderControlsHandler } from "./builderControls";
  * The builder under a real control row, with the controls driving the tiles,
  * both following the LIVE document rather than the saved file.
  *
- * Owns the given values for the same reason the reader's `Dashboard` does: the
- * bar and the tiles have to read one set of values, so whatever holds them has
- * to sit above both. The manifest supplies what the file cannot say about the
+ * Owns the given values for the same reason the reader's `DashboardView`
+ * does: the bar and the tiles have to read one set of values, so whatever
+ * holds them has to sit above both. The manifest supplies what the file cannot say about the
  * model's own givens, and the set of givens the server can be sent; a control
  * declared here and not yet in the package is written into each tile's query as
  * a literal, so it works the moment it is added.

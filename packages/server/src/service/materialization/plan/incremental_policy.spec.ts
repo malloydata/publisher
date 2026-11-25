@@ -22,15 +22,20 @@ import * as path from "path";
 
 import { BadRequestError, internalErrorToHttpError } from "../../../errors";
 import { Environment } from "../../environment";
-import type { IncrementalDeclaration } from "./incremental_declaration";
+import type { IncrementalDeclaration } from "../domain/incremental";
 import {
+   INCREMENTAL_NO_MERGE_KEY_CODE,
+   INCREMENTAL_SHARED_ADDRESS_CODE,
    incrementalPolicyAdvisories,
    incrementalPolicyRejections,
+   incrementalUnbuildableReason,
+   MAX_LOOKBACK_SECONDS,
    type IncrementalPolicySource,
 } from "./incremental_policy";
 import type { Package } from "../../package";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { parsePackageName } from "../../identity";
+import { unrecordedAudit } from "../../access_record";
 
 /** A declaration with nothing declared; each test overrides what it needs. */
 function declaration(
@@ -75,6 +80,13 @@ const DATE_WATERMARK = {
 
 function rejections(overrides: Partial<IncrementalPolicySource>): string[] {
    return incrementalPolicyRejections([source(overrides)]);
+}
+
+/** Why the source is refused alone (rules 6, 7 and 12), or undefined. */
+function unbuildable(
+   overrides: Partial<IncrementalPolicySource>,
+): string | undefined {
+   return incrementalUnbuildableReason(source(overrides));
 }
 
 describe("incrementalPolicyRejections", () => {
@@ -294,29 +306,27 @@ describe("incrementalPolicyRejections", () => {
       watermarkOrderable: true,
    });
 
-   it("rule 6: rejects an unsupported dialect and lists the supported ones", () => {
-      const messages = rejections({ dialect: "duckdb", declaration: COHERENT });
-      expect(messages).toHaveLength(1);
-      expect(messages[0]).toContain('dialect "duckdb"');
-      expect(messages[0]).toContain(
-         "postgres, snowflake, standardsql (BigQuery)",
+   it("rule 6: an unsupported dialect is valid but unbuildable: refused alone, listing the supported ones", () => {
+      expect(rejections({ dialect: "duckdb", declaration: COHERENT })).toEqual(
+         [],
       );
-      expect(messages[0]).toContain('refresh="full"');
+      const reason = unbuildable({ dialect: "duckdb", declaration: COHERENT });
+      expect(reason).toContain('dialect "duckdb"');
+      expect(reason).toContain("postgres, snowflake, standardsql (BigQuery)");
+      expect(reason).toContain('refresh="full"');
    });
 
-   it("rule 6: an unknown dialect is refused, not assumed capable", () => {
-      const [message] = rejections({
-         dialect: undefined,
-         declaration: COHERENT,
-      });
-      expect(message).toContain("unknown");
+   it("rule 6: an unknown dialect is refused alone, not assumed capable", () => {
+      expect(
+         unbuildable({ dialect: undefined, declaration: COHERENT }),
+      ).toContain("unknown");
    });
 
    it("rule 6 subsumes rule 7 today: an unsupported dialect reports once", () => {
       // Rule 7 stays a distinct rule so the two allowlists can widen
       // independently, but a dialect that fails rule 6 must not produce two
-      // messages about the same thing.
-      const messages = rejections({
+      // reasons about the same thing.
+      const reason = unbuildable({
          dialect: "duckdb",
          declaration: declaration({
             ...COHERENT,
@@ -326,8 +336,22 @@ describe("incrementalPolicyRejections", () => {
             ],
          }),
       });
-      expect(messages).toHaveLength(1);
-      expect(messages[0]).toContain("applies it transactionally");
+      expect(reason).toContain("applies it transactionally");
+      expect(reason).not.toContain("MERGE");
+   });
+
+   it("an invalid declaration fails the load even on a dialect that cannot build it", () => {
+      const invalid = {
+         ...COHERENT,
+         declaredWatermark: false,
+         watermark: undefined,
+      };
+      const overrides = {
+         dialect: "duckdb",
+         declaration: declaration(invalid),
+      };
+      expect(rejections(overrides).join(" ")).toContain("no watermark=");
+      expect(unbuildable(overrides)).toBeUndefined();
    });
 
    it("every dialect on the allowlist accepts a coherent declaration", () => {
@@ -435,25 +459,139 @@ describe("incrementalPolicyRejections", () => {
 
    // ── Rule 12: window fields ────────────────────────────────────────────
 
-   it("rule 12: any calculate: field is refused, with the eventual criterion", () => {
-      const messages = rejections({
+   it("rule 12: any calculate: field refuses the source alone, with the eventual criterion", () => {
+      const overrides = {
          declaration: declaration({ ...COHERENT, calculateFields: ["prev"] }),
-      });
-      expect(messages).toHaveLength(1);
-      expect(messages[0]).toContain('"prev"');
-      expect(messages[0]).toContain("calculate:");
+      };
+      expect(rejections(overrides)).toEqual([]);
+      const reason = unbuildable(overrides);
+      expect(reason).toContain('"prev"');
+      expect(reason).toContain("calculate:");
       // The criterion that will narrow this rule later, so the message does not
       // read as a permanent prohibition.
-      expect(messages[0]).toContain("BACKWARD");
+      expect(reason).toContain("BACKWARD");
       // …and the explicit carve-out, so nobody reads it as "no non-additive
       // aggregates".
-      expect(messages[0]).toContain("count_distinct");
+      expect(reason).toContain("count_distinct");
    });
 
    it("rule 12: does not fire on a source with no window fields", () => {
       expect(rejections({ declaration: declaration({ ...COHERENT }) })).toEqual(
          [],
       );
+      expect(
+         unbuildable({ declaration: declaration({ ...COHERENT }) }),
+      ).toBeUndefined();
+   });
+
+   // ── Rule 13: lookback= ─────────────────────────────────────────────────
+
+   /** A coherent merge declaration on a timestamp watermark, plus `extra`. */
+   function withLookback(
+      extra: Partial<IncrementalDeclaration>,
+   ): IncrementalDeclaration {
+      return declaration({
+         refresh: "incremental",
+         incremental: true,
+         declaredWatermark: true,
+         declaredMergeKey: true,
+         watermark: {
+            name: "loaded_at",
+            kind: "dimension",
+            malloyType: "timestamp",
+         },
+         watermarkOrderable: true,
+         mergeKeys: [
+            { name: "order_id", kind: "dimension", malloyType: "string" },
+         ],
+         strategy: "merge",
+         declaredLookback: true,
+         lookback: { text: "2 days", seconds: 172_800 },
+         ...extra,
+      });
+   }
+
+   it("rule 13: accepts lookback= with a time watermark and a merge key", () => {
+      expect(rejections({ declaration: withLookback({}) })).toEqual([]);
+      expect(
+         rejections({
+            declaration: withLookback({ watermark: DATE_WATERMARK }),
+         }),
+      ).toEqual([]);
+   });
+
+   it("rule 13: a lookback= that is not a duration names the units", () => {
+      const messages = rejections({
+         declaration: withLookback({ lookback: { text: "2 months" } }),
+      });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain('lookback="2 months"');
+      expect(messages[0]).toContain("hours, days or weeks");
+   });
+
+   it("rule 13: a lookback= longer than 365 days fails, not a silent rebuild", () => {
+      expect(
+         rejections({
+            declaration: withLookback({
+               lookback: { text: "365 days", seconds: MAX_LOOKBACK_SECONDS },
+            }),
+         }),
+      ).toEqual([]);
+      const messages = rejections({
+         declaration: withLookback({
+            lookback: { text: "53 weeks", seconds: 53 * 604_800 },
+         }),
+      });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain("365 days");
+   });
+
+   it("rule 13: lookback= needs merge_key=", () => {
+      const messages = rejections({
+         declaration: withLookback({
+            declaredMergeKey: false,
+            mergeKeys: [],
+            strategy: "range_replace",
+         }),
+      });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain("lookback= without merge_key=");
+   });
+
+   it("rule 13: lookback= needs a date or timestamp watermark", () => {
+      const messages = rejections({
+         declaration: withLookback({
+            watermark: {
+               name: "batch",
+               kind: "dimension",
+               malloyType: "number",
+            },
+         }),
+      });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain("of type number");
+   });
+
+   it("rule 1: lookback= on a source that is not incremental", () => {
+      const messages = rejections({
+         declaration: declaration({
+            declaredLookback: true,
+            lookback: { text: "2 days", seconds: 172_800 },
+         }),
+      });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain("declares lookback= but is not");
+   });
+
+   it("rule 5: an empty lookback= asks for a duration", () => {
+      const messages = rejections({
+         declaration: withLookback({
+            lookback: undefined,
+            malformed: [{ key: "lookback", problem: "empty" }],
+         }),
+      });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain('lookback="2 days"');
    });
 
    // ── Multiple sources ──────────────────────────────────────────────────
@@ -513,10 +651,10 @@ describe("incrementalPolicyAdvisories", () => {
       expect(stored.message).toContain("stored file");
       expect(stored.message).not.toContain("partitioned or clustered");
 
-      const [colocated] = incrementalPolicyAdvisories([
+      const [database] = incrementalPolicyAdvisories([
          source({ declaration: declaration(keyless) }),
       ]);
-      expect(colocated.message).toContain("partitioned or clustered");
+      expect(database.message).toContain("partitioned or clustered");
    });
 
    it("warns about a keyless delta with both consequences", () => {
@@ -532,6 +670,10 @@ describe("incrementalPolicyAdvisories", () => {
          }),
       ]);
       expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatchObject({
+         code: INCREMENTAL_NO_MERGE_KEY_CODE,
+         severity: "warn",
+      });
       // (a) a restated row with an advanced watermark appears twice…
       expect(warnings[0].message).toContain("appears twice");
       // (b) …and an unpartitioned target may re-read the whole table.
@@ -623,8 +765,12 @@ describe("incrementalPolicyAdvisories", () => {
       /** Only the shared-address advisory, which is all these tests assert on. */
       function collisionMessages(sources: IncrementalPolicySource[]) {
          return incrementalPolicyAdvisories(sources)
-            .filter((w) => (w.message ?? "").includes("content address"))
-            .map((w) => ({ subject: w.subject, message: w.message ?? "" }));
+            .filter((w) => w.code === INCREMENTAL_SHARED_ADDRESS_CODE)
+            .map((w) => ({
+               subject: w.subject,
+               message: w.message ?? "",
+               code: w.code,
+            }));
       }
 
       it("warns BOTH sources when their declarations disagree", () => {
@@ -647,6 +793,7 @@ describe("incrementalPolicyAdvisories", () => {
          expect(warnings[1].subject).toBe("daily_b");
          expect(warnings[1].message).toContain('"daily_a"');
          for (const w of warnings) {
+            expect(w.code).toBe(INCREMENTAL_SHARED_ADDRESS_CODE);
             expect(w.message).toContain("DISAGREE");
             expect(w.message).toContain("rebuilds in full");
          }
@@ -658,7 +805,7 @@ describe("incrementalPolicyAdvisories", () => {
          const warnings = collisionMessages(pair());
          expect(warnings).toHaveLength(2);
          for (const w of warnings) {
-            expect(w.message).toContain("Only one is materialized");
+            expect(w.message).toContain("Only one table is materialized");
             expect(w.message).not.toContain("DISAGREE");
          }
       });
@@ -781,8 +928,7 @@ source: raw is duckdb.sql("""
       "is inert for a plain persist source, and the package still loads",
       async () => {
          const pkg = await loadPackage(`${RAW}#@ persist name="t"\n${ROLLUP}`);
-         expect(pkg.incrementalPolicyWarnings()).toEqual([]);
-         expect(pkg.formatInvalidIncrementalPolicy()).toBe("");
+         expect(pkg.formatLoadGateText()).toBe("");
       },
       { timeout: 30000 },
    );
@@ -833,15 +979,43 @@ source: raw is duckdb.sql("""
    );
 
    it(
-      "resolves a watermark against the compiled output schema and refuses DuckDB",
+      "refuses a coherent declaration on DuckDB alone: the package loads, the source is not built, and it answers live",
       async () => {
-         const messages = await loadRejection(
+         const pkg = await loadPackage(
             `${RAW}#@ persist name="t" refresh="incremental" watermark="order_date"\n${ROLLUP}`,
          );
          // The declaration itself is coherent; only the dialect stands in the
-         // way — which on this dialect means the package cannot be served at all.
-         expect(messages).toHaveLength(1);
-         expect(messages[0]).toContain('dialect "duckdb"');
+         // way, which refuses that source alone.
+         const warnings = pkg.getPackageMetadata().warnings ?? [];
+         const notBuilt = warnings.filter(
+            (w) => w.code === "persist-not-built",
+         );
+         expect(notBuilt).toHaveLength(1);
+         expect(notBuilt[0]).toMatchObject({
+            severity: "warn",
+            subject: "daily",
+         });
+         expect(notBuilt[0].message).toContain('dialect "duckdb"');
+         // A refusal persist-source-refused never named: no alias.
+         expect(
+            warnings.filter((w) => w.code === "persist-source-refused"),
+         ).toEqual([]);
+         expect(pkg.formatLoadGateText()).toBe("");
+         // Not built: neither planned nor in the run's plan.
+         expect(Object.values(pkg.getBuildPlan()?.sources ?? {})).toEqual([]);
+         // Answered live, with live's rows.
+         const model = pkg.getModel("model.malloy");
+         const rows = async (query: string) =>
+            (
+               (await model!.runQuery(unrecordedAudit(), {
+                  query,
+               })) as unknown as {
+                  compactResult?: unknown[];
+               }
+            ).compactResult;
+         expect(
+            await rows("run: daily -> { aggregate: r is revenue.sum() }"),
+         ).toEqual(await rows("run: raw -> { aggregate: r is amount.sum() }"));
       },
       { timeout: 30000 },
    );
@@ -860,9 +1034,9 @@ source: raw is duckdb.sql("""
    );
 
    it(
-      "rejects a calculate: field while accepting count_distinct beside it",
+      "refuses a calculate: field alone, and accepts count_distinct beside it",
       async () => {
-         const gated = await loadRejection(
+         const gated = await loadPackage(
             `${RAW}#@ persist name="t" refresh="incremental" watermark="order_date"
 source: daily is raw -> {
   group_by: order_date
@@ -870,56 +1044,55 @@ source: daily is raw -> {
   calculate: prev is lag(revenue)
 }`,
          );
-         expect(gated.join("\n")).toContain("calculate:");
+         const reason = (gated.getPackageMetadata().warnings ?? [])
+            .filter((w) => w.code === "persist-not-built")
+            .map((w) => w.message)
+            .join("\n");
+         expect(reason).toContain("calculate:");
 
-         const allowed = await loadRejection(
+         await fs.rm(path.join(envPath, "pkg"), {
+            recursive: true,
+            force: true,
+         });
+         const allowed = await loadPackage(
             `${RAW}#@ persist name="t" refresh="incremental" watermark="order_date"
 source: daily is raw -> {
   group_by: order_date
   aggregate: buyers is count(order_id)
 }`,
          );
-         // Only the dialect refusal — the non-additive aggregate is fine.
-         expect(allowed).toHaveLength(1);
-         expect(allowed[0]).not.toContain("calculate:");
+         // Only the dialect refusal: the non-additive aggregate is fine.
+         const allowedReason = (allowed.getPackageMetadata().warnings ?? [])
+            .filter((w) => w.code === "persist-not-built")
+            .map((w) => w.message)
+            .join("\n");
+         expect(allowedReason).toContain('dialect "duckdb"');
+         expect(allowedReason).not.toContain("calculate:");
       },
       { timeout: 60000 },
    );
 
    it(
-      "surfaces the unknown-key advisory on the warnings WITHOUT failing the load",
+      "fails the load on an unknown key, which is invalid",
       async () => {
-         // The other half of the severity split, over a real package: an
-         // unrecognized key is legal, so the package loads and the finding rides
-         // `warnings`. (Its sibling, the keyless-delta advisory, needs an
-         // incremental source — which on DuckDB the dialect rule rejects, so it
-         // is only reachable from the unit tests above.)
-         const pkg = await loadPackage(
+         const messages = await loadRejection(
             `${RAW}#@ persist name="t" mergekey="order_id"\n${ROLLUP}`,
          );
-         const unknown = (pkg.getPackageMetadata().warnings ?? []).filter(
-            (w) => w.code === "persist-unknown-key",
-         );
-         expect(unknown).toHaveLength(1);
-         expect(unknown[0]).toMatchObject({
-            severity: "warn",
-            subject: "daily",
-         });
-         expect(unknown[0].message).toContain("mergekey=");
-         expect(pkg.formatInvalidIncrementalPolicy()).toBe("");
+         const joined = messages.join("\n");
+         expect(joined).toContain("mergekey=");
+         expect(joined).toContain("[persist-unknown-key]");
       },
       { timeout: 30000 },
    );
 
    it(
-      "really does compile two differently named sources to ONE address",
+      "gives two differently named sources of one build an address each",
       async () => {
-         // What makes the shared-address advisory worth having: nothing here says
-         // "duplicate" — two names, two name= tables — and yet the compiler emits
-         // byte-identical SQL, so one content address, one table, one boundary.
-         // The advisory's own wording is covered by the unit tests above, which
-         // can name a dialect that accepts an incremental declaration; here the
-         // sources stay plain so the package loads and the plan can be read.
+         // The compiler emits byte-identical SQL for both, which alone would be
+         // one content address, one table, one boundary; each `name=` is a
+         // table of its own, so it is folded into each address
+         // (foldDistinctTableNames) and the shared-address advisory, whose
+         // wording the unit tests above cover, never meets them.
          const pkg = await loadPackage(
             `${RAW}` +
                `#@ persist name="t_a"\n` +
@@ -938,7 +1111,7 @@ source: daily is raw -> {
             "daily_a",
             "daily_b",
          ]);
-         expect(new Set(sources.map((s) => s.sourceEntityId)).size).toBe(1);
+         expect(new Set(sources.map((s) => s.sourceEntityId)).size).toBe(2);
       },
       { timeout: 30000 },
    );
@@ -947,7 +1120,7 @@ source: daily is raw -> {
       "gates an extending child on the declaration it INHERITED, and reports BOTH",
       async () => {
          // Two things at once. The child declares nothing at all, so every rule
-         // has to read the effective merged tag to see it — and both rejections
+         // has to read the effective merged tag to see it, and both rejections
          // travel in the one thrown message, so a model with two broken
          // declarations takes one republish to fix rather than two.
          const messages = await loadRejection(
@@ -955,12 +1128,12 @@ source: daily is raw -> {
 
 source: child is daily extend { }`,
          );
-         // Two sources, two rules each (no watermark=, and the dialect): all
-         // four rejections travel, none is dropped for being the fifth thing
-         // wrong with the package.
-         expect(messages).toHaveLength(4);
+         // Two sources, one invalid rule each (no watermark=), with its code.
          for (const name of ['"daily"', '"child"']) {
-            expect(messages.filter((m) => m.includes(name))).toHaveLength(2);
+            const lines = messages.filter((m) => m.includes(name));
+            expect(lines).toHaveLength(1);
+            expect(lines[0]).toContain("no watermark=");
+            expect(lines[0]).toContain("[persist-invalid]");
          }
       },
       { timeout: 30000 },
@@ -969,15 +1142,21 @@ source: child is daily extend { }`,
    it(
       "lets a child opt out of an inherited incremental declaration",
       async () => {
-         const messages = await loadRejection(
+         const pkg = await loadPackage(
             `${RAW}#@ persist name="t" refresh="incremental" watermark="order_date"\n${ROLLUP}
 
 #@ persist name="child_t" refresh="full" -watermark
 source: child is daily extend { }`,
          );
-         // Only the parent's dialect refusal remains; the child is out entirely.
-         expect(messages).toHaveLength(1);
-         expect(messages[0]).toContain('"daily"');
+         // Only the parent is refused (its dialect); the child builds in full.
+         expect(
+            (pkg.getPackageMetadata().warnings ?? [])
+               .filter((w) => w.code === "persist-not-built")
+               .map((w) => w.subject),
+         ).toEqual(["daily"]);
+         expect(
+            Object.values(pkg.getBuildPlan()?.sources ?? {}).map((s) => s.name),
+         ).toEqual(["child"]);
       },
       { timeout: 30000 },
    );

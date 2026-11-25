@@ -1,0 +1,129 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "daily@<hammer>/nw/nw.malloy": [],
+          "database_daily@<hammer>/nw/nw.malloy": []
+        },
+        "order": [
+          "daily@<hammer>/nw/nw.malloy",
+          "database_daily@<hammer>/nw/nw.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "daily@<hammer>/nw/nw.malloy": "persist",
+      "database_daily@<hammer>/nw/nw.malloy": "persist"
+    },
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "daily@<hammer>/nw/nw.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
+      "database_daily@<hammer>/nw/nw.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "daily@<hammer>/nw/nw.malloy": "nw.malloy",
+      "database_daily@<hammer>/nw/nw.malloy": "nw.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "daily@<hammer>/nw/nw.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "database_daily@<hammer>/nw/nw.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "daily@<hammer>/nw/nw.malloy": {
+        "annotationFields": {
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "category",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "nw.malloy",
+        "name": "daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.nw_orders"
+          }
+        ],
+        "refresh": null,
+        "sourceEntityId": "d0f7f6e253375aa7c5e4ceff9c247d56bf9dfa175c6985eeb28525384f18170a",
+        "sourceID": "daily@<hammer>/nw/nw.malloy",
+        "sql": "sha256:5326cb357da67cd9"
+      },
+      "database_daily@<hammer>/nw/nw.malloy": {
+        "annotationFields": {},
+        "columns": [
+          {
+            "name": "category",
+            "type": "string"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "nw.malloy",
+        "name": "database_daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.nw_orders"
+          }
+        ],
+        "refresh": null,
+        "sourceEntityId": "de1fb34ea9ae01a3dc662c160fd9d1d3d49299db910cc3550c817fd8a31f51f1",
+        "sourceID": "database_daily@<hammer>/nw/nw.malloy",
+        "sql": "sha256:d5c92bf54d8bad2e"
+      }
+    }
+  }
+}

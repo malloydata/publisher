@@ -1,0 +1,272 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "orders_base",
+        "tier": "database"
+      },
+      {
+        "name": "orders_rollup",
+        "tier": "database"
+      }
+    ],
+    "verdicts": [
+      "orders_base:serves",
+      "orders_rollup:serves"
+    ],
+    "warnings": []
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "c2eee33828208500",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()"
+          ],
+          "source": "orders_base",
+          "stages": 1
+        },
+        "source": "orders_base"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_base -> { aggregate: n is count() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "1bb28858164cefd3a2649fb9cb621d7d9f68d5389410c61e7701a3b891f6d911"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "below",
+            "sourceName": "orders_rollup",
+            "tableId": "ae2e931a995f7c0422af9e9930b2a6012974e4ba5ae5ce6bb59261c6c6f0cdd2"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [],
+          "measures": [],
+          "sourceName": "orders_base"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "1bb28858164cefd3a2649fb9cb621d7d9f68d5389410c61e7701a3b891f6d911",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "count orders_base",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "0af637393866096d",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()"
+          ],
+          "source": "orders_rollup",
+          "stages": 1
+        },
+        "source": "orders_rollup"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_rollup -> { aggregate: n is count() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "ae2e931a995f7c0422af9e9930b2a6012974e4ba5ae5ce6bb59261c6c6f0cdd2"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [],
+          "measures": [],
+          "sourceName": "orders_rollup"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "ae2e931a995f7c0422af9e9930b2a6012974e4ba5ae5ce6bb59261c6c6f0cdd2",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "count orders_rollup",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "c2eee33828208500",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()"
+          ],
+          "source": "orders_base",
+          "stages": 1
+        },
+        "source": "orders_base"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_base -> { aggregate: n is count() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "1bb28858164cefd3a2649fb9cb621d7d9f68d5389410c61e7701a3b891f6d911"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "below",
+            "sourceName": "orders_rollup",
+            "tableId": "ae2e931a995f7c0422af9e9930b2a6012974e4ba5ae5ce6bb59261c6c6f0cdd2"
+          }
+        ],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [],
+          "measures": [],
+          "sourceName": "orders_base"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "1bb28858164cefd3a2649fb9cb621d7d9f68d5389410c61e7701a3b891f6d911",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "count orders_base",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "0af637393866096d",
+          "kind": "reduce",
+          "measures": [
+            "aggregate:count()"
+          ],
+          "source": "orders_rollup",
+          "stages": 1
+        },
+        "source": "orders_rollup"
+      },
+      "equalToLive": true,
+      "malloy": "run: orders_rollup -> { aggregate: n is count() }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "ae2e931a995f7c0422af9e9930b2a6012974e4ba5ae5ce6bb59261c6c6f0cdd2"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [],
+          "measures": [],
+          "sourceName": "orders_rollup"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "ae2e931a995f7c0422af9e9930b2a6012974e4ba5ae5ce6bb59261c6c6f0cdd2",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "count orders_rollup",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "on"
+    }
+  ]
+}

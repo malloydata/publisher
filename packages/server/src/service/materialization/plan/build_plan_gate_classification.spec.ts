@@ -26,7 +26,7 @@ import {
    type GateClassificationDeps,
 } from "../../gate_classification";
 import { malloyGivenToApi, type MalloyGiven } from "../../given";
-import { assertColocatedPersistNotAuthorizeGated } from "./materialization_eligibility";
+import { assertDatabasePersistNotAuthorizeGated } from "./materialization_eligibility";
 
 const ROOT = "file:///gate-classify/";
 let connections: FixedConnectionMap;
@@ -241,35 +241,15 @@ source: joiner is duckdb.sql("select 1 as x, 1 as org_id") extend {
       });
    });
 
-   it("pins {row_level, attributed:true} for a joined copy of the entry point's own extend-inherited gate — note-identity cannot see the join", async () => {
-      // `derived` writes no annotation of its own; `extend`ing `locked`
-      // unannotated copies `locked`'s note object BY REFERENCE onto
-      // `derived`'s own annotations (so `collectEntryPointGates` sees it as
-      // an own entry-point gate — `classification: "row_level"`). `derived`
-      // ALSO joins a second copy of `locked`, carrying the SAME note object.
-      // `isAuthorizeAttributedToEntryPoint` dedupes by object identity, so
-      // the joined copy contributes no note the no-join walk doesn't already
-      // have via the extend-inherited copy — `attributed` comes out `true`,
-      // indistinguishable from a source with no join-carried gate at all.
-      //
-      // This is safe ONLY IF the colocated relaxation this classification
-      // feeds grafts the row filter at serve time exactly as the live query
-      // path does — i.e. the artifact grants nothing a live query would not.
-      // It is not safe merely because `attributed` reads `true` here.
-      //
-      // It DOES hold for this exact shape: `derived` is itself a top-level
-      // `modelDef.contents` entry (the `#@ persist name="derived"` source),
-      // and `entry.struct` from `collectEntryPointGates` (above) is `derived`'s
-      // OWN compiled struct — the same object. `resolveGraftTarget`'s FIRST
-      // branch (`findContentsKey` by identity) therefore resolves the graft
-      // target to `"derived"` directly, with no ancestor walk involved, for
-      // BOTH a live query of `derived` and a colocated-served one: the graft
-      // mechanism (`Model.buildGraftedMaterializer`) operates on `modelDef`,
-      // not on whether the entry point's rows come from a live recompute or a
-      // same-connection table substitution. So the row filter lands on
-      // `derived` either way, identically. `assertColocatedPersistNotAuthorizeGated`
-      // (`./materialization_eligibility`) admits this shape given this exact
-      // `{classification: "row_level", attributed: true}` outcome.
+   it("marks an extend-inherited row filter as inherited, so a joined copy of it cannot be admitted either", async () => {
+      // `derived` writes no gate of its own: it reads `locked`'s
+      // `#(access_filter)` by extending it, and joins a second copy of
+      // `locked` carrying the same note object, so note identity cannot see
+      // the join and `attributed` reads true. The database relaxation used
+      // to admit it on that alone. The served copy re-roots `derived` on its
+      // table, replacing `locked`, so it cannot graft the gate and declines
+      // every query: the table, holding every caller's rows, would never be
+      // read. `inheritedRowFilter` refuses it at plan instead.
       const { modelDef, materializer, deps, sources } = await compileModel(
          `##! experimental.persistence
 ##! experimental.givens
@@ -296,15 +276,16 @@ source: derived is locked extend {
       expect(outcome).toEqual({
          classification: "row_level",
          attributed: true,
+         inheritedRowFilter: true,
       });
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(
+         assertDatabasePersistNotAuthorizeGated(
             sources.derived,
             sources.derived.name,
             "persist",
             outcome,
          ),
-      ).not.toThrow();
+      ).toThrow("reads an #(access_filter) row-level gate");
    });
 
    it("records the fail-closed outcome when classification throws", async () => {

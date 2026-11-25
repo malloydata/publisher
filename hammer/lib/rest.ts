@@ -175,6 +175,30 @@ export class Rest {
       };
    }
 
+   /**
+    * POST …/packages?dryRun=true with a `location`: what a publish of that tree
+    * would answer (the build plan and the serve verdicts it predicts), with
+    * nothing installed.
+    */
+   async dryRunFrom(
+      pkg: string,
+      location: string,
+   ): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
+      const res = await fetch(
+         `${this.baseUrl}/api/v0/environments/${this.env}/packages?dryRun=true`,
+         {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: pkg, location }),
+         },
+      );
+      return {
+         ok: res.ok,
+         status: res.status,
+         body: (await res.json()) as Record<string, unknown>,
+      };
+   }
+
    /** PUT …/latest: point the package's latest at a version. */
    async setLatestVersion(
       pkg: string,
@@ -369,6 +393,38 @@ export class Rest {
    }
 
    /**
+    * Clear a package's manifest binding so it serves live. A package with
+    * published versions clears through its latest version's manifest route
+    * (`PUT …/versions/{version}/manifest` with null): its PATCH reads a null
+    * `manifestLocation` as unset, since a generated client sends a field it
+    * was never given as null. An unversioned package clears with the PATCH.
+    */
+   async clearManifest(pkg: string): Promise<Record<string, unknown>> {
+      const current = await this.getPackage(pkg);
+      const versionId = current.versionId;
+      if (typeof versionId !== "string" || versionId === "") {
+         return this.patchPackage(pkg, { manifestLocation: null });
+      }
+      const res = await fetch(
+         this.pkgUrl(
+            pkg,
+            `/versions/${encodeURIComponent(versionId)}/manifest`,
+         ),
+         {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ manifestLocation: null }),
+         },
+      );
+      const json = (await res.json()) as Record<string, unknown>;
+      if (!res.ok)
+         throw new Error(
+            `clearManifest ${pkg}@${versionId} ${res.status}: ${JSON.stringify(json)}`,
+         );
+      return json;
+   }
+
+   /**
     * The `entries` map of the package's most recent successful materialization
     * (MANIFEST_FILE_READY). This is the manifest the orchestrator would stamp
     * and distribute; the harness re-serves it via `writeManifest` + a
@@ -449,13 +505,11 @@ export class Rest {
       return rec;
    }
 
-   async deleteMaterialization(
-      pkg: string,
-      id: string,
-      opts: { dropTables?: boolean } = {},
-   ): Promise<void> {
-      const suffix = `/materializations/${id}${opts.dropTables ? "?dropTables=true" : ""}`;
-      const res = await fetch(this.pkgUrl(pkg, suffix), { method: "DELETE" });
+   /** Delete a materialization record (record-only: it drops no table). */
+   async deleteMaterialization(pkg: string, id: string): Promise<void> {
+      const res = await fetch(this.pkgUrl(pkg, `/materializations/${id}`), {
+         method: "DELETE",
+      });
       if (!res.ok)
          throw new Error(
             `deleteMaterialization ${pkg}/${id} ${res.status}: ${await res.text()}`,
@@ -463,19 +517,18 @@ export class Rest {
    }
 
    /**
-    * Reclaim the most recent successful materialization: DELETE it with
-    * `?dropTables=true`, which runs the destination-aware read-write drop of the
-    * physical table. Returns the id reclaimed (throws if there is none).
+    * Delete the most recent successful materialization's record. Record-only:
+    * its tables stay. Returns the id deleted (throws if there is none).
     */
-   async reclaimLatest(pkg: string): Promise<string> {
+   async forgetLatest(pkg: string): Promise<string> {
       const mats = await this.listMaterializations(pkg);
       const ready = mats
          .filter((m) => m.status === "MANIFEST_FILE_READY")
          .sort((a, b) => String(b.id).localeCompare(String(a.id)));
       const id = ready[0]?.id as string | undefined;
       if (!id)
-         throw new Error(`reclaimLatest ${pkg}: no successful materialization`);
-      await this.deleteMaterialization(pkg, id, { dropTables: true });
+         throw new Error(`forgetLatest ${pkg}: no successful materialization`);
+      await this.deleteMaterialization(pkg, id);
       return id;
    }
 

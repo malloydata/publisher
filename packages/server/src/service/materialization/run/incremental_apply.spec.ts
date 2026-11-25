@@ -13,23 +13,27 @@ import {
    compilePersistSources,
    duckdbTestConnections,
 } from "../../../test_helpers/incremental_test_harness";
+import { probeSelect, snowflakeScriptingBlock } from "./warehouse_sql";
 import {
    canonicalBoundValue,
    compareBounds,
    decodeTablePathSegments,
    deltaScript,
    deltaStatements,
+   isMergeKeyGuardFailure,
+   isPairGuardFailure,
+   mergeGuardedInStatement,
    ledgerLineageMismatch,
+   PAIR_GUARD_MESSAGE,
+   pairStagingTable,
    deltaSelect,
    planIncrementalStep,
    probeMaxWatermark,
-   probeSelect,
    probeTargetColumns,
    renderSqlBound,
    seedCoveredThrough,
    shapeMismatch,
    snapshotBound,
-   snowflakeScriptingBlock,
    type SqlRunner,
    warehouseDeltaTarget,
 } from "./incremental_apply";
@@ -211,6 +215,21 @@ describe("deltaSelect", () => {
       );
    });
 
+   it("leaves the range open above with no end, for a pair table's delta", () => {
+      expect(
+         deltaSelect({
+            dialect: "postgres",
+            sourceSQL: "SELECT 1 AS __pair_watermark",
+            watermarkName: "__pair_watermark",
+            start: { malloyType: "timestamp", value: "2024-06-01T00:00:00" },
+            end: undefined,
+         }),
+      ).toBe(
+         `SELECT * FROM (SELECT 1 AS __pair_watermark) AS __d ` +
+            `WHERE "__pair_watermark" >= TIMESTAMP '2024-06-01 00:00:00'`,
+      );
+   });
+
    it("filters the source's OUTPUT rows, and returns real columns", async () => {
       // The regression this composition exists for, end to end on a dialect that
       // can run it. The delta is built from PersistSource.getSQL(), so it selects
@@ -276,6 +295,35 @@ describe("probeSelect", () => {
 });
 
 describe("decodeTablePathSegments", () => {
+   it("reads every path as the one parser does, folding bare ASCII letters only", () => {
+      // A hyphen in a bare part, a whole BigQuery path in one pair of
+      // backticks, a partly quoted path: each decodes, as the bind reads it.
+      expect(decodeTablePathSegments("postgres", "proj-x.ds.tbl")).toEqual([
+         "proj-x",
+         "ds",
+         "tbl",
+      ]);
+      expect(decodeTablePathSegments("standardsql", "`p-1.ds.t`")).toEqual([
+         "p-1",
+         "ds",
+         "t",
+      ]);
+      expect(decodeTablePathSegments("standardsql", "`db`.t")).toEqual([
+         "db",
+         "t",
+      ]);
+      // Postgres folds A-Z only; Snowflake a-z only.
+      expect(decodeTablePathSegments("postgres", '"s".Ä')).toEqual(["s", "Ä"]);
+      expect(decodeTablePathSegments("postgres", '"s".ÄB')).toEqual([
+         "s",
+         "Äb",
+      ]);
+      expect(decodeTablePathSegments("snowflake", '"s".straße')).toEqual([
+         "s",
+         "STRAßE",
+      ]);
+   });
+
    it("case-folds a bare Postgres segment and preserves a quoted one", () => {
       expect(decodeTablePathSegments("postgres", "MySchema.MyTable")).toEqual([
          "myschema",
@@ -308,9 +356,8 @@ describe("decodeTablePathSegments", () => {
    });
 
    it("returns undefined for a path it cannot decode, rather than guessing", () => {
-      expect(
-         decodeTablePathSegments("postgres", "proj-x.ds.tbl"),
-      ).toBeUndefined();
+      expect(decodeTablePathSegments("postgres", '"s.t')).toBeUndefined();
+      expect(decodeTablePathSegments("postgres", "s..t")).toBeUndefined();
       // A dialect with no options at all, as opposed to one whose options reject
       // this particular path.
       expect(decodeTablePathSegments("mysql", "t")).toBeUndefined();
@@ -342,6 +389,7 @@ describe("probeTargetColumns", () => {
          "analytics.daily",
       );
       expect(result.columns).toEqual(["a", "b"]);
+      expect(seen[0]).toContain('data_type AS "column_type"');
       expect(seen[0]).toContain("information_schema.columns");
       expect(seen[0]).toContain("table_schema = 'analytics'");
       expect(seen[0]).toContain("table_name = 'daily'");
@@ -433,7 +481,7 @@ describe("probeTargetColumns", () => {
          "postgres",
          "analytics.gone",
       );
-      expect(result).toEqual({ columns: [] });
+      expect(result).toEqual({ columns: [], types: new Map() });
    });
 
    it("turns a failed probe into a reason, not an exception", async () => {
@@ -741,6 +789,80 @@ const LEDGER = {
    createdAt: new Date("2024-05-01T00:00:00Z"),
 };
 
+describe("deltaStatements: a pair table", () => {
+   const pair = (dialect = "duckdb", windowDeletes = false) =>
+      deltaStatements({
+         dialect,
+         quotedTablePath: `lake."orders_all"`,
+         deltaSQL: "SELECT 1",
+         columns: ["id", "lines__line_id", "__parent_row", "__pair_watermark"],
+         mergeKeys: ["id"],
+         watermarkName: "__pair_watermark",
+         ...RANGE,
+         ...(windowDeletes
+            ? {
+                 windowDeletes: [
+                    {
+                       column: "order_ts",
+                       before: {
+                          malloyType: "timestamp",
+                          value: "2024-01-01T00:00:00",
+                       },
+                    },
+                 ],
+              }
+            : {}),
+         pair: {
+            parentKey: "id",
+            parentRow: "__parent_row",
+            stagingTable: pairStagingTable("lake.orders_all"),
+         },
+      });
+
+   it("stages the delta once, then replaces whole parents by key and checks the flag, in one transaction", () => {
+      expect(pair()).toEqual([
+         `CREATE OR REPLACE TEMP TABLE "__pair_delta_lake_orders_all" AS SELECT 1`,
+         "BEGIN",
+         `DELETE FROM lake."orders_all" AS __t WHERE EXISTS (SELECT 1 FROM "__pair_delta_lake_orders_all" AS __s WHERE (__t."id" = __s."id" OR (__t."id" IS NULL AND __s."id" IS NULL)))`,
+         `INSERT INTO lake."orders_all" ("id", "lines__line_id", "__parent_row", "__pair_watermark") SELECT "id", "lines__line_id", "__parent_row", "__pair_watermark" FROM "__pair_delta_lake_orders_all"`,
+         `SELECT error('${PAIR_GUARD_MESSAGE}') FROM (SELECT "id" FROM lake."orders_all" GROUP BY "id" HAVING count(*) FILTER (WHERE "__parent_row") <> 1) AS __g LIMIT 1`,
+         "COMMIT",
+         `DROP TABLE IF EXISTS "__pair_delta_lake_orders_all"`,
+      ]);
+   });
+
+   it("never merges row by row, and deletes the rolling window before the check", () => {
+      const statements = pair("duckdb", true);
+      expect(statements.join("\n")).not.toContain("MERGE");
+      const at = (prefix: string) =>
+         statements.findIndex((s) => s.startsWith(prefix));
+      expect(
+         at(`DELETE FROM lake."orders_all" WHERE "order_ts" <`),
+      ).toBeGreaterThan(at("INSERT INTO"));
+      expect(at("SELECT error(")).toBeGreaterThan(
+         at(`DELETE FROM lake."orders_all" WHERE "order_ts" <`),
+      );
+   });
+
+   it("refuses any target but DuckDB, the only one a pair table is built in", () => {
+      expect(() => pair("postgres")).toThrow(/DuckDB only/);
+   });
+
+   it("tells its own check's failure from any other error", () => {
+      expect(
+         isPairGuardFailure(
+            new Error(`Invalid Input Error: ${PAIR_GUARD_MESSAGE}`),
+         ),
+      ).toBe(true);
+      expect(isPairGuardFailure(new Error("connection reset"))).toBe(false);
+   });
+
+   it("names one staging table per stored table", () => {
+      expect(pairStagingTable(`lake."a b"`)).toBe("__pair_delta_lake__a_b_");
+      expect(pairStagingTable("lake.x")).not.toBe(pairStagingTable("lake.y"));
+   });
+});
+
 describe("ledgerLineageMismatch", () => {
    it("accepts a boundary that describes the same thing", () => {
       expect(ledgerLineageMismatch(LEDGER, LINEAGE)).toBeUndefined();
@@ -843,6 +965,10 @@ describe("planIncrementalStep", () => {
          columns?: string[];
          nonEmpty?: boolean;
          maxWatermark?: unknown;
+         /** Each stored column's type, as the catalog spells it. */
+         storedTypes?: string[];
+         /** Each delta column's type (`pg_typeof`), or a failed read. */
+         deltaTypes?: string[] | "fails";
       } = {},
    ): { runner: SqlRunner; seen: string[] } {
       const seen: string[] = [];
@@ -855,7 +981,24 @@ describe("planIncrementalStep", () => {
             return {
                rows: (
                   answers.columns ?? ["order_date", "region", "revenue"]
-               ).map((c) => ({ column_name: c })),
+               ).map((c, i) => ({
+                  column_name: c,
+                  ...(answers.storedTypes
+                     ? { column_type: answers.storedTypes[i] }
+                     : {}),
+               })),
+            };
+         }
+         if (sql.includes("pg_typeof")) {
+            if (answers.deltaTypes === "fails") {
+               throw new Error("permission denied for table base");
+            }
+            return {
+               rows: [
+                  Object.fromEntries(
+                     (answers.deltaTypes ?? []).map((t, i) => [`t${i}`, t]),
+                  ),
+               ],
             };
          }
          if (sql.includes("LIMIT 1")) {
@@ -891,6 +1034,67 @@ describe("planIncrementalStep", () => {
       });
    };
 
+   describe("a source column widened after the build", () => {
+      const STORED = ["date", "text", "integer"];
+      it("rebuilds when the delta's type is wider than the stored column's", async () => {
+         const step = await plan(
+            {},
+            { storedTypes: STORED, deltaTypes: ["date", "text", "bigint"] },
+         );
+         expect(step).toMatchObject({
+            mode: "seed",
+            reasonCode: "shape_mismatch",
+         });
+         if (step.mode !== "seed") return;
+         expect(step.reason).toContain('"revenue" (integer → bigint)');
+      });
+
+      it("deltas when the types are unchanged, or narrower", async () => {
+         for (const revenue of ["integer", "smallint"]) {
+            const step = await plan(
+               {},
+               { storedTypes: STORED, deltaTypes: ["date", "text", revenue] },
+            );
+            expect(step.mode).toBe("delta");
+         }
+      });
+
+      it("rebuilds when the delta's types cannot be read", async () => {
+         const step = await plan(
+            {},
+            { storedTypes: STORED, deltaTypes: "fails" },
+         );
+         expect(step).toMatchObject({
+            mode: "seed",
+            reasonCode: "shape_mismatch",
+         });
+      });
+
+      it("reads the delta's types with no row: pg_typeof over an empty read", async () => {
+         const { runner, seen } = fakeRunner({
+            storedTypes: STORED,
+            deltaTypes: STORED,
+         });
+         await planIncrementalStep({
+            target: warehouseDeltaTarget({
+               dialect: "postgres",
+               runner,
+               quotedTablePath: `"analytics"."daily"`,
+               lineage: LINEAGE,
+               sourceSQL: "SELECT * FROM base",
+            }),
+            lineage: LINEAGE,
+            ledgerEntry: LEDGER,
+            forceRefresh: false,
+            now: NOW,
+            columns: ["order_date", "region", "revenue"],
+         });
+         const read = seen.find((q) => q.includes("pg_typeof"));
+         expect(read).toContain("LIMIT 0");
+         expect(read).toContain('pg_typeof(__q."revenue")) AS t2');
+      });
+   });
+
    it("applies a delta over [covered_through, snapshot) for a date watermark", async () => {
       const step = await plan();
       expect(step.mode).toBe("delta");
@@ -907,6 +1111,76 @@ describe("planIncrementalStep", () => {
       expect(script).toContain("FROM (SELECT * FROM base)");
       expect(script).toContain("2024-06-01");
       expect(script).toContain("2024-07-01");
+   });
+
+   describe("for an extension over its parent's table (upstream)", () => {
+      it("starts no later than the parent's delta start", async () => {
+         const step = await plan({
+            upstream: {
+               startAtMost: { malloyType: "date", value: "2024-05-20" },
+            },
+         });
+         expect(step.mode).toBe("delta");
+         if (step.mode !== "delta") return;
+         expect(step.start.value).toBe("2024-05-20");
+         expect(step.end.value).toBe("2024-07-01");
+         // A later parent start leaves its own lower bound.
+         const later = await plan({
+            upstream: {
+               startAtMost: { malloyType: "date", value: "2024-06-15" },
+            },
+         });
+         expect(later.mode === "delta" && later.start.value).toBe("2024-06-01");
+      });
+
+      it("ends a time range at the parent's coverage, and records it", async () => {
+         const step = await plan({
+            upstream: {
+               endAtMost: { malloyType: "date", value: "2024-06-20" },
+            },
+         });
+         expect(step.mode).toBe("delta");
+         if (step.mode !== "delta") return;
+         expect(step.end.value).toBe("2024-06-20");
+         expect(step.coveredThrough.value).toBe("2024-06-20");
+         // A parent that covers no more than the extension: nothing to do.
+         const behind = await plan({
+            upstream: {
+               endAtMost: { malloyType: "date", value: "2024-06-01" },
+            },
+         });
+         expect(behind.mode).toBe("skip");
+      });
+
+      it("seeds with the run's reason, before any probe", async () => {
+         const { runner, seen } = fakeRunner();
+         const step = await planIncrementalStep({
+            target: warehouseDeltaTarget({
+               dialect: "postgres",
+               runner,
+               quotedTablePath: `"analytics"."daily"`,
+               lineage: LINEAGE,
+               sourceSQL: "SELECT * FROM base",
+            }),
+            lineage: LINEAGE,
+            ledgerEntry: LEDGER,
+            forceRefresh: false,
+            now: NOW,
+            columns: ["order_date", "region", "revenue"],
+            upstream: {
+               reseed: {
+                  reasonCode: "upstream_generation_skipped",
+                  reason: "missed one",
+               },
+            },
+         });
+         expect(step).toEqual({
+            mode: "seed",
+            reasonCode: "upstream_generation_skipped",
+            reason: "missed one",
+         });
+         expect(seen).toEqual([]);
+      });
    });
 
    it("seeds on forceRefresh, before touching the warehouse", async () => {
@@ -1107,5 +1381,79 @@ describe("seedCoveredThrough", () => {
          NOW,
       );
       expect(result.bound).toBeUndefined();
+   });
+});
+
+describe("a merge whose source repeats a key", () => {
+   const merge = (dialect: string) =>
+      deltaStatements({
+         dialect,
+         quotedTablePath: "tgt",
+         deltaSQL: "SELECT * FROM src",
+         columns: ["id", "amount"],
+         mergeKeys: ["id"],
+         watermarkName: "updated_at",
+         start: { malloyType: "date", value: "2024-06-01" },
+         end: { malloyType: "date", value: "2024-07-01" },
+      })[0];
+
+   it("is guarded on Postgres and DuckDB, where the guard's failure is executed", () => {
+      for (const dialect of ["postgres", "duckdb"]) {
+         expect(merge(dialect)).toContain("__merge_key_rows > 1");
+      }
+   });
+
+   it("is guarded on BigQuery with ERROR() in the CASE branch, its runtime error", () => {
+      expect(merge("standardsql")).toContain(
+         "USING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY `id`) " +
+            "AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k " +
+            "WHERE (CASE WHEN __merge_key_rows > 1 THEN " +
+            "ERROR('incremental-merge-key-not-unique') END) IS NULL) AS __s",
+      );
+   });
+
+   it("is merged unguarded on Snowflake, which has no runtime error function, and probed after", () => {
+      expect(merge("snowflake")).toContain("USING (SELECT * FROM src) AS __s");
+      expect(mergeGuardedInStatement("snowflake")).toBe(false);
+      for (const dialect of ["postgres", "duckdb", "standardsql"]) {
+         expect(mergeGuardedInStatement(dialect)).toBe(true);
+      }
+   });
+
+   // Verified by message match only: neither engine runs in these tests. The
+   // messages are as each engine documents and raises them.
+   it.each([
+      [
+         "BigQuery",
+         "UPDATE/MERGE must match at most one source row for each target row",
+      ],
+      [
+         "Snowflake (ERROR_ON_NONDETERMINISTIC_MERGE)",
+         "100090 (42P18): Duplicate row detected during DML action\nRow Values: [1, 10]",
+      ],
+      [
+         "BigQuery's ERROR() in the guard",
+         "Error: incremental-merge-key-not-unique; reason: invalidQuery, message: incremental-merge-key-not-unique",
+      ],
+      [
+         "Postgres, past the guard",
+         "MERGE command cannot affect row a second time",
+      ],
+      [
+         "the guard",
+         'invalid input syntax for type integer: "incremental-merge-key-not-unique"',
+      ],
+   ])("reads %s's refusal as a repeated key", (_engine, message) => {
+      expect(isMergeKeyGuardFailure(new Error(message))).toBe(true);
+   });
+
+   it("reads any other failure as itself", () => {
+      for (const message of [
+         "permission denied for table tgt",
+         "Duplicate column name",
+         "Query exceeded resource limits",
+      ]) {
+         expect(isMergeKeyGuardFailure(new Error(message))).toBe(false);
+      }
    });
 });
