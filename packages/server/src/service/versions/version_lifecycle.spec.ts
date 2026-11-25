@@ -87,10 +87,6 @@ function host(): VersionHost<Loaded> {
          });
          return true;
       },
-      removePackageRecord: async (packageName) => {
-         const row = await repo.getPackageByName(ENV_ID, packageName);
-         if (row) await repo.deletePackage(row.id);
-      },
       boundManifestOf: (loaded) => loaded.manifest,
       onVersionLoaded: (_pkg, loaded, isLatest) =>
          log.push(`served ${loaded.versionId}${isLatest ? " latest" : ""}`),

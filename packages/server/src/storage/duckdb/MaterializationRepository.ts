@@ -11,7 +11,6 @@ import {
 import { DuckDBConnection } from "./DuckDBConnection";
 import { logger } from "../../logger";
 import { newId, Row, rowTimestamps, updateRowSql } from "./rows";
-import { OWED_RECLAIM_RUN, RUNNING_VERSION_RUN } from "./VersionRepository";
 
 const TERMINAL_STATUSES: ReadonlySet<MaterializationStatus> = new Set([
    "MANIFEST_FILE_READY",
@@ -285,23 +284,6 @@ export class MaterializationRepository {
       await this.db.run(
          "DELETE FROM materializations WHERE environment_id = ?",
          [environmentId],
-      );
-   }
-
-   /**
-    * Delete a package's runs, keeping those its deleted versions' reclaim
-    * still owes (their own `scope: version` auto-runs), which that reclaim
-    * drops and then deletes, and any run of a version still going
-    * (RUNNING_VERSION_RUN). An unversioned package has neither, so its runs
-    * all go, as they always have.
-    */
-   async deleteByPackage(
-      environmentId: string,
-      packageName: string,
-   ): Promise<void> {
-      await this.db.run(
-         `DELETE FROM materializations WHERE environment_id = ? AND package_name = ? AND NOT (${OWED_RECLAIM_RUN}) AND NOT (${RUNNING_VERSION_RUN})`,
-         [environmentId, packageName],
       );
    }
 }

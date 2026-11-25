@@ -58,12 +58,6 @@ export interface ResourceRepository {
    ): Promise<PackageRecord>;
    /** Deletes the package's row and everything keyed by it, versions included. */
    deletePackage(id: string): Promise<void>;
-   /**
-    * Remove only the package's own row, keeping what is keyed by its name
-    * (its runs, its incremental ledger, its versions): for undoing a row this
-    * server just created, which owns none of them.
-    */
-   deletePackageRecord(id: string): Promise<void>;
 
    // Versions
    listVersions(environmentId: string, packageName: string): Promise<Version[]>;
@@ -78,11 +72,16 @@ export interface ResourceRepository {
     * Record a newly published version and, when `promote` says so, make it the
     * package's `latest`, in one transaction. `promote` is handed the current
     * `latest` read inside that transaction. Throws PackageVersionError
-    * VERSION_CONFLICT when the version already has a row.
+    * VERSION_CONFLICT when the version already has a row. A package with no
+    * row throws, writing nothing, unless `createPackage` is set: then the
+    * package's row is written in the same transaction, so a package's first
+    * version and its row commit together and a crash cannot leave one
+    * without the other.
     */
    commitPublish(
       version: NewVersion,
       promote: PromoteRule,
+      options?: { createPackage?: boolean },
    ): Promise<{ version: Version; promoted: boolean }>;
    /**
     * Make an existing, unarchived version the package's `latest`, stamping its

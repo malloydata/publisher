@@ -3013,7 +3013,6 @@ export class Environment {
             packageName: string,
             description: string | null | undefined,
          ): Promise<boolean>;
-         removePackageRecord(packageName: string): Promise<void>;
          /** A package went with its last version: drop what is kept on it. */
          packageRemoved?(packageName: string): void;
       },
@@ -3073,7 +3072,6 @@ export class Environment {
                );
             },
             ensurePackageRecord: hooks.ensurePackageRecord,
-            removePackageRecord: hooks.removePackageRecord,
             // A manifest whose bind failed is not bound, so naming it again
             // binds it again rather than answering for a bind that failed.
             boundManifestOf: (loaded) =>

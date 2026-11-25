@@ -1,7 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { PackageVersionError, refuseVersionDelete } from "../../errors";
+import {
+   PackageNotFoundError,
+   PackageVersionError,
+   refuseVersionDelete,
+} from "../../errors";
 import {
    NewVersion,
    PromoteRule,
@@ -13,6 +17,7 @@ import {
    isUniqueViolation,
    TransactionQueries,
 } from "./DuckDBConnection";
+import { newId } from "./rows";
 
 type Row = Record<string, unknown>;
 
@@ -94,12 +99,31 @@ export class VersionRepository {
    async commitPublish(
       version: NewVersion,
       promote: PromoteRule,
+      options: { createPackage?: boolean } = {},
    ): Promise<{ version: Version; promoted: boolean }> {
       const { environmentId, packageName, versionId } = version;
       return this.db.transaction(async (tx) => {
+         const now = new Date().toISOString();
+         if (options.createPackage) {
+            // A package's first version: its row is written with it, never
+            // before it, so no crash leaves a package with no version.
+            await tx.run(
+               `INSERT INTO packages (id, environment_id, name, description, manifest_path, metadata, created_at, updated_at)
+                SELECT ?, ?, ?, NULL, '', '{}', ?, ?
+                WHERE NOT EXISTS (SELECT 1 FROM packages WHERE environment_id = ? AND name = ?)`,
+               [
+                  newId(),
+                  environmentId,
+                  packageName,
+                  now,
+                  now,
+                  environmentId,
+                  packageName,
+               ],
+            );
+         }
          const current = await readLatest(tx, environmentId, packageName);
          const promoted = current !== versionId && promote(current);
-         const now = new Date().toISOString();
          let row: Row | null;
          try {
             row = await tx.get<Row>(
@@ -322,6 +346,37 @@ export class VersionRepository {
       });
    }
 
+   /**
+    * Delete a package: its row, its versions, its ledger and its runs. Kept,
+    * as deletePackageIfNoVersions keeps them: its versions' own auto-runs,
+    * which their reclaim drops and then deletes, and any run still going. The
+    * ledger is forgotten by the package tag on each boundary, which names
+    * whoever last advanced it, so a table shared across versions keeps its
+    * boundary if another version wrote it last (at most one seed). One
+    * transaction, so a publish of a further version, which does not take the
+    * package lock a package delete holds, commits either before it (and its
+    * version goes too) or after it (and is refused with a 404: the package has
+    * no row). A crash leaves all of it or none.
+    */
+   async deletePackage(id: string): Promise<void> {
+      await this.db.transaction(async (tx) => {
+         const pkg = await tx.get<{ environment_id: string; name: string }>(
+            "SELECT environment_id, name FROM packages WHERE id = ?",
+            [id],
+         );
+         if (!pkg) return;
+         const byPackage = "WHERE environment_id = ? AND package_name = ?";
+         const key = [pkg.environment_id, pkg.name];
+         await tx.run(`DELETE FROM incremental_ledger ${byPackage}`, key);
+         await tx.run(
+            `DELETE FROM materializations ${byPackage} AND NOT (${OWED_RECLAIM_RUN}) AND NOT (${RUNNING_VERSION_RUN})`,
+            key,
+         );
+         await tx.run(`DELETE FROM versions ${byPackage}`, key);
+         await tx.run("DELETE FROM packages WHERE id = ?", [id]);
+      });
+   }
+
    async setManifestPath(
       environmentId: string,
       packageName: string,
@@ -356,16 +411,6 @@ export class VersionRepository {
       );
    }
 
-   async deleteByPackage(
-      environmentId: string,
-      packageName: string,
-   ): Promise<void> {
-      await this.db.run(
-         "DELETE FROM versions WHERE environment_id = ? AND package_name = ?",
-         [environmentId, packageName],
-      );
-   }
-
    async deleteByEnvironmentId(environmentId: string): Promise<void> {
       await this.db.run("DELETE FROM versions WHERE environment_id = ?", [
          environmentId,
@@ -375,8 +420,11 @@ export class VersionRepository {
 
 /**
  * The package's `latest`, read inside a transaction. A version is recorded
- * against an existing package row, so a missing one is a caller bug: throwing
- * rolls the transaction back rather than leaving a version no package owns.
+ * against an existing package row, so a missing one means the package was
+ * deleted while this write waited (a further version's publish does not hold
+ * the package lock a delete takes). Throwing rolls the transaction back rather
+ * than leaving a version no package owns, and answers 404 as the package is
+ * gone, not a 500.
  */
 async function readLatest(
    tx: TransactionQueries,
@@ -388,8 +436,8 @@ async function readLatest(
       [environmentId, packageName],
    );
    if (!pkg) {
-      throw new Error(
-         `Package ${packageName} has no registry row; record the package before its versions.`,
+      throw new PackageNotFoundError(
+         `Package ${packageName} has no registry row: it was deleted while this version was being written. Publish it again.`,
       );
    }
    return pkg.latest_version ?? null;

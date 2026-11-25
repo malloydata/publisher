@@ -94,10 +94,6 @@ beforeEach(async () => {
          });
          return true;
       },
-      removePackageRecord: async (packageName) => {
-         const row = await repo.getPackageByName(ENV_ID, packageName);
-         if (row) await repo.deletePackage(row.id);
-      },
    });
    env.setStorageBindingResolver(async () => ({}));
 });

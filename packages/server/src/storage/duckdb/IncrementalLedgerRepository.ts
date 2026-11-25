@@ -138,22 +138,6 @@ export class IncrementalLedgerRepository {
          [environmentId],
       );
    }
-
-   /**
-    * Forget every boundary tagged with a package, for when that package is
-    * deleted. Best-effort because the package is not part of the key: the tag
-    * names whoever last advanced a row, so a table shared across versions keeps
-    * its boundary if another version wrote it last. That costs at most one seed.
-    */
-   async deleteByPackage(
-      environmentId: string,
-      packageName: string,
-   ): Promise<void> {
-      await this.db.run(
-         "DELETE FROM incremental_ledger WHERE environment_id = ? AND package_name = ?",
-         [environmentId, packageName],
-      );
-   }
 }
 
 function mapRow(row: Record<string, unknown>): IncrementalLedgerEntry {

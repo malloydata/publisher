@@ -99,11 +99,6 @@ function host(): VersionHost<Loaded> {
          }
          return false;
       },
-      removePackageRecord: async (packageName) => {
-         log.push(`remove record ${packageName}`);
-         const row = await repo.getPackageByName(ENV_ID, packageName);
-         if (row) await repo.deletePackage(row.id);
-      },
    };
 }
 
@@ -218,8 +213,9 @@ describe("VersionService.publish", () => {
          archiveStatus: "unarchive",
       });
       expect(await latest()).toBe("1.0.0");
-      // The row is made with no description, which is set once committed.
-      expect(descriptions).toEqual([undefined, "Sales package"]);
+      // The row is written with the version, with no description, which is
+      // set once committed.
+      expect(descriptions).toEqual(["Sales package"]);
       expect((await repo.getPackageByName(ENV_ID, PKG))!.description).toBe(
          "Sales package",
       );
@@ -249,13 +245,9 @@ describe("VersionService.publish", () => {
       expect(error).toBeInstanceOf(BadRequestError);
       expect(fs.readdirSync(path.join(envPath, PKG))).toEqual(["old.malloy"]);
       expect(await repo.listVersions(ENV_ID, PKG)).toEqual([]);
-      // The package row this publish created goes with it.
+      // No package row: it is written only with a committed version.
       expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
-      expect(log).toEqual([
-         "load sales@1.0.0",
-         "release sales@1.0.0",
-         "remove record sales",
-      ]);
+      expect(log).toEqual(["load sales@1.0.0", "release sales@1.0.0"]);
    });
 
    it("refuses a version that does not compile, and the versions already published keep serving", async () => {

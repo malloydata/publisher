@@ -203,10 +203,6 @@ async function fixture(
             });
             return true;
          },
-         removePackageRecord: async (packageName) => {
-            const row = await repo.getPackageByName(ENV_ID, packageName);
-            if (row) await repo.deletePackage(row.id);
-         },
       });
    } else {
       await repo.createPackage({

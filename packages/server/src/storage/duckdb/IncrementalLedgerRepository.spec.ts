@@ -256,28 +256,14 @@ describe("IncrementalLedgerRepository", () => {
       ).not.toBeNull();
    });
 
-   it("cascades by package and by environment", async () => {
+   it("cascades by environment", async () => {
       // Distinct tables per row, since the package name no longer separates them.
+      // A package's rows go with its delete (VersionRepository.deletePackage).
       const { repo } = await freshRepo();
-      await repo.upsert(entry());
       await repo.upsert(
          entry({ packageName: "pkg-b", physicalTableName: "analytics.b" }),
       );
       await repo.upsert(entry({ environmentId: "env-2" }));
-
-      await repo.deleteByPackage(ENV, PKG);
-      expect(
-         await repo.get(ENV, {
-            connectionName: CONN,
-            physicalTableName: TABLE,
-         }),
-      ).toBeNull();
-      expect(
-         await repo.get(ENV, {
-            connectionName: CONN,
-            physicalTableName: "analytics.b",
-         }),
-      ).not.toBeNull();
 
       await repo.deleteByEnvironmentId(ENV);
       expect(

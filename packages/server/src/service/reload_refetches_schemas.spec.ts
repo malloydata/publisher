@@ -240,10 +240,6 @@ describe("publishing a version refetches table schemas", () => {
             });
             return true;
          },
-         removePackageRecord: async (packageName) => {
-            const row = await repo.getPackageByName(ENV_ID, packageName);
-            if (row) await repo.deletePackage(row.id);
-         },
       });
    });
 

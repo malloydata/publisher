@@ -158,10 +158,6 @@ describe("leftover name= views through real builds", () => {
             });
             return true;
          },
-         removePackageRecord: async (packageName) => {
-            const row = await repo.getPackageByName(ENV_ID, packageName);
-            if (row) await repo.deletePackage(row.id);
-         },
       });
       created.setStorageBindingResolver(
          storageBindingResolverFor(repo, ENV_ID),

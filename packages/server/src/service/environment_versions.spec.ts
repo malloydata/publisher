@@ -85,10 +85,6 @@ async function newEnvironment(): Promise<Environment> {
          });
          return true;
       },
-      removePackageRecord: async (packageName) => {
-         const row = await repo.getPackageByName(ENV_ID, packageName);
-         if (row) await repo.deletePackage(row.id);
-      },
    });
    return env;
 }
@@ -487,6 +483,72 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       );
       return { release, reached, restore: () => spy.mockRestore() };
    }
+
+   it("a crash during a new package's first publish leaves no package row for the restart to load", async () => {
+      const env = await newEnvironment();
+      const held = holdCompile(true);
+      try {
+         const publishing = publish(env, source("1.0.0", 1)).then(
+            () => "published",
+            () => "failed",
+         );
+         // Inside the compile, before the commit: what a crash here leaves
+         // is what the store holds now.
+         await held.reached;
+         expect(await repo.listPackages(ENV_ID)).toEqual([]);
+         expect(await repo.listVersions(ENV_ID, PKG)).toEqual([]);
+
+         // A restart registers a package for each row, as the store does.
+         const restarted = await newEnvironment();
+         for (const row of await repo.listPackages(ENV_ID)) {
+            restarted.registerConfiguredPackage(row.name);
+         }
+         expect(await restarted.listPackages()).toEqual([]);
+         expect(restarted.getFailedPackages().size).toBe(0);
+
+         held.release();
+         expect(await publishing).toBe("failed");
+      } finally {
+         held.release();
+         held.restore();
+      }
+      expect(await repo.listPackages(ENV_ID)).toEqual([]);
+   });
+
+   it("a package an earlier release left with a row and no version is cleared by publishing it again", async () => {
+      // What an earlier release left after a crash during a first publish.
+      await repo.createPackage({
+         environmentId: ENV_ID,
+         name: PKG,
+         description: "",
+         manifestPath: "",
+      });
+      const restarted = await newEnvironment();
+      for (const row of await repo.listPackages(ENV_ID)) {
+         restarted.registerConfiguredPackage(row.name);
+      }
+      await restarted.listPackages();
+
+      await publish(restarted, source("1.0.0", 7));
+      expect(
+         await answerOf(await restarted.getPackage(parsePackageName(PKG))),
+      ).toBe(7);
+      expect(restarted.getFailedPackages().has(PKG)).toBe(false);
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toMatchObject({
+         latestVersion: "1.0.0",
+      });
+      expect((await repo.listPackages(ENV_ID)).length).toBe(1);
+   });
+
+   it("writes a new package's row with its first version", async () => {
+      const env = await newEnvironment();
+      await publish(env, source("1.0.0", 1));
+      const row = await repo.getPackageByName(ENV_ID, PKG);
+      expect(row).toMatchObject({ name: PKG, latestVersion: "1.0.0" });
+      expect(
+         (await repo.listVersions(ENV_ID, PKG)).map((v) => v.versionId),
+      ).toEqual(["1.0.0"]);
+   });
 
    it("a read of an unversioned package during its first publish waits, then serves the version", async () => {
       unversionedOverAFile(0);
