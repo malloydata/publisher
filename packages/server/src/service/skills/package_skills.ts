@@ -5,9 +5,12 @@ import { createHash } from "crypto";
 import fs from "fs";
 import * as path from "path";
 import {
+   flatSkills,
    parseReference,
    referencePointer,
    stripLicenseHeader,
+   type BundledSkill,
+   type SkillCatalogEntry,
    type SkillEntry,
 } from "./build_skills_bundle";
 import { parseFrontmatter } from "./frontmatter";
@@ -15,6 +18,7 @@ import {
    ASSET_MAX_DEPTH,
    ASSET_MAX_ENTRIES,
    ASSET_PATH_MAX_CHARS,
+   decodeText,
    listBounded,
    newWalkBudget,
    skillFiles,
@@ -32,8 +36,13 @@ import {
 import { pathToFileURL } from "url";
 import { callerVisibleText } from "../../package_relative_text";
 
-/** The build-time bundle of the repo's skills, served as MCP prompts and through get_skill. */
-export const BUNDLED_SKILLS = (skillsBundle as { skills: SkillEntry[] }).skills;
+/** The build-time bundle of the repo's skills: each one's manifest, frontmatter and Markdown text. */
+export const BUNDLED_CATALOG = (
+   skillsBundle as unknown as { skills: BundledSkill[] }
+).skills;
+
+/** The bundle as the flat entries served as MCP prompts and through get_skill. */
+export const BUNDLED_SKILLS = flatSkills(BUNDLED_CATALOG);
 
 /** The directory a package keeps its own agent skills in. */
 export const PACKAGE_SKILLS_DIR = "skills";
@@ -43,15 +52,6 @@ type SkillOrigin = "bundled" | "package";
 
 export interface ResolvedSkill extends SkillEntry {
    origin: SkillOrigin;
-}
-
-/** One served skill, in the MCP skills extension's entry shape: `get_skill` is served from it. */
-export interface SkillCatalogEntry {
-   name: string;
-   /** The SKILL.md frontmatter as JSON (dates as ISO strings, keys as strings); empty when it did not parse. */
-   frontmatter: Record<string, unknown>;
-   /** Every served file by path relative to the skill, inline or listed; `digest` is `sha256:` and the hex of the file's raw bytes. */
-   files: Record<string, { digest: string; size: number }>;
 }
 
 interface PackageSkills {
@@ -205,19 +205,6 @@ function readListedBytes(
       return {
          problem: `cannot be read (${callerVisibleText((error as Error).message, packageRoot)})`,
       };
-   }
-}
-
-/** A listed file is text when its bytes are strict UTF-8 without a NUL; anything else is binary and is never served as a body. */
-function decodeText(bytes: Buffer): string | undefined {
-   if (bytes.includes(0)) return undefined;
-   try {
-      // ignoreBOM keeps a leading BOM, so the text is the bytes as they are.
-      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
-         bytes,
-      );
-   } catch {
-      return undefined;
    }
 }
 

@@ -2,20 +2,20 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
    buildSkills,
+   flatSkills,
    isCredible,
+   type BundledSkill,
    type SkillEntry,
 } from "./build_skills_bundle";
+import { skillFiles } from "./skill_files";
 import bundle from "./skills_bundle.json";
 
-const skills = (
-   bundle as {
-      skills: { name: string; description: string; body: string }[];
-   }
-).skills;
+const skills = (bundle as unknown as { skills: BundledSkill[] }).skills;
 
 /** The repo's top-level skills/, which this bundle is generated from. */
 const sourceDir = path.join(
@@ -35,7 +35,11 @@ const sourceDir = path.join(
  */
 const byCodepoint = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
-const byName = (a: SkillEntry, b: SkillEntry) => byCodepoint(a.name, b.name);
+const byName = (a: { name: string }, b: { name: string }) =>
+   byCodepoint(a.name, b.name);
+
+/** The flat entries the MCP prompts and get_skill still read. */
+const flat = flatSkills(skills);
 
 describe("skills_bundle.json (generated dual-channel asset)", () => {
    it("is in sync with skills/", () => {
@@ -121,11 +125,11 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
       expect(names).toEqual(buildSkills(sourceDir).map((s) => s.name));
    });
 
-   it("every skill has a nonempty name, description, and body", () => {
+   it("every skill has a name, a description in its frontmatter, and a SKILL.md", () => {
       for (const s of skills) {
          expect(s.name.length).toBeGreaterThan(0);
-         expect(s.description.length).toBeGreaterThan(0);
-         expect(s.body.length).toBeGreaterThan(0);
+         expect(String(s.frontmatter.description).length).toBeGreaterThan(0);
+         expect(s.bodies["SKILL.md"]!.length).toBeGreaterThan(0);
       }
    });
 
@@ -134,15 +138,111 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
       expect(new Set(names).size).toBe(names.length);
    });
 
+   // The bundle must stay near the Markdown it embeds: the tree is 4.7 MB because of scripts, tests and
+   // workbooks, and none of them may be embedded.
+   it("stays within 2 MB", () => {
+      const bytes = fs.statSync(
+         path.join(import.meta.dir, "skills_bundle.json"),
+      ).size;
+      expect(bytes).toBeLessThan(2_000_000);
+   });
+
+   describe("a skill is its whole directory", () => {
+      const dirOf = (s: BundledSkill) => path.join(sourceDir, s.name);
+
+      it("serves SKILL.md verbatim, licence header and frontmatter included, with no pointer section", () => {
+         for (const s of skills) {
+            expect(s.bodies["SKILL.md"]).toBe(
+               fs.readFileSync(path.join(dirOf(s), "SKILL.md"), "utf8"),
+            );
+            expect(s.bodies["SKILL.md"]).not.toContain(
+               "Reference files over MCP",
+            );
+         }
+         const withHeader = skills.filter((s) =>
+            s.bodies["SKILL.md"]!.includes("SPDX-License-Identifier"),
+         );
+         expect(withHeader.length).toBeGreaterThan(0);
+      });
+
+      it("lists every file skillFiles returns, with the digest and size of its raw bytes", () => {
+         for (const s of skills) {
+            const found = skillFiles(dirOf(s));
+            expect(found.warnings).toEqual([]);
+            expect(Object.keys(s.files)).toEqual(found.files);
+            for (const [file, entry] of Object.entries(s.files)) {
+               const bytes = fs.readFileSync(path.join(dirOf(s), file));
+               expect(entry).toEqual({
+                  digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+                  size: bytes.length,
+               });
+            }
+         }
+      });
+
+      it("embeds the text of every Markdown file and of nothing else", () => {
+         for (const s of skills) {
+            expect(Object.keys(s.bodies)).toEqual(
+               Object.keys(s.files).filter((f) => f.endsWith(".md")),
+            );
+            for (const [file, text] of Object.entries(s.bodies)) {
+               expect(text).toBe(
+                  fs.readFileSync(path.join(dirOf(s), file), "utf8"),
+               );
+            }
+         }
+         // Positive controls: the tree does hold scripts and binaries, and they are listed.
+         const listed = skills.flatMap((s) => Object.keys(s.files));
+         expect(listed.some((f) => f.endsWith(".py"))).toBe(true);
+         expect(listed.some((f) => f.endsWith(".md"))).toBe(true);
+      });
+
+      it("keeps the files a .skillignore names out of the manifest, while the tree holds them", () => {
+         const tests = (dir: string): string[] =>
+            fs
+               .readdirSync(dir, { withFileTypes: true })
+               .flatMap((e) =>
+                  e.isDirectory()
+                     ? tests(path.join(dir, e.name))
+                     : e.name.endsWith("_test.py")
+                       ? [e.name]
+                       : [],
+               );
+         const onDisk = skills.flatMap((s) => tests(dirOf(s)));
+         expect(onDisk.length).toBeGreaterThan(0);
+         const listed = skills.flatMap((s) => Object.keys(s.files));
+         expect(listed.filter((f) => f.endsWith("_test.py"))).toEqual([]);
+      });
+
+      it("keeps malloy-excel-review's fixtures/README.md and drops the rest of fixtures/", () => {
+         const excel = skills.find((s) => s.name === "malloy-excel-review")!;
+         expect(
+            Object.keys(excel.files).filter((f) => /fixture/i.test(f)),
+         ).toEqual(["fixtures/README.md"]);
+         expect(excel.bodies["fixtures/README.md"]).toContain(
+            "build_fixture.py",
+         );
+         // Positive control: the tree does hold them.
+         expect(
+            fs.existsSync(
+               path.join(
+                  sourceDir,
+                  "malloy-excel-review/fixtures/fixture.xlsx",
+               ),
+            ),
+         ).toBe(true);
+      });
+   });
+
    /**
     * A skill's reference/ files are its on-demand detail, and this channel is
     * the only way a host without the skills on disk can reach them. Before they
     * were bundled, malloy-review told an agent to load rubrics that, over MCP,
     * did not exist.
     */
-   describe("reference files", () => {
+   describe("reference files, as the flat entries", () => {
       const isReference = (s: SkillEntry) => s.name.includes("/");
-      const referenceEntries = skills.filter(isReference);
+      const referenceEntries = flat.filter(isReference);
 
       it("bundles every reference/*.md in the tree", () => {
          // Mirror the builder's own exclusion. A stray credible-* skill with a
@@ -169,7 +269,7 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
 
       it("names each one under its parent skill", () => {
          const skillNames = new Set(
-            skills.filter((s) => !isReference(s)).map((s) => s.name),
+            flat.filter((s) => !isReference(s)).map((s) => s.name),
          );
          for (const entry of referenceEntries) {
             expect(skillNames.has(entry.name.split("/")[0])).toBe(true);
@@ -200,14 +300,14 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
             referenceEntries.map((s) => s.name.split("/")[0]),
          );
          for (const name of parents) {
-            const parent = skills.find((s) => s.name === name);
+            const parent = flat.find((s) => s.name === name);
             expect(parent?.body).toContain("Reference files over MCP");
             expect(parent?.body).toContain(`get the prompt named \`${name}/`);
          }
       });
 
       it("leaves skills without a reference/ directory untouched", () => {
-         const plain = skills.find((s) => s.name === "malloy-getting-started");
+         const plain = flat.find((s) => s.name === "malloy-getting-started");
          expect(plain?.body).not.toContain("Reference files over MCP");
       });
    });
@@ -237,7 +337,7 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
          hasEmDash({ name: "control2", description: "a — b", body: "" }),
       ).toBe(true);
 
-      const offenders = skills.filter(hasEmDash).map((s) => s.name);
+      const offenders = flat.filter(hasEmDash).map((s) => s.name);
       expect(offenders).toEqual([]);
    });
 });

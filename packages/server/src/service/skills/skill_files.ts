@@ -66,6 +66,19 @@ export interface SkillFilesOptions {
    followReference?: (absolute: string) => string | undefined;
 }
 
+/** A file is text when its bytes are strict UTF-8 without a NUL; anything else is binary and is never served as a body. */
+export function decodeText(bytes: Buffer): string | undefined {
+   if (bytes.includes(0)) return undefined;
+   try {
+      // ignoreBOM keeps a leading BOM, so the text is the bytes as they are.
+      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+         bytes,
+      );
+   } catch {
+      return undefined;
+   }
+}
+
 function errorCode(error: unknown): string {
    return (error as NodeJS.ErrnoException).code ?? "unknown error";
 }

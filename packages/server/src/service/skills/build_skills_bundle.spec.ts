@@ -1,9 +1,107 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
-import { parseSkill } from "./build_skills_bundle";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { buildSkills, flatSkills, parseSkill } from "./build_skills_bundle";
 import { unquote } from "./frontmatter";
+
+const SKILL_MD =
+   "---\nname: pricing\ndescription: Price a thing.\n---\n<!--\nSPDX-License-Identifier: MIT\n-->\n# Pricing\n\nRun `scripts/run.py`.\n";
+const BINARY = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3]);
+
+describe("buildSkills", () => {
+   let root: string;
+   let skillsDir: string;
+   const write = (file: string, data: string | Buffer) => {
+      const full = path.join(skillsDir, file);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, data);
+   };
+
+   beforeAll(() => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-"));
+      skillsDir = path.join(root, "skills");
+      fs.mkdirSync(path.join(root, "manifests"));
+      fs.writeFileSync(
+         path.join(root, "manifests", "publisher-local.json"),
+         JSON.stringify({ auto_discovered: ["pricing"], supporting: [] }),
+      );
+      write("pricing/SKILL.md", SKILL_MD);
+      write("pricing/reference/rules.md", "# Rules\n\nDetail.\n");
+      write("pricing/references/more.md", "# More\n");
+      write("pricing/scripts/run.py", "print('hi')\n");
+      write("pricing/scripts/run_test.py", "assert True\n");
+      write("pricing/assets/logo.png", BINARY);
+      write("pricing/.skillignore", "*_test.py\n");
+      write("pricing/.env", "SECRET=1\n");
+      // Neither is in the manifest, so neither is bundled.
+      write("other/SKILL.md", "---\nname: other\ndescription: x\n---\nbody\n");
+      write("credible-local/SKILL.md", "---\nname: credible-local\n---\n");
+   });
+   afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
+
+   it("lists every file skillFiles returns, with the digest and size of its raw bytes", () => {
+      const [skill] = buildSkills(skillsDir);
+      expect(Object.keys(skill!.files)).toEqual([
+         "SKILL.md",
+         "assets/logo.png",
+         "reference/rules.md",
+         "references/more.md",
+         "scripts/run.py",
+      ]);
+      expect(skill!.files["assets/logo.png"]).toEqual({
+         digest: `sha256:${createHash("sha256").update(BINARY).digest("hex")}`,
+         size: BINARY.length,
+      });
+   });
+
+   it("embeds the verbatim text of Markdown files only, and the parsed frontmatter", () => {
+      const [skill] = buildSkills(skillsDir);
+      expect(skill!.name).toBe("pricing");
+      expect(skill!.frontmatter).toEqual({
+         name: "pricing",
+         description: "Price a thing.",
+      });
+      expect(skill!.bodies).toEqual({
+         "SKILL.md": SKILL_MD,
+         "reference/rules.md": "# Rules\n\nDetail.\n",
+         "references/more.md": "# More\n",
+      });
+   });
+
+   it("leaves out what .skillignore names and every dotfile", () => {
+      const [skill] = buildSkills(skillsDir);
+      expect(Object.keys(skill!.files)).not.toContain("scripts/run_test.py");
+      expect(Object.keys(skill!.files)).not.toContain(".env");
+      expect(Object.keys(skill!.files)).not.toContain(".skillignore");
+   });
+
+   it("bundles only the skills the manifest names", () => {
+      expect(buildSkills(skillsDir).map((s) => s.name)).toEqual(["pricing"]);
+   });
+
+   it("fails rather than bundle a skill whose walk or frontmatter had a finding", () => {
+      write("pricing/.skillignore", "*_test.py\n./scripts/run.py\n");
+      expect(() => buildSkills(skillsDir)).toThrow(/pricing.*starts with/);
+      write("pricing/.skillignore", "*_test.py\n");
+      write("pricing/SKILL.md", "---\nname: [\n---\nbody\n");
+      expect(() => buildSkills(skillsDir)).toThrow(/not valid YAML/);
+      write("pricing/SKILL.md", SKILL_MD);
+   });
+
+   it("flattens to the entries get_skill reads: a body with a pointer section, and one per reference file", () => {
+      const flat = flatSkills(buildSkills(skillsDir));
+      expect(flat.map((s) => s.name)).toEqual(["pricing", "pricing/rules"]);
+      expect(flat[0]!.body).toContain("# Pricing");
+      expect(flat[0]!.body).not.toContain("SPDX-License-Identifier");
+      expect(flat[0]!.body).toContain("Reference files over MCP");
+      expect(flat[1]!.body).toBe("# Rules\n\nDetail.");
+   });
+});
 
 describe("build_skills_bundle parseSkill", () => {
    it("parses name, description, and body from frontmatter", () => {

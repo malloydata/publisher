@@ -10,6 +10,8 @@
  * a filter only the audit applies lets the copy ship it.
  */
 import * as path from "node:path";
+// By path: the published package cannot depend on the server, and `tsconfig.build.json` never builds scripts/.
+import { skillFiles } from "../../server/src/service/skills/skill_files";
 
 /** Path segments of a forward-slash or platform-separated relative path. */
 function segments(relative: string): string[] {
@@ -31,20 +33,16 @@ export function isCredible(relative: string): boolean {
 }
 
 /**
- * Editor and OS debris. It must not enter the copy or the audit's
- * expectations: npm strips .DS_Store and friends from every tarball whatever
- * "files" says, so a stray one would be reported as a missing skill file, which
- * is what the audit says when the copy has catastrophically broken.
+ * Editor debris. It must not enter the copy or the audit's expectations: npm
+ * strips `npm-debug.log` from every tarball whatever "files" says, so a stray
+ * one would be reported as a missing skill file, which is what the audit says
+ * when the copy has catastrophically broken.
  *
- * The dotfile rule is deliberately broader than npm's own list (npm packs
- * .prettierrc and the like): skills are markdown, so no dotfile under skills/
- * is content.
+ * Dotfiles are not listed here: `skillFiles` never returns one.
  */
 export function isNeverPacked(relative: string): boolean {
    const name = path.basename(relative);
-   return (
-      name.startsWith(".") || name.endsWith(".orig") || name === "npm-debug.log"
-   );
+   return name.endsWith(".orig") || name === "npm-debug.log";
 }
 
 /**
@@ -62,4 +60,18 @@ export function isExcluded(relative: string): boolean {
       isNeverPacked(relative) ||
       isSourceReadme(relative)
    );
+}
+
+/**
+ * The files of one skill that reach the package, relative to the skill: what
+ * `skillFiles` decides, with no further skip, because other clients (Claude
+ * Code, `npx skills`) read the folder whole, minus `isExcluded`. A finding of
+ * the walk throws, since it would drop files from the copy and the audit alike.
+ */
+export function packedSkillFiles(skillsDir: string, name: string): string[] {
+   const { files, warnings } = skillFiles(path.join(skillsDir, name));
+   if (warnings.length > 0) {
+      throw new Error(`skill '${name}': ${warnings.join("; ")}`);
+   }
+   return files.filter((file) => !isExcluded(`${name}/${file}`));
 }

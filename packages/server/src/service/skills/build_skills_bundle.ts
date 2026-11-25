@@ -6,6 +6,10 @@
  * MCP prompts (dual-channel): skill-aware hosts read the skill files directly, while
  * hosts that only ingest MCP get the same guidance through these prompts.
  *
+ * A skill is its whole directory as `skillFiles` decides it: every file in a
+ * manifest of `{digest, size}`, and the Markdown files' text verbatim. Scripts,
+ * data and binaries are never embedded, which keeps the bundle small.
+ *
  * Committed as a build-time asset so the server has no runtime dependency on the
  * skills directory layout. Regenerate when the skills change:
  *
@@ -18,14 +22,31 @@
  * packages/server/.prettierrc, so prettier leaves the file byte-identical;
  * change it only alongside that setting.
  */
+import { createHash } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { parseFrontmatter } from "./frontmatter";
+import { decodeText, skillFiles } from "./skill_files";
+import { compareText } from "../../compare_text";
 
 export interface SkillEntry {
    name: string;
    description: string;
    body: string;
+}
+
+/** One served skill, in the MCP skills extension's entry shape: `get_skill` is served from it. */
+export interface SkillCatalogEntry {
+   name: string;
+   /** The SKILL.md frontmatter as JSON (dates as ISO strings, keys as strings); empty when it did not parse. */
+   frontmatter: Record<string, unknown>;
+   /** Every served file by path relative to the skill, inline or listed; `digest` is `sha256:` and the hex of the file's raw bytes. */
+   files: Record<string, { digest: string; size: number }>;
+}
+
+/** A bundled skill: the catalog entry a package skill has, plus its Markdown files' verbatim text by path. */
+export interface BundledSkill extends SkillCatalogEntry {
+   bodies: Record<string, string>;
 }
 
 /**
@@ -131,57 +152,71 @@ function manifestSkillNames(skillsDir: string): Set<string> {
    ]);
 }
 
-/** Reference files for one skill, sorted, or [] when it has none. */
-export function referenceFiles(skillDir: string): string[] {
-   const dir = path.join(skillDir, REFERENCE_DIR);
-   if (!fs.existsSync(dir)) return [];
-   return fs
-      .readdirSync(dir)
-      .filter((f) => f.endsWith(".md"))
-      .sort();
+/**
+ * One skill directory as the bundle holds it. A bundled skill must read clean,
+ * so a finding of the walk or of the frontmatter fails the build rather than
+ * leaving the manifest quietly short.
+ */
+function bundleSkill(skillDir: string, dirName: string): BundledSkill {
+   const found = skillFiles(skillDir);
+   const files: BundledSkill["files"] = {};
+   const bodies: BundledSkill["bodies"] = {};
+   for (const relative of found.files) {
+      const bytes = fs.readFileSync(path.join(skillDir, relative));
+      files[relative] = {
+         digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+         size: bytes.length,
+      };
+      const text = relative.endsWith(".md") ? decodeText(bytes) : undefined;
+      if (text !== undefined) bodies[relative] = text;
+   }
+   const fm = parseFrontmatter(bodies["SKILL.md"] ?? "", dirName);
+   const problems = [...found.warnings, ...fm.warnings];
+   if (problems.length > 0) {
+      throw new Error(`skill '${dirName}': ${problems.join("; ")}`);
+   }
+   return { name: fm.name, frontmatter: fm.frontmatter, files, bodies };
 }
 
 /**
- * Read every skill under a skills directory, in the bundle's own order.
- *
- * A skill's `reference/` files become entries of their own rather than being
- * folded into the parent body, so they stay on-demand detail over MCP.
+ * Read every skill the manifest ships under a skills directory, in codepoint
+ * order of name: the committed artifact's order must be identical on every
+ * machine, and localeCompare follows the runtime locale.
  */
-export function buildSkills(skillsDir: string): SkillEntry[] {
+export function buildSkills(skillsDir: string): BundledSkill[] {
    const shipping = manifestSkillNames(skillsDir);
-   const skills: SkillEntry[] = [];
+   const skills: BundledSkill[] = [];
    for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
       if (!entry.isDirectory() || isCredible(entry.name)) continue;
       if (!shipping.has(entry.name)) continue;
       const skillDir = path.join(skillsDir, entry.name);
-      const skillFile = path.join(skillDir, "SKILL.md");
-      if (!fs.existsSync(skillFile)) continue;
-
-      const skill = parseSkill(fs.readFileSync(skillFile, "utf8"), entry.name);
-      const files = referenceFiles(skillDir);
-      if (files.length > 0) {
-         skill.body = `${skill.body}\n\n${referencePointer(skill.name, files)}`;
-      }
-      skills.push(skill);
-
-      for (const file of files) {
-         skills.push(
-            parseReference(
-               fs.readFileSync(
-                  path.join(skillDir, REFERENCE_DIR, file),
-                  "utf8",
-               ),
-               skill.name,
-               file,
-            ),
-         );
-      }
+      if (!fs.existsSync(path.join(skillDir, "SKILL.md"))) continue;
+      skills.push(bundleSkill(skillDir, entry.name));
    }
-   // Codepoint order, not localeCompare: the committed artifact's order must be
-   // identical on every machine, and localeCompare follows the runtime locale.
-   return skills.sort((a, b) =>
-      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
-   );
+   return skills.sort((a, b) => compareText(a.name, b.name));
+}
+
+/**
+ * The flat `{name, description, body}` entries `get_skill`, the REST route and
+ * the MCP prompts still read: each skill's `SKILL.md` body with a pointer
+ * section, and each `reference/<stem>.md` as an entry named `<skill>/<stem>`.
+ */
+export function flatSkills(bundled: BundledSkill[]): SkillEntry[] {
+   const skills: SkillEntry[] = [];
+   for (const { name, bodies } of bundled) {
+      const skill = parseSkill(bodies["SKILL.md"] ?? "", name);
+      const references = Object.keys(bodies).filter((p) =>
+         /^reference\/[^/]+$/.test(p),
+      );
+      if (references.length > 0) {
+         skill.body = `${skill.body}\n\n${referencePointer(skill.name, references)}`;
+      }
+      skills.push(
+         skill,
+         ...references.map((p) => parseReference(bodies[p]!, skill.name, p)),
+      );
+   }
+   return skills.sort((a, b) => compareText(a.name, b.name));
 }
 
 function main(): void {
@@ -198,8 +233,9 @@ function main(): void {
    const skills = buildSkills(skillsDir);
 
    fs.writeFileSync(outFile, `${JSON.stringify({ skills }, null, 3)}\n`);
+   const files = skills.reduce((n, s) => n + Object.keys(s.files).length, 0);
    console.log(
-      `Wrote ${skills.length} entries (${skills.filter((s) => !s.name.includes("/")).length} skills plus ${skills.filter((s) => s.name.includes("/")).length} reference files) to ${outFile}`,
+      `Wrote ${skills.length} skills (${files} files in their manifests) to ${outFile}`,
    );
 }
 

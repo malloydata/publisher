@@ -21,25 +21,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { isExcluded } from "./exclusions";
+import { packedSkillFiles } from "./exclusions";
 import { manifestSkillNames } from "./manifest";
 
 const packageDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const source = path.join(packageDir, "..", "..", "skills");
-
-/** Every file under skills/, as forward-slash paths relative to skills/. */
-function sourceFiles(dir: string = source, prefix = ""): string[] {
-   const files: string[] = [];
-   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) {
-         files.push(...sourceFiles(path.join(dir, entry.name), relative));
-      } else {
-         files.push(relative);
-      }
-   }
-   return files;
-}
 
 /** Pack for real and list the files that came out. */
 function pack(): Set<string> {
@@ -72,19 +58,18 @@ function pack(): Set<string> {
 }
 
 /**
- * The manifest decides what the tarball must contain, for the same reason the
- * copy filters on it: an audit that globs `skills/` demands whatever happens to
- * be on disk, so the first skill the manifest holds back fails the publish
- * while pointing at the copy rather than at the manifest. `exclusions.ts` names
- * this hazard directly -- "a filter that only the copy applies makes the audit
- * demand a file that will never be there."
+ * The manifest's skills, each as `skillFiles` decides it, decide what the
+ * tarball must contain, for the same reason the copy asks them: an audit that
+ * globs `skills/` demands whatever happens to be on disk, so the first file a
+ * `.skillignore` or the manifest holds back fails the publish while pointing at
+ * the copy rather than at its cause. `exclusions.ts` names this hazard directly
+ * -- "a filter that only the copy applies makes the audit demand a file that
+ * will never be there."
  */
-const shipping = new Set(manifestSkillNames());
-const topLevel = (relative: string): string => relative.split("/")[0];
-
-const expected = sourceFiles()
-   .filter((file) => !isExcluded(file) && shipping.has(topLevel(file)))
-   .map((file) => `skills/${file}`);
+const expected = manifestSkillNames().flatMap((name) =>
+   packedSkillFiles(source, name).map((file) => `skills/${name}/${file}`),
+);
+const expectedSet = new Set(expected);
 
 const packedPaths = pack();
 const manifest = JSON.parse(
@@ -113,13 +98,12 @@ for (const required of [
    }
 }
 
-// Same predicates as the copy, so the two cannot disagree about a given file:
-// what the manifest holds back must be absent, not merely unrequired.
-const leaked = [...packedPaths]
-   .filter((file) => file.startsWith("skills/"))
-   .map((file) => file.slice("skills/".length))
-   .filter((file) => isExcluded(file) || !shipping.has(topLevel(file)))
-   .map((file) => `skills/${file}`);
+// Same set as the copy, so the two cannot disagree about a given file: what a
+// skill's `.skillignore` or the manifest holds back must be absent, not merely
+// unrequired.
+const leaked = [...packedPaths].filter(
+   (file) => file.startsWith("skills/") && !expectedSet.has(file),
+);
 if (leaked.length > 0) {
    failures.push(`the tarball must not contain: ${leaked.join(", ")}`);
 }
