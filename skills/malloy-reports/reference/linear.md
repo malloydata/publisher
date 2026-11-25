@@ -88,6 +88,8 @@ One query per tile, and remember a chart renders only the **first** aggregate in
 
 A `.malloynb` (cells delimited by `>>>markdown` and `>>>malloy`) is a deprecated format, served read-only as a linear report. **Do not create one.** When maintaining one: its compile errors show only when cells run, so test queries in the model first; imports belong in a setup cell at the top, never inside a `run:` cell; and it reads `## autorun=false` and `## givens { … }` as file-level lines, where a `.malloy` report takes them inside its artifact tag.
 
+Each code cell runs its `run:` statement as query text on the notebook's path, over REST with `POST …/models/{path}/query` and in the `show_report` panel. MCP `execute_query` does not take a `.malloynb` path and answers that the model is not found, so to check a cell's query there, run it against the `model_path` that `get_context` returns, which is `index.malloy` when the package has one; a model file the surface does not publish answers not found. The `run:` runs in restricted mode: it may not call a `sql_*` function or read a table directly, such as `duckdb.table(…)`; put either in a source in a cell and run that source. A join written in the `run:` is the caller's join, so a gate on the joined source applies to it. On a package with an `index.malloy`, a source the cells declare is not queryable, even over a published source; declare it in a model file and export it from `index.malloy`.
+
 ## Common mistakes
 
 | Mistake                                                                    | Fix                                                                                             |

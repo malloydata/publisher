@@ -14,19 +14,19 @@ import { isRollupOrigin, originOf } from "./domain/table_plans";
 import { isSourceDef, type SourceDef } from "@malloydata/malloy";
 import { gateSwitches, getPersistStorageMode } from "../../config";
 import { logger } from "../../logger";
-import { errMessage } from "../../utils";
+import { errorCodeOf } from "../../error_code";
 import type { Model } from "../model";
 import { collectEntryPointGates } from "../gate_classification";
 import { structsReachedFrom } from "../governance/ir/source_graph";
-import {
-   answerKeepsGates,
-   legMayPassGate,
-   SERVING_GATE_CONTEXT,
-} from "./domain/gate_policy";
+import { keepsGatesWhenReadExact, mayAttempt } from "./domain/admission";
+import type { GateSwitches, TableRead } from "./domain/gate_policy";
 import { type Binding, pin, type Snapshot } from "./domain/binding";
 import { storageTablePath } from "./domain/storage_table_path";
 import type { FreshnessManifest } from "./domain/types";
 import type { PlanLifecycle } from "./plan_lifecycle";
+import type { Tier } from "./domain/vocabulary";
+
+type BuildPlan = PlanLifecycle["buildPlan"];
 import {
    deriveDatabaseServeBindings,
    keptTableAddresses,
@@ -41,15 +41,21 @@ import {
 } from "./serve/query_path";
 import {
    computeServeVerdicts,
+   type ContractVerdict,
    type PersistedResultOf,
+   type NotServedIn,
+   type ServedCopyOutcome,
    type ServeVerdict,
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
+import type { ServedCopyProblem } from "./serve/served_copy_types";
+import { byActionability } from "./domain/source_decline";
 import { previewNativeSchema } from "./stored_column_types";
 import { reachableSourceIDs, SourceMap } from "./text/source_map";
+import type { ColumnContract } from "./domain/column_contract";
 import {
    entryPointGateExprs,
-   gateColumnTypesOf,
+   gateColumnsExactOf,
    gateReads,
 } from "./serve/gate_reads";
 import { ownLevelNotes, type AnnotationsDef } from "../annotations";
@@ -66,7 +72,7 @@ function declaresMaterialize(def: unknown): boolean {
 
 /**
  * What the environment answers about where a package's tables can be written
- * (P13), read live. `undefined` from either means "not known", which never
+ *, read live. `undefined` from either means "not known", which never
  * warns.
  */
 export interface DeploymentFacts {
@@ -74,6 +80,11 @@ export interface DeploymentFacts {
    destinationNames(): readonly string[] | undefined;
    /** Whether a connection's configured type can create a table. */
    connectionCanHoldTable(connectionName: string): boolean | undefined;
+   /**
+    * The `data_inlining_row_limit` above zero that the DuckLake catalog a
+    * destination or connection names was found recording at its last attach.
+    */
+   dataInliningLimit?(name: string): number | undefined;
 }
 
 /** What the verdicts read of the facade that holds them. */
@@ -87,6 +98,8 @@ interface ServeVerdictsHost {
    snapshot(): Snapshot;
    storageBindings(): readonly Binding[];
    databaseEntries(): FreshnessManifest | undefined;
+   /** The bound tables the bind held to their contracts and left out, by address. */
+   contractVerdicts(): ReadonlyMap<string, ContractVerdict>;
    deploymentFacts(): DeploymentFacts | undefined;
    destinationSchema(destinationName: string): string | undefined;
    declarationOf(sourceID: string): unknown;
@@ -145,24 +158,37 @@ export class ServeVerdicts {
    private entryPointMemo:
       | { models: Map<string, Model>; index: EntryPointIndex | undefined }
       | undefined;
+   /**
+    * The plan whose verdicts last failed to compute: a status poll asks again
+    * and again, so each plan's failure is warned once and then logged at
+    * debug.
+    */
+   private verdictFailureWarnedFor: object | undefined;
 
    constructor(private readonly host: ServeVerdictsHost) {}
 
    /**
-    * Each materialized source's serve verdict (D2), read from the plan and the
+    * Each materialized source's serve verdict, read from the plan and the
     * binding as they stand now. `views` adds per-view verdicts (a preview).
     * Reporting only: one that cannot be computed is logged and none is
     * returned, so the dry run, package read or status poll never fails here.
     */
    verdicts(views?: ReadonlyMap<string, ViewServeVerdict[]>): ServeVerdict[] {
-      if (!this.host.plan.buildPlan) return [];
+      const plan = this.host.plan.buildPlan;
+      if (!plan) return [];
       try {
          return this.compute(views);
       } catch (error) {
-         logger.warn("Could not compute serve verdicts", {
+         const fields = {
             packageName: this.host.packageName(),
-            error: errMessage(error),
-         });
+            code: errorCodeOf(error),
+         };
+         if (this.verdictFailureWarnedFor === plan) {
+            logger.debug("Could not compute serve verdicts", fields);
+         } else {
+            this.verdictFailureWarnedFor = plan;
+            logger.warn("Could not compute serve verdicts", fields);
+         }
          return [];
       }
    }
@@ -236,7 +262,7 @@ export class ServeVerdicts {
       } catch (error) {
          logger.warn("Could not declare the preview's serve bindings", {
             packageName: packageName(),
-            error: errMessage(error),
+            code: errorCodeOf(error),
          });
          bindings = [];
       }
@@ -253,7 +279,7 @@ export class ServeVerdicts {
             } catch (error) {
                logger.debug("Could not preview a model's storage views", {
                   packageName: packageName(),
-                  error: errMessage(error),
+                  code: errorCodeOf(error),
                });
             }
          }
@@ -264,7 +290,7 @@ export class ServeVerdicts {
       } catch (error) {
          logger.warn("Could not preview the v1 cutover's serve paths", {
             packageName: packageName(),
-            error: errMessage(error),
+            code: errorCodeOf(error),
          });
          return verdicts;
       }
@@ -310,9 +336,9 @@ export class ServeVerdicts {
             buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
          );
       };
-      // A `storage=` table that holds only ungated rows (g-mixed), read the
-      // same way: off the bound bindings, or, not bound yet, by the bind's
-      // own rule.
+      // A `storage=` table that holds only ungated rows (the ungated-rows
+      // rule), read the same way: off the bound bindings, or, not bound yet, by
+      // the bind's own rule.
       const ungatedTables = ungatedTableAddresses(
          plan.sourceEligibility?.ungated,
          buildPlan?.sources ?? {},
@@ -331,37 +357,23 @@ export class ServeVerdicts {
             )
          );
       };
-      // The stored types of the columns a bound `storage=` table's own gate
-      // reads, for the policy's exactness rule; the router reads each
-      // query's. A table not bound yet has none to read, and is judged once
-      // it is bound.
-      const ownGateColumnTypes = (sourceID: string): string[] | undefined => {
-         const bound = storageBindings.filter((b) =>
-            b.sourceIDs?.includes(sourceID),
-         );
-         if (bound.length === 0) return [];
-         for (const model of models.values()) {
-            const modelDef = model.getModelDef();
-            const def = modelDef
-               ? SourceMap.of(modelDef).node(sourceID)?.def
-               : undefined;
-            if (def === undefined) continue;
-            const exprs = entryPointGateExprs(def, modelDef);
-            const reads =
-               exprs === undefined
-                  ? undefined
-                  : // Its own `where:` terms were applied by the build.
-                    gateReads(def, exprs, modelDef, new Set([sourceID]));
-            const types = gateColumnTypesOf(
-               reads,
-               bound.map((b) => b.schema),
-            );
-            return types.some((t) => t === undefined)
-               ? undefined
-               : types.flatMap((t) => t ?? []);
-         }
-         return undefined;
-      };
+      // The table a source's answer reads past a gate, as the router
+      // judges it, on the verdict's tier.
+      const tableRead = (sourceID: string, tier: Tier): TableRead =>
+         tier === "storage"
+            ? {
+                 tier,
+                 ownGateKept: ownGateKept(sourceID),
+                 holdsOnlyUngatedRows: holdsOnlyUngatedRows(sourceID),
+                 ...storageGateRead(
+                    sourceID,
+                    storageBindings,
+                    host.snapshot().contracts,
+                    buildPlan,
+                    models,
+                 ),
+              }
+            : { tier };
       const switches = gateSwitches();
       // Pinned now: freshness is read once, as a query reads it.
       const pinned = pin(host.snapshot(), new Date());
@@ -388,35 +400,31 @@ export class ServeVerdicts {
          // The router's own question, asked of the source's own table: a
          // rollup's leg past a gate, with its variant proven at plan; the
          // served copy over a table it keeps the gate on.
-         keepsGate: (sourceID, tier) => {
-            if (isRollupOrigin(buildPlan?.sources?.[sourceID]?.origin)) {
-               return (
-                  legMayPassGate("rollup", switches, SERVING_GATE_CONTEXT) &&
-                  plan.rollupsKeepingGates.has(sourceID)
-               );
-            }
-            return answerKeepsGates(
-               "served",
-               [
-                  {
-                     tier,
-                     ownGateKept: tier === "storage" && ownGateKept(sourceID),
-                     holdsOnlyUngatedRows:
-                        tier === "storage" && holdsOnlyUngatedRows(sourceID),
-                     ...(tier === "storage"
-                        ? { gateColumnTypes: ownGateColumnTypes(sourceID) }
-                        : {}),
-                  },
-               ],
+         keepsGate: (sourceID, tier) =>
+            verdictKeepsGate(
+               isRollupOrigin(buildPlan?.sources?.[sourceID]?.origin)
+                  ? {
+                       rollup: true,
+                       keptAtPlan: plan.rollupsKeepingGates.has(sourceID),
+                       table: tableRead(sourceID, tier),
+                    }
+                  : { rollup: false, table: tableRead(sourceID, tier) },
                switches,
-               SERVING_GATE_CONTEXT,
-            );
-         },
+            ),
          refusedAtBind: (sourceID, source, tier) =>
             this.refusedAtBind(sourceID, source, tier),
          boundEntityIds: new Set(Object.keys(host.databaseEntries() ?? {})),
          freshEntityIds: new Set(Object.keys(pinned.compilerManifest.entries)),
+         contractVerdicts: host.contractVerdicts(),
          boundStorageNames: new Set(storageBindings.map((b) => b.sourceName)),
+         freshStorageIds: new Set(
+            pinned.fresh
+               .filter((b) => b.tier === "storage")
+               .flatMap((b) => b.sourceIDs ?? []),
+         ),
+         boundStorageIds: new Set(
+            storageBindings.flatMap((b) => b.sourceIDs ?? []),
+         ),
          servedStorageNames,
          freshStorageNames: new Set(
             pinned.fresh
@@ -425,11 +433,23 @@ export class ServeVerdicts {
          ),
          materialize: (sourceID) => {
             if (!materializeIDs.has(sourceID)) return undefined;
-            if (!servedCopy.on) return "off";
-            return servedCopy.ids.has(sourceID) || servedCopy.pending
-               ? "serves"
-               : "not_served";
+            return servedCopy.on ? "serves" : "off";
          },
+         servedCopyOnDatabaseOnly: (sourceID) =>
+            servedCopy.on && !servedCopy.uncompiled
+               ? servedCopy.databaseOnly.has(sourceID)
+               : undefined,
+         // Judged per source: a model whose copy has yet to compile for the
+         // first time blanks the judgement only of the sources it holds.
+         servedCopyOutcome: (sourceID) =>
+            servedCopy.on && !servedCopy.uncompiledHolds(sourceID)
+               ? servedCopyOutcomeOf(
+                    sourceID,
+                    buildPlan?.sources?.[sourceID]?.modelPath,
+                    servedCopy.compiled,
+                    (id) => buildPlan?.sources?.[id]?.sourceEntityId,
+                 )
+               : undefined,
          persistedViewOf: (sourceID) => persistedViews.get(sourceID),
          declaredMaterialize: (sourceID) =>
             this.declaredMaterialize(buildPlan, sourceID),
@@ -470,6 +490,7 @@ export class ServeVerdicts {
       const key = [
          plan.buildPlan,
          host.databaseEntries(),
+         host.contractVerdicts(),
          host.storageBindings(),
          plan.sourceEligibility,
          plan.databaseSourceEligibility,
@@ -491,8 +512,14 @@ export class ServeVerdicts {
          const sources = plan.buildPlan.sources ?? {};
          const perTable = new Map<string, ServeVerdict[]>();
          const bySource = new Map<string, LiveTableVerdict>();
+         // A `#@ persist` source the served copy leaves is reported per
+         // query by the leg's own decline code, which says more than
+         // `served_copy`; only a `#(materialize)` one is re-read here.
          const liveFor = (v: ServeVerdict) =>
-            v.verdict === "live" && !!v.reason && v.reason !== "stale";
+            v.verdict === "live" &&
+            !!v.reason &&
+            v.reason !== "stale" &&
+            (v.reason !== "served_copy" || v.origin === "materialize");
          for (const verdict of this.verdicts()) {
             if (liveFor(verdict) && !bySource.has(verdict.sourceID)) {
                bySource.set(verdict.sourceID, {
@@ -717,7 +744,7 @@ export class ServeVerdicts {
       } catch (error) {
          logger.debug("Could not read which sources the entry points reach", {
             packageName: this.host.packageName(),
-            error: errMessage(error),
+            code: errorCodeOf(error),
          });
          index = undefined;
       }
@@ -752,6 +779,18 @@ export class ServeVerdicts {
       for (const { modelPath, names, queries } of entries) {
          const model = models.get(modelPath);
          const modelDef = model?.getModelDef();
+         // An empty or markdown-only notebook has no definition and names
+         // nothing, so it reaches nothing: it must not unknow the rest. A
+         // model that failed to compile is unknown, not empty, and stays so.
+         if (
+            model &&
+            !modelDef &&
+            !names.length &&
+            !queries?.length &&
+            model.getCompilationError() === undefined
+         ) {
+            continue;
+         }
          if (!model || !modelDef) return undefined;
          // Gated as the router's veto finds it: the governor's walk of the
          // entry point's own and inherited gates (`collectEntryPointGates`).
@@ -803,30 +842,159 @@ export class ServeVerdicts {
 }
 
 /**
- * What the models' served copies answer from storage, by author `sourceID`:
- * `on` when any model's served copy is enabled, `pending` when one has yet to
- * compile, and a `signature` that changes whenever either does.
+ * What the models' served copies answer from storage, by author `sourceID`,
+ * as each one's last committed compile left them: `on` when any model's
+ * served copy is enabled, `uncompiled` when one has yet to compile for the
+ * first time, and a `signature` that changes whenever either does.
+ * `uncompiledHolds` says whether such a model holds a source, so its
+ * judgement waits for that model's first compile.
  */
 function servedCopyState(models: ReadonlyMap<string, Model>): {
    on: boolean;
-   pending: boolean;
+   uncompiled: boolean;
    ids: ReadonlySet<string>;
+   /** Re-rooted on a database table by some model, on a storage table by none. */
+   databaseOnly: ReadonlySet<string>;
+   /** Each model whose served copy has compiled, and what it left. */
+   compiled: readonly CompiledServedCopy[];
+   uncompiledHolds: (sourceID: string) => boolean;
    signature: string;
 } {
    let on = false;
-   let pending = false;
+   let uncompiled = false;
    const ids = new Set<string>();
-   for (const model of models.values()) {
+   const onDatabase = new Set<string>();
+   const onStorage = new Set<string>();
+   const compiled: CompiledServedCopy[] = [];
+   const parts: string[] = [];
+   const uncompiledModels: Model[] = [];
+   for (const [modelPath, model] of models) {
       const reread = model.servedCopySourceIDs?.();
       if (reread === undefined) continue;
       on = true;
-      if (reread === "pending") pending = true;
-      else for (const id of reread) ids.add(id);
+      if (reread === "uncompiled") {
+         uncompiled = true;
+         uncompiledModels.push(model);
+         continue;
+      }
+      const databaseOnly = model.servedCopyDatabaseOnlyIDs?.() ?? new Set();
+      for (const id of reread) {
+         ids.add(id);
+         (databaseOnly.has(id) ? onDatabase : onStorage).add(id);
+      }
+      const problems = model.servedCopyProblems?.() ?? [];
+      const throughBase = model.servedCopyThroughBaseIDs?.() ?? new Set();
+      compiled.push({
+         modelPath,
+         modelDef: model.getModelDef?.(),
+         rerooted: reread,
+         throughBase,
+         problems,
+      });
+      parts.push(
+         `${modelPath}=${problems.map((p) => `${p.reason}/${p.sourceID ?? ""}`).join(";")}` +
+            `/${[...throughBase].sort().join(";")}`,
+      );
    }
+   // A source another model re-rooted on its storage table is not database-only.
+   const databaseOnly = new Set(
+      [...onDatabase].filter((id) => !onStorage.has(id)),
+   );
    const signature = on
-      ? `${pending ? "pending" : "compiled"}:${[...ids].sort().join(",")}`
+      ? `${uncompiled ? "uncompiled" : "compiled"}:${[...ids].sort().join(",")}:${[...databaseOnly].sort().join(",")}:${parts.join("|")}`
       : "off";
-   return { on, pending, ids, signature };
+   // Holds as `servedCopyOutcomeOf` reads it: the model declares or
+   // imports the source.
+   const uncompiledHolds = (sourceID: string) =>
+      uncompiledModels.some(
+         (model) => sourceMapOf(model).node(sourceID) !== undefined,
+      );
+   return {
+      on,
+      uncompiled,
+      ids,
+      databaseOnly,
+      compiled,
+      uncompiledHolds,
+      signature,
+   };
+}
+
+/**
+ * A model's source map, read once per model: its IR never changes, and
+ * `/status` reads the verdicts on every poll.
+ */
+const sourceMaps = new WeakMap<Model, SourceMap>();
+function sourceMapOf(model: Model): SourceMap {
+   let map = sourceMaps.get(model);
+   if (!map) {
+      map = SourceMap.of(model.getModelDef?.());
+      sourceMaps.set(model, map);
+   }
+   return map;
+}
+
+/** One model's compiled served copy, as the verdicts read it. */
+interface CompiledServedCopy {
+   modelPath: string;
+   modelDef: unknown;
+   /** The sources it re-rooted on a stored table. */
+   rerooted: ReadonlySet<string>;
+   /** The sources it left as written, read through a base it re-rooted. */
+   throughBase: ReadonlySet<string>;
+   /** What its `served-copy-not-served` warnings are read from. */
+   problems: readonly ServedCopyProblem[];
+}
+
+/**
+ * How the compiled served copies left one source they read, the same for a
+ * `#(materialize)` source and a `#@ persist` one. A model reads its table
+ * when its copy re-roots it, or reads it through a re-rooted base whose
+ * table it shares (an extension inheriting `#@ persist`, one content
+ * address); an extension with a table of its own read through its base does
+ * not read that table. Every model that holds it (its compiled model
+ * declares or imports it, or a warning names it) and does not read it is
+ * listed, with every `served-copy-not-served` reason it gives for the source
+ * (its own, and its whole copy's), most actionable first. When no model
+ * holds it and none reads it, the declaring model is listed, `not_rerooted`.
+ */
+function servedCopyOutcomeOf(
+   sourceID: string,
+   declaredIn: string | undefined,
+   compiled: readonly CompiledServedCopy[],
+   entityOf: (sourceID: string) => string | undefined,
+): ServedCopyOutcome {
+   const entity = entityOf(sourceID);
+   let serves = false;
+   const notServedIn: NotServedIn[] = [];
+   for (const copy of compiled) {
+      const sharesRerootedTable =
+         copy.throughBase.has(sourceID) &&
+         entity !== undefined &&
+         [...copy.rerooted].some((id) => entityOf(id) === entity);
+      if (copy.rerooted.has(sourceID) || sharesRerootedTable) {
+         serves = true;
+         continue;
+      }
+      const own = copy.problems.filter(
+         (p) => p.sourceID === sourceID && !p.servedFromDatabase,
+      );
+      const holds =
+         own.length > 0 ||
+         SourceMap.of(copy.modelDef).node(sourceID) !== undefined;
+      if (!holds) continue;
+      const whole = copy.problems.filter((p) => p.sourceID === undefined);
+      const reasons = byActionability([...own, ...whole].map((p) => p.reason));
+      notServedIn.push({
+         model: copy.modelPath,
+         reasons: reasons.length > 0 ? reasons : ["not_rerooted"],
+      });
+   }
+   if (!serves && notServedIn.length === 0 && declaredIn !== undefined) {
+      notServedIn.push({ model: declaredIn, reasons: ["not_rerooted"] });
+   }
+   notServedIn.sort((a, b) => a.model.localeCompare(b.model));
+   return { serves, notServedIn };
 }
 
 /** A plan source's wire columns with both a name and a type. */
@@ -874,4 +1042,110 @@ function servePathOf(
       path: "live",
       reason: preview.problems.get(v.sourceID) ?? v.reason ?? "not_rerooted",
    };
+}
+
+/**
+ * The stored types of the columns a bound `storage=` table's own gate
+ * reads, and whether its column contract records each exact (`gateExact`),
+ * for the policy's exactness rule, as the router reads each query's. A
+ * table not bound yet has none to read, and is judged once it is bound.
+ *
+ * A rollup's gates are its base's, read off the base's def in the rollup's
+ * model (the file that declares the base), with whether they read no column
+ * at all (locks only), as the router marks a read.
+ */
+function storageGateRead(
+   sourceID: string,
+   storageBindings: readonly Binding[],
+   contracts: ReadonlyMap<string, ColumnContract> | undefined,
+   buildPlan: BuildPlan | undefined,
+   models: Map<string, Model>,
+): Pick<
+   TableRead,
+   "gateColumnTypes" | "gateColumnsExactRecorded" | "gatesReadNoColumn"
+> {
+   const bound = storageBindings.filter((b) => b.sourceIDs?.includes(sourceID));
+   if (bound.length === 0) return { gateColumnTypes: [] };
+   const found = gatedDefOf(sourceID, buildPlan, models);
+   if (found === undefined) return { gateColumnTypes: undefined };
+   const exprs = entryPointGateExprs(found.def, found.modelDef);
+   const reads =
+      exprs === undefined
+         ? undefined
+         : // Its own `where:` terms were applied by the build.
+           gateReads(found.def, exprs, found.modelDef, new Set([sourceID]));
+   const { types, exact } = gateColumnsExactOf(
+      reads,
+      bound.map((b) => contracts?.get(b.virtualHandle)),
+   );
+   const readsNoColumn =
+      reads !== undefined &&
+      !reads.unresolved &&
+      reads.columns.length === 0 &&
+      reads.names.size === 0;
+   const listed = !types.some((t) => t === undefined);
+   return {
+      gateColumnTypes: listed ? types.flatMap((t) => t ?? []) : undefined,
+      ...(listed
+         ? { gateColumnsExactRecorded: exact.every((e) => e === true) }
+         : {}),
+      ...(readsNoColumn ? { gatesReadNoColumn: true } : {}),
+   };
+}
+
+/**
+ * The def whose entry-point gates a stored source's table is read past: a
+ * rollup's base, in the rollup's model; any other source's own.
+ */
+function gatedDefOf(
+   sourceID: string,
+   buildPlan: BuildPlan | undefined,
+   models: Map<string, Model>,
+): { def: unknown; modelDef: unknown } | undefined {
+   const planned = buildPlan?.sources?.[sourceID];
+   if (isRollupOrigin(planned?.origin)) {
+      const base = planned?.preaggregate?.baseSourceName;
+      const modelDef = planned?.modelPath
+         ? models.get(planned.modelPath)?.getModelDef()
+         : undefined;
+      const contents = (
+         modelDef as { contents?: Record<string, unknown> } | undefined
+      )?.contents;
+      const def = base !== undefined ? contents?.[base] : undefined;
+      return def === undefined ? undefined : { def, modelDef };
+   }
+   for (const model of models.values()) {
+      const modelDef = model.getModelDef();
+      const def = modelDef
+         ? SourceMap.of(modelDef).node(sourceID)?.def
+         : undefined;
+      if (def !== undefined) return { def, modelDef };
+   }
+   return undefined;
+}
+
+/**
+ * Whether a source's own table keeps its entry point's gates, as the serve
+ * verdict reports it: the router's own question, asked before any query. A
+ * rollup is asked of its leg past a gate over its own table, with its variant
+ * proven at plan (`keptAtPlan`); any other table of the served copy's leg
+ * over that table, read exactly.
+ */
+export function verdictKeepsGate(
+   source:
+      | { rollup: true; keptAtPlan: boolean; table: TableRead }
+      | { rollup: false; table: TableRead },
+   switches: GateSwitches,
+): boolean {
+   if (source.rollup) {
+      // The variant proven at plan, and the rollup's own table read past
+      // the gate as the router judges it (its tier, marks, and the stored
+      // types of the columns the gate reads).
+      return (
+         mayAttempt("rollup", switches) &&
+         source.keptAtPlan &&
+         keepsGatesWhenReadExact("rollup", [source.table], switches)
+      );
+   }
+   return keepsGatesWhenReadExact("served", [source.table], switches);
 }

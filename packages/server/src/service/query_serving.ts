@@ -7,37 +7,27 @@
  *
  * The query pipeline (`model_serving.ts`) makes the legs for its pin
  * (`makeLegs`, serve/leg.ts) and routes over them with {@link variantsOf}:
- * each leg becomes one router candidate, and this is where the gate policy is
- * asked (before an attempt, by leg kind; after it, over the bindings the
- * answer read), where a `LegDecline` is read for the path report, and where a
- * leg's skip is logged. A leg does neither. {@link answerOf} turns the
+ * each leg becomes one router candidate, and this is where read admission
+ * is asked (before an attempt, by leg kind; after it, over the bindings the
+ * answer read: `serve/read_admission.ts`), where a `LegDecline` is read for
+ * the path report, and where a leg's skip is logged. A leg does neither. {@link answerOf} turns the
  * router's decision into the {@link Answer} every reader derives from, and
  * {@link queryPathFor} assembles the path report from it.
  *
  * Adding a leg needs nothing here: a leg module, its `makeLegs` entry and its
- * decline rows, and the router, the gate policy and the reports read it
+ * decline rows, and the router, read admission and the reports read it
  * through the answer.
  */
 
 import type { ModelDef, QueryMaterializer } from "@malloydata/malloy";
 import { gateSwitches, getPersistStorageMode } from "../config";
 import {
-   answerKeepsGates,
-   GATE_LEGS,
-   gateColumnsExact,
-   legMayPassGate,
-   SERVING_GATE_CONTEXT,
-   type TableRead,
-} from "./materialization/domain/gate_policy";
-import {
-   type GateReads,
-   gateColumnTypesOf,
-   gateReadsOfQuery,
-   storedTableCollationRefusal,
-   storedTypeIsString,
-   stringGateCollationRefusal,
-} from "./materialization/serve/gate_reads";
-import { rowFilterOnComposite } from "./composite_row_filter";
+   type CollationLookup,
+   observeAdmission,
+   ReadAdmission,
+   reportQueryWalk,
+} from "./materialization/serve/read_admission";
+import { recordQueryWalk } from "../materialization_metrics";
 import { logger } from "../logger";
 import { SourceMap, sourceChain } from "./materialization/text/source_map";
 import {
@@ -71,6 +61,7 @@ import {
    LIVE_ANSWER,
    type QueryFacts,
 } from "./materialization/serve/leg";
+import { storageServes } from "./materialization/domain/placement";
 import { originOfTable } from "./materialization/domain/table_plans";
 import {
    readPreparedQuery,
@@ -107,6 +98,14 @@ const SKIP_MESSAGE: Record<LegKind, string> = {
    served: "served copy cannot answer this query",
 };
 
+/** Each leg's `STALE` decline. */
+const STALE_DECLINE = {
+   served: "served_copy_stale",
+   rollup: "rollup_stale",
+   view: "view_stale",
+   query: "query_stale",
+} as const satisfies Record<LegKind, LegDecline["code"]>;
+
 /**
  * A leg's skip, at debug: it repeats on every query of a dashboard, and the
  * path report and `publisher_query_route_total` already say why.
@@ -122,294 +121,67 @@ function logSkip(kind: LegKind, modelPath: string, err: unknown): void {
 
 /**
  * The router's candidates for one query: one per leg, in the legs' order.
- * The gate policy (`domain/gate_policy.ts`) decides, its switches read once
- * for the query, whether a leg may be tried past an entry-point gate (R3:
- * the leg compiles the author's own text, gates included, so `govern()`
- * grafts and proves the gate on it) and whether the answer it produced keeps
- * the gates given the tables it read.
+ * Read admission (`serve/read_admission.ts`, deciding by the pure
+ * `admitRead`), its switches read once for the query, decides whether a leg
+ * may be tried past an entry-point gate (R3: the leg compiles the author's
+ * own text, gates included, so `govern()` grafts and proves the gate on it),
+ * and whether the answer it produced is used: before the gate, by the row
+ * scope and the caller's own filters; past it, by every rule.
  */
 export function variantsOf(
    legs: readonly Leg[],
    facts: QueryFacts,
    pinned: Pinned,
-   args: { modelPath: string },
+   args: { modelPath: string; collation?: CollationLookup },
 ): Variant<LegAnswer>[] {
-   const switches = gateSwitches();
-   // What the entry point's gates and row scope read, from the author's
-   // compile: read once per set of stored sources an answer read (a `where:`
-   // inside one was applied by its build), and only when needed.
-   const reads = new Map<string, Promise<GateReads | undefined>>();
-   const gateReadsFor: GateReadsFor = (tables) => {
-      const stored = storedSourceIDs(tables);
-      const key = [...stored].sort().join("\n");
-      let r = reads.get(key);
-      if (r === undefined) {
-         r = gateReadsOfQuery(facts.authorRunnable, stored);
-         reads.set(key, r);
-      }
-      return r;
-   };
-   let composite: Promise<boolean> | undefined;
-   const compositeOnce = () =>
-      (composite ??= entryRowFilterOnComposite(facts.authorRunnable));
-   const givens = facts.givens as Record<string, unknown> | undefined;
-   return legs.map((leg) => {
-      // A leg with no row in the gate policy (the query leg) is never tried
-      // past an entry-point gate: the policy fails closed.
-      const gateLeg = (GATE_LEGS as readonly LegKind[]).includes(leg.kind)
-         ? (leg.kind as (typeof GATE_LEGS)[number])
-         : undefined;
-      return {
-         kind: leg.kind,
-         applicable: leg.applies(facts, pinned),
-         keepsContracts:
-            gateLeg !== undefined &&
-            legMayPassGate(gateLeg, switches, SERVING_GATE_CONTEXT),
-         keepsContractsFor: async (answer: LegAnswer) => {
-            if (gateLeg === undefined) return false;
-            // Live refuses every caller of a source whose row filter was
-            // declared on a composite: no stored answer is kept for it.
-            if (await compositeOnce()) return false;
-            const read = answer.gateTablesRead ?? answer.tablesRead ?? [];
-            const tables = await withGateColumnTypes(read, gateReadsFor);
-            if (
-               (await storedComparisonRefusal(
-                  answer,
-                  tables,
-                  facts.authorRunnable,
-                  () => gateReadsFor(read),
-                  givens,
-               )) !== undefined
-            ) {
-               return false;
-            }
-            return answerKeepsGates(
-               gateLeg,
-               tables,
-               switches,
-               SERVING_GATE_CONTEXT,
-            );
-         },
-         attempt: async () => {
-            const answer = await leg.attempt(facts, pinned);
-            if (leg.kind === "served" || leg.kind === "rollup") {
-               await assertRowScopeExact(
-                  answer,
-                  gateReadsFor,
-                  facts.authorRunnable,
-                  leg.kind,
-                  givens,
-               );
-            }
-            if (leg.kind === "served") {
-               logger.debug("Serving query from the served copy (virtual)", {
-                  modelPath: args.modelPath,
-                  tables: (answer.tablesRead ?? []).map((b) => b.sourceName),
-               });
-            }
-            return { runnable: answer.runnable, extra: answer };
-         },
-         explain: (err): VariantSkipExplanation | undefined =>
-            isLegDecline(leg.kind, err) ? explanationOfDecline(err) : undefined,
-         onSkip: (err) => logSkip(leg.kind, args.modelPath, err),
-      };
-   });
-}
-
-/** What the gates and row scope read, given the tables an answer read. */
-type GateReadsFor = (
-   tables: readonly TableRead[],
-) => Promise<GateReads | undefined>;
-
-/** The sources (by `sourceID`) whose stored tables `tables` are. */
-function storedSourceIDs(tables: readonly TableRead[]): Set<string> {
-   const ids = new Set<string>();
-   for (const t of tables) {
-      for (const id of (t as Partial<Pick<Binding, "sourceIDs">>).sourceIDs ??
-         []) {
-         ids.add(id);
-      }
-   }
-   return ids;
-}
-
-/**
- * Each `storage=` table an answer read, with the stored types of the columns
- * the entry point's gates read (`gateColumnTypes`), for the gate policy's
- * exactness rule: a gate column stored as a float, which an exact number
- * rounds to, admits a neighbour's rows. A database table is built in the
- * source's own types and is left as it is.
- */
-async function withGateColumnTypes(
-   tables: readonly TableRead[],
-   gateReadsFor: GateReadsFor,
-): Promise<readonly TableRead[]> {
-   const retyped = (t: TableRead) =>
-      (t as Partial<Pick<Binding, "retypedColumns">>).retypedColumns ?? [];
-   const storage = tables.filter((t) => t.tier === "storage");
-   if (storage.length === 0 && !tables.some((t) => retyped(t).length > 0)) {
-      return tables;
-   }
-   const reads = await gateReadsFor(tables);
-   // Judged together: a gate column held by none of the storage tables the
-   // answer read leaves every one of them unproven.
-   const types = gateColumnTypesOf(
-      reads,
-      storage.map((t) => (t as Partial<Pick<Binding, "schema">>).schema),
+   const admission = new ReadAdmission(
+      facts,
+      gateSwitches(),
+      pinned.snapshot,
+      args.collation,
    );
-   const typeOf = new Map(storage.map((t, i) => [t, types[i]]));
-   const held = new Set((reads?.columns ?? []).flat());
-   // Locks only: the gates name no field at all, so no stored row can change
-   // their outcome (the gate policy's `gatesReadNoColumn`).
-   const readsNoColumn =
-      reads !== undefined &&
-      !reads.unresolved &&
-      reads.columns.length === 0 &&
-      reads.names.size === 0;
-   return tables.map((t) => {
-      if (t.tier === "storage") {
-         return {
-            ...t,
-            gateColumnTypes: typeOf.get(t),
-            ...(readsNoColumn ? { gatesReadNoColumn: true } : {}),
-         };
-      }
-      // A database table is built in the source's own types, so only a
-      // column the bind found moved since then (altered in the warehouse, or
-      // a 128-bit integer its DuckLake catalog holds as a DOUBLE) is judged,
-      // by the type it holds now. Unreadable gates judge every such column.
-      const moved = retyped(t);
-      if (moved.length === 0) return t;
-      return {
-         ...t,
-         gateColumnTypes: (reads === undefined || reads.unresolved
-            ? moved
-            : moved.filter((c) => held.has(c.name))
-         ).map((c) => c.type),
-      };
-   });
+   return legs.map((leg) => ({
+      kind: leg.kind,
+      applicable: leg.applies(facts, pinned),
+      keepsContracts: admission.mayAttempt(leg.kind),
+      keepsContractsFor: async (answer: LegAnswer) =>
+         (await admission.admit(leg.kind, answer, true)).used,
+      attempt: async () => {
+         const answer = await leg.attempt(facts, pinned);
+         // A table a failed reload found built from a changed upstream
+         // (Snapshot.withdrawn) is not read: the query answers as live does.
+         const withdrawn = pinned.snapshot.withdrawn;
+         if (
+            withdrawn &&
+            (answer.tablesRead ?? []).some((b) =>
+               withdrawn.has(b.virtualHandle),
+            )
+         ) {
+            throw new LegDecline(
+               STALE_DECLINE[leg.kind],
+               "a table this answer reads was built from an upstream table that changed since its build",
+            );
+         }
+         const outcome = await admission.admit(leg.kind, answer, false);
+         if (!outcome.used && "decline" in outcome) throw outcome.decline;
+         if (leg.kind === "served") {
+            logger.debug("Serving query from the served copy (virtual)", {
+               modelPath: args.modelPath,
+               tables: (answer.tablesRead ?? []).map((b) => b.sourceName),
+            });
+         }
+         return { runnable: answer.runnable, extra: answer };
+      },
+      explain: (err): VariantSkipExplanation | undefined =>
+         isLegDecline(leg.kind, err) ? explanationOfDecline(err) : undefined,
+      onSkip: (err) => logSkip(leg.kind, args.modelPath, err),
+   }));
 }
 
-/**
- * A served answer over a source whose rows a `where:` scopes (its own, one it
- * extends, a composite member's, a query-shaped source's base's or stage's,
- * gated or not) is kept only when the columns that scope reads are stored
- * exactly, by the gate policy's own rule (`gateColumnsExact`): the policy
- * itself is asked only past an entry-point gate, and a scope on a column
- * stored as a float admits a neighbour's rows. Every term counts, not only one
- * that reads a given: a scope written as a literal merges neighbours too.
- * Fails closed on a source whose reads cannot be listed.
- */
-async function assertRowScopeExact(
-   answer: LegAnswer,
-   gateReadsFor: GateReadsFor,
-   authorRunnable: QueryMaterializer,
-   leg: "served" | "rollup",
-   givens: Record<string, unknown> | undefined,
-): Promise<void> {
-   const tables = answer.gateTablesRead ?? answer.tablesRead ?? [];
-   const judged = await withGateColumnTypes(tables, gateReadsFor);
-   if (judged === tables) return;
-   const reads = await gateReadsFor(tables);
-   // A gated entry point's scope is judged by the gate policy, past the gate
-   // (`keepsContractsFor`), with its gate's columns: here, only an ungated one.
-   if (reads !== undefined && (!reads.scoped || reads.gated)) return;
-   const decline = (why: string) =>
-      leg === "served"
-         ? new LegDecline("served_copy_not_served", why)
-         : new LegDecline("rollup_row_level_gate", why, { shapeCheck: true });
-   // The exactness rule is the served copy's; the rollup leg judges its own
-   // stored columns (`storedRollupReads`), so it is asked only the
-   // comparison rules below.
-   if (leg === "served" && !judged.every(gateColumnsExact)) {
-      throw decline(
-         "the query's source scopes its rows by a column a stored table does not hold exactly",
-      );
-   }
-   if (
-      (await storedComparisonRefusal(
-         answer,
-         judged,
-         authorRunnable,
-         () => gateReadsFor(tables),
-         givens,
-      )) !== undefined
-   ) {
-      throw decline(
-         "the query's source scopes its rows by a column a stored table does not compare as its source does",
-      );
-   }
-}
-
-/**
- * Whether the query's entry point reads a row filter declared on a composite
- * source ({@link rowFilterOnComposite}); a compile that cannot be read
- * reads true.
- */
-async function entryRowFilterOnComposite(
-   runnable: QueryMaterializer,
-): Promise<boolean> {
-   try {
-      const prepared = await readPreparedQuery(runnable);
-      const struct = resolveStructRefSource(
-         prepared.structRef as never,
-         prepared.modelDef as never,
-      );
-      return rowFilterOnComposite(struct, prepared.modelDef);
-   } catch {
-      return true;
-   }
-}
-
-/** A stored type that carries a zone: compared in the reading session's zone. */
-const ZONED_STORED_TYPE = /\b(TIMESTAMP\s+WITH\s+TIME\s+ZONE|TIMESTAMPTZ)\b/i;
-
-/**
- * Why a stored table an answer read does not compare the columns the entry
- * point's gates and scopes read as the source compares them, or undefined
- * when it does (the comparison rules, beside the exactness rule):
- *
- * - a column stored with a zone (`TIMESTAMP WITH TIME ZONE`) is compared in
- *   the destination session's zone, not the source's;
- * - a string column is compared byte-exact on a `storage=` table, which
- *   matches the source only under its collation's terms, and every table
- *   read is judged by its own collation as well (`serve/gate_collation.ts`).
- */
-async function storedComparisonRefusal(
-   answer: LegAnswer,
-   tables: readonly TableRead[],
-   authorRunnable: QueryMaterializer,
-   readsOf: () => Promise<GateReads | undefined>,
-   givens: Record<string, unknown> | undefined,
-): Promise<string | undefined> {
-   const stored = tables.filter((t) => t.tier === "storage");
-   const types = stored.flatMap((t) => t.gateColumnTypes ?? []);
-   if (types.some((type) => ZONED_STORED_TYPE.test(type))) {
-      return "a gate column stored with a zone";
-   }
-   const reads = await readsOf();
-   if (stored.length > 0) {
-      const source = await stringGateCollationRefusal({
-         authorRunnable,
-         reads,
-         stringStored: types.some(storedTypeIsString),
-         ...(givens ? { givens } : {}),
-      });
-      if (source !== undefined) return source;
-   }
-   // The stored side: every table read, however it was admitted.
-   return storedTableCollationRefusal({
-      tables: tables as readonly (TableRead & {
-         virtualHandle?: string;
-         tablePath?: string;
-         destinationName?: string;
-      })[],
-      answerRunnable: answer.runnable,
-      virtualMap: answer.virtualMap,
-      authorRunnable,
-      reads,
-   });
-}
+// What read admission reports, counted and logged here, outside its layer.
+observeAdmission({
+   queryWalk: recordQueryWalk,
+});
 
 /** The answer the router's decision describes, before anything runs. */
 export function answerOf(route: RouteDecision<LegAnswer>): Answer {
@@ -569,12 +341,14 @@ export async function queryPathFor(
             ? (host.persistedViews.reportedTable(args.queryString, pinned) ??
               host.persistedQueries.reportedTable(args.queryString, pinned))
             : undefined);
+      // The `#(materialize)` tables the served copy reads at this pin.
+      const servedBound = host.servedCopy.materializeBindings(pinned, "bound");
       // Nothing materialized for this model: the answer is live and there is
       // nothing to name, so skip the chain walks and the catalog reads.
       if (
          (catalog?.planned.size ?? 0) === 0 &&
          host.storageTables(pinned.snapshot).length === 0 &&
-         host.servedCopy.materializeBindings(pinned, "bound").length === 0 &&
+         servedBound.length === 0 &&
          variantRollups.length === 0 &&
          viewTable === undefined &&
          answer.considered.length === 0
@@ -600,7 +374,7 @@ export async function queryPathFor(
       return buildQueryPath({
          shape,
          modelPath: host.modelPath,
-         chain: chainOfQuerySource(struct, modelDef, host.modelDef()),
+         chain: queriedChain(host, struct, modelDef),
          catalog,
          freshDatabase: pinned.hasEntries
             ? new Set(Object.keys(pinned.compilerManifest.entries))
@@ -611,7 +385,7 @@ export async function queryPathFor(
          storage: {
             all: [
                ...storageTables,
-               ...host.servedCopy.materializeBindings(pinned, "bound"),
+               ...servedBound,
                ...host.rollupVariants.rollupBindings(pinned, "bound"),
             ].map(toTable),
             fresh: [
@@ -623,7 +397,7 @@ export async function queryPathFor(
          rollups: variantRollups.map((r) => ({ ...r, variant: true })),
          // Every `storage=` source carries a package warning when the tier
          // is off or write-only (see storageWarnings).
-         storageWarned: getPersistStorageMode() !== "on",
+         storageWarned: !storageServes(getPersistStorageMode()),
          considered: answer.considered,
          storageTablesRead: routed?.tablesRead?.map(toTable),
          ...(answer.leg === "rollup"
@@ -634,10 +408,10 @@ export async function queryPathFor(
               }
             : {}),
          ...(answer.leg === "served" ? { via: "served_copy" as const } : {}),
-         servedCopyTables: new Set(
-            host.servedCopy
-               .materializeBindings(pinned, "bound")
-               .map((b) => b.tablePath),
+         servedCopyTables: new Set(servedBound.map((b) => b.tablePath)),
+         servedCopyDetails: servedCopyDetailsOf(
+            servedBound,
+            host.servedCopy.problems(),
          ),
          runFailed: answer.leg !== "live" && answer.runFailed,
          databaseRead: answer.databaseRead,
@@ -669,6 +443,43 @@ export async function queryPathFor(
       });
       return undefined;
    }
+}
+
+/**
+ * Each served-copy table's `column_types` detail, by table path: the columns
+ * its source's problem names, for the path report's `detail`.
+ */
+function servedCopyDetailsOf(
+   bindings: readonly Binding[],
+   problems: ReturnType<ServedCopyServe["problems"]>,
+): ReadonlyMap<string, string> {
+   const out = new Map<string, string>();
+   for (const p of problems) {
+      if (p.reason !== "column_types" || !p.detail || !p.sourceID) continue;
+      for (const b of bindings) {
+         if (b.sourceIDs?.includes(p.sourceID)) out.set(b.tablePath, p.detail);
+      }
+   }
+   return out;
+}
+
+/**
+ * The queried source's chain for the path report: the chain the model
+ * recorded for a source it declares ({@link QueryServingHost.sourceChains},
+ * read once per compile); a source it does not declare (one only the
+ * query's compile holds) is walked, and counted.
+ */
+export function queriedChain(
+   host: Pick<QueryServingHost, "modelDef" | "sourceChains">,
+   struct: unknown,
+   queryModelDef: unknown,
+): string[] {
+   const id = (struct as { sourceID?: unknown } | undefined)?.sourceID;
+   const recorded =
+      typeof id === "string" ? host.sourceChains().get(id) : undefined;
+   if (recorded) return [...recorded];
+   reportQueryWalk("path_chain");
+   return chainOfQuerySource(struct, queryModelDef, host.modelDef());
 }
 
 /**

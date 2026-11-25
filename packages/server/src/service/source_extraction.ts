@@ -49,7 +49,7 @@ import {
    sourceFilterNotes,
    type FilterDefinition,
 } from "./filter";
-import { gateExprsForRoute } from "./gate_registry_walk";
+import { gateGroupsForRoute } from "./gate_registry_walk";
 import { derivedStructsReachable } from "./governance/ir/source_graph";
 
 /** A `#(filter)` definition enriched with the dimension's Malloy type. */
@@ -469,15 +469,22 @@ export function extractSourcesFromModelDef(
          // Per route, so each wire field reports only its own route.
          const routeGroupsByRoute = new Map<string, string[][]>();
          for (const route of CANONICAL_AUTHORIZE_ROUTES) {
-            const groupsForRoute = gateExprsForRoute(
+            const groupsForRoute = gateGroupsForRoute(
                struct as SourceDef,
                modelDef,
                route,
             );
-            for (const exprs of groupsForRoute) {
-               groupsForSource.push({ route, exprs });
+            for (const { exprs, fromBase } of groupsForRoute) {
+               groupsForSource.push({
+                  route,
+                  exprs,
+                  ...(fromBase ? { fromBase: true as const } : {}),
+               });
             }
-            routeGroupsByRoute.set(route, groupsForRoute);
+            routeGroupsByRoute.set(
+               route,
+               groupsForRoute.map((g) => g.exprs),
+            );
          }
          if (groupsForSource.length > 0) {
             authorizeMap.set(sourceName, groupsForSource);

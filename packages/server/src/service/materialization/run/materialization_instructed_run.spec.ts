@@ -26,6 +26,10 @@ import { logger } from "../../../logger";
 import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
 import { startMetricsHarness } from "../../../test_helpers/metrics_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
+import { fakeContractReads } from "../../../test_helpers/contract_fixture";
+
+// Builds over fake connections, which answer no catalog query.
+fakeContractReads();
 
 /**
  * Instructed builds (executeInstructedBuild): resolving each instruction,
@@ -56,7 +60,6 @@ describe("executeInstructedBuild", () => {
       instructions: BuildInstruction[],
       seed: Record<string, unknown>,
       apiConnections?: Record<string, unknown>,
-      strict = false,
       // The host instructed the run (orchestrated).
       hostInstructed = false,
       signal: AbortSignal = new AbortController().signal,
@@ -84,7 +87,6 @@ describe("executeInstructedBuild", () => {
                instructions: BuildInstruction[];
                seedEntries: Record<string, unknown>;
                signal: AbortSignal;
-               strict: boolean;
                [option: string]: unknown;
             }) => Promise<ExecuteResult>;
          }
@@ -94,7 +96,6 @@ describe("executeInstructedBuild", () => {
          instructions,
          seedEntries: seed,
          signal,
-         strict,
          priorRefusals: [],
          hostInstructed,
       });
@@ -265,7 +266,6 @@ describe("executeInstructedBuild", () => {
             ],
             {},
             undefined,
-            false,
             false,
             run.signal,
          ),
@@ -558,25 +558,6 @@ describe("executeInstructedBuild", () => {
          expect((memory as BuildRunFailedError).retryable).toBe(true);
          const odd = await runOnly("something odd happened");
          expect((odd as BuildRunFailedError).retryable).toBeUndefined();
-      });
-
-      // ms2data/service#6756: the instructions refused the only build there
-      // is, so the same instructions refuse it again.
-      it("marks a source refused under warehouseReach refuse deterministic, and its dependent too", async () => {
-         const { WarehouseRecomputeRefusedError } = await import(
-            "../../../errors"
-         );
-         const refused = new WarehouseRecomputeRefusedError(
-            "up",
-            "lake",
-            "'up' reads the source warehouse (regions) through 'via'",
-         );
-         const failures = await runChain(refused.message, refused);
-         expect(failures["bupupupupupupupu"].retryable).toBe(false);
-         expect(failures["bupupupupupupupu"].reason).toContain(
-            "warehouseReach: refuse",
-         );
-         expect(failures["bdowndowndowndow"].retryable).toBe(false);
       });
 
       it("omits the field when the failure is not recognized", async () => {
@@ -1439,24 +1420,37 @@ describe("executeInstructedBuild", () => {
    // a reference to it (or to the table from before the move) read as a
    // warehouse table, and its bare name was rendered into warehouse SQL.
    describe("an upstream declared `storage=` is never a warehouse table", () => {
+      /** One render Malloy is handed, as the specs below read it. */
+      type Rendered = {
+         buildManifest?: {
+            entries?: Record<string, { tableName?: string }>;
+         };
+      };
+
       async function downstreamSees(opts: {
          upStorage?: string;
          seed: Record<string, unknown>;
          mode?: string;
-         strict?: boolean;
          hostInstructed?: boolean;
          /** The downstream does not read `up` (default: it does). */
          downIgnoresUp?: boolean;
          /** Another upstream nothing supplied; a strict render reports it first. */
          alsoMissing?: boolean;
-      }) {
+         /** Where to collect every render, read even when the build is refused. */
+         renders?: Rendered[];
+      }): Promise<{
+         seen:
+            | {
+                 buildManifest?: {
+                    entries?: Record<string, { tableName?: string }>;
+                 };
+              }
+            | undefined;
+         result: Awaited<ReturnType<typeof callExecute>>;
+      }> {
          // Every render Malloy is handed. The FIRST is the build SQL; later ones
          // only classify the build's upstreams and are never executed.
-         const renders: {
-            buildManifest?: {
-               entries?: Record<string, { tableName?: string }>;
-            };
-         }[] = [];
+         const renders: Rendered[] = opts.renders ?? [];
          const connection = {
             runSQL: sinon.stub().resolves(),
             dialectName: "duckdb",
@@ -1472,7 +1466,7 @@ describe("executeInstructedBuild", () => {
             name: "down",
             sourceEntityId: "bdownaaaaaaaaaa",
             onGetSQL: (o) => {
-               renders.push(o as (typeof renders)[number]);
+               renders.push(o as Rendered);
                // Malloy's strict render refuses an upstream it cannot find.
                const m = (
                   o as {
@@ -1522,7 +1516,6 @@ describe("executeInstructedBuild", () => {
                ],
                opts.seed,
                undefined,
-               opts.strict ?? false,
                opts.hostInstructed ?? false,
             );
             return { seen: renders[0], result };
@@ -1531,10 +1524,26 @@ describe("executeInstructedBuild", () => {
          }
       }
 
-      it("does not render a stored upstream's unlabeled reference into warehouse SQL", async () => {
+      /**
+       * {@link downstreamSees} for a build its strict render refuses: what it
+       * rendered first, and why it was refused.
+       */
+      async function refusedHaving(
+         opts: Parameters<typeof downstreamSees>[0],
+      ): Promise<{ seen: Rendered | undefined; reason: string }> {
+         const renders: Rendered[] = [];
+         const reason = await downstreamSees({ ...opts, renders }).then(
+            () => "",
+            (err: unknown) =>
+               err instanceof Error ? err.message : String(err),
+         );
+         return { seen: renders[0], reason };
+      }
+
+      it("does not render a stored upstream's unlabeled reference into warehouse SQL, and refuses the build", async () => {
          // The reference the control plane sends today: the stored table's
          // name on the warehouse connection, no destination.
-         const { seen, result } = await downstreamSees({
+         const { seen, reason } = await refusedHaving({
             upStorage: "lake",
             seed: {
                up: {
@@ -1544,15 +1553,15 @@ describe("executeInstructedBuild", () => {
                },
             },
          });
+         expect(seen).toBeDefined();
          expect(seen?.buildManifest?.entries?.up).toBeUndefined();
-         // Still carried in the run's manifest; only the warehouse render skips it.
-         expect(result.entries.up?.physicalTableName).toBe(
-            "up__g004__e9c3ad40",
+         expect(reason).toContain(
+            "'up' is declared in storage destination 'lake'",
          );
       });
 
       it("does not render the warehouse table from before the upstream moved to storage", async () => {
-         const { seen } = await downstreamSees({
+         const { seen, reason } = await refusedHaving({
             upStorage: "lake",
             seed: {
                up: {
@@ -1562,7 +1571,9 @@ describe("executeInstructedBuild", () => {
                },
             },
          });
+         expect(seen).toBeDefined();
          expect(seen?.buildManifest?.entries?.up).toBeUndefined();
+         expect(reason).toContain("supplied at the wrong tier");
       });
 
       const oldWarehouseTable = {
@@ -1585,20 +1596,21 @@ describe("executeInstructedBuild", () => {
       });
 
       it("reads a storage= upstream as stored under write-only, so its warehouse table is not rendered", async () => {
-         const { seen } = await downstreamSees({
+         const { seen, reason } = await refusedHaving({
             upStorage: "lake",
             mode: "write-only",
             seed: oldWarehouseTable,
          });
+         expect(seen).toBeDefined();
          expect(seen?.buildManifest?.entries?.up).toBeUndefined();
+         expect(reason).toContain("supplied at the wrong tier");
       });
 
-      it("refuses a strict database build whose upstream was supplied at the wrong tier, naming both tiers", async () => {
+      it("refuses a database build whose upstream was supplied at the wrong tier, naming both tiers", async () => {
          // The only instructed source fails, so the run itself fails, with it.
          const reason = await downstreamSees({
             upStorage: "lake",
             seed: oldWarehouseTable,
-            strict: true,
          }).then(
             () => "",
             (err: unknown) =>
@@ -1614,7 +1626,7 @@ describe("executeInstructedBuild", () => {
 
       // Decided 2026-11-12: a host that hands a build another tier's table
       // (two workers with separate stores sharing one config) is a case the
-      // host must prevent, so a host-instructed build refuses, strict or not,
+      // host must prevent, so a host-instructed build refuses it by name
       // rather than recomputing the upstream across that boundary.
       const reasonOf = (p: Promise<unknown>) =>
          p.then(
@@ -1636,7 +1648,6 @@ describe("executeInstructedBuild", () => {
             downstreamSees({
                upStorage: "lake",
                hostInstructed: true,
-               strict: true,
                alsoMissing: true,
                seed: unlabeledUp,
             }),
@@ -1659,7 +1670,7 @@ describe("executeInstructedBuild", () => {
          expect(reason).not.toContain("the host supplied an upstream entry");
       });
 
-      it("refuses a host-instructed build whose upstream's unlabeled reference is at the wrong tier, not strict", async () => {
+      it("refuses a host-instructed build whose upstream's unlabeled reference is at the wrong tier", async () => {
          const reason = await reasonOf(
             downstreamSees({
                upStorage: "lake",
@@ -1681,12 +1692,11 @@ describe("executeInstructedBuild", () => {
          expect(reason).not.toContain("not found in manifest");
       });
 
-      it("refuses a host-instructed strict build with the host-supplied message", async () => {
+      it("refuses a host-instructed build with the host-supplied message", async () => {
          const reason = await reasonOf(
             downstreamSees({
                upStorage: "lake",
                hostInstructed: true,
-               strict: true,
                seed: oldWarehouseTable,
             }),
          );
@@ -1697,7 +1707,7 @@ describe("executeInstructedBuild", () => {
       it("classifies the host-supplied refusal as deterministic", async () => {
          const { classifyBuildError } = await import("./build_failure_class");
          const { HostSuppliedWrongTierError } = await import(
-            "./materialization_run_support"
+            "./build_upstreams"
          );
          expect(
             classifyBuildError(
@@ -1708,19 +1718,13 @@ describe("executeInstructedBuild", () => {
          ).toBe(false);
       });
 
-      it("still recomputes in a self-instructed build, not strict", async () => {
-         const { seen } = await downstreamSees({
-            upStorage: "lake",
-            seed: oldWarehouseTable,
-         });
-         expect(seen?.buildManifest?.entries?.up).toBeUndefined();
-      });
-
       it("treats an entry built into the source's own database as current in a host-instructed build", async () => {
          // No `storage=`, and a destination that is the source's own
          // connection: the same database, so the entry is current and the host
-         // build refuses nothing (#1619's review fix).
-         const { result } = await downstreamSees({
+         // build refuses nothing at the wrong tier (#1619's review fix). Its
+         // stored table is still not warehouse SQL, so the strict render misses
+         // it rather than recomputing it.
+         const { reason } = await refusedHaving({
             hostInstructed: true,
             seed: {
                up: {
@@ -1731,8 +1735,8 @@ describe("executeInstructedBuild", () => {
                },
             },
          });
-         expect(result.entries.bdownaaaaaaaaaa).toBeDefined();
-         expect(Object.keys(result.failures ?? {})).toEqual([]);
+         expect(reason).not.toContain("the host supplied an upstream entry");
+         expect(reason).toContain("'up' not found in manifest");
       });
 
       it("still renders a database upstream's warehouse table", async () => {
@@ -2038,7 +2042,7 @@ describe("executeInstructedBuild", () => {
                {},
             )) as ExecuteResult & {
                refusalsInFailures: number;
-               refusedBesideBuilt: Record<string, unknown>;
+               refusedSources: Record<string, unknown>;
             };
             expect(result.entries["b0k0k0k0k0k0k0k0"].physicalTableName).toBe(
                "ok_v1",
@@ -2056,7 +2060,13 @@ describe("executeInstructedBuild", () => {
             );
             expect(result.refusalsInFailures).toBe(1);
             expect(result.sourcesRefused).toBe(2);
-            expect(result.refusedBesideBuilt).toEqual({});
+            // The base, held back only for sharing the address, is reported
+            // too, by its own record, never dropped.
+            expect(
+               Object.values(
+                  result.refusedSources as Record<string, { name: string }>,
+               ).map((r) => r.name),
+            ).toEqual(["base"]);
             expect(
                createsFrom(runSQL).some((sql) => sql.includes("shared_v1")),
                "nothing is built on a refused database address",
@@ -2393,14 +2403,7 @@ describe("executeInstructedBuild", () => {
          compiled: unknown,
          instructions: BuildInstruction[],
       ): Promise<unknown> {
-         return callExecute(
-            compiled,
-            instructions,
-            {},
-            undefined,
-            false,
-            true,
-         ).then(
+         return callExecute(compiled, instructions, {}, undefined, true).then(
             () => {
                throw new Error("the run built something");
             },

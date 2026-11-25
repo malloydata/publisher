@@ -5,7 +5,7 @@
 // `.malloynb` notebooks (see RELEASE_NOTES deprecations). Every test in
 // this file is about that deprecated feature.
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { PACKAGES } from "./helpers/fixtures";
 import {
    exampleFixture,
@@ -19,6 +19,16 @@ import {
  * package. The viewer stays supported, so the coverage stays.
  */
 const FIXTURE_NOTEBOOK = "test_package_notebook.malloynb";
+const README_NOTEBOOK = "README.malloynb";
+const README_SOURCE = `>>>markdown
+# Readme notebook
+
+>>>malloy
+import "storefront.malloy"
+
+>>>malloy
+run: order_items -> top_products
+`;
 const GOVERNED_NOTEBOOK = "test_governed_notebook.malloynb";
 const GOVERNED_SOURCE = `>>>markdown
 # Governed notebook
@@ -47,6 +57,20 @@ run: order_items -> top_customers
 run: order_items -> category_performance
 `;
 
+/** Every API request the page makes, as `METHOD /path` after the package. */
+function apiRequests(page: Page): string[] {
+   const sent: string[] = [];
+   page.on("request", (request) => {
+      const { pathname } = new URL(request.url());
+      const at = pathname.indexOf("/packages/");
+      if (pathname.startsWith("/api/v0/") && at >= 0) {
+         const rest = pathname.slice(at).split("/").slice(3).join("/");
+         sent.push(`${request.method()} /${rest}`);
+      }
+   });
+   return sent;
+}
+
 let storefront: PackageEnv;
 let governed: PackageEnv;
 
@@ -59,7 +83,10 @@ test.describe("package-notebooks", () => {
          "pkgnb",
          exampleFixture(PACKAGES.storefront),
          PACKAGES.storefront,
-         { [FIXTURE_NOTEBOOK]: NOTEBOOK_SOURCE },
+         {
+            [FIXTURE_NOTEBOOK]: NOTEBOOK_SOURCE,
+            [README_NOTEBOOK]: README_SOURCE,
+         },
       );
       governed = await publishPackageEnv(
          baseURL,
@@ -107,14 +134,49 @@ test.describe("package-notebooks", () => {
       await expect(page).toHaveURL(/test_package_notebook\.malloynb/);
    });
 
-   test("the notebook view renders authored content", async ({ page }) => {
+   test("the notebook view renders authored content, its cells run through the query endpoint", async ({
+      page,
+   }) => {
+      const sent = apiRequests(page);
       await page.goto(`/${storefront.path}`);
       await page.getByText(FIXTURE_NOTEBOOK, { exact: true }).click();
-      // The fixture's own H1: its presence confirms the Notebook mounted and
-      // ran the cells.
+      // The fixture's own H1, and a result per cell that runs.
       await expect(
          page.getByRole("heading", { name: "A notebook", level: 1 }),
       ).toBeVisible();
+      await expect(page.locator(".malloy-render")).toHaveCount(3, {
+         timeout: 30_000,
+      });
+      // Each `run:` cell is a query against the notebook's own path; the
+      // import cell sends nothing, and the deprecated notebook routes are
+      // never read.
+      expect(
+         sent.filter((request) =>
+            request.endsWith(`POST /models/${FIXTURE_NOTEBOOK}/query`),
+         ),
+      ).toHaveLength(3);
+      expect(sent.filter((request) => request.includes("/notebooks"))).toEqual(
+         [],
+      );
+   });
+
+   test("a root README.malloynb renders on the package page, its cell run", async ({
+      page,
+   }) => {
+      const sent = apiRequests(page);
+      await page.goto(`/${storefront.path}`);
+      await expect(
+         page.getByRole("heading", { name: "Readme notebook", level: 1 }),
+      ).toBeVisible({ timeout: 60_000 });
+      await expect(page.locator(".malloy-render")).toHaveCount(1, {
+         timeout: 30_000,
+      });
+      await expect(page.getByText(/render it with Notebook/)).toHaveCount(0);
+      expect(
+         sent.filter((request) =>
+            request.endsWith(`POST /models/${README_NOTEBOOK}/query`),
+         ),
+      ).toHaveLength(1);
    });
 
    test("clicking a notebook row keeps the package segment in the URL", async ({

@@ -1045,12 +1045,20 @@ describe("an inheriting derivation's unexpressible gate scopes to that entry poi
       },
    );
 
-   it("a query-source projecting the gated column away loads and denies", async () => {
+   it("a query-source projecting the gated column away loads with no warning and answers the base's admitted rows", async () => {
+      // The gate filters the base's rows before the derivation runs, so the
+      // derivation need not keep the column it reads (orgtable: org 1 holds
+      // ids 1 and 2).
+      warnSpy.mockClear();
       await withAuthorizeModel(
          `${GATED_PARENT}\nsource: Z2 is gated_parent -> { group_by: id, val; aggregate: n is count() }\n`,
          async ({ model, error }) => {
             expect(error).toBeUndefined();
-            await expectAccessDenied(countFor(model, "Z2", { GROUPS: [1] }));
+            expect(warnedSources(warnSpy.mock.calls, UNEXPRESSIBLE)).toEqual(
+               [],
+            );
+            expect(await countFor(model, "Z2", { GROUPS: [1] })).toBe(2);
+            expect(await countFor(model, "Z2", { GROUPS: [9] })).toBe(0);
          },
       );
    });

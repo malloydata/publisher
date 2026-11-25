@@ -206,26 +206,19 @@ describe("a query that bakes a default-less given loads", () => {
          expect(notebook.notebookCells?.some((c) => c.type === "code")).toBe(
             true,
          );
-         const run = await model.executeNotebookCell(
-            unrecordedAudit(),
-            1,
-            undefined,
-            false,
-            {
-               ORG: 2,
-            },
-         );
+         const run = await model.runQuery(unrecordedAudit(), {
+            query: "run: orders -> { where: org_id = $ORG; aggregate: c }",
+            givens: { ORG: 2 },
+         });
          expect(count(run.result)).toBe(2);
       });
    });
 
-   it("lists the layout notebook's query cell", async () => {
+   it("lists the layout notebook's query tile", async () => {
       write(SHAPES[1]);
       const pkg = await Package.create("env", "pkg", tempDir, malloyConfig());
-      const notebook = await pkg.getModel("notebooks/nb.malloy")!.getNotebook();
-      expect(notebook.notebookCells?.some((c) => c.kind === "query")).toBe(
-         true,
-      );
+      const report = await pkg.getReport("notebooks/nb.malloy");
+      expect(report?.tiles?.some((t) => t.kind === "query")).toBe(true);
    });
 
    it("runs an exported query with the given, and refuses it without", async () => {

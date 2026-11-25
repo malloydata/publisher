@@ -27,10 +27,7 @@ import {
 // Registers the "publisher" connection type (proxies SQL to a remote Publisher);
 // lookupConnection resolves it through the registry like any other type.
 import "@malloydata/db-publisher";
-import {
-   buildPoolOptions,
-   SnowflakeConnection,
-} from "@malloydata/db-snowflake";
+import type { SnowflakeConnection } from "@malloydata/db-snowflake";
 import "@malloydata/db-sqlserver";
 import type { SQLServerConnection } from "@malloydata/db-sqlserver";
 import "@malloydata/db-trino";
@@ -38,81 +35,99 @@ import type { TrinoConnection } from "@malloydata/db-trino";
 import {
    Connection,
    contextOverlay,
+   makeDigest,
    MalloyConfig,
+   type QueryRecord,
    TableSourceDef,
 } from "@malloydata/malloy";
 import type { LookupConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
+import { AsyncLocalStorage } from "async_hooks";
 import { createHash } from "crypto";
-import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import type { PoolConfig } from "pg";
-import tls from "tls";
 import { components } from "../api";
+import { ConnectionOrigin, getPostgresPoolMax } from "../config";
 import {
-   ConnectionOrigin,
-   getDuckDBMemoryLimit,
-   getDuckLakeRowGroupSizeBytes,
-   getDuckLakeTargetFileSizeBytes,
-   getDuckDBTempDirectory,
-   getExtensionFetchPolicy,
-   getPostgresPoolMax,
-} from "../config";
-import {
-   catalogFormatRangeForEngine,
-   isCatalogFormatInRange,
-} from "../ducklake_version";
-import {
+   BadRequestError,
    ConnectionNotFoundError,
    ConnectionPoolExhaustedError,
    TableNotFoundError,
    UnconfiguredConnectionError,
-   UnsupportedCatalogFormatError,
 } from "../errors";
 import { logAxiosError, logger } from "../logger";
 import { redactConnectionSecretShapes, redactPgSecrets } from "../pg_helpers";
-import {
-   assertSafeEnvironmentPath,
-   assertSafePackageName,
-   safeJoinUnderRoot,
-} from "../path_safety";
+import { assertSafePackageName } from "../path_safety";
 import {
    assembleEnvironmentConnections,
-   buildPostgresConnectionString,
-   CoreConnectionEntry,
    EnvironmentConnectionMetadata,
-   normalizeSnowflakePrivateKey,
-   parseServiceAccountKey,
-   postgresStatementTimeoutMs,
-   PROXIED_SSLMODES,
+   removeUndefined,
 } from "./connection_config";
+import {
+   attachCloudStorage,
+   doesSecretExistInDuckDB,
+   instanceSecretRenewers,
+} from "./cloud_storage_secret";
+import { connectionDialectOf, type CoreConnectionEntry } from "./dialects";
+import {
+   DUCKLAKE,
+   isDuckLakeInitRace,
+   managedSearchPathSql,
+} from "./dialects/ducklake";
+import type { DestinationAttachMode } from "./dialects/types";
+import {
+   applyExtensionSessionSettings,
+   escapeSQL,
+   installAndLoadExtension,
+   runSQLRows,
+   sanitizeSecretName,
+} from "./duckdb_session_setup";
+import {
+   buildPostgresConnectionString,
+   postgresStatementTimeoutMs,
+} from "./postgres_conninfo";
+import { buildSnowflakeConnection } from "./snowflake_connection";
+import { guardBigQueryTruncation } from "./bigquery_truncation";
 import { gcpImpersonationOverlay } from "./gcp_impersonation";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import {
-   CloudStorageCredentials,
-   checkS3Endpoint,
-   DEFAULT_S3_CREDENTIAL_CHAIN,
-   resolveCloudStorageCredentials,
-} from "./gcs_s3_utils";
-import { recordConnectionType } from "./connection_type";
+   isManagedConnection,
+   managedSchemas,
+   managedSchemasOf,
+   recordConnectionType,
+} from "./connection_type";
+import {
+   managedCatalogMessage,
+   managedCatalogRefusal,
+   managedTablePathRefusal,
+   scrubCatalogSuggestions,
+} from "./managed_catalog_scope";
 import {
    allowForLockdown,
    azureAllowPrefix,
-   clearAmbientS3Settings,
-   cloudStorageAllowPrefixes,
+   duckDBInstanceHasOtherHolders,
+   duckDBInstanceId,
    duckDBInstanceOf,
    isConfigurationFrozen,
    installDuckDBStatementLockdown,
    isLockedByOptions,
    lockDownDuckDBSession,
    relativeReadEntries,
-   runAsInternalStatement,
+   runExclusiveOnDuckDBInstance,
+   runInternalSQL,
 } from "./duckdb_lockdown";
+import {
+   DUCKLAKE_ATTACH_FAILED,
+   DUCKLAKE_CATALOG_UNAVAILABLE,
+   DuckLakeCatalogUnavailableError,
+} from "./ducklake_catalog_unavailable";
 import { installDuckDBStatementGate } from "./duckdb_statement_gate";
 import {
+   disownDuckDBConnection,
    hardCloseOwnedDuckDBConnections,
+   hardCloseWhenIdle,
    installDuckDBHardClose,
    ownDuckDBConnection,
 } from "./duckdb_hard_close";
@@ -156,268 +171,6 @@ export type InternalConnection = ApiConnection & {
    ducklakeConnection?: components["schemas"]["DucklakeConnection"];
 };
 
-// Sessions whose extension PRAGMAs are already pinned, so the lookup funnel
-// (run on every resolve) issues the SETs once per connection. The DuckLake
-// tier pins with `alwaysDisableAutoinstall` inside its attach, before the
-// funnel sees the connection, so the stronger setting is recorded first and
-// never re-evaluated down to policy.
-const extensionSessionPinned = new WeakSet<Connection>();
-
-/**
- * Bound the Parquet row group DuckLake buffers before flushing, when configured.
- *
- * DuckLake has only a CATALOG option for this (no session equivalent):
- * `set_option` writes it to `ducklake_metadata`, where every writer of the lake
- * sees it. That is why it is skipped on a read-only attach.
- *
- * Failures are swallowed: a catalog that predates the option, or one this
- * deployment may not re-configure, must still attach; this is a memory
- * optimisation, not a correctness requirement.
- */
-export async function applyDuckLakeRowGroupBound(
-   connection: DuckDBConnection,
-   dbName: string,
-): Promise<void> {
-   const bytes = getDuckLakeRowGroupSizeBytes();
-   if (bytes === undefined) {
-      return;
-   }
-   try {
-      // DuckDB refuses ROW_GROUP_SIZE_BYTES (Binder Error) while insertion order
-      // is preserved. This SET is GLOBAL to the DuckDB instance; it stays
-      // contained because a build gets its own instance from
-      // `createIsolatedBuildSession` and a read-only attach never reaches here.
-      await connection.runSQL("SET preserve_insertion_order=false");
-      await connection.runSQL(
-         `CALL ${quoteIdentifier(dbName, "duckdb")}.set_option('parquet_row_group_size_bytes', '${escapeSQL(bytes)}')`,
-      );
-      logger.info(`DuckLake row group bound applied to ${dbName}: ${bytes}`);
-   } catch (error) {
-      logger.warn(
-         `Could not set the DuckLake row group bound on ${dbName}; the lake keeps ` +
-            `its existing value: ${error instanceof Error ? error.message : String(error)}`,
-      );
-   }
-}
-
-/**
- * Bound how large a Parquet file DuckLake writes before rotating, when configured.
- *
- * Same catalog-option mechanics, read-only skip and swallowed failure as
- * {@link applyDuckLakeRowGroupBound}, without its `preserve_insertion_order`
- * requirement; the two may be applied in either order.
- *
- * It bounds a separate term: writing to object storage, DuckDB holds each
- * multipart part until the file completes, so the row group bounds the
- * per-column buffer and this bounds the file. Setting only one keeps paying the
- * other.
- */
-export async function applyDuckLakeTargetFileSize(
-   connection: DuckDBConnection,
-   dbName: string,
-): Promise<void> {
-   const bytes = getDuckLakeTargetFileSizeBytes();
-   if (bytes === undefined) {
-      return;
-   }
-   try {
-      await connection.runSQL(
-         `CALL ${quoteIdentifier(dbName, "duckdb")}.set_option('target_file_size', '${escapeSQL(bytes)}')`,
-      );
-      logger.info(`DuckLake target file size applied to ${dbName}: ${bytes}`);
-   } catch (error) {
-      logger.warn(
-         `Could not set the DuckLake target file size on ${dbName}; the lake keeps ` +
-            `its existing value: ${error instanceof Error ? error.message : String(error)}`,
-      );
-   }
-}
-
-/**
- * Sessions that already carry their resource limits, mapped to their spill
- * directory, so the SETs are not re-issued while a caller that owns a
- * directory can still re-point one set from the global default.
- */
-const sessionLimitsApplied = new WeakMap<
-   DuckDBConnection,
-   string | undefined
->();
-
-/**
- * Bound ONE DuckDB session's memory, and name where it spills.
- *
- * Every Publisher-owned session gets this: DuckDB sizes `memory_limit` per
- * INSTANCE from the container, and Publisher runs several in one process, so
- * unbounded they overcommit in SUM and the kernel kills the process. Both
- * settings are opt-in; see {@link getDuckDBMemoryLimit} for why the limit is
- * absolute.
- *
- * `tempDirectory` is a directory the session owns (a build's disposable
- * working directory), so its spill cannot outlive or collide with another
- * build. It overrides the configured default even when that default was
- * already applied, because an attach may carry the session through the funnel
- * first, without knowing the caller's directory.
- *
- * Failures are not swallowed: a rejected value is an operator error in a
- * resource bound, and continuing would run unbounded while config says
- * otherwise.
- */
-export async function applySessionResourceLimits(
-   connection: DuckDBConnection,
-   { tempDirectory }: { tempDirectory?: string } = {},
-): Promise<void> {
-   // A locked instance (duckdb_lockdown.ts) takes no SET: Malloy's locked
-   // tiers carry the memory limit and temp directory as options, and a
-   // networked instance was bounded before its lock.
-   if (isConfigurationFrozen(connection)) return;
-   const memoryLimit = getDuckDBMemoryLimit();
-   // A networked instance's own private temp directory (its options, which
-   // key its instance) is where it spills, unless the session names one.
-   const ownTemp = (
-      connection as unknown as { normalized?: { tempDirectory?: string } }
-   ).normalized?.tempDirectory;
-   const temp =
-      tempDirectory ?? (ownTemp ? undefined : getDuckDBTempDirectory());
-   if (sessionLimitsApplied.has(connection)) {
-      const applied = sessionLimitsApplied.get(connection);
-      // Only a session-owned directory revises an earlier decision; the memory
-      // bound is the same either way.
-      if (tempDirectory === undefined || tempDirectory === applied) {
-         return;
-      }
-      await connection.runSQL(
-         `SET temp_directory = '${escapeSQL(tempDirectory)}'`,
-      );
-      sessionLimitsApplied.set(connection, tempDirectory);
-      return;
-   }
-   if (temp !== undefined) {
-      // Before `memory_limit`: a limit low enough to force spill must never be in
-      // effect while the directory is still DuckDB's default.
-      await connection.runSQL(`SET temp_directory = '${escapeSQL(temp)}'`);
-   }
-   if (memoryLimit !== undefined) {
-      await connection.runSQL(`SET memory_limit = '${escapeSQL(memoryLimit)}'`);
-   }
-   sessionLimitsApplied.set(connection, temp);
-   logger.debug("Applied DuckDB session resource limits", {
-      memoryLimit: memoryLimit ?? "<duckdb default>",
-      tempDirectory: temp ?? "<duckdb default>",
-   });
-}
-
-/**
- * Pin the extension-management PRAGMAs on a Publisher-owned DuckDB session.
- * Publisher installs what it needs explicitly ({@link installAndLoadExtension}),
- * so DuckDB's implicit auto-install is never needed.
- *
- * Auto-load stays on so locally-present extensions lazy-load. Implicit
- * auto-install is turned off when `alwaysDisableAutoinstall` is set (the
- * DuckLake tier needs only its curated set) or under
- * `EXTENSION_FETCH_POLICY=local-only` (air-gapped: no session may reach the
- * network). Under `on-demand` a generic session keeps DuckDB's defaults.
- *
- * Called for every Publisher-owned session (lookup funnel, package sandbox,
- * attach entry points). A failed SET under `local-only` fails closed (throws),
- * since that mode promises no network access; otherwise the pin is
- * defense-in-depth, so it logs and continues.
- */
-export async function applyExtensionSessionSettings(
-   connection: DuckDBConnection,
-   {
-      alwaysDisableAutoinstall = false,
-   }: { alwaysDisableAutoinstall?: boolean } = {},
-): Promise<void> {
-   // Before the early return below: every Publisher-owned session reaches this
-   // funnel, so this is where "every session is bounded" is enforced.
-   await applySessionResourceLimits(connection);
-   const policy = getExtensionFetchPolicy();
-   const disableAutoinstall =
-      alwaysDisableAutoinstall || policy === "local-only";
-   if (!disableAutoinstall || extensionSessionPinned.has(connection)) {
-      return;
-   }
-   // A locked instance has auto-install off already (duckdb_lockdown.ts).
-   if (isConfigurationFrozen(connection)) {
-      extensionSessionPinned.add(connection);
-      return;
-   }
-   try {
-      await connection.runSQL("SET autoinstall_known_extensions=false;");
-      // DuckDB's default, set explicitly so a baked extension still loads.
-      await connection.runSQL("SET autoload_known_extensions=true;");
-      extensionSessionPinned.add(connection);
-   } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      if (policy === "local-only") {
-         throw new Error(
-            `Failed to disable DuckDB implicit extension auto-install under ` +
-               `EXTENSION_FETCH_POLICY=local-only; refusing to open a session that ` +
-               `could still fetch from the network. Underlying error: ${detail}`,
-         );
-      }
-      logger.warn("Failed to pin DuckDB extension session settings", {
-         error: detail,
-      });
-   }
-}
-
-export async function installAndLoadExtension(
-   connection: DuckDBConnection,
-   extensionName: string,
-   fromCommunity = false,
-): Promise<void> {
-   const policy = getExtensionFetchPolicy();
-
-   // `local-only` never fetches: it relies on the extension being baked into
-   // the image, and a missing one fails the LOAD below loudly.
-   if (policy === "on-demand") {
-      try {
-         // Plain INSTALL only fetches a missing extension. Not FORCE: it
-         // re-fetches even a baked extension, drifting the binary past the
-         // offline-verified build.
-         const installCommand = fromCommunity
-            ? `INSTALL ${extensionName} FROM community;`
-            : `INSTALL ${extensionName};`;
-         await connection.runSQL(installCommand);
-         logger.info(`${extensionName} extension installed`);
-      } catch (error) {
-         logger.info(
-            `${extensionName} extension already installed or install skipped`,
-            { error },
-         );
-      }
-   }
-
-   try {
-      await connection.runSQL(`LOAD ${extensionName};`);
-      logger.info(`${extensionName} extension loaded`);
-      if (extensionName === "httpfs") {
-         // httpfs seeds the S3 settings from the AWS_* environment; blank them
-         // so no SQL on this session reads them back (duckdb_lockdown.ts).
-         await clearAmbientS3Settings(connection, { httpfsLoaded: true });
-      }
-   } catch (error) {
-      if (policy === "local-only") {
-         const detail = error instanceof Error ? error.message : String(error);
-         logger.warn("DuckDB extension unavailable under local-only policy", {
-            extension: extensionName,
-            policy,
-            error: detail,
-         });
-         throw new Error(
-            `DuckDB extension '${extensionName}' is not available locally and ` +
-               `EXTENSION_FETCH_POLICY=local-only forbids fetching it. Bake the ` +
-               `'${extensionName}' extension into the image (or a pre-populated ` +
-               `~/.duckdb/extensions directory), or set ` +
-               `EXTENSION_FETCH_POLICY=on-demand to allow fetching missing ` +
-               `extensions on first use. Underlying LOAD error: ${detail}`,
-         );
-      }
-      throw error;
-   }
-}
-
 async function isDatabaseAttached(
    connection: DuckDBConnection,
    dbName: string,
@@ -448,14 +201,6 @@ async function isDatabaseAttached(
    }
 }
 
-function sanitizeSecretName(name: string): string {
-   return `secret_${name.replace(/[^a-zA-Z0-9_]/g, "_")}`;
-}
-
-export function escapeSQL(value: string): string {
-   return value.replace(/'/g, "''");
-}
-
 function handleAlreadyAttachedError(error: unknown, dbName: string): void {
    if (
       error instanceof Error &&
@@ -469,1233 +214,40 @@ function handleAlreadyAttachedError(error: unknown, dbName: string): void {
    }
 }
 
-interface BigQueryServiceAccount {
-   projectId: string;
-   serviceAccountJson: string;
-   clientEmail: string;
-}
-
 /**
- * Validate a BigQuery connection's service account key and resolve its
- * project. The DuckDB BIGQUERY secret authenticates only with a key, so the
- * read-only attach and the build-time federation both require one.
+ * Whether `alias` is attached on `connection`'s instance; undefined when the
+ * check itself failed, which says nothing about the catalog.
  */
-function parseBigQueryServiceAccount(
-   name: string | undefined,
-   config: components["schemas"]["BigqueryConnection"],
-): BigQueryServiceAccount {
-   const keyData = parseServiceAccountKey(config.serviceAccountKeyJson);
-   if (keyData) {
-      return {
-         projectId: (keyData.project_id || config.defaultProjectId) as string,
-         serviceAccountJson: config.serviceAccountKeyJson as string,
-         clientEmail: keyData.client_email as string,
-      };
-   }
-   throw new Error(
-      `BigQuery project_id and service account key required for: ${name}`,
-   );
-}
-
-/** Load the bigquery extension and create the secret scoped to the project. */
-async function createBigQuerySecret(
-   connection: DuckDBConnection,
-   name: string | undefined,
-   { projectId, serviceAccountJson }: BigQueryServiceAccount,
-): Promise<string> {
-   await installAndLoadExtension(connection, "bigquery", true);
-
-   const secretName = sanitizeSecretName(`bigquery_${name}`);
-   const escapedJson = escapeSQL(serviceAccountJson);
-   await connection.runSQL(`
-      CREATE OR REPLACE SECRET ${secretName} (
-         TYPE BIGQUERY,
-         SCOPE 'bq://${projectId}',
-         SERVICE_ACCOUNT_JSON '${escapedJson}'
-      );
-   `);
-   return secretName;
-}
-
-/** Each named Snowflake field must be non-empty. */
-function assertSnowflakeFieldsPresent(
-   name: string | undefined,
-   fields: Record<string, string | null | undefined>,
-): void {
-   for (const [field, value] of Object.entries(fields)) {
-      if (!value) {
-         throw new Error(`Snowflake ${field} is required for: ${name}`);
-      }
-   }
-}
-
-/** The SQL-escaped identity fields every Snowflake secret is built from. */
-function escapeSnowflakeIdentity(
-   config: components["schemas"]["SnowflakeConnection"],
-) {
-   return {
-      account: escapeSQL(config.account || ""),
-      user: escapeSQL(config.username || ""),
-      database: config.database ? escapeSQL(config.database) : undefined,
-      warehouse: config.warehouse ? escapeSQL(config.warehouse) : undefined,
-      schema: config.schema ? escapeSQL(config.schema) : undefined,
-      role: config.role ? escapeSQL(config.role) : undefined,
-   };
-}
-
-async function attachBigQuery(
-   connection: DuckDBConnection,
-   attachedDb: AttachedDatabase,
-): Promise<void> {
-   if (!attachedDb.bigqueryConnection) {
-      throw new Error(
-         `BigQuery connection configuration missing for: ${attachedDb.name}`,
-      );
-   }
-
-   const key = parseBigQueryServiceAccount(
-      attachedDb.name,
-      attachedDb.bigqueryConnection,
-   );
-   logger.info(`Using service account: ${key.clientEmail}`);
-   const { projectId } = key;
-   const secretName = await createBigQuerySecret(
-      connection,
-      attachedDb.name,
-      key,
-   );
-   logger.info(
-      `Created BigQuery secret: ${secretName} for project: ${projectId}`,
-   );
-
-   const attachCommand = `ATTACH 'project=${projectId}' AS ${attachedDb.name} (TYPE bigquery, READ_ONLY);`;
-   await connection.runSQL(attachCommand);
-   logger.info(`Successfully attached BigQuery database: ${attachedDb.name}`);
-}
-
-async function attachSnowflake(
-   connection: DuckDBConnection,
-   attachedDb: AttachedDatabase,
-): Promise<void> {
-   if (!attachedDb.snowflakeConnection) {
-      throw new Error(
-         `Snowflake connection configuration missing for: ${attachedDb.name}`,
-      );
-   }
-
-   const config = attachedDb.snowflakeConnection;
-
-   assertSnowflakeFieldsPresent(attachedDb.name, {
-      account: config.account,
-      username: config.username,
-      password: config.password,
-   });
-
-   await installAndLoadExtension(connection, "snowflake", true);
-
-   try {
-      const version = await connection.runSQL("SELECT snowflake_version();");
-      logger.info(`Snowflake ADBC driver verified with version:`, version.rows);
-   } catch (error) {
-      throw new Error(
-         `Snowflake ADBC driver verification failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-   }
-
-   const params = {
-      ...escapeSnowflakeIdentity(config),
-      password: escapeSQL(config.password || ""),
-   };
-
-   // Optional fields are emitted only when set: an absent one would otherwise
-   // interpolate the literal 'undefined', which Snowflake reads as a real
-   // database or warehouse name. ROLE and SCHEMA are carried so the attached
-   // database queries under the configured role, as the passthrough build does.
-   const secretLines = [
-      `      TYPE snowflake`,
-      `      ACCOUNT '${params.account}'`,
-      `      USER '${params.user}'`,
-      `      PASSWORD '${params.password}'`,
-      ...(params.database ? [`      DATABASE '${params.database}'`] : []),
-      ...(params.warehouse ? [`      WAREHOUSE '${params.warehouse}'`] : []),
-      ...(params.schema ? [`      SCHEMA '${params.schema}'`] : []),
-      ...(params.role ? [`      ROLE '${params.role}'`] : []),
-   ];
-   const secretString = `CREATE OR REPLACE SECRET ${attachedDb.name}_secret (\n${secretLines.join(",\n")}\n   );`;
-
-   await connection.runSQL(secretString);
-
-   const testresult = await connection.runSQL(
-      `SELECT * FROM snowflake_query('SELECT 1', '${attachedDb.name}_secret');`,
-   );
-   logger.info(`Testing Snowflake connection:`, testresult.rows);
-
-   const attachCommand = `ATTACH '${attachedDb.name}' AS ${attachedDb.name} (TYPE snowflake, SECRET ${attachedDb.name}_secret, READ_ONLY);`;
-   await connection.runSQL(attachCommand);
-   logger.info(`Successfully attached Snowflake database: ${attachedDb.name}`);
-}
-
-// A server switch that sets statement_timeout: `-cstatement_timeout=N` or
-// `--statement_timeout=N` (Postgres reads `-` in a switch name as `_`). The
-// two-token `-c statement_timeout=N` form is handled where tokens are walked.
-const STATEMENT_TIMEOUT_SWITCH = /^(?:-c|--)statement[_-]timeout=/i;
-
-/**
- * libpq `options` with every statement_timeout switch removed and the
- * connection's own appended, so the string carries exactly one. Other switches
- * are kept in order. Splits on unescaped whitespace, as the server does.
- */
-function mergeStatementTimeoutOption(
-   existing: string,
-   ms: number,
-): { value: string; replaced: boolean } {
-   const tokens = existing.split(/(?<!\\)\s+/).filter((t) => t !== "");
-   const kept: string[] = [];
-   let replaced = false;
-   for (let i = 0; i < tokens.length; i++) {
-      if (
-         tokens[i] === "-c" &&
-         /^statement[_-]timeout=/i.test(tokens[i + 1] ?? "")
-      ) {
-         i++;
-         replaced = true;
-      } else if (STATEMENT_TIMEOUT_SWITCH.test(tokens[i])) {
-         replaced = true;
-      } else {
-         kept.push(tokens[i]);
-      }
-   }
-   kept.push("-c", `statement_timeout=${ms}`);
-   return { value: kept.join(" "), replaced };
-}
-
-/**
- * The key/value pairs of a libpq keyword/value conninfo string, with each pair's
- * span so it can be replaced in place. Values are unquoted and unescaped.
- * Stops at the first token that is not a `key=value` pair.
- */
-function conninfoPairs(
-   conninfo: string,
-): { key: string; value: string; start: number; end: number }[] {
-   const pairs: { key: string; value: string; start: number; end: number }[] =
-      [];
-   // ASCII only, as libpq: a Unicode space inside a password is password data.
-   const isSpace = (c: string | undefined) =>
-      c !== undefined && /[ \t\n\v\f\r]/.test(c);
-   let i = 0;
-   while (i < conninfo.length) {
-      while (isSpace(conninfo[i])) i++;
-      if (i >= conninfo.length) break;
-      const start = i;
-      let key = "";
-      while (
-         i < conninfo.length &&
-         conninfo[i] !== "=" &&
-         !isSpace(conninfo[i])
-      ) {
-         key += conninfo[i++];
-      }
-      while (isSpace(conninfo[i])) i++;
-      if (conninfo[i] !== "=") break;
-      i++;
-      while (isSpace(conninfo[i])) i++;
-      let value = "";
-      if (conninfo[i] === "'") {
-         i++;
-         while (i < conninfo.length && conninfo[i] !== "'") {
-            if (conninfo[i] === "\\" && i + 1 < conninfo.length) i++;
-            value += conninfo[i++];
-         }
-         i++;
-      } else {
-         while (i < conninfo.length && !isSpace(conninfo[i])) {
-            if (conninfo[i] === "\\" && i + 1 < conninfo.length) i++;
-            value += conninfo[i++];
-         }
-      }
-      pairs.push({ key, value, start, end: Math.min(i, conninfo.length) });
-   }
-   return pairs;
-}
-
-function decodeUriComponentOrRaw(value: string): string {
-   try {
-      return decodeURIComponent(value);
-   } catch {
-      return value;
-   }
-}
-
-/** libpq has no `no-verify`; "encrypt, don't verify" is `require`. The one spelling every site maps to. */
-const LIBPQ_NO_VERIFY_SSLMODE = "require";
-
-const isUriConnectionString = (connectionString: string) =>
-   /^postgres(ql)?:\/\//i.test(connectionString);
-
-/** Applies `fn` to a URI's query parameters; the `?` is dropped when none remain. */
-function mapUriQuery(uri: string, fn: (params: string[]) => string[]): string {
-   const queryStart = uri.indexOf("?");
-   const base = queryStart === -1 ? uri : uri.slice(0, queryStart);
-   const params = fn(
-      queryStart === -1 ? [] : uri.slice(queryStart + 1).split("&"),
-   );
-   return params.length ? `${base}?${params.join("&")}` : base;
-}
-
-/**
- * Makes a raw connectionString's sslmode one libpq accepts: `no-verify` becomes
- * `require`, and a string with no sslmode gets `require` when the deployment's
- * PGSSLMODE is `no-verify`, because libpq reads that variable itself and rejects it.
- * A string naming a libpq `service`, or a deployment `PGSERVICE`, is left alone: its
- * file's sslmode outranks the variable, and an appended `require` would override a
- * stricter one (a service file with no sslmode then fails closed under `no-verify`).
- * In a URI, node-pg-only params libpq rejects are normalized too: `uselibpqcompat` is
- * dropped, and `ssl` yields to an `sslmode` (node-pg's precedence) or is respelled.
- */
-function libpqSslmodeInRawString(connectionString: string): string {
-   const envNoVerify =
-      externalEnv("PGSSLMODE")?.toLowerCase() === "no-verify" &&
-      !externalEnv("PGSERVICE");
-   const rewritten = `sslmode=${LIBPQ_NO_VERIFY_SSLMODE}`;
-   if (isUriConnectionString(connectionString)) {
-      return mapUriQuery(connectionString, (params) => {
-         const keys = params.map((param) =>
-            decodeUriComponentOrRaw(param.split("=")[0]),
-         );
-         const hasSslmode = keys.includes("sslmode");
-         // node-pg turns ssl=false into verified TLS when a cert param is present.
-         const hasCert = keys.some((key) =>
-            ["sslrootcert", "sslcert", "sslkey"].includes(key),
-         );
-         let seen = false;
-         const mapped = params.flatMap((param, i) => {
-            const [, ...rest] = param.split("=");
-            const value = decodeUriComponentOrRaw(rest.join("="));
-            if (keys[i] === "service") seen = true;
-            if (keys[i] === "uselibpqcompat") return [];
-            if (keys[i] === "ssl") {
-               if (hasSslmode) return [];
-               if (value === "no-verify") {
-                  seen = true;
-                  return [rewritten];
-               }
-               if (value === "1") return ["ssl=true"];
-               if (value === "0") {
-                  if (hasCert) return [];
-                  seen = true;
-                  return ["sslmode=disable"];
-               }
-               return [param];
-            }
-            if (keys[i] !== "sslmode") return [param];
-            seen = true;
-            return [value === "no-verify" ? rewritten : param];
-         });
-         return !seen && envNoVerify ? [...mapped, rewritten] : mapped;
-      });
-   }
-   const pairs = conninfoPairs(connectionString);
-   let result = connectionString;
-   for (const pair of [...pairs].reverse()) {
-      if (pair.key === "sslmode" && pair.value === "no-verify") {
-         result =
-            result.slice(0, pair.start) + rewritten + result.slice(pair.end);
-      }
-   }
-   return !pairs.some(
-      (pair) => pair.key === "sslmode" || pair.key === "service",
-   ) && envNoVerify
-      ? `${result} ${rewritten}`
-      : result;
-}
-
-/**
- * A raw connectionString with `sslmode=no-verify` rewritten to `require` (node-pg
- * spells "encrypt, don't verify" that way; libpq rejects it) and the connection's
- * statement timeout added, in whichever of libpq's two forms the string is
- * written: a URI takes the timeout as an `options` query parameter, a
- * keyword/value string as an `options` pair.
- *
- * libpq honors only the last `options`, so the timeout is merged into it
- * (adding another would drop the string's other server settings). A
- * statement_timeout the string already sets is replaced with a warning: the
- * explicit field wins, as on the query driver.
- */
-function libpqConnectionString(
-   name: string,
-   rawConnectionString: string,
-   pg: components["schemas"]["PostgresConnection"],
-): string {
-   const connectionString = libpqSslmodeInRawString(rawConnectionString);
-   const ms = postgresStatementTimeoutMs(name, pg);
-   if (ms === undefined) return connectionString;
-   const merged = (existing: string | undefined): string => {
-      if (existing === undefined) return `-c statement_timeout=${ms}`;
-      const { value, replaced } = mergeStatementTimeoutOption(existing, ms);
-      if (replaced) {
-         logger.warn(
-            `Connection '${name}' sets statementTimeoutMilliseconds and its connectionString's ` +
-               `options also set statement_timeout; statementTimeoutMilliseconds applies.`,
-         );
-      }
-      return value;
-   };
-
-   if (isUriConnectionString(connectionString)) {
-      const isOptions = (param: string) =>
-         decodeUriComponentOrRaw(param.split("=", 1)[0]) === "options";
-      return mapUriQuery(connectionString, (params) => {
-         const last = params.map(isOptions).lastIndexOf(true);
-         if (last === -1) {
-            return [
-               ...params,
-               `options=${encodeURIComponent(merged(undefined))}`,
-            ];
-         }
-         const raw = params[last].slice(params[last].indexOf("=") + 1);
-         const out = [...params];
-         out[last] =
-            `options=${encodeURIComponent(merged(decodeUriComponentOrRaw(raw)))}`;
-         return out;
-      });
-   }
-
-   const existing = conninfoPairs(connectionString)
-      .filter((pair) => pair.key === "options")
-      .pop();
-   if (!existing) {
-      return `${connectionString} ${pgConninfoPair("options", merged(undefined))}`;
-   }
-   return (
-      connectionString.slice(0, existing.start) +
-      pgConninfoPair("options", merged(existing.value)) +
-      connectionString.slice(existing.end)
-   );
-}
-
-/**
- * The libpq conninfo a DuckDB `TYPE postgres` attach opens a postgres connection
- * with.
- *
- * A connection given as fields uses its own `sslmode` when it sets one, and the
- * deployment PGSSLMODE otherwise. `applyConnectionOptions` decides whether
- * `statementTimeoutMilliseconds` reaches the string: false for a DuckLake
- * catalog, true for an attached database and a federated source. A raw
- * connectionString keeps its own settings (and, for a catalog, ignores the
- * `sslmode` field), but `sslmode=no-verify` (or an inherited
- * PGSSLMODE=no-verify) becomes `require`, which libpq accepts.
- *
- * Exported for tests.
- */
-export function buildPgConnectionString(
-   pg: components["schemas"]["PostgresConnection"],
-   {
-      name,
-      applyConnectionOptions,
-   }: { name: string; applyConnectionOptions: boolean },
-): string {
-   if (pg.connectionString) {
-      if (!applyConnectionOptions) {
-         return libpqSslmodeInRawString(pg.connectionString);
-      }
-      if (pg.sslmode != null) {
-         logger.warn(
-            `Connection '${name}' sets both postgresConnection.sslmode and ` +
-               `connectionString; sslmode is ignored and the connectionString's own sslmode applies.`,
-         );
-      }
-      return libpqConnectionString(name, pg.connectionString, pg);
-   }
-
-   const parts: string[] = [];
-   if (pg.host) parts.push(`host=${pg.host}`);
-   if (pg.port) parts.push(`port=${pg.port}`);
-   if (pg.databaseName) parts.push(`dbname=${pg.databaseName}`);
-   if (pg.userName) parts.push(`user=${pg.userName}`);
-   if (pg.password) parts.push(`password=${pg.password}`);
-
-   if (applyConnectionOptions) {
-      parts.push(...libpqStatementTimeoutParts(name, pg));
-   }
-   // A DuckLake catalog honors its own sslmode too: libpq keeps the last
-   // sslmode it reads, so falling through to PGSSLMODE (allow on a worker)
-   // would make every catalog attach try plaintext first.
-   if (pg.sslmode != null) {
-      parts.push(
-         ...libpqSslmodeParts(
-            `Connection '${name}'`,
-            pg.sslmode,
-            defaultProxiedAttachTrust(),
-         ),
-      );
-      return parts.join(" ");
-   }
-
-   const pgSSLMode = externalEnv("PGSSLMODE");
-
-   if (pgSSLMode) {
-      const mapping: Record<string, string> = {
-         "no-verify": LIBPQ_NO_VERIFY_SSLMODE,
-         disable: "disable",
-         allow: "allow",
-         prefer: "prefer",
-         require: "require",
-         "verify-ca": "verify-ca",
-         "verify-full": "verify-full",
-      };
-
-      const sslmode = mapping[pgSSLMode.toLowerCase()];
-      if (sslmode) parts.push(`sslmode=${sslmode}`);
-   }
-
-   return parts.join(" ");
-}
-
-async function attachPostgres(
-   connection: DuckDBConnection,
-   attachedDb: AttachedDatabase,
-): Promise<void> {
-   if (!attachedDb.postgresConnection) {
-      throw new Error(
-         `PostgreSQL connection configuration missing for: ${attachedDb.name}`,
-      );
-   }
-   // Before any SQL is built: an empty alias emits `AS ""`, which DuckDB
-   // rejects at a position after the DSN literal, and that error truncates the
-   // redactor's anchor away.
-   if (!attachedDb.name) {
-      throw new Error("Attached database name is required");
-   }
-
-   await installAndLoadExtension(connection, "postgres");
-
-   const config = attachedDb.postgresConnection;
-   const attachString: string = buildPgConnectionString(config, {
-      name: attachedDb.name,
-      applyConnectionOptions: true,
-   });
-
-   const attachCommand = `ATTACH '${escapeSQL(attachString)}' AS ${quoteIdentifier(attachedDb.name, "duckdb")} (TYPE postgres, READ_ONLY);`;
-   await connection.runSQL(attachCommand);
-   logger.info(`Successfully attached PostgreSQL database: ${attachedDb.name}`);
-}
-
-/** Rows out of a DuckDBConnection.runSQL result, in either shape it returns. */
-function runSQLRows(result: unknown): Record<string, unknown>[] {
-   if (Array.isArray(result)) return result as Record<string, unknown>[];
-   const rows = (result as { rows?: unknown }).rows;
-   return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
-}
-
-/**
- * Range-preflight for a DuckLake ATTACH (preflightDuckLakeCatalogFormat). Reads
- * the catalog's format version from `ducklake_metadata` through a plain postgres
- * ATTACH (not the DuckLake extension) and checks it against the running
- * engine's range (`ducklake_version.ts`). Out of range throws
- * {@link UnsupportedCatalogFormatError} (HTTP 422) naming the format, the range
- * and where to migrate, instead of an opaque 500 from deep inside DuckDB.
- *
- * Any failure of the preflight itself logs and returns, so the real ATTACH
- * stays the source of truth for unrelated errors.
- *
- * The temp attach name is unique per call so a failed DETACH cannot wedge a
- * fixed name for every later preflight, and concurrent lookups cannot
- * cross-DETACH each other.
- *
- * `metadataSchema` must be the configured `catalog.metadataSchema`: a read in
- * the wrong schema misses silently and the range check stops protecting the
- * catalogs that set it.
- *
- * Returns whether the catalog exists. With a `metadataSchema` it is looked up:
- * no `ducklake_metadata` table there is `absent`, the normal state before the
- * first read-write attach creates it. `unknown` is anything the preflight could
- * not settle, left to the real ATTACH.
- */
-export type DuckLakeCatalogPresence = "present" | "absent" | "unknown";
-
-let ducklakePreflightSeq = 0;
-async function preflightDuckLakeCatalogFormat(
-   connection: DuckDBConnection,
-   dbName: string,
-   pgConnString: string,
-   metadataSchema?: string,
-): Promise<DuckLakeCatalogPresence> {
-   const tempDb = `${dbName}_fmt_preflight_${++ducklakePreflightSeq}`;
-   const tempDbRef = quoteIdentifier(tempDb, "duckdb");
-   // Quoted although every name the config validator admits resolves unquoted:
-   // this preflight fails soft, so a miss would silently disable range checks.
-   // Quoting keeps that correct if the validator is widened. Safe because the
-   // validator admits no quote character.
-   const metadataRef = metadataSchema
-      ? `${tempDbRef}."${metadataSchema}".ducklake_metadata`
-      : `${tempDbRef}.ducklake_metadata`;
-   let catalogFormat: string | undefined;
-   try {
-      await connection.runSQL(
-         `ATTACH '${escapeSQL(pgConnString)}' AS ${tempDbRef} (TYPE postgres, READ_ONLY);`,
-      );
-      if (metadataSchema !== undefined) {
-         const found = await connection.runSQL(
-            `SELECT count(*) AS n FROM duckdb_tables() ` +
-               `WHERE database_name = '${escapeSQL(tempDb)}' ` +
-               `AND schema_name = '${escapeSQL(metadataSchema)}' ` +
-               `AND table_name = 'ducklake_metadata';`,
-         );
-         if (Number(runSQLRows(found)[0]?.n ?? 0) === 0) {
-            return "absent";
-         }
-      }
-      const result = await connection.runSQL(
-         `SELECT value FROM ${metadataRef} WHERE key = 'version' LIMIT 1;`,
-      );
-      const value = runSQLRows(result)[0]?.value;
-      catalogFormat = typeof value === "string" ? value : undefined;
-   } catch (error) {
-      const message = redactPgSecrets(
-         error instanceof Error ? error.message : String(error),
-      );
-      logger.warn(
-         "DuckLake catalog-format preflight read failed; falling back to ATTACH",
-         { dbName, error: message },
-      );
-      return "unknown";
-   } finally {
-      try {
-         await connection.runSQL(`DETACH ${tempDbRef};`);
-      } catch {
-         // The ATTACH may have failed, so there may be nothing to detach.
-      }
-   }
-
-   if (!catalogFormat) {
-      // Table present but no version row, or unreadable value: let ATTACH decide.
-      return "present";
-   }
-
-   // An engine with no matrix row skips the check; the CI version-contract
-   // check guarantees the pinned engine is covered.
-   let engineVersion = "";
-   try {
-      const versionResult = await connection.runSQL("SELECT version() AS v;");
-      engineVersion = String(runSQLRows(versionResult)[0]?.v ?? "");
-   } catch (error) {
-      logger.warn(
-         "DuckLake catalog-format preflight: could not read engine version; skipping",
-         {
-            dbName,
-            error: error instanceof Error ? error.message : String(error),
-         },
-      );
-      return "present";
-   }
-
-   const range = catalogFormatRangeForEngine(engineVersion);
-   if (!range) {
-      logger.warn(
-         "DuckLake catalog-format preflight: engine not covered by the format matrix; skipping",
-         { dbName, engineVersion },
-      );
-      return "present";
-   }
-
-   if (!isCatalogFormatInRange(catalogFormat, range)) {
-      logger.warn(
-         "DuckLake catalog format outside supported range; rejecting",
-         {
-            dbName,
-            catalogFormat,
-            supportedMin: range.min,
-            supportedMax: range.max,
-            engineVersion: range.engineVersion,
-         },
-      );
-      throw new UnsupportedCatalogFormatError(
-         `DuckLake catalog '${dbName}' has format version ${catalogFormat}, ` +
-            `which is outside the range this Publisher supports ` +
-            `(${range.min} ≤ format ≤ ${range.max}). The DuckLake ` +
-            `extension bundled with DuckDB v${range.engineVersion} attaches only ` +
-            `catalogs in that range without migration. Migrate the catalog to a ` +
-            `supported format (see the DuckLake catalog-migration docs at ` +
-            `https://ducklake.select/docs), or run a Publisher built against a ` +
-            `DuckDB engine whose supported range includes ${catalogFormat}.`,
-      );
-   }
-
-   logger.info(
-      `DuckLake catalog '${dbName}' format ${catalogFormat} is within supported range ` +
-         `${range.min}..${range.max} (engine v${range.engineVersion})`,
-   );
-   return "present";
-}
-
-/** How many times an attach that lost a catalog-create race is tried in all. */
-export const DUCKLAKE_INIT_RACE_ATTEMPTS = 3;
-
-/**
- * Whether `error` is a DuckLake attach that lost a race to create the same
- * catalog. DuckLake creates its metadata tables with a plain CREATE TABLE, so
- * when two sessions (two builds, on one server or two) attach a catalog that
- * does not exist yet, both create it and Postgres refuses the slower one: a
- * duplicate key on `pg_type`, or the relation already existing.
- */
-export function isDuckLakeInitRace(error: unknown): boolean {
-   const message = errMessage(error);
-   return (
-      message.includes("Failed to initialize DuckLake") &&
-      (message.includes("already exists") ||
-         message.includes("duplicate key value"))
-   );
-}
-
-/**
- * Whether a database is attached under `alias`, compared as DuckDB resolves
- * it: case-insensitively. An `ATTACH OR REPLACE … AS "lake"` over `"Lake"`
- * keeps the stored name `Lake`, so an exact match would miss it.
- */
-async function isAliasAttached(
+async function aliasAttachedOnInstance(
    connection: DuckDBConnection,
    alias: string,
-): Promise<boolean> {
+): Promise<boolean | undefined> {
    try {
       const rows = runSQLRows(
-         await connection.runSQL(
+         await runInternalSQL(
+            connection,
             `SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('${escapeSQL(alias)}')`,
          ),
       );
       return rows.length > 0;
    } catch {
-      return false;
+      return undefined;
    }
 }
 
-/**
- * Run a DuckLake ATTACH, trying again, up to `attempts` tries in all, when it
- * lost a race to create the catalog. Postgres reports the duplicate only once
- * the other create has committed, so the catalog exists by then and the next
- * attach opens it as any attach of an existing catalog does. Any other failure,
- * and the last try's, is thrown.
- */
-async function runDuckLakeAttach(
-   connection: DuckDBConnection,
-   dbName: string,
-   attachCommand: string,
-   attempts: number,
-): Promise<void> {
-   for (let attempt = 1; ; attempt++) {
-      try {
-         await connection.runSQL(attachCommand);
-         return;
-      } catch (error) {
-         if (!isDuckLakeInitRace(error) || attempt >= attempts) {
-            throw error;
-         }
-         logger.info(
-            "Another session created the DuckLake catalog first; attaching it again",
-            { dbName, attempt },
-         );
-         await new Promise((resolve) => setTimeout(resolve, 25 * attempt));
-      }
-   }
-}
-
-/**
- * Attach a DuckLake catalog. `readOnly: true` is the live user-facing path;
- * `readOnly: false` is the build variant, used only on a transient build
- * session so a materialization can write into the catalog. Neither passes
- * `AUTOMATIC_MIGRATION`: catalog-format migration is a coordinated fleet
- * cutover, never a side effect of an attach.
- *
- * `skipIfAbsent` is for a caller that only looks: when the preflight finds no
- * catalog it returns `false` without attaching. Otherwise returns `true`.
- */
-async function attachDuckLakeWithMode(
+/** A DuckLake catalog's attach, by the `ducklake` registry entry. */
+function attachDuckLakeWithMode(
    connection: DuckDBConnection,
    dbName: string,
    ducklakeConfig: components["schemas"]["DucklakeConnection"],
-   options: {
-      readOnly: boolean;
-      skipIfAbsent?: boolean;
-      /**
-       * Who authored the config, which the S3 credential-chain policy turns on:
-       * the operator's own storage destinations and catalogs pass
-       * `"storage-destination"`; an environment connection is author-supplied.
-       */
-      origin?: ConnectionOrigin;
-      /**
-       * A catalog served as its own tables (the connection's `managed`). Attached
-       * read-only, its storage secret reaches only the `main` schema's files.
-       */
-      managed?: boolean;
-      /**
-       * First-attach settings, which DuckLake fixes in the catalog when it creates
-       * it and ignores on a catalog that already exists. Only a catalog create
-       * (the admin API's POST /catalogs) sets them.
-       */
-      encrypted?: boolean;
-      dataInliningRowLimit?: number;
-   },
+   options: DestinationAttachMode,
 ): Promise<boolean> {
-   // Never implicitly auto-install, whatever the policy: the DuckLake stack is
-   // installed explicitly below.
-   await applyExtensionSessionSettings(connection, {
-      alwaysDisableAutoinstall: true,
-   });
-   await installAndLoadExtension(connection, "ducklake");
-   await installAndLoadExtension(connection, "postgres");
-   await installAndLoadExtension(connection, "aws");
-   await installAndLoadExtension(connection, "httpfs");
-   if (!ducklakeConfig.catalog?.postgresConnection) {
-      throw new Error(
-         `PostgreSQL connection configuration is required for DuckLake catalog: ${dbName}`,
-      );
-   }
-
-   const hasS3 = !!ducklakeConfig.storage?.s3Connection;
-   const hasGCS = !!ducklakeConfig.storage?.gcsConnection;
-   if (hasS3) {
-      // DuckDB signs an S3 read that no secret matches with a legacy key seeded
-      // from the AWS_* environment, which would bypass the scope on the secret
-      // created below. Off first, before anything here can reach S3, and GLOBAL:
-      // a plain SET is session-local, while the attach and the secret live on
-      // the instance, so a later connection object on an already-attached
-      // catalog would keep the fallback. The instance is this catalog's own
-      // (keyed on its database file), so nothing else is reached.
-      await connection.runSQL(
-         "SET GLOBAL enable_global_s3_configuration=false",
-      );
-   }
-   // The storage credential, and the policy gate on it, before the ATTACH: a
-   // refused credential attaches nothing. The secret itself is created after
-   // the ATTACH, once its scope can be read from the catalog (below).
-   const storage: AttachedDatabase | undefined = hasS3
-      ? {
-           name: `${dbName}_storage`,
-           type: "s3",
-           s3Connection: ducklakeConfig.storage!.s3Connection,
-        }
-      : hasGCS
-        ? {
-             name: `${dbName}_storage`,
-             type: "gcs",
-             gcsConnection: ducklakeConfig.storage!.gcsConnection,
-          }
-        : undefined;
-   if (storage) {
-      resolveCloudStorageCredentials(storage, options.origin ?? "connection");
-   }
-
-   const pg = ducklakeConfig.catalog.postgresConnection;
-   const pgConnString: string = buildPgConnectionString(pg, {
-      name: dbName,
-      applyConnectionOptions: false,
-   });
-   const mode = options.readOnly ? "READ_ONLY" : "READ_WRITE";
-   // These three attach diagnostics stay at debug: `redactPgSecrets` removes the
-   // password and URI userinfo but not the catalog host or the DATA_PATH, which
-   // would disclose the bucket and prefix to every log reader at info. The mode
-   // and outcome are logged at info below.
-   logger.debug(`pgConnString: ${redactPgSecrets(pgConnString)}`);
-   const escapedPgConnString = escapeSQL(pgConnString);
-   logger.debug(
-      `Final escaped connection string: ${redactPgSecrets(escapedPgConnString)}`,
-   );
-   // The data path: given, every attach uses it (and a read-write attach may
-   // create the catalog there); omitted, the catalog's recorded path is used and
-   // no attach may create one (see `dataPathClauses`).
-   const dataPath = ducklakeConfig.storage?.bucketUrl;
-   // The schema holding the `ducklake_*` tables; absent keeps DuckLake's default.
-   // Validated to a plain identifier at config load, because it reaches a quoted
-   // literal here and an identifier position in the preflight.
-   const metadataSchema = ducklakeConfig.catalog.metadataSchema;
-   const preflight = await preflightDuckLakeCatalogFormat(
+   return DUCKLAKE.destination!.attach(
       connection,
       dbName,
-      pgConnString,
-      metadataSchema,
+      { ducklakeConnection: ducklakeConfig },
+      options,
    );
-   if (preflight === "absent") {
-      if (options.skipIfAbsent) {
-         return false;
-      }
-      // Normal before the first read-write attach, but also what a mistyped
-      // schema looks like, and no attach mode says so (a read-write attach with
-      // a data path creates an empty catalog; the others fail without naming the
-      // schema).
-      logger.warn(
-         "No DuckLake catalog found in the configured metadata schema. With a " +
-            "configured data path this is expected before the first build, which " +
-            "creates it; without one, every attach fails until the catalog is " +
-            "created (the admin API's POST /catalogs). Otherwise check the schema " +
-            "name against the configuration.",
-         { dbName, metadataSchema },
-      );
-   }
-   // Read-write omits the flag: DuckLake's default is writable.
-   const readOnlyClause = options.readOnly ? ", READ_ONLY true" : "";
-   const metadataSchemaClause = metadataSchema
-      ? `, METADATA_SCHEMA '${escapeSQL(metadataSchema)}'`
-      : "";
-   // Every clause but the data path's leads with ", ", and that one may be
-   // empty, so a leading separator is dropped rather than emitted.
-   const attachClauses = (
-      dataPathClauses(dataPath, options.readOnly) +
-      readOnlyClause +
-      metadataSchemaClause +
-      firstAttachClauses(options)
-   ).replace(/^, /, "");
-   const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${quoteIdentifier(dbName, "duckdb")} (${attachClauses});`;
-   logger.debug(
-      `Attaching DuckLake database using command: ${redactPgSecrets(attachCommand)}`,
-   );
-   try {
-      // A create (the admin API's, the only caller with first-attach settings)
-      // that lost is not tried again: the retry would open the other creator's
-      // catalog, with that creator's settings and data path, and the create
-      // would report it as its own. It fails, and the caller answers that the
-      // catalog exists.
-      const creating =
-         options.encrypted !== undefined ||
-         options.dataInliningRowLimit !== undefined;
-      await runDuckLakeAttach(
-         connection,
-         dbName,
-         attachCommand,
-         creating ? 1 : DUCKLAKE_INIT_RACE_ATTEMPTS,
-      );
-      logger.info(
-         `Successfully attached DuckLake database in ${mode} mode: ${dbName}`,
-      );
-      if (!options.readOnly) {
-         await applyDuckLakeRowGroupBound(connection, dbName);
-         await applyDuckLakeTargetFileSize(connection, dbName);
-      }
-   } catch (error) {
-      // Skipped only when the alias really is attached. A catalog create that
-      // lost a race also says "already exists", and skipping that one left
-      // nothing attached: the build's next statement failed with "Schema with
-      // name <alias> does not exist".
-      if (
-         error instanceof Error &&
-         (error.message.includes("already exists") ||
-            error.message.includes("already attached")) &&
-         !isDuckLakeInitRace(error) &&
-         (await isAliasAttached(connection, dbName))
-      ) {
-         logger.info(
-            `DuckLake database ${dbName} is already attached, skipping`,
-         );
-      } else {
-         throw error;
-      }
-   }
-   if (!storage) {
-      // No storage secret: the catalog's data path is what its lock allows.
-      const root =
-         dataPath ||
-         (await recordedCatalogSettings(connection, dbName, metadataSchema)
-            .then((settings) => settings.data_path)
-            .catch(() => undefined));
-      if (root) allowForLockdown(connection, root);
-   }
-   if (storage) {
-      // The storage secret, scoped to the catalog's prefix. After the ATTACH,
-      // which reaches the catalog database and no data file, so a catalog whose
-      // config states no data path is scoped to the one it recorded, read from
-      // the attached catalog's own metadata rather than a second reader in the
-      // preflight. No scope, no attach: an unscoped secret would reach the whole
-      // bucket, and a catalog left attached without a secret would look attached
-      // to the next lookup and never be retried.
-      try {
-         const scope = await attachedDuckLakeScope(connection, dbName, {
-            configuredDataPath: dataPath,
-            metadataSchema,
-            readOnly: options.readOnly,
-            // Only a connection view is narrowed: an operator's destination
-            // serves every schema, whatever flags its entry carries.
-            managed:
-               options.managed === true &&
-               options.origin !== "storage-destination",
-         });
-         if (!scope) {
-            throw new Error(
-               `No storage secret could be scoped for DuckLake catalog '${dbName}': ` +
-                  `the config states no data path, and the catalog records no data ` +
-                  `path (or, for a managed view, no path for its main schema) to ` +
-                  `scope it to. The catalog was not attached.`,
-            );
-         }
-         await attachCloudStorage(connection, storage, options.origin, scope);
-         // The lock allows exactly what the secret is scoped to.
-         allowForLockdown(connection, scope);
-      } catch (error) {
-         await connection
-            .runSQL(`DETACH ${quoteIdentifier(dbName, "duckdb")};`)
-            .catch(() => {});
-         throw error;
-      }
-   }
-   return true;
-}
-
-/**
- * The scope of an attached catalog's storage secret ({@link storageSecretScope}),
- * reading from the catalog's metadata whatever the config does not state: the
- * recorded data path when the config has none, and the `main` schema's path for
- * a managed read-only view. Runs on the attached catalog, so nothing here is a
- * guess the preflight could fail softly on.
- */
-async function attachedDuckLakeScope(
-   connection: DuckDBConnection,
-   dbName: string,
-   input: {
-      configuredDataPath?: string;
-      metadataSchema?: string;
-      readOnly: boolean;
-      managed: boolean;
-   },
-): Promise<string | undefined> {
-   const recordedDataPath = input.configuredDataPath
-      ? undefined
-      : (
-           await recordedCatalogSettings(
-              connection,
-              dbName,
-              input.metadataSchema,
-           )
-        ).data_path;
-   const mainSchemaPath =
-      input.managed && input.readOnly
-         ? await recordedSchemaPath(
-              connection,
-              dbName,
-              input.metadataSchema,
-              "main",
-           )
-         : undefined;
-   return storageSecretScope({
-      configuredDataPath: input.configuredDataPath,
-      recordedDataPath,
-      mainSchemaPath,
-      readOnly: input.readOnly,
-      managed: input.managed,
-   });
-}
-
-/**
- * The metadata catalog of a DuckLake catalog attached as `alias`: DuckLake
- * exposes it as `__ducklake_metadata_<alias>`, with the `ducklake_*` tables in
- * the catalog's metadata schema when one is configured, and in its default
- * schema otherwise.
- */
-function metadataCatalogRef(
-   alias: string,
-   metadataSchema: string | undefined,
-): string {
-   return [
-      `__ducklake_metadata_${alias}`,
-      ...(metadataSchema ? [metadataSchema] : []),
-   ]
-      .map((part) => quoteIdentifier(part, "duckdb"))
-      .join(".");
-}
-
-/**
- * The settings a catalog attached as `alias` recorded in its `ducklake_metadata`
- * table (`data_path`, `encrypted`, `version`, `data_inlining_row_limit`,
- * `delete_older_than`, …), keyed by name. The metadata tables live in the
- * catalog's metadata schema when one is configured, and in its default schema
- * otherwise.
- */
-export async function recordedCatalogSettings(
-   connection: DuckDBConnection,
-   alias: string,
-   metadataSchema: string | undefined,
-): Promise<Record<string, string>> {
-   const rows = runSQLRows(
-      await connection.runSQL(
-         `SELECT key, value FROM ${metadataCatalogRef(alias, metadataSchema)}.ducklake_metadata WHERE scope IS NULL`,
-      ),
-   );
-   const settings: Record<string, string> = {};
-   for (const row of rows) {
-      if (typeof row.key === "string" && row.value != null) {
-         settings[row.key] = String(row.value);
-      }
-   }
-   return settings;
-}
-
-/**
- * The path a catalog attached as `alias` records for one of its schemas in
- * `ducklake_schema`, and whether it is relative to the data path, or undefined
- * when the schema is not recorded. A path of `''` is what a catalog migrated
- * from DuckLake 0.2 records for `main`: its files sit directly under the data
- * path. A NULL `path_is_relative` reads as relative, the recorded default.
- */
-export async function recordedSchemaPath(
-   connection: DuckDBConnection,
-   alias: string,
-   metadataSchema: string | undefined,
-   schemaName: string,
-): Promise<{ path: string; relative: boolean } | undefined> {
-   const row = runSQLRows(
-      await connection.runSQL(
-         `SELECT path, path_is_relative FROM ${metadataCatalogRef(alias, metadataSchema)}.ducklake_schema ` +
-            `WHERE schema_name = '${escapeSQL(schemaName)}' AND end_snapshot IS NULL LIMIT 1`,
-      ),
-   )[0];
-   if (!row || typeof row.path !== "string") return undefined;
-   return { path: row.path, relative: row.path_is_relative !== false };
-}
-
-/**
- * One key of a DuckLake table's partition spec: a column, and the transform
- * DuckLake records for it (`identity`, `year`, `month`, `day`, `hour`, or
- * `bucket(N)`).
- */
-export interface PartitionKey {
-   column: string;
-   transform: string;
-}
-
-/**
- * The partition spec `schemaName.tableName` has now, in the catalog attached as
- * `alias`, in key order. Empty when the table is not partitioned, including a
- * table whose spec was reset (DuckLake records that as a spec with no keys), and
- * when no such table exists.
- */
-export async function tablePartitionKeys(
-   connection: DuckDBConnection,
-   alias: string,
-   metadataSchema: string | undefined,
-   schemaName: string,
-   tableName: string,
-): Promise<PartitionKey[]> {
-   const meta = metadataCatalogRef(alias, metadataSchema);
-   const rows = runSQLRows(
-      await connection.runSQL(
-         `SELECT c.column_name, pc.transform
-            FROM ${meta}.ducklake_table t
-            JOIN ${meta}.ducklake_schema s
-              ON s.schema_id = t.schema_id AND s.end_snapshot IS NULL
-            JOIN ${meta}.ducklake_partition_info pi
-              ON pi.table_id = t.table_id AND pi.end_snapshot IS NULL
-            JOIN ${meta}.ducklake_partition_column pc
-              ON pc.partition_id = pi.partition_id AND pc.table_id = t.table_id
-            JOIN ${meta}.ducklake_column c
-              ON c.table_id = t.table_id AND c.column_id = pc.column_id AND c.end_snapshot IS NULL
-           WHERE s.schema_name = '${escapeSQL(schemaName)}'
-             AND t.table_name = '${escapeSQL(tableName)}'
-             AND t.end_snapshot IS NULL
-           ORDER BY pc.partition_key_index`,
-      ),
-   );
-   return rows.map((row) => ({
-      column: String(row.column_name),
-      transform: String(row.transform),
-   }));
-}
-
-/** `url` without its trailing slashes. A loop, not `/\/+$/`, which backtracks on a long run of them. */
-export function stripTrailingSlashes(url: string): string {
-   let end = url.length;
-   while (end > 0 && url[end - 1] === "/") end--;
-   return url.slice(0, end);
-}
-
-/** `url` with its trailing slashes replaced by exactly one. */
-function oneTrailingSlash(url: string): string {
-   return `${stripTrailingSlashes(url)}/`;
-}
-
-/**
- * Whether a URL names a scheme but no bucket (`s3://`, `gs:///`). As a scope it
- * would become `s3:/`, which DuckDB matches against every S3 URL, so such a
- * root is refused. A path with no scheme is not a URL and is left alone.
- */
-function isBucketlessUrl(url: string): boolean {
-   const at = url.indexOf("://");
-   return at >= 0 && stripTrailingSlashes(url.slice(at + 3)) === "";
-}
-
-/**
- * The URL prefix a DuckLake catalog's storage secret is scoped to, with exactly
- * one trailing slash so `…/org_a/` never matches `…/org_ab`. The configured data
- * path when the config states one, else the data path the catalog recorded,
- * which the preflight read. A managed catalog attached read-only is the
- * user-facing view of its own tables, so its secret reaches only the `main`
- * schema's files: the schema path the catalog recorded, under the data path when
- * relative. Undefined when nothing states a path, when a managed view's main
- * path is unknown, or when the root names no bucket: the caller then refuses
- * the attach rather than creating an unscoped secret.
- */
-export function storageSecretScope(input: {
-   configuredDataPath?: string;
-   recordedDataPath?: string;
-   mainSchemaPath?: { path: string; relative: boolean };
-   readOnly: boolean;
-   managed: boolean;
-}): string | undefined {
-   const root = input.configuredDataPath || input.recordedDataPath;
-   if (!root || isBucketlessUrl(root)) return undefined;
-   if (input.managed && input.readOnly) {
-      const main = input.mainSchemaPath;
-      if (!main) return undefined;
-      if (!main.relative) {
-         return isBucketlessUrl(main.path)
-            ? undefined
-            : oneTrailingSlash(main.path);
-      }
-      // An empty relative path is the data path itself (a catalog migrated from
-      // DuckLake 0.2 records it for `main`).
-      let start = 0;
-      while (start < main.path.length && main.path[start] === "/") start++;
-      return oneTrailingSlash(
-         `${oneTrailingSlash(root)}${main.path.slice(start)}`,
-      );
-   }
-   return oneTrailingSlash(root);
-}
-
-/**
- * The data-path half of a DuckLake ATTACH. A configured path is the one every
- * attach uses (`OVERRIDE_DATA_PATH`, so a catalog first created elsewhere still
- * writes under it), and a read-write attach may create the catalog there. With
- * none, DuckLake uses the path the catalog recorded at its creation, and a
- * read-write attach passes `CREATE_IF_NOT_EXISTS false`, so it refuses a missing
- * catalog ("Existing DuckLake ... does not exist") rather than creating one
- * with no path; a read-only attach never creates either way.
- */
-export function dataPathClauses(
-   dataPath: string | undefined,
-   readOnly: boolean,
-): string {
-   if (dataPath) {
-      return `DATA_PATH '${escapeSQL(dataPath)}', OVERRIDE_DATA_PATH true`;
-   }
-   return readOnly ? "" : "CREATE_IF_NOT_EXISTS false";
-}
-
-/**
- * ATTACH options a catalog takes only at its creation. Integers and booleans
- * only, so nothing here is spliced from text.
- */
-export function firstAttachClauses(options: {
-   encrypted?: boolean;
-   dataInliningRowLimit?: number;
-}): string {
-   let clauses = "";
-   if (options.encrypted === true) {
-      clauses += ", ENCRYPTED true";
-   }
-   if (
-      options.dataInliningRowLimit !== undefined &&
-      Number.isInteger(options.dataInliningRowLimit) &&
-      options.dataInliningRowLimit >= 0
-   ) {
-      clauses += `, DATA_INLINING_ROW_LIMIT ${options.dataInliningRowLimit}`;
-   }
-   return clauses;
 }
 
 /**
@@ -1731,17 +283,6 @@ async function attachDuckLake(
       origin: options.origin,
       managed: options.managed,
    });
-}
-
-/**
- * After a managed DuckLake attach, make the catalog's `main` the session's
- * search path: DuckDB never searches an attached catalog for an unqualified
- * table name, and `<name>.table('t')` compiles to the bare name. The alias is
- * quoted as an identifier inside the string literal the setting takes.
- */
-export function managedSearchPathSql(dbName: string): string {
-   const alias = `"${dbName.replace(/"/g, '""')}"`;
-   return `SET search_path = '${`${alias}.main`.replace(/'/g, "''")}'`;
 }
 
 async function setManagedSearchPath(
@@ -1797,454 +338,6 @@ export async function attachDuckLakeReadWrite(
    });
 }
 
-/** A source warehouse type that exposes a native DuckDB query-passthrough. */
-export type FederatedSourceType = "bigquery" | "snowflake" | "postgres";
-
-/**
- * The result of federating a source connection onto a build session: the
- * `handle` a passthrough table function needs to reach it —
- *  - bigquery: the resolved project id (`bigquery_query('<project>', '<sql>')`),
- *  - snowflake: the created secret name (`snowflake_query('<sql>', '<secret>')`),
- *  - postgres: the ATTACH alias (`postgres_query('<alias>', '<sql>')`).
- */
-interface FederatedHandle {
-   handle: string;
-   sourceType: FederatedSourceType;
-   /**
-    * Releases what the federation holds outside the DuckDB session (the SSH
-    * tunnel of a proxied Postgres source), which disposing the session does not
-    * close. The build session calls this in its `finally`.
-    */
-   close?: () => Promise<void>;
-}
-
-/**
- * The source connection's configuration needed to federate it onto a build
- * session. `name` is a caller-supplied, already-safe base for the secret/alias
- * identifiers; the type-specific config carries the credentials.
- */
-interface FederationConfig {
-   name: string;
-   bigqueryConnection?: components["schemas"]["BigqueryConnection"];
-   snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
-   postgresConnection?: components["schemas"]["PostgresConnection"];
-   /**
-    * The connection's proxy. A build must tunnel a proxied Postgres source as
-    * the query path does, or the passthrough dials the database host the
-    * bastion exists to keep unreachable.
-    */
-   proxy?: components["schemas"]["ConnectionProxy"];
-}
-
-/** Injection seam for tests: how a proxied federation opens its tunnel. */
-interface FederationDeps {
-   openProxy?: typeof openProxy;
-}
-
-/**
- * Establish a source warehouse's credentials on a build-scoped DuckDB session so
- * a native passthrough (`bigquery_query`/`snowflake_query`/`postgres_query`)
- * can push the compiled SELECT to it. Runs only on the transient build session:
- * source credentials are never set on the serve connection nor persisted.
- * BigQuery and Snowflake need only a SECRET; Postgres needs an ATTACH whose
- * alias the function references.
- *
- * @returns the {@link FederatedHandle} the caller passes to `wrapPassthrough`.
- * @throws for a source type without a native passthrough, or missing/invalid
- *   credentials, so a build fails loud rather than producing a wrong table.
- */
-export async function federateSourceForPassthrough(
-   connection: DuckDBConnection,
-   sourceType: FederatedSourceType,
-   config: FederationConfig,
-   deps: FederationDeps = {},
-): Promise<FederatedHandle> {
-   switch (sourceType) {
-      case "bigquery":
-         return federateBigQuery(connection, config);
-      case "snowflake":
-         return federateSnowflake(connection, config);
-      case "postgres":
-         return federatePostgres(connection, config, deps);
-      default: {
-         // Exhaustiveness guard: a new FederatedSourceType must add a branch.
-         const exhaustive: never = sourceType;
-         throw new Error(
-            `No native query-passthrough for source type '${String(exhaustive)}'`,
-         );
-      }
-   }
-}
-
-async function federateBigQuery(
-   connection: DuckDBConnection,
-   config: FederationConfig,
-): Promise<FederatedHandle> {
-   const bq = config.bigqueryConnection;
-   if (!bq) {
-      throw new Error(
-         `BigQuery connection configuration missing for: ${config.name}`,
-      );
-   }
-
-   // A build federating from a BigQuery source connection may carry
-   // impersonation legitimately (for the serve path). The DuckDB BIGQUERY secret
-   // takes a key, not a token, so name that limitation rather than fall through
-   // to the generic "service account key required".
-   if (bq.impersonateServiceAccount) {
-      throw new Error(
-         `BigQuery connection '${config.name}' uses impersonateServiceAccount, ` +
-            `which cannot federate through DuckDB: the DuckDB BIGQUERY secret ` +
-            `authenticates with a service account key, not a token. Federated ` +
-            `builds from this source require serviceAccountKeyJson.`,
-      );
-   }
-   const key = parseBigQueryServiceAccount(config.name, bq);
-   const { projectId } = key;
-   await createBigQuerySecret(connection, config.name, key);
-   logger.info(
-      `Federated BigQuery source for passthrough: project ${projectId}`,
-   );
-   // bigquery_query finds the secret scoped to bq://<project>, so the project id
-   // is the handle.
-   return { handle: projectId, sourceType: "bigquery" };
-}
-
-async function federateSnowflake(
-   connection: DuckDBConnection,
-   config: FederationConfig,
-): Promise<FederatedHandle> {
-   const sf = config.snowflakeConnection;
-   if (!sf) {
-      throw new Error(
-         `Snowflake connection configuration missing for: ${config.name}`,
-      );
-   }
-   assertSnowflakeFieldsPresent(config.name, {
-      account: sf.account,
-      username: sf.username,
-   });
-   // Key pair or password, as a live Snowflake connection accepts; requiring a
-   // password would make key-pair connections (Snowflake's preferred
-   // programmatic auth) unbuildable.
-   const usesKeyPair = !!sf.privateKey;
-   if (!usesKeyPair && !sf.password) {
-      throw new Error(
-         `Snowflake privateKey or password is required for: ${config.name}`,
-      );
-   }
-
-   await installAndLoadExtension(connection, "snowflake", true);
-
-   const params = {
-      ...escapeSnowflakeIdentity(sf),
-      password: sf.password ? escapeSQL(sf.password) : undefined,
-      // Normalized here because this config is an unnormalized clone (the live
-      // path normalizes at its own call site): a single-line PEM makes Go's
-      // pem.Decode return nil, and the extension wants PKCS#8 where a user may
-      // have pasted PKCS#1.
-      privateKey: sf.privateKey
-         ? escapeSQL(normalizeSnowflakePrivateKey(sf.privateKey))
-         : undefined,
-      privateKeyPass: sf.privateKeyPass
-         ? escapeSQL(sf.privateKeyPass)
-         : undefined,
-   };
-   const secretName = sanitizeSecretName(`snowflake_${config.name}`);
-   // Optional fields are emitted only when supplied, or the literal 'undefined'
-   // would be used as a db/warehouse name.
-   //
-   // ROLE and SCHEMA are part of the connection's identity (its digest).
-   // Dropping them would run the build under the user's default role while live
-   // queries use the configured one: a build that fails on permissions, or
-   // reads under wider ones.
-   const secretLines = [
-      `   TYPE snowflake`,
-      `   ACCOUNT '${params.account}'`,
-      `   USER '${params.user}'`,
-      // PRIVATE_KEY_PASSWORD, not the documented PRIVATE_KEY_PASSPHRASE, which
-      // is only a backward-compatible alias for it.
-      ...(usesKeyPair
-         ? [
-              `   AUTH_TYPE 'key_pair'`,
-              `   PRIVATE_KEY '${params.privateKey}'`,
-              ...(params.privateKeyPass
-                 ? [`   PRIVATE_KEY_PASSWORD '${params.privateKeyPass}'`]
-                 : []),
-           ]
-         : [`   PASSWORD '${params.password}'`]),
-      ...(params.database ? [`   DATABASE '${params.database}'`] : []),
-      ...(params.warehouse ? [`   WAREHOUSE '${params.warehouse}'`] : []),
-      ...(params.schema ? [`   SCHEMA '${params.schema}'`] : []),
-      ...(params.role ? [`   ROLE '${params.role}'`] : []),
-   ];
-   await connection.runSQL(
-      `CREATE OR REPLACE SECRET ${secretName} (\n${secretLines.join(",\n")}\n);`,
-   );
-   logger.info(`Federated Snowflake source for passthrough: ${secretName}`);
-   // snowflake_query(sql, secret): the secret name is the handle.
-   return { handle: secretName, sourceType: "snowflake" };
-}
-
-async function federatePostgres(
-   connection: DuckDBConnection,
-   config: FederationConfig,
-   deps: FederationDeps = {},
-): Promise<FederatedHandle> {
-   const pg = config.postgresConnection;
-   if (!pg) {
-      throw new Error(
-         `PostgreSQL connection configuration missing for: ${config.name}`,
-      );
-   }
-
-   await installAndLoadExtension(connection, "postgres");
-
-   // The raw name is the postgres_query handle; the ATTACH identifier is quoted
-   // (a hyphenated name would otherwise be a parser error).
-   const alias = config.name;
-
-   // A proxied connection is reached only through the SSH tunnel, as on the
-   // query path (buildProxiedPostgresConnection). The tunnel is build-scoped,
-   // closed by the handle's `close`. It is opened inside the try so any throw
-   // before the handle is returned closes it here; otherwise the listener is
-   // stranded for the life of the process.
-   let endpoint: ProxyEndpoint | undefined;
-   try {
-      let attachString: string;
-      if (config.proxy) {
-         if (!pg.host || !pg.port) {
-            // validateConnectionShape requires both; guard so the tunnel target
-            // is never undefined.
-            throw new Error(
-               `Connection proxy on '${config.name}' requires explicit host and port on the postgres connection.`,
-            );
-         }
-         endpoint = await (deps.openProxy ?? openProxy)(config.proxy, {
-            host: pg.host,
-            port: pg.port,
-         });
-         attachString = buildProxiedPgAttachString(config.name, pg, endpoint);
-      } else {
-         attachString = buildPgConnectionString(pg, {
-            name: config.name,
-            applyConnectionOptions: true,
-         });
-      }
-      logger.info(
-         `Federating Postgres source for passthrough as alias '${alias}'${endpoint ? " through its SSH proxy" : ""}: ${redactPgSecrets(attachString)}`,
-      );
-      // OR REPLACE only for idempotency within a session. Isolation between
-      // builds and tenants comes from each build's private DuckDB instance
-      // (createIsolatedBuildSession), which also scopes the bigquery/snowflake
-      // secrets.
-      await connection.runSQL(
-         `ATTACH OR REPLACE '${escapeSQL(attachString)}' AS ${quoteIdentifier(alias, "duckdb")} (TYPE postgres, READ_ONLY);`,
-      );
-   } catch (e) {
-      // The federation error propagates; a tunnel that fails to close outlives
-      // the build, so it is logged rather than lost.
-      await endpoint
-         ?.close()
-         .catch((closeErr) =>
-            logger.warn(
-               `Failed to close the SSH proxy opened for Postgres source '${config.name}' after its federation failed: ${String(closeErr)}`,
-            ),
-         );
-      throw e;
-   }
-   return {
-      handle: alias,
-      sourceType: "postgres",
-      ...(endpoint ? { close: () => endpoint!.close() } : {}),
-   };
-}
-
-/**
- * One libpq conninfo keyword/value pair. libpq takes a bare value only when it
- * has no whitespace, quote or backslash; any other value is single-quoted with
- * `\` and `'` backslash-escaped, so a password containing a space is not read
- * as a second keyword. Exported for tests.
- */
-export function pgConninfoPair(key: string, value: string): string {
-   if (value !== "" && !/[\s'\\]/.test(value)) return `${key}=${value}`;
-   return `${key}='${value.replace(/([\\'])/g, "\\$1")}'`;
-}
-
-/**
- * The CA material a proxied storage build hands libpq. Injected so a test needs
- * neither the process environment nor a file on disk.
- */
-export interface ProxiedAttachTrust {
-   /** The deployment's trusted CA bundle (NODE_EXTRA_CA_CERTS), when set. */
-   caBundle?: string;
-   /**
-    * Path of a bundle holding the runtime's ambient trust anchors — its bundled
-    * roots plus `caBundle` — which is the set the query path verifies
-    * `verify-full` against.
-    */
-   ambientBundle: () => string;
-}
-
-function defaultProxiedAttachTrust(): ProxiedAttachTrust {
-   return {
-      caBundle: externalEnv("NODE_EXTRA_CA_CERTS") || undefined,
-      ambientBundle: ambientTrustBundlePath,
-   };
-}
-
-const ambientTrustBundles = new Map<string | undefined, string>();
-let ambientTrustDir: string | undefined;
-
-/**
- * Writes the runtime's ambient trust anchors (`tls.rootCertificates` plus
- * NODE_EXTRA_CA_CERTS) to one PEM file for libpq's `sslrootcert`, which takes
- * exactly one file.
- *
- * Written by this process into a directory it created (`mkdtemp`, 0700), never
- * reused from a path that merely exists: a file at a predictable name would let
- * whoever wrote it choose the CAs a `verify-full` build trusts. An unreadable
- * NODE_EXTRA_CA_CERTS is skipped with a warning, as both runtimes do at
- * startup, so the build trusts what the query path does. Exported for tests.
- */
-export function ambientTrustBundlePath(): string {
-   const extra = externalEnv("NODE_EXTRA_CA_CERTS") || undefined;
-   const cached = ambientTrustBundles.get(extra);
-   if (cached) return cached;
-   let extraPem: string | undefined;
-   if (extra) {
-      try {
-         extraPem = readFileSync(extra, "utf8").trim();
-      } catch (err) {
-         logger.warn(
-            `Ignoring NODE_EXTRA_CA_CERTS for the storage build's trust bundle: ${extra} could not be read (${err instanceof Error ? err.message : String(err)}).`,
-         );
-      }
-   }
-   const pem =
-      [...tls.rootCertificates, ...(extraPem ? [extraPem] : [])].join("\n") +
-      "\n";
-   const digest = createHash("sha256").update(pem).digest("hex").slice(0, 16);
-   ambientTrustDir ??= mkdtempSync(
-      path.join(os.tmpdir(), "publisher-ambient-ca-"),
-   );
-   const file = path.join(ambientTrustDir, `${digest}.pem`);
-   writeFileSync(file, pem, { mode: 0o600 });
-   ambientTrustBundles.set(extra, file);
-   return file;
-}
-
-type ProxiedSslmode = (typeof PROXIED_SSLMODES)[number];
-
-/**
- * libpq keyword/value string for a Postgres source reached through the SSH
- * tunnel. libpq dials `hostaddr` (the tunnel's local endpoint) but sends `host`
- * (the database's own name) as SNI and checks the certificate against it, so
- * every `sslmode`, `verify-full` included, keeps its meaning through the
- * tunnel. TLS maps as on the query path (resolveProxiedTls):
- *
- *  - unset / `no-verify` → `require`: encrypt without verifying, so a force-SSL
- *    target is not rejected for plaintext;
- *  - `disable` → `disable`;
- *  - `verify-ca` → against the NODE_EXTRA_CA_CERTS bundle;
- *  - `verify-full` → against the ambient trust anchors plus NODE_EXTRA_CA_CERTS,
- *    so a publicly-trusted target builds as it queries.
- *
- * Exported for tests.
- */
-export function buildProxiedPgAttachString(
-   name: string,
-   pg: components["schemas"]["PostgresConnection"],
-   endpoint: ProxyEndpoint,
-   trust: ProxiedAttachTrust = defaultProxiedAttachTrust(),
-): string {
-   if (!pg.host) {
-      // validateConnectionShape requires host; guard so the certificate is
-      // never checked against an empty name.
-      throw new Error(
-         `Connection proxy on '${name}' requires an explicit host on the postgres connection.`,
-      );
-   }
-   const parts = [
-      pgConninfoPair("host", pg.host),
-      pgConninfoPair("hostaddr", endpoint.host),
-      pgConninfoPair("port", String(endpoint.port)),
-   ];
-   if (pg.databaseName) parts.push(pgConninfoPair("dbname", pg.databaseName));
-   if (pg.userName) parts.push(pgConninfoPair("user", pg.userName));
-   if (pg.password) parts.push(pgConninfoPair("password", pg.password));
-   parts.push(
-      ...libpqSslmodeParts(
-         `Connection proxy on '${name}'`,
-         pg.sslmode ?? "no-verify",
-         trust,
-      ),
-   );
-   parts.push(...libpqStatementTimeoutParts(name, pg));
-   return parts.join(" ");
-}
-
-/**
- * The libpq conninfo pairs for an explicit sslmode, shared by the proxied and
- * the direct DuckDB attach so a mode means the same thing on both. `subject` is
- * the phrase an error leads with.
- */
-function libpqSslmodeParts(
-   subject: string,
-   mode: ProxiedSslmode,
-   trust: ProxiedAttachTrust,
-): string[] {
-   // Typed against PROXIED_SSLMODES, so a mode added there without a case here
-   // is a compile error.
-   switch (mode) {
-      case "disable":
-         return ["sslmode=disable"];
-      case "no-verify":
-         return [`sslmode=${LIBPQ_NO_VERIFY_SSLMODE}`];
-      case "verify-ca": {
-         if (!trust.caBundle) {
-            throw new Error(
-               `${subject} uses sslmode 'verify-ca' but no trusted CA bundle is available (NODE_EXTRA_CA_CERTS is unset).`,
-            );
-         }
-         return [
-            "sslmode=verify-ca",
-            pgConninfoPair("sslrootcert", trust.caBundle),
-         ];
-      }
-      case "verify-full":
-         return [
-            "sslmode=verify-full",
-            pgConninfoPair("sslrootcert", trust.ambientBundle()),
-         ];
-      default: {
-         const unhandled: never = mode;
-         throw new Error(
-            `${subject} has unsupported sslmode '${String(unhandled)}' (expected ${PROXIED_SSLMODES.join(" | ")}).`,
-         );
-      }
-   }
-}
-
-/**
- * The libpq conninfo pair that applies a connection's statement timeout, as a
- * server option on every session the attach opens. Empty when it sets none.
- */
-function libpqStatementTimeoutParts(
-   name: string,
-   pg: components["schemas"]["PostgresConnection"],
-): string[] {
-   const ms = postgresStatementTimeoutMs(name, pg);
-   return ms === undefined
-      ? []
-      : [pgConninfoPair("options", `-c statement_timeout=${ms}`)];
-}
-
-/** A connection whose object-storage secret can be re-resolved without a reattach. */
-interface RenewableStorageSecret {
-   setStorageSecretRenewer(renew: () => Promise<void>): void;
-}
-
 /**
  * Whether a failed statement should re-resolve the storage credential and retry.
  * Exported so the spec tests this rule rather than a copy of it.
@@ -2274,179 +367,6 @@ export function isExpiredCredentialError(error: unknown): boolean {
            ? error
            : "";
    return message.includes("ExpiredToken");
-}
-
-/**
- * The CREATE OR REPLACE SECRET for a GCS or S3 storage root. Separate from
- * `attachCloudStorage` so the statement can be asserted without a live DuckDB.
- */
-export function buildCloudStorageSecretSQL(
-   secretName: string,
-   credentials: CloudStorageCredentials,
-): string {
-   const isGCS = credentials.type === "gcs";
-   const escapedKeyId = escapeSQL(credentials.accessKeyId);
-   const escapedSecret = escapeSQL(credentials.secretAccessKey);
-   const scopeClause = credentials.scope
-      ? `SCOPE '${escapeSQL(credentials.scope)}'`
-      : "";
-
-   let createSecretCommand: string;
-
-   if (isGCS) {
-      createSecretCommand = `
-         CREATE OR REPLACE SECRET ${secretName} (
-            TYPE gcs,
-            KEY_ID '${escapedKeyId}',
-            SECRET '${escapedSecret}'${scopeClause ? `,\n            ${scopeClause}` : ""}
-         );
-      `;
-   } else {
-      // The schema carries no `default:` (a generated client would not apply
-      // it), so the fallback lives here. Warned because a bucket in another
-      // region then fails as "no such bucket", which reads as a wrong name.
-      const region = credentials.region || "us-east-1";
-      if (!credentials.region) {
-         logger.warn(
-            "S3 connection has no region; defaulting to us-east-1. A bucket in " +
-               "another region will not be found.",
-            { secretName },
-         );
-      }
-
-      let clauses: string[];
-      if (credentials.provider === "credential_chain") {
-         // CHAIN is required: omitted, DuckDB resolves against `config` alone,
-         // which cannot work in a container.
-         const chain = escapeSQL(
-            credentials.chain?.trim() || DEFAULT_S3_CREDENTIAL_CHAIN,
-         );
-         // A chain secret stores the credentials it resolved, so a temporary
-         // credential (web-identity assume-role: an hour by default) expires
-         // while a serve-path secret lives on. `auto` is the only value that
-         // arms refresh (the aws extension stores `refresh_info` only for it;
-         // any other value silently does nothing). Not caller-configurable: a
-         // frozen snapshot of an expiring credential has no use.
-         clauses = [
-            "TYPE s3",
-            "PROVIDER credential_chain",
-            `CHAIN '${chain}'`,
-            "REFRESH 'auto'",
-            `REGION '${region}'`,
-         ];
-      } else {
-         clauses = [
-            "TYPE s3",
-            `KEY_ID '${escapedKeyId}'`,
-            `SECRET '${escapedSecret}'`,
-            `REGION '${region}'`,
-         ];
-      }
-      // Additive on both arms: an S3-compatible endpoint behind a host role is a
-      // real combination, and so is one with temporary keys.
-      if (credentials.endpoint) {
-         const { hostAndPath, useSsl } = checkS3Endpoint(
-            credentials.endpoint,
-            credentials.provider,
-         );
-         clauses.push(
-            `ENDPOINT '${escapeSQL(hostAndPath)}'`,
-            "URL_STYLE 'path'",
-         );
-         // `true` is never written: it is DuckDB's default, so a secret for an
-         // https or bare endpoint is what a bare one always was.
-         if (!useSsl) {
-            clauses.push("USE_SSL false");
-         }
-      }
-      if (
-         credentials.provider !== "credential_chain" &&
-         credentials.sessionToken
-      ) {
-         clauses.push(`SESSION_TOKEN '${escapeSQL(credentials.sessionToken)}'`);
-      }
-      if (scopeClause) {
-         clauses.push(scopeClause);
-      }
-      createSecretCommand = `
-            CREATE OR REPLACE SECRET ${secretName} (
-               ${clauses.join(",\n               ")}
-            );
-         `;
-   }
-
-   return createSecretCommand;
-}
-
-async function attachCloudStorage(
-   connection: DuckDBConnection,
-   attachedDb: AttachedDatabase,
-   origin: ConnectionOrigin = "connection",
-   scope?: string,
-): Promise<void> {
-   const storageType = attachedDb.type?.toUpperCase() || "";
-   // The scope rides on the credentials so the renewer re-emits it.
-   const credentials = {
-      ...resolveCloudStorageCredentials(attachedDb, origin),
-      scope,
-   };
-
-   await installAndLoadExtension(connection, "httpfs");
-   // `credential_chain` is implemented by the `aws` extension and resolves when
-   // the secret is created, so load it first (the generic attach path does not
-   // otherwise). `aws` is baked into the image, so local-only policy holds.
-   if (credentials.provider === "credential_chain") {
-      await installAndLoadExtension(connection, "aws");
-   }
-
-   const secretName = sanitizeSecretName(
-      `${attachedDb.type}_${attachedDb.name}`,
-   );
-   const createSecretCommand = buildCloudStorageSecretSQL(
-      secretName,
-      credentials,
-   );
-
-   if (await doesSecretExistInDuckDB(connection, secretName)) {
-      // Force-refresh attachments using this storage.
-      await connection.runSQL(`DETACH ${attachedDb.name};`).catch(() => {});
-   }
-   await connection.runSQL(createSecretCommand);
-
-   // Only a chain secret goes stale; a renewer for a key pair would only retry a
-   // wrong key. This backs up `REFRESH 'auto'`, which does not reach every read
-   // path: reads through an attached DuckLake catalog have surfaced ExpiredToken
-   // from an armed secret. Structural check, because only some of the
-   // connection types reaching here can renew.
-   const renewable = connection as unknown as Partial<RenewableStorageSecret>;
-   if (
-      credentials.provider === "credential_chain" &&
-      typeof renewable.setStorageSecretRenewer === "function"
-   ) {
-      const renewOn = async (target: DuckDBConnection) => {
-         // Replaced in place on the live connection; no in-flight query is
-         // disturbed. Admitted past a locked instance's secret gate for this
-         // one statement only (duckdb_lockdown.ts).
-         const sql = buildCloudStorageSecretSQL(secretName, credentials);
-         await runAsInternalStatement(sql, () => target.runSQL(sql));
-      };
-      renewable.setStorageSecretRenewer(() => renewOn(connection));
-      // The secret is the instance's: a later connection joining the locked
-      // instance, which runs no attach of its own, renews it the same way.
-      const instance = duckDBInstanceOf(connection);
-      if (instance) instanceSecretRenewers.set(instance, renewOn);
-   }
-
-   if (scope === undefined) {
-      // An attached database names no bucket: its reads are any URL of its
-      // scheme the secret reaches.
-      for (const prefix of cloudStorageAllowPrefixes(attachedDb.type ?? "")) {
-         allowForLockdown(connection, prefix);
-      }
-   }
-
-   logger.info(`Created ${storageType} secret: ${secretName}`);
-   logger.info(`${storageType} connection configured for: ${attachedDb.name}`);
 }
 
 async function attachAzureStorage(
@@ -2516,26 +436,14 @@ async function attachAzureStorage(
    }
 
    if (await doesSecretExistInDuckDB(connection, secretName)) {
-      await connection.runSQL(`DETACH ${attachedDb.name};`).catch(() => {});
+      await connection
+         .runSQL(`DETACH ${quoteIdentifier(attachedDb.name ?? "", "duckdb")};`)
+         .catch(() => {});
    }
    await connection.runSQL(createSecretCommand);
 
    logger.info(`Created Azure secret: ${secretName}`);
    logger.info(`Azure ADLS connection configured for: ${attachedDb.name}`);
-}
-
-async function doesSecretExistInDuckDB(
-   connection: DuckDBConnection,
-   secretName: string,
-): Promise<boolean> {
-   const escapedSecretName = escapeSQL(secretName);
-   const result = await connection.runSQL(`
-     SELECT COUNT(*) AS count
-     FROM duckdb_secrets()
-     WHERE name = '${escapedSecretName}';
-   `);
-   const rows = result.rows;
-   return Number(rows?.[0]?.count ?? 0) > 0;
 }
 
 /**
@@ -2573,10 +481,9 @@ async function attachDatabasesToDuckDB(
    connectionName: string,
    generation: number,
 ): Promise<void> {
-   const attachHandlers = {
-      bigquery: attachBigQuery,
-      snowflake: attachSnowflake,
-      postgres: attachPostgres,
+   // The object-storage types attach here; a database type attaches by its
+   // registry entry.
+   const storageAttachHandlers = {
       gcs: attachCloudStorage,
       s3: attachCloudStorage,
       azure: attachAzureStorage,
@@ -2644,10 +551,17 @@ async function attachDatabasesToDuckDB(
                   continue;
                }
 
+               // Own keys only: a type naming an Object.prototype member
+               // (`constructor`) would otherwise find a function that
+               // attaches nothing and reports success.
+               const storageType = attachedDb.type ?? "";
                const handler =
-                  attachHandlers[
-                     attachedDb.type as keyof typeof attachHandlers
-                  ];
+                  connectionDialectOf(attachedDb.type)?.attached?.attach ??
+                  (Object.hasOwn(storageAttachHandlers, storageType)
+                     ? storageAttachHandlers[
+                          storageType as keyof typeof storageAttachHandlers
+                       ]
+                     : undefined);
                if (!handler) {
                   throw new Error(
                      `Unsupported database type: ${attachedDb.type}`,
@@ -2699,15 +613,12 @@ async function detachAttachment(
    await duckdbConnection.runSQL(
       `DETACH DATABASE IF EXISTS ${quoteIdentifier(name, "duckdb")};`,
    );
-   const secret =
-      type === "snowflake"
-         ? `${name}_secret`
-         : type === "bigquery" ||
-             type === "gcs" ||
-             type === "s3" ||
-             type === "azure"
-           ? sanitizeSecretName(`${type}_${name}`)
-           : undefined;
+   const attached = connectionDialectOf(type)?.attached;
+   const secret = attached
+      ? attached.secretName?.(name)
+      : type === "gcs" || type === "s3" || type === "azure"
+        ? sanitizeSecretName(`${type}_${name}`)
+        : undefined;
    if (secret !== undefined) {
       await duckdbConnection.runSQL(`DROP SECRET IF EXISTS ${secret};`);
    }
@@ -2806,10 +717,30 @@ class AzureDuckDBConnection extends DuckDBConnection {
    }
 }
 
+/**
+ * The DuckLake connection whose storage-secret renewal the current async chain
+ * is running, so a statement the renewal itself issues does not renew again.
+ */
+const renewingStorageSecretOf = new AsyncLocalStorage<object>();
+
 class DuckLakeConnection extends DuckDBConnection {
    private connectionName: string;
+   private legacyDigest: string;
    private storageSecretRenewer?: () => Promise<void>;
-   private renewingStorageSecret = false;
+   /**
+    * The renewal in flight, shared by every statement that failed on the
+    * expired credential meanwhile: the statement gate hands the connection to
+    * the next statement as soon as one fails, so a second can fail before the
+    * first's renewal has run, and it must wait for that renewal, not give up.
+    * Resolves to whether the renewal succeeded; it never rejects.
+    */
+   private storageSecretRenewal?: Promise<boolean>;
+   /**
+    * How many renewals have completed. A statement that started before the
+    * latest one completed ran on the old credential, so it runs again on the
+    * new one rather than renewing a credential that is already fresh.
+    */
+   private storageSecretRenewals = 0;
 
    /** @see RenewableStorageSecret */
    setStorageSecretRenewer(renew: () => Promise<void>): void {
@@ -2832,50 +763,239 @@ class DuckLakeConnection extends DuckDBConnection {
       sql: string,
       options?: Parameters<DuckDBConnection["runSQL"]>[1],
    ): Promise<Awaited<ReturnType<DuckDBConnection["runSQL"]>>> {
+      const renewalsBefore = this.storageSecretRenewals;
       try {
          return await super.runSQL(sql, options);
       } catch (error) {
-         // The renewal's own statement runs through this method; the flag stops
-         // a failure there from recursing.
-         const renew = this.storageSecretRenewer;
-         if (
-            !shouldRenewStorageSecret({
-               error,
-               hasRenewer: !!renew,
-               alreadyRenewing: this.renewingStorageSecret,
-            }) ||
-            !renew
-         ) {
-            throw error;
+         if (!(await this.renewedStorageSecretAfter(error, renewalsBefore))) {
+            throw await this.catalogUnavailableOr(error);
          }
+         try {
+            return await super.runSQL(sql, options);
+         } catch (rerunError) {
+            throw await this.catalogUnavailableOr(rerunError);
+         }
+      }
+   }
+
+   /**
+    * Streams SQL (the raw `sqlQuery` route) with {@link runSQL}'s recovery:
+    * an expired credential is renewed and the statement run again once, and a
+    * lost catalog is confirmed and reported typed. Both errors arrive before
+    * the first row (DuckDB binds and opens the scan before it yields), so only
+    * the first pull is checked, and nothing is buffered. An error after a row
+    * has been yielded is thrown as it is: running again would repeat rows the
+    * caller already has.
+    */
+   async *runSQLStream(
+      sql: string,
+      options?: Parameters<DuckDBConnection["runSQLStream"]>[1],
+   ): AsyncIterableIterator<QueryRecord> {
+      const renewalsBefore = this.storageSecretRenewals;
+      let rows = super.runSQLStream(sql, options);
+      let first: IteratorResult<QueryRecord>;
+      try {
+         first = await rows.next();
+      } catch (error) {
+         if (!(await this.renewedStorageSecretAfter(error, renewalsBefore))) {
+            throw await this.catalogUnavailableOr(error);
+         }
+         rows = super.runSQLStream(sql, options);
+         try {
+            first = await rows.next();
+         } catch (rerunError) {
+            throw await this.catalogUnavailableOr(rerunError);
+         }
+      }
+      if (first.done) return;
+      // A consumer that stops early (a cap, an abort) returns this stream; the
+      // driver's must be returned too, or its statement is never released.
+      // `yield*` forwards that, but not while the first row is held here.
+      try {
+         yield first.value;
+         yield* rows;
+      } finally {
+         await rows.return?.(undefined);
+      }
+   }
+
+   /**
+    * Re-resolve the storage credential when `error` is an expired one, so
+    * the caller runs its statement again; false, renewing nothing, otherwise.
+    * A renewal already in flight is joined rather than started again, and
+    * one that completed since the statement started (`renewalsBefore`) is
+    * taken as done, so statements failing together share one renewal and each
+    * runs once more. A renewal that fails (an STS outage) is logged once and
+    * answers false to every statement sharing it, so each throws its own
+    * expired-credential error, the storage refusal the caller is told of,
+    * rather than the renewer's.
+    */
+   private async renewedStorageSecretAfter(
+      error: unknown,
+      renewalsBefore: number,
+   ): Promise<boolean> {
+      const renew = this.storageSecretRenewer;
+      if (
+         !renew ||
+         !shouldRenewStorageSecret({
+            error,
+            hasRenewer: !!renew,
+            // The renewal's own statement runs through runSQL: a failure there
+            // is the renewal's to throw, not one to wait on itself for.
+            alreadyRenewing: renewingStorageSecretOf.getStore() === this,
+         })
+      ) {
+         return false;
+      }
+      if (
+         !this.storageSecretRenewal &&
+         this.storageSecretRenewals === renewalsBefore
+      ) {
          logger.info(
             "Object-storage credential expired; re-resolving and retrying once",
             { connection: this.connectionName },
          );
-         this.renewingStorageSecret = true;
-         try {
-            await renew();
-         } finally {
-            this.renewingStorageSecret = false;
-         }
-         return await super.runSQL(sql, options);
+         const renewal = renewingStorageSecretOf
+            .run(this, renew)
+            .then(
+               () => {
+                  this.storageSecretRenewals++;
+                  return true;
+               },
+               (renewalError: unknown) => {
+                  logger.warn(
+                     "Object-storage credential renewal failed; answering the expired credential's refusal",
+                     {
+                        connection: this.connectionName,
+                        error:
+                           renewalError instanceof Error
+                              ? renewalError.message
+                              : String(renewalError),
+                     },
+                  );
+                  return false;
+               },
+            )
+            .finally(() => {
+               if (this.storageSecretRenewal === renewal) {
+                  this.storageSecretRenewal = undefined;
+               }
+            });
+         this.storageSecretRenewal = renewal;
       }
+      // None in flight: one completed since the statement started, so its
+      // credential is already fresh.
+      return (await this.storageSecretRenewal) ?? true;
+   }
+
+   /**
+    * `error`, or a {@link DuckLakeCatalogUnavailableError} when DuckDB failed
+    * to resolve a name and the instance confirms this connection's catalog is
+    * gone. The error alone cannot say: a three-part path reports `Binder
+    * Error: Catalog "<catalog>" does not exist`, but a two-part one
+    * (`<catalog>.<table>`, a destination with no schema) reports `Catalog
+    * Error: Table with name … does not exist`, as a misbinding does. So any
+    * binder or catalog error is checked against the instance, and one whose
+    * catalog is attached (a misbinding) is returned as it is. A confirmed loss
+    * also drops the instance's cached check, so the next lookup checks again
+    * and reopens the connection.
+    */
+   private async catalogUnavailableOr(error: unknown): Promise<unknown> {
+      // A managed connection's errors name nothing outside `main`: DuckDB's
+      // "Did you mean" suggests a table from any schema of the catalog.
+      if (isManagedConnection(this)) error = scrubCatalogSuggestions(error);
+      if (
+         !/\b(Binder|Catalog) Error\b/.test(errMessage(error)) ||
+         (await aliasAttachedOnInstance(this, this.connectionName)) !== false
+      ) {
+         return error;
+      }
+      forgetDuckLakeCatalogChecked(this, this.connectionName);
+      return new DuckLakeCatalogUnavailableError(this.connectionName, {
+         cause: error,
+      });
    }
 
    constructor(options: PublisherDuckDBOptions) {
       super(options);
-
-      if (!options.databasePath?.endsWith("_ducklake.duckdb")) {
-         throw new Error(
-            `DuckLakeConnection should only be used for DuckLake connections. ` +
-               `Expected database path ending with '_ducklake.duckdb', got: ${options.databasePath}`,
-         );
-      }
-
       this.connectionName = options.name;
+      // Malloy hard-codes 'duckdb' as the digest's first part; dialectName is that same string.
+      this.legacyDigest = makeDigest(
+         this.dialectName,
+         path.join(
+            options.workingDirectory ?? "",
+            `${options.name}_ducklake.duckdb`,
+         ),
+         options.workingDirectory,
+         undefined,
+      );
    }
 
+   /**
+    * The digest Malloy computed when this connection opened a
+    * `<env>/<name>_ducklake.duckdb` file, which persisted-source addresses
+    * already embed and which, unlike an in-memory path, differs per lake.
+    */
+   getDigest(): string {
+      return this.legacyDigest;
+   }
+
+   /**
+    * A compile's schema reads (`DESCRIBE`) run through `runRawSQL`, not
+    * {@link runSQL}, so they confirm a lost catalog here: without it a
+    * catalog lost after its check was cached fails every compile with an
+    * untyped binder error while the cached check keeps lookups from ever
+    * reopening the connection.
+    */
    async fetchTableSchema(
+      tableKey: string,
+      tablePath: string,
+   ): Promise<TableSourceDef> {
+      // Before the schema read: a DESCRIBE outside `main` is itself the
+      // catalog metadata a managed connection keeps from models.
+      await this.assertManagedScope("A .table() source", (schemas) =>
+         managedTablePathRefusal(tablePath, this.connectionName, schemas),
+      );
+      try {
+         return await this.fetchTableSchemaIn(tableKey, tablePath);
+      } catch (error) {
+         throw await this.catalogUnavailableOr(error);
+      }
+   }
+
+   /** @see fetchTableSchema */
+   async fetchSelectSchema(
+      sqlRef: Parameters<DuckDBConnection["fetchSelectSchema"]>[0],
+   ): Promise<Awaited<ReturnType<DuckDBConnection["fetchSelectSchema"]>>> {
+      await this.assertManagedScope("A .sql() source", (schemas) =>
+         managedCatalogRefusal(sqlRef.selectStr, this.connectionName, schemas),
+      );
+      try {
+         return await super.fetchSelectSchema(sqlRef);
+      } catch (error) {
+         throw await this.catalogUnavailableOr(error);
+      }
+   }
+
+   /**
+    * On a connection configured `managed`, throw when `refusal` names a
+    * reference outside the schemas it may read (managed_catalog_scope.ts).
+    */
+   private async assertManagedScope(
+      what: string,
+      refusal: (schemas: ReadonlySet<string>) => Promise<string | undefined>,
+   ): Promise<void> {
+      const schemas = managedSchemasOf(this);
+      if (!schemas) return;
+      const refused = await refusal(schemas);
+      if (refused) {
+         throw new BadRequestError(
+            managedCatalogMessage(what, this.connectionName, refused),
+         );
+      }
+   }
+
+   private async fetchTableSchemaIn(
       tableKey: string,
       tablePath: string,
    ): Promise<TableSourceDef> {
@@ -2906,36 +1026,6 @@ class DuckLakeConnection extends DuckDBConnection {
          );
       }
       return result;
-   }
-}
-
-export async function deleteDuckLakeConnectionFile(
-   connectionName: string,
-   environmentPath: string,
-): Promise<void> {
-   assertSafePackageName(connectionName);
-   assertSafeEnvironmentPath(environmentPath);
-   const ducklakePath = safeJoinUnderRoot(
-      environmentPath,
-      `${connectionName}_ducklake.duckdb`,
-   );
-   try {
-      await fs.access(ducklakePath);
-      await fs.rm(ducklakePath);
-      logger.info(
-         `Removed DuckLake connection file ${connectionName}_ducklake.duckdb from ${environmentPath}`,
-      );
-   } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-         logger.debug(
-            `DuckLake connection file ${connectionName}_ducklake.duckdb does not exist, skipping deletion`,
-         );
-      } else {
-         logger.error(
-            `Failed to remove DuckLake connection file ${connectionName}_ducklake.duckdb from ${environmentPath}`,
-            { error },
-         );
-      }
    }
 }
 
@@ -3036,71 +1126,6 @@ function entryToDuckDBOptions(
       rest.workingDirectory = workingDirectory;
    }
    return { ...removeUndefined(rest), name };
-}
-
-/**
- * Drop keys whose value is `undefined` or `null`.
- *
- * The null guard for connectors Publisher builds itself, outside Malloy's
- * registry (which strips nulls on its own path). A surviving `null` reaches
- * `makeDigest`, which reads `.length` off each part, and throws on the first
- * digest; the package-load worker takes that digest, so the whole package fails
- * to load ("import reference failure") while /compile still succeeds.
- *
- * Nulls come from an explicit `null` in publisher.config.json or a client
- * serializing unset optionals over POST /connections, and persist through the
- * repository's JSON round trip. An explicit null and an omitted field produce
- * the same digest.
- */
-function removeUndefined<T extends object>(
-   value: T,
-): { [K in keyof T]?: Exclude<T[K], null> } {
-   return Object.fromEntries(
-      Object.entries(value).filter(
-         ([, fieldValue]) => fieldValue !== undefined && fieldValue !== null,
-      ),
-   ) as { [K in keyof T]?: Exclude<T[K], null> };
-}
-
-function buildSnowflakePrivateKeyConnection(
-   metadata: EnvironmentConnectionMetadata,
-): SnowflakeConnection {
-   const name = metadata.apiConnection.name!;
-   const snowflake = metadata.apiConnection.snowflakeConnection;
-   if (!snowflake?.privateKey) {
-      throw new Error(
-         `Snowflake private key is required for connection ${name}`,
-      );
-   }
-   if (!snowflake.account) {
-      throw new Error(`Snowflake account is required for connection ${name}`);
-   }
-   if (!snowflake.username) {
-      throw new Error(`Snowflake username is required for connection ${name}`);
-   }
-   if (!snowflake.warehouse) {
-      throw new Error(`Snowflake warehouse is required for connection ${name}`);
-   }
-
-   return new SnowflakeConnection(name, {
-      connOptions: {
-         account: snowflake.account,
-         username: snowflake.username,
-         privateKey: normalizeSnowflakePrivateKey(snowflake.privateKey),
-         authenticator: "SNOWFLAKE_JWT",
-         warehouse: snowflake.warehouse,
-         ...removeUndefined({
-            password: snowflake.password,
-            privateKeyPass: snowflake.privateKeyPass,
-            database: snowflake.database,
-            schema: snowflake.schema,
-            role: snowflake.role,
-         }),
-      },
-      timeoutMs: snowflake.responseTimeoutMilliseconds,
-      // Same pool sizing as the registry path; server-owned, not in the API.
-      poolOptions: buildPoolOptions({ poolMin: 1, poolMax: 20 }),
-   });
 }
 
 // TLS mode for a proxied postgres connection, as pg connectionString query
@@ -3292,7 +1317,7 @@ function statementTimeoutSetupSQL(
    return ms === undefined ? undefined : `SET statement_timeout = ${ms}`;
 }
 
-function buildDuckLakeConnection(
+export function buildDuckLakeConnection(
    metadata: EnvironmentConnectionMetadata,
    entry: CoreConnectionEntry,
 ): DuckLakeConnection {
@@ -3339,7 +1364,7 @@ function getMetadataForLookup(
  * application would risk divergence and a silent live-serving fallback. The
  * value is an opaque token: never re-hashed, logged or parsed.
  */
-function applyConnectionFingerprint(
+export function applyConnectionFingerprint(
    connection: Connection,
    metadata: EnvironmentConnectionMetadata | undefined,
 ): Connection {
@@ -3356,14 +1381,73 @@ function isDuckDBConnection(
    return connection instanceof DuckDBConnection;
 }
 
+/**
+ * Per locked instance, the DuckLake catalogs checked attached on it. A lock
+ * never lifts and nothing can ATTACH or DETACH through Publisher after it, so
+ * a check holds until a read finds the catalog missing
+ * ({@link forgetDuckLakeCatalogChecked}); a lookup does not query the
+ * instance each time.
+ */
+const checkedDuckLakeCatalogs = new WeakMap<object, Set<string>>();
+
+/** Per instance, the catalogs found missing from it, logged once. */
+const missingDuckLakeCatalogs = new WeakMap<object, Set<string>>();
+
+/** The instances whose loss was reported to `onDuckLakeReopened`, once each. */
+const reportedDuckLakeInstances = new WeakSet<object>();
+
+function duckLakeInstanceKey(connection: DuckDBConnection): object {
+   return duckDBInstanceOf(connection) ?? connection;
+}
+
+function duckLakeCatalogChecked(
+   connection: DuckDBConnection,
+   name: string,
+): boolean {
+   return (
+      checkedDuckLakeCatalogs.get(duckLakeInstanceKey(connection))?.has(name) ??
+      false
+   );
+}
+
+function markDuckLakeCatalogChecked(
+   connection: DuckDBConnection,
+   name: string,
+): void {
+   const key = duckLakeInstanceKey(connection);
+   let names = checkedDuckLakeCatalogs.get(key);
+   if (!names) {
+      names = new Set();
+      checkedDuckLakeCatalogs.set(key, names);
+   }
+   names.add(name);
+}
+
+function forgetDuckLakeCatalogChecked(
+   connection: DuckDBConnection,
+   name: string,
+): void {
+   checkedDuckLakeCatalogs.get(duckLakeInstanceKey(connection))?.delete(name);
+}
+
+/** Record `name` missing on `connection`'s instance; true the first time. */
+function noteDuckLakeCatalogMissing(
+   connection: DuckDBConnection,
+   name: string,
+): boolean {
+   const key = duckLakeInstanceKey(connection);
+   let names = missingDuckLakeCatalogs.get(key);
+   if (!names) {
+      names = new Set();
+      missingDuckLakeCatalogs.set(key, names);
+   }
+   if (names.has(name)) return false;
+   names.add(name);
+   return true;
+}
+
 /** Managed DuckLake connections that set their search path on a locked instance. */
 const managedSearchPathSet = new WeakSet<Connection>();
-
-/** Each instance's storage-secret renewer, for connections that join it. */
-const instanceSecretRenewers = new WeakMap<
-   object,
-   (target: DuckDBConnection) => Promise<void>
->();
 
 /** Environment config builds so far, numbering each one's generation. */
 let environmentConfigGenerations = 0;
@@ -3375,6 +1459,10 @@ let environmentConfigGenerations = 0;
  *   prior attach state. Only the DuckLake branch reads it.
  * @param options.origin "storage-destination" for the operator's own storage
  *   destinations, which the S3 credential-chain policy treats differently.
+ * @param options.onDuckLakeReopened Called when a DuckLake connection was
+ *   found without its catalog on its locked instance and closed so the next
+ *   lookup reopens it: anything memoized against the closed connection (a
+ *   compiled serve shape) must be dropped.
  */
 export function buildEnvironmentMalloyConfig(
    connections: ApiConnection[] = [],
@@ -3383,7 +1471,12 @@ export function buildEnvironmentMalloyConfig(
    {
       origin = "connection",
       openProxy: openTunnel = openProxy,
-   }: { origin?: ConnectionOrigin; openProxy?: typeof openProxy } = {},
+      onDuckLakeReopened,
+   }: {
+      origin?: ConnectionOrigin;
+      openProxy?: typeof openProxy;
+      onDuckLakeReopened?: (name: string) => void;
+   } = {},
 ): EnvironmentMalloyConfig {
    const assembled = assembleEnvironmentConnections(
       connections,
@@ -3396,7 +1489,10 @@ export function buildEnvironmentMalloyConfig(
    // Promises are cached so concurrent lookups share one build and never leak a
    // losing instance's pool. One cache per branch keeps the concrete subtype.
    const duckLakeCache = new Map<string, Promise<DuckLakeConnection>>();
-   const snowflakeJwtCache = new Map<string, Promise<SnowflakeConnection>>();
+   const snowflakeConnectionCache = new Map<
+      string,
+      Promise<SnowflakeConnection>
+   >();
    const azureDuckDBCache = new Map<string, Promise<AzureDuckDBConnection>>();
    const proxyConnectionCache = new Map<
       string,
@@ -3408,6 +1504,18 @@ export function buildEnvironmentMalloyConfig(
    >();
    const proxyEndpoints = new Map<string, ProxyEndpoint>();
    const attachPromises = new WeakMap<Connection, Promise<void>>();
+   // One DuckLake ATTACH per connection object, shared by concurrent lookups.
+   const duckLakeAttaches = new WeakMap<Connection, Promise<void>>();
+   // DuckLake connections closed because their instance lost the catalog: a
+   // lookup holding one looks up again rather than return it.
+   const reopenedDuckLakes = new WeakSet<Connection>();
+   // Each reopened connection's close, which a lookup going on to the fresh
+   // instance waits for: opened sooner, the fresh connection would join the
+   // old instance while the closing connection still holds it.
+   const duckLakeClosing = new WeakMap<Connection, Promise<void>>();
+   // The connection each cached DuckLake promise resolves to, read
+   // synchronously so a reopen drops it before any other lookup runs.
+   const duckLakeCurrent = new Map<string, DuckLakeConnection>();
    const closePromises = new WeakMap<Connection, Promise<void>>();
    // An evicted tunnel has left the caches, so release finds its cleanup here.
    const evictions = new Set<Promise<void>>();
@@ -3469,6 +1577,235 @@ export function buildEnvironmentMalloyConfig(
       await attachPromise;
    }
 
+   /**
+    * Attach a DuckLake connection's catalog, once per connection object:
+    * concurrent first lookups share one attach. Two attaches of one catalog
+    * racing the lock lost it: the first lookup locked the instance between
+    * the second's ATTACH and its storage secret, the refused secret's cleanup
+    * detached the catalog, and the locked instance could never attach it
+    * again. The attach also runs exclusive of any lockdown of its instance
+    * (runExclusiveOnDuckDBInstance), so a lock never lands inside it.
+    */
+   function attachDuckLakeOnce(
+      connection: DuckLakeConnection,
+      name: string,
+      metadata: EnvironmentConnectionMetadata,
+   ): Promise<void> {
+      let attach = duckLakeAttaches.get(connection);
+      if (!attach) {
+         attach = (async () => {
+            // A locked instance holds this exact catalog setup (its key
+            // digests the DuckLake config, duckdb_lockdown.ts), and no ATTACH
+            // could run on it: an edit opens a fresh instance.
+            if (isConfigurationFrozen(connection)) return;
+            // Also opens the instance, so the exclusive step below is keyed
+            // on it rather than on this connection alone.
+            const attached = await isDatabaseAttached(connection, name);
+            if (attached && !isUpdateConnectionRequest) return;
+            await runExclusiveOnDuckDBInstance(connection, async () => {
+               if (isConfigurationFrozen(connection)) return;
+               if (
+                  !isUpdateConnectionRequest &&
+                  (await isDatabaseAttached(connection, name))
+               ) {
+                  return;
+               }
+               await attachDuckLake(
+                  connection,
+                  name,
+                  metadata.apiConnection.ducklakeConnection!,
+                  {
+                     origin,
+                     managed: metadata.apiConnection.managed === true,
+                  },
+               );
+               if (metadata.apiConnection.managed === true) {
+                  await setManagedSearchPath(connection, name);
+               }
+            });
+         })();
+         // Evicted on failure, so a transient one is retried by the next
+         // lookup. Every lookup that joined this attach fails with it (one
+         // transient failure fails each concurrent first lookup, once); that
+         // is the price of never running two attaches at once.
+         attach.catch((error: unknown) => {
+            if (duckLakeAttaches.get(connection) === attach) {
+               duckLakeAttaches.delete(connection);
+            }
+            logger.warn(
+               "DuckLake attach failed; the lookups sharing it fail, and the next lookup attaches again",
+               {
+                  code: DUCKLAKE_ATTACH_FAILED,
+                  connection: name,
+                  origin,
+                  instance: duckDBInstanceId(connection),
+                  error: redactPgSecrets(errMessage(error)),
+               },
+            );
+         });
+         duckLakeAttaches.set(connection, attach);
+      }
+      return attach;
+   }
+
+   /**
+    * A lookup of a DuckLake connection on a locked instance: check the catalog
+    * is still there (once per instance, see {@link checkedDuckLakeCatalogs}),
+    * and join the instance's setup on first use.
+    *
+    * A locked instance cannot ATTACH, so a catalog missing from it is never
+    * coming back on that instance. Once this connection is the instance's only
+    * holder, it is closed and dropped from the cache, so the next lookup opens
+    * a fresh instance and attaches. While another holder (a draining
+    * generation's connection) keeps the instance open, a reopen would only
+    * join it again, so the connection is kept and this lookup fails with
+    * {@link DuckLakeCatalogUnavailableError}, which a routed query answers
+    * live. A lookup that reopens looks up again onto the fresh instance
+    * ({@link resolveDuckLake}), so it succeeds. The loss is logged once per
+    * instance, and `onDuckLakeReopened` is called once per instance, when it
+    * is reopened.
+    */
+   async function verifyLockedDuckLake(
+      connection: DuckLakeConnection,
+      name: string,
+      metadata: EnvironmentConnectionMetadata,
+   ): Promise<void> {
+      if (!duckLakeCatalogChecked(connection, name)) {
+         const attached = await aliasAttachedOnInstance(connection, name);
+         if (attached === false) {
+            // Throws while another holder keeps the instance; otherwise the
+            // connection is reopened, and the caller looks up again.
+            catalogMissing(connection, name);
+            return;
+         }
+         // A check that failed says nothing, so it is not cached.
+         if (attached === true) markDuckLakeCatalogChecked(connection, name);
+      }
+      if (managedSearchPathSet.has(connection)) return;
+      managedSearchPathSet.add(connection);
+      // A connection joining the locked instance renews the instance's
+      // storage secret as the attaching one did.
+      const renew = instanceSecretRenewers.get(
+         duckDBInstanceOf(connection) ?? {},
+      );
+      if (renew) {
+         connection.setStorageSecretRenewer(() => renew(connection));
+      }
+      // The search path is per session, and allowed after the lock: a joining
+      // connection sets its own.
+      if (metadata.apiConnection.managed === true) {
+         await setManagedSearchPath(connection, name);
+      }
+   }
+
+   /**
+    * {@link verifyLockedDuckLake} found `name` missing: report it, then throw
+    * while another holder keeps the instance, or reopen the connection and
+    * return, so the caller looks up again ({@link resolveDuckLake}), as it
+    * does for a connection a concurrent lookup already reopened.
+    */
+   function catalogMissing(connection: DuckLakeConnection, name: string): void {
+      if (reopenedDuckLakes.has(connection)) return;
+      const instanceKey = duckLakeInstanceKey(connection);
+      const first = noteDuckLakeCatalogMissing(connection, name);
+      const context = {
+         code: DUCKLAKE_CATALOG_UNAVAILABLE,
+         connection: name,
+         origin,
+         instance: duckDBInstanceId(connection),
+      };
+      if (duckDBInstanceHasOtherHolders(connection)) {
+         if (first) {
+            logger.error(
+               "DuckLake catalog is missing from its locked DuckDB instance; the connection reopens once the instance's other holders are released",
+               context,
+            );
+         }
+         throw new DuckLakeCatalogUnavailableError(name);
+      }
+      if (first) {
+         logger.error(
+            "DuckLake catalog is missing from its locked DuckDB instance; reopening the connection",
+            context,
+         );
+      } else {
+         logger.info(
+            "Reopening a DuckLake connection whose instance lost its catalog, now that it is the instance's only holder",
+            context,
+         );
+      }
+      if (duckLakeCurrent.get(name) === connection) {
+         duckLakeCache.delete(name);
+         duckLakeCurrent.delete(name);
+      }
+      duckLakeAttaches.delete(connection);
+      reopenedDuckLakes.add(connection);
+      // Released here, so the generation's release has nothing left for it.
+      disownDuckDBConnection(malloyConfig, connection);
+      const eviction = closeOnce(connection)
+         .then(() => hardCloseWhenIdle(connection))
+         .catch((error) =>
+            logger.warn(
+               "Failed to close a DuckLake connection missing its catalog",
+               { connection: name, error: errMessage(error) },
+            ),
+         )
+         .then(() => {
+            evictions.delete(eviction);
+         });
+      evictions.add(eviction);
+      duckLakeClosing.set(connection, eviction);
+      if (!reportedDuckLakeInstances.has(instanceKey)) {
+         reportedDuckLakeInstances.add(instanceKey);
+         onDuckLakeReopened?.(name);
+      }
+   }
+
+   /**
+    * The DuckLake connection for `name`, attached, and checked when its
+    * instance is locked. A lookup whose connection was reopened, by its own
+    * check or a concurrent lookup's (its attach or check failing on the
+    * closed connection, or passing just before the close), looks up once
+    * more, onto the fresh instance, rather than fail or return a closed
+    * connection.
+    */
+   async function resolveDuckLake(
+      name: string,
+      metadata: EnvironmentConnectionMetadata,
+   ): Promise<DuckLakeConnection> {
+      for (let attempt = 0; ; attempt++) {
+         let connectionPromise = duckLakeCache.get(name);
+         if (!connectionPromise) {
+            const entry = assembled.pojo.connections[name];
+            const built = buildDuckLakeConnection(metadata, entry);
+            ownDuckDBConnection(malloyConfig, built);
+            connectionPromise = Promise.resolve(built);
+            duckLakeCache.set(name, connectionPromise);
+            duckLakeCurrent.set(name, built);
+         }
+         const connection = await connectionPromise;
+         try {
+            await attachDuckLakeOnce(connection, name, metadata);
+            if (isConfigurationFrozen(connection)) {
+               await verifyLockedDuckLake(connection, name, metadata);
+            }
+         } catch (error) {
+            if (
+               attempt === 0 &&
+               reopenedDuckLakes.has(connection) &&
+               !(error instanceof DuckLakeCatalogUnavailableError)
+            ) {
+               await duckLakeClosing.get(connection);
+               continue;
+            }
+            throw error;
+         }
+         if (!reopenedDuckLakes.has(connection)) return connection;
+         if (attempt > 0) throw new DuckLakeCatalogUnavailableError(name);
+         await duckLakeClosing.get(connection);
+      }
+   }
+
    malloyConfig.wrapConnections(
       (base: LookupConnection<Connection>): LookupConnection<Connection> => {
          const resolveConnection = async (
@@ -3476,55 +1813,7 @@ export function buildEnvironmentMalloyConfig(
             metadata: EnvironmentConnectionMetadata | undefined,
          ): Promise<Connection> => {
             if (metadata?.isDuckLake) {
-               let connectionPromise = duckLakeCache.get(name!);
-               if (!connectionPromise) {
-                  const entry = assembled.pojo.connections[name!];
-                  const built = buildDuckLakeConnection(metadata, entry);
-                  ownDuckDBConnection(malloyConfig, built);
-                  connectionPromise = Promise.resolve(built);
-                  duckLakeCache.set(name!, connectionPromise);
-               }
-               const connection = await connectionPromise;
-               // A locked instance holds this exact catalog setup (its key
-               // digests the DuckLake config, duckdb_lockdown.ts), and no
-               // ATTACH could run on it: an edit opens a fresh instance.
-               const frozen = isConfigurationFrozen(connection);
-               if (
-                  !frozen &&
-                  (isUpdateConnectionRequest ||
-                     !(await isDatabaseAttached(connection, name!)))
-               ) {
-                  await attachDuckLake(
-                     connection,
-                     name!,
-                     metadata.apiConnection.ducklakeConnection!,
-                     {
-                        origin,
-                        managed: metadata.apiConnection.managed === true,
-                     },
-                  );
-                  if (metadata.apiConnection.managed === true) {
-                     await setManagedSearchPath(connection, name!);
-                  }
-               } else if (frozen && !managedSearchPathSet.has(connection)) {
-                  managedSearchPathSet.add(connection);
-                  // A connection joining the locked instance renews the
-                  // instance's storage secret as the attaching one did.
-                  const renew = instanceSecretRenewers.get(
-                     duckDBInstanceOf(connection) ?? {},
-                  );
-                  if (renew) {
-                     connection.setStorageSecretRenewer(() =>
-                        renew(connection),
-                     );
-                  }
-                  // The search path is per session, and allowed after the
-                  // lock: a joining connection sets its own.
-                  if (metadata.apiConnection.managed === true) {
-                     await setManagedSearchPath(connection, name!);
-                  }
-               }
-               return connection;
+               return resolveDuckLake(name!, metadata);
             }
 
             if (metadata?.proxy) {
@@ -3607,13 +1896,18 @@ export function buildEnvironmentMalloyConfig(
                return connectionPromise;
             }
 
-            if (metadata?.hasSnowflakePrivateKey) {
-               let connectionPromise = snowflakeJwtCache.get(name!);
+            // Every Snowflake connection, password or key pair, so each reads
+            // its rows the same way (snowflake_connection.ts).
+            if (metadata?.apiConnection.type === "snowflake") {
+               let connectionPromise = snowflakeConnectionCache.get(name!);
                if (!connectionPromise) {
                   connectionPromise = Promise.resolve(
-                     buildSnowflakePrivateKeyConnection(metadata),
+                     buildSnowflakeConnection(
+                        name!,
+                        metadata.apiConnection.snowflakeConnection,
+                     ),
                   );
-                  snowflakeJwtCache.set(name!, connectionPromise);
+                  snowflakeConnectionCache.set(name!, connectionPromise);
                }
                return connectionPromise;
             }
@@ -3659,6 +1953,9 @@ export function buildEnvironmentMalloyConfig(
             // This generation's lookup created it, so releasing the generation
             // hard-closes it.
             ownDuckDBConnection(malloyConfig, connection);
+            if (metadata?.apiConnection.type === "bigquery") {
+               guardBigQueryTruncation(connection);
+            }
             if (metadata) {
                await attachOnce(connection, metadata);
             }
@@ -3728,9 +2025,16 @@ export function buildEnvironmentMalloyConfig(
                      });
                   }
                }
-               // Its configured type, which a `storage=` build's eligibility
-               // reads (a dialect does not tell DuckDB from DuckLake).
-               recordConnectionType(connection, metadata?.apiConnection.type);
+               // Its configured type, and whether it is `managed`, which a
+               // build's eligibility reads (a dialect does not tell DuckDB
+               // from DuckLake, nor a managed catalog from another).
+               recordConnectionType(connection, metadata?.apiConnection.type, {
+                  managed: metadata?.apiConnection.managed === true,
+                  schemas: managedSchemas(
+                     metadata?.apiConnection.ducklakeConnection
+                        ?.readableSchemas,
+                  ),
+               });
                return applyConnectionFingerprint(connection, metadata);
             },
          };
@@ -3743,7 +2047,7 @@ export function buildEnvironmentMalloyConfig(
       releaseConnections: async () => {
          const wrapperPromises: Promise<Connection>[] = [
             ...duckLakeCache.values(),
-            ...snowflakeJwtCache.values(),
+            ...snowflakeConnectionCache.values(),
             ...azureDuckDBCache.values(),
             ...proxyConnectionCache.values(),
             ...postgresConnectionCache.values(),
@@ -3766,7 +2070,8 @@ export function buildEnvironmentMalloyConfig(
             [...proxyEndpoints.values()].map((ep) => ep.close()),
          );
          duckLakeCache.clear();
-         snowflakeJwtCache.clear();
+         duckLakeCurrent.clear();
+         snowflakeConnectionCache.clear();
          azureDuckDBCache.clear();
          proxyConnectionCache.clear();
          postgresConnectionCache.clear();
@@ -3877,37 +2182,16 @@ async function testDuckDBConnection(
       }
 
       try {
+         const attached = connectionDialectOf(attachedDb.type)?.attached;
+         if (attached) {
+            await attached.test(duckdbConnection, attachedDb.name);
+            continue;
+         }
          switch (attachedDb.type) {
-            case "postgres": {
-               await duckdbConnection.runSQL(
-                  `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${attachedDb.name}' LIMIT 1`,
-               );
-               logger.info(
-                  `Attached Postgres database test passed: ${attachedDb.name}`,
-               );
-               break;
-            }
-            case "bigquery": {
-               await duckdbConnection.runSQL(
-                  `SELECT database_name FROM duckdb_databases() WHERE database_name = '${attachedDb.name}'`,
-               );
-               logger.info(
-                  `Attached BigQuery database test passed: ${attachedDb.name}`,
-               );
-               break;
-            }
-            case "snowflake": {
-               await duckdbConnection.runSQL(
-                  `SELECT database_name FROM duckdb_databases() WHERE database_name = '${attachedDb.name}'`,
-               );
-               logger.info(
-                  `Attached Snowflake database test passed: ${attachedDb.name}`,
-               );
-               break;
-            }
             case "gcs": {
-               await duckdbConnection.runSQL(
-                  `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${attachedDb.name}%' LIMIT 1`,
+               await runInternalSQL(
+                  duckdbConnection,
+                  `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${escapeSQL(attachedDb.name)}%' LIMIT 1`,
                );
                logger.info(
                   `Cloud storage credentials test passed: ${attachedDb.name}`,
@@ -3915,8 +2199,9 @@ async function testDuckDBConnection(
                break;
             }
             case "s3": {
-               await duckdbConnection.runSQL(
-                  `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${attachedDb.name}%' LIMIT 1`,
+               await runInternalSQL(
+                  duckdbConnection,
+                  `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${escapeSQL(attachedDb.name)}%' LIMIT 1`,
                );
                logger.info(
                   `Cloud storage credentials test passed: ${attachedDb.name}`,
@@ -3936,8 +2221,9 @@ async function testDuckDBConnection(
                      `Azure SAS token URL present for: ${attachedDb.name}`,
                   );
                } else {
-                  await duckdbConnection.runSQL(
-                     `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${attachedDb.name}%' LIMIT 1`,
+                  await runInternalSQL(
+                     duckdbConnection,
+                     `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${escapeSQL(attachedDb.name)}%' LIMIT 1`,
                   );
                   logger.info(
                      `Azure SPN credentials test passed: ${attachedDb.name}`,

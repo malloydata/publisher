@@ -54,7 +54,6 @@ import {
 } from "../package_load/package_load_pool";
 import {
    getDimensionValueSettings,
-   getEgressPreset,
    loadedRetrievalConfig,
    setRetrievalConfig,
    type RetrievalLlmConfig,
@@ -116,6 +115,15 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
 
    "admin.port": () => settings.get("admin.port") ?? null,
    "admin.host": () => settings.get("admin.host"),
+   "admin.requestTimeoutMs": () => settings.get("admin.requestTimeoutMs"),
+   "admin.memoryLimit": () => {
+      assertDuckDBResourceConfig();
+      return settings.get("admin.memoryLimit");
+   },
+   "admin.maxTempDirectorySize": () => {
+      assertDuckDBResourceConfig();
+      return settings.get("admin.maxTempDirectorySize");
+   },
    "admin.catalogDatabase": () => catalogAdminConfig()?.catalogDatabase ?? null,
    "admin.storage.provider": adminStorage,
    "admin.storage.keyId": adminStorage,
@@ -237,10 +245,13 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
       getRetrievalConfig(context.serverRoot)?.embedding?.queryPrefix ?? "",
    "retrieval.embedding.documentPrefix": (context) =>
       getRetrievalConfig(context.serverRoot)?.embedding?.documentPrefix ?? "",
+   // Retired: the one effect left is that a set preset is ignored, with a warning.
    "retrieval.egress.preset": (context) =>
-      inForce(context, () => getEgressPreset()),
+      inForce(context, () => loadedRetrievalConfig()?.egressIgnored === true),
    "retrieval.dimensionValues.enabled": (context) =>
       inForce(context, () => getDimensionValueSettings().enabled),
+   "retrieval.dimensionValues.givens": (context) =>
+      inForce(context, () => getDimensionValueSettings().givens),
 };
 
 /** The `retrieval.llm` block startup assembles and validates. */

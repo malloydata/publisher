@@ -17,6 +17,7 @@
  */
 
 import {
+   FRESHNESS_WINDOW_PROBLEM,
    freshnessWindowSeconds,
    isFreshnessFallback,
 } from "./materialization/domain/freshness";
@@ -248,6 +249,7 @@ const PERSIST_KEYS: ReadonlySet<string> = new Set([
    "refresh",
    "watermark",
    "merge_key",
+   "lookback",
    "freshness",
    "queryMetadata",
 ]);
@@ -257,7 +259,8 @@ const FRESHNESS_KEYS: ReadonlySet<string> = new Set(["window", "fallback"]);
 
 /**
  * Why a `freshness` group's values cannot be read, or undefined: a window
- * that is not a whole number and a unit (`s`, `m`, `h`, `d`, `w`), or a
+ * that is not a whole number greater than zero and a unit (`s`, `m`, `h`,
+ * `d`, `w`), or a
  * fallback other than `live`, `stale_ok`, `fail`. The one grammar every
  * mechanism reads (materialization/domain/freshness.ts).
  */
@@ -271,7 +274,7 @@ export function freshnessValueProblem(group: {
          window === undefined ||
          freshnessWindowSeconds(window) === undefined
       ) {
-         return 'has a freshness.window= that is not a whole number and a unit (s, m, h, d or w), such as freshness.window="24h"';
+         return FRESHNESS_WINDOW_PROBLEM;
       }
    }
    if (group.has("fallback") && !isFreshnessFallback(group.text("fallback"))) {
@@ -298,6 +301,7 @@ export const MATERIALIZE_KEYS: ReadonlySet<string> = new Set([
    "refresh",
    "watermark",
    "merge_key",
+   "lookback",
    "freshness",
    "queryMetadata",
    "inline",

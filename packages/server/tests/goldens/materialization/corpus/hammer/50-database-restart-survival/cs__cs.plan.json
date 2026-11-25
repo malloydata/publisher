@@ -70,6 +70,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cs_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "13ac021bf3329e7ff66c610d268277c80237b282ffa80e41aa6209944d96ea66",
         "sourceID": "daily@<hammer>/cs/cs.malloy",

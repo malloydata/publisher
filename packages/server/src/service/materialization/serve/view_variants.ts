@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Persisted-view variants (P14): the router's view leg for `#@ persist` on a
+ * Persisted-view variants: the router's view leg for `#@ persist` on a
  * view.
  *
  * A persisted view's table holds the view's result, so it answers a query
@@ -15,7 +15,7 @@
  * - `run: ops -> by_carrier -> { … }`: a query that starts from the view,
  *   which only its text shows; its later stages read the stored result;
  * - never `ops -> by_carrier + { … }` (a refinement changes the view's own
- *   query: skipped `MISSING_FIELD`), `ops -> { nest: by_carrier }` or a
+ *   query: skipped `SHAPE_MISMATCH`), `ops -> { nest: by_carrier }` or a
  *   hand-written look-alike (neither reads as a call, so the leg does not
  *   apply), nor a call on another source, an extension or a caller's own
  *   redefinition (the run target's `sourceID` must be the view's source's).
@@ -38,13 +38,14 @@
  *
  * Route, then govern: the source's row-level gates are written on the
  * variant's source, so `govern()` grafts and proves them on the variant as on
- * live (R3). Only a view whose gate fields it groups by is ever built
- * (question 3, `persisted_view_compile.ts`), and a gated entry point is tried
+ * live. Only a view whose gate fields it groups by is ever built
+ * (`persisted_view_compile.ts`), and a gated entry point is tried
  * only with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on.
  *
  * Behind `materialize.enabled`.
  */
 
+import { VariantCompileCache } from "./variant_compile_cache";
 import type {
    MalloyConfig,
    ModelDef,
@@ -86,6 +87,8 @@ import {
    type Binding,
    heldReadBinding,
    isDatabase,
+   type KeyedTable,
+   manifestUnderCompilerKey,
    type Pinned,
    storageLookupOf,
 } from "../domain/binding";
@@ -133,7 +136,27 @@ export interface ViewAnswer {
    virtualMap?: VirtualMap;
    /** For a `storage=` view: its binding. */
    binding?: Binding;
-   /** Where `govern()` grafts the source's gates on the variant (R3). */
+   /**
+    * For a database view: its table, for the check that a later stage's
+    * filter compares its columns as live compares them
+    * (`admission_lookup.ts`): its binding, or its path as the manifest
+    * substitutes it.
+    */
+   databaseTableRead?: {
+      tier: "database";
+      tablePath?: string;
+      destinationName?: string;
+      /** Its content address, which its column contract is kept under. */
+      virtualHandle?: string;
+      /** Stored as of its build: see `Binding.asOfBuild`. */
+      asOfBuild?: true;
+   };
+   /**
+    * For a database view whose address is not Malloy's key for it: the run
+    * that answers reads its entry under that key too.
+    */
+   keyedTable?: KeyedTable;
+   /** Where `govern()` grafts the source's gates on the variant. */
    graftScope: GraftScope;
 }
 
@@ -146,6 +169,18 @@ export interface ViewTable {
    built: boolean;
    /** Bound, but past its freshness window. */
    stale: boolean;
+   /**
+    * A storage table bound, but no storage destination is read
+    * (`PERSIST_STORAGE_MODE` write-only or off), and no database table is
+    * bound beside it: the serve verdict's `storage_mode`.
+    */
+   storageNotServed?: true;
+   /**
+    * A database table read because the storage mode reads no destination,
+    * while a storage table is bound beside it: the path report names that
+    * one `NOT_SERVED` (`storage_mode`).
+    */
+   storageTwinNotServed?: true;
    dataAsOf?: string;
 }
 
@@ -162,10 +197,18 @@ export interface ResolvedTable extends ViewTable {
     * declines while one is.
     */
    leftOut?: readonly string[];
+   /**
+    * A database table stored as of its build: its manifest entry in the
+    * pinned snapshot says so (`FreshnessAwareManifestEntry.asOfBuild`), so
+    * read admission declines an access decision over it.
+    */
+   asOfBuild?: true;
 }
 
 export interface CompiledVariant {
    materializer?: ModelMaterializer;
+   /** This compile's own graft cache scope (`VariantCompileCache`). */
+   cacheScope?: string;
    modelDef?: ModelDef;
    runtime?: GraftRuntime;
    error?: string;
@@ -177,11 +220,8 @@ export interface CompiledVariant {
 export class PersistedViewServe {
    private packagePath?: string;
    private packageConfig?: ModelConnectionInput;
-   /** Bumped when the context, the destinations or the bindings change: a graft cache scope. */
-   private generation = 0;
-   private compiled = new Map<string, Promise<CompiledVariant>>();
-   /** The snapshot bindings {@link compiled} was compiled over. */
-   private compiledFor: readonly Binding[] | undefined;
+   /** The compiled variants, by key: a graft cache scope per generation. */
+   private readonly compiled = new VariantCompileCache<CompiledVariant>();
    private planMemo?: { modelDef: unknown; plans: PersistedViewPlan[] };
 
    constructor(private readonly host: ViewVariantHost) {}
@@ -193,15 +233,7 @@ export class PersistedViewServe {
    }
 
    invalidate(): void {
-      this.generation++;
-      this.compiled.clear();
-   }
-
-   /** Start a new compile cache when the snapshot's bindings changed. */
-   private compiledOver(pinned: Pinned): void {
-      if (this.compiledFor === pinned.snapshot.bindings) return;
-      if (this.compiledFor !== undefined) this.invalidate();
-      this.compiledFor = pinned.snapshot.bindings;
+      this.compiled.invalidate();
    }
 
    /** Every persisted view a source this model can see declares. */
@@ -263,6 +295,7 @@ export class PersistedViewServe {
          binding,
          databaseTable,
          leftOut,
+         asOfBuild,
          ...table
       } = this.tableOf(called.plan, pinned, pinned.compilerManifest);
       void virtualMap;
@@ -270,6 +303,7 @@ export class PersistedViewServe {
       void binding;
       void databaseTable;
       void leftOut;
+      void asOfBuild;
       return table;
    }
 
@@ -287,7 +321,7 @@ export class PersistedViewServe {
       /** The pinned build manifest without the rollups' entries. */
       buildManifest: BuildManifest | undefined;
    }): Promise<ViewAnswer> {
-      this.compiledOver(args.pinned);
+      this.compiled.over(args.pinned);
       const called = this.calledView(args.queryString);
       if (!called) {
          throw new LegDecline("view_shape_mismatch");
@@ -343,6 +377,9 @@ export class PersistedViewServe {
       if (!table.built) {
          throw new LegDecline("view_not_built");
       }
+      if (table.storageNotServed) {
+         throw new LegDecline("view_storage_mode");
+      }
       if (table.stale || (!table.virtualMap && !table.databaseTable)) {
          throw new LegDecline("view_stale");
       }
@@ -366,7 +403,7 @@ export class PersistedViewServe {
          table,
          modelPath: this.host.modelPath(),
          subject: `${plan.sourceName} -> ${plan.viewName}`,
-         cacheScope: `persisted_view\u0000${this.generation}\u0000${plan.buildSourceID}\u0000${localName}`,
+         cacheScope: variant.cacheScope,
          compilerKey: this.compilerKeyOf(plan.buildSourceID),
       });
    }
@@ -388,12 +425,24 @@ export class PersistedViewServe {
       const planned = this.host.catalog()?.planned.get(plan.buildSourceID);
       const tableId = planned?.sourceEntityId;
       const withId = tableId !== undefined ? { tableId } : {};
-      const lookup = storageLookupOf(
+      const bound =
+         tableId !== undefined ? pinned.snapshot.entries[tableId] : undefined;
+      const storageServes = !!this.host.serveDestinationConfig();
+      const stored = storageLookupOf(
          pinned,
          plan.buildSourceID,
          isPersistedQuerySourceID(plan.buildSourceID) ? "query" : "view",
          plan.storage !== undefined,
       );
+      // No storage destination is read (PERSIST_STORAGE_MODE write-only or
+      // off): a database table bound beside the storage one answers, as
+      // `on`'s rules would with the storage tier removed.
+      const lookup = !storageServes && bound ? undefined : stored;
+      // The storage table read in its place, named by the path report.
+      const databaseId =
+         !lookup && stored && stored.state !== "not_built"
+            ? { ...withId, storageTwinNotServed: true as const }
+            : withId;
       if (lookup) {
          if (lookup.state === "not_built") {
             return { ...withId, tier: "storage", built: false, stale: false };
@@ -402,7 +451,18 @@ export class PersistedViewServe {
          const dataAsOf = binding.freshAsOf
             ? { dataAsOf: binding.freshAsOf }
             : {};
-         if (lookup.state === "stale" || !this.host.serveDestinationConfig()) {
+         if (!storageServes) {
+            // Not read whatever its freshness: the storage mode decides.
+            return {
+               ...withId,
+               ...dataAsOf,
+               tier: "storage",
+               built: true,
+               stale: false,
+               storageNotServed: true,
+            };
+         }
+         if (lookup.state === "stale") {
             return {
                ...withId,
                ...dataAsOf,
@@ -431,12 +491,11 @@ export class PersistedViewServe {
             ]),
          };
       }
-      const bound =
-         tableId !== undefined ? pinned.snapshot.entries[tableId] : undefined;
       if (!bound || tableId === undefined) {
-         return { ...withId, tier: "database", built: false, stale: false };
+         return { ...databaseId, tier: "database", built: false, stale: false };
       }
       const dataAsOf = bound.dataAsOf ? { dataAsOf: bound.dataAsOf } : {};
+      const asOfBuild = bound.asOfBuild ? { asOfBuild: true as const } : {};
       const fresh = freshManifest?.entries[tableId]?.tableName;
       const leftOut = bound.leftOutColumns?.length
          ? { leftOut: bound.leftOutColumns }
@@ -455,7 +514,7 @@ export class PersistedViewServe {
             : undefined;
       if (held) {
          return {
-            ...withId,
+            ...databaseId,
             ...dataAsOf,
             tier: "database",
             built: true,
@@ -466,20 +525,22 @@ export class PersistedViewServe {
                [held.destinationName, new Map([[tableId, held.tablePath]])],
             ]),
             ...leftOut,
+            ...asOfBuild,
          };
       }
       return fresh
          ? {
-              ...withId,
+              ...databaseId,
               ...dataAsOf,
               tier: "database",
               built: true,
               stale: false,
               databaseTable: fresh,
               ...leftOut,
+              ...asOfBuild,
            }
          : {
-              ...withId,
+              ...databaseId,
               ...dataAsOf,
               tier: "database",
               built: true,
@@ -499,14 +560,15 @@ export class PersistedViewServe {
             ? `${table.binding.destinationName}/${table.binding.virtualHandle}`
             : "database",
       ].join("\u0000");
-      let compiled = this.compiled.get(key);
-      if (!compiled) {
-         compiled = this.compile(plan, localName, table).catch((error) => ({
-            error: error instanceof Error ? error.message : String(error),
-         }));
-         this.compiled.set(key, compiled);
-      }
-      return compiled;
+      return this.compiled.get(
+         key,
+         (scope) =>
+            this.compile(plan, localName, table).then((v) => ({
+               ...v,
+               cacheScope: `persisted_view\u0000${scope}\u0000${plan.buildSourceID}\u0000${localName}`,
+            })),
+         (error) => ({ error }),
+      );
    }
 
    /**
@@ -628,7 +690,7 @@ export async function compilePersistedResultVariant(args: {
    const read = table.binding
       ? storedColumnCasts(
            // Matched by a unique case fold too, as the served copy matches:
-           // a warehouse that folded the build's quoted aliases (P3-06..09).
+           // a warehouse that folded the build's quoted aliases.
            canonicalStoredSchema(
               table.binding.schema,
               shape.columns.map((c) => c.name),
@@ -710,6 +772,9 @@ export async function compilePersistedResultVariant(args: {
    });
 }
 
+/** The failed variants {@link readStoredVariant} has warned of. */
+const warnedFailures = new WeakSet<object>();
+
 /**
  * Compile the caller's text on a compiled variant and check that its SQL
  * reads the stored table, or throw a {@link LegDecline}: the tail every
@@ -724,39 +789,44 @@ export async function readStoredVariant(args: {
    modelPath: string;
    /** What the variant answers, for the log. */
    subject: string;
-   /** The graft cache scope of this variant. */
-   cacheScope: string;
+   /**
+    * The graft cache scope of this variant: its compile's own. Undefined on
+    * a compiled variant is refused rather than read as a scope shared with
+    * every other such variant.
+    */
+   cacheScope: string | undefined;
    /** The key Malloy substitutes a database table under, when not its address. */
    compilerKey?: string;
 }): Promise<ViewAnswer> {
    const { variant, table } = args;
    // Sources folded apart on one build share Malloy's key: under it, this
-   // variant reads its own table.
-   const own =
-      args.compilerKey && table.tableId
-         ? args.buildManifest?.entries[table.tableId]
+   // variant reads its own table, and so does the run that answers.
+   const keyedTable =
+      args.compilerKey && table.tableId && !table.virtualMap
+         ? { tableId: table.tableId, compilerKey: args.compilerKey }
          : undefined;
-   const buildManifest =
-      own && args.buildManifest
-         ? {
-              ...args.buildManifest,
-              entries: {
-                 ...args.buildManifest.entries,
-                 [args.compilerKey!]: own,
-              },
-           }
-         : args.buildManifest;
+   const buildManifest = manifestUnderCompilerKey(
+      args.buildManifest,
+      keyedTable,
+   );
    if (!variant.materializer || !variant.modelDef) {
-      logger.warn("A persisted-view variant did not compile", {
-         modelPath: args.modelPath,
-         view: args.subject,
-         error: variant.error,
-      });
+      // Warned once per compiled variant: the leg asks on every query.
+      const fields = { modelPath: args.modelPath, view: args.subject };
+      if (warnedFailures.has(variant)) {
+         logger.debug("A persisted-view variant did not compile", fields);
+      } else {
+         warnedFailures.add(variant);
+         logger.warn("A persisted-view variant did not compile", fields);
+      }
       throw new LegDecline(
          "view_missing_field",
          "the query does not compile against the stored view",
       );
    }
+   if (!args.cacheScope) {
+      throw new Error("a compiled variant has no graft cache scope of its own");
+   }
+   const cacheScope = args.cacheScope;
    const runnable = variant.materializer.loadRestrictedQuery(args.queryString);
    let sql: string;
    try {
@@ -783,23 +853,49 @@ export async function readStoredVariant(args: {
       binding,
       databaseTable,
       leftOut,
+      asOfBuild,
       ...reported
    } = table;
    void quotedPath;
-   void databaseTable;
    void leftOut;
+   // An access decision over a table stored as of its build is declined at
+   // read admission, which sees the table only through what is reported here.
+   const stamp = asOfBuild ? { asOfBuild } : {};
    return {
       runnable,
       table: reported,
+      ...(keyedTable ? { keyedTable } : {}),
       ...(virtualMap ? { virtualMap } : {}),
       // A database table read through its typed source is still a database
       // table to the path report and the gate policy, as through the
       // substitution: only a `storage=` table's binding is reported.
       ...(binding && !isDatabase(binding) ? { binding } : {}),
+      ...(binding && isDatabase(binding)
+         ? {
+              databaseTableRead: {
+                 tier: "database" as const,
+                 tablePath: binding.tablePath,
+                 destinationName: binding.destinationName,
+                 virtualHandle: binding.virtualHandle,
+                 ...stamp,
+              },
+           }
+         : !virtualMap && databaseTable
+           ? {
+                databaseTableRead: {
+                   tier: "database" as const,
+                   tablePath: databaseTable,
+                   ...(table.tableId !== undefined
+                      ? { virtualHandle: table.tableId }
+                      : {}),
+                   ...stamp,
+                },
+             }
+           : {}),
       graftScope: {
          modelDef: variant.modelDef,
          materializer: variant.materializer,
-         cacheScope: args.cacheScope,
+         cacheScope,
          ...(variant.runtime ? { runtime: variant.runtime } : {}),
       },
    };

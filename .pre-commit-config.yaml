@@ -4,12 +4,3 @@ repos:
     hooks:
       - id: end-of-file-fixer
       - id: trailing-whitespace
-
-  - repo: local
-    hooks:
-      - id: python-sdk-generate
-        name: Regenerate Python SDK when api-doc.yaml changes
-        entry: bash -c 'packages/python-client/scripts/build-python-sdk.sh && git diff --exit-code'
-        language: system
-        pass_filenames: false
-        files: ^api-doc\.yaml$

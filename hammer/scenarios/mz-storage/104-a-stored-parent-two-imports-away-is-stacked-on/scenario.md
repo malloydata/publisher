@@ -100,7 +100,7 @@ Expect:
 | ------------ | --------------- | ---------- |
 | 99           | 2026-01-03      | 1000       |
 
-## Build (orchestrated, strict, pkg=tim)
+## Build (orchestrated, pkg=tim)
 
 Strict: `weekly` and `monthly`, `daily` by reference. Both stack.
 

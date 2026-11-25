@@ -1,0 +1,102 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
+# Reruns, once, the failed jobs of a run that lost a runner. `credible-ubuntu-24.04` is spot capacity,
+# so a reclaimed machine fails its job with no fault in the code; without this the run stays red until
+# someone reruns it by hand.
+#
+# A lost runner concludes the job `failure` with the annotation "The operation was canceled.", "A task
+# was canceled." or, when the shutdown interrupted a step, "Process completed with exit code 130." (the
+# step's SIGINT). A cancellation by a person or by `concurrency` concludes `cancelled`, so it never
+# matches. A timeout also ends "The operation was canceled.", after "exceeded the maximum execution
+# time", which tells it apart. The run is rerun only when every failed job lost its runner, or is a gate
+# that failed because a job it gathers did: a run with a test failure or a timeout in it stays red, so
+# neither gets a second try along with the lost job. Only a first attempt is rerun, so a run that keeps
+# failing is not retried forever.
+#
+# A pull request's run is rerun only while its commit is still the pull request's head. A newer push has
+# its own run in the same concurrency group, and rerunning the older one would cancel it.
+#
+# It calls the GitHub API and nothing else: no checkout, so the write token never meets a pull
+# request's code, a fork's included. It runs on GitHub's runners for the same reason.
+
+name: Rerun preempted jobs
+
+on:
+  workflow_run:
+    # Every workflow with a job on `credible-ubuntu-24.04`, by its `name:`, so a rename there must change
+    # here. In `skills`, a rerun of a lost tarball check also runs the publish job after it, which is the
+    # publish the release dispatch already asked for; that job checks the version is not yet on npm.
+    workflows:
+      - build
+      - App Playwright E2E
+      - Security Scan
+      - Image Scan
+      - Release sync
+      - skills
+      - hammer-nightly
+    types: [completed]
+
+permissions:
+  # `gh run rerun`.
+  actions: write
+  # The failed jobs' annotations.
+  checks: read
+  # The pull request's current head.
+  pull-requests: read
+
+jobs:
+  rerun:
+    if: >-
+      github.event.workflow_run.conclusion == 'failure'
+      && github.event.workflow_run.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Rerun the failed jobs once if a runner was lost
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          EVENT: ${{ github.event.workflow_run.event }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          failed=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs?filter=latest&per_page=100" \
+            --jq '.jobs[] | select(.conclusion == "failure") | "\(.id)\t\(.name)"')
+          lost="" other=""
+          while IFS=$'\t' read -r job name; do
+            [ -n "$job" ] || continue
+            msgs=$(gh api "repos/$REPO/check-runs/$job/annotations?per_page=100" --jq '.[].message') || msgs=""
+            if grep -q 'exceeded the maximum execution time' <<<"$msgs"; then
+              other="$other $name"
+            elif grep -qE 'The operation was canceled\.|A task was canceled\.|exit code 130\.' <<<"$msgs"; then
+              lost="$lost $name"
+            elif [ "$name" = "Cross Platform Tests / Platform: (ubuntu-latest)" ] \
+              || [ "$name" = "Playwright (packages/app)" ]; then
+              # A gate over sharded jobs (cross-platform-tests.yml's Linux gate, app-playwright.yml's
+              # roll-up), which fails when a shard does: the shards decide. By job name, so a rename
+              # there must change here.
+              :
+            else
+              other="$other $name"
+            fi
+          done <<<"$failed"
+          if [ -z "$lost" ] || [ -n "$other" ]; then
+            echo "Leaving $RUN_URL as it is. Lost a runner:${lost:- none}. Failed otherwise:${other:- none}."
+            exit 0
+          fi
+
+          if [ "$EVENT" = "pull_request" ]; then
+            current=$(gh api "repos/$REPO/pulls?state=open&head=$HEAD_OWNER:$HEAD_BRANCH" --jq '.[0].head.sha // ""')
+            if [ "$current" != "$HEAD_SHA" ]; then
+              echo "Leaving $RUN_URL as it is: its pull request has moved on (head ${current:-closed})."
+              exit 0
+            fi
+          fi
+
+          echo "::notice::Rerunning the failed jobs of $RUN_URL:$lost lost their runner."
+          gh run rerun "$RUN_ID" --repo "$REPO" --failed

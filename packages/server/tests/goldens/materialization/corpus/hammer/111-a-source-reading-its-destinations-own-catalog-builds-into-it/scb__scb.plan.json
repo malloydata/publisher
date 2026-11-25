@@ -1,3 +1,87 @@
 {
-  "compileError": "Error(s) compiling model:"
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "lake_probe",
+        "dependsOn": {
+          "by_kind@<hammer>/scb/scb.malloy": []
+        },
+        "order": [
+          "by_kind@<hammer>/scb/scb.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "by_kind@<hammer>/scb/scb.malloy": "persist"
+    },
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "by_kind@<hammer>/scb/scb.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "by_kind@<hammer>/scb/scb.malloy": "scb.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "lake_probe",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "by_kind@<hammer>/scb/scb.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "by_kind@<hammer>/scb/scb.malloy": {
+        "annotationFields": {
+          "name": "scb_by_kind",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "kind",
+            "type": "string"
+          },
+          {
+            "name": "n",
+            "type": "number"
+          }
+        ],
+        "connectionName": "lake_probe",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "scb.malloy",
+        "name": "by_kind",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "lake_probe",
+            "table": "lake_probe.main.scb_events"
+          }
+        ],
+        "refresh": null,
+        "sourceEntityId": "6114093e2543f407a900fc53c472d8a2c6f09ebf2d85a9bc7151a6ae786ec241",
+        "sourceID": "by_kind@<hammer>/scb/scb.malloy",
+        "sql": "sha256:bff04641974be4bb"
+      }
+    }
+  }
 }

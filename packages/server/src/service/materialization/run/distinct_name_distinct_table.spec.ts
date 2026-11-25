@@ -17,7 +17,7 @@ import {
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
-import { deriveBuildPlanOutcome, sharedTables } from "../plan/build_plan";
+import { derivePackagePlan, sharedTables } from "../plan/build_plan";
 import { loadGateText } from "../plan/load_gate_text";
 import type { BuildInstruction } from "../domain/types";
 import { computeSourceEntityId } from "../plan/addressing";
@@ -538,7 +538,7 @@ describe("a bare name between two schemas, over the real compiler", () => {
                const compiled = await compilePackageBuildPlan(
                   await packages.create(model),
                );
-               const outcome = deriveBuildPlanOutcome(compiled, null);
+               const outcome = derivePackagePlan(compiled, null);
                const text = loadGateText(
                   {
                      plan: outcome.plan,

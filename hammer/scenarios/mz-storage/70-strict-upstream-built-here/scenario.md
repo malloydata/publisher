@@ -61,7 +61,7 @@ source: rollup is daily -> {
 }
 ```
 
-## Build (orchestrated, strict, pkg=sbh)
+## Build (orchestrated, pkg=sbh)
 
 Both sources in one strict instruction list, upstream first. `daily` is built
 here, so `rollup` must resolve it from this build rather than refusing — and

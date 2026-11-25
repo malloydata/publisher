@@ -6,6 +6,7 @@ import type { FieldClassification } from "../../classification";
 import type { Binding } from "../domain/binding";
 import {
    materializedReadPlan,
+   ServedCopyServe,
    staleOnChain,
    storedColumnNotes,
 } from "./served_copy_serve";
@@ -102,5 +103,43 @@ describe("materializedReadPlan", () => {
          def,
       );
       expect(plan.mismatches).toEqual([]);
+   });
+});
+
+describe("ServedCopyServe: a compile that fails", () => {
+   it("rejects to its callers and leaves no rejection unhandled", async () => {
+      const serve = new ServedCopyServe({
+         modelPath: () => "m.malloy",
+         modelDef: () => ({}),
+         serveDestinationConfig: () => undefined,
+      } as never);
+      const failure = new Error("compile failed");
+      (serve as unknown as { compile: () => Promise<never> }).compile = () =>
+         Promise.reject(failure);
+      const pinned = {
+         snapshot: { bindings: [] },
+         fresh: [],
+         asOf: new Date(0),
+      } as never;
+      const unhandled: unknown[] = [];
+      const listener = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", listener);
+      try {
+         // Two callers join the same compile; each sees its rejection.
+         const results = await Promise.allSettled([
+            serve.compiledModelDef(pinned),
+            serve.compiledModelDef(pinned),
+         ]);
+         expect(results).toEqual([
+            { status: "rejected", reason: failure },
+            { status: "rejected", reason: failure },
+         ]);
+         // A later caller starts a fresh compile, not a settled failure.
+         await expect(serve.compiledModelDef(pinned)).rejects.toBe(failure);
+         await new Promise((r) => setTimeout(r, 20));
+         expect(unhandled).toEqual([]);
+      } finally {
+         process.off("unhandledRejection", listener);
+      }
    });
 });

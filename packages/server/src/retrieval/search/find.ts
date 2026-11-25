@@ -31,7 +31,7 @@
 
 import type { CatalogNode } from "../model/catalog";
 import type { FcjIndex } from "../index/index_build";
-import type { ValueMatch } from "../index/values_index";
+import type { ValueAllow, ValueMatch } from "../index/values_index";
 import { bestFacet } from "../index/vectors";
 import { terms } from "../index/keyword";
 
@@ -170,6 +170,11 @@ export function rankTarget(
       depth: number;
       /** Match value phrases by meaning (`valueEmbeddings`); needs `query`. */
       valueMeaning?: boolean;
+      /**
+       * The partition key the caller's givens name for a dimension's source
+       * (callerKeyOf). A value stored under a key matches only that key.
+       */
+      callerKey?: (dimension: string) => string | undefined;
    },
 ): Omit<FindResult, "target"> & { all: Candidate[] } {
    const admitted = new Map<string, CatalogNode>();
@@ -192,10 +197,10 @@ export function rankTarget(
       ? index.keyword.search(target.text, (k) => admitted.has(k))
       : [];
    const phrases = options.values ? valuePhrasesOf(target) : [];
+   const valueAllow: ValueAllow = (d, key) =>
+      admitted.has(d) && (key === undefined || options.callerKey?.(d) === key);
    const nominations =
-      phrases.length > 0
-         ? index.values.nominate(phrases, (d) => admitted.has(d))
-         : [];
+      phrases.length > 0 ? index.values.nominate(phrases, valueAllow) : [];
    // By meaning: the one phrase is the target's text, so its vector is `query`.
    const meaning: Array<{ phrase: string; vec: Float32Array }> =
       options.valueMeaning && query && index.values.embedded > 0
@@ -203,7 +208,7 @@ export function rankTarget(
          : [];
    const meaningNoms =
       meaning.length > 0
-         ? index.values.nominateByMeaning(meaning, (d) => admitted.has(d))
+         ? index.values.nominateByMeaning(meaning, valueAllow)
          : [];
    const closeTop = close.slice(0, options.depth);
    const keywordTop = keyword.slice(0, options.depth);
@@ -287,6 +292,11 @@ export function find(args: {
    allow: (node: CatalogNode) => boolean;
    /** `listUnion`: also keep, past perTarget, candidates this high on the close or keyword list alone. */
    unionTopK?: number;
+   /**
+    * The partition key the caller's givens name for a dimension's source
+    * (callerKeyOf). A value stored under a key matches only that key.
+    */
+   callerKey?: (dimension: string) => string | undefined;
 }): FindResult[] {
    const k = args.unionTopK ?? 0;
    return args.targets.map((target) => {
@@ -300,6 +310,7 @@ export function find(args: {
             values: args.values,
             depth: LIST_DEPTH,
             ...(args.valueMeaning ? { valueMeaning: true } : {}),
+            ...(args.callerKey ? { callerKey: args.callerKey } : {}),
          },
       );
       const beyond =

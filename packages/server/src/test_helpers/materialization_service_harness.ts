@@ -203,6 +203,8 @@ export const UNVERSIONED_ENVIRONMENT = {
    // Nothing configured is refused, and nothing is stale.
    publishRefusedConfiguredPackage: async () => undefined,
    getStaleCompileErrors: () => new Map<string, unknown>(),
+   // Every package a spec names is loaded.
+   hasLoadedPackage: () => true,
 };
 
 /** Point environmentStore.getEnvironment at a package with the given overrides. */

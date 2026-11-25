@@ -28,6 +28,7 @@ import {
    lockDownDuckDBSession,
    networkedDuckDBOptions,
    runAsInternalStatement,
+   runInternalSQL,
    sandboxedDuckDBOptions,
 } from "./duckdb_lockdown";
 import { unrecordedAudit } from "./access_record";
@@ -59,7 +60,8 @@ async function ducklakeLoaded(connection: {
    runSQL(sql: string): Promise<unknown>;
 }): Promise<boolean> {
    const [row] = rowsOf(
-      await connection.runSQL(
+      await runInternalSQL(
+         connection,
          "SELECT count(*) AS n FROM duckdb_functions() WHERE function_name = 'ducklake_snapshots'",
       ),
    );
@@ -175,6 +177,53 @@ async function expectCommonVectorsRefused(
    ]) {
       expect(await refused(connection, statement)).toContain("locked down");
    }
+   // Catalog and settings introspection, and the functions that reach an
+   // attached database beyond its tables, in any casing, quoting or position.
+   for (const statement of [
+      "SELECT * FROM duckdb_databases()",
+      'SELECT * FROM "DuckDB_Databases"() WHERE 1 = 1',
+      "PRAGMA database_list",
+      "SELECT * FROM duckdb_secrets()",
+      "SELECT * FROM which_secret('s3://b/x', 's3')",
+      "SELECT * FROM duckdb_settings()",
+      "SELECT * FROM postgres_query('db', 'SELECT 1')",
+      "SELECT * FROM postgres_scan('dbname=x', 'public', 't')",
+      "SELECT * FROM postgres_scan_pushdown('dbname=x', 'public', 't')",
+      "SELECT * FROM postgres_execute('db', 'SELECT 1')",
+      "SELECT * FROM postgres_attach('dbname=x')",
+      "SELECT * FROM postgres_configure_pool(max_connections := 1)",
+      "SELECT * FROM __ducklake_metadata_lake.ducklake_metadata",
+      'SELECT * FROM "__DuckLake_Metadata_lake".main.ducklake_metadata',
+      "SELECT 1 AS a /* duckdb_databases() */",
+      "SELECT * FROM pragma_database_list",
+      'SELECT * FROM "PRAGMA_DATABASE_LIST"()',
+      "SELECT * FROM pragma_show('t')",
+      "SELECT current_setting('allowed_paths') AS p",
+      "SELECT * FROM duckdb_variables()",
+      "SELECT getvariable('v') AS v",
+      "SELECT * FROM load_aws_credentials()",
+      "SELECT * FROM ducklake_settings('lake')",
+      "SELECT * FROM ducklake_options('lake')",
+      "SELECT * FROM ducklake_snapshots('lake')",
+      "SELECT * FROM ducklake_list_files('lake', 't')",
+      "SELECT * FROM ducklake_some_future_fn /* c */ ('lake')",
+   ]) {
+      expect(await refused(connection, statement)).toContain("locked down");
+      expect(await refusedStream(connection, statement)).toContain(
+         "locked down",
+      );
+   }
+   // Publisher's own read of its catalog, marked internal, still runs.
+   expect(
+      Number(
+         rowsOf(
+            await runInternalSQL(
+               connection,
+               "SELECT count(*) AS n FROM duckdb_databases()",
+            ),
+         )[0]?.n,
+      ),
+   ).toBeGreaterThan(0);
    // Hiding a statement from a reader that splits SQL differently from DuckDB:
    // a line comment DuckDB ends at a carriage return, a dollar-quote tag with
    // digits or non-ASCII, SQL run from its serialized form, and a database
@@ -204,6 +253,31 @@ async function expectCommonVectorsRefused(
          `COPY (SELECT 1) TO '${root}/pkg/x.csv'\n-- hack: split on this\nSELECT 1`,
       ),
    ).toContain("locked down");
+   // Nor after it: the query Malloy splits off last is gated before any part
+   // runs, so a macro placed in front of a refused query is never created.
+   const macro = `lockdown_sep_${Math.random().toString(36).slice(2)}`;
+   const macroCount = async () =>
+      Number(
+         rowsOf(
+            await runInternalSQL(
+               connection,
+               `SELECT count(*) AS n FROM duckdb_functions() WHERE function_name = '${macro}'`,
+            ),
+         )[0]?.n,
+      );
+   for (const query of [
+      "SELECT * FROM duckdb_settings()",
+      "CREATE SECRET sep (TYPE http, BEARER_TOKEN 't')",
+      "SELECT 1; SELECT 2",
+   ]) {
+      expect(
+         await refused(
+            connection,
+            `CREATE MACRO ${macro}() AS 1\n-- hack: split on this\n${query}`,
+         ),
+      ).toContain("locked down");
+      expect(await macroCount()).toBe(0);
+   }
    // A .sql() source is one SELECT, decided by DuckDB's parser.
    const sqlSource = (selectStr: string) =>
       (
@@ -525,6 +599,32 @@ describe("author SQL in a model on a DuckDB connection reads as one SELECT", () 
       }
    });
 
+   it("refuses author SQL that names catalog introspection or a metadata catalog", async () => {
+      for (const model of [
+         `source: s is duckdb.sql("SELECT * FROM duckdb_settings()")`,
+         `source: s is duckdb.sql("SELECT 1 AS a") extend { dimension: d is sql_string("(SELECT max(path) FROM duckdb_databases())") }`,
+         `source: s is duckdb.table('__ducklake_metadata_lake.ducklake_metadata')`,
+         `source: s is duckdb.sql("SELECT * FROM pragma_database_list")`,
+         `source: s is duckdb.sql("SELECT 1 AS a") extend { dimension: d is sql_string("current_setting('allowed_paths')") }`,
+         `source: s is duckdb.sql("SELECT 1 AS a") extend { dimension: d is sql_string("(SELECT max(path) FROM ducklake_list_files('lake', 't'))") }`,
+         `source: s is duckdb.sql("SELECT * FROM ducklake_snapshots('lake')")`,
+      ]) {
+         await expect(load(model)).rejects.toThrow(
+            /introspection|does not exist/,
+         );
+      }
+   });
+
+   it("refuses author SQL that spells the DuckDB connector's statement separator", async () => {
+      for (const model of [
+         `source: s is duckdb.sql("SELECT 1 AS a -- hack: split on this")`,
+         `source: s is duckdb.sql("SELECT '-- hack: split on this' AS a")`,
+         `source: s is duckdb.sql("SELECT 1 AS a") extend { dimension: d is sql_string("'-- hack: split on this'") }`,
+      ]) {
+         await expect(load(model)).rejects.toThrow(/statement separator/);
+      }
+   });
+
    it("loads one SELECT, CTEs included, and a plain raw expression", async () => {
       const pkg = await load(
          `source: s is duckdb.sql("WITH x AS (SELECT 1 AS a) SELECT a FROM x") extend { dimension: d is sql_number("a + 1") }`,
@@ -771,7 +871,7 @@ describe("environment duckdb with an attached bucket: setup, then lock", () => {
          ),
       ).toContain("locked down");
       const names = rowsOf(
-         await connection.runSQL("SELECT name FROM duckdb_secrets()"),
+         await runInternalSQL(connection, "SELECT name FROM duckdb_secrets()"),
       ).map((row) => row.name);
       expect(names).toContain("internal_renewal");
       expect(names).not.toContain("caller_secret");
@@ -855,6 +955,37 @@ describe("a networked instance with a DuckLake catalog: setup, then lock", () =>
       await expectCommonVectorsRefused(connection);
    });
 
+   it("refuses DuckLake's own functions, maintenance included, and leaves the catalog as it was", async () => {
+      const snapshots = async () =>
+         Number(
+            rowsOf(
+               await runInternalSQL(
+                  connection,
+                  "SELECT count(*) AS n FROM ducklake_snapshots('lake')",
+               ),
+            )[0]?.n,
+         );
+      const before = await snapshots();
+      for (const statement of [
+         "SELECT * FROM ducklake_set_commit_message('lake', 'a', 'b')",
+         "SELECT * FROM ducklake_expire_snapshots('lake', older_than => now())",
+         "CALL ducklake_cleanup_old_files('lake', cleanup_all => true)",
+         "SELECT * FROM ducklake_delete_orphaned_files('lake', cleanup_all => true)",
+         "SELECT * FROM ducklake_set_option('lake', 'data_inlining_row_limit', 7)",
+         "SELECT * FROM ducklake_table_info('lake')",
+      ]) {
+         expect(await refused(connection, statement)).toContain("locked down");
+      }
+      expect(await snapshots()).toBe(before);
+      // A table whose name starts like DuckLake's functions still reads.
+      await connection.runSQL(
+         "CREATE TABLE lake.ducklake_named AS SELECT 1 AS v",
+      );
+      expect(
+         rowsOf(await connection.runSQL("SELECT v FROM lake.ducklake_named")),
+      ).toEqual([{ v: 1 }]);
+   });
+
    it("is idempotent on a locked instance", async () => {
       await lockDownDuckDBSession(connection);
    });
@@ -876,7 +1007,8 @@ describe("two lookups locking one instance at once", () => {
          ]);
          expect(
             rowsOf(
-               await connection.runSQL(
+               await runInternalSQL(
+                  connection,
                   "SELECT current_setting('lock_configuration') AS v",
                ),
             ),

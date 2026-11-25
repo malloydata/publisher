@@ -29,6 +29,7 @@ import {
 } from "./materialization/package_materialization";
 import { MATERIALIZATION_UNREACHABLE_CODE } from "./materialization/serve/serve_verdict";
 import { recordConnectionsAsForTests } from "./connection_type";
+import { contractFor } from "../test_helpers/contract_fixture";
 
 // The package sandbox stands in for a warehouse in these fixtures: a
 // `storage=` build cannot read the sandbox, and the plan refuses a `storage=`
@@ -114,6 +115,67 @@ describe("a package's serve verdicts", () => {
             (w) => w.code === MATERIALIZATION_UNREACHABLE_CODE,
          ),
       ).toBe(false);
+   });
+
+   it("reads which entry points reach a source past an empty or markdown-only notebook", async () => {
+      loaded = await loadTempPackage({
+         "orders.malloy": ORDERS,
+         "empty.malloynb": "",
+         "notes.malloynb": ">>>markdown\n# Notes\nProse only.\n",
+      });
+      const models = (loaded.pkg as unknown as { models: Map<string, object> })
+         .models;
+      const verdicts = (
+         loaded.pkg.materialization() as unknown as {
+            verdicts: {
+               entryPointIndex(models: Map<string, object>): unknown;
+            };
+         }
+      ).verdicts;
+      // Neither notebook has a model definition. Before, either one left the
+      // whole index unknown, which silences `unreachable` and the gate check.
+      expect(verdicts.entryPointIndex(models)).toBeDefined();
+      expect(
+         loaded.pkg
+            .materialization()
+            .serveVerdicts()
+            .map((v) => [v.sourceName, v.verdict]),
+      ).toEqual([
+         ["orders", "awaiting_build"],
+         ["orders_public", "awaiting_build"],
+         ["staging", "awaiting_build"],
+      ]);
+   });
+
+   it("leaves which entry points reach a source unknown past a model that failed to compile", async () => {
+      loaded = await loadTempPackage({
+         "orders.malloy": ORDERS,
+         "empty.malloynb": "",
+      });
+      const models = (loaded.pkg as unknown as { models: Map<string, object> })
+         .models;
+      // A load refuses a model that does not compile, so stand one in: a
+      // placeholder a failed reload leaves has no definition and names
+      // nothing, as an empty notebook does, but carries its error.
+      const placeholder = loaded.pkg.getModel("empty.malloynb")!;
+      const failed = spyOn(placeholder, "getCompilationError").mockReturnValue(
+         new Error("did not compile"),
+      );
+      const verdicts = (
+         loaded.pkg.materialization() as unknown as {
+            verdicts: {
+               buildEntryPointIndex(models: Map<string, object>): unknown;
+            };
+         }
+      ).verdicts;
+      try {
+         // Unknown, not empty: a source it might reach is never called
+         // unreachable on its account.
+         expect(verdicts.buildEntryPointIndex(models)).toBeUndefined();
+      } finally {
+         failed.mockRestore();
+      }
+      expect(verdicts.buildEntryPointIndex(models)).toBeDefined();
    });
 
    it("reaches a source only an exported query-source or join reads", async () => {
@@ -293,7 +355,10 @@ source: orders is ${ROWS} -> { select: * ; where: region = $REGION }
       expect(orders).toBeDefined();
       loaded.pkg.materialization().bind({
          database: {
-            [orders!.sourceEntityId]: { tableName: "orders_t" },
+            [orders!.sourceEntityId]: {
+               tableName: "orders_t",
+               contract: contractFor(),
+            },
          },
       });
       const verdicts = byName(loaded.pkg.materialization().serveVerdicts());

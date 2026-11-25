@@ -8,6 +8,7 @@
  * Every answer is compared with live.
  */
 
+import { contractFor } from "../../../src/test_helpers/contract_fixture";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DATA_FILES, RAW_MODEL } from "./conformance/data";
 import {
@@ -502,30 +503,41 @@ source: wide_tz is wide_raw -> { select: id, tz }
    #@ persist name="wide"
    source: wide is wide_raw -> { select: ${select} }
    `;
+      // Values a read through a double, or a lost fraction, would change.
       for (const [name, cols] of [
-         ["int", "5::INTEGER"],
-         ["bigint", "5::BIGINT"],
-         ["decimal", "0.5::DECIMAL(38,9)"],
-         ["double", "0.5::DOUBLE"],
-         ["tstz", "TIMESTAMPTZ '2026-01-15 23:30:00+00'"],
+         ["int", "2147483647::INTEGER"],
+         ["bigint", "9007199254740993::BIGINT"],
+         ["decimal", "12345678901234567890.123456789::DECIMAL(38,9)"],
+         ["double", "0.1::DOUBLE"],
+         ["tstz", "TIMESTAMPTZ '2026-01-15 23:30:00.123456+00'"],
          ["varchar", "'a'"],
       ]) {
-         it(`a ${name} column is still served from the table under the cutover`, async () => {
+         it(`a ${name} column is still served from the table under the cutover, equal to live`, async () => {
             await freshLoadPool();
             const restore = withSwitch("cutover");
             const loader = await loadFixture({
                "w.malloy": variant(cols, "id, x"),
             });
             try {
+               const query = "run: wide -> { group_by: id, x }";
+               const live = await loader.run("w.malloy", query);
                const f = await loader.bind();
-               const out = await f.run(
-                  "w.malloy",
-                  "run: wide -> { group_by: id, x }",
-               );
+               const out = await f.run("w.malloy", query);
                // Served from the table today (off); must stay so under the cutover.
                expect("answer" in out && out.answer.servedBy).toBe(
                   "materialized",
                );
+               // Value for value, each as a string, never through a double.
+               const exact = (o: Outcome) =>
+                  "answer" in o
+                     ? o.answer.rows.map((r) =>
+                          Object.values(r).map((v) =>
+                             v instanceof Date ? v.toISOString() : String(v),
+                          ),
+                       )
+                     : o.error;
+               expect("answer" in live && live.answer.servedBy).toBe("live");
+               expect(exact(out)).toEqual(exact(live));
             } finally {
                restore();
                await loader.dispose();
@@ -563,6 +575,7 @@ source: wide_tz is wide_raw -> { select: id, tz }
                entries[s.sourceEntityId] = {
                   tableName: table,
                   connectionName: s.connectionName ?? "duckdb",
+                  contract: contractFor(),
                   schema: (
                      d.rows as { column_name: string; column_type: string }[]
                   ).map((r) => ({ name: r.column_name, type: r.column_type })),
@@ -1235,6 +1248,7 @@ source: dropped is orders_raw -> {
                entries[s.sourceEntityId] = {
                   tableName: table,
                   connectionName: s.connectionName ?? "duckdb",
+                  contract: contractFor(),
                   schema: (
                      d.rows as { column_name: string; column_type: string }[]
                   ).map((r) => ({ name: r.column_name, type: r.column_type })),

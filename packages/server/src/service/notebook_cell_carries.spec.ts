@@ -4,9 +4,8 @@
 /**
  * A linear report's query cell under a `#(carries)` ceiling: a cell that
  * reads its source past the ceiling is refused, as the same query is, and the
- * refusal writes an access record that says what the cell read. Pins the
- * ceiling on the cell's `govern()` request, which a query and a cell build
- * alike.
+ * refusal writes an access record that says what the cell read. The cell runs
+ * as its report's viewer runs it, through `runQuery` on the report's path.
  */
 import {
    afterAll,
@@ -25,6 +24,7 @@ import { logger } from "../logger";
 import { withAccessRecord, type AccessRecord } from "./access_record";
 import { Model, ModelPolicy } from "./model";
 import { seededDuckdb, writeTempPackage } from "../test_helpers/temp_package";
+import { attachedCells } from "../test_helpers/attached_cells";
 
 const SEED_SQL = `
 CREATE OR REPLACE TABLE people (id INTEGER, ssn VARCHAR);
@@ -53,6 +53,7 @@ describe("a linear report's query cell under a #(carries) ceiling", () => {
    let model: Model;
    let duckdb: DuckDBConnection;
    let removeDir: () => void;
+   let cellTexts: string[] = [];
    let past = -1;
    let within = -1;
    let info: ReturnType<typeof spyOn>;
@@ -90,7 +91,8 @@ describe("a linear report's query cell under a #(carries) ceiling", () => {
       expect(
          model.attachServedNotebookCells(model.getCompiledSourceText()!),
       ).toBe("ok");
-      const listed = (await model.getNotebook()).notebookCells ?? [];
+      const listed = attachedCells(model);
+      cellTexts = listed.map((c) => c.text);
       past = listed.findIndex((c) => c.text === `run: ${PAST}`);
       within = listed.findIndex((c) => c.text === `run: ${WITHIN}`);
       expect(past).toBeGreaterThanOrEqual(0);
@@ -112,7 +114,7 @@ describe("a linear report's query cell under a #(carries) ceiling", () => {
             caller: "c",
          },
          undefined,
-         (audit) => model.executeNotebookCell(audit, index),
+         (audit) => model.runQuery(audit, { query: cellTexts[index] }),
       );
 
    /** The one access record the last cell run wrote. */

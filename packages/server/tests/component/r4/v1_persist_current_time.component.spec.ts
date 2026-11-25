@@ -3,16 +3,16 @@
 
 /**
  * A v1 `#@ persist` whose build reads the current time, through the real
- * package path (load, plan, build, bind, serve). Built, its table would hold
- * the rows as of the build and serve them until the next rebuild; it is
- * refused at plan (`current_time`, a `persist-not-built` warning) and
- * answered live. A neighbour whose `now` is in its own extend block is
- * applied at every read, so it still builds, and its table answers as live.
+ * package path (load, plan, build, bind, serve). An ungated one builds like
+ * any stored table and is served as of its build: its table holds the rows
+ * as of the build, and the package carries a `persist-reads-current-time`
+ * warning naming it and where it reads the clock. A neighbour whose `now` is
+ * in its own extend block is applied at every read, so its table answers as
+ * live, with no warning.
  *
  * One row's timestamp lies a little after the load. Every source is queried
- * before it passes and again after: a stored snapshot of `ts < now` would
- * still leave it out, the live answer and a table read under its own `now`
- * take it in.
+ * before it passes and again after: a table as of its build still leaves it
+ * out, while the live answer and a table read under its own `now` take it in.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -110,7 +110,7 @@ source: plain is ev_plain -> { select: id, ts }
    };
 }
 
-const REFUSED = [
+const AS_OF_BUILD = [
    "q_now",
    "sq_now",
    "base_where_now",
@@ -135,7 +135,8 @@ const QUERY: Record<string, string> = {
 const query = (s: string) =>
    QUERY[s] ?? `run: ${s} -> { group_by: id; order_by: id }`;
 const BEFORE = (s: string) => (s === "plain" ? [1, 2, 3] : [1]);
-const AFTER = (s: string) => (s === "plain" ? [1, 2, 3] : [1, 3]);
+const AFTER = (s: string) =>
+   s === "plain" ? [1, 2, 3] : AS_OF_BUILD.includes(s) ? [1] : [1, 3];
 
 function ids(outcome: Outcome): { ids: number[]; servedBy: string } {
    if ("error" in outcome) throw new Error(outcome.error);
@@ -162,7 +163,7 @@ describe("v1 #@ persist over now, through a real package", () => {
          .replace("T", " ")
          .slice(0, 19);
       const loaded = await loadFixture(files(ts));
-      for (const s of [...REFUSED, ...BUILT]) {
+      for (const s of [...AS_OF_BUILD, ...BUILT]) {
          live[s] = ids(await loaded.run("now.malloy", query(s))).ids;
       }
       fixture = await loaded.bind();
@@ -174,18 +175,36 @@ describe("v1 #@ persist over now, through a real package", () => {
       await freshLoadPool();
    });
 
-   it("refuses each source whose build reads now, at plan, with a warning", () => {
+   it("builds each source whose build reads now, and says its answers are as of its build", () => {
       const refused = Object.values(
          fixture.pkg.getBuildPlan()?.refusedSources ?? {},
       );
-      for (const s of REFUSED) {
-         expect(fixture.built.some((b) => b.name === s)).toBe(false);
-         const entry = refused.find((r) => r.name === s);
-         expect(entry?.reason).toBe("current_time");
-         expect(entry?.tier).toBe(s === "sq_now" ? "storage" : "database");
-         const warning = fixture.warnings.find((w) => w.subject === s);
-         expect(warning?.code).toBe("persist-not-built");
-         expect(warning?.message).toContain("reads the current time");
+      for (const s of AS_OF_BUILD) {
+         expect({ s, built: fixture.built.some((b) => b.name === s) }).toEqual({
+            s,
+            built: true,
+         });
+         expect(refused.find((r) => r.name === s)).toBeUndefined();
+         const warning = fixture.warnings.find(
+            (w) => w.subject === s && w.code === "persist-reads-current-time",
+         );
+         expect({ s, message: warning?.message }).toEqual({
+            s,
+            message: expect.stringContaining("as of its last build"),
+         });
+      }
+      const q = fixture.warnings.find(
+         (w) =>
+            w.subject === "q_now" && w.code === "persist-reads-current-time",
+      );
+      expect(q?.message).toContain("`where: ts < now`");
+      for (const s of BUILT) {
+         expect(
+            fixture.warnings.some(
+               (w) =>
+                  w.subject === s && w.code === "persist-reads-current-time",
+            ),
+         ).toBe(false);
       }
    });
 
@@ -204,7 +223,7 @@ describe("v1 #@ persist over now, through a real package", () => {
       // The fixture must reach this point before the row's time, or the
       // "before" answers say nothing about a snapshot.
       expect(Date.now()).toBeLessThan(movingAt);
-      const sources = [...REFUSED, ...BUILT];
+      const sources = [...AS_OF_BUILD, ...BUILT];
       const before: Record<string, ReturnType<typeof ids>> = {};
       for (const s of sources) {
          before[s] = ids(await fixture.run("now.malloy", query(s)));
@@ -214,16 +233,22 @@ describe("v1 #@ persist over now, through a real package", () => {
       for (const s of sources) {
          after[s] = ids(await fixture.run("now.malloy", query(s)));
       }
-      // Rows first: a snapshot built as of the load would still answer [1].
+      // Rows first: a table as of its build still answers [1] after the
+      // moving row's time; one whose window is read at every read takes it in.
       for (const s of sources) {
          expect({ s, live: live[s] }).toEqual({ s, live: BEFORE(s) });
          expect({ s, before: before[s].ids }).toEqual({ s, before: BEFORE(s) });
          expect({ s, after: after[s].ids }).toEqual({ s, after: AFTER(s) });
       }
       for (const s of sources) {
-         const servedBy = BUILT.includes(s) ? "materialized" : "live";
-         expect(before[s].servedBy).toBe(servedBy);
-         expect(after[s].servedBy).toBe(servedBy);
+         expect({ s, servedBy: before[s].servedBy }).toEqual({
+            s,
+            servedBy: "materialized",
+         });
+         expect({ s, servedBy: after[s].servedBy }).toEqual({
+            s,
+            servedBy: "materialized",
+         });
       }
    }, 120_000);
 });

@@ -17,8 +17,8 @@ stored table in the lake, so its entry says `reused`, and its rows are a
 function of its parent's stored rows.
 
 That is what lets an orchestrator that must never have the warehouse do work it
-did not schedule (`warehouseReach: refuse`) build the extensions: the strict
-build reads only the lake, so nothing is refused. And it shows where the rows
+did not schedule build the extensions: every build is strict, and this one
+reads only the lake, so nothing is refused. And it shows where the rows
 came from: a US order added to the warehouse after `orders` was built is in
 neither extension, because they were computed from the table `orders` stored,
 not from the warehouse.
@@ -60,7 +60,7 @@ source: us_big is us_orders extend {
 }
 ```
 
-## Build refused (orchestrated, strict, pkg=mzx)
+## Build refused (orchestrated, pkg=mzx)
 
 Before `orders` has a table, a strict build of `us_orders` has nothing of its
 parent's to read, so it is refused rather than recomputed from the warehouse,
@@ -84,7 +84,7 @@ expect binding: orders -> lake
 | ------------ | --------------- | ----------- | ---------- |
 | 99           | 2026-02-25      | US          | 1000       |
 
-## Build (orchestrated, strict, reach=refuse, pkg=mzx)
+## Build (orchestrated, pkg=mzx)
 
 Build both extensions under strict with the warehouse recompute refused,
 reusing the `orders` table built before the new order: `us_orders` over it,

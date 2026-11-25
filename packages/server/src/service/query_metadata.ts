@@ -37,6 +37,8 @@ import {
    recordQueryMetadataDropped,
 } from "../query_metadata_metrics";
 
+import { usageCatalog, type UsageCatalogSource } from "./statement_usage";
+
 export type { QueryMetadata };
 
 /**
@@ -537,6 +539,11 @@ export interface ModelQueryMetadataInput {
     */
    meteredConnection?: (connectionName: string) => boolean;
    /**
+    * The DuckLake catalog a metered connection attaches, for its usage record;
+    * undefined when it is not a DuckLake one. Supplied with `meteredConnection`.
+    */
+   meteredCatalog?: (connectionName: string) => string | undefined;
+   /**
     * The package's declared bag — the least specific author-declared layer.
     * Supplied by the controller, which owns the package; the model knows only
     * its own file and its package's NAME.
@@ -555,13 +562,13 @@ export interface ModelQueryMetadataInput {
 export function buildQueryMetadataInput(args: {
    environmentName: string;
    environment: {
-      getApiConnection(connectionName: string): {
+      getApiConnection(connectionName: string): UsageCatalogSource & {
          queryMetadata?: QueryMetadata;
          queryMetadataEnforced?: QueryMetadata;
          managed?: boolean;
       };
       /** Throws for a name that is not a configured storage destination. */
-      getStorageDestination?(destinationName: string): unknown;
+      getStorageDestination?(destinationName: string): UsageCatalogSource;
    };
    pkg: { getDeclaredQueryMetadata(): QueryMetadata | null };
    request?: QueryMetadata;
@@ -592,6 +599,29 @@ export function buildQueryMetadataInput(args: {
             return null;
          }
       },
+      ...meteringReaders(environment),
+   };
+}
+
+/** The environment a {@link meteringReaders} reads connections and destinations from. */
+export interface MeteringEnvironment {
+   getApiConnection(connectionName: string): UsageCatalogSource & {
+      managed?: boolean;
+   };
+   /** Throws for a name that is not a configured storage destination. */
+   getStorageDestination?(destinationName: string): UsageCatalogSource;
+}
+
+/**
+ * Which connections a statement is metered on, and the catalog each names: a
+ * connection marked `managed`, or a storage destination a stored source runs
+ * on. Every route that runs a model's statements passes these in its
+ * {@link ModelQueryMetadataInput}; a route that leaves them out meters nothing.
+ */
+export function meteringReaders(
+   environment: MeteringEnvironment,
+): Pick<ModelQueryMetadataInput, "meteredConnection" | "meteredCatalog"> {
+   return {
       meteredConnection: (connectionName) => {
          try {
             if (environment.getApiConnection(connectionName).managed === true) {
@@ -605,6 +635,23 @@ export function buildQueryMetadataInput(args: {
             return environment.getStorageDestination !== undefined;
          } catch {
             return false;
+         }
+      },
+      meteredCatalog: (connectionName) => {
+         // The same order as `meteredConnection`: the managed connection of
+         // that name, else the storage destination a stored source runs on.
+         try {
+            const connection = environment.getApiConnection(connectionName);
+            if (connection.managed === true) return usageCatalog(connection);
+         } catch {
+            // Not a connection.
+         }
+         try {
+            return usageCatalog(
+               environment.getStorageDestination?.(connectionName),
+            );
+         } catch {
+            return undefined;
          }
       },
    };

@@ -35,7 +35,7 @@ import { offsetOf } from "../text/malloy_lexer";
  * `extend` is kept by the served copy, so only there can the build leave the
  * term out and the read re-apply it.
  */
-function givenWhereNotOwnReason(shown: string): string {
+export function givenWhereNotOwnReason(shown: string): string {
    return (
       `${shown} reads a given and is not written on this source, so it ` +
       "would not be re-applied over the stored table at read; the source " +
@@ -69,7 +69,7 @@ export function declarationOf(def: SourceDefLike): TermUse | undefined {
 /**
  * The given-reading `where:` terms of a materialized source (the `given` kind
  * of its classified terms, {@link classifyWhereTerms}), each one its own
- * declaration writes and over stored columns only, or why one is not (P2).
+ * declaration writes and over stored columns only, or why one is not.
  * See the module comment for why each refusal is one. A term that reads both
  * a given and the current time is not this function's: rolling_window.ts
  * refuses it.
@@ -79,6 +79,13 @@ export function readTimeTermsOf(
    classified: readonly ClassifiedWhereTerm[],
    columns: readonly MaterializeColumn[],
    givens: Record<string, unknown> = {},
+   /**
+    * Keep a term written outside the source's own declaration, marked
+    * `inherited`, rather than refuse it here, so a `#(materialize)`
+    * extension's planner refuses it with the reason that fits once its
+    * parent is known (`chainExtensionTables`).
+    */
+   options: { deferInherited?: boolean } = {},
 ):
    | {
         ok: true;
@@ -121,9 +128,12 @@ export function readTimeTermsOf(
          };
       }
       // Only its own declaration's: the served copy keeps no base's text, so
-      // an inherited term (from a base in this file or another, or a
-      // materialized parent) could not be re-applied at read.
-      if (!withinDeclaration(term.at, declaration)) {
+      // an inherited term (from a base in this file or another) could not be
+      // re-applied at read. Refused by the caller instead, with
+      // `deferInherited`, once it knows whether a materialized parent is
+      // involved.
+      const inherited = !withinDeclaration(term.at, declaration);
+      if (inherited && !options.deferInherited) {
          return {
             ok: false,
             reason: givenWhereNotOwnReason(shown),
@@ -169,6 +179,7 @@ export function readTimeTermsOf(
          givens: term.givens,
          columns: term.columns,
          at: term.at,
+         ...(inherited ? { inherited: true as const } : {}),
       });
    }
    return {

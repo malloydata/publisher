@@ -2,12 +2,21 @@
 // SPDX-License-Identifier: MIT
 
 import { BuildCancelledError } from "../domain/build_cancelled";
-import { describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import {
+   existsSync,
+   mkdirSync,
+   mkdtempSync,
+   readdirSync,
+   rmSync,
+   utimesSync,
+   writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
    BadRequestError,
    MaterializationEligibilityError,
@@ -20,15 +29,16 @@ import {
    type BuildSessionDeps,
    createIsolatedBuildSession,
    createTableAndDescribe,
-   dropStorageTable,
-   dropStorageTableSql,
    partitionKeySql,
    partitionOrderSql,
    passthroughSourceType,
+   removeStaleBuildDirs,
    wrapPassthrough,
    writePartitionedTable,
    oneFileModel,
+   assertSingleSelect,
 } from "./materialization_build_session";
+import { dropStorageTable, dropStorageTableSql } from "./storage_admin";
 import { identifier } from "../../malloy_text";
 import { declarableColumns } from "../stored_column_types";
 import { buildVirtualMap } from "../serve/bindings";
@@ -556,7 +566,7 @@ describe.skipIf(process.platform === "win32")(
          }
       });
 
-      it("refuses a downstream carrying author SQL as a shape failure, so the caller recomputes", async () => {
+      it("refuses a downstream carrying author SQL as ineligible", async () => {
          const dir = mkdtempSync(join(tmpdir(), "t3-sql-"));
          try {
             await seedLake(dir);
@@ -820,7 +830,7 @@ describe.skipIf(process.platform === "win32")(
             }
          });
 
-         it("refuses, as a shape failure the caller recomputes, a downstream reading the left-out column", async () => {
+         it("refuses as ineligible a downstream reading the left-out column", async () => {
             const dir = mkdtempSync(join(tmpdir(), "t3-exotic-map-"));
             try {
                await seedExotic(dir);
@@ -1368,5 +1378,132 @@ describe("buildSourceIntoStorage clears a Snowflake session's query tag", () => 
          runSQL.mockRestore();
          rmSync(dir, { recursive: true, force: true });
       }
+   });
+});
+
+describe("removeStaleBuildDirs", () => {
+   it("removes build directories of this pid older than the process and keeps everything else", () => {
+      const root = mkdtempSync(join(tmpdir(), "stale-sweep-"));
+      const startedAt = Date.now();
+      const at = (dir: string, offsetMs: number) => {
+         const t = new Date(startedAt + offsetMs);
+         utimesSync(dir, t, t);
+      };
+      const own = `malloy-build-${process.pid}-`;
+      try {
+         for (const name of [`${own}old`, `${own}new`, "other-old"]) {
+            mkdirSync(join(root, name));
+         }
+         writeFileSync(join(root, `${own}file`), "x");
+         at(join(root, `${own}old`), -60_000);
+         at(join(root, `${own}new`), 60_000);
+         at(join(root, "other-old"), -60_000);
+
+         expect(removeStaleBuildDirs(root, startedAt)).toBe(1);
+
+         expect(existsSync(join(root, `${own}old`))).toBe(false);
+         expect(existsSync(join(root, `${own}new`))).toBe(true);
+         expect(existsSync(join(root, "other-old"))).toBe(true);
+         expect(existsSync(join(root, `${own}file`))).toBe(true);
+      } finally {
+         rmSync(root, { recursive: true, force: true });
+      }
+   });
+
+   it("removes nothing when there is nothing stale", () => {
+      const root = mkdtempSync(join(tmpdir(), "stale-sweep-"));
+      try {
+         expect(removeStaleBuildDirs(root, Date.now())).toBe(0);
+      } finally {
+         rmSync(root, { recursive: true, force: true });
+      }
+   });
+
+   describe("a directory named for its process", () => {
+      const startedAt = Date.now();
+      const ownPid = process.pid;
+      let root: string;
+      const dir = (name: string, offsetMs: number) => {
+         mkdirSync(join(root, name));
+         const t = new Date(startedAt + offsetMs);
+         utimesSync(join(root, name), t, t);
+      };
+      const left = () => readdirSync(root).sort();
+      beforeEach(() => {
+         root = mkdtempSync(join(tmpdir(), "stale-sweep-pid-"));
+      });
+      afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+      it("names the process that created it", () => {
+         const { dispose, workDir } = createIsolatedBuildSession("pid_name");
+         try {
+            expect(basename(workDir)).toMatch(
+               new RegExp(`^malloy-build-${process.pid}-`),
+            );
+         } finally {
+            void dispose();
+         }
+      });
+
+      it("removes one whose process is gone, however recent, and keeps one whose process is alive, however old", async () => {
+         const live = spawn(process.execPath, [
+            "-e",
+            "setTimeout(() => {}, 60000)",
+         ]);
+         const dead = spawnSync(process.execPath, ["--version"]);
+         try {
+            dir(`malloy-build-${dead.pid}-x`, 60_000);
+            dir(`malloy-build-${live.pid}-x`, -60_000);
+            expect(removeStaleBuildDirs(root, startedAt)).toBe(1);
+            expect(left()).toEqual([`malloy-build-${live.pid}-x`]);
+         } finally {
+            live.kill();
+         }
+      });
+
+      it("removes one of its own pid only when it predates the process: a restarted container reuses pid 1", () => {
+         dir(`malloy-build-${ownPid}-old`, -60_000);
+         dir(`malloy-build-${ownPid}-live`, 60_000);
+         expect(removeStaleBuildDirs(root, startedAt)).toBe(1);
+         expect(left()).toEqual([`malloy-build-${ownPid}-live`]);
+      });
+
+      it("leaves one with no pid in its name alone, however old: an older publisher may share the temp root", () => {
+         dir("malloy-build-abc123", -60_000);
+         dir("malloy-build-7x", 60_000);
+         expect(removeStaleBuildDirs(root, startedAt)).toBe(0);
+         expect(left()).toEqual(["malloy-build-7x", "malloy-build-abc123"]);
+      });
+   });
+
+   it("does not throw when the temp root cannot be listed", () => {
+      expect(
+         removeStaleBuildDirs(join(tmpdir(), "no-such-root-for-sweep")),
+      ).toBe(0);
+   });
+});
+
+describe("a build that also reads another destination", () => {
+   // Its data path is in the session's allowlist, which DuckDB cannot make
+   // read-only: only one SELECT from the model reaches the session.
+   const other = "/tmp/other-destination/data";
+
+   it("refuses a COPY ... TO into the other destination's path, alone or after a SELECT", async () => {
+      for (const sql of [
+         `COPY (SELECT 1 AS x) TO '${other}/x.parquet'`,
+         `SELECT 1 AS x; COPY (SELECT 1 AS x) TO '${other}/x.parquet'`,
+         `SELECT 1 AS x -- hack: split on this\nCOPY (SELECT 1) TO '${other}/x.parquet'`,
+         `EXPORT DATABASE '${other}'`,
+      ]) {
+         await expect(assertSingleSelect(sql)).rejects.toThrow(
+            /runs one SELECT from its model/,
+         );
+      }
+   });
+
+   it("runs one SELECT", async () => {
+      await assertSingleSelect(
+         "WITH t AS (SELECT 1 AS x) SELECT x FROM t ORDER BY x",
+      );
    });
 });

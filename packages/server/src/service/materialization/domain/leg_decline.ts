@@ -49,6 +49,9 @@ type SkipReason = components["schemas"]["SkipReason"];
  *   destination, across from the query source.
  * - `rollup_stale`, `served_copy_stale`: the table the leg would read is past
  *   its freshness window, so the query's pin leaves it out.
+ * - `view_storage_mode`, `query_storage_mode`: the stored result is a storage
+ *   table, and `PERSIST_STORAGE_MODE` (write-only or off) reads none; the
+ *   serve verdict's `storage_mode`.
  * - `served_copy_time_zone`: the query sets a timezone over a stored computed
  *   dimension; `served_copy_cross_connection`: the copy waits on a join
  *   across connections, or the query reads a join it leaves out across
@@ -83,10 +86,12 @@ const DECLINES = {
    view_shape_mismatch: { reason: "SHAPE_MISMATCH" },
    view_not_built: { reason: "NOT_BUILT" },
    view_stale: { reason: "STALE" },
+   view_storage_mode: { reason: "NOT_SERVED", code: "storage_mode" },
    query_missing_field: { reason: "MISSING_FIELD" },
    query_shape_mismatch: { reason: "SHAPE_MISMATCH" },
    query_not_built: { reason: "NOT_BUILT" },
    query_stale: { reason: "STALE" },
+   query_storage_mode: { reason: "NOT_SERVED", code: "storage_mode" },
    served_copy_time_zone: { reason: "TIME_ZONE" },
    served_copy_cross_connection: { reason: "CROSS_CONNECTION" },
    served_copy_stale: { reason: "STALE" },

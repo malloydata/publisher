@@ -132,6 +132,31 @@ describe("buildQueryPath", () => {
       ]);
    });
 
+   it("names a gate the served copy could not keep against the queried source's own database table", () => {
+      // Two database `#@ persist` tables on the chain, the queried source's
+      // own nearest; the served copy was skipped for the query's gate.
+      const report = buildQueryPath(
+         input({
+            catalog: catalog([planned("daily"), planned("orders")], {
+               id_daily: "daily_built",
+               id_orders: "orders_built",
+            }),
+            considered: [
+               { kind: "served", outcome: "skipped", reason: "row_level_gate" },
+            ],
+         }),
+      );
+      expect(report.servedBy).toEqual({ kind: "live" });
+      expect(report.considered).toEqual([
+         {
+            tableId: "id_daily",
+            kind: "materialized",
+            outcome: "skipped",
+            reason: "ROW_LEVEL_GATE",
+         },
+      ]);
+   });
+
    it("names each table's origin: the mechanism that declared it, beside its kind", () => {
       const daily = storageOf("daily");
       const tables = [planned("daily", "materialize"), planned("orders")];
@@ -596,6 +621,7 @@ describe("buildQueryPath", () => {
             kind: "materialized",
             outcome: "skipped",
             reason: "NOT_SERVED",
+            code: "storage_mode",
          },
          { tableId: "id_daily", kind: "materialized", outcome: "used" },
       ]);
@@ -1198,7 +1224,8 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             catalog: {
                ...catalog([planned("daily")]),
                // Only the database copy is refused; the storage copy is
-               // merely unrouted, which this verdict does not explain.
+               // merely unrouted: it carries the storage mode's code, never
+               // its twin's.
                liveVerdicts: verdicts({
                   "database:id_daily": {
                      reason: "refused",
@@ -1216,6 +1243,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             kind: "materialized",
             outcome: "skipped",
             reason: "NOT_SERVED",
+            code: "storage_mode",
          },
       ]);
       expect(report.warnings).toEqual([]);

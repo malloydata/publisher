@@ -14,7 +14,7 @@
  *  - `materialize_database`: `#(materialize)` (v2, built in the origin
  *    warehouse)
  *
- * `@PREAGG(dim)` marks a rollup measure (`#@ preaggregate grain=…`, with
+ * `@PREAGG(dim)` (or `@PREAGG(a, b)`) marks a rollup measure (`#@ preaggregate grain=…`, with
  * `storage=` for the `storage` variant, and `#(rollup)` for
  * `materialize`, with `storage=` for `materialize` alone), and `@PVIEW(name)` a persisted view (`#@ persist name=…`).
  *
@@ -131,6 +131,12 @@ export function renderFiles(
    variant: Variant,
 ): Record<string, string> {
    const out: Record<string, string> = { "raw.malloy": RAW_MODEL };
+   // `@PREAGG(a, b)`: v1 takes the list as one string, v2 as a list.
+   const v2Grain = (grain: string) =>
+      grain
+         .split(",")
+         .map((g) => `"${g.trim()}"`)
+         .join(", ");
    for (const [file, text] of Object.entries(shape.files)) {
       out[file] = text
          .replace(/@PREAGG\(([^)]*)\)/g, (_m, grain: string) =>
@@ -139,8 +145,8 @@ export function renderFiles(
                : variant === "database"
                  ? `#@ preaggregate grain="${grain}"`
                  : variant === "materialize_database"
-                   ? `#(rollup) grain=["${grain}"]`
-                   : `#(rollup) grain=["${grain}"] storage="lake"`,
+                   ? `#(rollup) grain=[${v2Grain(grain)}]`
+                   : `#(rollup) grain=[${v2Grain(grain)}] storage="lake"`,
          )
          .replace(/@PVIEW\(([^)]*)\)/g, (_m, name: string) =>
             variant === "storage"
@@ -637,7 +643,7 @@ source: nested is orders_raw -> {
    },
    {
       name: "reserved-word names",
-      about: "A source and its fields named by reserved words, quoted in backticks, persisted under a reserved table name",
+      about: "A source and its fields named by reserved words, quoted in backticks, persisted under a reserved table name; stored output columns named month and group (campaign P2-44)",
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -649,6 +655,12 @@ source: \`order\` is orders_raw -> {
 } extend {
   measure: \`group\` is amt.sum()
 }
+
+@PERSIST(month)
+source: \`month\` is orders_raw -> {
+  group_by: \`month\` is month(order_date), \`group\` is region
+  aggregate: total is amount.sum()
+}
 `,
       },
       queries: [
@@ -656,6 +668,16 @@ source: \`order\` is orders_raw -> {
             name: "reserved-word fields",
             malloy:
                "run: `order` -> { group_by: `select`, `order`; aggregate: c is `count`.sum(), `group` }",
+         },
+         {
+            name: "stored columns named month and group",
+            malloy:
+               "run: `month` -> { group_by: `month`, `group`; aggregate: t is total.sum(); order_by: `month`, `group` }",
+         },
+         {
+            name: "a filter on the stored month and group columns",
+            malloy:
+               "run: `month` -> { where: `month` > 0 and `group` != 'none'; group_by: `group`; aggregate: t is total.sum() }",
          },
       ],
    },

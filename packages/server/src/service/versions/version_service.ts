@@ -50,7 +50,7 @@ export interface VersionHost<P> {
     * Compile the version whose files are at `versionPath`, bound to
     * `manifestPath` when one is set. A `hostOwned` version with no manifest
     * serves live, never this server's own run store. Throws when it does not
-    * load.
+    * load. `refreshSchemas`: a publish refetches the schemas it reads.
     */
    loadVersion(
       packageName: string,
@@ -59,11 +59,22 @@ export interface VersionHost<P> {
          Version,
          "versionId" | "manifestPath" | "sourceLocation" | "hostOwned"
       >,
+      options?: { refreshSchemas?: boolean },
    ): Promise<P>;
    /** Release a loaded version's connections; it is no longer served. */
    releaseVersion(packageName: string, versionId: string, loaded: P): void;
-   /** Bind a loaded version to a build manifest, or to none (live). */
-   bindVersionManifest(loaded: P, manifestPath: string | null): Promise<void>;
+   /**
+    * Bind a loaded version to a build manifest, or to none (live). With
+    * `refuseOnFailure`, a manifest that cannot be fetched or bound throws
+    * ManifestBindFailedError and leaves the version serving what it served
+    * before; without, the failure is reported as `bind_failed` and the
+    * version serves live.
+    */
+   bindVersionManifest(
+      loaded: P,
+      manifestPath: string | null,
+      options?: { refuseOnFailure?: boolean },
+   ): Promise<void>;
    /** The downloader for a location, writing into a staging folder. */
    downloaderFor(
       packageName: string,
@@ -111,8 +122,17 @@ export interface VersionHost<P> {
    ): Promise<boolean>;
    /** Remove a package row this service created for a publish that failed. */
    removePackageRecord(packageName: string): Promise<void>;
-   /** The build manifest a loaded version is bound to now, or null. */
+   /**
+    * The build manifest a loaded version is bound to now, or null: never
+    * one whose bind failed, so naming it again binds it again.
+    */
    boundManifestOf?(loaded: P): string | null;
+   /**
+    * Run `fn` fetching each build manifest at most once: a load and a bind
+    * inside it that name the same location share one fetch, and its error.
+    * One request's scope, so a later request reads the manifest again.
+    */
+   shareManifestFetches?<T>(fn: () => Promise<T>): Promise<T>;
    /**
     * Whether the loaded version carries the host-owned mark: a host manifest
     * it names actually bound, or a host built it. Not merely naming one.
@@ -166,6 +186,11 @@ export interface PublishOptions<P> {
    promotion: VersionPromotionMode;
    /** The publish checks; a message refuses the version with 400. */
    validate?: (loaded: P) => string | undefined;
+   /**
+    * A request's publish, as opposed to a configured package's at boot:
+    * the version's load refetches the schemas it reads.
+    */
+   refreshSchemas?: boolean;
 }
 
 export interface PublishResult<P> {
@@ -684,6 +709,7 @@ export class VersionService<P = unknown> {
                   sourceLocation: options.sourceLocation,
                   hostOwned: false,
                },
+               options.refreshSchemas ? { refreshSchemas: true } : undefined,
             );
             const refusal = options.validate?.(loaded);
             if (refusal) throw new BadRequestError(refusal);
@@ -794,31 +820,36 @@ export class VersionService<P = unknown> {
          options.manifestLocation !== existing.manifestPath
             ? options.manifestLocation
             : undefined;
-      if (newManifest) {
-         version = await this.registry.setVersionManifestPath(
-            this.environmentId,
-            packageName,
-            versionId,
-            newManifest,
-         );
-         const resident = this.cache.peek(packageName, versionId);
-         if (resident !== undefined) {
-            await host.bindVersionManifest(resident, newManifest);
+      // One fetch of the manifest for the binds below: a bind that failed
+      // reports no bound manifest, so the second would read it again.
+      const loaded = await this.sharingManifestFetches(async () => {
+         if (newManifest) {
+            version = await this.registry.setVersionManifestPath(
+               this.environmentId,
+               packageName,
+               versionId,
+               newManifest,
+            );
+            const resident = this.cache.peek(packageName, versionId);
+            if (resident !== undefined) {
+               await host.bindVersionManifest(resident, newManifest);
+            }
          }
-      }
 
-      // Loaded before `latest` can point at it: a version that cannot load
-      // must never become what every request without a version reaches.
-      const loaded = await this.cache.get(packageName, versionId);
-      // A load already running when the manifest was written binds the one
-      // it read before; bring it up to the row.
-      if (
-         newManifest &&
-         host.boundManifestOf &&
-         host.boundManifestOf(loaded) !== newManifest
-      ) {
-         await host.bindVersionManifest(loaded, newManifest);
-      }
+         // Loaded before `latest` can point at it: a version that cannot load
+         // must never become what every request without a version reaches.
+         const loaded = await this.cache.get(packageName, versionId);
+         // A load already running when the manifest was written binds the
+         // one it read before; bring it up to the row.
+         if (
+            newManifest &&
+            host.boundManifestOf &&
+            host.boundManifestOf(loaded) !== newManifest
+         ) {
+            await host.bindVersionManifest(loaded, newManifest);
+         }
+         return loaded;
+      });
       if (options.description !== undefined) {
          await host.ensurePackageRecord(packageName, options.description);
       }
@@ -1221,55 +1252,95 @@ export class VersionService<P = unknown> {
       manifestLocation: string | null,
    ): Promise<P> {
       const versionId = requiredVersionId(rawVersion);
-      const host = this.requireHost();
+      this.requireHost();
       // Looked up before the lock, so a request naming a version that does
       // not exist leaves no lock behind.
       await this.getVersion(packageName, versionId);
-      return this.withVersionWrite(packageName, versionId, async () => {
-         const current = await this.getVersion(packageName, versionId);
-         if (current.archiveStatus === "archive") {
-            throw versionArchived(packageName, versionId);
+      // One fetch of the manifest per request: a version not loaded binds
+      // it as it loads, and a failed bind there reports no bound manifest,
+      // so the refusing bind would read it again.
+      return this.withVersionWrite(packageName, versionId, () =>
+         this.sharingManifestFetches(() =>
+            this.setManifestLocked(packageName, versionId, manifestLocation),
+         ),
+      );
+   }
+
+   /** {@link setManifest}, holding the version's write lock. */
+   private async setManifestLocked(
+      packageName: string,
+      versionId: string,
+      manifestLocation: string | null,
+   ): Promise<P> {
+      const host = this.requireHost();
+      const current = await this.getVersion(packageName, versionId);
+      if (current.archiveStatus === "archive") {
+         throw versionArchived(packageName, versionId);
+      }
+      await this.registry.setVersionManifestPath(
+         this.environmentId,
+         packageName,
+         versionId,
+         manifestLocation,
+      );
+      const resident = this.cache.peek(packageName, versionId);
+      let loaded = resident;
+      try {
+         // Not loaded: load it (through memory admission, like any load).
+         // A load already running read the row before this write and binds
+         // the previous manifest, so it is brought up to the row after.
+         loaded ??= await this.loadOrRefuse(packageName, versionId);
+         if (
+            resident !== undefined ||
+            !host.boundManifestOf ||
+            host.boundManifestOf(loaded) !== manifestLocation
+         ) {
+            // A manifest that does not bind is refused, not served live.
+            await host.bindVersionManifest(loaded, manifestLocation, {
+               refuseOnFailure: true,
+            });
          }
-         await this.registry.setVersionManifestPath(
-            this.environmentId,
-            packageName,
-            versionId,
-            manifestLocation,
-         );
-         try {
-            const resident = this.cache.peek(packageName, versionId);
-            // Not loaded: load it (through memory admission, like any load).
-            // A load already running read the row before this write and binds
-            // the previous manifest, so it is brought up to the row after.
-            const loaded =
-               resident ?? (await this.loadOrRefuse(packageName, versionId));
-            if (
-               resident !== undefined ||
-               !host.boundManifestOf ||
-               host.boundManifestOf(loaded) !== manifestLocation
-            ) {
-               await host.bindVersionManifest(loaded, manifestLocation);
-            }
-            return loaded;
-         } catch (error) {
-            // Nothing was bound: the row goes back, so it never names a
-            // binding the version does not serve.
-            await this.registry
-               .setVersionManifestPath(
-                  this.environmentId,
-                  packageName,
-                  versionId,
-                  current.manifestPath,
-               )
-               .catch((restoreError) =>
+         return loaded;
+      } catch (error) {
+         // Nothing was bound: the row goes back, so it never names a
+         // binding the version does not serve.
+         await this.registry
+            .setVersionManifestPath(
+               this.environmentId,
+               packageName,
+               versionId,
+               current.manifestPath,
+            )
+            .catch((restoreError) =>
+               logger.error(
+                  "Could not restore a version's manifest after its bind failed",
+                  { packageName, versionId, error: restoreError },
+               ),
+            );
+         // A copy this request loaded bound the row's new manifest as it
+         // loaded. It is cached, and other requests may hold it already (one
+         // that joined the load, or read it since), so it is not evicted
+         // from under their queries: it is bound, in place, to what the row
+         // names again, as a load of that row binds it.
+         if (resident === undefined && loaded !== undefined) {
+            await host
+               .bindVersionManifest(loaded, current.manifestPath)
+               .catch((rebindError) =>
                   logger.error(
-                     "Could not restore a version's manifest after its bind failed",
-                     { packageName, versionId, error: restoreError },
+                     "Could not rebind a version after its manifest was refused",
+                     { packageName, versionId, error: rebindError },
                   ),
                );
-            throw error;
          }
-      });
+         throw error;
+      }
+   }
+
+   /** Run `fn` with one fetch per build manifest (VersionHost.shareManifestFetches). */
+   private sharingManifestFetches<T>(fn: () => Promise<T>): Promise<T> {
+      return this.host?.shareManifestFetches
+         ? this.host.shareManifestFetches(fn)
+         : fn();
    }
 
    /**

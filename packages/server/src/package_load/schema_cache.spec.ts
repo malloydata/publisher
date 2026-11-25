@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { type InFlightAnswer, SchemaCache } from "./schema_cache";
+import {
+   DeferredForgets,
+   type InFlightAnswer,
+   SchemaCache,
+} from "./schema_cache";
 
 /** Sizes an entry by its string length, so a test can reason in bytes. */
 const byLength = (value: string): number => value.length;
@@ -84,5 +88,38 @@ describe("SchemaCache", () => {
       await Promise.resolve();
       await Promise.resolve();
       expect(cache.joinInFlight("t")).toBeUndefined();
+   });
+});
+
+describe("DeferredForgets", () => {
+   function setup() {
+      const cache = new SchemaCache<string>(100, byLength);
+      cache.set("t", "old");
+      cache.set("u", "old");
+      return { cache, forgets: new DeferredForgets(cache) };
+   }
+
+   it("forgets at once when no job runs", () => {
+      const { cache, forgets } = setup();
+      forgets.forget(["t"]);
+      expect(cache.get("t")).toBeUndefined();
+      expect(cache.get("u")).toBe("old");
+   });
+
+   it("holds a forget until every running job ends, so no load reads two versions of a table", () => {
+      const { cache, forgets } = setup();
+      forgets.jobStarted("load-1");
+      forgets.jobStarted("copy-1");
+      forgets.forget(["t"]);
+      // The running load still reads the entry it may already have used.
+      expect(cache.get("t")).toBe("old");
+      expect(forgets.held).toBe(1);
+      forgets.jobEnded("load-1");
+      expect(cache.get("t")).toBe("old");
+      forgets.jobEnded("copy-1");
+      // Before the next job starts.
+      expect(cache.get("t")).toBeUndefined();
+      expect(cache.get("u")).toBe("old");
+      expect(forgets.held).toBe(0);
    });
 });

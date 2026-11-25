@@ -9,10 +9,13 @@
  * text, which differs by dialect, is warehouse_sql.ts's.
  */
 
+import type { ColumnContract } from "../domain/column_contract";
+import { captureDatabaseContract } from "./column_contract_capture";
+import { persistSourceDeclaredColumns } from "../stored_column_types";
 import { BuildCancelledError } from "../domain/build_cancelled";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { logger } from "../../../logger";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { errMessage } from "../../../utils";
 import { quoteRenameTarget, quoteTablePath } from "../../quoting";
 import { storedColumnsOfOutput } from "../stored_column_types";
@@ -27,15 +30,16 @@ import type {
    KeyCheckRecord,
    TierAdapter,
 } from "./tier";
-import { runRollupKeyCheck } from "./inline_uniqueness";
+import { runKeyCheck } from "./inline_uniqueness";
 import { buildDatabaseDelta } from "./incremental_delta_strategy";
 import {
    advanceLedgerAfterSeed,
+   ledgerExtensionKeys,
    ledgerFields,
    refreshFields,
    resetLedger,
 } from "./incremental_build";
-import { backupSuffix, stagingSuffix } from "./materialization_run_support";
+import { backupSuffix, stagingSuffix } from "./build_table_names";
 import { transactionalSwapSql } from "./warehouse_sql";
 import { runAsInternalStatement } from "../../duckdb_lockdown";
 
@@ -109,9 +113,8 @@ export class DatabaseTier
    checkKey(
       site: DatabaseSite,
       check: KeyCheck,
-      table: string,
    ): Promise<KeyCheckRecord | undefined> {
-      return runRollupKeyCheck(check, site.connection, table);
+      return runKeyCheck(check, site.connection);
    }
 
    /** The staging CTAS and the swap onto the served name. */
@@ -178,6 +181,30 @@ export class DatabaseTier
          });
          throw err;
       }
+      // The column contract, read over the staging table before the swap:
+      // a capture that fails drops it and leaves the previous table serving.
+      let contract: ColumnContract;
+      try {
+         contract = await captureDatabaseContract({
+            connection: {
+               dialectName: dialect,
+               runSQL: (sql, options) =>
+                  connection.runSQL(sql, { ...runOptions, ...options }),
+            },
+            tableName: stagingTableName,
+            physicalTableName,
+            declared: persistSourceDeclaredColumns(persistSource),
+         });
+      } catch (err) {
+         await dropStagingAfterFailure({
+            connection,
+            runOptions,
+            dialect,
+            stagingTableName,
+            connectionName: persistSource.connectionName,
+         });
+         throw err;
+      }
       await swapIntoPlace({
          connection,
          runOptions,
@@ -197,7 +224,7 @@ export class DatabaseTier
       const durationMs = Math.round(performance.now() - startTime);
       // A database `#@ persist` table is bound on the served copy with the
       // columns its build wrote, captured here as a `storage=` build captures
-      // them (the v1 cutover's G1).
+      // them (the v1 cutover's).
       const schema = await capturedDatabaseSchema({
          connection,
          physicalTableName,
@@ -207,7 +234,7 @@ export class DatabaseTier
 
       // Each column's type as the warehouse names it, so the served copy
       // reads a big-integer column through a cast to exactly that type and
-      // never narrows one (known limitation 12). Captured on every build: a
+      // never narrows one. Captured on every build: a
       // `#(materialize)` table records no other schema.
       const nativeSchema = await capturedNativeSchema({
          run: (sql, options) =>
@@ -236,7 +263,16 @@ export class DatabaseTier
          physicalTableName,
          connectionName: persistSource.connectionName,
          realization: "COPY",
-         ...ledgerFields(incrementalRefresh?.lineage, seededThrough),
+         ...ledgerFields(
+            incrementalRefresh?.lineage,
+            seededThrough,
+            ledgerExtensionKeys(
+               incrementalRefresh,
+               instruction.reseed,
+               incrementalRefresh?.context.materializationId,
+               incrementalRefresh ? "full" : undefined,
+            ),
+         ),
          // Reported for any incremental source that rebuilt, so a full rebuild
          // is distinguishable from a delta.
          ...refreshFields(incrementalRefresh ? "full" : undefined),
@@ -247,6 +283,7 @@ export class DatabaseTier
          ...(schema?.length ? { schema } : {}),
          ...(nativeSchema?.length ? { nativeSchema } : {}),
          ...request.upstreamReuse,
+         contract,
       };
    }
 }
@@ -297,7 +334,7 @@ export async function capturedDatabaseSchema(args: {
          {
             sourceName: args.sourceName,
             physicalTableName: key,
-            error: errMessage(err),
+            code: errorCodeOf(err),
          },
       );
       return undefined;
@@ -333,7 +370,7 @@ async function dropStagingAfterFailure({
          {
             stagingTableName,
             connectionName,
-            cleanupError: errMessage(cleanupErr),
+            cleanupCode: errorCodeOf(cleanupErr),
          },
       );
    }
@@ -425,7 +462,7 @@ async function swapInTransaction({
             logger.warn("Failed to roll back a materialized table swap", {
                physicalTableName,
                connectionName,
-               error: errMessage(rollbackErr),
+               code: errorCodeOf(rollbackErr),
                // The swap's error can quote its SQL; it reaches the run's
                // record.
                causeCode: errorCodeOf(failure),
@@ -453,7 +490,7 @@ async function swapInTransaction({
 }
 
 /** Whether a statement failed because other objects depend on what it drops. */
-function dependedOn(err: unknown): boolean {
+export function dependedOn(err: unknown): boolean {
    const code = (err as { code?: unknown } | null)?.code;
    return (
       code === "2BP01" ||
@@ -580,8 +617,8 @@ async function swapByRenamingAside({
                   backupTableName,
                   stagingTableName,
                   connectionName,
-                  error: errMessage(err),
-                  restoreError: errMessage(restoreErr),
+                  code: errorCodeOf(err),
+                  restoreCode: errorCodeOf(restoreErr),
                },
             );
             throw err;
@@ -602,7 +639,7 @@ async function swapByRenamingAside({
             physicalTableName,
             backupTableName,
             connectionName,
-            error: errMessage(dropErr),
+            code: errorCodeOf(dropErr),
          },
       );
    }

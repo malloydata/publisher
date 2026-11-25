@@ -29,6 +29,7 @@ import {
    incrementalPolicyAdvisories,
    incrementalPolicyRejections,
    incrementalUnbuildableReason,
+   MAX_LOOKBACK_SECONDS,
    type IncrementalPolicySource,
 } from "./incremental_policy";
 import type { Package } from "../../package";
@@ -483,6 +484,116 @@ describe("incrementalPolicyRejections", () => {
       ).toBeUndefined();
    });
 
+   // ── Rule 13: lookback= ─────────────────────────────────────────────────
+
+   /** A coherent merge declaration on a timestamp watermark, plus `extra`. */
+   function withLookback(
+      extra: Partial<IncrementalDeclaration>,
+   ): IncrementalDeclaration {
+      return declaration({
+         refresh: "incremental",
+         incremental: true,
+         declaredWatermark: true,
+         declaredMergeKey: true,
+         watermark: {
+            name: "loaded_at",
+            kind: "dimension",
+            malloyType: "timestamp",
+         },
+         watermarkOrderable: true,
+         mergeKeys: [
+            { name: "order_id", kind: "dimension", malloyType: "string" },
+         ],
+         strategy: "merge",
+         declaredLookback: true,
+         lookback: { text: "2 days", seconds: 172_800 },
+         ...extra,
+      });
+   }
+
+   it("rule 13: accepts lookback= with a time watermark and a merge key", () => {
+      expect(rejections({ declaration: withLookback({}) })).toEqual([]);
+      expect(
+         rejections({
+            declaration: withLookback({ watermark: DATE_WATERMARK }),
+         }),
+      ).toEqual([]);
+   });
+
+   it("rule 13: a lookback= that is not a duration names the units", () => {
+      const messages = rejections({
+         declaration: withLookback({ lookback: { text: "2 months" } }),
+      });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain('lookback="2 months"');
+      expect(messages[0]).toContain("hours, days or weeks");
+   });
+
+   it("rule 13: a lookback= longer than 365 days fails, not a silent rebuild", () => {
+      expect(
+         rejections({
+            declaration: withLookback({
+               lookback: { text: "365 days", seconds: MAX_LOOKBACK_SECONDS },
+            }),
+         }),
+      ).toEqual([]);
+      const messages = rejections({
+         declaration: withLookback({
+            lookback: { text: "53 weeks", seconds: 53 * 604_800 },
+         }),
+      });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain("365 days");
+   });
+
+   it("rule 13: lookback= needs merge_key=", () => {
+      const messages = rejections({
+         declaration: withLookback({
+            declaredMergeKey: false,
+            mergeKeys: [],
+            strategy: "range_replace",
+         }),
+      });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain("lookback= without merge_key=");
+   });
+
+   it("rule 13: lookback= needs a date or timestamp watermark", () => {
+      const messages = rejections({
+         declaration: withLookback({
+            watermark: {
+               name: "batch",
+               kind: "dimension",
+               malloyType: "number",
+            },
+         }),
+      });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain("of type number");
+   });
+
+   it("rule 1: lookback= on a source that is not incremental", () => {
+      const messages = rejections({
+         declaration: declaration({
+            declaredLookback: true,
+            lookback: { text: "2 days", seconds: 172_800 },
+         }),
+      });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain("declares lookback= but is not");
+   });
+
+   it("rule 5: an empty lookback= asks for a duration", () => {
+      const messages = rejections({
+         declaration: withLookback({
+            lookback: undefined,
+            malformed: [{ key: "lookback", problem: "empty" }],
+         }),
+      });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain('lookback="2 days"');
+   });
+
    // ── Multiple sources ──────────────────────────────────────────────────
 
    it("reports every source's problems, in source order", () => {
@@ -817,10 +928,7 @@ source: raw is duckdb.sql("""
       "is inert for a plain persist source, and the package still loads",
       async () => {
          const pkg = await loadPackage(`${RAW}#@ persist name="t"\n${ROLLUP}`);
-         expect(pkg.materialization().incrementalPolicyWarnings()).toEqual([]);
-         expect(pkg.materialization().formatInvalidIncrementalPolicy()).toBe(
-            "",
-         );
+         expect(pkg.formatLoadGateText()).toBe("");
       },
       { timeout: 30000 },
    );
@@ -892,9 +1000,7 @@ source: raw is duckdb.sql("""
          expect(
             warnings.filter((w) => w.code === "persist-source-refused"),
          ).toEqual([]);
-         expect(pkg.materialization().formatInvalidIncrementalPolicy()).toBe(
-            "",
-         );
+         expect(pkg.formatLoadGateText()).toBe("");
          // Not built: neither planned nor in the run's plan.
          expect(Object.values(pkg.getBuildPlan()?.sources ?? {})).toEqual([]);
          // Answered live, with live's rows.

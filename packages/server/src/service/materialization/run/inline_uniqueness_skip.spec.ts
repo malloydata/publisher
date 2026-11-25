@@ -20,10 +20,9 @@ import {
    makeMaterialization,
    materializePlansIn,
    sourcesIn,
-   targetsIn,
 } from "../../../test_helpers/materialization_test_fixtures";
 import { useMaterializationOn } from "../../../test_helpers/settings_env";
-import { computeSourceEntityId } from "../plan/build_plan";
+import { planAddresses } from "../plan/addressing";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
 import type { BuildInstruction, ManifestEntry } from "../domain/types";
 import {
@@ -33,7 +32,7 @@ import {
    withoutUniquenessPasses,
 } from "./inline_uniqueness";
 import { InstructedBuild } from "./instructed_build";
-import type { BuildEnvironment } from "./materialization_run_support";
+import { type BuildEnvironment } from "./build_upstreams";
 import { buildSource } from "./source_build";
 
 const packages = tempBuildPlanPackages();
@@ -52,6 +51,26 @@ const PERSISTED_JOIN = `##! experimental.persistence
 source: regions_raw is duckdb.table('regions_src')
 #@ persist name="regions_t"
 source: regions is regions_raw -> { select: code, label } extend {
+  primary_key: code
+}
+#(materialize) storage="lake" name="orders_t" inline=["regions"]
+source: orders is duckdb.table('orders_src') extend {
+  join_one: regions with region
+}
+`;
+
+/**
+ * `regions` beside a `storage=` twin of the same SQL: its `name=` folds into
+ * its address, which is then not the key the compiler looks its table up by.
+ */
+const FOLDED_JOIN = `##! experimental.persistence
+source: regions_raw is duckdb.table('regions_src')
+#@ persist name="regions_t"
+source: regions is regions_raw -> { select: code, label } extend {
+  primary_key: code
+}
+#@ persist storage="lake"
+source: regions_twin is regions_raw -> { select: code, label } extend {
   primary_key: code
 }
 #(materialize) storage="lake" name="orders_t" inline=["regions"]
@@ -106,14 +125,12 @@ async function scenario(model: string) {
    )) as unknown as MalloyConnection;
    for (const sql of SEED) await duckdb.runSQL(sql);
    const compiled = await compilePackageBuildPlan(pkg);
+   // The plan's addresses, folds included (foldDistinctTableNames).
+   const planned = planAddresses(compiled);
    const addresses = new Map(
       Object.entries(sourcesIn(compiled)).map(([id, s]) => [
          s.name,
-         computeSourceEntityId(
-            s,
-            compiled.connectionDigests,
-            targetsIn(compiled)?.[id],
-         ),
+         planned[id] as string,
       ]),
    );
    const environment = {
@@ -198,10 +215,8 @@ async function scenario(model: string) {
          instructions: rebuild.map(instruction),
          seedEntries: carried,
          signal: new AbortController().signal,
-         strict: false,
          priorRefusals: [],
          hostInstructed: false,
-         warehouseReach: "recompute",
          uniqueness: ledger,
       });
       if (Object.keys(result.failures).length === 0) {
@@ -279,6 +294,28 @@ describe("the inline uniqueness check, skipped only when its table is unchanged"
          expect(failed[0].reason).toMatch(/inlines the join_one 'regions'/);
          expect(outcomes(fourth.uniquenessChecks)).toEqual([]);
          expect(fourth.uniquenessChecks?.passes ?? {}).toEqual({});
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "skips over an unchanged persisted joined table whose address folds in its name=",
+      async () => {
+         const s = await scenario(FOLDED_JOIN);
+         // The twin is planned (so regions' address folds), not built.
+         const first = await s.run(["regions", "orders"]);
+         expect(first.failures).toEqual({});
+         expect(outcomes(first.uniquenessChecks)).toEqual([
+            "orders.regions:ran",
+         ]);
+         expect(
+            Object.values(first.uniquenessChecks?.passes ?? {}),
+         ).toMatchObject([{ joinedAddress: s.addresses.get("regions") }]);
+         const second = await s.run(["orders"]);
+         expect(second.failures).toEqual({});
+         expect(outcomes(second.uniquenessChecks)).toEqual([
+            "orders.regions:skipped",
+         ]);
       },
       { timeout: 60000 },
    );

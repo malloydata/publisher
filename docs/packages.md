@@ -230,6 +230,11 @@ compiles it, and serves it. A package that declares no `version` fails to load. 
   `GET /api/v0/environments/{env}/packages/{pkg}?reload=true` over REST or the `reload_package`
   MCP tool. A reload that fails to compile leaves the files alone and keeps serving the previous
   model.
+- An unversioned (for example watch-mode) package's reload, and a publish, read the columns of
+  each table the package reads from the warehouse again, so a column added, dropped or retyped
+  there shows up. The recompile watch mode runs on a save, and a boot, reuse the columns already
+  fetched: reload the package to see a warehouse change. With versioning on (the default) a
+  version's reload changes nothing, so a column change is picked up by publishing a new version.
 - `--init` deletes `publisher_data/` and publishes everything again from the configured
   locations. Keep your source of truth outside `publisher_data/`.
 
@@ -249,6 +254,11 @@ until the swap. Four things follow from how that is recorded:
   recompiled beyond what a new `manifestLocation` requires. A `PATCH` with a different `location`
   installs from it. A `PATCH` never changes the recorded location by itself. To fetch the same
   location again, reload the package.
+- A `PATCH` naming a `manifestLocation` that cannot be fetched or bound is refused, with 400
+  `MANIFEST_NOT_FOUND` when nothing is at it, 422 `MANIFEST_INVALID` when what is there is not a
+  build manifest, and otherwise 500 `MANIFEST_BIND_FAILED`; nothing of that `PATCH` is applied: `publisher.json` and the
+  package's metadata stay as they were, and it serves what it served before. A manifest that binds
+  with a table declined (one the warehouse does not hold) answers 200, with that source live.
 - A `PATCH` that arrives while a load of the package is in progress waits for it, and is applied
   to whichever copy that load leaves resident. So it lands on the copy being installed, or, if the
   install failed, on the copy that is still serving.

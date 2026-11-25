@@ -20,8 +20,9 @@ it. The join to `regions` cannot be carried into the destination, and a
 dimension that reads it names an alias the model does not have — so the
 build thins to the kinds that change rows (the `where:` filter) and compiles
 again. `rollup` never read `region_name`; it stacks on `daily`'s table and
-says `reused`. A downstream that does read it is refused under strict as a
-shape the build could not carry, which is what it is.
+says `reused`. A downstream that does read it is not built, since its build
+cannot be expressed over `daily`'s table and nothing recomputes from raw; it
+answers live.
 
 ## Publisher
 
@@ -71,12 +72,11 @@ source: by_name is daily -> { group_by: region_name; aggregate: grand is total.s
 ## Publish
 
 `rollup` stacks on `daily`; `by_name` reads the join the destination cannot
-bind, so non-strict it is recomputed from the warehouse and says so.
+bind, so the plan refuses it and it is not built.
 
 expect binding: daily -> lake
 expect binding: rollup -> lake
 expect upstreams: rollup -> reused
-expect upstreams: by_name -> recomputed
 
 ## Query rollup
 
@@ -92,28 +92,48 @@ Expect:
 | --------- |
 | 300       |
 
+## Query by name
+
+`by_name` answers live, with the parent's filter applied.
+
+```malloy
+run: by_name -> { select: region_name, grand }
+```
+
+Expect:
+
+| region_name | grand:num |
+| ----------- | --------- |
+| east        | 300       |
+
 ## Mutate orders_pg.pjw_orders
 
 | order_id:int | order_date:date | region_id:int | amount:num |
 | ------------ | --------------- | ------------- | ---------- |
 | 99           | 2026-01-03      | 10            | 1000       |
 
-## Build (orchestrated, strict, pkg=pjw)
+## Build (orchestrated, pkg=pjw)
 
 Strict: `rollup` alone over the stored `daily`. Stacks on the table.
 
 - rollup -> pjw_rollup__g2 @ lake (reused)
   reference: daily
 
-## Build refused (orchestrated, strict, pkg=pjw)
+## Build refusals
 
-Strict: `by_name` reads `region_name`, which no tier can carry. Refused as a
-shape the build could not express, naming the construct.
+`by_name` reads `region_name`, which `daily`'s stored table does not hold: the
+join that supplies it reads the warehouse. The plan refuses it, naming the
+field, bound or not.
 
-- by_name -> pjw_by_name__g2 @ lake
-  reference: daily
+Expect:
 
-cites: could not express it over them
+| source  | tier    | reason                  |
+| ------- | ------- | ----------------------- |
+| by_name | storage | upstream_table_unusable |
+
+## Warns
+
+cites: it reads 'region_name' from a table no stored upstream holds
 
 ## Bind pjw
 

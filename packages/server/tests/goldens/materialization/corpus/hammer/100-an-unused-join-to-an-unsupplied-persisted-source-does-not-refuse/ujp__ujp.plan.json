@@ -100,6 +100,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.ujp_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "e0c8608d950cd1f4e05681cf328f0e8220dce2ad4498722787626adba3fb9772",
         "sourceID": "counts@<hammer>/ujp/ujp.malloy",
@@ -127,6 +133,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.ujp_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "9e2946c24d93348533d887f4a1a76b78f6f3f4489f71eb0efec8d704340d4cd9",
         "sourceID": "daily@<hammer>/ujp/ujp.malloy",
@@ -151,6 +163,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.ujp_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "6296e0159a81ea1436716846404c383f0d729e331a186229bbea5e9755e0e784",
         "sourceID": "rollup@<hammer>/ujp/ujp.malloy",

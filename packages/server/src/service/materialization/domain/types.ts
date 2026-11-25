@@ -14,6 +14,8 @@
  */
 
 import { components } from "../../../api";
+import type { TableRecord } from "./physical_table";
+import type { TableCollations } from "./collation";
 
 // Wire types for the build protocol.
 export type MaterializationStatus =
@@ -21,6 +23,17 @@ export type MaterializationStatus =
 export type BuildPlan = components["schemas"]["BuildPlan"];
 export type BuildManifestResult = components["schemas"]["BuildManifest"];
 export type ManifestEntry = components["schemas"]["ManifestEntry"];
+
+/**
+ * What an incremental refresh's late-row check found below one delta's lower
+ * bound (run/incremental_apply.ts, `countLateRows`): rows the source holds,
+ * stamped in the window `[from, to)` directly below where the delta started
+ * reading, that the stored table lacks. No delta reads below that bound, so
+ * they stay missing until a rebuild or a `lookback=` that reaches them. The
+ * manifest entry's `lateRows`; raised as a package warning
+ * (`INCREMENTAL_LATE_ROWS_CODE`, domain/incremental.ts) while it is bound.
+ */
+export type LateRows = NonNullable<ManifestEntry["lateRows"]>;
 export type BuildInstruction = components["schemas"]["BuildInstruction"];
 export type ManifestReference = components["schemas"]["ManifestReference"];
 export type Realization = components["schemas"]["Realization"];
@@ -31,6 +44,17 @@ export type Realization = components["schemas"]["Realization"];
  * counterpart is `IncrementalLedgerEntry` in storage/DatabaseInterface.ts.
  */
 export type LedgerEntry = components["schemas"]["LedgerEntry"];
+
+/**
+ * A `buildInstructions.ledger` entry dropped as malformed: the table it named
+ * and what was wrong with it. Its source seeds under `ledger_entry_malformed`.
+ * An entry naming no string table cannot be attributed to a source and is
+ * only logged.
+ */
+export interface MalformedLedgerEntry {
+   physicalTableName: string;
+   defect: string;
+}
 
 /** How a delta advances the serving table. */
 export type IncrementalStrategy = "merge" | "range_replace";
@@ -126,6 +150,14 @@ export interface FreshnessAwareManifestEntry {
     */
    leftOutColumns?: string[];
    /**
+    * Set when the snapshot is built: the plan stores this table as of its
+    * build (`PackagePlan.asOfBuild`), so read admission declines an access
+    * decision over it. A database persisted view's or query's table has no
+    * serve binding to carry `Binding.asOfBuild`, only this entry. Internal,
+    * never on the wire.
+    */
+   asOfBuild?: boolean;
+   /**
     * The connection the physical table lives on, carried from the run
     * manifest so the bind step can quote `tableName` for that connection's
     * dialect (see Package.quoteBoundTableNames). Absent on entries whose
@@ -145,16 +177,35 @@ export interface FreshnessAwareManifestEntry {
    /**
     * The database table's columns with their types as the warehouse's own
     * catalog names them (the wire entry's `nativeSchema`), which the served
-    * copy casts a big-integer column to exactly (known limitation 12).
+    * copy casts a big-integer column to exactly.
     */
    nativeSchema?: { name: string; type: string }[];
    /**
-    * A `#(rollup)` rollup's key check (known limitation 29), as the
-    * auto-run that wrote or carried this table recorded it: whether the rows
-    * it grouped held its one grain dimension once per value. Internal, never
-    * on the wire; absent (unknown) on every entry a host's manifest binds.
+    * The key checks the table's contract records, as a bind reads them
+    * under the primary keys the models declare now (`keyUniquenessOfContract`):
+    * a `#(rollup)` rollup's own key, and each checked source's primary key.
+    * Internal, never on the wire: set only by a bind, off the contract.
     */
    keyUniqueness?: KeyUniqueness;
+   /**
+    * The wire entry's `lateRows`: what the run's late-row check found below
+    * an incremental delta, raised as a package warning while it is bound.
+    */
+   lateRows?: LateRows;
+   /**
+    * The wire entry's `ledger` and `builtFrom`, as an incremental extension's
+    * standalone refresh reads them: which build of its parent's table it last
+    * read (run/incremental_upstream.ts, `boundParentReads`).
+    */
+   ledger?: ManifestEntry["ledger"];
+   builtFrom?: ManifestEntry["builtFrom"];
+   /**
+    * The wire entry's `contract`, as the host stored it (read with
+    * `parseContract`): a table with none is never served from.
+    */
+   contract?: unknown;
+   /** The wire entry's `builtAt`: which build of the table a verdict judged. */
+   builtAt?: string;
 }
 
 /** See {@link FreshnessAwareManifestEntry.heldRead}. */
@@ -186,6 +237,12 @@ export interface KeyUniqueness {
     * source known true here.
     */
    parentKeys?: Record<string, boolean>;
+   /**
+    * The primary key column each of {@link parentKeys} checked, by sourceID.
+    * A check is read only while the source still declares that key: one with
+    * no column recorded, or another, is unknown, and its joins answer live.
+    */
+   parentKeyColumns?: Record<string, string>;
 }
 
 /**
@@ -213,6 +270,12 @@ export type ObservedColumns =
         }[];
         /** The connection's dialect the types were read on. */
         dialect?: string;
+        /**
+         * Its column collations, read beside its columns
+         * (`readTableCollations`); absent on an engine whose collations are
+         * not read.
+         */
+        collations?: TableCollations;
      }
    | {
         /** Why, as a fixed class: what a package warning may say. */
@@ -261,12 +324,22 @@ export type KeptTableReason =
  * source is served under now, left in its old place by a `storage=` or tier
  * move (`may_be_served`), which may be the very table served.
  */
-export interface KeptTable {
+export interface KeptTable extends TableRecord {
    sourceEntityId: string;
    sourceName?: string;
-   /** The kept table. */
-   physicalTableName: string;
    connectionName: string;
    storageDestinationName?: string;
    reason: KeptTableReason;
+}
+
+/** A run that can write nothing more. */
+const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
+   "MANIFEST_FILE_READY",
+   "FAILED",
+   "CANCELLED",
+]);
+
+/** Whether a run with `status` has not settled: it may still write. */
+export function isActiveRun(status: string): boolean {
+   return !TERMINAL_RUN_STATUSES.has(status);
 }

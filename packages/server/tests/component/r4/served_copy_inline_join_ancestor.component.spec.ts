@@ -94,7 +94,8 @@ const QUERIES = [
 // extension builds in the destination over its parent's stored table, the
 // parent's inlined join read from its stored columns as a record (#1661's
 // follow-up). Without the parent's `inline=`, its table holds no joined
-// column, so the extension builds over the raw chain.
+// column, so the extension is refused at plan (`upstream_table_unusable`),
+// never built over the raw chain, and answers live.
 for (const [label, storage, parentInline, problems, chained] of [
    [
       "database, the parent inlining it too",
@@ -157,11 +158,29 @@ for (const [label, storage, parentInline, problems, chained] of [
       } else if (chained === false) {
          // The parent's table holds no joined column, so the stored-chain
          // build cannot read the join over it (its target is not in the
-         // destination): the extension builds over the raw chain.
-         it("builds the extension over the raw chain", () => {
+         // destination): the extension is refused, never built over the raw
+         // chain, and every query on it answers live, equal to live.
+         it("refuses the extension at plan, never building it over the raw chain", () => {
             expect(fixture.storedBuildSQL.long_flights).toBeUndefined();
-            expect(fixture.tableIds.long_flights).toBeDefined();
+            expect(fixture.tableIds.long_flights).toBeUndefined();
+            const refusal = fixture.materializeRefusals.find(
+               (r) => r.sourceName === "long_flights",
+            );
+            expect(refusal?.reason).toBe("upstream_table_unusable");
+            expect(refusal?.message).toContain("it extends 'flights'");
          });
+         for (const [name, malloy] of QUERIES) {
+            it(`answers ${name} live, equal to live`, async () => {
+               const run = await fixture.run({
+                  name,
+                  malloy,
+                  expectLive: true,
+               });
+               expect(run.live.length).toBeGreaterThan(0);
+               expect(rowDifference(run.live, run.served)).toBeUndefined();
+            });
+         }
+         return;
       }
 
       it("builds the extension's stored rows exactly as the raw chain would", async () => {

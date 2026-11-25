@@ -23,24 +23,24 @@
  * and Malloy's own persistence planner builds on v1's pipeline. The serve side
  * (serve/rollup_variants.ts) offers it to the router as a variant.
  *
- * - **A1, on the measure.** A declaration belongs to the source that wrote it:
+ * - **On the measure.** A declaration belongs to the source that wrote it:
  *   a tag at the declaring site is inherited by reference onto every
  *   extension's field, so a note an extension inherits from its base (the same
  *   note, by position) is the base's, and an include-list item's note is the
  *   including source's own. A source therefore has its rollups once, wherever
  *   it is imported.
- * - **A2, qualifying measures.** The measure grammar (rollup_measure_grammar.ts)
+ * - **Qualifying measures.** The measure grammar (rollup_measure_grammar.ts)
  *   over the measure's own text, checked against the compiled expression
  *   (governance/ir/measure_aggregates.ts): the leaves must be exactly the
  *   aggregates the compiler computes, or the measure is not stored. The text
  *   is read because the build re-emits each leaf as Malloy text, which the
  *   compiled IR cannot give back. A join-level aggregate is stored only when
  *   the join's key is in the grain, so each joined row falls in one group.
- * - **A3, grain dimensions.** Dimensions the source declares, by name. The
+ * - **Grain dimensions.** Dimensions the source declares, by name. The
  *   rollup's name carries its declaring model: a digest of the base's
  *   package-relative `sourceID`, so same-named bases in two models never
  *   share a table, and every model that imports the base plans the same name.
- * - **A4, access filters.** The base's entry-point gates, as the governor
+ * - **Access filters.** The base's entry-point gates, as the governor
  *   walks them (`collectEntryPointGates`: own, inherited, a derivation's
  *   base), so the build and the read-time proof never disagree about which
  *   gates a rollup covers. A gate is exact on a rollup only when every field
@@ -48,7 +48,7 @@
  *   fields the grain does not keep, that reads through a join, or a base that
  *   joins a gated source, is a publish warning and the rollup is not built.
  *   A gated base's rollups are built only when a query can read them past
- *   their gate ({@link rollupGateEnforcedAtRead}); otherwise none is (row 21).
+ *   their gate ({@link rollupGateEnforcedAtRead}); otherwise none is.
  *   A hidden grain dimension is stored, redeclared with its modifier on
  *   the variant (a `private` one only when the base itself declares it,
  *   read through its build copy).
@@ -60,7 +60,7 @@
  *   for an inherited one, `given_where_over_unstored_field` for one over a
  *   field the grain drops, `reads_given` for one the build
  *   would read.
- * - **A6, fan-out grains.** A grain dimension read through a join_many or
+ * - **Fan-out grains.** A grain dimension read through a join_many or
  *   join_cross is recorded as a fan-out dimension; the serve side reads the
  *   rollup only for a query that fixes it at every aggregating level.
  *
@@ -79,6 +79,7 @@ import { keyCheckPipeline } from "../text/key_check_text";
 import {
    primaryKeyOf,
    recordedTimezoneOf,
+   stageZonedTruncations,
    timezoneOf,
 } from "../../governance/ir/compiled_model";
 import type { ModelDef, SourceDef } from "@malloydata/malloy";
@@ -162,7 +163,11 @@ import {
    type DecomposedMeasure,
    type MeasureRefusal,
 } from "./rollup_measure_grammar";
-import type { AggregateLeaf, Reaggregate } from "../domain/rollup_measures";
+import {
+   rollupLabel,
+   type AggregateLeaf,
+   type Reaggregate,
+} from "../domain/rollup_measures";
 import {
    splitSourceID,
    type ParentKeyCheck,
@@ -216,8 +221,8 @@ export interface ParentKeyNeed {
 /**
  * Whether a rollup at `placement` over a gated base may be read past its
  * base's gate (and so is worth building), by the gate policy: on either
- * tier, under `materialize.gatedSources` or, with it off, under G3 when every
- * gate is the base's `own`, or a lock reading no row field.
+ * tier, under `materialize.gatedSources` or, with it off, under own-gate
+ * keeping when every gate is the base's `own`, or a lock reading no row field.
  */
 function rollupsServeGatedBases(
    placement: { storage?: string },
@@ -238,7 +243,7 @@ function rollupsServeGatedBases(
 
 /**
  * A rollup base's gates as the gate policy reads them: row-level, and
- * `attributed` when every one is the base's own (G3 for rollups); `lockOnly`
+ * `attributed` when every one is the base's own (for rollups); `lockOnly`
  * when every one is a lock reading no row field.
  */
 function baseGateOf(
@@ -271,18 +276,17 @@ function isRollupVariantPlan(plan: unknown): plan is RollupVariantPlan {
 }
 
 /**
- * Whether a planned rollup's base gate is enforced when it is read (R3 for
- * rollups): `govern()` grafts and proves the base's gates on the rollup
- * variant, so the tier checks that refuse a gated build (the database and
- * storage `authorize` refusals) do not apply to it. True only for a rollup
- * the rollup leg planned (a `#(rollup)` one, or a v1 `#@ preaggregate`
- * line read as one) over a gated base, whose every gate the
- * planner proved exact on the rollup (table 1: each field a grain dimension,
- * no gated join), at a
- * placement the gate policy allows (`domain/gate_policy.ts`). The build plan, the
- * host-instructed build and the serve bind all ask this one question, through
- * `gateEnforcedAtRead`, so a rollup is never built that cannot be read, nor
- * read because it was built.
+ * Whether a planned rollup's base gate is enforced when it is read (route, then
+ * govern, for rollups): `govern()` grafts and proves the base's gates on the
+ * rollup variant, so the tier checks that refuse a gated build (the database
+ * and storage `authorize` refusals) do not apply to it. True only for a rollup
+ * the rollup leg planned (a `#(rollup)` one, or a v1 `#@ preaggregate` line
+ * read as one) over a gated base, whose every gate the planner proved exact on
+ * the rollup (table 1: each field a grain dimension, no gated join), at a
+ * placement the gate policy allows (`domain/gate_policy.ts`). The build plan,
+ * the host-instructed build and the serve bind all ask this one question,
+ * through `gateEnforcedAtRead`, so a rollup is never built that cannot be read,
+ * nor read because it was built.
  */
 export function rollupGateEnforcedAtRead(plan: unknown): boolean {
    if (typeof plan !== "object" || plan === null) return false;
@@ -427,7 +431,7 @@ function privateLifts(
    return at < 0 ? undefined : facts.ancestors.slice(0, at + 1);
 }
 
-/** Every compiled source of `map`, once per map: what A1's reader looks among. */
+/** Every compiled source of `map`, once per map: what the on-the-measure reader looks among. */
 const scopes = new WeakMap<SourceMap, unknown[]>();
 function scopeOf(map: SourceMap): unknown[] {
    let scope = scopes.get(map);
@@ -439,7 +443,7 @@ function scopeOf(map: SourceMap): unknown[] {
 }
 
 /**
- * The `#(rollup)` notes `def`'s own statement declared on `field` (A1),
+ * The `#(rollup)` notes `def`'s own statement declared on `field`,
  * by the shared rule (`declaredFieldNotes`): a note a source inherited from
  * the source it extends, renames or imports is that source's, and an
  * include-list item's note is the including source's own.
@@ -989,6 +993,11 @@ interface RollupFacts {
    /** The time zone the source sets, and whether a source in it joins it. */
    zone: ReturnType<typeof timezoneOf>;
    joinedInZone: boolean;
+   /**
+    * The timestamp truncations the source's query computed in a zone of its
+    * own ({@link stageZonedTruncations}).
+    */
+   stageZoned: ReadonlySet<string>;
    /** Whether a same-zone joiner reads a rollup placed in `storage` (none: database). */
    readInZone(storage: string | undefined): boolean;
    scope: Parameters<typeof decomposeMeasure>[1];
@@ -1034,7 +1043,7 @@ function rollupFactsOf(
    const timeFields = currentTimeFields(def.fields);
    // A given-reading `where:` of the base's own, over its dimensions, is left
    // out of the build and written again on the variant, as the served copy
-   // re-applies one (P2); an inherited one (`inherited_where_with_given`), one
+   // re-applies one; an inherited one (`inherited_where_with_given`), one
    // over a field that is not a dimension (`given_where_over_unstored_field`),
    // or one the build would read (`reads_given`), is refused by
    // the one classifier `#(materialize)` reads, with its reason.
@@ -1062,7 +1071,7 @@ function rollupFactsOf(
    // A source that sets its own `timezone:` (or inherits one) built its
    // times in that zone, and the base branch reads no query on it from a
    // rollup (`TIME_ZONE`), whose variant is redeclared without the zone. The
-   // only reader left is the join branch (A7): through a join from a source
+   // only reader left is the join branch: through a join from a source
    // in the same zone, to a database rollup or to one in a `storage=`
    // destination the joining source is stored in too (the branch reads no
    // other: `CROSS_CONNECTION`). Anything else is never read.
@@ -1140,6 +1149,7 @@ function rollupFactsOf(
       timeFields,
       zone,
       joinedInZone: joinersInZone.length > 0,
+      stageZoned: stageZonedTruncations(def),
       readInZone,
       scope,
       joinsRead,
@@ -1196,14 +1206,14 @@ function declarationRefusal(
       };
    }
    const timeRead = facts.windowed
-      ? "the source's rows read the current time (a `where:` with `now`, a rolling window)"
+      ? "the source's rows read the current time (a `where:` with `now` or a relative time filter such as `f'last 7 days'`, a rolling window)"
       : timeFields.has(decl.measure)
-        ? "the measure reads the current time (`now`)"
+        ? "the measure reads the current time (`now`, or a relative time filter)"
         : decl.grain
              .filter((g) => timeFields.has(g))
              .map(
                 (g) =>
-                   `its grain dimension \`${g}\` reads the current time (\`now\`)`,
+                   `its grain dimension \`${g}\` reads the current time (\`now\`, or a relative time filter)`,
              )[0];
    if (timeRead) {
       return unservable(
@@ -1221,6 +1231,22 @@ function declarationRefusal(
          "time_zone",
          decl,
          `the source sets its own time zone (\`timezone: '${zone}'\`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (${noJoin}), so its table would cost a build no query reads`,
+      );
+   }
+   // A `storage=` rollup is read through a declaration that restates each
+   // timestamp truncation over its stored value in the reading query's zone,
+   // which truncates one its source's query computed in a zone of its own
+   // again and serves a wrong value, so such a rollup is not planned and its
+   // reads are answered live.
+   const stageZoned =
+      decl.storage === undefined
+         ? undefined
+         : decl.grain.find((g) => facts.stageZoned.has(g));
+   if (stageZoned !== undefined) {
+      return unservable(
+         "time_zone",
+         decl,
+         `its grain dimension \`${stageZoned}\` is a truncation its source's query computed in a zone of its own, which a \`storage=\` rollup would truncate again in the reading query's zone`,
       );
    }
    // A hidden grain dimension is stored and redeclared with its modifier on
@@ -1299,7 +1325,7 @@ function declarationRefusal(
       );
    }
    // A gate on a source the base joins is not the base's to graft: the
-   // rollup is not built (A4, fail closed).
+   // rollup is not built (fail closed).
    if (gate.declared && gate.joinGated) {
       return unservable(
          gate.reason.joined,
@@ -1307,9 +1333,9 @@ function declarationRefusal(
          "a source it joins has a row-level gate, which a rollup cannot re-apply to its rows",
       );
    }
-   // A4: a gate's fields must be in the grain for its rows to be filtered;
-   // a gate that reads through a join (or anything but a dimension) can
-   // never be re-applied to a rollup's rows.
+   // Access filters: a gate's fields must be in the grain for its rows to be
+   // filtered; a gate that reads through a join (or anything but a dimension)
+   // can never be re-applied to a rollup's rows.
    const ungated = [
       ...gate.unkeepable,
       ...gate.dimensions.filter((g) => !decl.grain.includes(g)),
@@ -1376,7 +1402,7 @@ function rollupMeasureOf(
               `its definition is outside what #(rollup) reads (${d.detail})`,
            );
    }
-   // A2: a join-level aggregate merges only when each joined row falls in
+   // A join-level aggregate merges only when each joined row falls in
    // one group, which the join's key in the grain guarantees.
    let joinProblem: string | undefined;
    const measureFanOut = new Set<string>();
@@ -1572,7 +1598,7 @@ function reaggregateOf(leaf: AggregateLeaf | undefined): Reaggregate {
  * them (`collectEntryPointGates`: own, inherited, a derivation's base), so
  * the build and the read-time proof walk the same gates. `unkeepable` holds
  * what a grain can never keep: a join, a measure, a view, a dimension read
- * through a join (a fan-out grain is not fixed by a grafted filter, A6), or a
+ * through a join (a fan-out grain is not fixed by a grafted filter), or a
  * gate the walk could not read. `joinGated`: a source the base joins carries
  * a gate, which is not the base's to graft.
  */
@@ -1617,6 +1643,7 @@ function gateFieldNames(
             exprs: ["false"],
             route: "authorize",
             selfContained: true,
+            baseHops: 0,
          },
       ];
       unkeepable.add("(an unreadable gate)");
@@ -1624,6 +1651,15 @@ function gateFieldNames(
    for (const entry of entries) {
       // The walk's fail-closed deny: no entry point to graft on.
       if (!entry.struct) unkeepable.add("(an unreadable gate)");
+      // A row filter read through a `->` derivation filters the derivation's
+      // base before the derivation runs; the rollup's rows are the
+      // derivation's output, so no grain proves it exact there.
+      if (
+         entry.baseHops > 0 &&
+         canonicalAuthorizeRoute(entry.route) !== AUTHORIZE_ROUTE
+      ) {
+         unkeepable.add("(a row filter on a derivation's base)");
+      }
       for (const expr of entry.exprs) {
          for (const id of malloyIdentifiers(expr)) {
             const f = byName.get(id);
@@ -1681,9 +1717,9 @@ function lockOnlyAt(
  * Whether every gate in `entries` is an `#(authorize)` lock that reads no row
  * field: each was read off a resolved entry point, is on the lock route,
  * names no field of `def` (`dimensions` and `unkeepable` empty: the same
- * identifier walk the A4 check runs), and its text holds nothing but givens,
- * literals and the lock grammar's words. A row filter always reads a field,
- * so it is never lock-only.
+ * identifier walk the access-filter check runs), and its text holds nothing but
+ * givens, literals and the lock grammar's words. A row filter always reads a
+ * field, so it is never lock-only.
  */
 function locksReadNoRowField(
    entries: ReturnType<typeof collectEntryPointGates>,
@@ -1730,7 +1766,7 @@ function readsOnlyGivensAndLiterals(expr: string): boolean {
  * Whether every gate note on `def`'s own level is one its own statement
  * declared ({@link declaredNotes}): Malloy copies a base's notes onto a source
  * that extends it, so a gate the walk reads as the entry point's may be
- * inherited. Only a base's own gate is kept under G3.
+ * inherited. Only a base's own gate is kept under own-gate keeping.
  */
 function gateNotesDeclaredBy(def: SourceLike, scope: SourceScope): boolean {
    const gates = ownLevelNotes(def.annotations).filter(
@@ -1786,6 +1822,37 @@ export function planModelRollups(
    return { plans, refused };
 }
 
+/**
+ * The refusal of a planned rollup whose build reads a given: its table would
+ * hold one given value's rows, served to every caller.
+ */
+export function rollupReadsGivenRefusal(
+   plan: {
+      baseSourceName: string;
+      grainDimensions: readonly string[];
+      storage?: string;
+   },
+   source: { sourceID: string; name: string },
+): RollupRefusal {
+   return {
+      tier: "unservable",
+      code: ROLLUP_NOT_BUILT_CODE,
+      message:
+         `${rollupLabel(plan)} is not built, so its measures ` +
+         "are served live: its rows read a given, and a table holds one " +
+         "value's rows.",
+      sourceName: plan.baseSourceName,
+      // A given read while the stored relation is built, as every other
+      // mechanism names it.
+      refused: refusalKey(
+         source.sourceID,
+         source.name,
+         "reads_given",
+         tierOf(plan.storage),
+      ),
+   };
+}
+
 /** A refusal as a package finding. */
 export function rollupRefusalFinding(
    refusal: RollupRefusal,
@@ -1836,7 +1903,7 @@ function storedDestinationsOf(map: SourceMap, struct: unknown): Set<string> {
 }
 
 /**
- * The Malloy text of a rollup's key check (known limitation 29), or undefined
+ * The Malloy text of a rollup's key check, or undefined
  * when the rollup's grain is not one dimension. Run against the rollup
  * companion, which imports the base under {@link rollupBaseAlias}, so it reads
  * exactly the rows the rollup's build groups: the base's, on its own

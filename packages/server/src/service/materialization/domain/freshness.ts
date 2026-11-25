@@ -54,6 +54,22 @@ export function freshnessOf(facts: FreshnessFacts, at: Date): Freshness {
    return facts.freshnessFallback === "stale_ok" ? "stale_ok" : "stale";
 }
 
+/**
+ * The instant, in epoch milliseconds, a table with `facts` stops being read
+ * ({@link freshnessOf} turns `stale`): the first moment its age exceeds its
+ * window. Undefined when it never does (no window, no anchor, or a
+ * `stale_ok` fallback, which keeps it read).
+ */
+export function stopsReadAt(facts: FreshnessFacts): number | undefined {
+   if (facts.freshnessWindowSeconds == null || facts.dataAsOf == null) {
+      return undefined;
+   }
+   if (facts.freshnessFallback === "stale_ok") return undefined;
+   const dataAsOfMs = Date.parse(facts.dataAsOf);
+   if (Number.isNaN(dataAsOfMs)) return undefined;
+   return dataAsOfMs + facts.freshnessWindowSeconds * 1000 + 1;
+}
+
 /** The `fallback` values a declaration may give. */
 export const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
 type FreshnessFallback = (typeof FRESHNESS_FALLBACKS)[number];
@@ -88,6 +104,53 @@ export function freshnessWindowSeconds(window: string): number | undefined {
    const count = Number(match[1]);
    if (!Number.isSafeInteger(count) || count <= 0) return undefined;
    return count * WINDOW_UNITS[match[2]];
+}
+
+/**
+ * Why a `freshness.window=` value is refused, as a declaration's message
+ * says it after the route's name: the window must be a positive duration,
+ * a whole number greater than zero and one unit, so `0h`, `-1h` and `1.5h`
+ * are each refused with the same rule.
+ */
+export const FRESHNESS_WINDOW_PROBLEM =
+   "has a freshness.window= that is not a positive duration: write a whole " +
+   'number greater than zero and one unit (s, m, h, d or w), such as freshness.window="24h"';
+
+/**
+ * Seconds per unit of a duration a `#@ persist` key takes (`lookback=`): the
+ * window's letters, and each unit's word, singular or plural. No month or
+ * year, whose length varies.
+ */
+const DURATION_UNITS: Readonly<Record<string, number>> = {
+   ...WINDOW_UNITS,
+   second: 1,
+   seconds: 1,
+   minute: 60,
+   minutes: 60,
+   hour: 3600,
+   hours: 3600,
+   day: 86_400,
+   days: 86_400,
+   week: 604_800,
+   weeks: 604_800,
+};
+
+/** The units {@link durationSeconds} reads, for a message. */
+export const DURATION_UNIT_TEXT =
+   "seconds, minutes, hours, days or weeks (s, m, h, d or w)";
+
+/**
+ * A declared duration in seconds: a positive whole number and one unit,
+ * written as a window is (`36h`, `2d`) or in words (`2 days`, `1 hour`,
+ * `90 minutes`). Undefined for any other text. Lower case, as every
+ * annotation value is case-sensitive.
+ */
+export function durationSeconds(text: string): number | undefined {
+   const match = /^\s*(\d+)\s*([a-z]+)\s*$/.exec(text);
+   if (!match || !Object.hasOwn(DURATION_UNITS, match[2])) return undefined;
+   const count = Number(match[1]);
+   if (!Number.isSafeInteger(count) || count <= 0) return undefined;
+   return count * DURATION_UNITS[match[2]];
 }
 
 /** A declared freshness policy, as a plan source carries it. */

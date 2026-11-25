@@ -254,6 +254,36 @@ const ROUTE_MISTAKES: [
       '#@ persist refresh="incremental"',
       "persist-query-invalid",
    ],
+   [
+      "persist",
+      "a lookback= without merge_key=",
+      '#@ persist name="t" refresh="incremental" watermark="category" lookback="2 days"',
+      "persist-invalid",
+   ],
+   [
+      "persist",
+      "a lookback= that is not a duration",
+      '#@ persist name="t" refresh="incremental" watermark="category" merge_key="category" lookback="2 months"',
+      "persist-invalid",
+   ],
+   [
+      "materialize",
+      "a lookback= without merge_key=",
+      '#(materialize) refresh="incremental" watermark="id" lookback="2 days"',
+      "materialize-invalid",
+   ],
+   [
+      "view",
+      "a lookback= on a result rebuilt whole",
+      '#@ persist lookback="2 days"',
+      "persist-view-invalid",
+   ],
+   [
+      "query",
+      "a lookback= on a result rebuilt whole",
+      '#@ persist lookback="2 days"',
+      "persist-query-invalid",
+   ],
 ];
 
 /** Every (mistake, route) pair, with a package name of its own. */
@@ -478,11 +508,8 @@ describe("the load-versus-refused policy", () => {
          ],
       ];
       const rows: [string, string][] = [
-         // A table name is also checked on the raw text before the models
-         // compile (assertPersistNamesQuoted), which a run does not re-read.
-         ...CASES.filter((c) => !/ name=$/.test(c.label.split(" on ")[0])).map(
-            (c) => [c.label, c.model] as [string, string],
-         ),
+         // A table name checked on the raw text included: a run reads it too.
+         ...CASES.map((c) => [c.label, c.model] as [string, string]),
          ...NEAR_MISSES,
       ];
       for (const [label, model] of rows) {
@@ -500,21 +527,10 @@ describe("the load-versus-refused policy", () => {
                      await packages.create({ "model.malloy": model }),
                   );
                   expect(
-                     loadGateText(
-                        {
-                           plan: plan.plan,
-                           annotationFindings: plan.annotationFindings,
-                           incrementalDeclarations:
-                              plan.incrementalDeclarations,
-                           ...(plan.materializePlans
-                              ? { materializePlans: plan.materializePlans }
-                              : {}),
-                           ...(plan.modelGateLines
-                              ? { modelGateLines: plan.modelGateLines }
-                              : {}),
-                        },
-                        { enforceCollisions: true, versionScoped: false },
-                     ),
+                     loadGateText(plan, {
+                        enforceCollisions: true,
+                        versionScoped: false,
+                     }),
                   ).toBe(loadFailure);
                } finally {
                   await packages.cleanup();

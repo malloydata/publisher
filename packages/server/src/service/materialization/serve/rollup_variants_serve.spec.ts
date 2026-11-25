@@ -11,6 +11,10 @@ import {
    pinnedOf,
 } from "../../../test_helpers/persisted_result_fixture";
 import type { Binding } from "../domain/binding";
+import {
+   contractWithoutPassedKeys,
+   keyUniquenessOfContract,
+} from "../domain/column_contract";
 import { LegDecline } from "../domain/leg_decline";
 import { splitSourceID } from "../domain/table_plans";
 import { rollupCompanionURLOf } from "../text/read_text";
@@ -590,7 +594,10 @@ describe("RollupVariantServe (a joined source's rollup, read through the join)",
       expect(
          await outcomeOf(
             attempt(query, {
-               segments: { parentKeys: { [flightsID]: false } },
+               segments: {
+                  parentKeys: { [flightsID]: false },
+                  parentKeyColumns: { [flightsID]: "id" },
+               },
             }),
          ),
       ).toMatchObject({
@@ -598,9 +605,29 @@ describe("RollupVariantServe (a joined source's rollup, read through the join)",
          detail:
             "the query source holds a value of its primary key `id` more than once or NULL, so a row of the rollup of `segments` would be read once per row that shares it",
       });
+      // A check of the key `flights` declared at build, not now, says nothing.
       expect(
          await outcomeOf(
-            attempt(query, { segments: { parentKeys: { [flightsID]: true } } }),
+            attempt(query, {
+               segments: {
+                  parentKeys: { [flightsID]: true },
+                  parentKeyColumns: { [flightsID]: "old_id" },
+               },
+            }),
+         ),
+      ).toMatchObject({
+         code: "rollup_count_semantics",
+         detail:
+            "the query source's primary key `id` was not checked unique and never NULL when the rollup of `segments` was built, so a row of it could be read once per row that shares it",
+      });
+      expect(
+         await outcomeOf(
+            attempt(query, {
+               segments: {
+                  parentKeys: { [flightsID]: true },
+                  parentKeyColumns: { [flightsID]: "id" },
+               },
+            }),
          ),
       ).toMatchObject({
          code: "rollup_count_semantics",
@@ -608,8 +635,45 @@ describe("RollupVariantServe (a joined source's rollup, read through the join)",
             "`segments`'s primary key `seg_id` was not checked unique and never NULL when its rollup was built, and live counts and sums `segments.seg_miles` once per non-NULL key where its rollup reads every row",
       });
       const answer = await attempt(query, {
-         segments: { parentKeys: { [flightsID]: true, [segmentsID]: true } },
+         segments: {
+            parentKeys: { [flightsID]: true, [segmentsID]: true },
+            parentKeyColumns: { [flightsID]: "id", [segmentsID]: "seg_id" },
+         },
       });
+      expect(answer.rollupSourceName).toStartWith("segments__rollup__");
+   });
+
+   it("declines a join_many read beside a join_one whose rollup's build found its key repeated, also while a run is active", async () => {
+      const query =
+         "run: flights -> { group_by: crew.size; aggregate: segments.seg_miles }";
+      const segments = {
+         parentKeys: { [flightsID]: true, [segmentsID]: true },
+         parentKeyColumns: { [flightsID]: "id", [segmentsID]: "seg_id" },
+      };
+      // `crew`'s contract as the store holds it, and as a bind reads it while
+      // a run of the package is active: only a passed check is stripped, so
+      // the repeat is still known.
+      const crewContract = {
+         v: 1,
+         dialect: "duckdb",
+         columns: [],
+         keys: { "rollup:flight_id": { unique: false, level: "rollup" } },
+      };
+      const whileRunning = keyUniquenessOfContract(
+         contractWithoutPassedKeys(crewContract),
+         [],
+      );
+      expect(whileRunning).toEqual({ keyColumn: "flight_id", unique: false });
+      expect(
+         await outcomeOf(attempt(query, { segments, crew: whileRunning })),
+      ).toMatchObject({
+         code: "rollup_count_semantics",
+         detail:
+            "the query reads the join_one `crew`, whose key the data holds more than once, so live repeats rows through it",
+      });
+      // Unknown is served (known limitation 29): what stripping every check
+      // would have done.
+      const answer = await attempt(query, { segments });
       expect(answer.rollupSourceName).toStartWith("segments__rollup__");
    });
 
@@ -635,5 +699,62 @@ describe("RollupVariantServe (a joined source's rollup, read through the join)",
             ),
          ),
       ).toEqual({ name: "NoRollupForQuery", detail: "no rollup" });
+   });
+});
+
+const FOLDED_MODEL = `##! experimental { persistence composite_sources }
+source: trips_named is duckdb.sql("select * from (values (1, 1)) as t(trip_id, station_id)") extend {
+  primary_key: trip_id
+  #(rollup) grain=["station_id"] name="scratch.trips_by_station"
+  measure: trip_count is count()
+}
+
+source: trips_default is duckdb.sql("select * from (values (1, 1)) as t(trip_id, station_id)") extend {
+  primary_key: trip_id
+  #(rollup) grain=["station_id"]
+  measure: trip_count is count()
+}
+`;
+
+/**
+ * Campaign R-01: two rollups of one build placed apart are two addresses that
+ * Malloy files under one key. The moved one is read under that key, also
+ * when the manifest holds no entry at the key (its twin stored elsewhere, or
+ * not built), where before its compile recomputed and it read as NOT_BUILT.
+ */
+describe("RollupVariantServe (a rollup whose address is not Malloy's key)", () => {
+   let f: PersistedResultFixture;
+   let named: { sourceEntityId: string; compilerKey?: string };
+   beforeAll(async () => {
+      f = await persistedResultFixture(FOLDED_MODEL);
+      const found = [...f.catalog.planned.values()].find((t) =>
+         t.name.startsWith("trips_named__rollup__"),
+      );
+      if (!found) throw new Error("no rollup of trips_named planned");
+      named = found;
+   });
+   afterAll(async () => {
+      await f?.cleanup();
+   });
+
+   it("answers from its own table with only its own entry bound", async () => {
+      expect(named.compilerKey).toBeDefined();
+      expect(named.compilerKey).not.toBe(named.sourceEntityId);
+      const query =
+         "run: trips_named -> { group_by: station_id; aggregate: trip_count }";
+      const entries = {
+         [named.sourceEntityId]: { tableName: "named_rollup_t" },
+      };
+      const answer = await f.rollups.attempt({
+         queryString: query,
+         givens: undefined,
+         authorRunnable: f.materializer.loadQuery(query),
+         pinned: pinnedOf([], entries as never),
+      });
+      expect(answer.databaseTablePath).toBe("named_rollup_t");
+      expect(answer.keyedTable).toEqual({
+         tableId: named.sourceEntityId,
+         compilerKey: named.compilerKey!,
+      });
    });
 });

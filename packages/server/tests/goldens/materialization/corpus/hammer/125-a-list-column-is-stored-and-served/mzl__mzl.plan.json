@@ -1,0 +1,111 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "s_arr@<hammer>/mzl/mzl.malloy": []
+        },
+        "order": [
+          "s_arr@<hammer>/mzl/mzl.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "s_arr@<hammer>/mzl/mzl.malloy": "materialize"
+    },
+    "materializePlans": {
+      "s_arr@<hammer>/mzl/mzl.malloy": {
+        "buildSourceName": "s_arr__mat",
+        "columns": [
+          {
+            "column": "station_id",
+            "computed": false,
+            "dimension": "station_id"
+          },
+          {
+            "column": "v",
+            "computed": false,
+            "dimension": "v"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "s_arr",
+          "storage": "lake"
+        },
+        "sourceID": "s_arr@<hammer>/mzl/mzl.malloy",
+        "sourceName": "s_arr",
+        "storedColumns": [
+          {
+            "name": "station_id",
+            "type": "DOUBLE"
+          },
+          {
+            "name": "v",
+            "type": "VARCHAR[]"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "s_arr@<hammer>/mzl/mzl.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "s_arr@<hammer>/mzl/mzl.malloy": "mzl.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "s_arr@<hammer>/mzl/mzl.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "s_arr@<hammer>/mzl/mzl.malloy": {
+        "annotationFields": {
+          "name": "s_arr",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "station_id",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "mzl.malloy",
+        "name": "s_arr",
+        "origin": "materialize",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "bee3a89c3305eac4960a694fd6fc52a9219664cf3ec172949ff6848339e3af4d",
+        "sourceID": "s_arr@<hammer>/mzl/mzl.malloy",
+        "sql": "sha256:18e4dd72b2a3b83d"
+      }
+    }
+  }
+}

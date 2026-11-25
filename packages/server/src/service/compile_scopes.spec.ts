@@ -16,9 +16,16 @@ import { Environment } from "./environment";
 // first and learn from the reload. scope "file" validates the edit pre-save at
 // true coordinates; scope "package" is a dry-run with reload's reach (imports
 // across files) and none of its effects on the served model.
-import { listDashboards } from "./legacy_report_views";
 import { writePackageFiles } from "../test_helpers/temp_package";
 import { parsePackageName } from "./identity";
+import type { Package } from "./package";
+
+/** The names of the grid reports a package lists. */
+const gridReportNames = (pkg: Package) =>
+   pkg
+      .listReports()
+      .filter((report) => report.layout === "grid")
+      .map((report) => report.name);
 
 const BASE_MODEL = `source: base_source is duckdb.sql("select 1 as id, 5 as n") extend {
   measure: c is count()
@@ -234,6 +241,41 @@ source: tracks is base_source extend {
       const errors = problems.filter((p) => p.severity === "error");
       expect(errors.length).toBeGreaterThan(0);
       expect(errors.some((p) => p.model === "tracks.malloy")).toBe(true);
+   });
+
+   it("package: reports a lookback= the load refuses, as the load words it", async () => {
+      // The incremental gate reads lookback= as it reads watermark= and
+      // merge_key=: a lookback with no merge key fails the load, so the
+      // dry-run says so before a reload finds out.
+      const persisted = `##! experimental.persistence
+${BASE_MODEL}
+source: ev is duckdb.sql("select 1 as id, TIMESTAMP '2026-01-01 00:00:00' as loaded_at")
+#@ persist name="evs" refresh="incremental" watermark="loaded_at" lookback="2 days"
+source: events is ev -> { select: id, loaded_at }
+`;
+      const { problems } = await compile("base.malloy", persisted, "package");
+      const lookback = problems.filter(
+         (p) =>
+            p.severity === "error" &&
+            p.message.includes("lookback= without merge_key="),
+      );
+      expect(lookback).toHaveLength(1);
+      expect(lookback[0]).toMatchObject({ code: "persist-invalid" });
+      // With the merge key it names, the declaration is valid (the dialect
+      // cannot refresh it incrementally, which refuses it alone: a warning).
+      const valid = await compile(
+         "base.malloy",
+         persisted.replace(
+            'lookback="2 days"',
+            'merge_key="id" lookback="2 days"',
+         ),
+         "package",
+      );
+      expect(
+         valid.problems.filter(
+            (p) => p.severity === "error" && p.message.includes("lookback"),
+         ),
+      ).toEqual([]);
    });
 
    it("package: with no source, validates the files as saved", async () => {
@@ -554,7 +596,7 @@ query: x is sales -> by_n
       const pkg = await env.getPackage(parsePackageName("pkg"), true);
       const before = pkg.getPackageMetadata().warnings;
       const servedModel = pkg.getModel("dashboards/x.malloy");
-      expect(listDashboards(pkg, "env").map((d) => d.name)).toEqual(["x"]);
+      expect(gridReportNames(pkg)).toEqual(["x"]);
 
       // A what-if that breaks the dashboard: compile reports it, and the
       // served package keeps its models, dashboards and warnings as they were.
@@ -567,7 +609,7 @@ query: x is sales -> by_n
       expect(await env.getPackage(parsePackageName("pkg"))).toBe(pkg);
       expect(pkg.getModel("dashboards/x.malloy")).toBe(servedModel);
       expect(pkg.getPackageMetadata().warnings).toEqual(before);
-      expect(listDashboards(pkg, "env").map((d) => d.name)).toEqual(["x"]);
+      expect(gridReportNames(pkg)).toEqual(["x"]);
       expect(env.getFailedPackages().size).toBe(0);
    });
 

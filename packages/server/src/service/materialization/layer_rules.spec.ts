@@ -13,8 +13,10 @@
  *  - The five ratchets: annotation payload reads outside the declaration
  *    reader, reads of the compiler's IR outside governance/ir, clock reads in
  *    serve/ and domain/, a registered dialect spelled as a string literal
- *    or an object key (or a dialect compared to any literal), and a
- *    function over 200 lines.
+ *    or an object key (or a dialect compared to any literal), a connection
+ *    type spelled the same way (in materialization and the connection
+ *    modules the registry in service/dialects/ absorbs), and a function over
+ *    200 lines.
  *
  * Every list lives in materialization_allowlists.mjs, each entry tagged with
  * the step that removes it, and only shrinks: an entry whose violation is gone
@@ -26,7 +28,9 @@ import * as fs from "fs";
 import * as path from "path";
 import * as ts from "typescript";
 import * as lists from "../../../materialization_allowlists.mjs";
+import { CONNECTION_DIALECTS } from "../dialects";
 import { CAPABILITIES } from "./domain/dialect";
+import { LEGS, TABLE_KINDS, TIERS } from "./domain/vocabulary";
 
 const SERVER_DIR = path.resolve(__dirname, "../../..");
 const SRC_DIR = path.join(SERVER_DIR, "src");
@@ -34,11 +38,12 @@ const MZ_DIR = __dirname;
 const LAYERS = ["domain", "text", "plan", "run", "serve"] as const;
 
 /**
- * A step of the plan, as an entry's tag names it, or `table`: a count frozen
- * as part of the dialect table, which no step removes and only a reviewed
- * change grows.
+ * A step of the plan, as an entry's tag names it (`D2` to `D4`: the dialect
+ * abstraction's collation readers, connection registry, and passthrough
+ * builds), or `table`: a count frozen as part of the dialect table, which no
+ * step removes and only a reviewed change grows.
  */
-const STEP = /^(L|R|2[a-p]|2g\.[1-4]|5|table)$/;
+const STEP = /^(L|R|2[a-r]|2g\.[1-4]|5|D[2-4]|table)$/;
 
 function walk(dir: string): string[] {
    return fs
@@ -158,6 +163,41 @@ describe("H1 and H2: the documentation lint rules", () => {
          (m) => m.ruleId === "publisher/no-history-comments",
       );
       expect(history?.message).toContain("has 3");
+   });
+
+   it("H2 fires on a plan or review label standing for a concept", async () => {
+      // Each label counts once; a duration and the r4 directory do not.
+      const [planted] = await eslint.lintText(
+         "/** Header. */\n// As G3 keeps it (P10, known limitation 29, question 14, g-mixed, F-08, malloydata/malloy#3208); every `2d`, r4.\nexport const x = 1;\n",
+         { filePath: path.join(MZ_DIR, "plan", "__planted__.ts") },
+      );
+      const history = planted.messages.find(
+         (m) => m.ruleId === "publisher/no-history-comments",
+      );
+      expect(history?.message).toContain("has 7");
+   });
+
+   it("H2 does not read an ordinary word as a plan label", async () => {
+      // A percentile, a quarter, a cache level and a bare R2 bucket; the
+      // ambiguous series count only cited in parentheses, as the plan does.
+      const [clean] = await eslint.lintText(
+         "/** Header. */\n// The P95 latency in Q1, an L2 cache, an R2 bucket.\nexport const x = 1;\n",
+         { filePath: path.join(MZ_DIR, "plan", "__planted__.ts") },
+      );
+      expect(
+         clean.messages.filter(
+            (m) => m.ruleId === "publisher/no-history-comments",
+         ),
+      ).toEqual([]);
+      const [cited] = await eslint.lintText(
+         "/** Header. */\n// Refinement (R2), leak (L2), question (Q14).\nexport const x = 1;\n",
+         { filePath: path.join(MZ_DIR, "plan", "__planted__.ts") },
+      );
+      expect(
+         cited.messages.find(
+            (m) => m.ruleId === "publisher/no-history-comments",
+         )?.message,
+      ).toContain("has 3");
    });
 
    it("H1: the modules with no header are exactly the seeded ones", () => {
@@ -283,6 +323,9 @@ function importedNames(files: string[]): Map<string, Set<string>> {
    };
    for (const file of files) {
       const sf = parse(file);
+      // A namespace import marks what the file reads off it (`ns.member`),
+      // or everything when the namespace is used whole.
+      const namespaces = new Map<string, string | undefined>();
       const visit = (n: ts.Node): void => {
          if (
             (ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) &&
@@ -294,7 +337,9 @@ function importedNames(files: string[]): Map<string, Set<string>> {
                const clause = n.importClause;
                if (clause?.name) mark(target, "default");
                const b = clause?.namedBindings;
-               if (b && ts.isNamespaceImport(b)) mark(target, "*");
+               if (b && ts.isNamespaceImport(b)) {
+                  namespaces.set(b.name.text, target);
+               }
                if (b && ts.isNamedImports(b)) {
                   for (const e of b.elements)
                      mark(target, (e.propertyName ?? e.name).text);
@@ -330,6 +375,28 @@ function importedNames(files: string[]): Map<string, Set<string>> {
          ts.forEachChild(n, visit);
       };
       visit(sf);
+      if (namespaces.size === 0) continue;
+      const readNamespace = (n: ts.Node): void => {
+         if (
+            ts.isIdentifier(n) &&
+            namespaces.has(n.text) &&
+            !ts.isNamespaceImport(n.parent)
+         ) {
+            const target = namespaces.get(n.text);
+            if (
+               ts.isPropertyAccessExpression(n.parent) &&
+               n.parent.expression === n
+            ) {
+               mark(target, n.parent.name.text);
+            } else if (ts.isQualifiedName(n.parent) && n.parent.left === n) {
+               mark(target, n.parent.right.text);
+            } else {
+               mark(target, "*");
+            }
+         }
+         ts.forEachChild(n, readNamespace);
+      };
+      readNamespace(sf);
    }
    return used;
 }
@@ -401,6 +468,23 @@ function matchesIn(lines: string[], pattern: RegExp): number {
    return n;
 }
 
+/**
+ * file → how many matches of `pattern` its code holds read as one text, so
+ * an expression broken over lines still counts.
+ */
+function countTextMatches(
+   files: string[],
+   pattern: RegExp,
+): Record<string, number> {
+   const out: Record<string, number> = {};
+   for (const file of files) {
+      const text = codeLines(file).join("\n");
+      const n = (text.match(new RegExp(pattern.source, "g")) ?? []).length;
+      if (n > 0) out[srcRel(file)] = n;
+   }
+   return out;
+}
+
 /** file → how many code lines match `pattern`, over `files`. */
 function countMatches(
    files: string[],
@@ -460,6 +544,56 @@ function dialectLiterals(lines: string[], caseLabels = false): number {
       matchesIn(code, DIALECT_KEY)
    );
 }
+
+/** Every configured connection type, the registry's keys, as alternatives. */
+const CONNECTION_TYPES = Object.keys(CONNECTION_DIALECTS).join("|");
+
+/** A string literal exactly a connection type, quoted any way. */
+const CONNECTION_TYPE_LITERAL = new RegExp(`["'\`](${CONNECTION_TYPES})["'\`]`);
+
+/** A connection type as a bare object key (`{ ducklake: ... }`). */
+const CONNECTION_TYPE_KEY = new RegExp(
+   `(?<![\\w$."'\`-])(${CONNECTION_TYPES})\\s*:(?!:)`,
+);
+
+/** A connection type as a `case` label. */
+const CONNECTION_TYPE_CASE = new RegExp(
+   `\\bcase\\s+["'\`](${CONNECTION_TYPES})["'\`]`,
+   "g",
+);
+
+/**
+ * How many connection-type literals `lines` hold: every string literal that
+ * is exactly a configured connection type (a `case` label, an element, a
+ * comparison, a type) and every bare object key that is one. Counted apart
+ * from the dialect literals, since `duckdb`, `motherduck` and `ducklake` share
+ * one dialect and the branches keyed on them are keyed on the type.
+ * `caseLabels` frees `case` labels, for the SQL half of the dialect table,
+ * whose switches are over a dialect that shares a type's spelling.
+ */
+function connectionTypeLiterals(lines: string[], caseLabels = false): number {
+   const code = caseLabels
+      ? lines.map((l) => l.replace(CONNECTION_TYPE_CASE, ""))
+      : lines;
+   return (
+      matchesIn(code, CONNECTION_TYPE_LITERAL) +
+      matchesIn(code, CONNECTION_TYPE_KEY)
+   );
+}
+
+/**
+ * The connection modules whose branches on a connection type move into the
+ * registry (service/dialects/), counted beside materialization's own files.
+ */
+const CONNECTION_MODULES = [
+   "service/connection.ts",
+   "service/connection_config.ts",
+   "service/connection_service.ts",
+   "service/db_utils.ts",
+   "service/destination_overlap.ts",
+   "service/quoting.ts",
+   "controller/connection.controller.ts",
+];
 
 function expectCounts(
    name: string,
@@ -538,6 +672,39 @@ describe("the ratchets", () => {
       expectCounts("dialect literals", actual, lists.RATCHET_DIALECT_LITERALS);
    });
 
+   it("a connection-type literal is counted wherever it is", () => {
+      const actual: Record<string, number> = {};
+      const files = [
+         ...mzFiles(),
+         ...CONNECTION_MODULES.map((f) => path.join(SRC_DIR, f)),
+      ];
+      const sqlHalf = "service/materialization/run/warehouse_sql.ts";
+      for (const file of files) {
+         const n = connectionTypeLiterals(
+            codeLines(file),
+            srcRel(file) === sqlHalf,
+         );
+         if (n > 0) actual[srcRel(file)] = n;
+      }
+      expectCounts(
+         "connection-type literals",
+         actual,
+         lists.RATCHET_CONNECTION_TYPE_LITERALS,
+      );
+   });
+
+   it("the connection-type count reads literals and keys, not longer words", () => {
+      expect(connectionTypeLiterals([`case "ducklake":`])).toBe(1);
+      expect(connectionTypeLiterals([`case "ducklake":`], true)).toBe(0);
+      expect(connectionTypeLiterals([`type === 'motherduck'`])).toBe(1);
+      expect(connectionTypeLiterals([`["bigquery", "postgres"]`])).toBe(2);
+      expect(connectionTypeLiterals([`{ bigquery: 1, ducklake: 2 }`])).toBe(2);
+      expect(connectionTypeLiterals([`a.bigquery: 1`, `"bigquery_x"`])).toBe(0);
+      expect(connectionTypeLiterals([`"malloy-publisher:table"`])).toBe(0);
+      // A dialect name that is no connection type is not counted here.
+      expect(connectionTypeLiterals([`"standardsql"`, `"presto"`])).toBe(0);
+   });
+
    it("the dialect-literal count reads a type test as no dialect", () => {
       // A type test goes; a dialect after `typeof` does not.
       expect(dialectLiterals([`typeof dialect === "postgres"`])).toBe(1);
@@ -609,5 +776,380 @@ describe("the ratchets", () => {
       expectExact("long functions", actual, listed);
       for (const step of Object.values(listed))
          expect(stepOf(step)).toMatch(STEP);
+   });
+});
+
+// ---------------------------------------------------------------------------
+// The domain model's ratchets: one switch read, one tier decision, one table
+// identity, one admission, one vocabulary, a serve layer that runs no SQL,
+// and the names the plan deleted staying deleted.
+// ---------------------------------------------------------------------------
+
+/** Every non-spec module of the server, test helpers aside. */
+const serverFiles = () =>
+   walk(SRC_DIR).filter(
+      (f) => !isSpec(f) && !srcRel(f).startsWith("test_helpers/"),
+   );
+
+/** The query pipeline's shells, which the domain-model rules also cover. */
+const SHELLS = [
+   "service/model.ts",
+   "service/environment.ts",
+   "service/query_serving.ts",
+];
+
+/** A switch read: the settings the domain model's `Switches` hold. */
+const SWITCH_READ =
+   /\b(getPersistStorageMode|gateSwitches|getMaterializeEnabled|getPersistAddressIncludesDestination)\(/;
+
+/**
+ * A tier decided in place: a `? "storage" : "database"` ternary (either
+ * way round, over line breaks), or a destination tested beside the storage
+ * mode (not beside any other mode, such as a run's).
+ */
+const TIER_DECISION =
+   /\?\s*["'`](storage|database)["'`]\s*:\s*["'`](database|storage)["'`]|\bdestination\w*\s*&&[^;\n]*(\bgetPersistStorageMode\(|\b\w*[sS]torageMode\b)/;
+
+/**
+ * A table name compared outside the identity module: case-folded, its quotes
+ * stripped by a regex, or joined into a key with NUL or a colon.
+ */
+const TABLE_IDENTITY = new RegExp(
+   [
+      String.raw`\b\w*(?:[tT]able|tablePath)\w*\??\.to(?:Locale)?(?:Lower|Upper)Case\(`,
+      String.raw`\b\w*(?:[tT]able|tablePath)\w*\??\.replace\(\s*\/[^/\n]*["'\x60][^/\n]*\/g?\s*,\s*(?:""|''|\x60\x60)\s*\)`,
+      String.raw`\$\{[^}]*[tT]able\w*[^}]*\}(?:\\u0000|:)\$\{`,
+      String.raw`(?:\\u0000|:)\$\{[^}]*[tT]able\w*[^}]*\}`,
+   ].join("|"),
+);
+
+/** A regex literal over a stored column's type name. */
+const STORED_TYPE_PATTERN =
+   /\/(?:[^/\n\\]|\\.)*\b(DOUBLE|FLOAT|INT128|HUGEINT|TIMESTAMPTZ|VARCHAR)\b(?:[^/\n\\]|\\.)*\/[gimsuy]*/;
+
+/** SQL or a connection reached from serve/, in any of the runner's forms. */
+const SERVE_IO = /\.run(?:Raw)?SQL\w*\(|\blookupConnection\(/;
+
+/** The words of domain/vocabulary.ts: a kind, a tier or a leg. */
+const VOCABULARY = new Set<string>([...TABLE_KINDS, ...TIERS, ...LEGS]);
+
+/**
+ * How many unions and `as const` lists `sf` declares of vocabulary words
+ * alone (two or more): a kind, tier or leg set written out again rather than
+ * derived from domain/vocabulary.ts (`Extract<Tier, …>`, an index type).
+ */
+function vocabularyRestatements(sf: ts.SourceFile): number {
+   const words = (items: readonly ts.Node[]): string[] | undefined => {
+      const out: string[] = [];
+      for (const item of items) {
+         const lit = ts.isLiteralTypeNode(item) ? item.literal : item;
+         if (!ts.isStringLiteral(lit)) return undefined;
+         out.push(lit.text);
+      }
+      return out;
+   };
+   const restates = (w: string[] | undefined) =>
+      w !== undefined && w.length >= 2 && w.every((x) => VOCABULARY.has(x));
+   let n = 0;
+   const visit = (node: ts.Node): void => {
+      if (ts.isUnionTypeNode(node) && restates(words(node.types))) n++;
+      if (
+         ts.isAsExpression(node) &&
+         node.type.getText(sf) === "const" &&
+         ts.isArrayLiteralExpression(node.expression) &&
+         restates(words(node.expression.elements))
+      ) {
+         n++;
+      }
+      ts.forEachChild(node, visit);
+   };
+   visit(sf);
+   return n;
+}
+
+/** The non-spec files among `files` that reach the frozen gate-policy rows. */
+function frozenRowsImporters(files: string[]): string[] {
+   const target = /gate_policy_frozen_rows["'`]/;
+   return files
+      .filter((f) => {
+         const sf = parse(f);
+         let reached = false;
+         const visit = (n: ts.Node): void => {
+            const spec =
+               (ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) &&
+               n.moduleSpecifier
+                  ? n.moduleSpecifier
+                  : ts.isCallExpression(n) &&
+                      n.expression.kind === ts.SyntaxKind.ImportKeyword
+                    ? n.arguments[0]
+                    : undefined;
+            if (spec && target.test(spec.getText(sf))) reached = true;
+            ts.forEachChild(n, visit);
+         };
+         visit(sf);
+         return reached;
+      })
+      .map(srcRel);
+}
+
+describe("the domain model's ratchets", () => {
+   it("the switches are read only by config.ts, the facade and the query pipeline", () => {
+      // The rule is materialization's: its modules and the shells beside
+      // them. Elsewhere in the server a switch is read where it is used.
+      const free = new Set([
+         "service/materialization/package_materialization.ts",
+         "service/model.ts",
+         "service/query_serving.ts",
+      ]);
+      expectCounts(
+         "switch reads",
+         countMatches(
+            [...mzFiles(), ...SHELLS.map((f) => path.join(SRC_DIR, f))].filter(
+               (f) => !free.has(srcRel(f)),
+            ),
+            SWITCH_READ,
+         ),
+         lists.RATCHET_SWITCH_READS,
+      );
+   });
+
+   it("a tier is decided only by domain/placement.ts", () => {
+      const files = [
+         ...mzFiles(),
+         ...SHELLS.map((f) => path.join(SRC_DIR, f)),
+      ].filter(
+         (f) => srcRel(f) !== "service/materialization/domain/placement.ts",
+      );
+      expectCounts(
+         "tier decisions",
+         countTextMatches(files, TIER_DECISION),
+         lists.RATCHET_TIER_DECISIONS,
+      );
+   });
+
+   it("a table name is compared only by domain/physical_table.ts", () => {
+      const identity = new Set([
+         "service/materialization/domain/physical_table.ts",
+         "service/materialization/domain/table_name.ts",
+      ]);
+      expectCounts(
+         "table identity",
+         countMatches(
+            mzFiles().filter((f) => !identity.has(srcRel(f))),
+            TABLE_IDENTITY,
+         ),
+         lists.RATCHET_TABLE_IDENTITY,
+      );
+   });
+
+   it("a stored type is classed only by stored_column_types.ts", () => {
+      const files = [
+         ...mzFiles(),
+         path.join(SRC_DIR, "service/query_serving.ts"),
+      ].filter(
+         (f) => srcRel(f) !== "service/materialization/stored_column_types.ts",
+      );
+      expectCounts(
+         "stored-type patterns",
+         countMatches(files, STORED_TYPE_PATTERN),
+         lists.RATCHET_STORED_TYPE_PATTERNS,
+      );
+   });
+
+   it("serve/ runs no SQL and reaches no connection", () => {
+      expectCounts(
+         "serve io",
+         countMatches(
+            mzFiles().filter((f) =>
+               srcRel(f).startsWith("service/materialization/serve/"),
+            ),
+            SERVE_IO,
+         ),
+         lists.RATCHET_SERVE_IO,
+      );
+   });
+
+   it("the gate policy is read only by admission, and admitRead only by its shell", () => {
+      // name -> the one module that may import it.
+      const owners: Record<string, string> = {
+         answerKeepsGates: "service/materialization/domain/admission.ts",
+         legMayPassGate: "service/materialization/domain/admission.ts",
+         tableKeepsGates: "service/materialization/domain/admission.ts",
+         gateColumnsExact: "service/materialization/domain/admission.ts",
+         admitRead: "service/materialization/serve/read_admission.ts",
+      };
+      const actual: Record<string, true> = {};
+      // The modules that define them; a namespace import, a re-export or a
+      // dynamic import of one reaches them as surely as a named import.
+      const homes = /\/domain\/(gate_policy|admission)["'`]$/;
+      for (const file of serverFiles()) {
+         const sf = parse(file);
+         const rel = srcRel(file);
+         const reach = (name: string) => {
+            if (name in owners && owners[name] !== rel) {
+               actual[`${rel}#${name}`] = true;
+            }
+         };
+         for (const st of sf.statements) {
+            if (ts.isImportDeclaration(st)) {
+               const b = st.importClause?.namedBindings;
+               if (b && ts.isNamedImports(b)) {
+                  for (const e of b.elements)
+                     reach((e.propertyName ?? e.name).text);
+               } else if (
+                  b &&
+                  ts.isNamespaceImport(b) &&
+                  homes.test(st.moduleSpecifier.getText(sf))
+               ) {
+                  const ns = b.name.text;
+                  const text = sf.getFullText();
+                  for (const name of Object.keys(owners)) {
+                     if (new RegExp(`\\b${ns}\\.${name}\\b`).test(text))
+                        reach(name);
+                  }
+               }
+            }
+            if (ts.isExportDeclaration(st) && st.moduleSpecifier) {
+               const b = st.exportClause;
+               if (b && ts.isNamedExports(b)) {
+                  for (const e of b.elements)
+                     reach((e.propertyName ?? e.name).text);
+               } else if (!b && homes.test(st.moduleSpecifier.getText(sf))) {
+                  for (const name of Object.keys(owners)) reach(name);
+               }
+            }
+         }
+         const visit = (n: ts.Node): void => {
+            if (
+               ts.isCallExpression(n) &&
+               n.expression.kind === ts.SyntaxKind.ImportKeyword &&
+               n.arguments[0] &&
+               homes.test(n.arguments[0].getText(sf)) &&
+               !Object.values(owners).includes(rel)
+            ) {
+               actual[`${rel}#import()`] = true;
+            }
+            ts.forEachChild(n, visit);
+         };
+         visit(sf);
+      }
+      const listed = lists.RATCHET_ADMISSION_IMPORTS as Record<string, string>;
+      expectExact("admission imports", actual, listed);
+      for (const step of Object.values(listed)) expect(step).toMatch(STEP);
+   });
+
+   it("the frozen gate-policy rows are read only by specs", () => {
+      // Spec data: a module that read them would make the frozen list a
+      // runtime input, editable without the security review.
+      expect(
+         frozenRowsImporters(walk(SRC_DIR).filter((f) => !isSpec(f))),
+      ).toEqual([]);
+   });
+
+   it("kinds, tiers and legs are spelled out only in domain/vocabulary.ts", () => {
+      const actual: Record<string, number> = {};
+      for (const file of [
+         ...mzFiles(),
+         path.join(SRC_DIR, "materialization_metrics.ts"),
+      ]) {
+         if (srcRel(file) === "service/materialization/domain/vocabulary.ts")
+            continue;
+         const n = vocabularyRestatements(parse(file));
+         if (n > 0) actual[srcRel(file)] = n;
+      }
+      expectCounts(
+         "vocabulary restatements",
+         actual,
+         lists.RATCHET_VOCABULARY_UNIONS,
+      );
+   });
+
+   it("the names the plan deleted outright stay deleted", () => {
+      // docs/materialization-v2-plan.md, "Deleted outright" and its status
+      // against code: each name deleted is gone from src/, or listed with the
+      // step that deletes it. A name the status keeps for good (the router's
+      // adapters, `FreshnessManifest`, `keyCheckCompilers`) is not here.
+      const deleted = [
+         "materialization_serve_transform",
+         "StorageBindings",
+         "BoundTable",
+         "readCasts",
+         "RoutedExtra",
+         "routedAnswer",
+         "explainDecline",
+      ];
+      const files = walk(SRC_DIR).filter((f) => !isSpec(f));
+      const code = files.map((f) => codeLines(f).join("\n"));
+      const actual: Record<string, true> = {};
+      for (const name of deleted) {
+         const word = new RegExp(`\\b${name}\\b`);
+         if (
+            files.some((f) => path.basename(f, ".ts") === name) ||
+            code.some((text) => word.test(text))
+         ) {
+            actual[name] = true;
+         }
+      }
+      const listed = lists.DELETED_NAMES_PENDING as Record<string, string>;
+      expectExact("deleted names", actual, listed);
+      for (const step of Object.values(listed)) expect(step).toMatch(STEP);
+   });
+
+   it("each pattern catches what it names, and only that", () => {
+      expect(SWITCH_READ.test("if (getMaterializeEnabled()) {")).toBe(true);
+      expect(SWITCH_READ.test("const enabled = switches.materialize;")).toBe(
+         false,
+      );
+      expect(TIER_DECISION.test(`tier: d ? "storage" : "database",`)).toBe(
+         true,
+      );
+      expect(TIER_DECISION.test(`x ? "database" : "storage"`)).toBe(true);
+      expect(
+         TIER_DECISION.test(`destinations && getPersistStorageMode() === "on"`),
+      ).toBe(true);
+      expect(TIER_DECISION.test(`tier: placement.tier,`)).toBe(false);
+      expect(
+         TIER_DECISION.test(`tier: d\n   ? "storage"\n   : "database",`),
+      ).toBe(true);
+      expect(
+         TIER_DECISION.test(`destinationName && run.mode === "orchestrated"`),
+      ).toBe(false);
+      expect(TIER_DECISION.test(`destination && storageMode !== "off"`)).toBe(
+         true,
+      );
+      expect(TABLE_IDENTITY.test("tableName.toLocaleLowerCase()")).toBe(true);
+      expect(SERVE_IO.test("connection.runSQLStream(sql)")).toBe(true);
+      expect(SERVE_IO.test("connection.runRawSQL(sql)")).toBe(true);
+      expect(TABLE_IDENTITY.test("physicalTableName.toLowerCase()")).toBe(true);
+      expect(TABLE_IDENTITY.test(`tableName.replace(/["\`]/g, "")`)).toBe(true);
+      expect(TABLE_IDENTITY.test("`${conn}\\u0000${physicalTableName}`")).toBe(
+         true,
+      );
+      expect(TABLE_IDENTITY.test("`${connection}:${table}`")).toBe(true);
+      expect(TABLE_IDENTITY.test("c.name.toLowerCase()")).toBe(false);
+      // Escaping a quote for SQL is not stripping it.
+      expect(TABLE_IDENTITY.test(`tablePath.replace(/'/g, "''")`)).toBe(false);
+      expect(STORED_TYPE_PATTERN.test("/^(DOUBLE|FLOAT)$/i.test(t)")).toBe(
+         true,
+      );
+      expect(STORED_TYPE_PATTERN.test(`t === "DOUBLE"`)).toBe(false);
+      expect(SERVE_IO.test("await connection.runSQL(sql)")).toBe(true);
+      expect(SERVE_IO.test("connections.lookupConnection(name)")).toBe(true);
+      const sf = (code: string) =>
+         ts.createSourceFile("x.ts", code, ts.ScriptTarget.Latest, true);
+      expect(
+         vocabularyRestatements(
+            sf(
+               `type T = "database" | "storage";\nconst K = ["view", "query"] as const;`,
+            ),
+         ),
+      ).toBe(2);
+      expect(
+         vocabularyRestatements(
+            sf(
+               `type T = Extract<Tier, "storage">;\ntype U = "database" | "other";\nconst one = ["view"] as const;`,
+            ),
+         ),
+      ).toBe(0);
    });
 });

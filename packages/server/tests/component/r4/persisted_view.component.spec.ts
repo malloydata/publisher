@@ -79,10 +79,13 @@ describe("R4: a persisted view answers its exact call, equal to live", () => {
       ).toBe(false);
    });
 
-   it("refuses a view whose result reads the current time, with a warning", () => {
+   it("builds a view whose result reads the current time, as of its build", () => {
       expect(fixture.viewRefusals.some((r) => r.includes("current time"))).toBe(
-         true,
+         false,
       );
+      expect(
+         fixture.bindings.some((b) => b.sourceName === "flights__recent__view"),
+      ).toBe(true);
    });
 
    const served: [string, string, boolean][] = [

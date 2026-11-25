@@ -46,16 +46,29 @@ export function gateExprsForRoute(
    modelDef: ModelDef | undefined,
    route: string,
 ): string[][] {
+   return gateGroupsForRoute(struct, modelDef, route).map((g) => g.exprs);
+}
+
+/**
+ * {@link gateExprsForRoute}, each group with whether it was read on a `->`
+ * derivation's base (`fromBase`), where it filters the base's rows rather
+ * than this struct's.
+ */
+export function gateGroupsForRoute(
+   struct: SourceDef,
+   modelDef: ModelDef | undefined,
+   route: string,
+): { exprs: string[]; fromBase: boolean }[] {
    const { steps } = gatePlan(struct, modelDefGateGraph(modelDef), {
       composite: "resolved",
       routes: [route],
       treatAsOwnGate: true,
    });
-   const groups: string[][] = [];
+   const groups: { exprs: string[]; fromBase: boolean }[] = [];
    for (const step of steps) {
       if (step.kind !== "gate") continue;
       if (step.failure?.kind === "unreadable") throw step.failure.error;
-      groups.push(step.exprs);
+      groups.push({ exprs: step.exprs, fromBase: step.baseHops > 0 });
    }
    return groups;
 }

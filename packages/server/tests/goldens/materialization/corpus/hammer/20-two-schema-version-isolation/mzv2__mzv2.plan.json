@@ -71,6 +71,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.mz_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "51f17ba2ff3031131d30c71b890c87232bc2374842805774a2c08415a71655e7",
         "sourceID": "daily@<hammer>/mzv2/mzv2.malloy",

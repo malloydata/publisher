@@ -257,7 +257,7 @@ describe("stringifyQueryResponse", () => {
       );
       let message = "";
       try {
-         stringifyQueryResponse(tooBig, 42, 0, "notebook_cell");
+         stringifyQueryResponse(tooBig, 42, 0, "model_query");
       } catch (error) {
          message = (error as Error).message;
       }

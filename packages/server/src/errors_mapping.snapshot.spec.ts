@@ -13,7 +13,8 @@ import {
    BuildPlanRefreshingError,
    BuildPlanUnavailableError,
    ChainedShapeNotCarriedError,
-   WarehouseRecomputeRefusedError,
+   ContractCaptureFailedError,
+   SchemaIncompatibleError,
    ChainedUpstreamMissingError,
    CompileRefusedError,
    ConflictError,
@@ -23,6 +24,8 @@ import {
    ConnectionNotFoundError,
    ConnectionPoolExhaustedError,
    ConnectionSaveError,
+   ResultShapeError,
+   ResultTruncatedError,
    DashboardNotFoundError,
    DestinationNotFoundError,
    DryRunCapacityError,
@@ -35,6 +38,7 @@ import {
    InvalidStateTransitionError,
    MaterializationConflictError,
    MaterializationEligibilityError,
+   MaterializedTableDropRefusedError,
    TableOwnershipError,
    BuildInstructionsInvalidError,
    MaterializationNotFoundError,
@@ -69,6 +73,7 @@ import {
    InstalledFromLocationError,
    WriteRollbackFailedError,
    WriteRolledBackError,
+   ManifestBindFailedError,
    WriteVerifyError,
 } from "./errors";
 import { logger } from "./logger";
@@ -293,6 +298,8 @@ const CASES: Array<[string, () => unknown]> = [
       "ConnectionPoolExhaustedError",
       () => new ConnectionPoolExhaustedError("The connection pool is full."),
    ],
+   ["ResultTruncatedError", () => new ResultTruncatedError(50000, 99000)],
+   ["ResultShapeError", () => new ResultShapeError()],
    [
       "DestinationNotFoundError",
       () => new DestinationNotFoundError("No destination named warehouse"),
@@ -354,12 +361,18 @@ const CASES: Array<[string, () => unknown]> = [
       () => new ChainedShapeNotCarriedError("shape not carried"),
    ],
    [
-      "WarehouseRecomputeRefusedError",
+      "ContractCaptureFailedError",
       () =>
-         new WarehouseRecomputeRefusedError(
-            "rollup",
-            "lake",
-            "'rollup' reads the source warehouse (regions) through 'via'",
+         new ContractCaptureFailedError(
+            "lake.orders_t",
+            "its collations did not read",
+         ),
+   ],
+   [
+      "SchemaIncompatibleError",
+      () =>
+         new SchemaIncompatibleError(
+            "'v' was not built over its upstream 'a''s table a_t in 'lake'",
          ),
    ],
    [
@@ -448,6 +461,30 @@ const CASES: Array<[string, () => unknown]> = [
       "MaterializationConflictError",
       () => new MaterializationConflictError("a build is running"),
    ],
+   [
+      "MaterializedTableDropRefusedError in use",
+      () =>
+         new MaterializedTableDropRefusedError(
+            "TABLE_IN_USE",
+            "a committed run names analytics.orders",
+         ),
+   ],
+   [
+      "MaterializedTableDropRefusedError owned elsewhere",
+      () =>
+         new MaterializedTableDropRefusedError(
+            "TABLE_OWNED_ELSEWHERE",
+            "another package marked analytics.orders",
+         ),
+   ],
+   [
+      "MaterializedTableDropRefusedError unverified",
+      () =>
+         new MaterializedTableDropRefusedError(
+            "TABLE_OWNERSHIP_UNVERIFIED",
+            "nothing proves analytics.orders is this package's",
+         ),
+   ],
    ["WriteConflictError", () => new WriteConflictError("file changed")],
    [
       "WriteConflictError (FILE_EXISTS)",
@@ -466,6 +503,35 @@ const CASES: Array<[string, () => unknown]> = [
          new WriteRolledBackError("the reload failed; restored", {
             cause: new Error("compile failed"),
          }),
+   ],
+   [
+      "ManifestBindFailedError",
+      () =>
+         new ManifestBindFailedError(
+            "s3://bucket/manifest.json",
+            new Error("fetch failed"),
+            false,
+         ),
+   ],
+   [
+      "ManifestBindFailedError (not found)",
+      () =>
+         new ManifestBindFailedError(
+            "s3://bucket/manifest.json",
+            new Error("No build manifest at s3://bucket/manifest.json"),
+            false,
+            "not_found",
+         ),
+   ],
+   [
+      "ManifestBindFailedError (invalid)",
+      () =>
+         new ManifestBindFailedError(
+            "s3://bucket/manifest.json",
+            new Error("not a JSON object"),
+            false,
+            "invalid",
+         ),
    ],
    [
       "WriteRollbackFailedError",

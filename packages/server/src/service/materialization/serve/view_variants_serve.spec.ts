@@ -11,7 +11,10 @@ import {
    pinnedOf,
    storedViewBinding,
 } from "../../../test_helpers/persisted_result_fixture";
+import { gateSwitches } from "../../../config";
 import { LegDecline } from "../domain/leg_decline";
+import { makeLegs } from "./leg";
+import { ReadAdmission } from "./read_admission";
 import { PersistedViewServe } from "./view_variants";
 
 /**
@@ -247,13 +250,55 @@ describe("PersistedViewServe (database)", () => {
          );
          const [message, meta] = warn.firstCall.args as unknown as [
             string,
-            { error?: string },
+            Record<string, unknown>,
          ];
          expect(message).toBe("A persisted-view variant did not compile");
-         expect(meta.error).toBe("no context");
+         // The compile's text never reaches the log.
+         expect(meta).not.toHaveProperty("error");
       } finally {
          warn.restore();
       }
+   });
+
+   it("marks a table stored as of its build, so read admission declines an access decision over it", async () => {
+      // The other checks keep access decisions off this leg today; this
+      // backstop must decline one on its own, so it has to see the flag. A
+      // database view's table has no binding: its manifest entry carries it.
+      const pinned = pinnedOf([], {
+         [tableId]: { tableName: STORED, asOfBuild: true },
+      });
+      const query = {
+         queryString: "run: orders -> by_region",
+         givens: undefined,
+         authorRunnable: f.materializer.loadQuery("run: orders -> by_region"),
+      };
+      const [leg] = makeLegs(pinned, { persistedViews: f.views });
+      const answer = await leg.attempt(query, pinned);
+      expect(answer.resultTableRead).toMatchObject({
+         tier: "database",
+         tablePath: STORED,
+         asOfBuild: true,
+      });
+      // The path report does not carry it.
+      expect(answer.viewTable).not.toHaveProperty("asOfBuild");
+      const admission = new ReadAdmission(query, gateSwitches());
+      // Past an entry-point gate: an access decision, declined.
+      expect((await admission.decide("view", answer, true)).verdict).toEqual({
+         admit: false,
+         reason: "as_of_build_access",
+         detail: expect.any(String),
+      });
+      // The query reads no given and passes no gate: no access decision.
+      // Its result's ordering is judged as any other: with no bind here to
+      // record the source's capability, it fails closed.
+      expect((await admission.decide("view", answer, false)).verdict).toEqual({
+         admit: false,
+         reason: "result_order_comparison",
+         detail: expect.any(String),
+      });
+      // Without the flag the same answer is not an as-of-build read.
+      const plain = await leg.attempt(query, pinnedOf([], built));
+      expect(plain.resultTableRead).not.toHaveProperty("asOfBuild");
    });
 
    it("names the compiler key of a planned table, and none for an unplanned one", () => {
@@ -349,7 +394,7 @@ describe("PersistedViewServe (storage=)", () => {
       expect(answer.binding).toBe(binding);
    });
 
-   it("reports a binding stale past its window, and any binding stale with no destination to read it", () => {
+   it("reports a binding stale past its window, and any binding not served with no destination to read it", () => {
       const old = storedViewBinding(buildSourceID, {
          schema,
          freshAsOf: new Date(Date.now() - 3_600_000).toISOString(),
@@ -369,7 +414,12 @@ describe("PersistedViewServe (storage=)", () => {
             pinnedOf([storedViewBinding(buildSourceID, { schema })]),
             undefined,
          ),
-      ).toEqual({ tier: "storage", built: true, stale: true });
+      ).toEqual({
+         tier: "storage",
+         built: true,
+         stale: false,
+         storageNotServed: true,
+      });
       expect(
          f.views.tableOf(
             { buildSourceID, storage: "lake" },

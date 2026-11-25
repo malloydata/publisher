@@ -5,6 +5,7 @@
 -- ==== source pv_base__by_region__view
 -- sourceID: pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy
 -- connection: duckdb
+-- reads: pv_base@<pkg>/m.malloy
 -- sourceEntityId: a634b528cb34b67c79aaa476de57cdfa5f64b1c47abd877843a927606a776a4b
 -- compiler key: a634b528cb34b67c79aaa476de57cdfa5f64b1c47abd877843a927606a776a4b (the sourceEntityId)
 -- build SQL:

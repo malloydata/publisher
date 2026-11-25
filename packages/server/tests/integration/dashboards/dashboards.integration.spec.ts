@@ -162,15 +162,43 @@ describe("Dashboard discovery (E2E)", () => {
       expect(res.status).toBe(404);
    });
 
+   // The deprecated by-name routes are removed, so nothing claims them and the
+   // app's fallback answers them as any unknown API path. Use `/reports`.
+   it("answers the removed …/dashboards routes as unknown API endpoints", async () => {
+      for (const sub of ["/dashboards", "/dashboards/overview"]) {
+         const res = await fetch(apiUrl(sub));
+         expect([sub, res.status]).toEqual([sub, 404]);
+         const body = (await res.json()) as { message?: string };
+         expect(body.message).toStartWith(
+            `Unknown API endpoint: /api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}${sub}.`,
+         );
+      }
+   });
+
+   // The deprecated notebook routes, and their `/projects` twins, are removed
+   // the same way. Read `/reports`; run a cell through the model query route.
+   it("answers the removed …/notebooks routes as unknown API endpoints", async () => {
+      const paths = [
+         "/notebooks",
+         "/notebooks/orders-since.malloynb",
+         "/notebooks/orders-since.malloynb/cells/3",
+      ].flatMap((sub) => [
+         `/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}${sub}`,
+         `/api/v0/projects/${ENV_NAME}/packages/${PACKAGE_NAME}${sub}`,
+      ]);
+      expect(paths).toHaveLength(6);
+      for (const path of paths) {
+         const res = await fetch(`${baseUrl}${path}`);
+         expect([path, res.status]).toEqual([path, 404]);
+         const body = (await res.json()) as { message?: string };
+         expect(body.message).toStartWith(`Unknown API endpoint: ${path}.`);
+      }
+   });
+
    it("answers a versionId on a package with no versions as no such version", async () => {
       // This package was loaded from a directory, so it has no published
       // versions: a well-formed version is 404, a malformed one 400.
-      for (const sub of [
-         "/reports",
-         "/reports/dashboards/overview.malloy",
-         "/dashboards",
-         "/dashboards/overview",
-      ]) {
+      for (const sub of ["/reports", "/reports/dashboards/overview.malloy"]) {
          const missing = await fetch(apiUrl(`${sub}?versionId=1.0.0`));
          expect(missing.status).toBe(404);
          expect(((await missing.json()) as { reason?: string }).reason).toBe(
@@ -553,22 +581,22 @@ describe("Dashboard discovery (E2E)", () => {
       it("reads a date given in the bare form on a .malloynb cell", async () => {
          const countSince = async (since: string) => {
             const res = await fetch(
-               apiUrl(
-                  `/notebooks/orders-since.malloynb/cells/3?givens=${encodeURIComponent(
-                     JSON.stringify({ SINCE: since }),
-                  )}`,
-               ),
+               apiUrl("/models/orders-since.malloynb/query"),
+               {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                     query: "run: orders -> since_totals",
+                     givens: { SINCE: since },
+                     compactJson: true,
+                  }),
+               },
             );
             expect(res.status).toBe(200);
-            const body = (await res.json()) as { result?: string };
-            const cell = JSON.parse(body.result ?? "{}") as {
-               data?: {
-                  array_value?: {
-                     record_value?: { number_value?: number }[];
-                  }[];
-               };
-            };
-            return cell.data?.array_value?.[0]?.record_value?.[0]?.number_value;
+            const rows = JSON.parse(
+               ((await res.json()) as { result: string }).result,
+            ) as Record<string, number>[];
+            return Object.values(rows[0] ?? {})[0];
          };
          // Six orders in the fixture; two are ordered on or after 2024-03-01.
          expect(await countSince("2024-01-01")).toBe(6);
@@ -674,13 +702,13 @@ describe("Dashboard discovery (E2E)", () => {
       });
 
       /**
-       * A name outside the documented pattern is SERVED and only noted. The
+       * A name outside letters, digits, `-` and `_` is SERVED. The
        * report path is a plain wildcard, so `GET .../reports/dashboards/v1.2.malloy` resolves;
        * measured, not assumed. Withholding it broke working dashboards for any
        * team that versions a filename, and then made the drill lint call a real
        * dashboard "not a dashboard in this package".
        */
-      it("serves a dashboard whose name is outside the documented pattern", async () => {
+      it("serves a dashboard whose name carries a dot", async () => {
          const res = await fetch(
             `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}/reports/dashboards/v1.2.malloy`,
          );
@@ -741,53 +769,45 @@ describe("Dashboard discovery (E2E)", () => {
        * routing: Express cannot decode the param, so no handler runs. Measured
        * rather than assumed, because the obvious guess is 400 and it is not one.
        *
-       * Read what this does and does not pin. It exercises NO dashboard code:
-       * `decode_param` throws during layer matching, so `getDashboard` never
+       * Read what this does and does not pin. It exercises NO report code:
+       * `decode_param` throws during layer matching, so the report lookup never
        * runs and no regression in lookup, gating or payload is visible here.
        * What it pins is that a trailing-param route matches at all and that the
        * app-level handler maps an unclassified error to 500, and that the
-       * dashboards route is not somehow special among its neighbours.
+       * reports route is not somehow special among its neighbours.
        *
-       * `models` and `notebooks` are the comparison because they take a param in
-       * the same position. Their routes are wildcards where this one is
-       * `:dashboardName`, so the bodies match only while both captures are the
-       * single segment `p%q`; a multi-segment capture would diverge for reasons
-       * unrelated to dashboards. The package route behaves the same way and is
-       * simply not expressible through the helper below.
+       * `models` is the comparison because it takes a param in the same
+       * position, so the bodies match only while both captures are the single
+       * segment `p%q`. The package route behaves the same way and is simply not
+       * expressible through the helper below.
        *
        * Expected to go red when the middleware is fixed to return 400, which is
        * the point of writing it down.
        */
-      // DEPRECATED FEATURE COVERAGE — delete together with
-      // the `…/dashboards` / `…/notebooks` routes (see RELEASE_NOTES deprecations).
-      describe("deprecated: the …/dashboards and …/notebooks routes", () => {
-         it("answers a raw, undecodable name exactly as its neighbours do", async () => {
-            const raw = (suffix: string) =>
-               fetch(
-                  `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}/${suffix}/p%q`,
-               );
-            const onDashboards = await raw("dashboards");
-            expect(onDashboards.status).toBe(500);
-            const body = await onDashboards.text();
-            for (const neighbour of ["models", "notebooks"]) {
-               const other = await raw(neighbour);
-               expect(other.status).toBe(onDashboards.status);
-               expect(await other.text()).toBe(body);
-            }
-         });
+      it("answers a raw, undecodable name exactly as its neighbour does", async () => {
+         const raw = (suffix: string) =>
+            fetch(
+               `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}/${suffix}/p%q`,
+            );
+         const onReports = await raw("reports");
+         expect(onReports.status).toBe(500);
+         const body = await onReports.text();
+         const other = await raw("models");
+         expect(other.status).toBe(onReports.status);
+         expect(await other.text()).toBe(body);
       });
 
-      it("notes the unconventional name without refusing to serve it", async () => {
+      it("says nothing about the unconventional name", async () => {
          const messages = (await packageWarnings(LINT_PACKAGE)).map(
             (w) => w.message ?? "",
          );
-         expect(messages).toContainEqual(
-            expect.stringContaining(
-               '"v1.2" is outside the conventional dashboard name',
-            ),
+         // The name-shape note went with the by-name dashboards route, the
+         // only URL that carried the bare name.
+         expect(messages).not.toContainEqual(
+            expect.stringContaining("outside the conventional dashboard name"),
          );
          // And the drill pointing at it resolves, because it is real and
-         // reachable: the only thing said is that the bare name is deprecated.
+         // reachable.
          expect(messages).not.toContainEqual(
             expect.stringContaining('targets "v1.2", which is not'),
          );
@@ -1119,15 +1139,14 @@ describe("Dashboard discovery (E2E)", () => {
        * import-only dashboard's tiles run regardless of any export closure.
        */
 
-      it("serves an unconventionally named dashboard and says only that", async () => {
+      it("serves an unconventionally named dashboard and says nothing about its name", async () => {
          const mine = (await warningsOf(curatedUrl(""))).filter(
             (w) =>
                (w.model ?? "").includes("w1.9") &&
                // Drawn on purpose; `reports_anywhere` owns the finding.
                w.code !== "report-on-surface",
          );
-         expect(mine).toHaveLength(1);
-         expect(mine[0]?.message ?? "").toContain("is served, but");
+         expect(mine).toEqual([]);
       });
 
       describe("when index.malloy is the surface", () => {

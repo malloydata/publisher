@@ -72,7 +72,7 @@ export function storedTypedSource(args: {
    const { columns, casts, binding, typeName, stored } = args;
    // Each stored column under the name the result declares where it matches
    // only by a unique case fold (a warehouse that folded the build's quoted
-   // aliases, P3-06..09): DuckDB reads it under either spelling.
+   // aliases): DuckDB reads it under either spelling.
    const schema = canonicalStoredSchema(
       binding.schema,
       columns.map((c) => c.name),

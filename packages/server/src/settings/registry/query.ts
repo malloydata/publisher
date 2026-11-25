@@ -21,7 +21,7 @@ export const query = [
       default: DEFAULT_MAX_QUERY_ROWS,
       description:
          "Row cap on ad-hoc connection SQL; 0 leaves only the byte cap.",
-      notes: "Maximum rows returned per query on every query surface (`/connections/.../sqlQuery`, model query, notebook cell, MCP `executeQuery`). Forwarded to the connector / Malloy `runnable.run` as the effective row limit; queries that exceed the cap fail with HTTP 413. Set to `0` to disable. A caller-supplied `rowLimit` smaller than the cap is preserved.",
+      notes: "Maximum rows returned per query on every query surface (`/connections/.../sqlQuery`, model query, MCP `executeQuery`). Forwarded to the connector / Malloy `runnable.run` as the effective row limit; queries that exceed the cap fail with HTTP 413. Set to `0` to disable. A caller-supplied `rowLimit` smaller than the cap is preserved.",
       aliases: { env: ["PUBLISHER_MAX_QUERY_ROWS"] },
    }),
    setting({
@@ -30,7 +30,7 @@ export const query = [
       default: DEFAULT_MAX_RESPONSE_BYTES,
       description:
          "Byte cap on ad-hoc connection SQL responses; 0 leaves only the row cap.",
-      notes: "Maximum JSON-serialized response size, for ad-hoc SQL, model queries and notebook cells. Streaming-capable connections (Postgres, DuckDB) enforce mid-stream and abort the driver immediately; non-streaming connections enforce post-buffer. Exceeding the cap fails with HTTP 413. Set to `0` to disable. See the note below the table.",
+      notes: "Maximum JSON-serialized response size, for ad-hoc SQL and model queries. Streaming-capable connections (Postgres, DuckDB) enforce mid-stream and abort the driver immediately; non-streaming connections enforce post-buffer. Exceeding the cap fails with HTTP 413. Set to `0` to disable. See the note below the table.",
       defaultText: "`50000000` (50 MB)",
       aliases: { env: ["PUBLISHER_MAX_RESPONSE_BYTES"] },
    }),
@@ -146,7 +146,7 @@ export const query = [
       default: DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES,
       description:
          "Serialized schema each package-load worker caches across loads, in bytes; 0 turns it off.",
-      notes: "Serialized size of the table and SQL schemas each package-load worker keeps across loads, so a model's repeated and later requests for the same table skip the round trip to the main thread. Least recently used entries go first. Scoped per environment and per connection instance, so editing a connection drops its entries; a request that asks to refresh a schema is fetched again, and the result replaces the entry. Heap use is a few times the serialized size. `0` disables it; empty takes the default, and a value that is not a byte count stops the server from starting.",
+      notes: "Serialized size of the table and SQL schemas each package-load worker keeps across loads, so a model's repeated and later requests for the same table skip the round trip to the main thread. Least recently used entries go first. Scoped per environment and per connection instance, so editing a connection drops its entries. An explicit refresh (a reload with `?reload=true` or `reload_package`, a publish, or a `PATCH` that reinstalls) fetches every table and SQL schema the package reads again, in the connection's own cache too, and every worker drops its old entry; a watch-mode recompile and a boot read the cached schemas. Heap use is a few times the serialized size. `0` disables it; empty takes the default, and a value that is not a byte count stops the server from starting.",
       defaultText: "`16777216` (16 MiB)",
       aliases: { env: ["PACKAGE_LOAD_SCHEMA_CACHE_BYTES"] },
    }),

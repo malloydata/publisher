@@ -66,10 +66,14 @@ export function authorModelLiftContext(
    return built;
 }
 
-function buildAuthorModelLiftContext(
+/**
+ * The part of a lift context a walk of the model reads (`reachPersisted`):
+ * `contents` by source name, hidden dependencies included, and a sourceID
+ * index. Pure; reads no file.
+ */
+export function authorModelReachContext(
    modelDef: unknown,
-   readFile: (url: string) => string | undefined,
-): AuthorModelLiftContext {
+): Pick<AuthorModelLiftContext, "contents" | "sourceNameById"> {
    type Def = DerivedSourceDef & { sourceID?: unknown };
    const md = modelDef as
       | {
@@ -100,6 +104,14 @@ function buildAuthorModelLiftContext(
          sourceNameById.set(def.sourceID, name);
       }
    }
+   return { contents, sourceNameById };
+}
+
+function buildAuthorModelLiftContext(
+   modelDef: unknown,
+   readFile: (url: string) => string | undefined,
+): AuthorModelLiftContext {
+   const { contents, sourceNameById } = authorModelReachContext(modelDef);
    const fileCache = new Map<string, string | null>();
    const fileText = (url: string): string | undefined => {
       if (!url.startsWith("file:")) return undefined;

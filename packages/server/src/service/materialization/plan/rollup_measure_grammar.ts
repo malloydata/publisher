@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The measure grammar for `#(rollup)` (A2):
+ * The measure grammar for `#(rollup)`:
  * whether a measure's partials can be stored per grain group and merged, read
  * from the measure's own text rather than from the compiled IR.
  *
@@ -49,7 +49,7 @@
  * `not_mergeable`.
  */
 
-import { lexAll, type Token as LexToken } from "../text/malloy_lexer";
+import { lexAll, type Token as LexToken } from "../../malloy_lexer_core";
 import type {
    AggregateLeaf,
    MeasureExpr,

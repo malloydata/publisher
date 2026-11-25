@@ -72,6 +72,28 @@ SELECT
 FROM __stage0 as base
 WHERE base."n">1
 
+-- ==== source orders__recent__view
+-- sourceID: orders__recent__view@<pkg>/m.malloy.persist-view.malloy
+-- connection: duckdb
+-- sourceEntityId: 00eaeafe019005432a365f1f947144998fe8a0f11656a6fd56c848514a06b7c1
+-- compiler key: 00eaeafe019005432a365f1f947144998fe8a0f11656a6fd56c848514a06b7c1 (the sourceEntityId)
+-- build SQL:
+SELECT 
+   base."region" as "region",
+   COUNT(1) as "n"
+FROM (
+  SELECT CAST(id AS BIGINT) AS id, CAST(customer_id AS BIGINT) AS customer_id,
+         region, status,
+         CAST(amount AS DOUBLE) AS amount, CAST(discount AS DOUBLE) AS discount,
+         CAST(order_date AS DATE) AS order_date,
+         CAST(created_at AS TIMESTAMP) AS created_at,
+         CAST("order" AS BIGINT) AS "order"
+  FROM read_csv('data/orders.csv', header=true, all_varchar=true)
+) as base
+WHERE base."created_at">((LOCALTIMESTAMP - INTERVAL (30) day))
+GROUP BY 1
+ORDER BY 2 desc NULLS LAST
+
 -- generated files
 
 -- ==== <pkg>/m.malloy
@@ -109,3 +131,6 @@ source: orders__by_status__view is orders__pv_base -> by_status
 
 #@ persist storage="lake"
 source: orders__two_stage__view is orders__pv_base -> two_stage
+
+#@ persist storage="lake"
+source: orders__recent__view is orders__pv_base -> recent

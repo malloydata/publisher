@@ -18,6 +18,10 @@ import {
    persistTables,
 } from "../../../test_helpers/materialization_test_fixtures";
 import type { BuildInstruction } from "../domain/types";
+import { fakeContractReads } from "../../../test_helpers/contract_fixture";
+
+// Builds over fake connections, which answer no catalog query.
+fakeContractReads();
 
 let warn: sinon.SinonStub;
 let quiet: sinon.SinonStub[] = [];
@@ -61,7 +65,6 @@ function execute(
       instructions,
       seedEntries: seed,
       signal: new AbortController().signal,
-      strict: false,
       priorRefusals: [],
       hostInstructed: true,
    });

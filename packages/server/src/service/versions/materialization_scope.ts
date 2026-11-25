@@ -1,6 +1,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { leafKey } from "../materialization/domain/physical_table";
+import { contractWithoutPassedKeys } from "../materialization/domain/column_contract";
+import { isActiveRun } from "../materialization/domain/types";
 import { createHash } from "crypto";
 import type {
    Materialization,
@@ -191,6 +194,69 @@ export function newestServingEntries(
 }
 
 /**
+ * Each incremental source's newest entry among the committed runs `reader`
+ * reads, by content address, whichever run wrote it: a run of some sources
+ * commits a manifest naming only those, so an extension it did not build
+ * last recorded its boundary, and which build of its parent's table that
+ * boundary was reached over, in an older run (incremental_upstream.ts).
+ * `excludeId` skips one run, the one asking.
+ *
+ * An entry is taken only while it is the newest record of its table: never
+ * one its run has marked superseded (SUPERSEDED_TABLES_KEY), nor one naming
+ * a table a later committed run recorded again (for any source), since
+ * either way the table no longer holds what the entry says.
+ */
+export function newestIncrementalEntries(
+   runs: Materialization[],
+   reader: ServingReader,
+   excludeId?: string,
+): Record<string, ManifestEntry> {
+   const committed = runs
+      .filter(
+         (m) =>
+            m.id !== excludeId &&
+            readsRun(m, reader) &&
+            m.status === "MANIFEST_FILE_READY" &&
+            m.manifest?.entries,
+      )
+      .sort((a, b) => committedAt(b) - committedAt(a));
+   const out: Record<string, ManifestEntry> = {};
+   // Each table a newer run recorded, by where it lives.
+   const newer = new Set<string>();
+   for (const m of committed) {
+      const superseded = new Set(
+         tableNamesIn(m.metadata, SUPERSEDED_TABLES_KEY).map(tableIdentity),
+      );
+      const recorded: string[] = [];
+      for (const [address, entry] of Object.entries(m.manifest!.entries!)) {
+         if (isLegacyFailedEntry(entry)) continue;
+         const table = recordedTable(entry);
+         recorded.push(table);
+         if (
+            out[address] ||
+            !entry.ledger ||
+            superseded.has(tableIdentity(entry.physicalTableName)) ||
+            newer.has(table)
+         ) {
+            continue;
+         }
+         out[address] = entry;
+      }
+      for (const table of recorded) newer.add(table);
+   }
+   return out;
+}
+
+/** Where an entry's table lives, for telling whether two entries name one. */
+function recordedTable(entry: ManifestEntry): string {
+   return JSON.stringify([
+      entry.connectionName ?? null,
+      entry.storageDestinationName ?? null,
+      tableIdentity(entry.physicalTableName),
+   ]);
+}
+
+/**
  * What a physical table name names, for telling whether two runs write the
  * same table: its last segment, unquoted, without letter case. Two names a
  * warehouse may read as one table (`summary` and `SUMMARY` in DuckDB, or
@@ -199,25 +265,20 @@ export function newestServingEntries(
  * or a version serve live: the safe direction.
  */
 export function tableIdentity(physicalTableName: string): string {
-   const segments = physicalTableName.split(".");
-   return segments[segments.length - 1].replace(/["`[\]]/g, "").toLowerCase();
+   return leafKey(physicalTableName);
 }
 
 /**
  * How a loaded package finds, in the store, the tables it serves from (see
- * newestServingEntries).
+ * newestServingEntries). While a run of the package is still active it may
+ * be rewriting a table in place, so no key check a contract records as
+ * passed is bound then: those tables' joins that need a verdict answer live
+ * until a bind after the run ends (the run's own load binds what it found).
+ * A check that found its key repeated stays bound: it only ever declines.
  */
 export function storageBindingResolverFor(
    repository: Pick<ResourceRepository, "listMaterializations">,
    environmentId: string,
-   /**
-    * What the bind adds to the entries from the runs they came from: the
-    * rollup key records (known limitation 29, `withRollupKeyRecords`).
-    */
-   annotate?: (
-      entries: Record<string, ManifestEntry>,
-      runs: Materialization[],
-   ) => Record<string, ManifestEntry>,
 ): (
    packageName: string,
    reader: ServingReader,
@@ -229,8 +290,29 @@ export function storageBindingResolverFor(
          reader.owned !== undefined ? { version: reader.owned } : undefined,
       );
       const entries = storedServingEntries(runs, reader);
-      return annotate ? annotate(entries, runs) : entries;
+      return runs.some((run) => isActiveRun(run.status))
+         ? withoutPassedKeyChecks(entries)
+         : entries;
    };
+}
+
+/** `entries`, each with no passed key check in its contract ({@link contractWithoutPassedKeys}). */
+function withoutPassedKeyChecks(
+   entries: Record<string, ManifestEntry>,
+): Record<string, ManifestEntry> {
+   return Object.fromEntries(
+      Object.entries(entries).map(([id, entry]) => [
+         id,
+         entry.contract === undefined
+            ? entry
+            : {
+                 ...entry,
+                 contract: contractWithoutPassedKeys(
+                    entry.contract,
+                 ) as ManifestEntry["contract"],
+              },
+      ]),
+   );
 }
 
 /**

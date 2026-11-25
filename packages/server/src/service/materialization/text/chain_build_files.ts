@@ -35,6 +35,10 @@ interface Position {
 export function chainBuildFileSet(args: {
    lift: AuthorModelLift;
    downstreamSourceID: string;
+   /** The downstream by its name in the model instead. */
+   downstreamName?: string;
+   /** More declarations, by name, to keep as written (a named query). */
+   keepAlso?: readonly string[];
    bindings: readonly { sourceName: string; sourceIDs?: readonly string[] }[];
    /** Each upstream the served copy re-roots, where it is declared. */
    reroots: readonly { sourceID: string; url?: string; range?: unknown }[];
@@ -45,7 +49,8 @@ export function chainBuildFileSet(args: {
    | { entry: string; downstreamName: string; files: Map<string, string> } {
    const { lift } = args;
    const why = (declined: string) => ({ declined });
-   const downstreamName = lift.sourceNameById.get(args.downstreamSourceID);
+   const downstreamName =
+      args.downstreamName ?? lift.sourceNameById.get(args.downstreamSourceID);
    const location =
       downstreamName === undefined
          ? undefined
@@ -68,11 +73,16 @@ export function chainBuildFileSet(args: {
       if (b.sourceIDs) for (const id of b.sourceIDs) stored.add(id);
       else storedNames.add(b.sourceName);
    }
-   const reached = reachPersisted(
-      lift,
-      downstreamName,
-      (n, id) => stored.has(id) || storedNames.has(n),
-   );
+   const isStored = (n: string, id: string) =>
+      stored.has(id) || storedNames.has(n);
+   // A downstream named by a stored upstream itself (a query run on it)
+   // reads that upstream's table and nothing past it.
+   const own = lift.contents[downstreamName] as { sourceID?: unknown };
+   const reached =
+      typeof own?.sourceID === "string" &&
+      isStored(downstreamName, own.sourceID)
+         ? { raw: false, rawLeaves: [] as string[], visited: [] as string[] }
+         : reachPersisted(lift, downstreamName, isStored);
    if (reached.raw) {
       return why(
          `it reads ${reached.rawLeaves.join(", ")}, which no re-rooted upstream stands in for`,
@@ -90,6 +100,11 @@ export function chainBuildFileSet(args: {
       keepAt(at?.url, at?.range);
    }
    for (const r of args.reroots) keepAt(r.url, r.range);
+   for (const also of args.keepAlso ?? []) {
+      const at = lift.contents[also]?.location;
+      if (!at?.url) return why(`'${also}''s declaration could not be found`);
+      keepAt(at.url, at.range);
+   }
    // Every file the downstream's file reaches by import, blanked: the
    // imports the compile resolved, never text that only looks like one.
    const files = new Map<string, string>();

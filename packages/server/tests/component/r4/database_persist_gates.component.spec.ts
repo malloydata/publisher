@@ -118,10 +118,14 @@ const CASES: Case[] = [
             })),
    },
    {
+      // Refused at plan, and answered live: the gate it inherits through `->`
+      // filters `gated`'s rows before `inherits` runs, which no routed shape
+      // grafting at its own output stands for (the router's
+      // `derivation_base` veto).
       name: "a persisted source over the gated one, its gate inherited",
       malloy:
          "run: inherits -> { group_by: org; aggregate: total; order_by: org }",
-      via: "served_copy",
+      via: "live",
       rows: (g) =>
          g.ORGS.slice()
             .sort()

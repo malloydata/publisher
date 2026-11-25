@@ -55,9 +55,38 @@ stands in front of Publisher and does all of the following:
      including ones the model marks private or internal, with its warehouse type. No row value is
      returned, but the names and types describe your warehouse, so restrict these routes to
      operators.
+   - the materialized-table drop
+     (`DELETE …/packages/{packageName}/connections/{connectionName}/materializedTables/{tableName}`,
+     from 0.16.0). It drops a table in the warehouse, so allow it only to the operator that owns
+     the package's materialization lifecycle. Publisher relies on the gateway for who may call it,
+     and enforces ownership itself: whoever the gateway admits can drop only a database-tier table
+     that a run record of the package names on that connection, or whose ownership mark names the
+     package and the very place the warehouse's catalog says the requested name resolves to now
+     (a mark copied onto another table by a rename, a move to another schema, a clone, or a copy
+     a search path finds first proves nothing, and a mark from before 0.16.0 is not accepted). The
+     mark proves ownership only if everyone who can edit a table's comment or description in the
+     warehouse could also drop that table: on BigQuery `bigquery.tables.update` changes a
+     description without `bigquery.tables.delete`, and on Databricks `MODIFY` allows
+     `COMMENT ON` but not `DROP`. Grant comment and description edits accordingly. It never
+     drops one that a committed run of the package, a loaded package's binding or an active run
+     still uses, or that another package marked
+     ([the drop route](materialization.md#the-drop-route)). Two limits remain. The in-use check
+     sees only this server's records and loaded packages: not an unloaded package bound through a
+     host manifest or `manifestLocation`, a reader outside Malloy, another environment or server
+     on the same schema, or a re-pointed connection. And the answer tells a caller whether a
+     relation the connection can see exists (404 `TABLE_NOT_FOUND` against a 409), for any name
+     it asks about; it never names another table's owner. Both are acceptable only because the
+     gateway admits the operator alone.
 5. Forwards who is asking in the caller header (`x-publisher-caller`, renamed with
    `PUBLISHER_CALLER_HEADER`) and a `traceparent`, so
    the [access record](access-record.md) names the caller.
+
+**Headers a gateway must strip.** `x-publisher-bypass-authorize` is the one request header that
+changes what Publisher enforces: carrying the value of `PUBLISHER_BYPASS_AUTHORIZE_SECRET`, it skips
+`#(authorize)` and `#(access_filter)` on a query or a compile check. Remove it from every inbound
+request at the gateway, so only an internal service behind the gateway (an indexer) can set it. The
+`/api/v1` spec states the same rule in its overview rather than as a parameter or a security scheme,
+so no generated client offers it.
 
 Without that tier the controls are advisory. Anyone who can reach the port can set their own givens
 and pass any gate. The rest of this page is the detail behind that rule.
@@ -199,8 +228,21 @@ Concretely:
   read and no URL: `STORAGE_ACCESS_DENIED`, saying the query is fine, only for a URL under a data
   path the environment configures, and `PATH_ACCESS_DENIED` for a path the query or model reads
   itself. The full text, bucket and path included, is in the server
-  log. Hiding a schema a host's catalog uses (such as a managed `materialized` schema)
-  from models is the host's to configure, not Publisher's.
+  log.
+- **A `managed` DuckLake connection reads only its catalog's `main` schema and the schemas its
+  `readableSchemas` lists.** Its storage credential reaches only those schemas' files, and because
+  DuckLake answers some reads from catalog metadata alone (columns, row counts, file statistics,
+  listings, inlined rows), SQL on it is also held to those schemas before it runs: a `.table()` or
+  `.sql()` source when the model compiles, a raw SQL expression when the package loads, and raw SQL
+  at its route. Any other schema or catalog, the
+  metadata catalog, DuckDB's catalog views and functions, `DESCRIBE`/`SHOW`/`SUMMARIZE`, and table
+  functions other than `range`, `generate_series` and `unnest` are refused, as is a table name that is a
+  path, glob or DuckDB catalog name however it is qualified; on a local data path its file allowlist
+  is those schemas' files, as its secret is scoped elsewhere; and its schema listing
+  shows only `main` and the listed schemas (`packages/server/src/service/managed_catalog_scope.ts`). DuckDB and DuckLake
+  offer no attach option that hides a schema, the metadata, file statistics or inlined rows from a
+  read-only attach, so this check is the control. A storage destination's own session still reads
+  every schema.
 - **Governance is mostly a modeling concern.** `#(authorize)`, `#(access_filter)`, given-scoped
   row-level access, and a package's `index.malloy` surface constrain what a _model_ exposes. They are
   real, and they are the right place to put data policy. They are not end-user authentication:
@@ -209,8 +251,8 @@ Concretely:
   the value of `PUBLISHER_BYPASS_AUTHORIZE_SECRET` skips gate evaluation on BOTH routes outright —
   the `#(authorize)` lock as well as the `#(access_filter)` filter — for trusted data-management
   callers (indexers). With that variable unset the bypass is refused, so
-  the default is closed; a deployment that configures the secret and reaches untrusted callers
-  should still strip the header at its edge — see
+  the default is closed; a deployment that configures the secret removes the header from every
+  inbound request at its gateway (see "Headers a gateway must strip" above) — see
   [authorize-bypass-deployment.md](authorize-bypass-deployment.md). It is the one place where a
   request, not a model, decides whether governance applies.
 
@@ -248,11 +290,11 @@ a source that should not answer schema questions to outsiders wants a lock as we
   may not otherwise see, so a failure to attach the gate returns an opaque error naming no column,
   join, or expression — only the source.
 - **A gate is evaluated with the query it is grafted into.** A gate on a field computed from a
-  timestamp follows the query's `timezone:`, and a gate inherited through a `->` derivation filters
-  the derivation's output, after its `all()`, window functions and `limit` have run over every row.
-  For these two live behaviours served answers match a live run. Gate on a column that already
-  holds the date or key, and filter a derivation's input with a first-stage `where:` on the gate's
-  given when its global context is sensitive. See
+  timestamp follows the query's `timezone:`; served answers match a live run. Gate on a column that
+  already holds the date or key. A gate inherited through a `->` derivation filters the base's rows
+  before the derivation runs, so the derivation's `all()`, window functions, `limit` and renames see
+  only the caller's rows; where it cannot be applied there (a base that hides the gate's column) the
+  query is denied. See
   [row-level-access.md § Where a gate is evaluated](row-level-access.md#where-a-gate-is-evaluated).
 - **A row-level gate's given values land in the warehouse query log.** The filter is inlined
   (`WHERE org_id IN (7, 8)`), not parameterized, so every caller's group set appears verbatim in
@@ -280,6 +322,25 @@ a source that should not answer schema questions to outsiders wants a lock as we
   metadata schema as a destination, or a data path that overlaps the destination's. That check is
   not exhaustive (a DuckDB connection attaching the destination in its `setupSQL` is not caught),
   so treat it as a backstop, not the control. The destination's own credentials are the control.
+
+- **Inlined rows are not files.** A DuckLake catalog that records a `data_inlining_row_limit` above 0
+  keeps a small table as rows in its catalog database, where a read-only view or storage secret
+  scoped to the catalog's files does not reach to keep a reader out, so a stored copy of a gated
+  source could be read past the gate. Publisher records 0 on every catalog it creates and warns
+  (`ducklake-data-inlining-on`, in the log and on each package storing there) about an existing one
+  that records more; it never changes an existing catalog's setting. See
+  [DuckLake](ducklake.md#how-publisher-attaches-a-ducklake-catalog).
+
+### Stored tables read past a gate
+
+A gated query answered from a stored table is held, by one decision (`admitRead`), to the rules
+every stored answer meets (the caller's own filters, the result's order and grouping) and to the
+gate's own: whether the leg and every table it read keep the gate, and whether every column the
+gate reads is stored exactly, without a zone, and compared as its source compares it. A gate fact
+that cannot be read answers live. The list is in
+[materialization.md](materialization.md#the-rules-a-stored-answer-is-held-to).
+The gate itself is still proven by `govern()` on every answer, and it holds only on reads through
+Publisher, never on a direct read of a destination.
 
 ## Where author code executes today
 
@@ -382,8 +443,17 @@ cloud-metadata or other non-allowlisted URL, no ATTACH of another catalog, no ex
 load beyond what the instance's own setup loaded (extension autoload is off), no persistent
 secret, and no `SET`/`RESET` once locked. On a locked instance, Publisher also refuses, before
 DuckDB sees it, any statement that creates or drops a secret, that reaches DuckDB's logging or
-profiling (which DuckDB's configuration lock does not cover), or that runs SQL taken from text
-(`query()`, a serialized plan, `IMPORT DATABASE`). It reads each statement with DuckDB's own
+profiling (which DuckDB's configuration lock does not cover), that runs SQL taken from text
+(`query()`, a serialized plan, `IMPORT DATABASE`), or that introspects the instance's catalog,
+settings, secrets, variables, pragmas or its own files (its file cache, spill files and
+extensions), calls DuckLake's own functions, or reaches an attached
+database other than through its tables (an attached database's Postgres system schemas,
+`pg_catalog`, `information_schema`, `pg_toast` and `pg_temp_N`, included; DuckDB's own
+`information_schema` and `pg_catalog` still read, except the `pg_settings`, `pg_database` and
+`pg_prepared_statements` views over refused functions); author SQL that does any of these,
+logging, profiling and SQL run from text included, is refused when the package loads. A Postgres database attached to DuckDB
+(a DuckLake catalog, an attached database, a federated build source) is attached through a
+temporary DuckDB secret that holds its user, password and client-key password, so its attach path carries no credential. It reads each statement with DuckDB's own
 parser where the parser can serialize it, and every statement with a fail-closed lexical check
 that re-reads comment and string text, so a construct read differently from DuckDB hides nothing.
 Publisher's own renewal of a storage secret is the one secret statement it admits. The lockdown is part of each instance's configuration identity, so an instance is never

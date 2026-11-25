@@ -2,23 +2,21 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A database `#@ persist` table on BigQuery whose manifest entry carries no
- * captured warehouse types (`nativeSchema`, which manifests written before the
- * control plane stored it lack). A column whose field Malloy types as a
- * `bigint` number is read through a cast to its warehouse type; BigQuery has
- * exactly one integer type, INT64, so the served copy reads it through INT64
- * and the source serves. On any other dialect nothing captured means no cast
- * is known exact, and the column is still left out.
- *
- * Either way the package warns once for the source
- * (`database-native-type-missing`), naming its columns; a table whose build
- * captured the types gets no such warning.
+ * A database `#@ persist` table on BigQuery and on DuckDB whose manifest entry
+ * carries no column contract (manifests written before contracts were
+ * recorded lack one). Such an entry records nothing to compare the table with,
+ * so the bind leaves the table out and the source answers live, with the
+ * serve verdict, the path report and the package warning all naming
+ * `contract_missing`, on BigQuery as on any dialect. A table whose build
+ * recorded its types and contract serves through its native casts, and gets
+ * no warning.
  *
  * BigQuery is a stand-in: its schema reads come from a fixture and its SQL
  * returns no rows, since what is checked is the served copy and the SQL it
  * writes, not the warehouse.
  */
 
+import { contractFor } from "../../src/test_helpers/contract_fixture";
 import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
@@ -41,6 +39,11 @@ function standInBigQuery(name: string): Connection {
       name,
       projectId: "stand-in",
    } as never);
+   // The collation probe's datasets.list, which names the region its
+   // project-wide read runs in.
+   Object.assign((connection as unknown as { bigQuery: object }).bigQuery, {
+      getDatasets: async () => [[{ metadata: { location: "US" } }]],
+   });
    Object.assign(connection, {
       getSQLBlockSchema: async () => ({
          fields: [
@@ -49,25 +52,50 @@ function standInBigQuery(name: string): Connection {
          ],
       }),
       // The bind's catalog read of the stored table's columns, as BigQuery
-      // types them; every other statement returns nothing.
+      // types them, and the collation probe's read of the stored table's
+      // type; every other statement returns nothing (the collation probe's
+      // other reads among them: no collated column).
       runSQL: async (sql: string) =>
-         sql.includes("INFORMATION_SCHEMA.COLUMNS")
+         // The bind's read of the stored table's column collations, beside
+         // its columns: none collated.
+         sql.startsWith("SELECT table_name, column_name, collation_name FROM")
             ? {
-                 rows: [
-                    {
-                       table_name: "by_k_table",
-                       column_name: "k",
-                       data_type: "STRING",
-                    },
-                    {
-                       table_name: "by_k_table",
-                       column_name: "total",
-                       data_type: "INT64",
-                    },
-                 ],
+                 rows: ["k", "total"].map((column_name) => ({
+                    table_name: "by_k_table",
+                    column_name,
+                    collation_name: null,
+                 })),
                  totalRows: 2,
               }
-            : { rows: [], totalRows: 0 },
+            : /INFORMATION_SCHEMA\.TABLES\b/.test(sql)
+              ? {
+                   rows: [
+                      {
+                         table_schema: "scratch",
+                         table_name: "by_k_table",
+                         table_type: "BASE TABLE",
+                      },
+                   ],
+                   totalRows: 1,
+                }
+              : sql.includes("INFORMATION_SCHEMA.COLUMNS") &&
+                  !sql.includes("collation_name")
+                ? {
+                     rows: [
+                        {
+                           table_name: "by_k_table",
+                           column_name: "k",
+                           data_type: "STRING",
+                        },
+                        {
+                           table_name: "by_k_table",
+                           column_name: "total",
+                           data_type: "INT64",
+                        },
+                     ],
+                     totalRows: 2,
+                  }
+                : { rows: [], totalRows: 0 },
    });
    return connection;
 }
@@ -136,7 +164,9 @@ async function bindWithoutNativeSchema(
          freshnessWindowSeconds: 86400,
          freshnessFallback: "live",
          dataAsOf: new Date().toISOString(),
-         ...(nativeSchema ? { nativeSchema } : {}),
+         ...(nativeSchema
+            ? { nativeSchema, contract: contractFor(nativeSchema) }
+            : {}),
       },
    } as never);
    const model_ = pkg.getModel("m.malloy");
@@ -150,6 +180,14 @@ async function bindWithoutNativeSchema(
       notices: (pkg.getPackageMetadata().warnings ?? []).filter(
          (w) => w.code === "database-native-type-missing",
       ),
+      codes: (pkg.getPackageMetadata().warnings ?? []).map((w) => w.code),
+      verdict: pkg
+         .materialization()
+         .serveVerdicts()
+         .find((v) => v.sourceName === "by_k"),
+      declines: (result.path?.considered ?? []).map(
+         (c) => (c as { code?: string }).code,
+      ),
       problems: model_?.servedCopyProblems() ?? [],
       servedBy: result.path?.servedBy,
       sql: String((result.result as unknown as { sql?: string }).sql ?? ""),
@@ -157,41 +195,33 @@ async function bindWithoutNativeSchema(
 }
 
 describe("a database table bound with no captured warehouse types", () => {
-   it("reads a BigQuery big-integer column through INT64, and serves", async () => {
-      const { notices, problems, servedBy, sql } =
-         await bindWithoutNativeSchema(
-            modelOn("bq", "SELECT k, n FROM t"),
-            new Map<string, Connection>([["bq", standInBigQuery("bq")]]),
-         );
-      expect(problems).toEqual([]);
-      expect(servedBy?.kind).toBe("materialized");
-      expect(sql).toContain("by_k_table");
-      expect(sql).toMatch(/AS INT64\)/);
-      expect(notices.map((w) => [w.model, w.subject, w.severity])).toEqual([
-         ["m.malloy", "by_k", "warn"],
-      ]);
-      expect(notices[0].message).toContain("`total` is read as `INT64`");
-      expect(notices[0].message).toContain("next full rebuild");
-      expect(notices[0].message).not.toMatch(/file:|\//);
-   });
-
-   it("still leaves the column out on another dialect", async () => {
-      const { notices, problems, servedBy } = await bindWithoutNativeSchema(
+   // A typeless entry answers live (888c55948): it was served before.
+   for (const [dialect, model, connections] of [
+      [
+         "BigQuery",
+         modelOn("bq", "SELECT k, n FROM t"),
+         () => new Map<string, Connection>([["bq", standInBigQuery("bq")]]),
+      ],
+      [
+         "DuckDB",
          modelOn("duckdb", "SELECT 'a' AS k, CAST(1 AS BIGINT) AS n"),
-         new Map<string, Connection>(),
-      );
-      expect(problems.map((p) => [p.sourceName, p.reason])).toEqual([
-         ["by_k", "column_types"],
-      ]);
-      expect(servedBy?.kind).toBe("live");
-      expect(notices.map((w) => w.subject)).toEqual(["by_k"]);
-      expect(notices[0].message).toContain(
-         "`total` cannot be read exactly without one",
-      );
-      // Here the whole source answers live (`column_types`), and the
-      // message does not claim only the queries reading it do.
-      expect(notices[0].message).toContain("wholly live");
-   });
+         () => new Map<string, Connection>(),
+      ],
+   ] as const) {
+      it(`answers live on ${dialect}, naming contract_missing everywhere`, async () => {
+         const { codes, verdict, declines, servedBy, notices } =
+            await bindWithoutNativeSchema(model, connections());
+         expect(servedBy?.kind).toBe("live");
+         expect(verdict).toMatchObject({
+            verdict: "live",
+            reason: "contract_missing",
+         });
+         expect(declines).toContain("contract_missing");
+         expect(codes).toContain("materialization-contract-missing");
+         // Left out whole: no column of it is read, so none is warned of.
+         expect(notices).toEqual([]);
+      });
+   }
 
    it("warns of nothing for a table whose build captured the types", async () => {
       const { notices, problems, sql } = await bindWithoutNativeSchema(

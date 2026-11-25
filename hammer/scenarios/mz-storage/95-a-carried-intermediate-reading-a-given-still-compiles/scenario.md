@@ -84,7 +84,7 @@ Expect:
 | ------------ | --------------- | ----------- | ---------- |
 | 99           | 2026-01-03      | east        | 1000       |
 
-## Build (orchestrated, strict, pkg=cig)
+## Build (orchestrated, pkg=cig)
 
 Strict: `rollup` alone over the stored `daily`, through the intermediate that
 reads the given. Succeeds, from the table.

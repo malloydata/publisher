@@ -12,6 +12,10 @@ import {
    createMocks,
    withQueryMetadataOn,
 } from "../../../test_helpers/materialization_service_harness";
+import { fakeContractReads } from "../../../test_helpers/contract_fixture";
+
+// Builds over fake connections, which answer no catalog query.
+fakeContractReads();
 
 /**
  * buildOneSource: the database CTAS/swap, the SQL it issues and the metadata
@@ -481,30 +485,5 @@ describe("buildOneSource reports upstreamReuse from the manifest it substituted 
       });
       expect(entry.upstreamReuse).toBe("reused");
       expect(entry.upstreamRecomputeReason).toBeUndefined();
-   });
-
-   it("recomputed, with the reason, when the upstream is in no manifest and the compiler's strict render misses it", async () => {
-      const entry = await build(new Manifest(), {}, (sqlOpts) => {
-         const m = (
-            sqlOpts as {
-               buildManifest?: {
-                  strict?: boolean;
-                  entries?: Record<string, unknown>;
-               };
-            }
-         ).buildManifest;
-         if (m?.strict === true && !("addr-daily" in (m.entries ?? {}))) {
-            throw Object.assign(
-               new Error(
-                  "Persisted source 'daily@m' not found in manifest (buildId: addr-daily); strict manifest mode forbids fallback to live compilation.",
-               ),
-               { code: "runtime-manifest-strict-miss" },
-            );
-         }
-      });
-      expect(entry.upstreamReuse).toBe("recomputed");
-      expect(entry.upstreamRecomputeReason).toMatch(
-         /'daily' is not in this build's manifest/,
-      );
    });
 });

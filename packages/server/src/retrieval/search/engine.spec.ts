@@ -927,6 +927,8 @@ describe("splitBundles", () => {
 });
 
 describe("a package removed while its index builds", () => {
+   // Reads an earlier spec stored would be reused, not read.
+   beforeEach(() => deleteEngineRows(harness.db, "env", "fixture"));
    afterAll(() => (harness.registry.valueFetcherOverride = fcjValueFetcher));
 
    it("stops the build, keeps no state, and leaves no stored value behind", async () => {
@@ -936,6 +938,7 @@ describe("a package removed while its index builds", () => {
          getPackage: async () => pkg,
          peekPackage: () => served,
          getStaleCompileErrors: () => new Map(),
+         listApiConnections: () => [],
       };
       const store: PackageLookup & EnvironmentPeek = {
          getEnvironment: async () => environment as unknown as Environment,
@@ -974,6 +977,8 @@ describe("a package removed while its index builds", () => {
 });
 
 describe("a value read the server refused", () => {
+   // Reads an earlier spec stored would be reused, not read.
+   beforeEach(() => deleteEngineRows(harness.db, "env", "fixture"));
    const CITY = "dimension:cities@travel.malloy:city";
    /** The fixture's Package is typed unknown; the state is keyed by it. */
    const stateOf = (pkg: unknown) =>

@@ -7,6 +7,7 @@ import {
    callerTextDecline,
    callTargetDecline,
    exactCallDecline,
+   readStoredVariant,
    refinedCallDecline,
 } from "./view_variants";
 
@@ -182,5 +183,53 @@ describe("the view leg's decisions at their edges", () => {
          refinedCallDecline(call({ refined: true, laterStages: 2 }))?.code,
       ).toBe("view_shape_mismatch");
       expect(refinedCallDecline(call({ laterStages: 2 }))).toBeUndefined();
+   });
+});
+
+describe("readStoredVariant", () => {
+   const read = (variant: object, cacheScope: string | undefined) => {
+      let loaded = false;
+      const run = readStoredVariant({
+         queryString: "run: flights -> by_carrier",
+         givens: undefined,
+         buildManifest: undefined,
+         variant: {
+            ...variant,
+            materializer: {
+               loadRestrictedQuery: () => {
+                  loaded = true;
+                  throw new Error("not reached in this spec");
+               },
+            },
+         } as never,
+         table: {} as never,
+         modelPath: "m.malloy",
+         subject: "flights -> by_carrier",
+         cacheScope,
+      });
+      return { run, loaded: () => loaded };
+   };
+
+   it("refuses a compiled variant with no graft cache scope of its own, before reading it", async () => {
+      for (const scope of [undefined, ""]) {
+         const { run, loaded } = read({ modelDef: {} }, scope);
+         await expect(run).rejects.toThrow("no graft cache scope");
+         expect(loaded()).toBe(false);
+      }
+   });
+
+   it("declines a variant that did not compile as before, whatever its scope", async () => {
+      await expect(
+         readStoredVariant({
+            queryString: "run: flights -> by_carrier",
+            givens: undefined,
+            buildManifest: undefined,
+            variant: { error: "does not compile" },
+            table: {} as never,
+            modelPath: "m.malloy",
+            subject: "flights -> by_carrier",
+            cacheScope: undefined,
+         }),
+      ).rejects.toMatchObject({ code: "view_missing_field" });
    });
 });

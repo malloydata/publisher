@@ -25,7 +25,8 @@ import {
    MaterializationEligibilityError,
    ModelCompilationError,
    UnconfiguredConnectionError,
-   WarehouseRecomputeRefusedError,
+   ContractCaptureFailedError,
+   SchemaIncompatibleError,
 } from "../../../errors";
 import {
    causeChain,
@@ -36,9 +37,9 @@ import { errMessage } from "../../../utils";
 import {
    HostSuppliedWrongTierError,
    strictMissSourceId,
-} from "./materialization_run_support";
+} from "./build_upstreams";
 import { InlinedJoinNotUniqueError } from "./inline_uniqueness";
-import type { SourceFailure } from "../domain/types";
+import type { RefusedSource, SourceFailure } from "../domain/types";
 
 /**
  * Whether retrying one source's failed build could succeed, as reported on
@@ -237,9 +238,11 @@ export function classifyBuildError(err: unknown): BuildRetryable {
    // The host supplied an upstream at the wrong tier: the same instructions
    // fail the same way, so the host must change them.
    if (err instanceof HostSuppliedWrongTierError) return false;
-   // The instructions refused the only build there is (warehouseReach:
-   // refuse): the same instructions refuse it again.
-   if (err instanceof WarehouseRecomputeRefusedError) return false;
+   // A table's contract did not read back: a retry reads it again.
+   if (err instanceof ContractCaptureFailedError) return true;
+   // The plan was stale: the package derives it again, and a retry builds
+   // or the plan refuses.
+   if (err instanceof SchemaIncompatibleError) return true;
    // An upstream no manifest holds: unclassified on its own (see above).
    if (isUpstreamMissingError(err)) return undefined;
    // A property of the model, the package or the environment's configuration.
@@ -296,9 +299,7 @@ export interface FailedUpstream {
  * unclassified otherwise. Its reason then names the upstream's own failure,
  * so the dependent does not read as a mere absence.
  *
- * Any other error is the source's own (for instance a non-strict build that
- * recomputed the failed upstream from raw and then failed itself), so it is
- * classified on its own.
+ * Any other error is the source's own, so it is classified on its own.
  */
 export function classifySourceFailure(
    err: unknown,
@@ -380,6 +381,8 @@ export class BuildRunFailedError extends Error {
    readonly retryable: BuildRetryable;
    /** Each source's own failure, by sourceEntityId ({@link withFailedRunManifest}). */
    runFailures?: Record<string, SourceFailure>;
+   /** The refused sources `runFailures` does not report, by sourceID. */
+   runRefused?: Record<string, RefusedSource>;
 
    constructor(message: string, retryable: BuildRetryable) {
       super(message);
@@ -395,8 +398,14 @@ export class BuildRunFailedError extends Error {
  * or binds it, since every reader that binds or reuses a run counts
  * MANIFEST_FILE_READY runs only.
  */
-export interface FailedRunManifest {
+interface FailedRunManifest {
    failures: Record<string, SourceFailure>;
+   /**
+    * Refused sources `failures` does not report (one beside another
+    * source's failure on its address), by sourceID: recorded as the run's
+    * `metadata.refusedSources`, as a committed run records them.
+    */
+   refusedSources?: Record<string, RefusedSource>;
 }
 
 /** An error a run that built nothing throws, which carries its failures. */
@@ -415,6 +424,11 @@ export function withFailedRunManifest<E extends CarriesRunFailures>(
    manifest: FailedRunManifest,
 ): E {
    err.runFailures = manifest.failures;
+   if (manifest.refusedSources && Object.keys(manifest.refusedSources).length) {
+      err.runRefused = manifest.refusedSources;
+   } else {
+      delete err.runRefused;
+   }
    return err;
 }
 
@@ -425,7 +439,14 @@ export function failedRunManifestOf(
    if (!carriesRunFailures(err) || err.runFailures === undefined) {
       return undefined;
    }
-   return { failures: err.runFailures as Record<string, SourceFailure> };
+   return {
+      failures: err.runFailures as Record<string, SourceFailure>,
+      ...(err.runRefused
+         ? {
+              refusedSources: err.runRefused as Record<string, RefusedSource>,
+           }
+         : {}),
+   };
 }
 
 /** Whether retrying a whole run that threw `err` could succeed. */

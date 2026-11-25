@@ -151,9 +151,10 @@ curl -s .../api/v0/environments/<env>/packages/<pkg>/reports     # lists the rep
 
 `models` returns a 424 with the full compiler error when the Malloy is broken,
 which is the fastest way to see a compile failure. `reports` lists every `.malloy`
-file with an `## artifact` tag, with its `path` and `layout`. A report still
-compiles as a model, so `models/run_report.malloy` shows its compile errors. To
-verify every tile, run each tile's query through the query route.
+file with an `## artifact` tag, with its `path` and `layout`, and a linear report
+is **not** in the `models` list. It still compiles as a model, so
+`models/run_report.malloy` shows its compile errors. To verify every tile, run
+each tile's query through the query route.
 
 Pass `--mcp_port` explicitly. It defaults to 4040 and any other local Publisher
 already holds it; the server logs `Port 4040 in use` and carries on without an MCP
