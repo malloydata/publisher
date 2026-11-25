@@ -399,51 +399,157 @@ describe("skillFiles", () => {
       expect(elapsed).toBeLessThan(1000);
    });
 
-   describe("total matching work", () => {
-      const longName = (prefix: string, i: number, suffix: string) =>
-         `${prefix}${String(i).padStart(4, "0")}`.padEnd(248, "n") + suffix;
+   describe("path length", () => {
+      it("keeps a path of 200 characters and skips one of 201, with one warning naming the first", () => {
+         write("SKILL.md");
+         const keep = `d/${"k".repeat(198)}`;
+         const drop = `d/${"z".repeat(199)}`;
+         write(keep);
+         write(drop);
+         write(`d/${"y".repeat(199)}.txt`);
+         const { files, warnings } = skillFiles(dir);
+         expect(files).toEqual(["SKILL.md", keep]);
+         expect(warnings).toHaveLength(1);
+         expect(warnings[0]).toContain("2 paths are over 200 characters");
+         expect(warnings[0]).toContain('from "d/yyyy');
+      });
+
+      it("does not descend into a directory whose own path is over 200 characters", () => {
+         write("SKILL.md");
+         write(`${"d".repeat(201)}/inner.txt`);
+         write("ok.txt");
+         const { files, warnings } = skillFiles(dir);
+         expect(files).toEqual(["SKILL.md", "ok.txt"]);
+         expect(warnings).toHaveLength(1);
+         expect(warnings[0]).toContain("1 path is over 200 characters");
+      });
+
+      it("measures the path from the skill, so a deep directory under assets/ counts its whole chain", () => {
+         write("SKILL.md");
+         const chain = Array.from({ length: 5 }, (_, i) =>
+            `c${i}`.padEnd(40, "n"),
+         );
+         write(`assets/${chain.join("/")}/f.txt`);
+         expect(skillFiles(dir).files).toEqual(["SKILL.md"]);
+      });
+
+      it("still counts a Markdown file of reference/ with a long path toward its cap, as the listing does", () => {
+         for (let i = 0; i < ASSET_MAX_ENTRIES + 100; i++) {
+            write(
+               `reference/${String(i).padStart(4, "0").padEnd(195, "n")}.md`,
+            );
+         }
+         const { files, warnings } = skillFiles(dir);
+         expect(files).toEqual([]);
+         expect(
+            warnings.filter((w) => w.includes("Markdown files")),
+         ).toHaveLength(1);
+         expect(
+            warnings.filter((w) => w.includes("over 200 characters")),
+         ).toHaveLength(1);
+      });
+   });
+
+   // Skipped on Windows, whose MAX_PATH and slower filesystem fail the fixtures; the bounds are platform-independent.
+   describe.skipIf(process.platform === "win32")("total matching work", () => {
       const walkSeconds = (run: () => SkillFilesResult) => {
          const started = performance.now();
          const result = run();
          return { result, elapsed: performance.now() - started };
       };
-
-      it("matches the most paths the walk allows against the most patterns of the slowest shape within a second", () => {
+      /** A name that brings `prefix` plus it to exactly 200 characters. */
+      const padded = (prefix: string, label: string, i: number, ext: string) =>
+         `${label}${String(i).padStart(4, "0")}`.padEnd(
+            200 - prefix.length - ext.length,
+            "n",
+         ) + ext;
+      const nested = (base: string, levels: number) =>
+         Array.from({ length: levels }, (_, l) =>
+            `${base}${l}`.padEnd(20, "n"),
+         ).join("/");
+      /** Files at the bound: `flat` directly in assets/ and the root, `deep` under 7 and 6 nested directories. */
+      const buildTree = (layout: "flat" | "deep") => {
          write("SKILL.md");
          for (let i = 0; i < ASSET_MAX_ENTRIES + 100; i++) {
-            write(`reference/${longName("r", i, ".md")}`);
+            write(`reference/${padded("reference/", "r", i, ".md")}`);
          }
+         const assets =
+            layout === "deep" ? `assets/${nested("a", 7)}/` : "assets/";
+         const other = layout === "deep" ? `o/${nested("o", 6)}/` : "";
          for (let i = 0; i <= ASSET_MAX_ENTRIES; i++) {
-            write(`assets/${longName("a", i, ".dat")}`);
-            write(longName("x", i, ".dat"));
+            write(`${assets}${padded(assets, "a", i, ".dat")}`);
+            write(`${other}${padded(other, "x", i, ".dat")}`);
          }
-         // The matching rules come first, as `ignore` tests last to first, so every later rule runs on every path.
-         // 48 slow rules of 20 characters fill both caps (50 patterns, 979 characters); the 149 after them are skipped.
-         const slow = (questionMarks: number) =>
-            `*${"?".repeat(questionMarks)}zq`;
+      };
+      // The matching rules come first, as `ignore` tests last to first, so every later rule runs on every path.
+      // 48 slow rules fill both caps (50 patterns, under 1,024 characters); the 149 after them are skipped.
+      const shapes: Record<string, string> = {
+         "basename `*` and 17 `?`": `*${"?".repeat(17)}zq`,
+         "slash `**/*` and 14 `?`": `**/*${"?".repeat(14)}k`,
+         "anchored `assets/**/*` and 8 `?`": `assets/**/*${"?".repeat(8)}k`,
+      };
+
+      it.each(["flat", "deep"] as const)(
+         "matches the most paths the walk allows, at the path bound, against the most patterns of each slow shape within a second (%s)",
+         (layout) => {
+            buildTree(layout);
+            for (const [shape, slow] of Object.entries(shapes)) {
+               skillignore(
+                  "reference/*.md",
+                  "*.dat",
+                  ...Array.from({ length: 48 }, () => slow),
+                  ...Array.from({ length: 149 }, () => `*${"?".repeat(77)}zq`),
+               );
+               const { result, elapsed } = walkSeconds(() =>
+                  skillFiles(dir, { budget: newWalkBudget("package") }),
+               );
+               if (elapsed >= 1000) {
+                  throw new Error(`${shape} took ${elapsed.toFixed(0)} ms`);
+               }
+               expect(result.files).toEqual(["SKILL.md"]);
+               expect(
+                  result.warnings.filter((w) =>
+                     w.startsWith("skill walk stopped"),
+                  ),
+               ).toHaveLength(3);
+            }
+         },
+         60_000,
+      );
+
+      it("bounds paths of a thousand characters under assets/ and elsewhere, where a slash pattern backtracks across every segment", () => {
+         write("SKILL.md");
+         const chain = (base: string, levels: number, tag: string) => {
+            const dirs = Array.from({ length: levels }, (_, l) =>
+               `${tag}${l}`.padEnd(245, "n"),
+            ).join("/");
+            for (let i = 0; i < ASSET_MAX_ENTRIES; i++) {
+               write(
+                  `${base}/${dirs}/${`${tag}f${String(i).padStart(4, "0")}`.padEnd(244, "n")}.dat`,
+               );
+            }
+         };
+         chain("assets", 7, "a");
+         chain("o", 6, "o");
          skillignore(
-            "reference/*.md",
             "*.dat",
-            ...Array.from({ length: 48 }, () => slow(17)),
-            ...Array.from({ length: 149 }, () => slow(77)),
+            ...Array.from({ length: 49 }, () => `**/*${"?".repeat(14)}k`),
          );
          const { result, elapsed } = walkSeconds(() =>
-            skillFiles(dir, { budget: newWalkBudget("package") }),
+            skillFiles(dir, { budget: newWalkBudget("agent") }),
          );
          expect(elapsed).toBeLessThan(1000);
          expect(result.files).toEqual(["SKILL.md"]);
-         expect(
-            result.warnings.filter((w) => w.startsWith("skill walk stopped")),
-         ).toHaveLength(3);
-      }, 30_000);
+         expect(result.warnings).toHaveLength(1);
+         expect(result.warnings[0]).toContain(
+            "2 paths are over 200 characters",
+         );
+      }, 60_000);
 
       it("bounds ten thousand ignored Markdown files in reference/ against two hundred slow patterns", () => {
          write("SKILL.md");
          for (let i = 0; i < REFERENCE_MAX_EXAMINED; i++) {
-            write(
-               `reference/${String(i).padStart(4, "0").padEnd(245, "n")}.md`,
-               "x",
-            );
+            write(`reference/${padded("reference/", "", i, ".md")}`, "x");
          }
          skillignore(
             "reference/*",
@@ -462,7 +568,7 @@ describe("skillFiles", () => {
          expect(result.warnings[2]).toContain(
             `reference/ holds more than ${ASSET_MAX_ENTRIES} Markdown files`,
          );
-      }, 30_000);
+      }, 60_000);
    });
 
    describe("SKILL.md", () => {

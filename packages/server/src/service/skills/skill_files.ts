@@ -7,7 +7,7 @@ import ignore, { type Ignore } from "ignore";
 import * as path from "path";
 import { compareText } from "../../compare_text";
 
-/** Longest listed asset path; checked by the caller, which knows the skill's prefix. */
+/** Longest listed asset path, which the caller checks with the skill's prefix; `skillFiles` itself refuses a skill-relative path over it. */
 export const ASSET_PATH_MAX_CHARS = 200;
 /** Directories nested deeper than this are not walked. */
 export const ASSET_MAX_DEPTH = 8;
@@ -259,7 +259,8 @@ type Zone = "root" | "reference" | "linked reference" | "assets" | "other";
  * `SKILL.md` comes first, then `reference/`, then `assets/`, then the rest, so
  * a bound cuts the newest locations first. An ignored directory is not
  * descended, but every entry seen still counts against the budget; hitting a
- * bound adds a warning and keeps what was found so far. The Markdown files
+ * bound adds a warning and keeps what was found so far. A path over
+ * `ASSET_PATH_MAX_CHARS` is not matched, listed or descended. The Markdown files
  * directly in `reference/` are bounded by a count of their own, linked or not
  * and ignored or not, and `reference/` is listed no further than that, nor past
  * `REFERENCE_MAX_EXAMINED` entries of any kind.
@@ -336,6 +337,8 @@ export function skillFiles(
    };
 
    const files: string[] = [];
+   let longPaths = 0;
+   let firstLongPath = "";
    const visit = (
       absolute: string,
       rel: string,
@@ -411,6 +414,11 @@ export function skillFiles(
          ) {
             continue;
          }
+         // A pattern with a slash backtracks across every segment of the path, so its length bounds the matching time.
+         if (relative.length > ASSET_PATH_MAX_CHARS) {
+            if (longPaths++ === 0) firstLongPath = relative;
+            continue;
+         }
          if (matcher.ignores(isDirectory ? `${relative}/` : relative)) {
             if (relative !== SKILL_MD || isDirectory) continue;
             warnings.push(
@@ -434,6 +442,11 @@ export function skillFiles(
       }
    };
    visit(dir, "", 1, "root");
+   if (longPaths > 0) {
+      warnings.push(
+         `${longPaths} path${longPaths === 1 ? " is" : "s are"} over ${ASSET_PATH_MAX_CHARS} characters, so ${longPaths === 1 ? "it and anything under it is" : "they and anything under them are"} not included, from ${shown(firstLongPath)}`,
+      );
+   }
 
    files.sort(compareText);
    return { files, warnings, skillignore };
