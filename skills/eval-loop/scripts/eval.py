@@ -10,6 +10,7 @@
   python3 eval.py run      --set <set-dir> --label baseline-01
   python3 eval.py replay   --set <set-dir> --label replay-01   # retrieval only, no answerer
   python3 eval.py query-replay --set <set-dir> --from baseline-01 --label perf-01   # time passing queries
+  python3 eval.py simulate --set <set-dir> --from perf-01   # predict what a table would do, before building it
   python3 eval.py accept   --set <set-dir> --run fix-01 --run fix-02   # the acceptance rules
   python3 eval.py diagnose --set <set-dir> --label baseline-01
   python3 eval.py improve  --set <set-dir> --label baseline-01 --experiment fix1   # one edit per cluster
@@ -48,7 +49,7 @@ import config  # noqa: E402
 
 VERBS = ("check", "serve", "publish", "experiment", "verify", "run", "replay",
          "query-replay", "accept", "diagnose", "improve", "package", "history", "push", "pull",
-         "routine", "runs", "versions", "export", "import-run")
+         "routine", "runs", "versions", "export", "import-run", "simulate")
 
 
 def flag_value(args: list[str], flag: str) -> str | None:
@@ -223,6 +224,9 @@ def dispatch(argv: list[str]) -> int:
     if verb == "routine":
         import routine
         return routine.main(rest)
+    if verb == "simulate":
+        import simulate
+        return simulate.main(rest)
     if verb in ("run", "replay", "query-replay"):
         rest = with_experiment(verb, rest)
     if verb == "verify":

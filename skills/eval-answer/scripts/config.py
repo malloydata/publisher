@@ -77,9 +77,19 @@ SCHEMA: dict[str, dict[str, Any]] = {
     # Where finished runs are shared (eval-loop's run_store.py): a folder, or
     # commands for anything else. Unset, runs stay in the workdir.
     "store": {"path": "path", "push": str, "pull": str, "list": str},
-    # How a query replay times queries (eval-loop's query_replay.py).
+    # How a query replay times queries (eval-loop's query_replay.py), and the
+    # speed objective a simulation scores options against (simulate.py).
     # `budget_ms` marks a query slow; unset, a replay only reports times.
-    "performance": {"budget_ms": "count", "repeats": "count", "latency_band": "fraction"},
+    # `objective` is the number to lower: `weighted_ms` (each query's time by
+    # how often it ran) or `p95_ms`. The `max_*` keys are limits an option must
+    # meet; the `usd_*` keys are prices, which turn build time and bytes into
+    # money; `table_read_ms` is the time assumed for a query a table answers
+    # before one is built and measured.
+    "performance": {"budget_ms": "count", "repeats": "count", "latency_band": "fraction",
+                    "objective": str, "max_staleness_hours": "positive",
+                    "max_build_ms_per_day": "positive", "max_usd_per_day": "positive",
+                    "usd_per_compute_hour": "positive", "usd_per_tb_scanned": "positive",
+                    "usd_per_gb_month": "positive", "table_read_ms": "positive"},
 }
 
 BUILTIN: dict[tuple[str, str], Any] = {
@@ -90,6 +100,8 @@ BUILTIN: dict[tuple[str, str], Any] = {
     ("truth", "environment"): "truth",
     ("performance", "repeats"): 5,
     ("performance", "latency_band"): 0.2,
+    ("performance", "objective"): "weighted_ms",
+    ("performance", "table_read_ms"): 10.0,
 }
 
 
@@ -325,6 +337,12 @@ def _check(path: pathlib.Path, raw: dict[str, Any]) -> dict[str, dict[str, Any]]
                     raise ConfigError(f"Invalid {path} on '{section}.{key}': "
                                       f"expected a fraction between 0 and 1, such as 0.2, "
                                       f"got {value!r}.")
+                out[section][key] = float(value)
+            elif kind == "positive":
+                if (isinstance(value, bool) or not isinstance(value, (int, float))
+                        or not value > 0):
+                    raise ConfigError(f"Invalid {path} on '{section}.{key}': "
+                                      f"expected a number above 0, such as 24, got {value!r}.")
                 out[section][key] = float(value)
             elif kind is bool:
                 if not isinstance(value, bool):

@@ -120,10 +120,23 @@ class Performance(unittest.TestCase):
                           cfg.get("performance", "latency_band")), (2000, 5, 0.2))
         self.assertIsNone(config.load(make_set({})).get("performance", "budget_ms"))
 
+    def test_the_objective_defaults_and_takes_limits_and_prices(self):
+        cfg = config.load(make_set({}))
+        self.assertEqual((cfg.get("performance", "objective"),
+                          cfg.get("performance", "table_read_ms")), ("weighted_ms", 10.0))
+        cfg = config.load(make_set({"eval.toml": "[performance]\nobjective = \"p95_ms\"\n"
+                                                 "max_staleness_hours = 24\n"
+                                                 "usd_per_compute_hour = 2.5\n"}))
+        self.assertEqual((cfg.get("performance", "objective"),
+                          cfg.get("performance", "max_staleness_hours"),
+                          cfg.get("performance", "usd_per_compute_hour")), ("p95_ms", 24.0, 2.5))
+
     def test_bad_values_say_what_was_expected(self):
         for text, expect in (("budget_ms = 0", "at least 1"),
                              ("repeats = true", "at least 1"),
-                             ("latency_band = 20", "between 0 and 1")):
+                             ("latency_band = 20", "between 0 and 1"),
+                             ("max_staleness_hours = 0", "above 0"),
+                             ("usd_per_compute_hour = true", "above 0")):
             with self.assertRaises(config.ConfigError) as e:
                 config.load(make_set({"eval.toml": f"[performance]\n{text}\n"}))
             self.assertIn(expect, str(e.exception))
