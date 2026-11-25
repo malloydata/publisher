@@ -164,8 +164,8 @@ The route is a priority order, not a verdict: it cannot prove a formula safe.
 ## Where it runs
 
 Claude Code and Cursor. A regular chat in a client such as Credible has no shell tool (an agent's own computer does), and the MCP skills
-bundle carries the `SKILL.md` body and each `reference/*.md` file (served as a prompt named
-`malloy-excel-review/<name>`, fetched on request) but no `scripts/`.
+bundle carries the `SKILL.md` body and each `reference/*.md` file (read with
+`get_skill("malloy-excel-review", path)`) but no `scripts/`.
 **So `SKILL.md` and the reference files have to be usable without the script**, and the script exists to do what
 reading sheets one at a time cannot: expand shared formulas, find the regions, build the
 dependency graph and its cycles, gate the oracle, and read the external data without a

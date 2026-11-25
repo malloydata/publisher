@@ -20,9 +20,9 @@ SPDX-License-Identifier: MIT
 1. **Discover.** Establish the input shape, run the classifier, inventory and classify every sheet, and decide where the data really comes from. `reference/discover.md`.
 2. **Recover sources.** Turn ranges into sources, lifting only cells that are data, and check the lift against the workbook's own totals. `reference/recover-sources.md`.
 3. **Translate formulas.** Route every formula region, then port it from a recipe: `reference/translate-formulas.md` decides where each goes, and the cookbooks carry the worked Malloy. A routing table is not a migration; the recipe is the deliverable.
-   - Aggregates and lookups: `reference/cookbook-lookup-aggregate.md`
-   - Pivot tables: `reference/cookbook-pivot.md`
-   - Assumptions, roll-forwards, circularity, Monte Carlo: `reference/cookbook-scenario.md`
+   - Aggregates and lookups: `reference/cookbook-lookup-aggregate.md` and `cookbook-lookup-aggregate-2.md`
+   - Pivot tables: `reference/cookbook-pivot.md` and `cookbook-pivot-2.md`
+   - Assumptions, roll-forwards, circularity, Monte Carlo: `reference/cookbook-scenario.md` and `cookbook-scenario-2.md`
 4. **Power Pivot handoff**, only when the workbook carries a data model. `reference/power-pivot.md`.
 5. **Prove the numbers.** Cached-value parity at more than one context. `reference/parity.md`.
 6. **Say what changed.** Every cell accounted for as translated, translated at a cost, staying in Excel, or unresolved. `reference/review-coverage.md`.
@@ -33,7 +33,7 @@ The user's question is "can I move off this workbook and still trust my numbers?
 
 - **Auto-detected:** an `.xlsx` or `.xlsm` file with formulas or pivot tables, and the user confirms they want it carried across.
 - **Explicitly requested:** "migrate off Excel", "turn this spreadsheet into a model", "replace this workbook", or a path to a workbook.
-- **One formula at a time:** the user pastes a formula and asks what it becomes. Go straight to the recipe (`reference/translate-formulas.md` section 5 names the cookbook); the routing procedure is for a whole workbook.
+- **One formula at a time:** the user pastes a formula and asks what it becomes. Go straight to the recipe (`reference/translate-formulas-2.md` section 5 names the cookbook); the routing procedure is for a whole workbook.
 - **Not this skill:** a workbook with no formulas and no pivots is a data file; take it to the modeling workflow. A Power BI file is `malloy-powerbi-review`.
 
 ## Input Shapes
@@ -125,10 +125,14 @@ Each reference file is loaded by the step that needs it. You do not need to read
 |---|---|---|
 | `reference/discover.md` | 1 | Input shape, classifier run, sheet classes, attached code, the data question, secrets handling, prior-art notes |
 | `reference/recover-sources.md` | 2 | Ranges to sources, `read_xlsx` behaviour, dates, merged headers, wide to long, checking the lift |
-| `reference/translate-formulas.md` | 3 | The oracle verdict, the three-way split, routes, the must-not-misfile flags, `LET` and dynamic arrays |
-| `reference/cookbook-lookup-aggregate.md` | 3 | `SUMIFS` and friends, `SUMPRODUCT`, exact and approximate lookups, plugs, `TODAY` |
-| `reference/cookbook-pivot.md` | 3 | Rows, columns, values, page fields, calculated fields, show-values-as, Top-N, grouping |
-| `reference/cookbook-scenario.md` | 3 | Givens, cumulative flows, compounding, recurrences, circularity, Monte Carlo, the stays-in-Excel list |
+| `reference/translate-formulas.md` | 3 | The oracle verdict, the three-way split, routes, the must-not-misfile flags |
+| `reference/translate-formulas-2.md` | 3 | Function families, `LET` and dynamic arrays, constants and plugs, reporting |
+| `reference/cookbook-lookup-aggregate.md` | 3 | `SUMIFS` and friends, `SUMPRODUCT`, exact lookups (LA1 to LA8) |
+| `reference/cookbook-lookup-aggregate-2.md` | 3 | Approximate lookups, plugs, `TODAY`, `RANK` and `MEDIAN`, distinct counts, parity contexts (LA9 onward) |
+| `reference/cookbook-pivot.md` | 3 | Rows, columns, values, page fields, calculated fields, show-values-as (P1 to P4) |
+| `reference/cookbook-pivot-2.md` | 3 | Top-N, grouping, calculated items, `GETPIVOTDATA`, external caches, nested rows (P5 onward) |
+| `reference/cookbook-scenario.md` | 3 | Givens, cumulative flows, compounding, recurrences, circularity (SC1 to SC6) |
+| `reference/cookbook-scenario-2.md` | 3 | Monte Carlo, Data Tables, Goal Seek and Solver, scenario controls, the stays-in-Excel list (SC7 onward) |
 | `reference/power-pivot.md` | 4 | Detect a data model and hand it to `malloy-powerbi-review` |
 | `reference/parity.md` | 5 | The oracle gate, granularities, contexts, tolerances, what a mismatch means |
 | `reference/review-coverage.md` | 6 | Account for every sheet, region, pivot, connection and code mechanism |

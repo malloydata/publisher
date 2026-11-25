@@ -309,65 +309,11 @@ If a project's standards file specifies a stricter policy (e.g., a `search_mallo
 
 ## Relative Data-File Paths: Set an Absolute `workingDirectory`
 
-`duckdb.table('data/x.csv')` is resolved against the DuckDB connection's `workingDirectory`, not
-against the model file. Publisher sets that to the package root, so relative paths work there with
-no config at all. Every other host reads it from `malloy-config.json`, and **a relative value there
-is resolved against the process's current directory** - not the config file's directory, and not the
-VS Code workspace root. `canonicalizeConfigPath` in `malloy-db-duckdb/src/duckdb_config.ts` calls
-`canonicalizePath` with no `baseDirectory`, which is a bare `path.resolve(input)`.
-
-So the same config works or fails depending on which directory the editor or shell was launched
-from. That is why this breaks intermittently and appears to be a model bug.
-
-```json
-// WRONG: resolved against the process cwd, so it works from the repo root and
-// fails from anywhere else - including however your editor happened to launch
-{"connections": {"duckdb": {"is": "duckdb", "workingDirectory": "malloy"}}}
-
-// RIGHT: absolute, so the cwd cannot change the answer
-{"connections": {"duckdb": {"is": "duckdb", "workingDirectory": "/abs/path/to/pkg"}}}
-```
-
-Point it at the directory the model's table paths are written relative to - the package root, the
-one holding `data/`. Keep the model's paths relative (`data/x.csv`) so Publisher still serves it;
-only the config carries the absolute path.
-
-**The symptom, and the cascade.** One `IO Error` at the `source:` line, then a "not defined" error
-for every field of that source:
-
-```
-line 87: IO Error: No files found that match the pattern "data/product_usage.csv"
-line 91: 'org_slug' is not defined
-line 93: Reference to undefined value active_users
-```
-
-Those field errors are not real. Fix the first error and they all go. Do not start renaming
-columns.
-
-**Check the config before the model** when a source that Publisher queries fine fails in the editor
-or CLI with a missing-file error. The model is the same file; the resolution base is not.
+Set `workingDirectory` in `malloy-config.json` absolute. The cause and the symptom: `reference/relative-data-paths.md`.
 
 ## JSON Files: Read Them In Place Like CSV
 
-```malloy
-// RIGHT: .json works like .csv/.parquet
-source: reviews is duckdb.table('data/reviews.json')
-// RIGHT: newline-delimited JSON is read the same way
-source: events is duckdb.table('data/events.ndjson')
-// RIGHT: read options need read_json_auto in a SQL source
-source: nested is duckdb.sql("""SELECT * FROM read_json_auto('data/reviews.json')""")
-// WRONG: shelling out to python, or converting to CSV first
-```
-
-DuckDB reads JSON directly, so never preprocess a `.json` file before modeling it and never reach for a scripting language to inspect one. Both a top-level array of objects and newline-delimited JSON work through `duckdb.table()`.
-
-Quirk: JSON carries no schema, so a value written as `"90"` arrives as a string where the same data in CSV would be inferred as a number. Cast it in the source, under a new name (reusing the column's own name is a redefinition error):
-
-```malloy
-source: reviews is duckdb.table('data/reviews.json') extend {
-  dimension: points_num is points::number
-}
-```
+DuckDB reads `.json` and `.ndjson` in place like CSV, so never convert one first. The examples and the string-typing quirk: `reference/json-files.md`.
 
 ## Excel Files: Read `.xlsx` In Place, Never Convert
 

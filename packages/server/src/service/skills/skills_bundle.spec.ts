@@ -5,6 +5,9 @@ import { describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { registerGetSkillTool } from "../../mcp/tools/get_skill_tool";
+import { fakeOf } from "../../test_helpers/store_fakes";
+import type { PackageLookup } from "../environment_ports";
 import { buildSkills, type BundledSkill } from "./build_skills_bundle";
 import { skillFiles } from "./skill_files";
 import bundle from "./skills_bundle.json";
@@ -225,6 +228,50 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
             ),
          ).toBe(true);
       });
+   });
+
+   // A file over get_skill's budget comes back without its text, and over MCP the bundle is the only copy of a built-in guide.
+   it("serves every Markdown file whole through get_skill, within its tool-result budget", async () => {
+      let handler:
+         | ((p: unknown) => Promise<{
+              content: Array<{ resource?: { text: string } }>;
+           }>)
+         | undefined;
+      const store = fakeOf<PackageLookup>({
+         getEnvironment: async () => ({
+            getPackage: async () => ({ listSkills: () => [] }),
+         }),
+      });
+      registerGetSkillTool(
+         {
+            registerTool: (_n: string, _o: unknown, h: typeof handler) => {
+               handler = h;
+            },
+         } as never,
+         store,
+         skills,
+      );
+      const scopes = [{ environment: "home", package: "a-package-name" }];
+      const trimmed: string[] = [];
+      for (const s of skills) {
+         for (const file of Object.keys(s.bodies)) {
+            for (const scoped of [undefined, scopes]) {
+               const reply = JSON.parse(
+                  (
+                     await handler!({
+                        skill_name: s.name,
+                        path: file,
+                        scopes: scoped,
+                     })
+                  ).content[0]!.resource!.text,
+               );
+               if (reply.skill?.content === undefined || reply.message) {
+                  trimmed.push(`${s.name}/${file}`);
+               }
+            }
+         }
+      }
+      expect([...new Set(trimmed)]).toEqual([]);
    });
 
    // No allowlist: every Markdown file in the bundle honours the house style, so

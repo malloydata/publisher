@@ -577,8 +577,10 @@ class ContaminatedVerdict(unittest.TestCase):
         # reason also has a verdict, or an explicit unreadable marker"): a null
         # verdict must always name which of the known causes it was, so no
         # future nulling can be silent the way contamination was.
-        schema = (pathlib.Path(rb.__file__).parent.parent.parent
-                  / "eval-answer" / "reference" / "ledger-schema.md").read_text()
+        reference = (pathlib.Path(rb.__file__).parent.parent.parent
+                     / "eval-answer" / "reference")
+        schema = "".join((reference / name).read_text() for name in
+                         ("ledger-schema.md", "ledger-schema-events.md"))
         for reason in ("not_submitted", "contaminated", "answerer_truncated",
                        "judge_unparseable", "no_saved_verdict"):
             with self.subTest(reason):
