@@ -252,6 +252,12 @@ class Routine:
             self.result["shared"] = f"not shared: {e}"
             print(f"\n! {self.result['shared']}")
 
+    def pages(self, *steps: tuple) -> tuple:
+        """The steps that build the run's page and the history page, unless
+        --no-pages: a machine that is thrown away after the run has no one to
+        read them, and may not hold their templates."""
+        return () if self.a.no_pages else steps
+
     def quality(self) -> tuple[int, str]:
         cap = (("--max-cost-usd", str(self.a.max_cost_usd))
                if self.a.max_cost_usd is not None else ())
@@ -290,11 +296,11 @@ class Routine:
         # the cap already reached it waits for a person to ask for it, and the
         # run's page, which is built from the diagnosis, waits with it.
         capped = self.a.max_cost_usd is not None and spent >= self.a.max_cost_usd
-        for name, *args in (() if capped else (
-                ("diagnose", "diagnose", *self.s, "--label", self.label,
-                 "--verdicts", "no_match,near_match"),
-                ("package", "package", *self.s, "--label", self.label))) + (
-                ("history", "history", *self.s),):
+        later = () if capped else (
+            ("diagnose", "diagnose", *self.s, "--label", self.label,
+             "--verdicts", "no_match,near_match"),
+            *self.pages(("package", "package", *self.s, "--label", self.label)))
+        for name, *args in later + self.pages(("history", "history", *self.s)):
             code = self.do(name, *args)
             if code != 0:
                 return STEP_FAILED, f"stopped at {name} (exit {code}); nothing after it ran"
@@ -351,8 +357,8 @@ class Routine:
             return NO_NUMBER, (f"the replay is {status}: {n['errors']} of {n['queries']} "
                                f"queries errored. No number is recorded")
         for name, *args in (("diagnose", "diagnose", *self.s, "--label", self.label),
-                            ("package", "package", *self.s, "--label", self.label),
-                            ("history", "history", *self.s)):
+                            *self.pages(("package", "package", *self.s, "--label", self.label),
+                                        ("history", "history", *self.s))):
             code = self.do(name, *args)
             if code != 0:
                 return STEP_FAILED, f"stopped at {name} (exit {code}); nothing after it ran"
@@ -434,6 +440,10 @@ def main(argv: list[str] | None = None) -> int:
                          "it, and in improve mode try no further edit once the run and the "
                          "edits so far reached it. Checked before each edit, so the last "
                          "edit can pass it by what one edit costs")
+    ap.add_argument("--no-pages", action="store_true",
+                    help="skip building the run's page and the history page (eval.py "
+                         "package and history), as on an agent computer that is thrown "
+                         "away after the run")
     ap.add_argument("--max-turns", default="40")
     ap.add_argument("--parallel", default="4")
     a = ap.parse_args(argv)

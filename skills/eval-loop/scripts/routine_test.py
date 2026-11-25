@@ -89,6 +89,14 @@ class Kinds(unittest.TestCase):
                           "test": {"passed": 1, "decided": 1, "passRate": 1.0}})
         self.assertIn("1 of 1 on the test split", r["reason"])
 
+    def test_no_pages_skips_the_run_page_and_the_history(self):
+        self.answer_run(self.run_dir)
+        code, ran, _, _ = self.go("quality", None, None, "--no-pages")
+        self.assertEqual(code, routine.DONE)
+        self.assertIn("diagnose", ran)
+        self.assertNotIn("package", ran)
+        self.assertNotIn("history", ran)
+
     def test_quality_never_times_queries(self):
         _, ran, _, _ = self.go("quality", on={"run": lambda: self.answer_run(self.run_dir)})
         self.assertNotIn("query-replay", ran)
