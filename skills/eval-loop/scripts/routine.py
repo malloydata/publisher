@@ -255,10 +255,14 @@ class Routine:
     def quality(self) -> tuple[int, str]:
         cap = (("--max-cost-usd", str(self.a.max_cost_usd))
                if self.a.max_cost_usd is not None else ())
+        # With no truth package, run's own key check would fall back to the
+        # server under test and refuse it as not isolated. The keys are scored
+        # as stored, and verify below records that they were not re-checked.
+        unchecked = () if self.cfg.has_truth else ("--skip-golden-check",)
         for name, *args in (("check", "check", *self.s), ("verify", "verify", *self.s),
                             ("run", "run", *self.s, "--label", self.label, "--no-share", "--recover",
                              "--max-turns", self.a.max_turns, "--parallel", self.a.parallel,
-                             *cap)):
+                             *cap, *unchecked)):
             code = self.do(name, *args)
             if name == "verify" and code == 3 and not self.cfg.has_truth:
                 # No truth package to re-derive the keys from, as on a machine

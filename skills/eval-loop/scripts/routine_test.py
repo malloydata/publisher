@@ -252,11 +252,16 @@ class Kinds(unittest.TestCase):
         (self.set / "eval.toml").write_text(
             (self.set / "eval.toml").read_text().replace("[truth]\n", ""))
         self.answer_run(self.run_dir)
-        code, ran, result, _ = self.go("quality", {"verify": 3})
+        code, ran, result, calls = self.go("quality", {"verify": 3})
         self.assertEqual(code, routine.DONE)
-        self.assertIn("run", ran)
+        self.assertIn("--skip-golden-check", calls[ran.index("run")])
         self.assertIs(result["keysVerified"], False)
         self.assertIn("the answer keys were not re-derived", result["reason"])
+
+    def test_with_a_truth_package_the_run_checks_its_keys(self):
+        self.answer_run(self.run_dir)
+        _, ran, _, calls = self.go("quality")
+        self.assertNotIn("--skip-golden-check", calls[ran.index("run")])
 
     def test_a_truth_server_that_could_not_check_still_stops_the_routine(self):
         code, ran, _, _ = self.go("quality", {"verify": 3})
