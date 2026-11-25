@@ -172,6 +172,17 @@ class Main(unittest.TestCase):
         self.assertTrue((d / "options.csv").read_text().startswith("option,kind,source,grain"))
         self.assertIn("objective: lower weighted_ms, data at most 6 h old", out.getvalue())
 
+    def test_the_options_app_is_a_package_over_the_simulation_with_yes_no_flags(self):
+        with unittest.mock.patch("sys.stdout", new_callable=io.StringIO):
+            sim.main(["--set", str(self.set), "--from", "perf-01", "--package"])
+        pkg = self.root / "w" / "simulations" / "sim-perf-01" / "package"
+        self.assertTrue((pkg / "speed_options.malloy").is_file())
+        self.assertTrue((pkg / "public" / "app.js").is_file())
+        options = (pkg / "options.csv").read_text()
+        self.assertIn(",yes,", options)
+        self.assertNotIn("True", options)
+        self.assertTrue((pkg / "assumptions.csv").read_text().startswith("kind,text\nobjective,"))
+
     def test_a_bad_objective_names_the_fix(self):
         (self.set / "eval.toml").write_text((self.set / "eval.toml").read_text()
                                             + 'objective = "fastest"\n')

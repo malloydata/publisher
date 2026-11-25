@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Speed Options</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --surface: #fff; --text: #1d1d1b; --text-2: #5f5e5a; --border: #e2e1dc;
+    --before: #a3a29c; --after: #2f6fb3; --bad: #b3261e; --good: #2e7d32;
+    --font: system-ui, -apple-system, "Segoe UI", sans-serif; --mono: ui-monospace, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161615; --surface: #1f1f1d; --text: #ecebe6; --text-2: #a3a29c; --border: #34332f;
+            --before: #6b6a64; --after: #6ea8e6; --bad: #f2b8b5; --good: #8fd19e; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 var(--font); }
+  header, main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  h1 { margin: 0; font-size: 20px; } header p { margin: 4px 0 0; color: var(--text-2); }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-top: 12px; }
+  .panel h2 { margin: 0 0 8px; font-size: 14px; }
+  .opt { display: grid; grid-template-columns: minmax(160px, 1.3fr) 2fr repeat(3, minmax(80px, .6fr)); gap: 10px;
+         align-items: center; padding: 8px 4px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .opt.head { cursor: default; color: var(--text-2); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .opt:not(.head):hover, .opt[aria-expanded="true"] { background: var(--bg); }
+  .name { overflow-wrap: anywhere; font-weight: 600; } .sub { color: var(--text-2); font-size: 12px; font-weight: 400; }
+  .bars { display: grid; gap: 3px; } .bar { height: 9px; border-radius: 2px; min-width: 2px; }
+  .bar.before { background: var(--before); } .bar.after { background: var(--after); }
+  .num { font-variant-numeric: tabular-nums; text-align: right; font-size: 12px; }
+  .no { color: var(--bad); } .ok { color: var(--good); }
+  .detail { grid-column: 1 / -1; background: var(--bg); border-radius: 6px; padding: 8px; font-size: 12px; }
+  .q { display: grid; grid-template-columns: minmax(120px, 1fr) 60px 120px 2fr; gap: 8px; padding: 3px 0; }
+  .why { color: var(--text-2); overflow-wrap: anywhere; }
+  ul.assume { margin: 0; padding-left: 18px; color: var(--text-2); }
+  .legend { color: var(--text-2); font-size: 12px; margin-bottom: 6px; }
+  .legend span { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 10px; vertical-align: middle; }
+  .is-error { color: var(--bad); }
+  @media (max-width: 640px) { .opt { grid-template-columns: 1fr 1fr; } .opt .bars { grid-column: 1 / -1; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Speed options</h1>
+  <p id="objective">Loading the objective…</p>
+</header>
+<main>
+  <section class="panel">
+    <h2>Options, best first</h2>
+    <div class="legend">Objective<span style="background:var(--before)"></span>now<span style="background:var(--after)"></span>predicted. Click an option for its queries.</div>
+    <div id="options"></div>
+  </section>
+  <section class="panel">
+    <h2>What these predictions assume</h2>
+    <ul class="assume" id="assumptions"></ul>
+  </section>
+</main>
+<script src="/sdk/publisher.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

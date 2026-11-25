@@ -1,0 +1,5 @@
+{
+    "name": "speed-options",
+    "version": "1.0.0",
+    "description": "The options a speed simulation found: for each, the tables it adds, which queries they would answer, the time saved, the build cost, how stale the data could be, and whether it meets the objective. Built by skills/eval-loop/scripts/simulate.py --package."
+}

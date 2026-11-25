@@ -45,6 +45,7 @@ import csv
 import json
 import math
 import pathlib
+import shutil
 import sys
 import urllib.error
 import urllib.request
@@ -334,15 +335,45 @@ def check(sim: dict[str, Any], replay_rows: list[dict[str, Any]]) -> dict[str, A
 
 # ------------------------------------------------------------------ output
 
-def write(dir_: pathlib.Path, sim: dict[str, Any]) -> None:
-    dir_.mkdir(parents=True, exist_ok=True)
-    (dir_ / "options.json").write_text(json.dumps(sim, indent=1, default=str))
+TEMPLATE = HERE.parent / "templates" / "speed-options-package"
+
+
+def csv_value(v: Any) -> Any:
+    # yes/no, not True/False, which DuckDB would read as a boolean column.
+    return ("yes" if v else "no") if isinstance(v, bool) else v
+
+
+def write_csvs(dir_: pathlib.Path, sim: dict[str, Any]) -> None:
     for name, cols, rows in (("options.csv", OPTION_COLUMNS, sim["options"]),
                              ("predictions.csv", PREDICTION_COLUMNS, sim["predictions"])):
         with (dir_ / name).open("w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
             w.writeheader()
-            w.writerows(rows)
+            w.writerows({k: csv_value(v) for k, v in r.items()} for r in rows)
+
+
+def write(dir_: pathlib.Path, sim: dict[str, Any]) -> None:
+    dir_.mkdir(parents=True, exist_ok=True)
+    (dir_ / "options.json").write_text(json.dumps(sim, indent=1, default=str))
+    write_csvs(dir_, sim)
+
+
+def write_package(dir_: pathlib.Path, sim: dict[str, Any]) -> pathlib.Path:
+    """The options app (step 5): the template's model and page over this
+    simulation's options, predictions and assumptions. Serve it like any
+    package; it holds queries' shapes and times, no answer."""
+    pkg = dir_ / "package"
+    if pkg.exists():
+        shutil.rmtree(pkg)
+    shutil.copytree(TEMPLATE, pkg)
+    write_csvs(pkg, sim)
+    with (pkg / "assumptions.csv").open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["kind", "text"])
+        w.writerow(["objective", report(sim).splitlines()[0].capitalize() + "."])
+        for a in sim["assumptions"]:
+            w.writerow(["assumption", a])
+    return pkg
 
 
 def report(sim: dict[str, Any]) -> str:
@@ -387,6 +418,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--check", help="a simulation's label, to compare with --against")
     ap.add_argument("--against", help="with --check: a replay of the built candidate")
     ap.add_argument("--label", default=None)
+    ap.add_argument("--package", action="store_true",
+                    help="also write the options app, a servable package, under the simulation")
     a = ap.parse_args(argv)
     cfg = config.load(pathlib.Path(a.set_dir))
     runs, sims = cfg.workdir() / "runs", cfg.workdir() / "simulations"
@@ -421,6 +454,8 @@ def main(argv: list[str] | None = None) -> int:
            "packageErrors": errors, "options": opts, "predictions": preds}
     write(sims / label, sim)
     print(report(sim))
+    if a.package:
+        print(f"\noptions app: {write_package(sims / label, sim)}")
     for e in errors:
         print(f"  ! the candidate package reports: {e}")
     print(f"\n{sims / label / 'options.json'}")
