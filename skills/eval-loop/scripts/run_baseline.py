@@ -1116,7 +1116,10 @@ def wait_retrieval_ready(a: argparse.Namespace, tries: int = 12,
             seen = 0
             last = f"probe failed: {exc}"
         else:
-            if mode is None:
+            # No embedding provider: "lexical" since 0.18 (a cold index says
+            # "indexing"), nothing before. Every call is lexical, so the run
+            # is consistent.
+            if mode in (None, "lexical"):
                 return True, ("no embedding provider configured, so every call "
                               "is lexical; the run is consistent")
             if mode == "semantic":

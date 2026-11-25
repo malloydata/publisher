@@ -328,12 +328,17 @@ class RetrievalGate(unittest.TestCase):
         self.assertFalse(ready)
         self.assertIn("maxEntities", said)
 
+    def test_a_lexical_index_is_ready(self):
+        # Since 0.18 a cold index answers "indexing", and "lexical" is a built
+        # index with no vectors: no embedding provider. That is steady.
+        ready, said = self.gate([("lexical", None)])
+        self.assertTrue(ready)
+        self.assertIn("no embedding provider", said)
+
     def test_an_unknown_retrieval_value_is_refused(self):
-        # An old server that still answered "lexical" with a provider
-        # configured is not the contract this gate reads.
-        ready, said = self.gate([("lexical", "indexing")])
+        ready, said = self.gate([("vector", None)])
         self.assertFalse(ready)
-        self.assertIn("unrecognised retrieval value 'lexical'", said)
+        self.assertIn("unrecognised retrieval value 'vector'", said)
 
     def test_a_probe_that_never_succeeds_fails_the_gate(self):
         ready, said = self.gate([ValueError("boom")] * 3, tries=3)
