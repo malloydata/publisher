@@ -21,6 +21,17 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased]: a data app learns where each answer came from and the reader's light or dark mode
+
+**[new] The browser runtime (`/sdk/publisher.js`) gives a data app what Publisher knows about its answers.**
+
+- `Publisher.query(model, q, { meta })` and `queryFull` fill `meta` with `servedFrom`, `path` (the table that served the answer and the ones considered) and `executionTimeMs` from the response, and `versionId`, the version the query was pinned to or `null`. Without `meta` nothing changes.
+- `Publisher.model(modelPath)` reads a model's sources and fields with their annotations, and `Publisher.packageResource("build-plan" | "materializations")` what Publisher builds for the package and its runs. Both read the page's pinned version, as its queries do; another resource name is refused.
+
+**[new] Light and dark between a framing page and a data app.** The page hears the reader's mode as `publisher:color-scheme` (`{ type, mode }`), asks for it with `publisher:color-scheme-request`, and answers `publisher:color-scheme-applied` once it has drawn it. The runtime handles the page's side: `Publisher.colorScheme`, `Publisher.onColorScheme(fn)` and `Publisher.colorSchemeApplied(mode)`. The SDK's `DataAppViewer`, and so the console, sends the console's mode to the page's own origin and gives the frame the page's colour scheme once the page answers; it exports the three message names and `PublisherColorScheme`. `Publisher.embed` does not send a mode.
+
+**[new] The `malloy-html-data-apps` skill builds from a kit.** An agent asked for a data app copies the kit and writes one config and its pages: several pages with drill-downs, every block explained on its back, nine themes, light and dark. A dashboard request goes to `malloy-reports` unless the user asks for an app.
+
 ## [Unreleased] — a framed data app can save files, copy, go full screen and open new tabs
 
 The frame that the Console's data app viewer and `Publisher.embed` create now adds `allow-downloads allow-popups` to its sandbox and delegates `clipboard-write; fullscreen`, so a page can save a file, open a link in a new tab, copy text and go full screen. A tab it opens keeps the sandbox: in Firefox a tab that escaped it could redirect the host page. Hosts that call `Publisher.embed` get this on upgrade with no change of their own. A host that passes `allow` replaces the default, and `allow: ""` turns it off; `null` takes the default. A host that passes `sandbox` replaces the sandbox tokens, so `sandbox: "allow-scripts allow-same-origin allow-forms"` keeps the old frame. With the defaults, top navigation and modal dialogs stay off.

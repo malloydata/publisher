@@ -10,6 +10,15 @@ SPDX-License-Identifier: MIT
 
 The mock below is for when there is no live server, or when you need a specific shape on demand - an empty result, a failing query, a tile whose data does not exist yet. The app talks to the world through exactly one seam: `window.Publisher.query(modelPath, malloy)`. Mock that seam and you can load the real page in a real browser with canned data, then assert on what actually rendered.
 
+
+> **With the data app kit** (`reference/app-frame.md`), most of this file is done for you: the kit has no
+> `.tile`, `.value` or canvas. Its blocks are `.block`, a drawn one has `data-loaded`, a failed one holds
+> `.state--error`, and `body[data-ready="true"]` is set once every block on the page has drawn. Open each page with
+> `?check=1` for the kit's own banner (no failed block, no `undefined`, `NaN` or `null` on the page). In Playwright:
+> load, wait for `.block[data-loaded]`, read layout shift with the page left still, then scroll to the bottom in
+> steps and wait for `body[data-ready="true"]` before the full-page shot. The sections below are for an app built
+> without the kit.
+
 ## 1. Mock `sdk/publisher.js` (when there is no live server)
 
 Serve a stand-in at the same root-relative path the page loads (`/sdk/publisher.js`). It returns canned rows keyed by `(modelPath, query)`, and (this is the part that bites) it reproduces the **async delay** of the real runtime, so your assertions exercise the loading→loaded transition instead of racing a synchronous stub.
@@ -301,3 +310,7 @@ Compare screen coordinates against the host's *visible* area, not against the wi
 - **A missing fixture is a test bug, not empty data.** Reject on an unknown `(model, query)` key so a drifted query string fails loudly, instead of returning `[]` and masquerading as a real empty state.
 - **Assert on the rendered DOM, not on `Publisher.query` return values.** The bugs live in the render path (NaN formatting, wrong column read, `|| 0` faking a zero). Reading the query result back proves nothing the model didn't already prove.
 - Match the selectors (`.tile .value`, `.is-error`, `.kit-skeleton`, `canvas`) to whatever your app actually emits.
+- **Shoot a lazy page with a viewport taller than the view** (1280x6000, 390x12000) and wait for a marker the page sets once every tile has drawn (the kit sets `body[data-ready="true"]`; a per-card marker such as its `data-loaded` matches as soon as the first card draws). A normal viewport shoots the tiles below the fold as skeletons. This is the opposite of the lazy-load check, which wants a small viewport; do both.
+- **`document.fonts.check` is true when the face is missing.** To prove a font loaded, look for it in `[...document.fonts]` with `status === 'loaded'`.
+- **Check a module as a module.** `node --check app.js` on a `.js` file misses a name declared twice in an ES module, which leaves the page blank; `node --input-type=module --check < app.js` catches it.
+- **An SVG chart has no pixels to read.** For the kit's d3 module, count the marks (`svg path`, `svg rect`, `svg circle`) and read their labels instead of sampling a canvas.

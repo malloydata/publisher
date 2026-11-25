@@ -2,14 +2,25 @@
 // SPDX-License-Identifier: MIT
 
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
-import { Box, IconButton, Stack, Tooltip, Typography } from "@mui/material";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+   Box,
+   IconButton,
+   Stack,
+   Tooltip,
+   Typography,
+   useTheme,
+} from "@mui/material";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { useServer } from "../ServerProvider";
 import { MONO_FONT_FAMILY } from "../styles";
 import { parseResourceUri } from "../../utils/formatting";
 import {
+   isPublisherColorSchemeApplied,
+   isPublisherColorSchemeRequest,
    isPublisherResizeMessage,
+   PUBLISHER_COLOR_SCHEME_MESSAGE_TYPE,
+   type PublisherColorScheme,
    packageFileUrl,
 } from "../../utils/dataAppEmbed";
 
@@ -111,6 +122,46 @@ export default function DataAppViewer({ resourceUri }: DataAppViewerProps) {
    // resize message; the runtime postMessages the real content height
    // within a frame of load.
    const [iframeHeight, setIframeHeight] = useState<number>(120);
+
+   // The reader's light or dark mode goes to the page on load, on every switch,
+   // and whenever its runtime asks. A page that answers it drew that mode gets
+   // a frame in the same colour scheme; one that never answers is left as it
+   // was, since a page written for a light background is unreadable on a dark
+   // one.
+   const mode: PublisherColorScheme =
+      useTheme().palette.mode === "dark" ? "dark" : "light";
+   const modeRef = useRef(mode);
+   modeRef.current = mode;
+   const [appliedMode, setAppliedMode] = useState<PublisherColorScheme | null>(
+      null,
+   );
+   const frameOrigin = useMemo(() => {
+      try {
+         return new URL(standaloneUrl, window.location.href).origin;
+      } catch {
+         return null;
+      }
+   }, [standaloneUrl]);
+   const sendMode = useCallback(() => {
+      const target = iframeRef.current?.contentWindow;
+      if (!target || !frameOrigin) return;
+      target.postMessage(
+         { type: PUBLISHER_COLOR_SCHEME_MESSAGE_TYPE, mode: modeRef.current },
+         frameOrigin,
+      );
+   }, [frameOrigin]);
+   useEffect(sendMode, [mode, sendMode]);
+   useEffect(() => {
+      function onMessage(e: MessageEvent) {
+         if (e.source !== iframeRef.current?.contentWindow) return;
+         if (frameOrigin && e.origin !== frameOrigin) return;
+         if (isPublisherColorSchemeRequest(e.data)) sendMode();
+         else if (isPublisherColorSchemeApplied(e.data))
+            setAppliedMode(e.data.mode);
+      }
+      window.addEventListener("message", onMessage);
+      return () => window.removeEventListener("message", onMessage);
+   }, [frameOrigin, sendMode]);
 
    useEffect(() => {
       // Fill mode pins the iframe to 100%, so content-height resize messages are
@@ -214,6 +265,11 @@ export default function DataAppViewer({ resourceUri }: DataAppViewerProps) {
             <iframe
                ref={iframeRef}
                src={standaloneUrl}
+               onLoad={() => {
+                  // A new page has not answered yet.
+                  setAppliedMode(null);
+                  sendMode();
+               }}
                title={title}
                // allow-same-origin so the iframe can use cookies for the
                // Publisher API. allow-scripts so the dashboard's JS runs.
@@ -234,6 +290,7 @@ export default function DataAppViewer({ resourceUri }: DataAppViewerProps) {
                   // track the content height reported via publisher:resize.
                   height: fillViewport ? "100%" : iframeHeight,
                   border: 0,
+                  ...(appliedMode ? { colorScheme: appliedMode } : {}),
                }}
             />
          </Box>
