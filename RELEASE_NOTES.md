@@ -47,6 +47,10 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Who is affected:** a client that calls `get_skill` or the skill routes, reads `availableSkills` from every reply, or calls a per-reference prompt. **What to do:** pass the file's path instead of a `<skill>/<stem>` name, read `content` as the file itself, and update installed skills.
 
+## [0.18.2] — a wide manifest bind no longer holds the main thread
+
+**[fix] Binding a manifest with many `storage=` tables no longer stalls the server.** Since 0.17.3 a bind recorded every named source's scope facts for every bound table in one main-thread task. On a package with many sources and dozens of bound tables that held the event loop for seconds or longer, long enough for a health check to time out. The bind now walks each source once, reuses that walk for every bound table the source's scope does not read, and yields to the event loop as it goes. What a query reads is unchanged.
+
 ## [0.18.1]: a data app learns where each answer came from and the reader's light or dark mode
 
 **[new] The browser runtime (`/sdk/publisher.js`) gives a data app what Publisher knows about its answers.**

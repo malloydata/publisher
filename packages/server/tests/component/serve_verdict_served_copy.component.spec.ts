@@ -39,6 +39,8 @@ import {
    type Outcome,
 } from "../../src/test_helpers/conformance/package_runner";
 import type { components } from "../../src/api";
+import { setEventLoopYieldBudgetMsForTesting } from "../../src/service/event_loop_yield";
+import { scopeFactsOf } from "../../src/service/materialization/serve/scope_facts";
 
 type ServeVerdict = components["schemas"]["ServeVerdict"];
 type PackageWarning = {
@@ -611,6 +613,63 @@ describe("verdicts read the moment a bind's commit returns", () => {
       for (const v of verdictsOf(s.fixture)) {
          expect(v).not.toHaveProperty("servedCopyPending");
       }
+      await expectServedEqualLive();
+   });
+
+   it("a publish while a bind's commit records leaves the commit's scope facts", async () => {
+      const { mz, database, stored, model } = bound();
+      await unbindAll();
+      await mz.bindCompiled({ database: database as never });
+      // A publish that fires while the commit records (a plan refresh, a
+      // storage-read retry): its copy is prepared over the snapshot the
+      // models read until the swap, the one from before the bind. Its
+      // scope facts must not land over the commit's. Its string-capability
+      // read answers at once here, so it reads that snapshot while the
+      // commit is still recording, as a quick catalog read does.
+      const refresh = spyOn(
+         model,
+         "refreshStringCapabilities",
+      ).mockResolvedValue(undefined);
+      const record = model.recordScopeFactsOver.bind(model);
+      // Every recording, the commit's and the publish's: the publish's is
+      // awaited by nothing, so the check waits for both to land.
+      const recordings: Promise<void>[] = [];
+      let published = false;
+      const spy = spyOn(model, "recordScopeFactsOver").mockImplementation(
+         async (snapshot) => {
+            if (!published) {
+               published = true;
+               (
+                  mz as unknown as { publish(models?: "installed"): void }
+               ).publish("installed");
+            }
+            const recording = record(snapshot);
+            recordings.push(recording);
+            return recording;
+         },
+      );
+      const previous = setEventLoopYieldBudgetMsForTesting(0);
+      try {
+         await mz.bindCompiled({ storage: stored as never });
+         await (mz as unknown as { commitChain: Promise<void> }).commitChain;
+         const deadline = Date.now() + 60_000;
+         while (recordings.length < 2 && Date.now() < deadline) {
+            await Bun.sleep(10);
+         }
+         await Promise.all(recordings);
+      } finally {
+         setEventLoopYieldBudgetMsForTesting(previous);
+         spy.mockRestore();
+         refresh.mockRestore();
+      }
+      expect(published).toBe(true);
+      expect(recordings).toHaveLength(2);
+      const serving = (
+         model as unknown as { servingSnapshot(): object }
+      ).servingSnapshot();
+      expect(
+         scopeFactsOf(model.stringCapabilityRuntime(), serving as never),
+      ).toBeDefined();
       await expectServedEqualLive();
    });
 
