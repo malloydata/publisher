@@ -12,6 +12,7 @@ import type {
    RunSQLOptions,
 } from "@malloydata/malloy";
 import type { components } from "../api";
+import { getSnowflakeApplicationName } from "../config";
 import { removeUndefined } from "./connection_config";
 import { normalizeSnowflakePrivateKey } from "./dialects/snowflake";
 
@@ -37,6 +38,11 @@ type SnowflakeConnOptions = NonNullable<
  * (a password, if also set, is passed along and unused). Unset and `null`
  * optional fields are dropped: a surviving `null` reaches `makeDigest`, which
  * throws on it.
+ *
+ * `application` is the client application name the session reports
+ * (`PUBLISHER_SNOWFLAKE_APPLICATION_NAME`), set only when configured. A Snowflake
+ * partner uses it to have Snowflake attribute the sessions to it. It is not
+ * part of the connection's digest, so setting it changes no cache key.
  */
 export function buildSnowflakeConnOptions(
    name: string,
@@ -72,6 +78,7 @@ export function buildSnowflakeConnOptions(
          database: snowflake.database,
          schema: snowflake.schema,
          role: snowflake.role,
+         application: getSnowflakeApplicationName(),
       }),
       jsTreatIntegerAsBigInt: true,
    };

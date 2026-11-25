@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Snowflake sessions can report a partner application name
+
+**[new] `PUBLISHER_SNOWFLAKE_APPLICATION_NAME` sets the client application name every Snowflake session reports.** A Snowflake technology partner sets it to the connection string identifier it registered with the Snowflake Partner Network, and Snowflake attributes the sessions to it (`CLIENT_ENVIRONMENT:APPLICATION` in `SNOWFLAKE.ACCOUNT_USAGE.SESSIONS`). It applies to live queries and connection tests (snowflake-sdk's `application`) and, in the Docker image, to DuckDB-attached Snowflake and `storage=` build passthrough through the ADBC driver shim (`adbc.snowflake.sql.client_option.app_name`). The ADBC driver adds its own prefix, so those sessions report `[ADBC][Go-v1.12.0]<name>`. It is an environment variable only, with no flag or config-file key, because the ADBC driver reads only the process environment. A name Snowflake would refuse fails startup. Unset, nothing changes.
+
 ## [0.18.2] — a wide manifest bind no longer holds the main thread
 
 **[fix] Binding a manifest with many `storage=` tables no longer stalls the server.** Since 0.17.3 a bind recorded every named source's scope facts for every bound table in one main-thread task. On a package with many sources and dozens of bound tables that held the event loop for seconds or longer, long enough for a health check to time out. The bind now walks each source once, reuses that walk for every bound table the source's scope does not read, and yields to the event loop as it goes. What a query reads is unchanged.

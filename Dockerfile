@@ -355,6 +355,11 @@ RUN --mount=type=bind,from=adbc-driver,source=/out,target=/tmp/adbc \
 #                                   default 5). The throughput knob, not the
 #                                   memory one — lowering it costs wall time.
 #
+# The shim also reads PUBLISHER_SNOWFLAKE_APPLICATION_NAME, the client application
+# name every Snowflake session reports (a Snowflake partner's connection
+# identifier; the server sets it on snowflake-sdk sessions too). Unset sets
+# nothing. The driver reports it as "[ADBC][Go-<version>]<name>".
+#
 # Deliberately not defaulted here, like PUBLISHER_DUCKLAKE_*: an image upgrade
 # must not change what the driver does until an operator asks it to.
 

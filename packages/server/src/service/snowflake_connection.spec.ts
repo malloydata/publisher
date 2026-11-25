@@ -14,9 +14,12 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import snowflake from "snowflake-sdk";
 import type { components } from "../api";
+import { assertSnowflakeApplicationNameConfig } from "../config";
 import { bigIntReplacer } from "../json_utils";
 import { driverValue, fakeSnowflake } from "../test_helpers/fake_snowflake";
+import { installSettings } from "../test_helpers/settings_env";
 import {
    createEnvironmentConnections,
    buildEnvironmentMalloyConfig,
@@ -116,6 +119,107 @@ describe("buildSnowflakeConnOptions", () => {
       expect(() =>
          buildSnowflakeConnOptions("sf", { ...BASE, warehouse: "" }),
       ).toThrow(/warehouse is required/);
+   });
+});
+
+describe("the client application a Snowflake session reports", () => {
+   let restoreSettings: (() => void) | undefined;
+   const installEnv = (env: Record<string, string>): void => {
+      restoreSettings?.();
+      restoreSettings = installSettings({ env }).restore;
+   };
+   afterEach(() => {
+      restoreSettings?.();
+      restoreSettings = undefined;
+   });
+
+   it("is left to the driver when unset", () => {
+      installEnv({});
+      const options = buildSnowflakeConnOptions("sf", {
+         ...BASE,
+         password: "pw",
+      });
+      expect("application" in options).toBe(false);
+   });
+
+   it("is PUBLISHER_SNOWFLAKE_APPLICATION_NAME on the password and key-pair paths", () => {
+      installEnv({ PUBLISHER_SNOWFLAKE_APPLICATION_NAME: "Credible_Credible" });
+      for (const auth of [{ password: "pw" }, { privateKey: KEY }]) {
+         const options = buildSnowflakeConnOptions("sf", { ...BASE, ...auth });
+         expect(options.application).toBe("Credible_Credible");
+      }
+   });
+
+   it("reaches every Snowflake connection an environment builds", async () => {
+      installEnv({ PUBLISHER_SNOWFLAKE_APPLICATION_NAME: "Credible_Credible" });
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "sf-app-spec-"));
+      const configs: ApiConnection[] = [
+         {
+            name: "sf_password",
+            type: "snowflake",
+            snowflakeConnection: { ...BASE, password: "pw" },
+         },
+         {
+            name: "sf_key_pair",
+            type: "snowflake",
+            snowflakeConnection: { ...BASE, privateKey: KEY },
+         },
+      ];
+      const { malloyConnections, releaseConnections } =
+         await createEnvironmentConnections(configs, root);
+      try {
+         for (const config of configs) {
+            const { connOptions } = malloyConnections.get(
+               config.name!,
+            ) as unknown as { connOptions: Record<string, unknown> };
+            expect(connOptions.application).toBe("Credible_Credible");
+         }
+      } finally {
+         await releaseConnections();
+         await fs.rm(root, { recursive: true, force: true });
+      }
+   });
+
+   it("accepts exactly the names snowflake-sdk accepts", () => {
+      // snowflake-sdk validates the name when a connection is created, with
+      // no network, so a value it refuses would fail every Snowflake
+      // connection. The boot check must refuse the same values, no more.
+      snowflake.configure({ logLevel: "OFF" });
+      for (const name of [
+         "Credible_Credible",
+         "DagsterLabs_Dagster",
+         "Ab",
+         "A" + "b".repeat(50),
+         "a.b-c_d",
+         "A",
+         "A" + "b".repeat(51),
+         "Credible Data",
+         "1Credible",
+         "_Credible",
+         "Credible/Data",
+      ]) {
+         let sdkAccepts = true;
+         try {
+            snowflake.createConnection({
+               ...BASE,
+               password: "pw",
+               application: name,
+            });
+         } catch {
+            sdkAccepts = false;
+         }
+         installEnv({ PUBLISHER_SNOWFLAKE_APPLICATION_NAME: name });
+         let publisherAccepts = true;
+         try {
+            assertSnowflakeApplicationNameConfig();
+         } catch {
+            publisherAccepts = false;
+         }
+         expect({ name, publisherAccepts }).toEqual({
+            name,
+            publisherAccepts: sdkAccepts,
+         });
+      }
    });
 });
 
