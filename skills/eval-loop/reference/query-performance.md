@@ -21,7 +21,13 @@ run, so it costs server time only. Per query it records:
 
 - the median and max of the server's `executionTimeMs`;
 - `servedFrom` and `queryCostBytes`;
-- the source the query reads (`run: <source> -> …`);
+- from the path report: what answered the query (`served_by`: `live`, or the
+  table's kind, such as `rollup` or `materialized`, and its id), each table
+  passed over and why (`skipped`: `GRAIN_TOO_COARSE`, `MISSING_FIELD` and the
+  server's sentence), and the query's `shape` (its source, the fields it
+  groups and filters by, its measures);
+- the source the query reads, from the path report, or from `run: <source> ->`
+  on a server too old to send one;
 - a hash of the rows, which ignores row order and float noise in the last
   digits.
 
@@ -62,10 +68,12 @@ and DuckDB reports no bytes. The server reports no size on disk, so rows is
 the only size, and a table built beside its source in local DuckDB reports no
 rows either: measured, such a build reported its 4 ms and nothing else.
 
-`servedFrom` reports only the `storage=` tier. A query answered from a table
-built in the source's own warehouse reads null, the same as a live one, so use
-the binding in `run.json`, not `servedFrom`, to say a colocated persist was in
-force.
+Which table answered a query is in its path report, not in `servedFrom`:
+`servedFrom` names only the tier (`storage`, `database`, `live_fallback`), and
+cannot tell a rollup's answer from another table's. `run.json` also records
+each table's serve verdict (`serveVerdicts`: `serves`, `awaiting_build`, or
+`live` with a reason), which covers v2 tables; the package-wide binding status
+does not.
 
 ### Time what people ran
 
@@ -82,8 +90,11 @@ run, and how often. `--queries <file>` replays a workload file in place of
 `modelPath`, `givens` and `qid` are optional. The same query on two lines is
 one query whose counts add. A query with no `qid` is named by a hash of its
 text, givens and model, so it has the same name in tomorrow's file and two
-days' replays compare query by query. A host's logs are the usual source; a
-host may ship a skill that writes the file.
+days' replays compare query by query. A host's logs are the usual source:
+`scripts/workload_from_logs.py` writes the file from a Publisher log at debug
+level (the request body holds the query text; the access record never does),
+or from any JSONL of executed queries, such as a host's request logs. A query
+that names givens without their values is left out, not guessed.
 
 Every replay reports `weighted_ms` beside `total_ms`: each query's time by its
 count, in total and per source. That is the number to rank on. A 90 ms query
@@ -142,13 +153,43 @@ they read, so one materialization fixes one group.
 
 With no `budget_ms` nothing is slow, and one finding is still made:
 `HOT-SOURCE` names the unpersisted source that takes at least 30% of the
-replay's time, counted by how often each query ran. It is read off the replay,
+replay's time still answered live, counted by how often each query ran. Time a
+table already saves does not count. It carries each query's shape and the skip
+reasons that kept existing tables from answering. It is read off the replay,
 before anything is built, and it is where to look first.
+
+## 4b. Simulate, before building
+
+```bash
+python3 skills/eval-loop/scripts/eval.py simulate --set <set> --from perf-01 --package
+python3 skills/eval-loop/scripts/eval.py simulate --set <set> --from perf-01 --candidate <edited-package-dir>
+python3 skills/eval-loop/scripts/eval.py simulate --set <set> --check sim-perf-01 --against perf-02
+```
+
+Step 4 of the optimization loop (`optimization-loop.md`). The first form
+proposes rollup grains from the queries still answered live and predicts, for
+each, which queries it answers, the time saved, the build time a day at the
+refresh `max_staleness_hours` needs, and the cost when prices are set, ranked
+against the `[performance]` objective in `eval.toml`. `--package` writes the
+options app: serve it and show it to the person choosing.
+
+The second form dry-run publishes an edited package and predicts from the
+server's own build plan and serve verdicts. It costs nothing and catches what
+the first cannot: a rollup on a measure that cannot be merged
+(`rollup-not-mergeable`), or one through a join whose key is not in the grain
+(`join_not_in_grain`). Run it on every candidate before building one.
+
+The third compares a simulation with a replay of the built candidate: which
+table answered each query, and the time. A wrong coverage prediction, or a
+`table_read_ms` far from the measured one, is what to correct before the next
+simulation.
 
 ## 5. Improve, and accept
 
-The edit is a `#@ persist` or `#@ preaggregate` on the source a group reads, made
-with the `malloy-materialization` skill. `skill:eval-improve` proposes it and
+The edit is a table that answers the group's queries: a `#(rollup)` at their
+grain, a `#(materialize)` on the source, or a `#@ persist` on a view or query,
+made with the `malloy-materialization` skill and picked as `skill:eval-improve`
+says. `skill:eval-improve` proposes it and
 **the user approves each one before it is made**: a persisted table costs
 storage and rebuild time, and that trade is theirs.
 
@@ -160,6 +201,9 @@ Acceptance for a speed edit (`acceptance-check.md`):
    reads the changed source, not only the slow ones. Every row stays the same.
 3. The targeted queries are faster than the band. No other query is slower than
    the band.
+4. The path report shows each targeted query answered by the new table, in
+   every replay. Faster on the clock is not proof: the band can pass a change
+   whose table never answered.
 
 A persist or a preaggregate changes no name and no doc, so what the agent can
 find is unchanged, and no fresh answer run is needed. An edit that also renames
@@ -186,8 +230,11 @@ or a look at the server, not an edit.
 3. The night's own replay is replayed against it twice.
 4. It is accepted only if both replays say the same: no stored answer's rows
    changed, none now errors, no query is slower, at least one is faster, and
-   the total is faster by more than the band. Two replays, because one
-   replay's total moves by itself.
+   the total is faster by more than the band, and every targeted query is
+   answered by a table. Two replays, because one replay's total moves by
+   itself. When the first replay shows no targeted query answered by a table,
+   the second is not run, and the server's reason is recorded: the table's
+   serve verdict, or the skip that kept it from the first targeted query.
 5. An accepted edit stays on the branch, with the time saved and the build it
    costs on each refresh in its commit message. A rejected one is taken off.
    Either way the attempt is a line in `attempts.jsonl` on that branch.
