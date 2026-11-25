@@ -79,15 +79,15 @@ away with the package `PATCH` that writes it: bind a version's build manifest wi
 
 A package can carry agent skills of its own in a `skills/` directory at its root: one directory per skill, each holding a `SKILL.md` in the [agentskills.io](https://agentskills.io) format (a `name` and `description` in the frontmatter, then the body). A skill is its whole directory: the spec's `scripts/`, `references/` and `assets/` folders, and any other file under it, are part of the skill, and the body names them by paths relative to the skill root. Publisher serves a package's skills next to the bundled skills, scoped to that package, so an agent learns how to work with this package's data from the package itself:
 
-- `get_skill(skill_name, path)` reads any file of a skill by its path, for example `references/joins.md` or `scripts/check.py`. `path` defaults to `SKILL.md`. Reading `SKILL.md` also returns the parsed `frontmatter` and `files`, every file of the skill as `{path, size}`, which is the skill's served set. A binary file answers with its size and a message, never its bytes.
-- `GET …/packages/{pkg}/skills` lists the skills, `…/skills/{skill}` reads `SKILL.md` and `…/skills/{skill}/{path}` reads one file. `content` is the file as written, with nothing appended. A file that changed on disk since the package loaded answers 404 until the package reloads.
+- `get_skill(skill_name, path)` reads any file of a skill by its path, for example `references/joins.md` or `scripts/check.py`. `path` defaults to `SKILL.md`. Reading `SKILL.md` also returns the parsed `frontmatter` and `files`, every file of the skill as `{path, size}`, which is the skill's served set unless the reply says some entries were cut to keep it under the 35,000-character tool-result limit. A binary file answers with its size and a message, never its bytes.
+- `GET …/packages/{pkg}/skills` lists the skills, `…/skills/{skill}` reads `SKILL.md` and `…/skills/{skill}/{path}` reads one file. `content` is the file as written, with nothing appended. A listed file (not Markdown, or Markdown that was listed) that changed on disk since the package loaded answers 404 until the package reloads; inline Markdown is served from the text read at load.
 
 Rules for what is served:
 
 - A skill whose `name` matches a bundled skill replaces it for this package. Nothing is merged. Every entry carries an `origin` (`package` or `bundled`) saying which one you are reading.
 - Every file is read through its real path, and one that resolves outside the package is not served, so a link cannot pull in a file from elsewhere on the machine. A link to a Markdown file inside the package is followed; any other link is skipped with a warning. A `skills/` directory that is itself a link out of the package is skipped with a load warning.
-- A skill whose `SKILL.md` cannot be read or is not UTF-8 text, or whose frontmatter `name` differs from its directory name, is skipped. One with no `description` is served but flagged, since nothing tells a caller when to read it. A file that breaks a limit is skipped alone, without dropping its skill. Each case is a load warning naming the fix, and the package still loads.
-- The frontmatter is read as YAML 1.2. One that does not parse, repeats a key, or expands past its limit is served as an empty `frontmatter`, with `name` and `description` read line by line and a warning.
+- A skill whose `SKILL.md` cannot be read or is not UTF-8 text, or whose frontmatter `name` differs from its directory name, is skipped; in a skill an agent names, any of these drops the agent. One with no `description` is served but flagged, since nothing tells a caller when to read it. A file that breaks a limit is skipped alone, without dropping its skill. Each case is a load warning naming the fix, and the package still loads.
+- The frontmatter is read as YAML 1.2. One that does not parse, repeats a key, or expands past 5 times its source plus 10,000 characters is served as an empty `frontmatter`, with `name` and `description` read line by line and a warning.
 
 ### Which files a skill holds
 
@@ -95,7 +95,7 @@ A skill is every file under its directory except these, which never reach an age
 
 - Dotfiles and dot-folders (`.skillignore` itself, `.env`, `.DS_Store`, `.git/`, `.claude/`), `node_modules/`, `__pycache__/` and `*.pyc`. No `.skillignore` pattern brings one back. Rename the file (`env.example`) to ship it.
 - Whatever `.skillignore` at the skill's root matches. It takes gitignore syntax, matched without regard to case, and only the root file is read. `SKILL.md` stays whatever it says, with a warning.
-- A `SKILL.md` below the root, and `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` and `publisher.json` anywhere in the skill, in any case. An agent computer reads those files with authority, so each is skipped with a warning.
+- A `SKILL.md` below the root, and `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` and `publisher.json` anywhere in the skill, in any case. An agent computer reads those files with authority, so each is skipped with a warning. In a skill an agent names, a `publisher.json` at the skill's root, in `reference/` or below `assets/`, and a `SKILL.md` below `assets/`, drop the whole agent instead.
 - A file that breaks a limit (see [the budgets](agent-skills/authoring-skills.md#budgets)), each named in a warning.
 
 `.skillignore` and `.credignore` decide different things:
@@ -113,7 +113,7 @@ Editing `.skillignore` moves the agent's `definitionSha` and the package's `sour
 
 To see what a skill holds before an agent does:
 
-- A package skill: `get_skill` on its `SKILL.md`. Its `files` is exactly the served set.
+- A package skill: `GET …/packages/{pkg}/skills/{skill}`, whose `files` is the served set, or `get_skill` on its `SKILL.md`, which trims `files` past 35,000 characters and says so.
 - An agent's skills: `get_agent` with `skills: "summary"` lists each inline file and counts the listed files of each skill. The default view lists each listed file with its size and sha256.
 - The upload: `cred publish --dry-run` lists the files that would be uploaded. That is the upload set, not the skill set.
 
@@ -155,7 +155,7 @@ The agent's name is its key: 1 to 64 characters of lowercase letters, digits and
 
 **Strict allowlist.** An agent, schedule or budget entry with a key this server does not know is dropped, because a key it does not understand might limit the agent, and an unknown key never runs. `tools`, `mcp-servers`, `hooks`, `permission-mode` and `base` are not part of the schema, so they are dropped too: a definition adds words to a session and never widens what the session may do. A key starting `x-` is ignored, for notes and tool metadata.
 
-**A broken agent never fails the package.** An agent that fails validation (a bad name, a missing file, a path that escapes the package or resolves outside it through a link, a nested `publisher.json` under an agent path, an over-cap file, a bad cron, a bad `budget`) is left out and reported in the package's load warnings with a `Fix:` line. The model and the other agents keep serving. An agent skill with no `description`, a `reference/` that cannot be read, or a skills directory with no skills is not a failure: the agent is served and the finding appears in its `warnings`. A package with no `agents` key is unchanged, and an older Publisher serves a package that has one as before, without the agents.
+**A broken agent never fails the package.** An agent that fails validation (a bad name, a missing file, a path that escapes the package or resolves outside it through a link, a nested `publisher.json` under an agent path, a skills directory, a skill's root or `reference/`, or below `assets/`, an over-cap file, a bad cron, a bad `budget`) is left out and reported in the package's load warnings with a `Fix:` line. The model and the other agents keep serving. An agent skill with no `description`, a `reference/` that cannot be read, or a skills directory with no skills is not a failure: the agent is served and the finding appears in its `warnings`. A package with no `agents` key is unchanged, and an older Publisher serves a package that has one as before, without the agents.
 
 ### Listed files
 

@@ -43,19 +43,24 @@ assets/         files a skill copies into what it builds
 ```
 
 `references/` is the folder to use for new skills. The skills here keep the `reference/` they
-already have, and nothing moves: both are read the same way, so a body names a file by its path
-from the skill root, such as `reference/joins.md`. Other folders (`templates/`, `data/`) work too.
+already have, and nothing moves. Both are served, and a body names a file by its path from the
+skill root, such as `reference/joins.md`; `reference/` keeps the allowances it always had (see
+[Budgets](#budgets)). Other folders (`templates/`, `data/`) work too.
 
-Which files make up a skill is decided in one place for every channel (the npm pack, the MCP
-bundle, a package's own skills):
+The built-ins and `.skillignore` decide which files make up a skill for every channel (the npm
+pack, the MCP bundle, a package's own skills):
 
 - Dotfiles and dot-folders, `node_modules/`, `__pycache__/` and `*.pyc` are never part of a skill.
   `.skillignore` cannot bring them back.
 - A `.skillignore` at the skill's root drops more, in gitignore syntax matched without regard to
   case. The skills that carry tests or fixtures use it: `*_test.py` keeps a test out of the pack
   and the bundle. `SKILL.md` is always kept.
-- A `SKILL.md` below the root, `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` and `publisher.json`
-  are skipped wherever they sit, because a host reads those files with authority.
+
+A bundled skill here carries every file the skill's own `.skillignore` leaves. When Publisher
+serves a package's skills or an agent's skills, its reader also skips a `SKILL.md` below the root,
+`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` and `publisher.json` wherever they sit, because a host
+reads those files with authority. In this repository that is a rule for authors: the pack and the
+bundle do not filter them.
 
 `.skillignore` curates; it does not hide anything. An ignored file stays in the repository and in
 any package copy, and a client that reads the directory itself (Claude Code through
@@ -173,27 +178,30 @@ assuming it is always loaded.
 
 ## Budgets
 
-A skill's files are read, hashed and listed when Publisher loads a package, so every part of that
-has a bound. Each crossing names itself in a warning that reaches the agent page, the notices
-chip, `cred publish` and `get_agent`. A crossing skips the one file it concerns, unless the row
-says it drops the agent. Inline files are a skill's Markdown outside `assets/`, carried in the
-agent definition; listed files are every other file, which Publisher lists by path, size and
-sha256 and reads on request.
+A skill's files are read, hashed and listed when Publisher loads a package. Most of that has a
+bound, set out below; the number of skills under a skills root, and the Markdown a package's own
+skills carry inline, have none. Each crossing is a load warning on the package, and for an agent
+also in `get_agent`'s `warnings`; `cred publish --dry-run` shows the upload set. A crossing skips
+the one file it concerns, unless the row says it drops the agent. Inline files are a skill's
+Markdown outside `assets/`, carried in the agent definition; listed files are every other file,
+which Publisher lists by path, size and sha256 and reads on request.
 
 | Budget | Limit | When it is crossed |
 | --- | --- | --- |
-| An agent's `instructions` and each task file | 16 KB each | Drops the agent |
+| An agent's `instructions` and each task file | 16 KiB each | Drops the agent |
+| A `SKILL.md` | 256 KiB | The skill is not served, and an agent that names it is dropped |
 | An agent's inline Markdown | 256 KiB; every `SKILL.md` is counted first | `SKILL.md` files alone over it drop the agent; other Markdown that does not fit is listed instead, with a warning |
-| One package skill's Markdown file | 256 KiB | The file is listed instead of inlined |
+| One package skill's Markdown file | 256 KiB per file. A package's own skills have no total | The file is listed instead of inlined |
+| Skills under a skills root, and under `skills/` | No limit. Each skill has its own `reference/` allowance | Nothing; the reload cost grows with them |
 | One listed file | Under 1 MiB (1,048,576 bytes is out) | The file is skipped |
 | Listed files per agent | 4 MiB and 200 files | Later files are skipped |
 | Listed files per package, across agents | 8 MiB, each path counted once, agents charged in manifest order | Later files are skipped |
 | Listed files of a package's own `skills/` | 4 MiB and 200 files per package, apart from the agents' 8 MiB | Later files are skipped |
 | A listed path | Segments of `[A-Za-z0-9_][A-Za-z0-9._-]*`, at most 200 characters with the skill's directory name, at most 8 levels deep, no control character, no `.malloy` or `.malloynb`, a regular file | The file is skipped. Inline Markdown keeps lenient names |
 | Entries walked | Per agent, 1,000 under `assets/` and 1,000 elsewhere, shared by its skills. The package's `skills/` has the same pair. Ignored entries count | The walk stops there, and the rest are not included |
-| `reference/` | At most 1,000 Markdown files per skill, read no further than 10,000 entries of any kind. `references/` counts against the entries walked | The rest are not read |
+| `reference/` | At most 1,000 Markdown files per skill, read no further than 10,000 entries of any kind. It is outside the entries walked, is followed when it is a link, and is read before other Markdown. `references/` has none of this and counts against the entries walked | The rest are not read |
 | `.skillignore` | 16 KiB, 200 patterns of at most 200 characters, two single `*` a pattern | The pattern, or the file, is skipped |
-| Frontmatter | YAML 1.2; at most 100 references to one anchor; output at most 5 times the source | An empty `frontmatter` and a line read of `name` and `description` |
+| Frontmatter | YAML 1.2; at most 100 references to one anchor; output at most 5 times the source plus 10,000 characters | An empty `frontmatter` and a line read of `name` and `description` |
 | `get_skill` result | 35,000 characters, Cursor's limit | Keeps the body and trims `files` with a count, then drops the parsed frontmatter, then the body |
 
 A Markdown file of a bundled skill must come back whole from `get_skill` at that limit, so keep each one under it and split a long reference file in two; a bundle test holds every file to it.
@@ -201,30 +209,33 @@ A Markdown file of a bundled skill must come back whole from `get_skill` at that
 Two budgets belong to the host that lists skills, not to Publisher: an agent computer lists every
 skill's name and description in each model call against one shared budget (16 skills and 4,000
 characters), and it refuses an agent past it. A `description` written as a YAML block scalar
-(`>-` or `|`) is read to its true length, so check one that was cut short before.
+(`>-` or `|`) counts its whole text against that budget.
 
 ### What a reload costs
 
 `Package.refreshServingIdentity` walks and hashes a package's skills and agents synchronously, on
 creation and on every reload, so the event loop does nothing else for as long as it takes. A host
 that reloads on every turn pays it every turn. `bun run perf:skills-reload` in `packages/server`
-builds a package at the caps (8 agents, 12 MiB listed, every walk budget spent) and times it. On a
-development machine with a warm page cache, the median of 5 reloads:
+builds a package with 8 agents and a package skill, each with one skill, and times it. The first
+row is the largest each budget allows for those nine skills. A package with more skills costs more,
+since nothing bounds their number. On a development machine with a warm page cache, the median of
+5 reloads:
 
 | Package | Blocks the loop for |
 | --- | --- |
 | One agent, `SKILL.md` only | 2 ms |
-| 12 MiB in 300 listed files across 8 agents and a package skill | 128 ms |
-| The same agents with 1,000 entries walked in each of `assets/` and `scripts/` | 269 ms |
-| The same agents with 907 Markdown files in each skill's `reference/` | 1.0 s |
-| All of the above at once | 1.1 s |
+| Every budget spent in nine skills: about 11.7 MiB in 1,800 listed files, 1,000 entries under `assets/`, 999 files in `references/` and 907 in `reference/` each | 1.9 s |
+| The 300 large listed files alone (about 11.7 MiB) | 126 ms |
+| The 1,000 `assets/` entries alone | 267 ms |
+| The 999 `references/` files alone | 970 ms |
+| The 907 `reference/` files alone | 904 ms |
 
 A Markdown file costs about 0.1 ms to read and hash and a walked entry about 10 microseconds, so
 file count moves the time most. Keep a skill to the files an agent uses.
 
 ## Authoring a new skill
 
-1. Create `skills/<skill-name>/` with a `SKILL.md` and any `reference/` files.
+1. Create `skills/<skill-name>/` with a `SKILL.md` and any `references/` files.
 2. Keep the skill self-contained: no reference to its use case or manifest.
 3. Use `skill:<other-skill>` to point at other skills.
 4. Add the skill to the relevant manifest(s) under `auto_discovered` or `supporting`.
