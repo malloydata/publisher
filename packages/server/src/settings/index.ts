@@ -24,7 +24,11 @@ export {
    SettingsError,
    type SettingSource,
 } from "./errors";
-export { externalEnv, referencedVariable } from "./external";
+export {
+   externalEnv,
+   referencedVariable,
+   type ExternalVariable,
+} from "./external";
 export { REGISTRY, type SettingKey, type SettingValue } from "./registry";
 export { derivedEnvName, derivedFlagName } from "./setting";
 export {

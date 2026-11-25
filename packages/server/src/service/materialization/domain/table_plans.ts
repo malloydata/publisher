@@ -18,7 +18,9 @@
  * Pure.
  */
 
+import { contractKeyName } from "./column_contract";
 import type { StringReads } from "./string_reads";
+import type { UpstreamColumn } from "./upstream_schemas";
 import type { TableKind as StoredTableKind } from "./vocabulary";
 import type { BuildTarget, PersistSource } from "@malloydata/malloy";
 import type {
@@ -296,10 +298,10 @@ export interface InlineUniquenessCheck {
    pairLevel?: number;
    /**
     * Set on a pair table's leaf key check ({@link pairKeyChecks}): it never
-    * fails the build. An auto-run runs it once the table is written and
-    * records what it found beside the table (unique and never null, under
-    * {@link joinedSourceID}); the served copy re-declares a count through the
-    * path over the leaf's key only where that record passed.
+    * fails the build. Every build runs it once the table is written and
+    * records what it found in the table's contract (`leaf:<join path>.<key>`,
+    * read back as {@link joinedSourceID}'s); the served copy re-declares a
+    * count through the path over the leaf's key only where that check passed.
     */
    recordOnly?: true;
 }
@@ -404,9 +406,70 @@ export interface MaterializePlan {
    /**
     * For an extension table: the materialized parent whose build source
     * this source's build reads, so its table is computed from the parent's.
-    * Absent: built over the raw chain.
+    * Absent: the source extends no materialized parent (an extension whose
+    * parent's table it cannot build over is refused at plan, never built
+    * over the raw chain).
     */
    buildsOver?: MaterializeParent;
+}
+
+/**
+ * How an extension table's build reads its parent's table, decided at plan
+ * ({@link chainVerdict} in plan/materialize_plan.ts) and read by the build,
+ * which never re-derives it.
+ */
+export interface ChainMode {
+   /**
+    * Where the parent's table is, seen from the extension's build:
+    *  - `same`: one tier (both database, or both one `storage=` destination);
+    *  - `storage_over_database`: a `storage=` extension of a database parent,
+    *    whose warehouse build reads the parent's table and is copied in;
+    *  - `across_destinations`: a `storage=` extension of a parent in another
+    *    destination, attached read-only in the extension's build session.
+    */
+   tier: "same" | "storage_over_database" | "across_destinations";
+   /**
+    * With `across_destinations`: the `storage=` destination the parent's
+    * table is in, which the build attaches read-only beside its own.
+    */
+   parentDestination?: string;
+   /**
+    * Set when the parent is a pair table (an inlined join_many, or several
+    * inlined paths): the build re-roots the parent on its join put back
+    * (plan/pair_reroot.ts), so the extension reads one row per parent. The
+    * re-root counts each level by its key, so the build relies on the leaf
+    * checks `leafKeys` names (`ColumnContract.keys`, as
+    * `pairLeafContractKeys` writes them) having passed on the parent's
+    * table: judged at plan from the parent's bound contract when there is
+    * one, else at build (run/pair_leaf_gate.ts, `schema_incompatible`).
+    */
+   pair?: { leafKeys: string[] };
+   /**
+    * Set when the parent's build leaves terms out (a current-time `where:`
+    * holding an upper bound): its re-root in the extension's build leaves
+    * those in its declaration out too, each found by its verbatim text and
+    * where the compiler says it reads, so the extension's table holds every
+    * window's rows, as the parent's does. The served copy applies each
+    * again at read, from its parts.
+    */
+   leftOutParentTerms?: { code: string; at: TermUse[] }[];
+   /**
+    * For an incremental extension: how its refresh follows its parent's
+    * table (see `chainIncremental`). Absent for a full extension, which the
+    * run rebuilds whenever its parent's table moves.
+    *  - `delta`: its delta reads the parent's table, from no later than the
+    *    parent's own delta start in the run, and a time watermark's range
+    *    ends no later than the parent's coverage;
+    *  - `reseed_on_parent_change`: both incremental on different
+    *    watermarks: rebuilt in full whenever the parent's table changed.
+    */
+   incremental?: {
+      coordinate: "delta" | "reseed_on_parent_change";
+      /** The parent's watermark, when the parent is incremental. */
+      parentWatermark?: string;
+      /** The parent's `merge_key=`, when the parent declares one. */
+      parentMergeKey?: string;
+   };
 }
 
 /** The parent an extension table builds over. */
@@ -417,6 +480,8 @@ export interface MaterializeParent {
    sourceName: string;
    /** The parent's declaration in that file, which the build copy re-roots. */
    declaration: TermUse;
+   /** How the build reads the parent's table, decided at plan. */
+   mode: ChainMode;
    /**
     * The declarations from just below the parent to the extension's own,
     * root first, each an `extend` or a rename of the one before, in the
@@ -725,6 +790,13 @@ interface TablePlanFacts {
    /** The entry point's `#(authorize)` gate, classified where it compiled. */
    gate?: PersistSourceGateOutcome;
    /**
+    * Each stored column that is a plain copy of one warehouse column, by its
+    * stored name: a `.table()` source's own columns. A `storage=` build
+    * records a destination double as gate-exact only over a binary64 one
+    * (`deriveContract`). Held in memory with the plan, never on the wire.
+    */
+   columnOrigins?: ReadonlyMap<string, UpstreamColumn>;
+   /**
     * The declared primary key a build checks for a repeated or NULL value
     * over this table, when it is stored in a destination and read beside a
     * `storage=` rollup through a join_many keyed on it (the join-to-rollup
@@ -747,6 +819,14 @@ interface TablePlanFacts {
     * with this as its message.
     */
    unusableUpstream?: string;
+   /**
+    * Set for an {@link unusableUpstream} judged from a pair-table parent's
+    * bound contract, which is not refused at plan: a run refuses
+    * the table with {@link unusableUpstream} before building anything,
+    * unless it rebuilt the parent's table first, whose fresh contract the
+    * build-time leaf gate judges instead (instructed_build.ts).
+    */
+   unusableUnlessParentRebuilt?: true;
 }
 
 /**
@@ -868,11 +948,62 @@ export interface OverStoredBase {
    /**
     * With `rerootedSourceID` a pair table (an inlined join_many, re-rooted
     * with its join put back, pair_reroot.ts): the contract keys of the leaf
-    * key checks the build relies on (`items.item_id`). A build refuses
+    * key checks the build relies on (`leaf:items.item_id`). A build refuses
     * unless the upstream's table records each as passed (unique and never
     * null), and never builds from raw instead.
     */
    pairLeafKeys?: readonly string[];
+}
+
+/**
+ * A pair path's leaf: the join names from the source to it, its key, and its
+ * source. The leaf key check's writer (the build's inline uniqueness checks) and
+ * its readers ({@link pairLeafContractKeys}) both name the check from this.
+ */
+export function pairLeafPath(p: MaterializePair): {
+   names: string[];
+   keyColumn: string;
+   sourceID: string;
+} {
+   const hops = p.hops ?? [];
+   const last = hops[hops.length - 1];
+   return {
+      names: [p.join, ...hops.map((h) => h.join)],
+      keyColumn: last?.key ?? p.childKey,
+      sourceID: last?.sourceID ?? p.childSourceID,
+   };
+}
+
+/**
+ * The contract keys (`ColumnContract.keys`) of the leaf checks a build over
+ * the pair table needs passed (unique and never null): one per path, as
+ * `run/inline_uniqueness.ts` records them (`leaf:items.options.option_id`).
+ */
+export function pairLeafContractKeys(plan: MaterializePlan): string[] {
+   return pairPathsOf(plan).map((p) => {
+      const leaf = pairLeafPath(p);
+      return contractKeyName("leaf", leaf.names.join("."), leaf.keyColumn);
+   });
+}
+
+/**
+ * Each pair path's leaf, as a bind reads its check off the table's contract:
+ * the join path its contract key names (`items.options`) and the leaf
+ * source's sourceID. The key column is left out: a bind looks the check up
+ * under the primary key the leaf declares now, not the one the plan names.
+ */
+export function pairLeavesOf(
+   plan: MaterializePlan,
+): { joinPath: string; sourceID: string }[] {
+   return pairPathsOf(plan).map((p) => {
+      const leaf = pairLeafPath(p);
+      return { joinPath: leaf.names.join("."), sourceID: leaf.sourceID };
+   });
+}
+
+/** A plan's pair paths: its blocks', else its one pair's. */
+function pairPathsOf(plan: MaterializePlan): MaterializePair[] {
+   return plan.pairBlocks?.blocks ?? (plan.pair ? [plan.pair] : []);
 }
 
 /** A `#(materialize)` plan's kind: `pair` when it stores an inlined join_many. */

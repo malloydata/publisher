@@ -1,32 +1,32 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { runInternalSQL } from "../../duckdb_lockdown";
+import { runInternalSQL } from "../../../duckdb_lockdown";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { PostgresConnection } from "@malloydata/db-postgres";
 import { type Connection, SingleConnectionRuntime } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { equalityOnlyExpr, gateReadsOfQuery } from "../gate_reads";
+import { catalogIO } from "./catalog_io";
+import { lookupSourceRefusal, lookupStoredRefusal } from "../admission_lookup";
 import {
-   storedTableCollationRefusal,
-   stringGateCollationRefusal,
-} from "./gate_collation";
-import { equalityOnlyExpr, gateReadsOfQuery } from "./gate_reads";
-import { probeIO } from "./gate_collation";
-import { DUCKDB_COLLATION } from "./collation/duckdb";
-import {
-   POSTGRES_COLLATION,
-   unfinalizedPostgresSQL,
-} from "./collation/postgres";
+   readStringCapabilities,
+   recordStringCapabilities,
+} from "../source_capability";
+import { captureDatabaseContract } from "../../run/column_contract_capture";
+import { makeSnapshot } from "../../domain/binding";
+import { DUCKDB_COLLATION } from "./duckdb";
+import { POSTGRES_COLLATION, unfinalizedPostgresSQL } from "./postgres";
 
-/** The reads over a connection, through the I/O `gate_collation.ts` builds. */
+/** The reads over a connection, through the I/O `collation/catalog_io.ts` builds. */
 const duckdbCollation = (c: Connection, sql: string) =>
-   DUCKDB_COLLATION.sourceColumns(probeIO(c), sql);
+   DUCKDB_COLLATION.sourceColumns(catalogIO(c), sql);
 const duckdbTableCollation = (c: Connection, path: string) =>
-   DUCKDB_COLLATION.storedTable(probeIO(c), path);
+   DUCKDB_COLLATION.storedTable(catalogIO(c), path);
 const postgresCollation = (c: Connection, sql: string) =>
-   POSTGRES_COLLATION.sourceColumns(probeIO(c), sql);
+   POSTGRES_COLLATION.sourceColumns(catalogIO(c), sql);
 const postgresTableCollation = (c: Connection, path: string) =>
-   POSTGRES_COLLATION.storedTable(probeIO(c), path);
+   POSTGRES_COLLATION.storedTable(catalogIO(c), path);
 
 describe("a DuckDB source's string comparison", () => {
    it("is binary with no collation set or written, and unknown with one", async () => {
@@ -302,25 +302,6 @@ describe.skipIf(!url)("a Postgres column's collation", () => {
       }
    });
 
-   it("judges a database table with no path unknown, never binary", async () => {
-      const postgresAuthor = new SingleConnectionRuntime({ connection: pg })
-         .loadModel(`source: s is pg.sql("SELECT 'a' AS c")`)
-         .loadQuery("run: s -> { select: c }");
-      expect(
-         await storedTableCollationRefusal({
-            tables: [{ tier: "database" }],
-            answerRunnable: {
-               runtime: {
-                  connections: { lookupConnection: async () => pg },
-               },
-            } as never,
-            virtualMap: undefined,
-            authorRunnable: postgresAuthor as never,
-            reads: undefined,
-         }),
-      ).toBeDefined();
-   });
-
    it("reads a column through a query Malloy compiled, as the probe sends it", async () => {
       const { sql } = await new SingleConnectionRuntime({ connection: pg })
          .loadModel(`source: s is pg.table('public.gate_coll_t')`)
@@ -445,15 +426,23 @@ source: c_nested is comp extend {
          table: string,
          source: string,
       ) => {
-         const q = new SingleConnectionRuntime({ connection: pg })
-            .loadModel(MODEL(table))
-            .loadQuery(`run: ${source} -> { group_by: id; order_by: id }`);
+         const runtime = new SingleConnectionRuntime({ connection: pg });
+         const materializer = runtime.loadModel(MODEL(table));
+         const q = materializer.loadQuery(
+            `run: ${source} -> { group_by: id; order_by: id }`,
+         );
          const reads = await gateReadsOfQuery(q as never);
-         return stringGateCollationRefusal({
-            authorRunnable: q as never,
-            reads,
-            givens: { FLAG: true },
-         });
+         // Looked up over what a bind records of the model.
+         recordStringCapabilities(
+            runtime,
+            await readStringCapabilities({
+               modelDef: (await materializer.getModel())._modelDef,
+               load: (text) => materializer.loadQuery(text),
+               connection: async () => pg,
+               givens: { FLAG: true },
+            }),
+         );
+         return lookupSourceRefusal({ authorRunnable: q as never, reads });
       };
 
       it("refuses an equality through a dimension over a nondeterministic column", async () => {
@@ -588,33 +577,57 @@ source: s_join is pg.table('public.dsc_base') extend {
 
       const refusal = async (
          source: string,
-         tablePath: string,
+         tablePaths: string | readonly string[],
          destinationName?: string,
          kind?: string,
       ) => {
-         const author = new SingleConnectionRuntime({ connection: pg })
-            .loadModel(MODEL)
-            .loadQuery(`run: ${source} -> { group_by: id }`);
-         return storedTableCollationRefusal({
-            tables: [
-               {
-                  tier: "database",
-                  tablePath,
-                  ...(destinationName ? { destinationName } : {}),
-                  ...(kind ? { kind } : {}),
-               },
-            ],
-            answerRunnable: {
-               runtime: {
-                  connections: {
-                     lookupConnection: async (name?: string) =>
-                        name === "other" ? other : pg,
-                  },
-               },
-            } as never,
-            virtualMap: undefined,
+         const paths =
+            typeof tablePaths === "string" ? [tablePaths] : tablePaths;
+         const runtime = new SingleConnectionRuntime({ connection: pg });
+         const materializer = runtime.loadModel(MODEL);
+         const author = materializer.loadQuery(
+            `run: ${source} -> { group_by: id }`,
+         );
+         const reads = await gateReadsOfQuery(author as never);
+         // Looked up over the contract a build captures of the table and
+         // what a bind records of the source.
+         recordStringCapabilities(
+            runtime,
+            await readStringCapabilities({
+               modelDef: (await materializer.getModel())._modelDef,
+               load: (q) => materializer.loadQuery(q),
+               connection: async (name) => (name === "other" ? other : pg),
+            }),
+         );
+         const contracts = new Map<
+            string,
+            Awaited<ReturnType<typeof captureDatabaseContract>>
+         >();
+         for (const [i, p] of paths.entries()) {
+            const contract = await captureDatabaseContract({
+               connection: destinationName === "other" ? other : pg,
+               tableName: p,
+               physicalTableName: p,
+            }).catch(() => undefined);
+            if (contract) contracts.set(`t${i}`, contract);
+         }
+         return lookupStoredRefusal({
+            tables: paths.map((p, i) => ({
+               tier: "database" as const,
+               tablePath: p,
+               virtualHandle: `t${i}`,
+               ...(destinationName ? { destinationName } : {}),
+               ...(kind ? { kind } : {}),
+            })),
             authorRunnable: author as never,
-            reads: await gateReadsOfQuery(author as never),
+            reads,
+            bind: makeSnapshot(
+               [],
+               {},
+               undefined,
+               undefined,
+               contracts.size > 0 ? contracts : undefined,
+            ),
          });
       };
 
@@ -631,6 +644,17 @@ source: s_join is pg.table('public.dsc_base') extend {
       it("refuses a column altered to another collation after the build", async () => {
          expect(await refusal("s", "dsc_alt")).toBeDefined();
          expect(await refusal("s_ren", "dsc_alt")).toBeDefined();
+      });
+
+      // A read names its column, not the table that holds it: when two
+      // tables an answer reads hold `region` under different collations,
+      // the one read may be either, so both are compared. Matching by name
+      // alone kept whichever table came last, and admitted `dsc_alt`'s
+      // `C` column as the source's own whenever `dsc_st` followed it.
+      it("refuses a column two tables read hold under different collations, in either order", async () => {
+         expect(await refusal("s", ["dsc_alt", "dsc_st"])).toBeDefined();
+         expect(await refusal("s", ["dsc_st", "dsc_alt"])).toBeDefined();
+         expect(await refusal("s", ["dsc_st", "dsc_st"])).toBeUndefined();
       });
 
       it("refuses a table on another database whose same-named collation differs", async () => {

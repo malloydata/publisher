@@ -16,13 +16,6 @@ import { VersionRef } from "../service/identity";
 import { isUsableTableName } from "../service/materialization";
 import { queryMetadataViolations } from "../service/query_metadata";
 
-/**
- * The values `buildInstructions.warehouseReach` accepts (ms2data/service#6756).
- * Accepted and ignored: every build is strict, and none recomputes a stored
- * upstream from the warehouse.
- */
-const WAREHOUSE_REACH_VALUES: readonly string[] = ["recompute", "refuse"];
-
 type RunContext = components["schemas"]["RunContext"];
 
 const RUN_TRIGGERS = ["publish", "on_demand", "scheduler"] as const;
@@ -114,7 +107,7 @@ export class MaterializationController {
          }
          const deprecated = parsed.deprecatedOptions;
          if (deprecated.length > 0) {
-            // Once per request that sends either; neither changes the run.
+            // Once per request that sends it; it does not change the run.
             logger.warn(
                "buildInstructions options are deprecated and ignored: every build is strict",
                { ...context, options: deprecated },
@@ -217,7 +210,7 @@ export class MaterializationController {
       sources: BuildInstruction[];
       referenceManifest?: ManifestReference[];
       /** The deprecated options the payload sent, which are ignored. */
-      deprecatedOptions: ("strictUpstreams" | "warehouseReach")[];
+      deprecatedOptions: "strictUpstreams"[];
       ledger?: LedgerEntry[];
       malformedLedger?: MalformedLedgerEntry[];
    } {
@@ -236,7 +229,7 @@ export class MaterializationController {
       const result: {
          sources: BuildInstruction[];
          referenceManifest?: ManifestReference[];
-         deprecatedOptions: ("strictUpstreams" | "warehouseReach")[];
+         deprecatedOptions: "strictUpstreams"[];
          ledger?: LedgerEntry[];
          malformedLedger?: MalformedLedgerEntry[];
       } = {
@@ -255,7 +248,7 @@ export class MaterializationController {
             );
          }
          result.referenceManifest = obj.referenceManifest.map((ref) =>
-            this.validateManifestReference(ref),
+            this.validateManifestReference(ref, context),
          );
       }
       if (obj.strictUpstreams !== undefined) {
@@ -266,18 +259,15 @@ export class MaterializationController {
          }
          result.deprecatedOptions.push("strictUpstreams");
       }
-      // Null is read as absent: Credible's clients drop null fields, so null
-      // and absent must mean the same.
+      // Removed, and refused by name so a caller learns it is gone. Null is
+      // read as absent: Credible's clients drop null fields, so null and
+      // absent must mean the same.
       if (obj.warehouseReach !== undefined && obj.warehouseReach !== null) {
-         if (
-            typeof obj.warehouseReach !== "string" ||
-            !WAREHOUSE_REACH_VALUES.includes(obj.warehouseReach)
-         ) {
-            throw new BuildInstructionsInvalidError(
-               `buildInstructions.warehouseReach must be one of ${WAREHOUSE_REACH_VALUES.join(" | ")}`,
-            );
-         }
-         result.deprecatedOptions.push("warehouseReach");
+         throw new BuildInstructionsInvalidError(
+            "buildInstructions.warehouseReach was removed: every build is " +
+               "strict, and none recomputes a stored upstream from the " +
+               "warehouse, so there is nothing for it to choose",
+         );
       }
       // Null is read as absent ("use the local store"), not as an empty ledger:
       // the two mean opposite things, and a caller that means "I own the ledger
@@ -324,7 +314,10 @@ export class MaterializationController {
       return result;
    }
 
-   private validateManifestReference(raw: unknown): ManifestReference {
+   private validateManifestReference(
+      raw: unknown,
+      context: { environmentName: string; packageName: string },
+   ): ManifestReference {
       if (typeof raw !== "object" || raw === null) {
          throw new BuildInstructionsInvalidError(
             "Each manifest reference must be an object",
@@ -353,7 +346,7 @@ export class MaterializationController {
             : {}),
          // Where a stored upstream's table lives. Without it a reference to
          // a stored table reads as a warehouse table, and a chained
-         // `storage=` build over it refuses or recomputes it. The service
+         // `storage=` build over it refuses it. The service
          // checks it names a configured destination.
          ...(referenceDestination(ref.storageDestinationName) !== undefined
             ? {
@@ -383,7 +376,58 @@ export class MaterializationController {
          ...(ref.contract !== undefined && ref.contract !== null
             ? { contract: ref.contract as ManifestReference["contract"] }
             : {}),
+         // The upstream's ledger entry, for an incremental extension over it
+         // (incremental_upstream.ts). Null reads as absent.
+         ...this.validateReferenceLedger(ref, context),
       };
+   }
+
+   /**
+    * A reference's `ledger`, checked as an echoed ledger entry is
+    * ({@link validateLedgerEntry}) and held to the reference's own table and
+    * source: the same `sourceEntityId`, so a host whose physical names are
+    * stable across versions cannot carry the ledger of the parent's previous
+    * definition. A malformed or mismatched one is dropped with a warning,
+    * never a 400, as if absent: the extensions over that upstream read the
+    * bound manifest's or this worker's entry instead, and reseed only when
+    * neither proves which build they read over (incremental_upstream.ts).
+    * Returned whole, keys this release does not know included.
+    */
+   private validateReferenceLedger(
+      ref: Record<string, unknown>,
+      context: { environmentName: string; packageName: string },
+   ): { ledger?: LedgerEntry } {
+      if (ref.ledger === undefined || ref.ledger === null) return {};
+      const checked = this.validateLedgerEntry(ref.ledger);
+      let defect: string;
+      if ("defect" in checked) {
+         defect = checked.defect;
+      } else if (
+         checked.entry.connectionName !== ref.connectionName ||
+         checked.entry.physicalTableName !== ref.physicalTableName ||
+         checked.entry.storageDestinationName !==
+            referenceDestination(ref.storageDestinationName)
+      ) {
+         defect =
+            "it names another table than the reference (connectionName, " +
+            "physicalTableName, storageDestinationName)";
+      } else if (checked.entry.sourceEntityId !== ref.sourceEntityId) {
+         defect =
+            "it names another source than the reference (sourceEntityId): " +
+            "an entry from another definition of the upstream";
+      } else {
+         return { ledger: checked.entry };
+      }
+      logger.warn(
+         "Dropped a referenceManifest entry's ledger; extensions over it fall back to the bound or local ledger",
+         {
+            ...context,
+            table: ref.physicalTableName,
+            defect,
+            reasonCode: "reference_ledger_dropped",
+         },
+      );
+      return {};
    }
 
    private validateInstruction(raw: unknown): BuildInstruction {

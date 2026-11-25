@@ -16,17 +16,7 @@ export function outcomeFor(
    return signal?.aborted ? "cancelled" : "failed";
 }
 
-/** A run that can write nothing more. */
-const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
-   "MANIFEST_FILE_READY",
-   "FAILED",
-   "CANCELLED",
-]);
-
-/** Whether a run with `status` has not settled: it may still write. */
-export function isActiveRun(status: string): boolean {
-   return !TERMINAL_RUN_STATUSES.has(status);
-}
+export { isActiveRun } from "../domain/types";
 
 /**
  * Allowed status transitions: PENDING → MANIFEST_ROWS_READY (tables built) →

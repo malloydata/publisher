@@ -6,9 +6,9 @@
  * `nativeSchema` it carries before a build reads the table in place of its
  * source. With the table altered since its build (`DECIMAL(10,1)` to
  * `DECIMAL(10,0)`, which rounds `2.4` to `2`), every build is refused with
- * SourceFailure code `schema_incompatible` (whatever `strictUpstreams`
- * says), never recomputing the upstream from raw. A reference that
- * carries no types cannot be checked: a strict build reads it as before,
+ * SourceFailure code `schema_incompatible`, never recomputing the upstream
+ * from raw. A reference that carries no types cannot be checked: a build
+ * reads it as before,
  * with a warning and a count, and the rows it stores are the table's.
  */
 
@@ -100,11 +100,7 @@ describe("a host's reference is checked against the nativeSchema it carries", ()
       }
    };
    /** `b` alone, as a host instructs it, with `a` by reference. */
-   const buildB = (
-      table: string,
-      reference: Partial<Entry>,
-      strictUpstreams: boolean,
-   ) => {
+   const buildB = (table: string, reference: Partial<Entry>) => {
       const b = Object.values(pkg.getBuildPlan()?.sources ?? {}).find(
          (s) => s.name === "b",
       )!;
@@ -126,7 +122,6 @@ describe("a host's reference is checked against the nativeSchema it carries", ()
                ...reference,
             },
          ],
-         strictUpstreams,
       });
    };
    const stored = async (table: string) =>
@@ -193,8 +188,8 @@ describe("a host's reference is checked against the nativeSchema it carries", ()
          `ALTER TABLE ${upstream.physicalTableName} ALTER amt TYPE DECIMAL(10,0)`,
       );
       const typed = { nativeSchema: upstream.nativeSchema };
-      typedStrict = await buildB("rt_b_strict", typed, true);
-      typedRelaxed = await buildB("rt_b_relaxed", typed, false);
+      typedStrict = await buildB("rt_b_strict", typed);
+      typedRelaxed = await buildB("rt_b_relaxed", typed);
       // No run on record holds `a`'s types either, as for a host whose
       // worker never built it: the reference is all there is.
       for (const run of [first, typedStrict, typedRelaxed]) {
@@ -203,7 +198,7 @@ describe("a host's reference is checked against the nativeSchema it carries", ()
       resetMaterializationTelemetryForTesting();
       const warn = spyOn(logger, "warn");
       try {
-         untypedStrict = await buildB("rt_b_untyped", {}, true);
+         untypedStrict = await buildB("rt_b_untyped", {});
          untypedWarnings = warn.mock.calls.filter((c) =>
             String(c[0]).includes(
                "reads a referenced upstream table unchecked",

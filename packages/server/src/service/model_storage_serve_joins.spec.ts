@@ -28,6 +28,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { pathToFileURL } from "url";
 import { Model } from "./model";
+import { recordModelCapabilities } from "../test_helpers/string_capability";
 import type { Binding } from "./materialization/domain/binding";
 import { installSettings } from "../test_helpers/settings_env";
 import { QueryPrivileges } from "./model_query_request";
@@ -135,6 +136,7 @@ async function buildModel(src: string = MODEL_SRC): Promise<Model> {
    serveConfig.wrapConnections(() => new FixedConnectionMap(connMap, "duckdb"));
    model.setServeDestinationConfig(() => serveConfig);
    model.setServedCopyContext(dir, connMap);
+   await recordModelCapabilities(model);
    return model;
 }
 
@@ -267,6 +269,7 @@ async function buildGatedModel(): Promise<Model> {
    serveConfig.wrapConnections(() => new FixedConnectionMap(connMap, "duckdb"));
    model.setServeDestinationConfig(() => serveConfig);
    model.setServedCopyContext(dir, connMap);
+   await recordModelCapabilities(model);
    model.setServeBindings([ORDERS_BINDING, REGIONS_BINDING]);
    return model;
 }

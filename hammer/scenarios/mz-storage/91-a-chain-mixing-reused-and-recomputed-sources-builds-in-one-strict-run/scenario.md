@@ -8,16 +8,15 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# A package whose chain mixes reusable and warehouse-reaching intermediates builds in one strict run, each source reporting its own path
+# A chain mixing reusable and warehouse-reaching intermediates builds what it can in one run, and the rest answers live
 
 The shape a real model takes: raw tables prepared by several non-persisted
 sources, three stored levels, and the intermediates between them differing in
-what they reach. `daily_regional` joins a warehouse table, so `regional` is
-recomputed. `regional_wide` only reshapes `regional`, so `summary` is built from
-`regional`'s stored table. One orchestrated strict build of all three must
-succeed, and each entry must report its own path — not the run as a whole, since
-the two paths have different freshness semantics and a consumer reads them per
-source.
+what they reach. `daily_regional` joins a warehouse table, so `regional` has no
+build over `daily`'s stored table, and nothing recomputes from raw: the plan
+refuses it. `summary` reads only `regional`, which has no table, so the plan
+refuses it too. `daily` builds, and the two not built answer live, equal to
+the warehouse.
 
 ## Publisher
 
@@ -72,18 +71,28 @@ source: summary is regional_wide -> {
 }
 ```
 
-## Build (orchestrated, strict, pkg=cmx)
+## Build refusals
 
-All three in one strict instruction list, upstream first. `regional` is
-recomputed (its intermediate reaches `regions`); `summary` is built from
-`regional`'s stored table (its intermediate reaches nothing else). The run
-succeeds.
+`regional` reads `regions` through `daily_regional`: the plan refuses it.
+`summary` reads `regional`'s table, which the plan will never build, so the
+plan refuses it too, naming `regional`, rather than leaving a run to fail it.
+
+Expect:
+
+| source   | tier    | reason                  |
+| -------- | ------- | ----------------------- |
+| regional | storage | upstream_table_unusable |
+| summary  | storage | upstream_table_unusable |
+
+## Warns
+
+cites: its upstream 'regional' declares a persisted table, but it is refused
+
+## Build (orchestrated, pkg=cmx)
+
+What the plan lists: `daily` builds.
 
 - daily -> cmx_daily__g1 @ lake
-- regional -> cmx_regional__g1 @ lake (recomputed)
-- summary -> cmx_summary__g1 @ lake (reused)
-
-cites: daily_regional
 
 ## Bind cmx
 

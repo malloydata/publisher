@@ -51,6 +51,7 @@ import {
    validateConnectionSqlFields,
    validateDuckdbApiSurface,
 } from "../service/connection_config";
+import { managedSchemas } from "../service/connection_type";
 import {
    managedCatalogMessage,
    managedCatalogRefusal,
@@ -255,14 +256,19 @@ function sqlRunFailure(
 }
 
 /**
- * Refuse raw SQL on a managed connection that names anything outside its
- * catalog's `main` schema (managed_catalog_scope.ts), before it runs.
+ * Refuse raw SQL on a managed connection that names anything outside the
+ * schemas it may read (managed_catalog_scope.ts), before it runs.
  */
 async function assertManagedCatalogScope(
    connectionName: string,
    sqlStatement: string,
+   schemas: ReadonlySet<string>,
 ): Promise<void> {
-   const refused = await managedCatalogRefusal(sqlStatement, connectionName);
+   const refused = await managedCatalogRefusal(
+      sqlStatement,
+      connectionName,
+      schemas,
+   );
    if (refused) {
       throw new BadRequestError(
          managedCatalogMessage("Raw SQL", connectionName, refused),
@@ -427,6 +433,17 @@ export class ConnectionController {
          if (error instanceof ConnectionNotFoundError) return false;
          throw error;
       }
+   }
+
+   /** The schemas raw SQL on a managed connection may name (managed_catalog_scope.ts). */
+   private configuredManagedSchemas(
+      environment: Environment,
+      connectionName: string,
+   ): ReadonlySet<string> {
+      return managedSchemas(
+         this.getApiConnectionForLookup(environment, connectionName)
+            .ducklakeConnection?.readableSchemas,
+      );
    }
 
    /**
@@ -756,7 +773,11 @@ export class ConnectionController {
          await assertSingleSelect(connectionName, sqlStatement, singleSelect);
       }
       if (singleSelect === "managed database") {
-         await assertManagedCatalogScope(connectionName, sqlStatement);
+         await assertManagedCatalogScope(
+            connectionName,
+            sqlStatement,
+            this.configuredManagedSchemas(environment, connectionName),
+         );
       }
 
       const malloyConnection = await this.getMalloyConnection(
@@ -971,7 +992,14 @@ export class ConnectionController {
          await assertSingleSelect(connectionName, sqlStatement, singleSelect);
       }
       if (managed) {
-         await assertManagedCatalogScope(connectionName, sqlStatement);
+         await assertManagedCatalogScope(
+            connectionName,
+            sqlStatement,
+            this.configuredManagedSchemas(
+               environmentForAdmission,
+               connectionName,
+            ),
+         );
       }
       // A managed connection is metered (statement_usage.ts): the statement
       // that runs below emits one usage record, whether it answers or fails.

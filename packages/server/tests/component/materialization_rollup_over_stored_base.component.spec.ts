@@ -446,13 +446,15 @@ describe("a database rollup over a database #@ persist base", () => {
       it("rebuilds a carried base older than a rollup's narrower window, and builds the rollup from it, so it is served fresh rather than stale on arrival", async () => {
          const base = '#@ persist freshness.window="1h"';
          await setUp(
-            modelOf('#@ preaggregate grain="cat" freshness.window="2s"', base),
+            modelOf('#@ preaggregate grain="cat" freshness.window="8s"', base),
          );
          const first = await build();
          const baseAnchor = entryOf(first, "daily").dataAsOf!;
-         await until(baseAnchor, 2500);
+         // The window is wide enough that the rebuilt rollup is still fresh
+         // when it is queried on a loaded runner; the wait outlasts it.
+         await until(baseAnchor, 8500);
          await regrain(
-            '#@ preaggregate grain="sub" freshness.window="2s"',
+            '#@ preaggregate grain="sub" freshness.window="8s"',
             base,
          );
          const started = Date.now();

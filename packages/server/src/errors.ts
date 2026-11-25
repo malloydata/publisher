@@ -149,6 +149,15 @@ export type ErrorReason =
    // 409: the package's build plan could not be derived at load; a reload
    // derives it again, a retry does not.
    | "BUILD_PLAN_UNAVAILABLE"
+   // 500: a version's build manifest was fetched or bound and failed; the
+   // version keeps serving what it served before (ManifestBindFailedError).
+   | "MANIFEST_BIND_FAILED"
+   // 400: nothing is at the manifest location a request named; nothing of
+   // it was applied, as with MANIFEST_BIND_FAILED.
+   | "MANIFEST_NOT_FOUND"
+   // 422: the manifest a request named does not parse, or is not a build
+   // manifest; nothing of it was applied, as with MANIFEST_BIND_FAILED.
+   | "MANIFEST_INVALID"
    // 503: the package's build plan is being re-derived after a connection
    // change; retry after the Retry-After seconds.
    | "BUILD_PLAN_REFRESHING"
@@ -1117,6 +1126,12 @@ export class MaterializationEligibilityError extends Error {
     */
    runFailures?: Record<string, object>;
 
+   /**
+    * The refused sources `runFailures` does not report, by sourceID, which
+    * the FAILED run records as `metadata.refusedSources`.
+    */
+   runRefused?: Record<string, object>;
+
    constructor(error: { message: string; reason?: EligibilityRefusalReason }) {
       super(error.message);
       this.name = "MaterializationEligibilityError";
@@ -1497,6 +1512,43 @@ export class WriteRolledBackError extends Error {
 }
 
 /**
+ * A build manifest set on a version (`PUT …/versions/{version}/manifest`) or
+ * a package (`PATCH …/packages/{package}`) that could not be fetched or
+ * bound. The caller's own input when `problem` says so: nothing at the
+ * location (400 `MANIFEST_NOT_FOUND`), or what is there does not parse or is
+ * not a manifest (422 `MANIFEST_INVALID`). Otherwise the server's (a fetch
+ * that timed out or was refused, or a bind that threw on a manifest that
+ * read): 500 `MANIFEST_BIND_FAILED`. Nothing of it is applied:
+ * the `manifestLocation` stays what it was (a PATCH is undone whole), and
+ * the package serves what it served before, the manifest it had bound or,
+ * with none, live (or this server's own store, where it would restore from
+ * it). `applied` says the failure came after the bind began to change what
+ * the package serves, so that state has to be put back; the cause is
+ * logged with the failure.
+ */
+export class ManifestBindFailedError extends Error {
+   get kind(): "manifest_bind_failed" {
+      return "manifest_bind_failed";
+   }
+
+   constructor(
+      manifestLocation: string,
+      cause: unknown,
+      readonly applied: boolean,
+      readonly problem?: "not_found" | "invalid",
+   ) {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      super(
+         `The build manifest ${manifestLocation} could not be bound ` +
+            `(${detail}), so it was not applied: the package serves what ` +
+            `it served before.`,
+         { cause },
+      );
+      this.name = "ManifestBindFailedError";
+   }
+}
+
+/**
  * A write whose reload failed, and whose restore failed too: the package may
  * serve the new text or none. 500, because only an operator can settle it.
  */
@@ -1730,6 +1782,7 @@ interface ErrorByKind {
    write_conflict: WriteConflictError;
    installed_from_location: InstalledFromLocationError;
    write_rolled_back: WriteRolledBackError;
+   manifest_bind_failed: ManifestBindFailedError;
    write_rollback_failed: WriteRollbackFailedError;
    connection_save: ConnectionSaveError;
    write_verify: WriteVerifyError;
@@ -1820,6 +1873,7 @@ const ERROR_CLASSES: {
    write_conflict: WriteConflictError,
    installed_from_location: InstalledFromLocationError,
    write_rolled_back: WriteRolledBackError,
+   manifest_bind_failed: ManifestBindFailedError,
    write_rollback_failed: WriteRollbackFailedError,
    connection_save: ConnectionSaveError,
    write_verify: WriteVerifyError,
@@ -2303,6 +2357,23 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    connection_save: { status: 500, mcp: { advice: "internal" } },
    // Logged once, where the rollback happened, with the cause.
    write_rolled_back: { status: 500, mcp: { advice: "internal" } },
+   // Logged where the bind failed, with its cause.
+   manifest_bind_failed: {
+      status: (error) =>
+         error.problem === "not_found"
+            ? 400
+            : error.problem === "invalid"
+              ? 422
+              : 500,
+      reason: (error) =>
+         error.problem === "not_found"
+            ? "MANIFEST_NOT_FOUND"
+            : error.problem === "invalid"
+              ? "MANIFEST_INVALID"
+              : "MANIFEST_BIND_FAILED",
+      // Never raised on an MCP path; internal, so a path in it is redacted.
+      mcp: { advice: "internal" },
+   },
    service_unavailable: BACK_PRESSURE,
    package_admission_refused: BACK_PRESSURE,
    dry_run_capacity: BACK_PRESSURE,

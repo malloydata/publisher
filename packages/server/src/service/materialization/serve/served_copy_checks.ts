@@ -25,11 +25,15 @@ import {
 } from "../../governance/ir/prepared_query";
 import type { Binding } from "../domain/binding";
 import type { ServedCopyDeclineCode } from "../domain/leg_decline";
-import { lexAll } from "../text/malloy_lexer";
+import { lexAll } from "../../malloy_lexer_core";
 import { SourceMap } from "../text/source_map";
 import { boundTablePath, sqlReadsTable } from "./bindings";
 import { entryPointGateExprs, gateReadNames } from "./gate_reads";
-import type { AnswerAttempt, Compiled } from "./served_copy_types";
+import type {
+   AnswerAttempt,
+   Compiled,
+   SourceDecline,
+} from "./served_copy_types";
 
 /** The caller's detail for a join-grain aggregate through an inlined join. */
 const JOIN_GRAIN_DETAIL =
@@ -147,48 +151,65 @@ export function recordJoinsRead(
  */
 export async function checkSourceZone(attempt: AnswerAttempt): Promise<void> {
    const { compiled, decline, prepared } = attempt;
+   if (compiled.authorModelDef === undefined) return;
+   let differs: boolean;
+   try {
+      differs = sourceZoneDiffers(compiled, (await prepared()).structRef);
+   } catch {
+      differs = true;
+   }
+   if (differs) decline(SOURCE_ZONE_DECLINE.reason, SOURCE_ZONE_DECLINE.code);
+}
+
+/** {@link checkSourceZone}'s decline. */
+export const SOURCE_ZONE_DECLINE: SourceDecline = {
+   reason:
+      "the source the query runs on computes in another time zone in the served copy than in the author's model",
+   code: "served_copy_time_zone",
+};
+
+/**
+ * {@link checkSourceZone}'s test for the source `structRef` names (a name,
+ * or a struct written inline): whether it, or anything on its chain the
+ * author's model declares, computes in another zone in the copy. Pure: the
+ * served copy records it per named source at its compile.
+ */
+export function sourceZoneDiffers(
+   compiled: Compiled,
+   structRef: unknown,
+): boolean {
    const author = compiled.authorModelDef;
-   if (author === undefined) return;
+   if (author === undefined) return false;
    const zoneOf = (def: unknown) => {
       const z = (def as { queryTimezone?: unknown } | undefined)?.queryTimezone;
       return typeof z === "string" ? z : undefined;
    };
-   let differs: boolean;
    try {
-      const view = await prepared();
       const struct = resolveStructRefSource<unknown>(
-         view.structRef as never,
+         structRef as never,
          compiled.modelDef as never,
       );
-      if (struct === undefined) {
-         differs = true;
-      } else {
-         const served = SourceMap.of(compiled.modelDef);
-         const authored = SourceMap.of(author);
-         const name = structRefName(view.structRef);
-         const authorStruct =
-            name !== undefined
-               ? resolveStructRefSource<unknown>(name as never, author as never)
-               : undefined;
-         differs =
-            (authorStruct !== undefined &&
-               !sameZone(zoneOf(struct), zoneOf(authorStruct))) ||
-            served.chainOf(struct).some((id) => {
-               const a = authored.node(id);
-               return (
-                  a !== undefined &&
-                  !sameZone(zoneOf(served.node(id)?.def), zoneOf(a.def))
-               );
-            });
-      }
-   } catch {
-      differs = true;
-   }
-   if (differs) {
-      decline(
-         "the source the query runs on computes in another time zone in the served copy than in the author's model",
-         "served_copy_time_zone",
+      if (struct === undefined) return true;
+      const served = SourceMap.of(compiled.modelDef);
+      const authored = SourceMap.of(author);
+      const name = structRefName(structRef);
+      const authorStruct =
+         name !== undefined
+            ? resolveStructRefSource<unknown>(name as never, author as never)
+            : undefined;
+      return (
+         (authorStruct !== undefined &&
+            !sameZone(zoneOf(struct), zoneOf(authorStruct))) ||
+         served.chainOf(struct).some((id) => {
+            const a = authored.node(id);
+            return (
+               a !== undefined &&
+               !sameZone(zoneOf(served.node(id)?.def), zoneOf(a.def))
+            );
+         })
       );
+   } catch {
+      return true;
    }
 }
 
@@ -339,29 +360,49 @@ export function readsInAnotherZone(
  */
 export async function checkOptOut(attempt: AnswerAttempt): Promise<void> {
    const { compiled, decline, compiling, prepared } = attempt;
-   if (
-      (compiled.optOutIDs && compiled.optOutIDs.size > 0) ||
-      (compiled.unsafeIDs && compiled.unsafeIDs.size > 0)
-   ) {
+   if (readsOptOuts(compiled)) {
       const { structRef } = await compiling(prepared);
-      const struct = resolveStructRefSource<unknown>(
-         structRef,
-         compiled.modelDef as never,
-      );
-      const chain = SourceMap.of(compiled.modelDef).chainOf(struct);
-      if (chain.some((id) => compiled.unsafeIDs?.has(id))) {
-         decline(
-            "the query reads a source whose served copy exposes a field the compile of record does not classify or carry",
-            "served_copy_not_served",
-         );
-      }
-      if (chain.some((id) => compiled.optOutIDs?.has(id))) {
-         decline(
-            "the query reads a source that opts out of persist",
-            "served_copy_opt_out",
-         );
-      }
+      const d = optOutDeclineOf(compiled, structRef);
+      if (d) decline(d.reason, d.code);
    }
+}
+
+/** Whether the copy holds any opted-out or unsafe source {@link checkOptOut} reads. */
+export function readsOptOuts(compiled: Compiled): boolean {
+   return (
+      (compiled.optOutIDs !== undefined && compiled.optOutIDs.size > 0) ||
+      (compiled.unsafeIDs !== undefined && compiled.unsafeIDs.size > 0)
+   );
+}
+
+/**
+ * {@link checkOptOut}'s decline for the source `structRef` names, or
+ * undefined. Pure: the served copy records it per named source at its
+ * compile.
+ */
+export function optOutDeclineOf(
+   compiled: Compiled,
+   structRef: unknown,
+): SourceDecline | undefined {
+   const struct = resolveStructRefSource<unknown>(
+      structRef as never,
+      compiled.modelDef as never,
+   );
+   const chain = SourceMap.of(compiled.modelDef).chainOf(struct);
+   if (chain.some((id) => compiled.unsafeIDs?.has(id))) {
+      return {
+         reason:
+            "the query reads a source whose served copy exposes a field the compile of record does not classify or carry",
+         code: "served_copy_not_served",
+      };
+   }
+   if (chain.some((id) => compiled.optOutIDs?.has(id))) {
+      return {
+         reason: "the query reads a source that opts out of persist",
+         code: "served_copy_opt_out",
+      };
+   }
+   return undefined;
 }
 
 /**

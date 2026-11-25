@@ -57,6 +57,7 @@ import {
 } from "../../../src/test_helpers/conformance/package_runner";
 import { serviceOverEnvironment } from "../../../src/test_helpers/materialization_service_harness";
 import { installSettings } from "../../../src/test_helpers/settings_env";
+import { planRefusalsOnceRead } from "../../../src/test_helpers/string_capability";
 import { writePackageFiles } from "../../../src/test_helpers/temp_package";
 import {
    disposeTempStorage,
@@ -431,9 +432,12 @@ const SHAPES: Shape[] = [
       query: "run: r -> { group_by: cat; aggregate: rn; order_by: cat }",
       want: { live: "ROW_LEVEL_GATE" },
    },
-   // A view over a `storage=` #(materialize) source has no build over that
-   // source's table, so it is refused at plan (upstream_table_unusable) and
-   // its queries read the source's own table, or live.
+   // A view over a `storage=` #(materialize) source is built over that
+   // source's table in its destination. Before that table is bound, the
+   // plan judges each string it groups or orders by how m's Postgres source
+   // compares it live, and refuses both views here (each groups a string
+   // that does not compare in byte order), so their queries read the
+   // source's own table, or live.
    {
       name: "persisted view (refused at plan): ordered by its measure",
       query: "run: m -> by_cat_counted",
@@ -485,6 +489,8 @@ describe.skipIf(!POSTGRES_URL)(
       let service: MaterializationService;
       let restore = () => {};
       let run: Materialization | undefined;
+      /** What the plan the run started from refused, by source name. */
+      let planRefused: Record<string, { reason: string; message: string }> = {};
       /** How the warehouse orders each column, against byte order. */
       const orders: Record<string, { collated: string[]; bytes: string[] }> =
          {};
@@ -634,6 +640,9 @@ describe.skipIf(!POSTGRES_URL)(
             () => env!,
          );
          for (const s of shapes()) live.set(s, await ask(s.query));
+         planRefused = await planRefusalsOnceRead(
+            await env.getPackage(parsePackageName(PKG), false),
+         );
          run = await build();
          for (const s of shapes()) served.set(s, await ask(s.query));
       });
@@ -651,7 +660,7 @@ describe.skipIf(!POSTGRES_URL)(
          await freshLoadPool();
       });
 
-      it("builds every stored table", () => {
+      it("refuses at plan the views grouping a string over m's unbound table, and builds every other", () => {
          expect([run?.status, run?.error ?? null]).toEqual([
             "MANIFEST_FILE_READY",
             null,
@@ -659,7 +668,18 @@ describe.skipIf(!POSTGRES_URL)(
          const manifest = run?.manifest as {
             failures?: Record<string, unknown>;
          };
+         // Declined at plan, never left to fail at build.
          expect(manifest.failures ?? {}).toEqual({});
+         // m's table is not bound when the plan is derived: it judges each
+         // view by how m's Postgres source compares what it groups, `ci`
+         // under a nondeterministic collation, `cat` under `en_US`.
+         for (const view of ["by_cat_counted", "by_cat_ordered"]) {
+            const refusal = planRefused[`m__${view}__view`];
+            expect(refusal?.reason, view).toBe("upstream_table_unusable");
+            expect(refusal?.message, view).toContain(
+               "from 'm', whose table is not bound yet and whose source compares",
+            );
+         }
       });
 
       it("orders each non-binary column otherwise than byte order, and C and the builtin as it", () => {

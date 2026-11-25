@@ -112,7 +112,7 @@ source: orders is orders_raw extend {
    );
 
    it(
-      "builds an extension in another destination than its parent and an incremental one over the raw chain, and one in another file over its parent's build source",
+      "chains an extension in another destination than its parent, an incremental one in its parent's destination, and one in another file over its parent's build source",
       async () => {
          const c = await compiled({
             "m.malloy": `${BASE}
@@ -133,9 +133,26 @@ source: other_ext is orders extend { dimension: n is 1 }
          for (const p of generatedPlans(c)) {
             expect([p.sourceName, p.buildsOver?.sourceName]).toEqual([
                p.sourceName,
-               p.sourceName === "other_ext" ? "orders" : undefined,
+               p.sourceName === "orders" ? undefined : "orders",
             ]);
          }
+         // Read with the parent's destination attached beside its own.
+         expect(
+            generatedPlans(c).find((p) => p.sourceName === "stored_ext")
+               ?.buildsOver?.mode,
+         ).toEqual({ tier: "across_destinations", parentDestination: "lake" });
+         // An incremental extension of a full parent deltas over its table.
+         expect(
+            generatedPlans(c).find((p) => p.sourceName === "inc_ext")
+               ?.buildsOver?.mode,
+         ).toEqual({ tier: "same", incremental: { coordinate: "delta" } });
+         // Never over the raw chain: nothing here is refused.
+         expect(
+            (c.annotationFindings ?? [])
+               .filter((f) => f.code === "materialize-not-built")
+               .map((f) => [f.subject, f.refused?.reason])
+               .sort(),
+         ).toEqual([]);
          // Across files (P10): imported from a copy of `m.malloy` with the
          // parent re-rooted on its build source.
          const other = generatedPlans(c).find(
@@ -604,7 +621,7 @@ source: orders is orders_raw
    );
 
    it(
-      "chains a database extension over its database parent, and builds a storage= extension of a database parent over the raw chain (P10, phase 3 pull request 6)",
+      "chains a database extension over its database parent, and a storage= extension of a database parent over its table in the warehouse (P10, phase 3 pull request 6)",
       async () => {
          const c = await compiled(`${BASE}
 #(materialize)
@@ -624,11 +641,17 @@ source: stored_ext is orders extend { dimension: east is region = 'east' }
             ]),
          ).toEqual([
             ["orders", undefined, true],
-            ["stored_ext", undefined, true],
             // Database: its build reads the parent's build source in the
             // warehouse, so nothing is compiled over a stored table.
             ["orders_ext", "orders", true],
+            // Built in the warehouse over the parent's table too, then copied
+            // into its destination.
+            ["stored_ext", "orders", true],
          ]);
+         expect(
+            generatedPlans(c).find((p) => p.sourceName === "stored_ext")
+               ?.buildsOver?.mode,
+         ).toEqual({ tier: "storage_over_database" });
          expect(
             (c.annotationFindings ?? []).filter(
                (f) => f.code === "materialize-not-built",
@@ -1055,16 +1078,21 @@ source:
                .map((p) => [p.sourceName, p.buildSourceName])
                .sort(),
          ).toEqual([
-            ["first_copy", "first_copy__mat"],
             ["orders", "orders__mat"],
-            ["second_copy", "second_copy__mat"],
             ["west_orders", "west_orders__mat"],
          ]);
+         // Both copies are read as declaring it; each is a database
+         // extension of a storage= parent, whose table a database build
+         // cannot read, so each is refused rather than built from raw.
          expect(
-            (c.annotationFindings ?? []).filter(
-               (f) => f.code === "materialize-not-built",
-            ),
-         ).toEqual([]);
+            (c.annotationFindings ?? [])
+               .filter((f) => f.code === "materialize-not-built")
+               .map((f) => [f.subject, f.refused?.reason])
+               .sort(),
+         ).toEqual([
+            ["first_copy", "upstream_table_unusable"],
+            ["second_copy", "upstream_table_unusable"],
+         ]);
       },
       { timeout: 30000 },
    );

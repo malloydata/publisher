@@ -35,8 +35,12 @@ import { malloyIdentifiers } from "../../query_text";
 
 import { fieldPathsIn } from "./gate_paths";
 import type { ColumnOrigin, GateReads } from "./gate_reads_types";
-import { storedUpstreamResolver } from "./stored_upstream";
-import type { UpstreamTableSchema } from "../domain/upstream_schemas";
+import {
+   type IdMembership,
+   querySourceIDs,
+   storedUpstreamResolver,
+} from "./stored_upstream";
+import type { ColumnContract } from "../domain/column_contract";
 
 /** The names a gate's text reads: each identifier it names, fields or not. */
 export function gateIdentifiers(exprs: readonly string[]): string[] {
@@ -361,12 +365,12 @@ class GateReadWalk {
 
    constructor(
       private readonly modelDef: unknown,
-      private readonly stored: ReadonlySet<string>,
+      private readonly stored: IdMembership,
       /**
        * The sources the answer's compile re-rooted on their stored tables,
        * by `sourceID`, read or not ({@link scopeJoins}).
        */
-      private readonly rerooted: ReadonlySet<string> = new Set(),
+      private readonly rerooted: IdMembership = new Set(),
    ) {
       this.upstreamOf = storedUpstreamResolver(modelDef, stored);
    }
@@ -690,29 +694,9 @@ class GateReadWalk {
       }
       if (s?.query === undefined) return false;
       const query = JSON.stringify(s.query);
-      return this.storedQueries().has(query);
-   }
-
-   /** The queries of the stored query-shaped sources the model names. */
-   private storedQueriesMemo?: Set<string>;
-   private storedQueries(): Set<string> {
-      if (this.storedQueriesMemo) return this.storedQueriesMemo;
-      const out = new Set<string>();
-      const contents =
-         (this.modelDef as { contents?: Record<string, unknown> } | undefined)
-            ?.contents ?? {};
-      for (const c of Object.values(contents)) {
-         const d = c as { sourceID?: unknown; query?: unknown } | undefined;
-         if (
-            typeof d?.sourceID === "string" &&
-            this.stored.has(d.sourceID) &&
-            d.query !== undefined
-         ) {
-            out.add(JSON.stringify(d.query));
-         }
-      }
-      this.storedQueriesMemo = out;
-      return out;
+      return (querySourceIDs(this.modelDef).get(query) ?? []).some((id) =>
+         this.stored.has(id),
+      );
    }
 
    private tooDeep(): boolean {
@@ -1676,14 +1660,14 @@ export function gateReads(
    struct: unknown,
    exprs: readonly string[],
    modelDef?: unknown,
-   stored: ReadonlySet<string> = new Set(),
+   stored: IdMembership = new Set(),
    /**
     * The gate texts the warehouse compares (the row filters): a lock is
     * decided in Publisher. Absent, every text is taken as one.
     */
    rowFilterExprs: readonly string[] = exprs,
    /** The sources the answer's compile re-rooted on their tables, read or not. */
-   rerooted: ReadonlySet<string> = new Set(),
+   rerooted: IdMembership = new Set(),
 ): GateReads {
    const walk = new GateReadWalk(modelDef, stored, rerooted);
    const read = gatePaths(exprs);
@@ -1823,75 +1807,34 @@ export function gateColumnTypesOf(
    return schemas.map((s) => typesIn(reads, s ?? []));
 }
 
-/** A stored gate column's type in the warehouse table it copies. */
-interface UpstreamType {
-   dialect: string;
-   nativeType: string;
-}
-
 /**
- * For each table, by the tables' order, and each of its gate columns in
- * {@link gateColumnTypesOf}'s order: the column's type in the warehouse
- * table it is a plain copy of (its `columnOrigins` entry, looked up in the
- * table's `upstreams`), or undefined when the build computed it, its origin
- * is not one column, or its table was not read. Undefined for a table
- * {@link gateColumnTypesOf} lists nothing for.
+ * For each table, by the tables' order: whether its column contract records
+ * every gate column it holds exact (`gateExact`, from the build), or
+ * undefined where {@link gateColumnTypesOf} lists nothing for it over the
+ * contracts' columns (fail closed: the policy reads a `storage=` table with
+ * nothing listed as not exact).
  */
-export function gateColumnUpstreamTypesOf(
+export function gateColumnsExactOf(
    reads: GateReads | undefined,
-   schemas: readonly (Schema | undefined)[],
-   upstreams: readonly (readonly UpstreamTableSchema[] | undefined)[],
-): ((UpstreamType | undefined)[] | undefined)[] {
-   const types = gateColumnTypesOf(reads, schemas);
-   return schemas.map((schema, i) => {
-      if (types[i] === undefined || reads === undefined) return undefined;
-      const held = new Set(reads.columns.flat());
-      return (schema ?? [])
-         .filter((c) => held.has(c.name))
-         .map((c) => upstreamTypeOf(reads, c.name, upstreams[i]));
-   });
-}
-
-/** The upstream type of the stored column `name` (see gateColumnUpstreamTypesOf). */
-function upstreamTypeOf(
-   reads: GateReads,
-   name: string,
-   upstreams: readonly UpstreamTableSchema[] | undefined,
-): UpstreamType | undefined {
-   const origins = reads.columns.flatMap((names, j) =>
-      names.includes(name) ? [reads.columnOrigins?.[j]] : [],
+   contracts: readonly (ColumnContract | undefined)[],
+): { types: (string[] | undefined)[]; exact: (boolean | undefined)[] } {
+   const types = gateColumnTypesOf(
+      reads,
+      contracts.map((c) =>
+         c?.columns.map((col) => ({ name: col.name, type: col.nativeType })),
+      ),
    );
-   const origin = origins[0];
-   if (
-      origin === undefined ||
-      origins.some(
-         (o) =>
-            o === undefined ||
-            o.connectionName !== origin.connectionName ||
-            o.table !== origin.table ||
-            o.column !== origin.column,
-      )
-   ) {
-      return undefined;
-   }
-   const table = upstreams?.find(
-      (u) =>
-         u.connectionName === origin.connectionName && u.table === origin.table,
-   );
-   if (!table?.columns || !table.dialect) return undefined;
-   const exact = table.columns.filter((c) => c.name === origin.column);
-   const folded = table.columns.filter(
-      (c) => c.name.toLowerCase() === origin.column.toLowerCase(),
-   );
-   const column =
-      exact.length === 1
-         ? exact[0]
-         : folded.length === 1
-           ? folded[0]
-           : undefined;
-   return column
-      ? { dialect: table.dialect, nativeType: column.nativeType }
-      : undefined;
+   const held = new Set((reads?.columns ?? []).flat());
+   return {
+      types,
+      exact: contracts.map((c, i) =>
+         types[i] === undefined
+            ? undefined
+            : (c?.columns ?? [])
+                 .filter((col) => held.has(col.name))
+                 .every((col) => col.gateExact),
+      ),
+   };
 }
 
 /**
@@ -1901,12 +1844,12 @@ function upstreamTypeOf(
 export async function gateReadsOfQuery(
    runnable: QueryMaterializer,
    /** The sources whose tables the answer reads, by `sourceID`. */
-   stored: ReadonlySet<string> = new Set(),
+   stored: IdMembership = new Set(),
    /**
     * The sources the answer's compile re-rooted on their tables, read or
     * not, by `sourceID`: a join to one never re-applies its own query.
     */
-   rerooted: ReadonlySet<string> = new Set(),
+   rerooted: IdMembership = new Set(),
 ): Promise<GateReads | undefined> {
    try {
       const prepared = await readPreparedQuery(runnable);
@@ -1915,22 +1858,33 @@ export async function gateReadsOfQuery(
          prepared.structRef as never,
          prepared.modelDef as never,
       );
-      const exprs = entryPointGateExprs(struct, prepared.modelDef);
+      return gateReadsOfSource(struct, prepared.modelDef, stored, rerooted);
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * {@link gateReadsOfQuery} for the source `struct` of `modelDef`: what its
+ * entry point's gates and row scope read, or undefined when they cannot be
+ * read. Pure: the bind records it per named source (`scope_facts.ts`).
+ */
+export function gateReadsOfSource(
+   struct: unknown,
+   modelDef: unknown,
+   stored: IdMembership = new Set(),
+   rerooted: IdMembership = new Set(),
+): GateReads | undefined {
+   try {
+      const exprs = entryPointGateExprs(struct as never, modelDef as never);
       const rowFilters = entryPointGateExprs(
-         struct,
-         prepared.modelDef,
+         struct as never,
+         modelDef as never,
          ACCESS_FILTER_ROUTE,
       );
       return exprs === undefined || rowFilters === undefined
          ? undefined
-         : gateReads(
-              struct,
-              exprs,
-              prepared.modelDef,
-              stored,
-              rowFilters,
-              rerooted,
-           );
+         : gateReads(struct, exprs, modelDef, stored, rowFilters, rerooted);
    } catch {
       return undefined;
    }
@@ -1942,12 +1896,12 @@ export async function gateReadsOfQuery(
  * when it cannot be read: the string comparisons its `where:`, `having:`,
  * filtered measures, views' and nests' filters make from stage `fromStage`
  * on, which an answer re-applies to a stored table. Judged by the same
- * collation rules as the entry point's scope (`gate_collation.ts`).
+ * collation rules as the entry point's scope (`admission_lookup.ts`).
  */
 export async function queryFilterReadsOfQuery(
    runnable: QueryMaterializer,
    /** The sources whose tables the answer reads, by `sourceID`. */
-   stored: ReadonlySet<string>,
+   stored: IdMembership,
    options: {
       /** The first stage the answer applies to a stored table. */
       fromStage: number;

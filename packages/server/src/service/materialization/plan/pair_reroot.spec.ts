@@ -15,6 +15,7 @@ import {
    materializePlanNamed,
    planPackages,
 } from "../../../test_helpers/materialization_fixture";
+import { pairLeavesOf } from "../domain/table_plans";
 import {
    pairLeafContractKeys,
    pairRerootBase,
@@ -67,7 +68,7 @@ source: orders is raw extend {
   } on items.__pair_parent_key = id
 }`);
       expect(pairRerootJoins(plan)).toEqual(["items"]);
-      expect(pairLeafContractKeys(plan)).toEqual(["items.item_id"]);
+      expect(pairLeafContractKeys(plan)).toEqual(["leaf:items.item_id"]);
    });
 
    it("a path of two: one join per level, the middle one on its level flag", async () => {
@@ -94,7 +95,16 @@ source: orders is raw extend {
     } on options.__pair_parent_key = item_id
   } on items.__pair_parent_key = id
 }`);
-      expect(pairLeafContractKeys(plan)).toEqual(["items.options.option_id"]);
+      expect(pairLeafContractKeys(plan)).toEqual([
+         "leaf:items.options.option_id",
+      ]);
+      // A bind reads that check as the leaf source's (`opts`), by the path.
+      expect(pairLeavesOf(plan)).toEqual([
+         {
+            joinPath: "items.options",
+            sourceID: expect.stringMatching(/^opts@/),
+         },
+      ]);
    });
 
    it("two blocks: each path its own join, every read on its block's rows", async () => {
@@ -124,8 +134,12 @@ source: orders is raw extend {
 }`);
       expect(pairRerootJoins(plan)).toEqual(["items", "notes"]);
       expect(pairLeafContractKeys(plan)).toEqual([
-         "items.item_id",
-         "notes.note_id",
+         "leaf:items.item_id",
+         "leaf:notes.note_id",
+      ]);
+      expect(pairLeavesOf(plan)).toEqual([
+         { joinPath: "items", sourceID: expect.stringMatching(/^items1@/) },
+         { joinPath: "notes", sourceID: expect.stringMatching(/^notes@/) },
       ]);
    });
 

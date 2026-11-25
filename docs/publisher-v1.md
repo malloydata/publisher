@@ -107,7 +107,7 @@ credential without holding it.
 | The same kind of setting lives in different places | MCP's port and host are variables, but what MCP exposes (`mcp.includeHiddenFilesAndSources`) is in the file |
 | A setting can be given in two places with no general rule for which wins | the `retrieval.embedding` keys override the `EMBEDDING_*` variables; nothing else overlaps |
 | Booleans are read five ways | most variables accept `1/true/yes/on` and `0/false/no/off` and refuse anything else; `INITIALIZE_STORAGE`, `PUBLISHER_USE_BUNDLED_DEFAULT` and `PUBLISHER_ALLOW_PROXY_CONNECTIONS` are on only for exactly `true`; `DISABLE_RESPONSE_LOGGING` for `true` or `1`; `PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY` reads an unrecognised value as off where it is used, because one reader runs inside ssh2's synchronous host-key callback, where a throw would escape; and `frozenConfig` is read with `Boolean()`, so `"frozenConfig": "false"` freezes the server |
-| A typo is silent | an unknown key in the file is ignored (only `retrieval.llm`, `retrieval.embedding` and `retrieval.egress` refuse one), so a misspelled `adminApiEnable` runs the API it meant to turn off; an unknown flag, and a flag given without its value, are ignored too |
+| A typo is silent | an unknown key in the file is ignored (only `retrieval.llm`, `retrieval.embedding` and `retrieval.dimensionValues` refuse one), so a misspelled `adminApiEnable` runs the API it meant to turn off; an unknown flag, and a flag given without its value, are ignored too |
 | A `${VAR}` cannot supply a number or a boolean | substitution always yields a string |
 | Names do not follow a pattern | about 20 Publisher settings lack the `PUBLISHER_` prefix (`MCP_PORT`, `SERVER_ROOT`, `LOG_LEVEL`, `EMBEDDING_MODEL`, …); flags mix `--mcp_port` with `--watch-env`; a flag and its variable can differ (`--watch-env` is `PUBLISHER_WATCH`, `--init` is `INITIALIZE_STORAGE`); two switches are negative (`--no-mcp-config`, `DISABLE_RESPONSE_LOGGING`) |
 | The reference drifts from the code | `--config` and `PERSIST_COLLISION_ENFORCE` are not in the configuration table |
@@ -250,7 +250,7 @@ Every content read is of exactly one version, named in the path. A publish, a re
 - **Errors.** One `Error {status, reason, message, requestId, details?}`, `reason` from one closed enum and `details` typed per reason a client acts on; each operation lists the reasons it answers. Clients branch on `status` and `reason`, never on `message`. An error inside a successful response is an `EmbeddedError`, and every diagnostic a `Problem`.
 - **Dry runs.** `?dryRun=true` stores nothing and answers 200 with no `Location`: a connection's test result, or the `Version` a publish would make, without `resource`, `revision` or timestamps.
 - **MCP** is a second surface over the same model: snake_case tool names and its own tool schemas, which use v1's field names and meanings (decision A73), switched by the `mcp.api` setting together with the skills.
-- **The admin API** is a sibling spec at `/admin/v1` with the same grammar, owning DuckLake catalogs, watch mode and GC, and taking the resource writes the serving API refuses under `resources.readOnly`.
+- **The admin API** is a sibling spec at `/admin/v1` with the same grammar, owning DuckLake catalogs, watch mode and GC, and taking the resource writes the serving API refuses under `resources.readOnly`. Its long-term data-write path is one resource: a load, `POST …/loads`, taking `mode: create|replace|merge|append`, `source: {objects}|{table}`, `key`, `maxDeletedRows` and a schema-change policy, so a table PUT's copy and replace are loads and the PUT is deprecated, and `PUT /schemas/{schema}` becomes `POST /schemas`. Until then loads and table PUT are two paths that share their helpers and differ in semantics.
 
 **What v1 leaves out.** Everything in today's spec with no load-bearing caller, and everything deprecated: `events`, the serving-API watch mode, the `storageDestinations` routes, `sqlTemporaryTable`, the inline package fields, dashboards and notebooks, `/projects`, `includeLoading`, `Materialization.environmentId` and its `metadata` blob, `filterParams` and `bypassFilters`, `configEtag`, `compactJson`, the theme, `.malloynb`. A request for one of them reopens the decision; it does not reach v1 by default.
 
@@ -1742,8 +1742,8 @@ Three kinds of setting are exceptions, and the registry marks them:
 
 Variables Publisher does not own keep their names and stay outside the registry: `NODE_ENV`,
 `NODE_OPTIONS`, `NODE_EXTRA_CA_CERTS` (which the Docker image sets to its RDS CA bundle), `OTEL_*`,
-`GOOGLE_APPLICATION_CREDENTIALS`, libpq's `PGSSLMODE` and `PGSERVICE` (which Publisher's Postgres
-connection setup also reads), and the `ADBC_*` variables the Docker image's driver shim reads.
+`GOOGLE_APPLICATION_CREDENTIALS`, libpq's `PGSSLMODE`, `PGSSLROOTCERT`, `PGSSLCERT`, `PGSSLKEY`, `PGSERVICE`,
+`PGHOSTADDR`, `PGCHANNELBINDING`, `PGGSSENCMODE`, `PGREQUIREAUTH`, `PGSSLCRL`, `PGSSLCRLDIR` and `PGSSLMINPROTOCOLVERSION` (which Publisher's Postgres connection setup also reads), and the `ADBC_*` variables the Docker image's driver shim reads.
 
 #### Types, read the same way from every source
 
@@ -1915,8 +1915,9 @@ The block keeps its shape. Its scalar leaves gain a variable and a flag, and the
 | `EMBEDDING_INDEX_CONNECTION_SCHEMA` | `retrieval.embedding.connectionSchemaIndexingEnabled` | `PUBLISHER_RETRIEVAL_EMBEDDING_CONNECTION_SCHEMA_INDEXING_ENABLED` |
 | `LLM_API_KEY` | `retrieval.llm.apiKey` (secret) | `PUBLISHER_RETRIEVAL_LLM_API_KEY` |
 
-The other `retrieval` keys (`llm.provider`, `llm.model`, …, `egress.preset`, `dimensionValues.enabled`)
-keep their file paths and gain derived variables and flags. `indexing.maxEntities` gets no derived name: it does nothing since [#1469](https://github.com/malloydata/publisher/pull/1469) (the search index has no entity cap; the server warns when it is set), so it goes with the other deprecated keys at 1.0.0.
+The other `retrieval` keys (`llm.provider`, `llm.model`, …, `dimensionValues.enabled`)
+keep their file paths and gain derived variables and flags. `egress.preset` keeps its names but is
+no longer read: setting it logs a startup warning. `indexing.maxEntities` gets no derived name: it does nothing since [#1469](https://github.com/malloydata/publisher/pull/1469) (the search index has no entity cap; the server warns when it is set), so it goes with the other deprecated keys at 1.0.0.
 
 #### Settings added since the design was written
 
@@ -1927,6 +1928,8 @@ keep their file paths and gain derived variables and flags. `indexing.maxEntitie
 | `PUBLISHER_MODEL_PAGE` (the model viewer) | `modelPage` (enum: `explorer`, `viewer`) | unchanged | — | a lasting choice between two pages, both kept |
 | `PUBLISHER_PACKAGE_INLINE_FIELDS` (#1532) | `packageInlineFields` (enum: `on`, `off`) | unchanged | — | a transition setting that a later release turns off and the one after removes with the fields, so, like `packageVersioning`, it keeps its name and has no flag |
 | _new_ (#1882) | `admin.requestTimeoutMs` | `PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS` | `--admin-request-timeout-ms` | added after the design was written, so it took its derived names from the start |
+| _new_ | `admin.memoryLimit` | `PUBLISHER_ADMIN_MEMORY_LIMIT` | `--admin-memory-limit` | the memory cap of an admin load or copy session (default `1.5GB`), held to `duckdb.memoryLimit` when that is lower |
+| _new_ | `admin.maxTempDirectorySize` | `PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE` | `--admin-max-temp-directory-size` | the spill cap of an admin load or copy session (default `6GiB`) |
 
 Step 2 has shipped, so a new setting takes only its derived name, as `PUBLISHER_VERSION_PROMOTION`
 did from the start, and never needs an alias.

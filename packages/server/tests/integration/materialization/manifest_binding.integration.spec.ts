@@ -33,8 +33,8 @@ const API = `/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`;
  * Covers the publisher's manifestLocation plumbing: create/update accepts a
  * manifest URI, it is persisted to publisher.json (so it survives a reload),
  * the package loader fetches + binds it through the existing reloadAllModels
- * primitive on every (re)load, an unreachable manifest degrades to serving
- * live, and clearing it reverts.
+ * primitive on every (re)load, a PATCH naming an unreachable manifest is
+ * refused with 500 and leaves the package as it was, and clearing it reverts.
  *
  * The build-time rewrite of upstream persist references to physical tables is
  * Malloy's reloadAllModels behavior, exercised by the materialization lifecycle
@@ -431,17 +431,19 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
    );
 
    it(
-      "recovers from live_fallback when a later storage= manifest binds",
+      "binds a later storage= manifest after refusing one it could not fetch",
       async () => {
          await getPackage(true); // start from live (unbound)
 
-         // Degrade first: a manifest URI that cannot be fetched reports
-         // live_fallback.
+         // Refused first: a manifest URI with nothing at it answers 400 and
+         // leaves the package unbound, as it was.
          const missing = path.join(tmpDir, `absent-${Date.now()}.json`);
-         const failed = (await (
-            await patchPackage({ manifestLocation: missing })
-         ).json()) as Record<string, unknown>;
-         expect(failed.manifestBindingStatus).toBe("bind_failed");
+         const failedRes = await patchPackage({ manifestLocation: missing });
+         expect(failedRes.status).toBe(400);
+         expect(((await failedRes.json()) as { reason?: string }).reason).toBe(
+            "MANIFEST_NOT_FOUND",
+         );
+         expect((await getPackage()).manifestBindingStatus).toBe("unbound");
 
          // A pure-`storage=` manifest binds with no database entry to recompile, so
          // nothing on that path recomputes the status — the successful bind has to
@@ -465,7 +467,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
    );
 
    it(
-      "a failed rebind keeps the previously bound manifest in every field but the status",
+      "a refused rebind keeps the previously bound manifest in every field",
       async () => {
          await getPackage(true); // start from live (unbound)
 
@@ -477,18 +479,20 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          expect(bound.manifestEntryCount).toBe(1);
          expect(bound.boundManifestUri).toBe(manifestFile);
 
-         // Rebind to a URI that cannot be fetched. The CONFIGURED manifest is not
-         // applied, but the previously bound one stays fully in place: the fetch
-         // fails before either tier applies, so nothing was even partially
-         // replaced — and only the status moves. A reclaim gate reading
-         // live_fallback as "not serving from manifest tables" would drop the
-         // generation boundManifestUri still points at, out from under a package
-         // actively serving it.
+         // Rebind to a URI with nothing at it: refused with 400, and the
+         // previously bound manifest stays fully in place, configured, bound
+         // and served. The fetch fails before either tier applies, so nothing
+         // was even partially replaced. A reclaim gate must still read
+         // boundManifestUri as a live reference whatever the status says.
          const missing = path.join(tmpDir, `absent-rebind-${Date.now()}.json`);
-         const failed = (await (
-            await patchPackage({ manifestLocation: missing })
-         ).json()) as Record<string, unknown>;
-         expect(failed.manifestBindingStatus).toBe("bind_failed");
+         const failedRes = await patchPackage({ manifestLocation: missing });
+         expect(failedRes.status).toBe(400);
+         expect(((await failedRes.json()) as { reason?: string }).reason).toBe(
+            "MANIFEST_NOT_FOUND",
+         );
+         const failed = await getPackage();
+         expect(failed.manifestLocation).toBe(manifestFile);
+         expect(failed.manifestBindingStatus).toBe("bound");
          expect(failed.manifestEntryCount).toBe(1);
          expect(failed.boundManifestUri).toBe(manifestFile);
          expect(await queryOrderSummaryStatus()).toBe(200);
@@ -544,24 +548,27 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       { timeout: 60_000 },
    );
 
-   it("degrades to serving live when the manifest is unreachable", async () => {
+   it("refuses a manifest that is not there with 400, and goes on serving live", async () => {
+      await getPackage(true); // start from live (unbound)
       const missing = path.join(tmpDir, "does-not-exist.json");
 
       const patchRes = await patchPackage({ manifestLocation: missing });
-      expect(patchRes.status).toBe(200);
-      const patched = await patchRes.json();
-      expect(patched.manifestLocation).toBe(missing);
-      // The configured location is retained, but the binding is reported as a
-      // degraded live fallback (not "bound") with nothing actually bound.
-      expect(patched.manifestBindingStatus).toBe("bind_failed");
+      expect(patchRes.status).toBe(400);
+      expect(await patchRes.json()).toMatchObject({
+         code: 400,
+         reason: "MANIFEST_NOT_FOUND",
+      });
+      // Nothing of the PATCH applied: not the location, not publisher.json.
+      const patched = await getPackage();
+      expect(patched.manifestLocation ?? null).toBeNull();
+      expect(patched.manifestBindingStatus).toBe("unbound");
       expect(patched.manifestEntryCount).toBe(0);
       expect(patched.boundManifestUri ?? null).toBeNull();
 
-      // A fetch failure must not brick the package — it still serves live.
+      // A fetch failure must not brick the package — it still serves live,
+      // through a reload that reads publisher.json again.
       expect(await queryOrderSummaryStatus()).toBe(200);
-      expect((await getPackage(true)).manifestLocation).toBe(missing);
+      expect((await getPackage(true)).manifestLocation ?? null).toBeNull();
       expect(await queryOrderSummaryStatus()).toBe(200);
-
-      await patchPackage({ manifestLocation: null });
    });
 });

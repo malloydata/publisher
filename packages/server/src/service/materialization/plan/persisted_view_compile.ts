@@ -57,12 +57,16 @@ import {
    canonicalAuthorizeRoute,
 } from "../../authorize_routes";
 import { collectEntryPointGates } from "../../gate_classification";
-import { readPreparedQuery } from "../../governance/ir/prepared_query";
+import {
+   queryGivenUsageIds,
+   readPreparedQuery,
+} from "../../governance/ir/prepared_query";
 import { identifier } from "../../malloy_text";
 import { pipelineReadsCurrentTime } from "./persist_dynamic_terms";
 import {
    planModelPersistedQueries,
    planModelPersistedViews,
+   READS_A_GIVEN,
    type PersistedQueryRefusal,
    type PersistedViewRefusal,
 } from "./persisted_view";
@@ -432,10 +436,13 @@ async function persistedQueryRefusalReason(
 ): Promise<{ reason: string; refusal: RefusedReason } | undefined> {
    let stages: StageLike[];
    let structRef: unknown;
+   let givens: string[] | undefined;
    try {
-      const prepared = await readPreparedQuery(
-         materializer.loadQuery(`run: ${identifier(plan.queryName)}`),
+      const runnable = materializer.loadQuery(
+         `run: ${identifier(plan.queryName)}`,
       );
+      const prepared = await readPreparedQuery(runnable);
+      givens = queryGivenUsageIds(await runnable.getPreparedQuery());
       stages = Array.isArray(prepared.pipeline)
          ? (prepared.pipeline as StageLike[])
          : [];
@@ -445,6 +452,24 @@ async function persistedQueryRefusalReason(
          reason: `the query does not compile on its own (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`,
          refusal: "generated_build_failed",
       };
+   }
+   // A persisted query that reads any given (its own, or a source's `where:`
+   // a `#(materialize)` build leaves out) is refused as `reads_given`, with a
+   // default or without: one table cannot hold every caller's result. One
+   // with no default is refused here, before its companion is written: it
+   // has no value at build, so the companion that declares the query's build
+   // source would not compile, leaving out every persisted view and query of
+   // the model. One with a default is refused by the build target's own
+   // check (persisted_view.ts, `persistedQueryReadsGivenRefusal`).
+   const declared = (modelDef as { givens?: Record<string, unknown> } | null)
+      ?.givens;
+   const unvalued = (givens ?? []).some(
+      (id) =>
+         (declared?.[id] as { default?: unknown } | undefined)?.default ===
+         undefined,
+   );
+   if (unvalued) {
+      return { reason: READS_A_GIVEN, refusal: "reads_given" };
    }
    if (stages.length === 0)
       return {
@@ -803,7 +828,12 @@ function overStoredUpstreamNotes(
       );
       if (!chainable) continue;
       if (base && "unusable" in base) {
-         unusable.set(plan.buildSourceID, base.unusable);
+         // A `storage=` view or query whose `#(materialize)` upstreams are
+         // all stored in its own destination is built there over their
+         // tables (storage_over_stored.ts), or refused there.
+         if (!materializedInOwnDestination(plan, modelDef, map, materialized)) {
+            unusable.set(plan.buildSourceID, base.unusable);
+         }
          continue;
       }
       if (spans.length === 0 && base === undefined) continue;
@@ -816,6 +846,26 @@ function overStoredUpstreamNotes(
       candidates.add(plan.buildSourceID);
    }
    return { keep, candidates, stored, upstreams, unusable };
+}
+
+/**
+ * Whether `plan` is a `storage=` view or query every planned
+ * `#(materialize)` upstream of which is stored in its own destination.
+ */
+function materializedInOwnDestination(
+   plan: { storage?: string; root: unknown },
+   modelDef: unknown,
+   map: SourceMap,
+   materialized: MaterializedBases | undefined,
+): boolean {
+   if (plan.storage === undefined || !materialized) return false;
+   const planned = new Set(materialized.plans.map((p) => p.sourceID));
+   const reached = reachedUpstreams(plan.root, modelDef, map).filter((u) =>
+      planned.has(u.sourceID),
+   );
+   return (
+      reached.length > 0 && reached.every((u) => u.storage === plan.storage)
+   );
 }
 
 /**

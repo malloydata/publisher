@@ -448,6 +448,22 @@ describe("toPublicConnection", () => {
       expect(dl.catalog.metadataSchema).toBe("ducklake_meta");
    });
 
+   it("keeps the ducklake readableSchemas list, which a scalar slot would drop", () => {
+      const view = toPublicConnection({
+         name: "lake",
+         type: "ducklake",
+         ducklakeConnection: {
+            catalog: { postgresConnection: { host: "catalog.db" } },
+            readableSchemas: ["extra_a", "extra_b"],
+         },
+      } as unknown as ApiConnection);
+
+      expect(view.ducklakeConnection?.readableSchemas).toEqual([
+         "extra_a",
+         "extra_b",
+      ]);
+   });
+
    it("returns no credential for a connection of every contract type", () => {
       // One fixture per type, every credential field that type declares set to
       // the sentinel, so a shape that forgets one fails here.

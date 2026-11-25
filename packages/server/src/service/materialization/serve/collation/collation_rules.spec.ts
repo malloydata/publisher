@@ -7,7 +7,7 @@
  * exported probes over a fake connection), the DuckDB probes, and the
  * allow-lists that let an answer skip the probe (`NON_STRING_OPERATORS`,
  * `EQUALITY_NODES`, read through `gateReads` and `equalityOnlyExpr`). The
- * live Postgres cases stay in gate_collation.spec.ts as integration tests.
+ * live Postgres cases stay in collation_lookup.spec.ts as integration tests.
  *
  * Every row is today's answer. The rows marked CURRENT are questionable
  * ones, pinned so a change shows as a diff.
@@ -15,23 +15,20 @@
 
 import { describe, expect, it } from "bun:test";
 import type { Connection } from "@malloydata/malloy";
-import { probeIO } from "./gate_collation";
-import { equalityOnlyExpr, gateReads } from "./gate_reads";
-import { DUCKDB_COLLATION } from "./collation/duckdb";
-import {
-   POSTGRES_COLLATION,
-   unfinalizedPostgresSQL,
-} from "./collation/postgres";
+import { catalogIO } from "./catalog_io";
+import { equalityOnlyExpr, gateReads } from "../gate_reads";
+import { DUCKDB_COLLATION } from "./duckdb";
+import { POSTGRES_COLLATION, unfinalizedPostgresSQL } from "./postgres";
 
-/** The reads over a connection, through the I/O `gate_collation.ts` builds. */
+/** The reads over a connection, through the I/O `collation/catalog_io.ts` builds. */
 const duckdbCollation = (c: Connection, sql: string) =>
-   DUCKDB_COLLATION.sourceColumns(probeIO(c), sql);
+   DUCKDB_COLLATION.sourceColumns(catalogIO(c), sql);
 const duckdbTableCollation = (c: Connection, path: string) =>
-   DUCKDB_COLLATION.storedTable(probeIO(c), path);
+   DUCKDB_COLLATION.storedTable(catalogIO(c), path);
 const postgresCollation = (c: Connection, sql: string) =>
-   POSTGRES_COLLATION.sourceColumns(probeIO(c), sql);
+   POSTGRES_COLLATION.sourceColumns(catalogIO(c), sql);
 const postgresTableCollation = (c: Connection, path: string) =>
-   POSTGRES_COLLATION.storedTable(probeIO(c), path);
+   POSTGRES_COLLATION.storedTable(catalogIO(c), path);
 
 /** A connection answering every query with `rows`, recording the SQL. */
 function connection(answer: (sql: string) => Record<string, unknown>[]): {

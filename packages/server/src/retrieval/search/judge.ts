@@ -9,12 +9,12 @@
  * The call sees the targets verbatim and in order, whether this cluster
  * covers each, and for each target the cluster's candidates (and the
  * structural extras) with their kind, type, source, route and full doc text
- * (see docOnlyText), rules included. Doc text is sent under every egress
- * preset; on a connection with `dbmeta` on it can be the database's
- * description rather than the model's. A stored value is data: under any
- * preset below `full` the judge is told that a candidate matched the
- * phrase's value and how, never the stored string; authored expressions are
- * not sent at all.
+ * (see docOnlyText), rules included. On a connection with `dbmeta` on the doc
+ * can be the database's description rather than the model's. For a value
+ * target the judge sees the stored values that matched, which come only from
+ * `#(index)` dimensions: on ungated sources, and on gated sources keyed by
+ * the givens `retrieval.dimensionValues.givens` lists, only the values under
+ * the key the caller's givens name. Authored expressions are not sent at all.
  *
  * In a list with `listRoutes` above 0, each candidate field is followed by up
  * to that many routes to it from the other listed sources, shortest first,
@@ -35,11 +35,9 @@ import {
    JUDGE_READINGS_RULES,
    JUDGE_REPLY_FORMAT,
    JUDGE_VALUE_RULES,
-   JUDGE_VALUE_RULES_FULL,
    judgeSplitRules,
 } from "../llm/prompts/judge";
 import type { ChatModel } from "../llm/types";
-import { getEgressPreset } from "../config";
 import { humanizeName } from "../index/embedding_index";
 import { runPooled } from "../llm/llm_calls";
 import type { CatalogNode } from "../model/catalog";
@@ -82,7 +80,7 @@ export interface JudgePick {
    /** Near-identical twins `twinRule` took out, for the trace. */
    droppedTwins?: string[];
    /**
-    * For a value target under the `full` preset, the stored values the judge
+    * For a value target, the stored values the judge
     * named, by candidate key. A key is here when the reply had a `values`
     * list and the judge was shown that candidate's values; respond keeps only
     * what {@link keptValues} allows. A key that is absent keeps every value.
@@ -100,7 +98,7 @@ export interface JudgeVerdict {
    jsonRepaired?: boolean;
 }
 
-/** How many of a candidate's matched values the judge is shown under the `full` preset. */
+/** How many of a candidate's matched values the judge is shown. */
 export const JUDGE_VALUES_SHOWN = 5;
 
 /** The judge's word for each way a value matched. */
@@ -129,7 +127,7 @@ function matchedValues(
 
 /**
  * Every value label the judge is shown, by `<target index>:<label>`. Only a
- * `dimensional_value` target under the `full` preset shows any.
+ * `dimensional_value` target shows any.
  */
 export function valueLabels(
    cluster: Cluster,
@@ -137,7 +135,6 @@ export function valueLabels(
    options: readonly JudgeOption[],
 ): Map<string, { key: string; value: string }> {
    const out = new Map<string, { key: string; value: string }>();
-   if (getEgressPreset() !== "full") return out;
    for (const t of targets) {
       if (t.type !== "dimensional_value") continue;
       for (const o of options) {
@@ -444,7 +441,6 @@ export function renderJudgePrompt(
    /** `listRoutes`: above 0, a list shows route options and marks joined copies as routes. */
    routeCap = 0,
 ): string {
-   const full = getEgressPreset() === "full";
    const nameOf = (s: string) => index.catalog.sources.get(s)?.name ?? s;
    const lines: string[] = cluster.peers
       ? peerLines(index, cluster)
@@ -455,11 +451,6 @@ export function renderJudgePrompt(
          return t.type === "dimensional_value" ? "no stored values" : undefined;
       const how = (v: ValueMatch) =>
          `${HOW_SHOWN[v.how]}, ${v.score.toFixed(2)}`;
-      if (!full)
-         return `stored values matched the target (${values
-            .slice(0, JUDGE_VALUES_SHOWN)
-            .map(how)
-            .join("; ")}); the values are not shown`;
       const shown = values
          .slice(0, JUDGE_VALUES_SHOWN)
          .map((v, i) =>
@@ -839,11 +830,7 @@ export async function judge(args: {
       const valueRules = args.targets.some(
          (t) => t.type === "dimensional_value",
       )
-         ? [
-              getEgressPreset() === "full"
-                 ? JUDGE_VALUE_RULES_FULL
-                 : JUDGE_VALUE_RULES,
-           ]
+         ? [JUDGE_VALUE_RULES]
          : [];
       const system = [
          base,

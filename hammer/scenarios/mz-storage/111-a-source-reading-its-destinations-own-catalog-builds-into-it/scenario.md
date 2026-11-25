@@ -103,4 +103,4 @@ Expect:
 
 ## Build refused scbsql
 
-cites: carries SQL its author wrote
+cites: no SQL an author wrote

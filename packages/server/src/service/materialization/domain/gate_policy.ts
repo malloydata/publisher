@@ -254,18 +254,6 @@ export interface TableRead {
     */
    readonly gateColumnTypes?: readonly string[];
    /**
-    * For each of {@link gateColumnTypes}, by position, the column's type in
-    * the warehouse table it is a plain copy of, as that table's catalog
-    * names it (`ManifestEntry.upstreamSchemas`), with the dialect naming it;
-    * undefined for a column computed by the build, or one whose table was
-    * not read. A gate column stored as a DuckDB DOUBLE is exact when it is a
-    * copy of a binary64 its dialect compares as DuckDB does.
-    */
-   readonly gateColumnUpstreamTypes?: readonly (
-      | { readonly dialect: string; readonly nativeType: string }
-      | undefined
-   )[];
-   /**
     * The entry point's gates read no column at all: each is an
     * `#(authorize)` lock over givens and literals, decided per request on the
     * live entry point, so no stored row changes its outcome. Set by the
@@ -273,6 +261,13 @@ export interface TableRead {
     * false.
     */
    readonly gatesReadNoColumn?: boolean;
+   /**
+    * Whether every column the entry point's gates read is stored exactly,
+    * read from the table's column contract (`gateExact`, recorded at build;
+    * a stored binary float is exact only there): when present, the policy's
+    * exactness rule reads it alone.
+    */
+   readonly gateColumnsExactRecorded?: boolean;
 }
 
 /**
@@ -286,16 +281,6 @@ const INEXACT_GATE_TYPE =
    /\b(DOUBLE|FLOAT[0-9]*|REAL|HUGEINT|UHUGEINT|U?INT128)\b/i;
 
 /**
- * Whether `type`, a stored column's type, is one under which a gate's
- * equality may differ from live's ({@link INEXACT_GATE_TYPE}), whatever
- * its source: a build that cannot name the column's source records such a
- * column's gate as not exact.
- */
-export function gateTypeInexact(type: string): boolean {
-   return INEXACT_GATE_TYPE.test(type);
-}
-
-/**
  * Whether a gate compares a column stored as `type` as live compares it.
  * Every other number type holds what it was given exactly. A binary float
  * is exact only as a copy of the same binary float: a column stored as a
@@ -305,9 +290,10 @@ export function gateTypeInexact(type: string): boolean {
  * are the same on both sides, and so is every comparison, a decimal
  * literal's included (each side reads it as the nearest double). A wider
  * or narrower source, an exact number stored as a float, a column the
- * build computed, and an unknown source are not.
+ * build computed, and an unknown source are not. The build records it per
+ * column as `ColumnContract` `gateExact` (`deriveContract`).
  */
-function gateColumnTypeExact(
+export function gateColumnTypeExact(
    type: string,
    upstream: { dialect: string; nativeType: string } | undefined,
 ): boolean {
@@ -318,15 +304,19 @@ function gateColumnTypeExact(
 }
 
 /**
- * Whether every column the entry point's gates read is stored exactly for
- * its type, so the gate admits on the stored table exactly the rows it
- * admits live. Fail closed: a `storage=` table whose gate columns could not
- * be listed is not.
+ * Whether every column the entry point's gates read is stored exactly, so
+ * the gate admits on the stored table exactly the rows it admits live: as
+ * the table's column contract records it, else by type alone (no binary
+ * float is exact unrecorded). Fail closed: a `storage=` table whose gate
+ * columns could not be listed is not.
  */
 export function gateColumnsExact(t: TableRead): boolean {
+   if (t.gateColumnsExactRecorded !== undefined) {
+      return t.gateColumnsExactRecorded;
+   }
    if (t.gateColumnTypes === undefined) return t.tier === "database";
-   return t.gateColumnTypes.every((type, i) =>
-      gateColumnTypeExact(type, t.gateColumnUpstreamTypes?.[i]),
+   return t.gateColumnTypes.every((type) =>
+      gateColumnTypeExact(type, undefined),
    );
 }
 

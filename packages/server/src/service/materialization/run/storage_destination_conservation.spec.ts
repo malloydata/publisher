@@ -428,7 +428,7 @@ describe("a storage destination is handled by its type", () => {
          attaches: ["read-write lake"],
          statements: [
             "SET ducklake_default_data_inlining_row_limit = 0",
-            `CREATE TABLE "lake"."main"."t" AS SELECT * FROM read_csv('<data>/in.csv')`,
+            `CREATE TABLE "lake"."main"."t" AS SELECT * FROM read_csv('<data>/in.csv', hive_partitioning = false)`,
             "CALL ducklake_flush_inlined_data('lake', schema_name => 'main', table_name => 't')",
             'SELECT count(*) AS n FROM "lake"."main"."t"',
             'DESCRIBE "lake"."main"."t"',

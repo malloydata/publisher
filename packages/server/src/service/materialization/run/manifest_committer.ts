@@ -26,6 +26,7 @@ import { errMessage } from "../../../utils";
 import { parseEnvironmentName } from "../../identity";
 import { resolveEnvironmentId } from "../../resolve_environment";
 import {
+   newestIncrementalEntries,
    ServingReader,
    storageBindingResolverFor,
    storedServingEntries,
@@ -41,11 +42,6 @@ import {
    ManifestReference,
    SourceFailure,
 } from "../domain/types";
-import {
-   keyUniquenessAt,
-   withRollupKeyRecords,
-   type RollupKeyRecord,
-} from "./inline_uniqueness";
 import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 import { type RunLifecycle } from "./run_lifecycle";
 
@@ -287,8 +283,6 @@ export class ManifestCommitter {
       entries: Record<string, ManifestEntry>,
       // The version the run built; undefined for an unversioned package.
       versionId?: string,
-      // The rollup key checks this run stands behind.
-      rollupKeys?: Readonly<Record<string, RollupKeyRecord>>,
       // Records the run done, with what this reports; called under the
       // package's lock, after the load (see commit).
       finish: (served: Served) => Promise<void> = async () => {},
@@ -310,11 +304,6 @@ export class ManifestCommitter {
          // table on the source's OWN connection, where it does not exist.
          // Storage entries serve via the bindings below.
          if (entry.physicalTableName && !entry.storageDestinationName) {
-            const keyUniqueness = keyUniquenessAt(
-               rollupKeys,
-               sourceEntityId,
-               entry,
-            );
             manifestEntries[sourceEntityId] = {
                tableName: entry.physicalTableName,
                // For dialect quoting at bind (Package.quoteBoundTableNames): the
@@ -325,7 +314,6 @@ export class ManifestCommitter {
                // the served copy binds a v1 table with.
                ...boundSchemaOf(entry.schema),
                ...boundNativeSchemaOf(entry.nativeSchema),
-               ...(keyUniqueness ? { keyUniqueness } : {}),
                ...freshnessFactsOf(entry),
                ...(entry.contract !== undefined
                   ? { contract: entry.contract }
@@ -334,21 +322,11 @@ export class ManifestCommitter {
             };
          }
       }
-      // A stored table's own primary key check rides on its entry, from this
-      // run's records alone (the join-to-rollup branch in a destination).
-      const storageEntries = Object.fromEntries(
-         Object.entries(builtEntries).map(([id, entry]) => {
-            const keyUniqueness = entry.storageDestinationName
-               ? keyUniquenessAt(rollupKeys, id, entry)
-               : undefined;
-            return [id, keyUniqueness ? { ...entry, keyUniqueness } : entry];
-         }),
-      );
       await environment.loadRunManifest({
          packageName,
          versionId,
          database: manifestEntries,
-         storage: storageEntries,
+         storage: builtEntries,
          commit: async (outcome) => {
             if (outcome.loaded) {
                logger.info("Auto-run: loaded manifest into package models", {
@@ -392,12 +370,25 @@ export class ManifestCommitter {
       return storedServingEntries(list, reader, excludeId);
    }
 
+   /** See materialization_scope.ts, `newestIncrementalEntries`. */
+   async newestIncrementalEntries(
+      environmentId: string,
+      packageName: string,
+      excludeId: string,
+      reader: ServingReader = {},
+   ): Promise<Record<string, ManifestEntry>> {
+      const list =
+         (await this.repository.listMaterializations(
+            environmentId,
+            packageName,
+            reader.owned !== undefined ? { version: reader.owned } : undefined,
+         )) ?? [];
+      return newestIncrementalEntries(list, reader, excludeId);
+   }
+
    /**
     * The entries a rebind binds, read as a package load reads them
-    * (`storageBindingResolverFor`): each with the key checks the newest run
-    * stands behind (`withRollupKeyRecords`). Without them a rebind after a
-    * run would drop what the run's own load bound, and the served copy would
-    * read every recorded key as unknown.
+    * (`storageBindingResolverFor`).
     */
    private boundEntries(
       environmentId: string,
@@ -406,11 +397,10 @@ export class ManifestCommitter {
    ): Promise<Record<string, ManifestEntry>> {
       // Read fresh each time, under the slot's lock the caller holds: what a
       // rebind binds is the store as of the bind, not as of the run's start.
-      return storageBindingResolverFor(
-         this.repository,
-         environmentId,
-         withRollupKeyRecords,
-      )(packageName, reader);
+      return storageBindingResolverFor(this.repository, environmentId)(
+         packageName,
+         reader,
+      );
    }
 
    /**
@@ -457,7 +447,10 @@ export class ManifestCommitter {
             freshnessFallback: _fallback,
             ...unstamped
          } = local;
-         const merged: ManifestEntry = { ...unstamped };
+         const merged: ManifestEntry = withoutForeignBuild(
+            { ...unstamped },
+            ref,
+         );
          for (const [key, value] of Object.entries(ref)) {
             if (value !== undefined) {
                (merged as Record<string, unknown>)[key] = value;
@@ -505,6 +498,10 @@ export class ManifestCommitter {
                sourceEntityId: eid,
                physicalTableName: e.tableName,
                connectionName: e.connectionName,
+               // Which build of an incremental table it is, for an extension
+               // over it (incremental_upstream.ts).
+               ...(e.builtAt ? { builtAt: e.builtAt } : {}),
+               ...(e.ledger ? { ledger: e.ledger } : {}),
             };
          }
       }
@@ -517,7 +514,10 @@ export class ManifestCommitter {
             continue;
          }
          // Explicit reference wins; the bound entry fills the gaps it left.
-         const merged: ManifestEntry = { ...entry };
+         const merged: ManifestEntry = withoutForeignBuild(
+            { ...entry },
+            existing,
+         );
          for (const [key, value] of Object.entries(existing)) {
             if (value !== undefined) {
                (merged as Record<string, unknown>)[key] = value;
@@ -630,14 +630,13 @@ export class ManifestCommitter {
             // Read and bound under the package's lock, which an unversioned
             // run is created under too: a run created before the read is
             // active, so the read binds no key check of a table it may be
-            // rewriting (uncontestedAutoRun); one created after the bind
+            // rewriting (storageBindingResolverFor); one created after the bind
             // forgets what was bound before it writes.
             await environment.rebindPackageFromStore(packageName, async () => {
                const { tableNameManifest, storageEntries } =
                   splitManifestEntries(
                      await this.boundEntries(environmentId, packageName),
                      `rebind (package ${packageName})`,
-                     "store",
                   );
                return {
                   // Database: re-derive (or clear) regardless of mode.
@@ -690,9 +689,42 @@ export function referenceManifestToEntries(
          ...(ref.builtAt ? { builtAt: ref.builtAt } : {}),
          // Its column contract, as the host stored it.
          ...(ref.contract !== undefined ? { contract: ref.contract } : {}),
+         // Its ledger entry, as the host stored it: which build of the table
+         // it is, and its history since its seed, for an incremental
+         // extension over it (incremental_upstream.ts). Over the bound
+         // manifest's and this worker's, as every reference field is.
+         ...(ref.ledger ? { ledger: ref.ledger } : {}),
       };
    }
    return entries;
+}
+
+/**
+ * `base` without the facts that name one build of the table when `ref` names
+ * another: its `ledger` when `ref` carries another `builtAt`, and its
+ * `builtAt` when `ref` carries a ledger entry another run advanced. The
+ * merged entry would otherwise carry one build's boundary beside another's
+ * `builtAt`, and an extension over it would read that boundary as the build
+ * it is (incremental_upstream.ts).
+ */
+function withoutForeignBuild(
+   base: ManifestEntry,
+   ref: ManifestEntry,
+): ManifestEntry {
+   const out = { ...base };
+   if (out.ledger && ref.builtAt !== undefined && ref.builtAt !== out.builtAt) {
+      delete out.ledger;
+   }
+   if (
+      out.builtAt !== undefined &&
+      ref.ledger !== undefined &&
+      ref.builtAt === undefined &&
+      (ref.ledger.advancedBy === undefined ||
+         ref.ledger.advancedBy !== base.ledger?.advancedBy)
+   ) {
+      delete out.builtAt;
+   }
+   return out;
 }
 
 /** An entry's freshness facts, each only when set (manifest_loader.ts reads the same). */

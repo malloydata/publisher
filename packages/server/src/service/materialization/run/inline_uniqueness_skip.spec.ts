@@ -215,7 +215,6 @@ async function scenario(model: string) {
          instructions: rebuild.map(instruction),
          seedEntries: carried,
          signal: new AbortController().signal,
-         strict: false,
          priorRefusals: [],
          hostInstructed: false,
          uniqueness: ledger,

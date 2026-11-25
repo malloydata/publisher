@@ -58,4 +58,4 @@ so source edits won't show up — right for production, wrong for development.
 - [docs/html-data-apps.md](../../docs/html-data-apps.md) — the full in-package HTML data app reference
   (runtime API, query patterns, embedding, security).
 - [AGENTS.md](AGENTS.md) — the same guidance for AI coding agents working in this package.
-- [examples/storefront](../storefront) — another package with a `public/` HTML dashboard.
+- [examples/storefront](../storefront) — another package with a `public/` HTML data app.

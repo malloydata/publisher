@@ -38,6 +38,7 @@ import type { EnvironmentStore } from "./environment_store";
 import { MaterializationService } from "./materialization/run/materialization_service";
 import {
    internalErrorToHttpError,
+   ManifestBindFailedError,
    MaterializationConflictError,
 } from "../errors";
 import { parsePackageName, VersionRef } from "./identity";
@@ -805,14 +806,21 @@ describe("a local run of a host-bound package or version", () => {
       await storeTables(pkg);
       expect(await total(pkg)).toBe(7);
 
-      // A mistyped manifest: its fetch fails, so nothing binds.
-      await versions().setManifest(
-         PKG,
-         "1.0.0",
-         path.join(root, "no-such-manifest.json"),
-      );
+      // A mistyped manifest: its fetch fails, so it is refused and nothing
+      // of it is applied, the name it gave included.
+      const refused = await versions()
+         .setManifest(PKG, "1.0.0", path.join(root, "no-such-manifest.json"))
+         .catch((error: unknown) => error);
+      expect(refused).toBeInstanceOf(ManifestBindFailedError);
+      expect(internalErrorToHttpError(refused as Error).json).toMatchObject({
+         code: 400,
+         reason: "MANIFEST_NOT_FOUND",
+      });
       expect((await versions().getVersion(PKG, "1.0.0")).hostOwned).toBe(false);
-      expect(env.isHostOwned(pkg)).toBe(true); // it names one, for now
+      expect(await rowOf("1.0.0")).toBeNull();
+      expect(env.isHostOwned(pkg)).toBe(false);
+      expect(tableOf(pkg, id)).toBe('"summary_local"');
+      expect(await total(pkg)).toBe(7);
 
       // Cleared, it is the standalone version it was: its store serves.
       await versions().setManifest(PKG, "1.0.0", null);

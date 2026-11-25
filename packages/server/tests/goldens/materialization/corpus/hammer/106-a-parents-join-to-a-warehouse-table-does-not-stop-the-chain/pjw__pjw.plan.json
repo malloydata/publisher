@@ -1,14 +1,26 @@
 {
   "droppedPersistSources": [],
   "internal": {
-    "annotationFindings": [],
+    "annotationFindings": [
+      {
+        "code": "persist-not-built",
+        "message": "#@ persist source \"by_name\" is not built, so it is answered live: it reads 'region_name' from a table no stored upstream holds (the source warehouse, through a join or a source nothing stores), which no stored table can stand in for; a downstream is never built by recomputing its upstreams from raw.",
+        "model": "pjw.malloy",
+        "refused": {
+          "name": "by_name",
+          "reason": "upstream_table_unusable",
+          "sourceID": "by_name@<hammer>/pjw/pjw.malloy",
+          "tier": "storage"
+        },
+        "route": "@",
+        "subject": "by_name",
+        "tier": "unservable"
+      }
+    ],
     "builds": [
       {
         "connectionName": "orders_pg",
         "dependsOn": {
-          "by_name@<hammer>/pjw/pjw.malloy": [
-            "daily@<hammer>/pjw/pjw.malloy"
-          ],
           "daily@<hammer>/pjw/pjw.malloy": [],
           "rollup@<hammer>/pjw/pjw.malloy": [
             "daily@<hammer>/pjw/pjw.malloy"
@@ -16,24 +28,18 @@
         },
         "order": [
           "daily@<hammer>/pjw/pjw.malloy",
-          "rollup@<hammer>/pjw/pjw.malloy",
-          "by_name@<hammer>/pjw/pjw.malloy"
+          "rollup@<hammer>/pjw/pjw.malloy"
         ]
       }
     ],
     "droppedPersistSources": [],
     "kinds": {
-      "by_name@<hammer>/pjw/pjw.malloy": "persist",
       "daily@<hammer>/pjw/pjw.malloy": "persist",
       "rollup@<hammer>/pjw/pjw.malloy": "persist"
     },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
-      "by_name@<hammer>/pjw/pjw.malloy": {
-        "attributed": true,
-        "classification": "row_level"
-      },
       "daily@<hammer>/pjw/pjw.malloy": {
         "attributed": true,
         "classification": "row_level"
@@ -44,7 +50,6 @@
       }
     },
     "sourceModelPaths": {
-      "by_name@<hammer>/pjw/pjw.malloy": "pjw.malloy",
       "daily@<hammer>/pjw/pjw.malloy": "pjw.malloy",
       "rollup@<hammer>/pjw/pjw.malloy": "pjw.malloy"
     }
@@ -65,12 +70,6 @@
                 "daily@<hammer>/pjw/pjw.malloy"
               ],
               "sourceID": "rollup@<hammer>/pjw/pjw.malloy"
-            },
-            {
-              "dependsOn": [
-                "daily@<hammer>/pjw/pjw.malloy"
-              ],
-              "sourceID": "by_name@<hammer>/pjw/pjw.malloy"
             }
           ]
         ]
@@ -78,46 +77,18 @@
     ],
     "omittedFiles": [],
     "omittedSources": [],
-    "refusedSources": {},
-    "sources": {
+    "refusedSources": {
       "by_name@<hammer>/pjw/pjw.malloy": {
-        "annotationFields": {
-          "name": "pjw_by_name",
-          "storage": "lake"
-        },
-        "columns": [
-          {
-            "name": "region_name",
-            "type": "string"
-          },
-          {
-            "name": "grand",
-            "type": "number"
-          }
-        ],
-        "connectionName": "orders_pg",
-        "dialect": "duckdb",
-        "freshness": null,
+        "message": "#@ persist source \"by_name\" is not built, so it is answered live: it reads 'region_name' from a table no stored upstream holds (the source warehouse, through a join or a source nothing stores), which no stored table can stand in for; a downstream is never built by recomputing its upstreams from raw.",
         "modelPath": "pjw.malloy",
         "name": "by_name",
         "origin": "persist",
-        "preaggregate": null,
-        "queryMetadata": null,
-        "reads": [
-          {
-            "connectionName": "orders_pg",
-            "table": "public.pjw_orders"
-          },
-          {
-            "connectionName": "orders_pg",
-            "table": "public.pjw_regions"
-          }
-        ],
-        "refresh": null,
-        "sourceEntityId": "836b355aa6de60d51d0a748ae7491a845b9b6d41a908a1c64449f4497ad563d4",
+        "reason": "upstream_table_unusable",
         "sourceID": "by_name@<hammer>/pjw/pjw.malloy",
-        "sql": "sha256:d4175ace4855a5ee"
-      },
+        "tier": "storage"
+      }
+    },
+    "sources": {
       "daily@<hammer>/pjw/pjw.malloy": {
         "annotationFields": {
           "name": "pjw_daily",

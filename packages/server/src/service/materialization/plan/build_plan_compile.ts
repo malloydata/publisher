@@ -211,12 +211,18 @@ async function collectPackageParts(
          ...(pkg.boundStorageColumns
             ? { boundStorageColumns: pkg.boundStorageColumns }
             : {}),
+         ...(pkg.boundTableContract
+            ? { boundTableContract: pkg.boundTableContract }
+            : {}),
          ...(pkg.planChainStringReads
             ? {
                  stringReads: {
                     read: pkg.planChainStringReads,
                     ...(pkg.boundStorageContract
                        ? { boundContract: pkg.boundStorageContract }
+                       : {}),
+                    ...(pkg.upstreamStringCapability
+                       ? { capability: pkg.upstreamStringCapability }
                        : {}),
                  },
               }

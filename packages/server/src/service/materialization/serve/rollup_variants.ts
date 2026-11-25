@@ -190,6 +190,7 @@ import { gateSwitches, getMaterializeEnabled } from "../../../config";
 import { boundTablePath, buildVirtualMap, sqlReadsTable } from "./bindings";
 import {
    type Binding,
+   checkedKeyIs,
    heldReadBinding,
    isDatabase,
    type KeyedTable,
@@ -207,6 +208,7 @@ import {
 import type { MaterializedTableCatalog } from "./query_path";
 import { queryShapeOf } from "./query_path";
 import { STORAGE_DIALECT } from "../domain/dialect";
+import { reportQueryWalk } from "./query_walks";
 
 type VirtualMap = Map<string, Map<string, string>>;
 
@@ -265,6 +267,8 @@ interface RollupAnswer {
     * definition (its collation) reads that table.
     */
    databaseTablePath?: string;
+   /** For a database rollup: its table's content address (its contract's key). */
+   databaseTableId?: string;
    /**
     * For a database rollup whose address is not Malloy's key for it: the run
     * that answers reads its entry under that key too.
@@ -366,6 +370,11 @@ interface RollupQuery {
     */
    rawSql: boolean;
    /**
+    * Whether the run target sets its own `timezone:`, which the rollup's
+    * stored times are not read in ({@link RollupStatics}).
+    */
+   timeZoned?: boolean;
+   /**
     * Set when the run target extends or renames the source the rollups
     * aggregate: that base's definition, and what the run target
     * adds to it.
@@ -418,6 +427,19 @@ export class RollupVariantServe {
       byBase: Map<string, RollupVariantPlan[]>;
       /** Each source's join branches, by its `sourceID`. */
       joinBranches?: Map<string, ReturnType<typeof joinRollupBranches>>;
+      /**
+       * The pre-filtered rollup list: each source a rollup can answer
+       * (its own, one through its extends and renames, or one through a
+       * join), with its target and join branches, by `sourceID`. Built
+       * with the plans; a source absent from it has none.
+       */
+      candidates?: ReadonlyMap<string, RollupCandidates>;
+      /**
+       * What a query on each candidate source declines by before reading
+       * its own shape ({@link RollupStatics}), by `sourceID`: the same for
+       * every query on the source, so read with the plans.
+       */
+      statics?: ReadonlyMap<string, RollupStatics>;
    };
 
    constructor(private readonly host: RollupVariantHost) {}
@@ -456,8 +478,68 @@ export class RollupVariantServe {
             if (plans.length > 0) byBase.set(node.sourceID, plans);
          }
       }
-      this.planMemo = { modelDef, switches, byBase };
+      const built: NonNullable<typeof this.planMemo> = {
+         modelDef,
+         switches,
+         byBase,
+      };
+      this.planMemo = built;
+      const candidates = new Map<string, RollupCandidates>();
+      const statics = new Map<string, RollupStatics>();
+      if (modelDef && byBase.size > 0) {
+         for (const node of SourceMap.of(modelDef).nodes()) {
+            const c = this.walkCandidates(node.sourceID);
+            if (c.target || c.branches.length > 0) {
+               candidates.set(node.sourceID, c);
+               statics.set(
+                  node.sourceID,
+                  rollupStaticsOf(node.def as object, modelDef, c),
+               );
+            }
+         }
+      }
+      built.candidates = candidates;
+      built.statics = statics;
       return byBase;
+   }
+
+   /** What a query on `sourceID` could read a rollup through: the walks. */
+   private walkCandidates(sourceID: string): RollupCandidates {
+      const target = this.rollupTarget(sourceID);
+      return {
+         ...(target ? { target } : {}),
+         branches: this.joinBranchesOf(sourceID),
+      };
+   }
+
+   /**
+    * {@link walkCandidates} for a query on `sourceID`: looked up in the
+    * list built with the plans, walked (and counted) only when no list was
+    * built.
+    */
+   private candidatesFor(sourceID: string): RollupCandidates {
+      this.plansByBase();
+      const list = this.planMemo?.candidates;
+      if (list !== undefined) return list.get(sourceID) ?? NONE;
+      reportQueryWalk("rollup_candidates");
+      return this.walkCandidates(sourceID);
+   }
+
+   /**
+    * {@link rollupStaticsOf} for a query on `sourceID`: looked up in what
+    * the plans recorded, else walked on the query's own compile of the
+    * source (and counted).
+    */
+   private staticsFor(
+      sourceID: string,
+      struct: object,
+      modelDef: unknown,
+      candidates: RollupCandidates,
+   ): RollupStatics {
+      const recorded = this.planMemo?.statics?.get(sourceID);
+      if (recorded) return recorded;
+      reportQueryWalk("rollup_candidates");
+      return rollupStaticsOf(struct, modelDef, candidates);
    }
 
    /**
@@ -520,11 +602,13 @@ export class RollupVariantServe {
       );
       const sourceID =
          typeof struct?.sourceID === "string" ? struct.sourceID : undefined;
-      const target =
-         localName && sourceID ? this.rollupTarget(sourceID) : undefined;
-      // The query source's joins whose joined source has rollups.
-      const branches =
-         sourceID && localName ? this.joinBranchesOf(sourceID) : [];
+      // The rollups a query on its source could read, from the list the
+      // plans were read with: its own, through its bases, or through a join
+      // whose joined source has rollups.
+      const candidates =
+         localName && sourceID ? this.candidatesFor(sourceID) : NONE;
+      const target = candidates.target;
+      const branches = candidates.branches;
       if (
          !localName ||
          !sourceID ||
@@ -534,13 +618,17 @@ export class RollupVariantServe {
          throw new NoRollupForQuery("the query's source declares no rollup");
       }
       const plans = target?.plans ?? [];
-      const extension = target?.extension;
-      // The live entry point's gates, as the governor walks them: a query
-      // reaches here past them only when the router let the leg through.
-      const gates = liveEntryPointGates(
+      // The source's own facts, recorded with the plans: its live entry
+      // point's gates (as the governor walks them: a query reaches here past
+      // them only when the router let the leg through), its zone, its
+      // extension's verdict and each join branch's gate decline.
+      const statics = this.staticsFor(
+         sourceID,
          struct,
-         prepared.modelDef ?? (modelDef as never),
+         prepared.modelDef ?? modelDef,
+         candidates,
       );
+      const gates = statics.gates;
       const shape = queryShapeOf(prepared.query, struct, {
          sourceName: localName,
       });
@@ -561,14 +649,20 @@ export class RollupVariantServe {
       // An extension that adds more than fields declines its base's rollups
       //; its own joins' rollups are still tried.
       let ownPlans = plans;
-      if (extension) {
-         try {
-            extension.delta = checkExtension(struct, extension.baseDef);
-         } catch (error) {
-            if (!isDeclineOf(error, "rollup")) throw error;
-            first = error;
+      let extension: RollupQuery["extension"];
+      if (target?.extension) {
+         const verdict = statics.extension;
+         if (verdict && "decline" in verdict) {
+            first = verdict.decline;
             ownPlans = [];
-            for (const plan of plans) members.set(plan.rollupSourceName, error);
+            for (const plan of plans) {
+               members.set(plan.rollupSourceName, verdict.decline);
+            }
+         } else {
+            extension = {
+               baseDef: target.extension.baseDef,
+               ...(verdict ? { delta: verdict.delta } : {}),
+            };
          }
       }
       // The views the query reads by name: the one its text runs,
@@ -588,6 +682,7 @@ export class RollupVariantServe {
          shape,
          views,
          rawSql: readsRawSql(prepared.query),
+         timeZoned: statics.timeZoned,
          ...(gates ? { gates } : {}),
          ...(zoned ? { zoned } : {}),
          ...(extension ? { extension } : {}),
@@ -605,7 +700,7 @@ export class RollupVariantServe {
       // Then a joined source's rollup, read through the join: the
       // join branches, inside the rollup step.
       const usage = branches.length > 0 ? queryFieldUsagePaths(prepared) : [];
-      for (const { branch, refusal } of branches) {
+      for (const [i, { branch, refusal }] of branches.entries()) {
          // Through a join, a zoned query is read from the joined source's
          // rollup by the same rule as its own: what the query reads
          // through the join, and the grain the join meets, must not depend
@@ -641,7 +736,7 @@ export class RollupVariantServe {
             // declared in an overlay of the served copy's own copy of the
             // query source's declaring file (`compileJoinGated`),
             // so the gate lands there as on a database rollup's variant.
-            const gated = joinGateDecline(gates, struct, branch.plan);
+            const gated = statics.branchGates[i];
             if (gated) {
                first ??= gated;
                members.set(branch.plan.rollupSourceName, gated);
@@ -998,10 +1093,10 @@ export class RollupVariantServe {
          read,
          primaryKeyOf(childDef),
          this.storedIn(plan, q.args.pinned) !== undefined
-            ? verdictOf(
-                 this.tableOf(plan, q.args.pinned)?.binding?.primaryKeys?.[
-                    plan.baseSourceID
-                 ],
+            ? this.bindingKeyUniqueness(
+                 this.tableOf(plan, q.args.pinned)?.binding,
+                 plan.baseSourceID,
+                 primaryKeyOf(childDef),
               )
             : this.parentKeyUniqueness(
                  plan,
@@ -1100,6 +1195,9 @@ export class RollupVariantServe {
          rollupSourceName: plan.rollupSourceName,
          rollupBaseSourceID: plan.baseSourceID,
          databaseTablePath: databaseTable,
+         ...(table.sourceEntityId !== undefined
+            ? { databaseTableId: table.sourceEntityId }
+            : {}),
          ...(table.keyedTable ? { keyedTable: table.keyedTable } : {}),
          ...(await this.joinGraft(q, runnable, variant)),
       };
@@ -1345,7 +1443,7 @@ export class RollupVariantServe {
       // a grafted gate or a caller's filter on it compared, in another zone:
       // live's answer would differ, and a truncation gate would admit groups
       // live refuses.
-      if (timezoneOf(query.struct) !== undefined) {
+      if (query.timeZoned) {
          throw new LegDecline(
             "rollup_time_zone",
             "the query's source sets its own time zone, which the rollup's stored times are not read in",
@@ -1507,7 +1605,10 @@ export class RollupVariantServe {
          ...(table.virtualMap ? { virtualMap: table.virtualMap } : {}),
          ...(table.binding ? { binding: table.binding } : {}),
          ...(!table.virtualMap && databaseTable
-            ? { databaseTablePath: databaseTable }
+            ? {
+                 databaseTablePath: databaseTable,
+                 databaseTableId: table.sourceEntityId,
+              }
             : {}),
          ...(!table.virtualMap && table.keyedTable
             ? { keyedTable: table.keyedTable }
@@ -1558,8 +1659,8 @@ export class RollupVariantServe {
 
    /**
     * What the build of `plan`'s table found of the query source's primary key
-    * (its parent key check): `unique` when unique and never NULL, `unknown`
-    * when not checked, or a table a host's manifest binds.
+    * (its parent key check), as the table's contract records it: `unique`
+    * when unique and never NULL, `unknown` when not checked.
     */
    private parentKeyUniqueness(
       plan: RollupVariantPlan,
@@ -1569,17 +1670,38 @@ export class RollupVariantServe {
       const sourceID = (struct as { sourceID?: unknown } | undefined)?.sourceID;
       const id = this.tableOf(plan, pinned)?.sourceEntityId;
       if (typeof sourceID !== "string" || id === undefined) return "unknown";
-      return verdictOf(
-         pinned.snapshot.entries[id]?.keyUniqueness?.parentKeys?.[sourceID],
+      const checks = pinned.snapshot.entries[id]?.keyUniqueness;
+      // A check of the key the source declared then, not now, says nothing.
+      const key = primaryKeyOf(
+         SourceMap.of(this.host.modelDef()).node(sourceID)?.def,
       );
+      if (!checkedKeyIs(checks?.parentKeyColumns, sourceID, key)) {
+         return "unknown";
+      }
+      return verdictOf(checks?.parentKeys?.[sourceID]);
+   }
+
+   /**
+    * What `binding`'s build found of `sourceID`'s primary key `key`: unknown
+    * when it checked another column, or recorded none.
+    */
+   private bindingKeyUniqueness(
+      binding: Binding | undefined,
+      sourceID: string,
+      key: string | undefined,
+   ): KeyVerdict {
+      if (!checkedKeyIs(binding?.primaryKeyColumns, sourceID, key)) {
+         return "unknown";
+      }
+      return verdictOf(binding?.primaryKeys?.[sourceID]);
    }
 
    /**
     * What the build of a stored table the served copy reads for the query's
     * source found of `key`: `unique` when a source it stores declares `key`
     * its primary key and the check found it unique and never NULL;
-    * `repeated` when one found it repeated or NULL; `unknown` when not
-    * checked, or a binding a host's manifest made.
+    * `repeated` when one found it repeated or NULL; `unknown` when its
+    * contract records no check of `key`.
     */
    private storedKeyUniqueness(
       binding: Binding,
@@ -1592,6 +1714,8 @@ export class RollupVariantServe {
          const unique = binding.primaryKeys[id];
          if (unique === undefined) continue;
          if (primaryKeyOf(map.node(id)?.def) !== key) continue;
+         // Checked as another column: the key moved since the build.
+         if (!checkedKeyIs(binding.primaryKeyColumns, id, key)) continue;
          if (!unique) return "repeated";
          found = true;
       }
@@ -3822,4 +3946,66 @@ export function coverageDecline(
       );
    }
    return undefined;
+}
+
+/** What a query on one source could read a rollup through. */
+interface RollupCandidates {
+   readonly target?: {
+      plans: RollupVariantPlan[];
+      extension?: RollupQuery["extension"];
+   };
+   readonly branches: ReturnType<typeof joinRollupBranches>;
+}
+
+const NONE: RollupCandidates = { branches: [] };
+
+/**
+ * What a query on one candidate source declines by, or carries, before its
+ * own shape is read: the same for every query on the source, so recorded
+ * with the plans and looked up per query.
+ */
+interface RollupStatics {
+   /** The live entry point's gates ({@link liveEntryPointGates}). */
+   readonly gates?: EnforcedGates;
+   /** Whether the source sets its own `timezone:`. */
+   readonly timeZoned: boolean;
+   /**
+    * For a source that extends or renames the rolled-up one, what it adds
+    * ({@link checkExtension}), or why its base's rollups decline.
+    */
+   readonly extension?: { delta: SourceDelta } | { decline: LegDecline };
+   /**
+    * Each join branch's decline past the entry point's gates
+    * ({@link joinGateDecline}), by the branch's index; empty when ungated.
+    */
+   readonly branchGates: readonly (LegDecline | undefined)[];
+}
+
+/** {@link RollupStatics} of the source `def`, as `modelDef` declares it. */
+function rollupStaticsOf(
+   def: object,
+   modelDef: unknown,
+   candidates: RollupCandidates,
+): RollupStatics {
+   const gates = liveEntryPointGates(def, modelDef);
+   let extension: RollupStatics["extension"];
+   const baseDef = candidates.target?.extension?.baseDef;
+   if (baseDef !== undefined) {
+      try {
+         extension = { delta: checkExtension(def, baseDef) };
+      } catch (error) {
+         if (!isDeclineOf(error, "rollup")) throw error;
+         extension = { decline: error };
+      }
+   }
+   return {
+      ...(gates ? { gates } : {}),
+      timeZoned: timezoneOf(def) !== undefined,
+      ...(extension ? { extension } : {}),
+      branchGates: gates
+         ? candidates.branches.map(({ branch }) =>
+              joinGateDecline(gates, def, branch.plan),
+           )
+         : [],
+   };
 }

@@ -10,7 +10,7 @@
  */
 
 import { DUCKDB_COLLATE_DEFINITIONS } from "../../domain/collation";
-import type { Collation, CollationReader, ProbeIO } from "./probe_io";
+import type { Collation, CollationReader, CatalogIO } from "./catalog_io";
 
 /**
  * A DuckDB-dialect source compares bytes unless the instance sets a
@@ -18,7 +18,7 @@ import type { Collation, CollationReader, ProbeIO } from "./probe_io";
  * definition of any table or view the instance holds (a column's collation
  * is not otherwise readable).
  */
-async function duckdbCollation(io: ProbeIO, sql: string): Promise<Collation> {
+async function duckdbCollation(io: CatalogIO, sql: string): Promise<Collation> {
    if (/\bcollate\b/i.test(sql)) return "unknown";
    const [setting] = await io.rows(
       "SELECT current_setting('default_collation') AS c",
@@ -41,7 +41,7 @@ function tableNameOf(path: string): string {
  * the catalog does not list is unknown.
  */
 async function duckdbTableCollation(
-   io: ProbeIO,
+   io: CatalogIO,
    tablePath: string,
 ): Promise<Collation> {
    const [setting] = await io.rows(
@@ -62,7 +62,7 @@ async function duckdbTableCollation(
 
 /** Whether the instance lists the table at `tablePath`, matched without case. */
 async function duckdbTableListed(
-   io: ProbeIO,
+   io: CatalogIO,
    tablePath: string,
 ): Promise<boolean> {
    const name = tableNameOf(tablePath).replace(/'/g, "''");

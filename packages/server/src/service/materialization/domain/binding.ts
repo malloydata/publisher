@@ -33,9 +33,10 @@ import type {
    BuildManifest,
    FreshnessAwareManifestEntry,
    FreshnessManifest,
+   KeyUniqueness,
    ManifestEntry,
 } from "./types";
-import type { UpstreamTableSchema } from "./upstream_schemas";
+import type { ColumnContract } from "./column_contract";
 
 /** What a stored table holds, from the plan: never read off a name. */
 export type BindingKind = Exclude<TableKind, "pair">;
@@ -75,6 +76,8 @@ export interface Binding {
     * is NULL. Internal: absent on every binding a host's manifest makes.
     */
    primaryKeys?: Record<string, boolean>;
+   /** The key column each of {@link primaryKeys} checked, by sourceID. */
+   primaryKeyColumns?: Record<string, string>;
    /**
     * A stored rollup's own key check, as the run that
     * wrote or carried the table found it: whether its base held the grain's
@@ -129,14 +132,6 @@ export interface Binding {
     * its type. Absent for a storage table, whose schema is native.
     */
    nativeSchema?: { name: string; type: string }[];
-   /**
-    * The warehouse tables the table's build read, with their columns'
-    * native types (`ManifestEntry.upstreamSchemas`): what a stored column
-    * that copies one of them is a copy of, which the gate policy judges a
-    * stored float gate column by. Set on a `storage=` table; absent, none
-    * is known.
-    */
-   upstreamSchemas?: UpstreamTableSchema[];
    /** The data-as-of instant the freshness window is aged from. */
    freshAsOf?: string;
    freshnessWindowSeconds?: number;
@@ -218,6 +213,12 @@ export interface Snapshot {
     * files a manifest handed to Malloy under.
     */
    readonly compilerKeys?: Readonly<Record<string, string>>;
+   /**
+    * Each served table's column contract, as its build recorded it and the
+    * bind held its table to, by content address: what read admission looks
+    * a stored column's collation up in (`serve/admission_lookup.ts`).
+    */
+   readonly contracts?: ReadonlyMap<string, ColumnContract>;
 }
 
 /**
@@ -229,6 +230,7 @@ export function makeSnapshot(
    entries: Readonly<FreshnessManifest> = {},
    withdrawn?: ReadonlySet<string>,
    compilerKeys?: Readonly<Record<string, string>>,
+   contracts?: ReadonlyMap<string, ColumnContract>,
 ): Snapshot {
    return Object.freeze({
       bindings,
@@ -237,6 +239,7 @@ export function makeSnapshot(
       ...(compilerKeys && Object.keys(compilerKeys).length > 0
          ? { compilerKeys }
          : {}),
+      ...(contracts && contracts.size > 0 ? { contracts } : {}),
    });
 }
 
@@ -519,29 +522,116 @@ export function bindingServesModelSource(
 }
 
 /**
- * The primary key checks a local run recorded on a stored entry (its own
- * source's, by sourceID): internal, set only by the committing run or a
- * restore from the store, never by a host's manifest.
+ * A stored entry's `keyUniqueness`, each part kept only when it is well formed
+ * and not empty: the rollup's own check (`keyColumn` with `unique`), the
+ * primary key checks by sourceID (`parentKeys`), and the column each read
+ * (`parentKeyColumns`). Undefined when no part is.
  */
-export function primaryKeysOf(entry: {
-   keyUniqueness?: { parentKeys?: unknown };
-}): Record<string, boolean> | undefined {
-   const keys = entry.keyUniqueness?.parentKeys;
-   if (!keys || typeof keys !== "object") return undefined;
+function parseKeyUniqueness(raw: unknown): KeyUniqueness | undefined {
+   if (!raw || typeof raw !== "object") return undefined;
+   const k = raw as Record<string, unknown>;
+   const own =
+      typeof k.keyColumn === "string" && typeof k.unique === "boolean"
+         ? { keyColumn: k.keyColumn, unique: k.unique }
+         : undefined;
+   const parentKeys = recordOf(k.parentKeys, "boolean") as
+      | Record<string, boolean>
+      | undefined;
+   const parentKeyColumns = recordOf(k.parentKeyColumns, "string") as
+      | Record<string, string>
+      | undefined;
+   if (!own && !parentKeys && !parentKeyColumns) return undefined;
+   return {
+      ...(own ?? {}),
+      ...(parentKeys ? { parentKeys } : {}),
+      ...(parentKeyColumns ? { parentKeyColumns } : {}),
+   };
+}
+
+/** `value`'s entries of type `of`, or undefined when it has none. */
+function recordOf(
+   value: unknown,
+   of: "boolean" | "string",
+): Record<string, unknown> | undefined {
+   if (!value || typeof value !== "object") return undefined;
    const out = Object.fromEntries(
-      Object.entries(keys).filter(([, v]) => typeof v === "boolean"),
-   ) as Record<string, boolean>;
+      Object.entries(value).filter(([, v]) => typeof v === of),
+   );
    return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/**
+ * The primary key checks a stored entry carries, by sourceID: internal, set
+ * only by a bind, off the table's contract (`keyUniquenessOfContract`).
+ */
+export function primaryKeysOf(
+   entry: object,
+): Record<string, boolean> | undefined {
+   return keyUniquenessOf(entry)?.parentKeys;
+}
+
+/** The key column each of {@link primaryKeysOf}'s checks read, by sourceID. */
+export function primaryKeyColumnsOf(
+   entry: object,
+): Record<string, string> | undefined {
+   return keyUniquenessOf(entry)?.parentKeyColumns;
+}
+
+/** The `keyUniqueness` a stored entry carries, parsed ({@link parseKeyUniqueness}). */
+function keyUniquenessOf(entry: object): KeyUniqueness | undefined {
+   return parseKeyUniqueness(
+      (entry as { keyUniqueness?: unknown }).keyUniqueness,
+   );
+}
+
+/**
+ * Whether `columns` records `sourceID`'s primary key check as one of `key`:
+ * a check of another column, or one with no column recorded, says nothing,
+ * so a primary key moved since the check reads as unchecked.
+ */
+export function checkedKeyIs(
+   columns: Readonly<Record<string, string>> | undefined,
+   sourceID: string,
+   key: string | undefined,
+): boolean {
+   return key !== undefined && columns?.[sourceID] === key;
+}
+
 /** A rollup's own key check a local run recorded on a stored entry, as {@link primaryKeysOf}. */
-function rollupKeyOf(entry: {
-   keyUniqueness?: { keyColumn?: unknown; unique?: unknown };
-}): Binding["rollupKey"] {
-   const k = entry.keyUniqueness;
-   return typeof k?.keyColumn === "string" && typeof k.unique === "boolean"
+function rollupKeyOf(entry: object): Binding["rollupKey"] {
+   const k = keyUniquenessOf(entry);
+   return k?.keyColumn !== undefined && k.unique !== undefined
       ? { keyColumn: k.keyColumn, unique: k.unique }
       : undefined;
+}
+
+/**
+ * `binding` with the key checks `entry` records now (its stored sources'
+ * primary keys, and a rollup's own key), in place of the ones it was made
+ * with: what a reload that moves a primary key gives a `storage=` binding
+ * without binding its entries again.
+ */
+export function withEntryKeyChecks(
+   binding: Binding,
+   entry: ManifestEntry,
+): Binding {
+   const {
+      primaryKeys: _was,
+      primaryKeyColumns: _wasColumns,
+      rollupKey: _wasKey,
+      ...rest
+   } = binding;
+   const primaryKeys = primaryKeysOf(entry);
+   const primaryKeyColumns = primaryKeyColumnsOf(entry);
+   const rollupKey = isRollupOrigin(entry.origin)
+      ? rollupKeyOf(entry)
+      : undefined;
+   return {
+      ...rest,
+      ...(primaryKeys ? { primaryKeys } : {}),
+      ...(primaryKeyColumns ? { primaryKeyColumns } : {}),
+      ...(rollupKey ? { rollupKey } : {}),
+   };
 }
 
 /**
@@ -588,9 +678,10 @@ export function deriveServeBindings(
             (name) => !builders.has(name),
          ),
       ].filter((name, i, all) => all.indexOf(name) === i);
-      const primaryKeys = primaryKeysOf(entry as never);
+      const primaryKeys = primaryKeysOf(entry);
+      const primaryKeyColumns = primaryKeyColumnsOf(entry);
       const rollupKey = isRollupOrigin(entry.origin)
-         ? rollupKeyOf(entry as never)
+         ? rollupKeyOf(entry)
          : undefined;
       for (const sourceName of names) {
          // Set whenever there is a plan to read, even empty: an empty list
@@ -615,10 +706,8 @@ export function deriveServeBindings(
             freshnessWindowSeconds: entry.freshnessWindowSeconds,
             freshnessFallback: entry.freshnessFallback,
             ...(primaryKeys ? { primaryKeys } : {}),
+            ...(primaryKeyColumns ? { primaryKeyColumns } : {}),
             ...(rollupKey ? { rollupKey } : {}),
-            ...(entry.upstreamSchemas?.length
-               ? { upstreamSchemas: entry.upstreamSchemas }
-               : {}),
          });
       }
    }

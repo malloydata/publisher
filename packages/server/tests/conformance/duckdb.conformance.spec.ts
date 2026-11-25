@@ -28,7 +28,7 @@ import {
    probeTargetColumns,
 } from "../../src/service/materialization/run/incremental_apply";
 import { DUCKDB_COLLATION } from "../../src/service/materialization/serve/collation/duckdb";
-import { probeIO } from "../../src/service/materialization/serve/gate_collation";
+import { catalogIO } from "../../src/service/materialization/serve/collation/catalog_io";
 import {
    ownedTableProbeSql,
    relationProbeSql,
@@ -281,8 +281,14 @@ describe("DuckDB conformance", () => {
       );
       const found = quoted.columns.length === 2 && bare.columns.length === 1;
       expect({ quoted, bare }).toEqual({
-         quoted: { columns: ["a", "B"] },
-         bare: { columns: ["v"] },
+         quoted: {
+            columns: ["a", "B"],
+            types: new Map([
+               ["a", "INTEGER"],
+               ["B", "INTEGER"],
+            ]),
+         },
+         bare: { columns: ["v"], types: new Map([["v", "INTEGER"]]) },
       });
       expect(found).toBe(CAN.decodedTablePath);
    });
@@ -350,7 +356,7 @@ describe("DuckDB conformance", () => {
          path.join(dir, "reader.duckdb"),
       );
       try {
-         const io = probeIO(other as never);
+         const io = catalogIO(other as never);
          await other.runSQL(`CREATE TABLE plain (s VARCHAR)`);
          expect(
             await DUCKDB_COLLATION.sourceColumns(

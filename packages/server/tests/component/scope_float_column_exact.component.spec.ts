@@ -126,6 +126,22 @@ describe("R-10: a row scope over a stored DOUBLE that copies a warehouse double"
       expect(byName.scores_sql.upstreamSchemas).toBeUndefined();
    });
 
+   it("records the copied double gate-exact in its contract, and neither the computed one nor author SQL's", () => {
+      const gateExactOf = (sourceName: string, column: string) =>
+         (
+            Object.values(fixture.stored).find(
+               (e) => e.sourceName === sourceName,
+            )?.contract as
+               | { columns: { name: string; gateExact: boolean }[] }
+               | undefined
+         )?.columns.find((c) => c.name === column)?.gateExact;
+      expect(gateExactOf("scores_mz", "score")).toBe(true);
+      expect(gateExactOf("scores_calc", "score2")).toBe(false);
+      expect(gateExactOf("scores_sql", "score")).toBe(false);
+      // A column of an exact type is gate-exact wherever it came from.
+      expect(gateExactOf("scores_sql", "id")).toBe(true);
+   });
+
    it("answers each query live before the bind", () => {
       for (const name of Object.keys(QUERIES)) {
          expect({ name, by: servedByOf(live[name]) }).toEqual({

@@ -261,6 +261,44 @@ source: a is raw extend {
       query: `run: a -> { group_by: cat; aggregate: total } ${AS_TEXT}`,
       servedBy: "rollup",
    },
+   {
+      label: "extension of a #(materialize) parent two files away, through a pass-through file",
+      files: {
+         "a.malloy": `${HEAD}#(materialize)
+source: a is raw extend { dimension: cat2 is cat }
+`,
+         "b.malloy": `##! experimental { persistence }
+import "a.malloy"
+source: mid is a extend { dimension: cat3 is cat }
+`,
+         "m.malloy": `##! experimental { persistence }
+import "b.malloy"
+#(materialize)
+source: ext is mid extend { dimension: big is amt > 5 }
+`,
+      },
+      upstream: "a",
+      downstream: /^ext$/,
+      query: `run: ext -> { group_by: cat; aggregate: total is amt.sum() } ${AS_TEXT}`,
+      servedBy: "materialized",
+   },
+   {
+      label: "extension of a #(materialize) parent in the file it imports",
+      files: {
+         "a.malloy": `${HEAD}#(materialize)
+source: a is raw extend { dimension: cat2 is cat }
+`,
+         "m.malloy": `##! experimental { persistence }
+import "a.malloy"
+#(materialize)
+source: ext is a extend { dimension: big is amt > 5 }
+`,
+      },
+      upstream: "a",
+      downstream: /^ext$/,
+      query: `run: ext -> { group_by: cat; aggregate: total is amt.sum() } ${AS_TEXT}`,
+      servedBy: "materialized",
+   },
 ];
 
 interface Answer {
@@ -444,7 +482,7 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
          // Out of band: the raw rows are gone. A downstream that recomputed
          // its upstream from raw would hold no rows.
          await warehouse.runSQL(`DELETE FROM ${tier.raw}`);
-         second = await build({ strictUpstreams: true });
+         second = await build({});
          served = await ask(mechanism.query);
       }, 300_000);
       afterAll(async () => {

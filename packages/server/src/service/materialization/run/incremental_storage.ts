@@ -19,6 +19,7 @@ import { projectToStoredColumns, storedColumnOf } from "./run_plan";
 import {
    canonicalBoundValue,
    deltaSelect,
+   sqlDeltaTarget,
    type DeltaTarget,
    type IncrementalLineage,
    type SqlRunner,
@@ -33,7 +34,9 @@ import type { FederatedSourceType } from "../../dialects";
 import type { QueryMetadata } from "../../query_metadata";
 import { quoteIdentifier } from "../../quoting";
 import { errMessage } from "../../../utils";
+import { errorCodeOf } from "../../../error_code";
 import { storageTablePath } from "../domain/storage_table_path";
+import { storedTypesAsBuilt } from "../stored_column_types";
 import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
 import {
    decimalTypeOf,
@@ -204,6 +207,32 @@ function storageWindowRows(params: {
    };
 }
 
+/**
+ * A delta's column types as the destination session reads them (`DESCRIBE`
+ * of its SELECT), for a `storage=` table whose source is Postgres, whose
+ * passthrough's DESCRIBE prepares the query on the server, reading no row,
+ * and for an extension stacked on its parent's table in the destination.
+ * Another engine's may run it, so its delta's types are not read, and not
+ * judged (DeltaTarget.deltaColumnTypes).
+ */
+function describedTypes(
+   session: DuckDBConnection,
+): NonNullable<DeltaTarget["deltaColumnTypes"]> {
+   return async (deltaSQL) => {
+      try {
+         const rows = (await session.runSQL(`DESCRIBE (${deltaSQL})`))
+            .rows as Record<string, unknown>[];
+         return {
+            types: new Map(
+               rows.map((r) => [String(r.column_name), String(r.column_type)]),
+            ),
+         };
+      } catch (err) {
+         return { error: errMessage(err), errorCode: errorCodeOf(err) };
+      }
+   };
+}
+
 export function storageDeltaTarget(params: {
    /** The build-scoped session: destination attached read-write, source federated. */
    session: DuckDBConnection;
@@ -341,6 +370,13 @@ export function storageDeltaTarget(params: {
                : read.selectSQL;
          },
 
+         ...(capabilitiesOf(sourceType).passthroughNumericAsDouble
+            ? {
+                 deltaColumnTypes: describedTypes(session),
+                 storedAsBuilt: storedTypesAsBuilt,
+              }
+            : {}),
+
          ...storageWindowRows({
             session,
             sourceType,
@@ -382,5 +418,49 @@ export function storageDeltaTarget(params: {
             }
          },
       },
+   };
+}
+
+/**
+ * The delta target of a `storage=` extension table stacked on its parent's
+ * table in one destination (extension chains, case 2): the rows come from
+ * the extension's build SQL compiled over the parent's stored table
+ * (`storedSQL`, already projected to the stored columns, the CTAS's own),
+ * run on the same destination session that writes them, so nothing reads
+ * the warehouse. Filtered on the stored watermark column, as the seed's
+ * projection names it.
+ */
+export function stackedDeltaTarget(params: {
+   session: DuckDBConnection;
+   destinationName: string;
+   destinationSchema?: string;
+   physicalTableName: string;
+   quotedTablePath: string;
+   lineage: IncrementalLineage;
+   persistSource: PersistSource;
+   storedSQL: string;
+}): DeltaTarget {
+   const { session, lineage } = params;
+   const storedColumn = storedColumnOf(params.persistSource);
+   return {
+      ...sqlDeltaTarget({
+         dialect: STORAGE_DIALECT,
+         runner: sessionRunner(session),
+         quotedTablePath: params.quotedTablePath,
+         logicalTablePath: storageTablePath(
+            params.destinationName,
+            params.physicalTableName,
+            params.destinationSchema,
+         ),
+         sourceSQL: params.storedSQL,
+         watermarkName: storedColumn(lineage.watermarkName),
+         watermarkType: lineage.watermarkType,
+      }),
+      storedColumn,
+      // The parent's table is in the destination, so DESCRIBE reads no
+      // row: a parent rebuilt at a wider type is seen before the delta.
+      deltaColumnTypes: describedTypes(session),
+      // What the stacked build's casts store each computed type as.
+      storedAsBuilt: storedTypesAsBuilt,
    };
 }

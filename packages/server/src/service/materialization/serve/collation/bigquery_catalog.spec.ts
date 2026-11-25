@@ -19,11 +19,12 @@ import { BigQueryConnection } from "@malloydata/db-bigquery";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { type Connection, SingleConnectionRuntime } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { lookupSourceRefusal } from "../admission_lookup";
 import {
-   storedTableCollationRefusal,
-   stringGateCollationRefusal,
-} from "./gate_collation";
-import type { GateReads } from "./gate_reads_types";
+   readStringCapabilities,
+   recordStringCapabilities,
+} from "../source_capability";
+import type { GateReads } from "../gate_reads_types";
 
 const duckdb = new DuckDBConnection("bq-catalog-spec", ":memory:");
 
@@ -180,13 +181,21 @@ async function answers(
 ): Promise<(string | undefined)[]> {
    const out: (string | undefined)[] = [];
    for (let seed = 0; seed < RUNS; seed++) {
+      // Read as a bind reads the catalog, then looked up.
+      const connection = stubBigQuery(seed, pageCap);
+      const runtime = new SingleConnectionRuntime({ connection });
+      const materializer = runtime.loadModel(MODEL);
+      recordStringCapabilities(
+         runtime,
+         await readStringCapabilities({
+            modelDef: (await materializer.getModel())._modelDef,
+            load: (q) => materializer.loadQuery(q),
+            connection: async () => connection,
+         }),
+      );
       out.push(
-         await stringGateCollationRefusal({
-            authorRunnable: new SingleConnectionRuntime({
-               connection: stubBigQuery(seed, pageCap),
-            })
-               .loadModel(MODEL)
-               .loadQuery(query),
+         await lookupSourceRefusal({
+            authorRunnable: materializer.loadQuery(query),
             reads: STRING_READS,
          }),
       );
@@ -215,24 +224,5 @@ describe("a BigQuery catalog read, as BigQuery pages and reports it", () => {
       expect(await answers("run: plain -> { group_by: region }", 5)).toEqual(
          Array(RUNS).fill(LIVE),
       );
-   });
-
-   it("keeps a database table whose columns and source's report 'NULL'", async () => {
-      for (let seed = 0; seed < RUNS; seed++) {
-         const r = new SingleConnectionRuntime({
-            connection: stubBigQuery(seed),
-         })
-            .loadModel(MODEL)
-            .loadQuery("run: plain -> { group_by: region }");
-         expect(
-            await storedTableCollationRefusal({
-               tables: [{ tier: "database", tablePath: "proj.d01.copy_t" }],
-               answerRunnable: r,
-               virtualMap: undefined,
-               authorRunnable: r,
-               reads: STRING_READS,
-            }),
-         ).toBeUndefined();
-      }
    });
 });
