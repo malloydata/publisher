@@ -150,11 +150,15 @@ def timed_query(base: str, environment: str, package: str, model: str,
     """Run a Malloy query and keep what the server says about how it ran. Never raises.
 
     `{"rows", "error", "executionTimeMs", "servedFrom", "queryCostBytes",
-    "roundTripMs"}`. `executionTimeMs` is the server's own figure: compile,
-    authorize, routing and the warehouse round trip, without serialization or
-    transport. `roundTripMs` is what this caller waited, so it reads higher.
-    `servedFrom` reports only the `storage=` tier: a query answered from a table
-    built in the source's own warehouse reads null, the same as a live one.
+    "path", "roundTripMs"}`. `executionTimeMs` is the server's own figure:
+    compile, authorize, routing and the warehouse round trip, without
+    serialization or transport. `roundTripMs` is what this caller waited, so it
+    reads higher. `path` is the server's path report (0.13 and later): which
+    table answered (`servedBy`, kind `live` for none), each table it passed
+    over and why (`considered`), and the query's shape (`query`: source,
+    grouped-by and filtered-by fields, measures). It is the only per-query
+    proof that a table answered; `servedFrom` names only the tier (`storage`,
+    `database`, `live_fallback`), and is null on an older server.
 
     `version` pins a published package version (`versionId` on the request),
     which REST can do and the MCP tools cannot.
@@ -169,7 +173,8 @@ def timed_query(base: str, environment: str, package: str, model: str,
         data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"})
     out: dict[str, Any] = {"rows": [], "error": None, "executionTimeMs": None,
-                           "servedFrom": None, "queryCostBytes": None, "roundTripMs": None}
+                           "servedFrom": None, "queryCostBytes": None, "path": None,
+                           "roundTripMs": None}
     t0 = time.perf_counter()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -186,7 +191,7 @@ def timed_query(base: str, environment: str, package: str, model: str,
     except (ValueError, TypeError) as exc:
         out["error"] = f"unreadable result: {exc}"[:300]
     if isinstance(payload, dict):
-        for k in ("executionTimeMs", "servedFrom", "queryCostBytes"):
+        for k in ("executionTimeMs", "servedFrom", "queryCostBytes", "path"):
             out[k] = payload.get(k)
     return out
 

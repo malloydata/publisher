@@ -132,6 +132,82 @@ class Timing(unittest.TestCase):
         self.assertEqual((row["error"], row["median_ms"]), ("HTTP 400: bad", None))
 
 
+# Path reports as Publisher 0.18.1 returned them for a package with two rollups
+# on `total_sales`, at (category) and (category, region).
+ROLLUP_PATH = {"query": {"sourceName": "order_items", "groupedBy": ["category"], "filteredBy": [],
+                         "measures": ["total_sales"]},
+               "servedBy": {"kind": "rollup", "origin": "rollup", "tableId": "632f", "tier": "database"},
+               "considered": [{"tableId": "632f", "kind": "rollup", "origin": "rollup",
+                               "outcome": "used"}],
+               "notConsidered": [], "warnings": []}
+LIVE_PATH = {"query": {"sourceName": "order_items", "groupedBy": [], "filteredBy": [],
+                       "measures": ["total_sales", "total_margin"]},
+             "servedBy": {"kind": "live"},
+             "considered": [{"tableId": "632f", "kind": "rollup", "origin": "rollup",
+                             "outcome": "skipped", "reason": "MISSING_FIELD",
+                             "detail": "the query aggregates `total_margin`, which the rollup does not store"},
+                            {"tableId": "bfdf", "kind": "rollup", "origin": "rollup",
+                             "outcome": "skipped", "reason": "MISSING_FIELD",
+                             "detail": "the query aggregates `total_margin`, which the rollup does not store"}],
+             "notConsidered": [], "warnings": []}
+
+
+class PathReport(unittest.TestCase):
+    def a(self):
+        return unittest.mock.Mock(publisher="http://h", environment="e", package="p",
+                                  timeout=5, repeats=2)
+
+    def timed(self, paths):
+        it = iter(paths)
+        return lambda *a, **k: {"rows": [{"n": 1}], "error": None, "executionTimeMs": 5,
+                                "servedFrom": "database", "queryCostBytes": None,
+                                "path": next(it), "roundTripMs": 6}
+
+    def test_a_rollup_answer_is_recorded_with_its_table_and_the_query_shape(self):
+        with unittest.mock.patch.object(qr, "timed_query", side_effect=self.timed([ROLLUP_PATH] * 3)):
+            row = qr.time_one({"qid": "q", "query": "run: oi -> by_category", "modelPath": "m",
+                               "source": "oi"}, self.a(), None)
+        self.assertEqual(row["served_by"], {"kind": "rollup", "tableId": "632f", "origin": "rollup",
+                                            "tier": "database"})
+        self.assertTrue(row["served_by_stable"])
+        self.assertEqual(row["skipped"], [])
+        self.assertEqual(row["shape"]["groupedBy"], ["category"])
+        # The router's source wins over the name read off the query text.
+        self.assertEqual(row["source"], "order_items")
+
+    def test_a_live_answer_keeps_each_skip_reason_once_with_its_detail(self):
+        with unittest.mock.patch.object(qr, "timed_query", side_effect=self.timed([LIVE_PATH] * 3)):
+            row = qr.time_one({"qid": "q", "query": "x", "modelPath": "m"}, self.a(), None)
+        self.assertEqual(row["served_by"], {"kind": "live"})
+        self.assertEqual([(s["tableId"], s["reason"]) for s in row["skipped"]],
+                         [("632f", "MISSING_FIELD"), ("bfdf", "MISSING_FIELD")])
+        self.assertIn("total_margin", row["skipped"][0]["detail"])
+
+    def test_answers_that_change_table_between_calls_are_not_stable(self):
+        with unittest.mock.patch.object(qr, "timed_query",
+                                        side_effect=self.timed([LIVE_PATH, ROLLUP_PATH, LIVE_PATH])):
+            row = qr.time_one({"qid": "q", "query": "x", "modelPath": "m"}, self.a(), None)
+        self.assertFalse(row["served_by_stable"])
+
+    def test_a_server_with_no_path_report_is_unknown_not_live(self):
+        with unittest.mock.patch.object(qr, "timed_query", side_effect=self.timed([None] * 3)):
+            row = qr.time_one({"qid": "q", "query": "x", "modelPath": "m"}, self.a(), None)
+        self.assertEqual(row["served_by"], {"kind": None})
+        self.assertIsNone(row["shape"])
+
+    def test_the_summary_counts_what_answered_and_the_time_still_live(self):
+        rows = [{"qid": "a", "source": "oi", "median_ms": 5, "count": 10,
+                 "served_by": {"kind": "rollup"}, "served_from": ["database"]},
+                {"qid": "b", "source": "oi", "median_ms": 100, "count": 2,
+                 "served_by": {"kind": "live"}, "served_from": ["none"]},
+                {"qid": "c", "source": "oi", "median_ms": 7, "count": 1,
+                 "served_by": {"kind": None}, "served_from": ["none"]}]
+        s = qr.summarize(rows, None)
+        self.assertEqual(s["answered_by"], {"live": 1, "rollup": 1, "unknown": 1})
+        self.assertEqual(s["by_source"]["oi"]["weighted_ms"], 257)
+        self.assertEqual(s["by_source"]["oi"]["live_weighted_ms"], 200)
+
+
 class Compare(unittest.TestCase):
     def test_band_and_floor(self):
         old = [result("fast", 1000), result("slow", 100), result("same", 1000),

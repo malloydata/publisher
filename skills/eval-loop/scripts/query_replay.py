@@ -179,6 +179,42 @@ def rows_sha(rows: list[Any]) -> str:
     return hashlib.sha256("\n".join(lines).encode()).hexdigest()[:16]
 
 
+# --------------------------------------------------------------------------- path
+
+def served_by(path: Any) -> dict[str, Any]:
+    """What answered a query, from its path report: `kind` (`live` when no
+    table did; `rollup`, `materialized`, `view`, `query` otherwise), and for a
+    table its `tableId`, `origin` and `tier`. `{"kind": None}` when the server
+    sent no path report (older than 0.13): unknown, not live."""
+    sb = (path or {}).get("servedBy") if isinstance(path, dict) else None
+    if not isinstance(sb, dict):
+        return {"kind": None}
+    return {k: sb.get(k) for k in ("kind", "tableId", "origin", "tier") if sb.get(k) is not None}
+
+
+def skipped(path: Any) -> list[dict[str, Any]]:
+    """Each table the router passed over for this query, and why (`reason`,
+    such as GRAIN_TOO_COARSE or MISSING_FIELD, `code` for NOT_SERVED, and the
+    server's sentence in `detail`)."""
+    out, seen = [], set()
+    for c in (path or {}).get("considered") or [] if isinstance(path, dict) else []:
+        if not isinstance(c, dict) or not c.get("reason"):
+            continue
+        item = {k: c.get(k) for k in ("kind", "tableId", "reason", "code", "detail") if c.get(k)}
+        key = json.dumps(item, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            out.append(item)
+    return out
+
+
+def shape(path: Any) -> dict[str, Any] | None:
+    """The query's shape from its path report: `sourceName`, `groupedBy`,
+    `filteredBy`, `measures`. What a table must hold to answer it."""
+    q = (path or {}).get("query") if isinstance(path, dict) else None
+    return q if isinstance(q, dict) else None
+
+
 # --------------------------------------------------------------------------- timing
 
 def time_one(q: dict[str, Any], a: argparse.Namespace, version: str | None) -> dict[str, Any]:
@@ -207,6 +243,14 @@ def time_one(q: dict[str, Any], a: argparse.Namespace, version: str | None) -> d
         min_ms=round(min(ms), 1),
         round_trip_ms=round(statistics.median(trip), 1),
         served_from=sorted({c["servedFrom"] or "none" for c in timed}),
+        # From the path report: what answered the last timed call, whether
+        # every timed call was answered the same way, what was passed over
+        # and why, and the query's shape.
+        served_by=served_by(timed[-1].get("path")),
+        served_by_stable=len({json.dumps(served_by(c.get("path")), sort_keys=True)
+                              for c in timed}) == 1,
+        skipped=skipped(timed[-1].get("path")),
+        shape=shape(timed[-1].get("path")),
         query_cost_bytes=timed[-1]["queryCostBytes"],
         rows_sha=rows_sha(calls[-1]["rows"]),
         n_rows=len(calls[-1]["rows"]),
@@ -215,6 +259,10 @@ def time_one(q: dict[str, Any], a: argparse.Namespace, version: str | None) -> d
         # changed hash against another replay is not evidence on its own.
         unstable_rows=len(shas) > 1,
     )
+    # The router's own word on the source beats the regex on the query text,
+    # which cannot read a named query or a persisted view's call.
+    if row["shape"] and row["shape"].get("sourceName"):
+        row["source"] = row["shape"]["sourceName"]
     row["rows"] = calls[-1]["rows"][:ROWS_KEPT]
     return row
 
@@ -241,6 +289,12 @@ def summarize(rows: list[dict[str, Any]], budget_ms: int | None) -> dict[str, An
         # often it ran. Equal to total_ms when no query carries a count.
         s["weighted_ms"] = round(s.get("weighted_ms", 0.0) + r["median_ms"] * (r.get("count") or 1), 1)
         s["slow"] += bool(r.get("slow"))
+        # Time a table could still save: only queries no table answered.
+        s.setdefault("live_weighted_ms", 0.0)
+        if (r.get("served_by") or {}).get("kind") == "live":
+            s["live_weighted_ms"] = round(s["live_weighted_ms"]
+                                          + r["median_ms"] * (r.get("count") or 1), 1)
+    kinds = [(r.get("served_by") or {}).get("kind") for r in ok]
     return {
         "queries": len(rows),
         "errors": len(rows) - len(ok),
@@ -253,6 +307,8 @@ def summarize(rows: list[dict[str, Any]], budget_ms: int | None) -> dict[str, An
         "budget_ms": budget_ms,
         "slow": sorted(r["qid"] for r in ok if r.get("slow")),
         "served_from_storage": sum(1 for r in ok if "storage" in r["served_from"]),
+        # From the path report. `unknown` is a server with no path report.
+        "answered_by": {k or "unknown": kinds.count(k) for k in sorted(set(kinds), key=str)},
         "live_fallback": sorted(r["qid"] for r in ok if "live_fallback" in r["served_from"]),
         "unstable_rows": sorted(r["qid"] for r in ok if r.get("unstable_rows")),
         "by_source": dict(sorted(by_source.items(), key=lambda kv: -kv[1]["total_ms"])),
