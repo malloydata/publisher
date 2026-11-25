@@ -205,6 +205,7 @@ export async function semanticHarness(): Promise<SemanticHarness> {
          const environment = {
             getPackage: async () => pkg,
             getStaleCompileErrors: () => stale,
+            listApiConnections: () => [],
          } as unknown as Environment;
          const store: EnvironmentCatalog = {
             getEnvironment: async () => environment,

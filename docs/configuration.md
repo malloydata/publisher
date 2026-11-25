@@ -109,7 +109,7 @@ and this table is generated from it. The names are today's; the configuration de
 | `root` | `PUBLISHER_ROOT` | `--root <dir>` | `SERVER_ROOT`, `--server_root` | `.` (cwd) | Where Publisher keeps its own storage (`publisher_data/`, `publisher.db`), and where it looks for `publisher.config.json` when `--config` is not passed. |
 | `config` | `PUBLISHER_CONFIG` | `--config <path>` | `PUBLISHER_CONFIG_PATH` | _unset_ | Path to the `publisher.config.json` to read, instead of the one in the server root. A path that does not exist is reported at startup, and the server starts with no environments. |
 | `useBundledDefault` | `PUBLISHER_USE_BUNDLED_DEFAULT` | `--use-bundled-default`, `--no-use-bundled-default` |  | on unless `root` or `config` is given; never in tests | Set to `true` to fall back to the sample config bundled inside the installed package when neither `--config` is passed nor a `publisher.config.json` exists at the server root. The server sets this itself on a zero-flag start (so a bare `npx @malloy-publisher/server` boots the samples); passing `--config` or `--server_root` leaves it unset. Because the bundled config lives inside the install, relative package locations resolve against the server root in this mode rather than the config's directory. |
-| `initializeStorage` | `PUBLISHER_INITIALIZE_STORAGE` | `--initialize-storage`, `--no-initialize-storage`, `--init` | `INITIALIZE_STORAGE` | `false` | Set to `true` (or pass `--init`) to **wipe persisted storage** (`publisher_data/`) and re-sync it from the config on boot. A first boot with empty storage loads the config automatically, so you only need this to reset state or pick up config changes. Also exposed as the `start:init` / `start:dev:init` scripts. |
+| `initializeStorage` | `PUBLISHER_INITIALIZE_STORAGE` | `--initialize-storage`, `--no-initialize-storage`, `--init` | `INITIALIZE_STORAGE` | `false` | Set to `true` (or pass `--init`) to **wipe persisted storage** (`publisher_data/`) and re-sync it from the config on boot. A first boot with empty storage loads the config automatically, so you only need this to reset state or pick up config changes. The search index (stored value reads, embeddings and LLM output) is kept, since each entry is reused only while what it was built from is unchanged; the rows of a package the config no longer lists are deleted. Also exposed as the `start:init` / `start:dev:init` scripts. |
 | `watchEnvironments` | `PUBLISHER_WATCH_ENVIRONMENTS` | `--watch-environments <name>`, `--watch-env <name>` | `PUBLISHER_WATCH` | _none_ | Dev only. Mount the named environment's local-dir packages in place (a symlink, not a copy) and watch them, so edits to your source recompile that package and live-reload any open pages. Repeat the flag or use a comma-separated list to mount several in place; only the first one auto-reloads. Leave unset in production, where packages are copied and stay decoupled from their source. |
 | `mcp.port` | `PUBLISHER_MCP_PORT` | `--mcp-port <n>` | `MCP_PORT`, `--mcp_port` | `4040` | MCP HTTP port. Serves the MCP tools (`list_packages`, `get_context`, `execute_query`, `compile_model`, `reload_package`, `get_status`, `search_malloy_docs`, `search_database_schema`, `get_skill`, `get_agent`, `list_reports`, `show_report`, and the panel-only `report_api`) and the agent skills as MCP prompts. `list_packages` is listed first because it is where an agent starts: `get_context` requires an environment and package in its `scopes`, and those names come from there. |
 | `mcp.host` | `PUBLISHER_MCP_HOST` | `--mcp-host <addr>` | `MCP_HOST`, `--mcp_host` | `host` when given, else `127.0.0.1` | Host binding for the MCP server. Takes precedence over `PUBLISHER_HOST`. Set `0.0.0.0` to expose MCP on the network, behind an authenticating gateway. |
@@ -184,7 +184,7 @@ and this table is generated from it. The names are today's; the configuration de
 | `retrieval.embedding.location` | `PUBLISHER_RETRIEVAL_EMBEDDING_LOCATION` | `--retrieval-embedding-location <value>` |  | _unset_ | Google Cloud region of a vertex embedding model. |
 | `retrieval.embedding.queryPrefix` | `PUBLISHER_RETRIEVAL_EMBEDDING_QUERY_PREFIX` | `--retrieval-embedding-query-prefix <value>` |  | empty | Text put before a search query, as written (spaces included). |
 | `retrieval.embedding.documentPrefix` | `PUBLISHER_RETRIEVAL_EMBEDDING_DOCUMENT_PREFIX` | `--retrieval-embedding-document-prefix <value>` |  | empty | Text put before indexed text, as written; a change re-embeds every package. |
-| `retrieval.egress.preset` | `PUBLISHER_RETRIEVAL_EGRESS_PRESET` | `--retrieval-egress-preset <value>` |  | `default` | `default` sends entity names, doc text (`#(doc)`, `#"`, and the database's descriptions on a connection with `dbmeta` on) and schema context. `full` also sends code and dimension values. Access predicates (`#(access_filter)`, `#(authorize)`) never leave, whatever this says. |
+| `retrieval.egress.preset` | `PUBLISHER_RETRIEVAL_EGRESS_PRESET` | `--retrieval-egress-preset <value>` |  | _ignored_ | Retired. An earlier release sent `#(index)` values to the embedding provider and the LLM only under `full`. Now the `#(index)` tag decides, as it does on a hosted index. To keep values on the machine, leave `EMBEDDING_API_KEY` unset, set `retrieval.fcj.valueEmbeddings` to `false` in the package's `publisher.json`, or set `retrieval.dimensionValues.enabled` to `false`. Access predicates (`#(access_filter)`, `#(authorize)`) never leave. |
 | `retrieval.dimensionValues.enabled` | `PUBLISHER_RETRIEVAL_DIMENSION_VALUES_ENABLED` | `--retrieval-dimension-values-enabled`, `--no-retrieval-dimension-values-enabled` |  | `true` | Value search: off reads no #(index) value and answers a dimensional_value target with "No index". |
 | `retrieval.embedding.apiKey` | `PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY` |  | `EMBEDDING_API_KEY` | _unset_ | Turns on embedding closeness in `get_context`'s search, and embedding ranking in `search_database_schema` (see below). Sent as a bearer token to the embedding endpoint. Unset: `get_context` ranks by keyword and stored values only. Must be set explicitly; an ambient `OPENAI_API_KEY` is deliberately not read. See "How get_context searches" below. |
 | `retrieval.embedding.model` | `PUBLISHER_RETRIEVAL_EMBEDDING_MODEL` | `--retrieval-embedding-model <value>` | `EMBEDDING_MODEL` | `text-embedding-3-small` for OpenAI | Embedding model name sent to the endpoint. Precedence is the same as for every setting: a flag, then a variable, then `retrieval.embedding.model` in `publisher.config.json`. |
@@ -340,14 +340,15 @@ What to know before turning it on:
 
 - What leaves the machine: for each field, its name, its doc text (`#(doc)`, else `#"`, else the database's
   description on a connection with `dbmeta` on) and the sentences derived from
-  them; under `egress.preset: "full"` only, the values of `#(index)` dimensions on ungated sources
-  (`fcj.valueEmbeddings: false` stops that too); and the query strings agents pass to `get_context`. Model source code, other data and query
+  them; the values of `#(index)` dimensions on ungated sources (`fcj.valueEmbeddings: false` in a
+  package, or `retrieval.dimensionValues.enabled: false`, stops that); and the query strings agents pass to `get_context`. Model source code, other data and query
   results are never sent. Point `EMBEDDING_API_BASE` at a local OpenAI-compatible server (Ollama, vLLM)
   to keep everything on the machine; with a local server also set `EMBEDDING_MODEL` to a model that
   server actually serves, since the default names an OpenAI model.
 - Storage: vectors are stored in the server's own `publisher.db`, keyed by a content hash, so only new
-  or changed text is embedded, across restarts too. `--init` wipes them with the rest of persisted
-  storage; the only cost of a wipe is embedding again.
+  or changed text is embedded, across restarts too. `--init` keeps them, and deletes only those of a
+  package the config no longer lists. To embed everything again, stop the server and delete
+  `publisher.db`.
 - When indexing starts: when a package loads, at boot, on add or install, and on reload, without waiting
   for a question. Each batch of up to 256 rows is saved as it returns, so a failure part-way keeps what
   was saved. A 429, a 5xx or a timeout is retried up to five times with exponential backoff and jitter,
@@ -405,8 +406,7 @@ credentials, what may leave the machine and the spend ceilings are all in the op
       "dimensions": 512,
       "queryPrefix": "",
       "documentPrefix": ""
-    },
-    "egress": { "preset": "default" }
+    }
   }
 }
 ```
@@ -423,8 +423,8 @@ credentials, what may leave the machine and the spend ceilings are all in the op
 | `embedding.provider`                                                | One of `openai`, `openai-compatible`, `ollama`, `google`, `vertex` (Anthropic has no embeddings API). Omitted: the `EMBEDDING_*` variables decide, as before.                                                                          |
 | `embedding.model`, `dimensions`, `baseUrl`, `projectId`, `location` | As for `llm`. `model` defaults to `text-embedding-3-small` for `openai` and is required for the other providers. `dimensions` is omitted from requests when unset.                                                                     |
 | `embedding.queryPrefix` / `documentPrefix`                          | Text put before a search query / before indexed text (default empty). `nomic-embed-text` wants `search_query: ` and `search_document: `. Changing `documentPrefix` re-embeds; changing `queryPrefix` does not.                         |
-| `egress.preset`                                                     | `default`: entity names, doc text (an entity's `#(doc)` lines, else its `#"` doc strings, else the database's description of its table or column on a connection with `dbmeta` on) and schema context may be sent to the LLM. `full`: also the field's code and matched dimension values. Access predicates (`#(access_filter)`, `#(authorize)`) are never sent, and there is no setting for that. |
 | `dimensionValues.enabled`                                           | See "Dimension value search".                                                                                                                                                                                                          |
+| `dimensionValues.givens`                                            | See "Dimension value search".                                                                                                                                                                                                          |
 
 **Keys.** Secrets are environment variables only, never file entries: `LLM_API_KEY` for the chat
 model and `EMBEDDING_API_KEY` for the embedding model (they are separate because the two are often
@@ -445,8 +445,9 @@ answers without the judge, the index-time questions and the source summaries.
 **Validation.** A bad value stops the server at startup with a message that names the key, what
 was expected and a fix, for example `Invalid retrieval.llm.provider: expected one of openai,
 openai-compatible, ollama, anthropic, google, vertex, got "cohere". Fix: ...`. Inside `llm`,
-`embedding`, `egress` and `dimensionValues`, and at the top of the `retrieval` block, an unknown key is an
-error that lists the valid ones, so a typo stops the server instead of being ignored.
+`embedding` and `dimensionValues`, and at the top of the `retrieval` block, an unknown key is an
+error that lists the valid ones, so a typo stops the server instead of being ignored. The one exception is
+`egress`, which an earlier release read: it loads, does nothing, and logs a warning at startup.
 
 **Providers.** Each provider is called directly over HTTPS, with no vendor SDK. Failed calls retry
 the same way for every provider: a 429, 408, 5xx or timeout is retried up to five times with
@@ -515,8 +516,8 @@ between releases.
 | `fcj.perTarget`        | `30`          | Candidates kept per target after the find step.                                                                                                                                                                                                                                                                                                      |
 | `fcj.keyword`          | `true`        | Rank by keyword (BM25) beside embedding closeness.                                                                                                                                                                                                                                                                                                   |
 | `fcj.values`           | `true`        | Use the value index of `#(index)` dimensions and the value lists docs give.                                                                                                                                                                                                                                                                          |
-| `fcj.valueCap`         | `50000`       | Most values indexed per dimension, the most frequent kept.                                                                                                                                                                                                                                                                                           |
-| `fcj.valueEmbeddings`  | `true`        | Provisional. Also embed the stored values at index time, so a phrase finds a dimension by the meaning of its values (`sneakers` finds the dimension that stores `Athletic Shoes`). Only under `egress.preset: "full"`; a gated source's values are never embedded.                                                                                                                       |
+| `fcj.valueCap`         | `5000`        | Most values indexed per dimension, the most frequent kept.                                                                                                                                                                                                                                                                                           |
+| `fcj.valueEmbeddings`  | `true`        | Provisional. Also embed the stored values at index time, so a phrase finds a dimension by the meaning of its values (`sneakers` finds the dimension that stores `Athletic Shoes`). A gated source's values are never embedded.                                                                                                                       |
 | `fcj.connect`          | `list`        | Provisional. `list`: one judge call sees every target's best `fcj.listTopK` candidates, grouped by source. `clusters`: candidates are first grouped into at most `fcj.maxClusters` sources whose joins explain the targets together, and the judge picks inside each group.                                                                           |
 | `fcj.listTopK`         | `30`          | Provisional. With `connect: "list"`, candidates per target the judge sees.                                                                                                                                                                                                                                                                           |
 | `fcj.listUnion`        | `30`          | Provisional. With `connect: "list"`, a candidate ranked this high or better in the meaning list or the keyword list alone is also shown to the judge. `0` shows the fused top alone.                                                                                                                                                                 |
@@ -531,7 +532,7 @@ between releases.
 | `fcj.collapseCopies`   | `false`       | Provisional. A field an extension inherits unchanged is searched once, as the same field on the source it extends, but only when both sources hold the same rows.                                                                                                                                                                                      |
 | `fcj.splitBundles`     | `false`       | Provisional. A target whose `search_text` is a list ("state, city and zip of the venue") is also searched item by item. `fcj.splitItemPicks` (`0`, no cap) caps the picks kept per item.                                                                                                                                                              |
 | `fcj.dateRange`        | `false`       | Provisional. When the request names a date or time range, add up to two date or time fields of each source a returned measure sits on.                                                                                                                                                                                                               |
-| `fcj.questions`        | `auto`        | Index-time questions written by the LLM for each field, embedded as extra rows. As for `sourceSummary.enabled`. `fcj.questionsPrompt` (`questions`, `phrases` or `values`) picks the wording (`values` shows a field's stored values to the LLM only under `egress.preset: "full"`) and `fcj.questionsPerNode` (`3`) the count.                                                                                                              |
+| `fcj.questions`        | `auto`        | Index-time questions written by the LLM for each field, embedded as extra rows. As for `sourceSummary.enabled`. `fcj.questionsPrompt` (`questions`, `phrases` or `values`) picks the wording (`values` shows a field's stored values to the LLM) and `fcj.questionsPerNode` (`3`) the count.                                                                                                              |
 | `fcj.docParts`         | `auto`        | Index-time split of long docs by the LLM; by rules otherwise. As for `fcj.questions`.                                                                                                                                                                                                                                                                |
 | `fcj.judgeLlm`         | none          | Provisional. Send the judge's calls to this model (`{ "model": "..." }`) instead of `retrieval.llm.model`. Only the model name: the provider, host and key are always the server's `retrieval.llm`.                                                                                                                                                   |
 | `fcj.maxClusters`      | `3`           | With `connect: "clusters"`, most source groups (and so judge calls) per request.                                                                                                                                                                                                                                                                     |
@@ -542,17 +543,15 @@ between releases.
 
 The judge is one chat call per request (one per group with `connect: "clusters"`). It sees the targets
 verbatim, and for each target the candidates with their kind, type, source, route and full doc
-text, rules included. It never sees an access predicate or a field's code (unless `egress.preset` is
-`full`). A target the judge picks nothing for comes back in `unresolved_targets`, which is the agent's
+text, rules included. It never sees an access predicate or a field's code. A target the judge picks nothing for comes back in `unresolved_targets`, which is the agent's
 signal to ask or to search again.
 
 For a `dimensional_value` target, each candidate field says how its stored values matched (exact, words,
-typo or meaning) and their scores. Under the `full` preset it also lists the values themselves, each with
-a label, and the judge names the ones it means. A listed value it does not name is left out of the
+typo or meaning), their scores, and the values themselves, each with a label, and the judge names the
+ones it means. A listed value it does not name is left out of the
 answer; a value that holds a named one as whole words, and a value past the five it was shown, stay. It
 picks nothing when no listed value is the target's value or a form of it (a typo, a different case, an
-abbreviation, a synonym). Below `full` it never sees a value, so it names none and every matched value is
-returned.
+abbreviation, a synonym).
 
 **A search has 90 seconds.** One that runs out of time answers every target in `unresolved_targets`, with a
 warning that names a narrower scope to retry with (`scopes[].source`, and for a value
@@ -664,8 +663,9 @@ still be offered for it. Its card then carries no `values`, and a warning says i
 ungated sources, and the value lists a doc gives ("one of DTC, B2B, Amazon"), once, through the same
 call `execute_query` uses, and matches a phrase against them: the same string, the same after case,
 accents, punctuation and spacing, a partial phrase, and a typo (one edit in a word of 4 or 5 letters,
-two in a longer one). With an embedding provider, `fcj.valueEmbeddings` and `egress.preset: "full"` they
-are also matched by meaning; under the `default` preset no stored value leaves the server. A dimension no one tagged `#(index)` has no stored values to match.
+two in a longer one). With an embedding provider they are also matched by meaning: tagging a dimension
+`#(index)` is what allows its values to be sent to that provider, and `fcj.valueEmbeddings: false` keeps
+them on the server. A dimension no one tagged `#(index)` has no stored values to match.
 
 Reads run one at a time, at most 60 seconds each and 5 minutes for the whole build. A read the server
 refuses because it is at `PUBLISHER_MAX_CONCURRENT_QUERIES`, one that times out, and one the 5 minutes did
@@ -675,24 +675,76 @@ those dimensions, while the old one keeps answering. The cool-down is one minute
 build leaves values unread, up to an hour. Any other failed read (a query error, a missing table) is skipped until the package
 reloads, since reading again would fail the same way. A dimension that holds no values is not a failure.
 
-**Access.** A value is data, and a gate applies to it as it does to `execute_query`. A source with
-`#(authorize)` or `#(access_filter)` is never read at index time and its values are never embedded. A
-`dimensional_value` target that pins one of its dimensions reads the values when asked, through the query
-path, with the caller's givens:
+**Reads are stored and reused.** Each read is stored in the server's database, once per dimension and per
+combination of listed givens. A later build reuses it instead of reading again, whether after a model
+edit, a reload or a restart. A stored read is reused while it is less than 24 hours old and its source's
+compiled definition is unchanged, apart from docs and line positions. So editing a doc reads nothing.
+Changing anything else in a source (its table, a `where:`, a join, any field, a gate) reads that source's
+`#(index)` dimensions again, and other sources keep theirs. Listing one more report reads only that
+report. A source is read once for each combination of the listed givens it names, so a source that
+names none is read once. A read is also redone when a connection is pointed at another database,
+account or role; a rotated password or token does not count. `--init` keeps stored reads, apart from
+those of a package the config no longer lists.
 
-- `#(authorize)`: a caller whose givens do not pass gets no values from that source. The source still
-  returns, with its dimensions and no `values`, and a warning says the values were withheld.
-- `#(access_filter)`: values come only from rows the filter admits. With no givens the gate cannot apply
-  and the source is withheld.
-- `get_context` takes an optional `givens` argument, read only by this lookup, with the trust `execute_query`'s
-  `givens` has: the caller asserts them. See [authorize.md](authorize.md#security-model).
+**Access.** A value is data, and a gate applies to it as it does to `execute_query`.
+
+- **A source whose only gate splits rows by a given** is indexed for the values of that given you list
+  in `retrieval.dimensionValues.givens` (below), and skipped otherwise, with a server log line that names
+  the setting. That means every `#(access_filter)` term is `column = $GIVEN` over a scalar given, no
+  given in the source's model is secure, and no source it joins has an `#(authorize)` or a secure given.
+  An example is `#(access_filter) report_id = $REPORT_ID`. Each listed report is read through the gate,
+  like any query for that report, and each value is stored with its report id. A search returns a value
+  only to a caller whose `givens` name that report, as hosted Credible does. A number given's report id
+  is compared as a number (`7` and `"7.0"` match); any other given's is compared as text (`"001"` and
+  `"1"` do not). Nothing reads every report at once: on a production model that is a scan of the whole
+  table, and the cap would keep values for almost none of the reports.
+- **A source with an `#(authorize)` lock**, under the same rules, is read with the givens you list, and
+  its values are stored. A lock decides only whether a caller may query the source, never which rows,
+  so at search time the lock is checked against the caller's `givens` with the same check a query runs.
+  A caller it refuses gets none of the source's stored values. If the listed givens do not pass the
+  lock, the read is refused and the source is skipped.
+- **Any other gated source** is never read at index time and its values are never embedded. When a
+  `dimensional_value` target reaches one of its dimensions, because the target is scoped to it or because
+  the search picked it by its name or doc, the values are read when asked, through the query path, with
+  the caller's givens. The same read answers for a report-gated source's dimension when the caller's
+  report is not listed.
+  - `#(authorize)`: a caller whose givens do not pass gets no values from that source. The source still
+    returns, with its dimensions and no `values`, and a warning says the values were withheld.
+  - `#(access_filter)`: values come only from rows the filter admits. With no givens the gate cannot
+    apply and the source is withheld.
+
+  That read takes up to 2,000 values in no set order, so a rare value can be missed, and a dimension the
+  search did not pick is not read. For a report-gated source, listing the reports in
+  `retrieval.dimensionValues.givens` is the reliable path.
+- `get_context` takes an optional `givens` argument, with the trust `execute_query`'s `givens` has: the
+  caller asserts them. It is read by this lookup, and it picks which report's stored values a search
+  returns. See [authorize.md](authorize.md#security-model).
 
 A value search that pins no dimension says which gated sources it skipped.
 
-**Settings.** `retrieval.dimensionValues.enabled` in `publisher.config.json` (default `true`): `false`
-reads no `#(index)` value when a package's index is built, whatever the package's `fcj.values` says, and
-makes a `dimensional_value` target answer with the "No index for target_type" warning. It is the block's
-only key.
+**Settings.** Both live in `publisher.config.json`, the local server's own file, which publishing a
+package never carries.
+
+- `retrieval.dimensionValues.enabled` (default `true`): `false` reads no `#(index)` value when a
+  package's index is built, whatever the package's `fcj.values` says. A `dimensional_value` target then
+  answers with the "No index for target_type" warning.
+- `retrieval.dimensionValues.givens`: for local development against a large model. Per package, the
+  givens the index reads with, each one value or a list:
+
+  ```json
+  "retrieval": { "dimensionValues": { "givens": {
+    "campaigns": { "REPORT_ID": [1042, 1077] }
+  } } }
+  ```
+
+  Each indexed dimension is then read once for each combination of the listed values (at most 50),
+  with that combination as its givens and up to the cap for each read. A source gated by
+  `column = $GIVEN` gets only the listed reports' values. A source that filters on a given with a plain
+  `where:` and no default, which cannot be read at all without one, is read too. Each model is sent
+  only the givens it declares. A read that needs a given nobody listed is skipped, and the server log
+  names the given and this setting. Every read counts against the build's 5-minute budget above, so
+  list only the reports you are working on: on one production model, two reports took 160 seconds.
+  Changing the setting takes a restart. It is not a way to limit what hosted Credible indexes.
 
 ## Semantic ranking for `search_database_schema`
 
@@ -852,7 +904,7 @@ source, model, table, destination, connection or query.
 | `publisher_materialization_build_total{kind,tier,outcome,failure_class}` | Counter | One per source per run. `kind`: `materialize`, `persist`, `rollup`, `view`, `query` (a persisted named query), `pair`; `tier`: `database` (the source's own connection's database; `colocated` before this release) or `storage`; `outcome`: `built`, `reused`, `refused`, `failed`, `cancelled`; `failure_class`: `none` unless failed, else `deterministic`, `transient`, `unclassified` or `billed_read_lost` (the read was charged and its rows were not captured). |
 | `publisher_materialization_build_duration_ms{kind,tier,method}` | Histogram | How long each source build ran (`method` `full` or `delta`), failed ones included; a skipped incremental refresh is not timed. |
 | `publisher_materialization_build_read_bytes{tier}` | Histogram | Warehouse bytes a build scanned, when the warehouse reported a count. `tier` as on `build_total`. |
-| `publisher_materialization_incremental_step_total{step,reason}` | Counter | Refreshes of a `refresh="incremental"` source: `delta`, `seed` (a full rebuild, with why) or `skip` (with why). A seed's `reason` is `forced`, `no_boundary`, `lineage_changed`, `table_renamed`, `merge_unsupported`, `table_unreadable`, `table_emptied`, `shape_mismatch`, `ledger_unreadable`, `ledger_entry_malformed` (the host's echoed `buildInstructions.ledger` entry for the table was malformed and dropped, as against `no_boundary`, where it sent none), `plan_error`, `chained_storage`, `pair_parent_row`, `merge_key_not_unique` (a merge's delta read one `merge_key=` value on two rows of the source), `upstream_generation_skipped` (an incremental extension that cannot prove which build of its parent's table it last read, or that the parent reached that build by deltas alone since) or `upstream_watermark_differs` (an incremental extension on another watermark than its incremental parent's, whose parent's table changed); a skip's is `frontier_unreadable` or `not_advanced`. |
+| `publisher_materialization_incremental_step_total{step,reason}` | Counter | Refreshes of a `refresh="incremental"` source: `delta`, `seed` (a full rebuild, with why) or `skip` (with why). A seed's `reason` is `forced`, `no_boundary`, `lineage_changed`, `table_renamed`, `merge_unsupported`, `table_unreadable`, `table_emptied`, `shape_mismatch`, `ledger_unreadable`, `ledger_entry_malformed` (the host's echoed `buildInstructions.ledger` entry for the table was malformed and dropped, as against `no_boundary`, where it sent none), `ledger_unheld` (a standalone run found a recorded boundary on a table its pre-run read did not hold to its contract: a seed whose run never committed, or a destination the source left and came back to), `plan_error`, `chained_storage`, `pair_parent_row`, `merge_key_not_unique` (a merge's delta read one `merge_key=` value on two rows of the source), `upstream_generation_skipped` (an incremental extension that cannot prove which build of its parent's table it last read, or that the parent reached that build by deltas alone since) or `upstream_watermark_differs` (an incremental extension on another watermark than its incremental parent's, whose parent's table changed); a skip's is `frontier_unreadable` or `not_advanced`. |
 | `publisher_materialization_key_check_total{kind,outcome}` | Counter | Key checks a run made. `kind`: `inline_join` (an inlined join_one's key; `not_unique` fails the build), `rollup`, `parent` (a query source's primary key beside a rollup), `pair_leaf`, `stored`; `outcome`: `unique`, `not_unique`, `not_run`, `reused` (a pass the run held still described the table). Outside `inline_join`, `not_unique` and `not_run` leave the key repeated or unknown, so queries that need it unique are answered live. |
 | `publisher_materialization_eligibility_refused_total{reason}` | Counter | Valid declarations not built, every mechanism (`#@ persist`, `#(materialize)`, a persisted view or query, a rollup): once per declaration each time a plan is adopted (a load, a re-derivation after a connection edit, a run's check of its own plan), and the refusals only a run finds, by its `RefusedSource.reason`. |
 | `publisher_materialization_build_plan_compute_duration_ms{computed_in}` | Histogram | Deriving a package's build plan at load, in the package-load `worker` or on the `main_thread`. |

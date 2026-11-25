@@ -3074,6 +3074,76 @@
       ]
     }
   },
+  "ManifestBindFailedError (not found)": {
+    "class": "ManifestBindFailedError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "The build manifest s3://bucket/manifest.json could not be bound (No build manifest at s3://bucket/manifest.json), so it was not applied: the package serves what it served before.",
+        "reason": "MANIFEST_NOT_FOUND"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: The build manifest <storage path> could not be bound (No build manifest at <storage path>), so it was not applied: the package serves what it served before.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "reason": "MANIFEST_NOT_FOUND",
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: The build manifest <storage path> could not be bound (No build manifest at <storage path>), so it was not applied: the package serves what it served before.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "ManifestBindFailedError (invalid)": {
+    "class": "ManifestBindFailedError",
+    "http": {
+      "status": 422,
+      "json": {
+        "code": 422,
+        "message": "The build manifest s3://bucket/manifest.json could not be bound (not a JSON object), so it was not applied: the package serves what it served before.",
+        "reason": "MANIFEST_INVALID"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: The build manifest <storage path> could not be bound (not a JSON object), so it was not applied: the package serves what it served before.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "reason": "MANIFEST_INVALID",
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: The build manifest <storage path> could not be bound (not a JSON object), so it was not applied: the package serves what it served before.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "WriteRollbackFailedError": {
     "class": "WriteRollbackFailedError",
     "http": {

@@ -2517,17 +2517,18 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("d: "),
       },
    ],
+   // Retired: a set preset is accepted and ignored, never in force.
    "retrieval.egress.preset": [
-      { name: "unset", expect: value("default") },
+      { name: "unset", expect: value(false) },
       {
          name: "the file",
          file: { retrieval: { egress: { preset: "full" } } },
-         expect: value("full"),
+         expect: value(true),
       },
       {
          name: "PUBLISHER_RETRIEVAL_EGRESS_PRESET",
          env: { PUBLISHER_RETRIEVAL_EGRESS_PRESET: "full" },
-         expect: value("full"),
+         expect: value(true),
       },
       {
          name: "not a preset",
@@ -2552,6 +2553,27 @@ export const CONTRACT: Record<string, Case[]> = {
          name: "a string in the file is still refused",
          file: { retrieval: { dimensionValues: { enabled: "false" } } },
          expect: fails("retrieval.dimensionValues.enabled"),
+      },
+   ],
+   "retrieval.dimensionValues.givens": [
+      { name: "unset", expect: value({}) },
+      {
+         name: "the file, one value read as a list of one",
+         file: {
+            retrieval: {
+               dimensionValues: { givens: { reports: { REPORT_ID: 7 } } },
+            },
+         },
+         expect: value({ reports: { REPORT_ID: [7] } }),
+      },
+      {
+         name: "a given with no value is refused",
+         file: {
+            retrieval: {
+               dimensionValues: { givens: { reports: { REPORT_ID: [] } } },
+            },
+         },
+         expect: fails("retrieval.dimensionValues.givens.reports.REPORT_ID"),
       },
    ],
 };

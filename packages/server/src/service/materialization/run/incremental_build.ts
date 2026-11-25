@@ -213,6 +213,19 @@ export interface IncrementalRunContext {
       string,
       Pick<ManifestEntry, "builtAt" | "ledger">
    >;
+   /**
+    * For a standalone run: the tables its pre-run read held to their
+    * contracts for a delta to advance (deriveHoldingCarried's `advanced`),
+    * by content address. A source whose recorded boundary names any other
+    * table, or that is not here at all, is reseeded rather than advanced
+    * from its ledger (`ledger_unheld`): a ledger outlives a run that failed
+    * before it committed, and a table a source left, and nothing read
+    * either. Absent when the caller supplies the ledger.
+    */
+   heldAdvanced?: ReadonlyMap<
+      string,
+      Pick<ManifestEntry, "physicalTableName" | "storageDestinationName">
+   >;
 }
 
 /** The `LedgerEntry` keys this release reads; any other key is an extension. */
@@ -471,6 +484,11 @@ export async function planSourceRefresh(params: {
          };
       }
    }
+   const unheld =
+      ledgerEntry !== null &&
+      !forceRefresh &&
+      !context.callerLedger &&
+      !heldForDelta(context, lineage);
    // Keyed on the TARGET dialect, because the version floor is about where the
    // MERGE runs (a `storage=` source reads Postgres but writes DuckDB). Probed
    // only when it can matter: the version gates MERGE alone, and with no
@@ -478,7 +496,8 @@ export async function planSourceRefresh(params: {
    const postgresVersionNum =
       lineage.strategy === "merge" &&
       capabilitiesOf(target.dialect).mergeGatedByServerVersion &&
-      ledgerEntry !== null
+      ledgerEntry !== null &&
+      !unheld
          ? await probeServerVersion(target.runner, target.dialect)
          : undefined;
    const upstream = coordinateWithParent({
@@ -504,23 +523,32 @@ export async function planSourceRefresh(params: {
       );
    }
    let step: IncrementalStep;
-   try {
-      step = await planIncrementalStep({
-         target,
-         lineage,
-         ledgerEntry,
-         forceRefresh,
-         now: context.now,
-         columns: params.columns,
-         postgresVersionNum,
-         ...(upstream ? { upstream } : {}),
-      });
-   } catch (err) {
-      return {
+   if (unheld) {
+      step = {
          mode: "seed",
-         reasonCode: "plan_error",
-         reason: `the delta could not be planned (${errMessage(err)})`,
+         reasonCode: "ledger_unheld",
+         reason:
+            "the table its recorded boundary names was not held to its contract before the run",
       };
+   } else {
+      try {
+         step = await planIncrementalStep({
+            target,
+            lineage,
+            ledgerEntry,
+            forceRefresh,
+            now: context.now,
+            columns: params.columns,
+            postgresVersionNum,
+            ...(upstream ? { upstream } : {}),
+         });
+      } catch (err) {
+         return {
+            mode: "seed",
+            reasonCode: "plan_error",
+            reason: `the delta could not be planned (${errMessage(err)})`,
+         };
+      }
    }
    noteStep(context, lineage, ledgerEntry, step, params.sourceName);
    // A caller-supplied entry that does not describe its source is the caller's
@@ -541,6 +569,26 @@ export async function planSourceRefresh(params: {
       );
    }
    return step;
+}
+
+/**
+ * Whether the run's pre-run read held the table `lineage` names, the same
+ * name in the same destination, for a delta to advance
+ * ({@link IncrementalRunContext.heldAdvanced}). True when the run keeps no
+ * such set (a caller-supplied ledger, or a run that reads none).
+ */
+function heldForDelta(
+   context: IncrementalRunContext,
+   lineage: IncrementalLineage,
+): boolean {
+   if (context.heldAdvanced === undefined) return true;
+   const held = context.heldAdvanced.get(lineage.sourceEntityId);
+   return (
+      held !== undefined &&
+      held.physicalTableName === lineage.physicalTableName &&
+      (held.storageDestinationName ?? undefined) ===
+         (lineage.storageDestinationName ?? undefined)
+   );
 }
 
 /**
