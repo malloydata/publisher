@@ -593,7 +593,7 @@ export async function withDestinationSession<T>(
  * other work in a pod sized for it: a memory cap below the pod's (the
  * operator's own `duckdb.memoryLimit` when that is lower), a spill cap under
  * its ephemeral storage, unordered output (so the writer streams), and
- * metadata caches for the many small reads of a Parquet scan.
+ * the HTTP metadata cache for the many small reads of a remote scan.
  */
 export async function applyLoadSessionSettings(
    session: DuckDBConnection,
@@ -609,8 +609,8 @@ export async function applyLoadSessionSettings(
       `memory_limit='${escapeSQL(memoryLimit)}'`,
       `max_temp_directory_size='${escapeSQL(settings.get("admin.maxTempDirectorySize"))}'`,
       "preserve_insertion_order=false",
+      // No parquet_metadata_cache: DuckDB 1.5.5 fails the second read of an encrypted file it cached.
       "enable_http_metadata_cache=true",
-      "parquet_metadata_cache=true",
    ]) {
       await session.runSQL(`SET ${setting}`);
    }

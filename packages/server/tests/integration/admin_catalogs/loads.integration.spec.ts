@@ -232,7 +232,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
       await admin.createCatalog({
          name: CATALOG,
          dataPath,
-         encrypted: false,
+         encrypted: true,
          schemas: ["s"],
       });
       fixtures = new DuckDBConnection(
@@ -267,6 +267,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          const second = await parquet(
             "SELECT * FROM (VALUES (2, 'changed'), (5, 'v5'), (6, 'new')) t(id, v)",
          );
+         expect(await dataFiles("basic")).toBeGreaterThan(0);
          expect(await merge("basic", [second])).toMatchObject({
             rowsInserted: 1,
             rowsReplaced: 1,
@@ -283,6 +284,14 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             { id: 5, v: "v5" },
             { id: 6, v: "new" },
          ]);
+         expect(await merge("basic", [second])).toMatchObject({
+            rowsInserted: 0,
+            rowsReplaced: 0,
+            rowsUnchanged: 3,
+            rowsDeleted: 0,
+            rowCount: 6,
+            cursorMax: null,
+         });
       });
 
       it("keeps the latest row of a key, across objects by their order and within one by its row", async () => {

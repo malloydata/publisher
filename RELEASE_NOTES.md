@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a load into an existing table of an encrypted catalog no longer crashes the admin server
+
+**[fix] A merge or keyed replace into a table that already exists no longer aborts the process when the catalog is encrypted.** Catalogs are encrypted by default. Load sessions turned on DuckDB's Parquet metadata cache, and DuckDB 1.5.5 fails the second read of an encrypted Parquet file it has cached. A merge into an existing table reads its target more than once, even when it changes nothing, so the failure invalidated the database and took the whole admin server down with it. Load sessions no longer use that cache. On 0.18.0 through 0.18.2, a merge or keyed replace into an existing table of an encrypted catalog restarts the admin server, so anyone using admin loads should skip those versions.
+
 ## [0.18.2] — a wide manifest bind no longer holds the main thread
 
 **[fix] Binding a manifest with many `storage=` tables no longer stalls the server.** Since 0.17.3 a bind recorded every named source's scope facts for every bound table in one main-thread task. On a package with many sources and dozens of bound tables that held the event loop for seconds or longer, long enough for a health check to time out. The bind now walks each source once, reuses that walk for every bound table the source's scope does not read, and yields to the event loop as it goes. What a query reads is unchanged.
