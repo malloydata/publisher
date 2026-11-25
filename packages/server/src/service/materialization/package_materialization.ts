@@ -2004,8 +2004,9 @@ export class PackageMaterialization {
    /**
     * Recompute the snapshot and, when its bindings changed (or for models a
     * reload just installed), hand every model its served copy's context and
-    * have it compile its served copy over the snapshot now, so a copy that
-    * does not compile is a package warning before any query. Never throws.
+    * have it compile its served copy over the snapshot once any commit in
+    * flight is done, so a copy that does not compile is a package warning
+    * before any query. Never throws.
     * Models read the snapshot itself per query, through their policy
     * ({@link wireServingResolvers}).
     */
@@ -2013,10 +2014,16 @@ export class PackageMaterialization {
       const { bindings } = this.snapshot();
       if (bindings === this.publishedBindings && !models) return;
       this.publishedBindings = bindings;
-      for (const model of this.owner.models().values()) {
-         this.setServedCopyContextOn(model);
-         void model.prepareServedCopy();
-      }
+      const targets = [...this.owner.models().values()];
+      for (const model of targets) this.setServedCopyContextOn(model);
+      // Behind any commit in flight, as a lapse is: run now, each copy and
+      // its scope facts would be recorded over the snapshot from before that
+      // commit's bind (`servedSnapshot`), and could land after the commit's.
+      const run = this.commitChain.then(async () => {
+         if (this.disposed) return;
+         await Promise.all(targets.map((model) => model.prepareServedCopy()));
+      });
+      this.commitChain = run.catch(() => undefined);
       this.bindTypeFindings(bindings);
       this.scheduleLapse();
    }

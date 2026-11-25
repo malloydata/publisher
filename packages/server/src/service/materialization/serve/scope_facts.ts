@@ -104,8 +104,23 @@ function disjoint(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
    return true;
 }
 
-/** The recording each runtime last started, so an older one finishing later is dropped. */
-const generations = new WeakMap<object, number>();
+/** Walks taken and reused since the last read; see {@link takeScopeFactWalksForTesting}. */
+const walks = { walked: 0, reused: 0 };
+
+/**
+ * Visible for tests: how many gate-read walks recordings took over a bound
+ * set, and how many reused a source's first walk instead, since the last
+ * call. Do NOT call from production code.
+ */
+export function takeScopeFactWalksForTesting(): {
+   walked: number;
+   reused: number;
+} {
+   const taken = { ...walks };
+   walks.walked = 0;
+   walks.reused = 0;
+   return taken;
+}
 
 /**
  * Record, for `runtime`'s model, every named source's scope facts over the
@@ -122,8 +137,6 @@ export async function recordScopeFacts(
    args: { modelDef: ModelDef; snapshot: Snapshot; lane?: ScopeLane },
 ): Promise<void> {
    const { modelDef, snapshot, lane } = args;
-   const generation = (generations.get(runtime) ?? 0) + 1;
-   generations.set(runtime, generation);
    const yielder = createEventLoopYielder();
    const flags = new Map<string, SourceFlags>();
    const reads = new Map<string, GateReads | undefined>();
@@ -164,11 +177,17 @@ export async function recordScopeFacts(
       const readsOver = (
          set: ReadonlySet<string>,
          rerooted: ReadonlySet<string>,
-      ): GateReads | undefined =>
-         disjoint(set, askedStored.asked) &&
-         disjoint(rerooted, askedRerooted.asked)
-            ? none
-            : gateReadsOfSource(struct, modelDef, set, rerooted);
+      ): GateReads | undefined => {
+         if (
+            disjoint(set, askedStored.asked) &&
+            disjoint(rerooted, askedRerooted.asked)
+         ) {
+            walks.reused++;
+            return none;
+         }
+         walks.walked++;
+         return gateReadsOfSource(struct, modelDef, set, rerooted);
+      };
       for (const set of storedSets) {
          for (const rerooted of lane ? [empty, lane.rerooted] : [empty]) {
             const key = readsKey(name, set, rerooted);
@@ -185,7 +204,6 @@ export async function recordScopeFacts(
          );
       }
    }
-   if (generations.get(runtime) !== generation) return;
    recorded.set(runtime, {
       snapshot,
       tables: tablesOf(snapshot),

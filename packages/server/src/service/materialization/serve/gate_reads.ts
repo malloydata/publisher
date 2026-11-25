@@ -35,7 +35,11 @@ import { malloyIdentifiers } from "../../query_text";
 
 import { fieldPathsIn } from "./gate_paths";
 import type { ColumnOrigin, GateReads } from "./gate_reads_types";
-import { storedUpstreamResolver } from "./stored_upstream";
+import {
+   type IdMembership,
+   querySourceIDs,
+   storedUpstreamResolver,
+} from "./stored_upstream";
 import type { ColumnContract } from "../domain/column_contract";
 
 /** The names a gate's text reads: each identifier it names, fields or not. */
@@ -361,12 +365,12 @@ class GateReadWalk {
 
    constructor(
       private readonly modelDef: unknown,
-      private readonly stored: ReadonlySet<string>,
+      private readonly stored: IdMembership,
       /**
        * The sources the answer's compile re-rooted on their stored tables,
        * by `sourceID`, read or not ({@link scopeJoins}).
        */
-      private readonly rerooted: ReadonlySet<string> = new Set(),
+      private readonly rerooted: IdMembership = new Set(),
    ) {
       this.upstreamOf = storedUpstreamResolver(modelDef, stored);
    }
@@ -690,31 +694,9 @@ class GateReadWalk {
       }
       if (s?.query === undefined) return false;
       const query = JSON.stringify(s.query);
-      return this.storedQueries().has(query);
-   }
-
-   /** The queries of the stored query-shaped sources the model names. */
-   private storedQueriesMemo?: Set<string>;
-   private storedQueries(): Set<string> {
-      if (this.storedQueriesMemo) return this.storedQueriesMemo;
-      const out = new Set<string>();
-      const contents =
-         (this.modelDef as { contents?: Record<string, unknown> } | undefined)
-            ?.contents ?? {};
-      for (const c of Object.values(contents)) {
-         const d = c as { sourceID?: unknown; query?: unknown } | undefined;
-         // `query` first: the stored set is asked only about the sources
-         // that could answer (scope_facts.ts reads what a walk asked).
-         if (
-            typeof d?.sourceID === "string" &&
-            d.query !== undefined &&
-            this.stored.has(d.sourceID)
-         ) {
-            out.add(JSON.stringify(d.query));
-         }
-      }
-      this.storedQueriesMemo = out;
-      return out;
+      return (querySourceIDs(this.modelDef).get(query) ?? []).some((id) =>
+         this.stored.has(id),
+      );
    }
 
    private tooDeep(): boolean {
@@ -1678,14 +1660,14 @@ export function gateReads(
    struct: unknown,
    exprs: readonly string[],
    modelDef?: unknown,
-   stored: ReadonlySet<string> = new Set(),
+   stored: IdMembership = new Set(),
    /**
     * The gate texts the warehouse compares (the row filters): a lock is
     * decided in Publisher. Absent, every text is taken as one.
     */
    rowFilterExprs: readonly string[] = exprs,
    /** The sources the answer's compile re-rooted on their tables, read or not. */
-   rerooted: ReadonlySet<string> = new Set(),
+   rerooted: IdMembership = new Set(),
 ): GateReads {
    const walk = new GateReadWalk(modelDef, stored, rerooted);
    const read = gatePaths(exprs);
@@ -1862,12 +1844,12 @@ export function gateColumnsExactOf(
 export async function gateReadsOfQuery(
    runnable: QueryMaterializer,
    /** The sources whose tables the answer reads, by `sourceID`. */
-   stored: ReadonlySet<string> = new Set(),
+   stored: IdMembership = new Set(),
    /**
     * The sources the answer's compile re-rooted on their tables, read or
     * not, by `sourceID`: a join to one never re-applies its own query.
     */
-   rerooted: ReadonlySet<string> = new Set(),
+   rerooted: IdMembership = new Set(),
 ): Promise<GateReads | undefined> {
    try {
       const prepared = await readPreparedQuery(runnable);
@@ -1890,8 +1872,8 @@ export async function gateReadsOfQuery(
 export function gateReadsOfSource(
    struct: unknown,
    modelDef: unknown,
-   stored: ReadonlySet<string> = new Set(),
-   rerooted: ReadonlySet<string> = new Set(),
+   stored: IdMembership = new Set(),
+   rerooted: IdMembership = new Set(),
 ): GateReads | undefined {
    try {
       const exprs = entryPointGateExprs(struct as never, modelDef as never);
@@ -1919,7 +1901,7 @@ export function gateReadsOfSource(
 export async function queryFilterReadsOfQuery(
    runnable: QueryMaterializer,
    /** The sources whose tables the answer reads, by `sourceID`. */
-   stored: ReadonlySet<string>,
+   stored: IdMembership,
    options: {
       /** The first stage the answer applies to a stored table. */
       fromStage: number;

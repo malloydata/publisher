@@ -18,7 +18,11 @@ import {
 } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { makeSnapshot } from "../domain/binding";
-import { recordScopeFacts, scopeFactsOf } from "./scope_facts";
+import {
+   recordScopeFacts,
+   scopeFactsOf,
+   takeScopeFactWalksForTesting,
+} from "./scope_facts";
 
 const ROOT = "file:///scope-facts-main-thread/";
 const FACTS = 4;
@@ -116,7 +120,7 @@ describe("recording a wide bind's scope facts", () => {
       await duckdb.close();
    });
 
-   it("never holds the event loop for long, every model recorded", async () => {
+   it("never holds the event loop for long, and walks a source again only for a bound set it reads", async () => {
       // Every model sees every rollup through its imports, as a package whose
       // models import a shared spine does.
       const rollupIDs = Array.from({ length: ROLLUPS }, (_, i) => {
@@ -155,6 +159,7 @@ describe("recording a wide bind's scope facts", () => {
          // Let the timer start before the first recording.
          await Bun.sleep(20);
          last = performance.now();
+         takeScopeFactWalksForTesting();
          for (const [j, modelDef] of models.entries()) {
             await recordScopeFacts(runtimes[j], { modelDef, snapshot, lane });
          }
@@ -164,9 +169,15 @@ describe("recording a wide bind's scope facts", () => {
          clearInterval(timer);
       }
 
+      const { walked, reused } = takeScopeFactWalksForTesting();
       for (const runtime of runtimes) {
          expect(scopeFactsOf(runtime, snapshot)).toBeDefined();
       }
       expect(maxBlockMs).toBeLessThan(MAX_BLOCK_MS);
+      // Each source's walk asks only about the sources it reads, so a bound
+      // set holding none of them reuses its first walk: most of a wide bind
+      // is reuse. The yield alone keeps the block short, not the CPU.
+      expect(walked).toBeGreaterThan(0);
+      expect(reused).toBeGreaterThan(10 * walked);
    });
 });
