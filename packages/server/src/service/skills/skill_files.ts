@@ -13,6 +13,8 @@ export const ASSET_PATH_MAX_CHARS = 200;
 export const ASSET_MAX_DEPTH = 8;
 /** Entries one walk may see, kept or not; the files `WalkBudget` names as always walked are outside it, and a skill's `reference/` has its own count of Markdown files of this size. */
 export const ASSET_MAX_ENTRIES = 1000;
+/** Entries of any kind read from a skill's `reference/`, real or linked, before the listing stops. */
+export const REFERENCE_MAX_EXAMINED = 10_000;
 
 const SKILL_MD = "SKILL.md";
 const REFERENCE_DIR = "reference";
@@ -182,7 +184,8 @@ type Zone = "root" | "reference" | "linked reference" | "assets" | "other";
  * descended, but every entry seen still counts against the budget; hitting a
  * bound adds a warning and keeps what was found so far. The Markdown files
  * directly in `reference/` are bounded by a count of their own, linked or not,
- * and `reference/` is listed no further than that.
+ * and `reference/` is listed no further than that, nor past
+ * `REFERENCE_MAX_EXAMINED` entries of any kind.
  */
 export function skillFiles(
    dir: string,
@@ -236,7 +239,7 @@ export function skillFiles(
       !entry.isDirectory() &&
       !builtInExcluded(entry.name, false) &&
       !matcher.ignores(relative);
-   // Stops one Markdown file past the cap, so a link to a huge directory is not listed in full; opendir does not sort, so which files survive a directory over the cap is unspecified.
+   // Stops one Markdown file past the cap, or one entry of any kind past REFERENCE_MAX_EXAMINED, so a link to a huge directory is not listed in full; opendir does not sort, so which files survive a directory over either is unspecified.
    const listReference = (absolute: string, rel: string): fs.Dirent[] => {
       const entries: fs.Dirent[] = [];
       const opened = fs.opendirSync(absolute);
@@ -247,6 +250,12 @@ export function skillFiles(
             entry !== null;
             entry = opened.readSync()
          ) {
+            if (entries.length >= REFERENCE_MAX_EXAMINED) {
+               warnings.push(
+                  `skill walk stopped in '${rel}': ${REFERENCE_DIR}/ holds more than ${REFERENCE_MAX_EXAMINED} entries, so the rest are not read`,
+               );
+               break;
+            }
             entries.push(entry);
             if (
                servedMarkdown(entry, `${rel}/${entry.name}`) &&

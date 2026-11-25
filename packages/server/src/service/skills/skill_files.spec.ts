@@ -10,6 +10,7 @@ import {
    ASSET_MAX_DEPTH,
    ASSET_MAX_ENTRIES,
    newWalkBudget,
+   REFERENCE_MAX_EXAMINED,
    skillFiles,
 } from "./skill_files";
 
@@ -550,6 +551,50 @@ describe("skillFiles", () => {
             // The spy must see the listing, or the bound below is vacuous.
             expect(reads).toBeGreaterThanOrEqual(ASSET_MAX_ENTRIES);
             expect(reads).toBeLessThanOrEqual(ASSET_MAX_ENTRIES + 1);
+         });
+
+         describe("past REFERENCE_MAX_EXAMINED entries of any kind", () => {
+            const fillOther = (count: number) => {
+               fs.mkdirSync(path.join(dir, "shared"), { recursive: true });
+               for (let i = 0; i < count; i++) {
+                  fs.writeFileSync(path.join(dir, "shared", `n${i}.txt`), "x");
+               }
+            };
+            const listLink = () => {
+               let warnings: string[] = [];
+               const reads = listingReads(() => {
+                  ({ warnings } = skillFiles(dir, {
+                     followReference: (target) => target,
+                  }));
+               });
+               return {
+                  reads,
+                  stopped: warnings.filter((w) =>
+                     w.includes(
+                        `reference/ holds more than ${REFERENCE_MAX_EXAMINED} entries`,
+                     ),
+                  ),
+               };
+            };
+
+            it("lists a link to twenty thousand other files and one Markdown file for no more than 10,001 entries, and says so", () => {
+               fillOther(2 * REFERENCE_MAX_EXAMINED);
+               write("shared/z.md");
+               link();
+               const { reads, stopped } = listLink();
+               // The spy must see the listing, or the bound below is vacuous.
+               expect(reads).toBeGreaterThanOrEqual(REFERENCE_MAX_EXAMINED);
+               expect(reads).toBeLessThanOrEqual(REFERENCE_MAX_EXAMINED + 1);
+               expect(stopped).toEqual([
+                  `skill walk stopped in 'reference': reference/ holds more than ${REFERENCE_MAX_EXAMINED} entries, so the rest are not read`,
+               ]);
+            });
+
+            it("says nothing about a directory of exactly that many", () => {
+               fillOther(REFERENCE_MAX_EXAMINED);
+               link();
+               expect(listLink().stopped).toEqual([]);
+            });
          });
       });
 
