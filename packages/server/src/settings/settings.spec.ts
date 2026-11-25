@@ -75,6 +75,7 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
    "query.maxConcurrent": "PUBLISHER_QUERY_MAX_CONCURRENT",
    "query.metadataEnabled": "PUBLISHER_QUERY_METADATA_ENABLED",
    "postgres.poolMax": "PUBLISHER_POSTGRES_POOL_MAX",
+   "snowflake.application": "PUBLISHER_SNOWFLAKE_APPLICATION",
    "memory.maxBytes": "PUBLISHER_MEMORY_MAX_BYTES",
    "memory.highWaterFraction": "PUBLISHER_MEMORY_HIGH_WATER_FRACTION",
    "memory.lowWaterFraction": "PUBLISHER_MEMORY_LOW_WATER_FRACTION",

@@ -12,9 +12,14 @@
 //   adbc.rpc.result_queue_size               <- ADBC_RESULT_QUEUE_SIZE
 //   adbc.snowflake.rpc.prefetch_concurrency  <- ADBC_PREFETCH_CONCURRENCY
 //
-// An unset or empty variable sets nothing for that option, so with neither
-// set the shim is a pure pass-through. Why this exists, the measurements, and
-// the condition for deleting it are in README.md next to this file.
+// and before each DatabaseInit it sets the client application name every
+// session reports, which the extension has no way to set either:
+//
+//   adbc.snowflake.sql.client_option.app_name <- PUBLISHER_SNOWFLAKE_APPLICATION
+//
+// An unset or empty variable sets nothing for that option, so with none of
+// them set the shim is a pure pass-through. Why this exists, the measurements,
+// and the condition for deleting it are in README.md next to this file.
 //
 // Lifetime: the extension opens one ADBC database per pooled Snowflake client,
 // and the driver manager runs AdbcDriverInit at each AdbcDatabaseInit — so the
@@ -43,7 +48,13 @@ static AdbcStatusCode (*real_StatementNew)(struct AdbcConnection*, struct AdbcSt
                                            struct AdbcError*);
 static AdbcStatusCode (*real_StatementSetOption)(struct AdbcStatement*, const char*, const char*,
                                                  struct AdbcError*);
+static AdbcStatusCode (*real_DatabaseInit)(struct AdbcDatabase*, struct AdbcError*);
+static AdbcStatusCode (*real_DatabaseSetOption)(struct AdbcDatabase*, const char*, const char*,
+                                                struct AdbcError*);
 static int debug_statements;
+
+#define APPLICATION_ENV "PUBLISHER_SNOWFLAKE_APPLICATION"
+#define APPLICATION_OPTION "adbc.snowflake.sql.client_option.app_name"
 
 // The driver rejects anything that is not a positive integer, but it does so per
 // statement and only in a log line; validating here keeps the startup line honest
@@ -63,9 +74,29 @@ static int is_positive_integer(const char* s) {
   return v > 0 && v <= INT_MAX;
 }
 
+// snowflake-sdk's rule for a client application name, which the server checks
+// at boot (config.ts, getSnowflakeApplication): a letter, then 1 to 50 letters,
+// digits, '.', '-' or '_'. The Go driver accepts anything; checking here keeps
+// both paths reporting the same names, and a name the server refused cannot
+// reach this process anyway, since that refusal fails startup.
+static int is_application_name(const char* s) {
+  if (!s) return 0;
+  if (!((*s >= 'A' && *s <= 'Z') || (*s >= 'a' && *s <= 'z'))) return 0;
+  size_t rest = 0;
+  for (const char* p = s + 1; *p; ++p, ++rest) {
+    char c = *p;
+    int ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+             c == '.' || c == '-' || c == '_';
+    if (!ok) return 0;
+  }
+  return rest >= 1 && rest <= 50;
+}
+
 // Exported for selftest.c, which cannot see the statics above.
 int AdbcShimIsPositiveInteger(const char* s) { return is_positive_integer(s); }
+int AdbcShimIsApplicationName(const char* s) { return is_application_name(s); }
 void* AdbcShimCapturedStatementNew(void) { return (void*)real_StatementNew; }
+void* AdbcShimCapturedDatabaseInit(void) { return (void*)real_DatabaseInit; }
 
 // The value to apply for an env var, or NULL when unset/empty/invalid.
 static const char* option_value(const char* env) {
@@ -80,6 +111,22 @@ static const char* describe(const char* env, char* buf, size_t len) {
   if (!v || !*v) return "(unset)";
   if (is_positive_integer(v)) return v;
   snprintf(buf, len, "(invalid \"%s\", ignored)", v);
+  return buf;
+}
+
+// The application name to apply, or NULL when unset/empty/invalid.
+static const char* application_value(void) {
+  const char* v = getenv(APPLICATION_ENV);
+  if (!v || !*v) return NULL;
+  return is_application_name(v) ? v : NULL;
+}
+
+// How the startup line describes the application name.
+static const char* describe_application(char* buf, size_t len) {
+  const char* v = getenv(APPLICATION_ENV);
+  if (!v || !*v) return "(unset)";
+  if (is_application_name(v)) return v;
+  snprintf(buf, len, "(invalid \"%.60s\", ignored)", v);
   return buf;
 }
 
@@ -133,6 +180,31 @@ static AdbcStatusCode shim_StatementNew(struct AdbcConnection* conn, struct Adbc
   return ADBC_STATUS_OK;
 }
 
+// The driver manager replays the extension's database options through
+// DatabaseSetOption and then calls DatabaseInit, which is where the Go driver
+// builds its session config; an option set here is the last one set. The
+// extension sets no app_name, so nothing overrides this one. The driver puts
+// its own "[ADBC][Go-<version>]" in front of the name.
+static AdbcStatusCode shim_DatabaseInit(struct AdbcDatabase* db, struct AdbcError* err) {
+  const char* application = application_value();
+  if (application) {
+    // Rejected is logged, not fatal: the session still opens, reporting the
+    // driver's default name, which is the behaviour without the shim.
+    struct AdbcError opt_err;
+    memset(&opt_err, 0, sizeof(opt_err));
+    AdbcStatusCode status = real_DatabaseSetOption(db, APPLICATION_OPTION, application, &opt_err);
+    if (status != ADBC_STATUS_OK) {
+      fprintf(stderr, LOG_PREFIX "%s=%s rejected by driver (status %d)%s%s\n", APPLICATION_OPTION,
+              application, (int)status, opt_err.message ? ": " : "",
+              opt_err.message ? opt_err.message : "");
+      if (opt_err.release) opt_err.release(&opt_err);
+    } else if (debug_statements) {
+      fprintf(stderr, LOG_PREFIX "%s=%s applied\n", APPLICATION_OPTION, application);
+    }
+  }
+  return real_DatabaseInit(db, err);
+}
+
 AdbcStatusCode AdbcDriverInit(int version, void* raw_driver, struct AdbcError* error) {
   char path[PATH_MAX];
   if (real_driver_path(path, sizeof(path)) != 0) return ADBC_STATUS_INTERNAL;
@@ -158,29 +230,42 @@ AdbcStatusCode AdbcDriverInit(int version, void* raw_driver, struct AdbcError* e
   struct AdbcDriver* driver = (struct AdbcDriver*)raw_driver;
   // Self-wrap guard. The real driver overwrites every slot today, but a manager
   // that reuses one AdbcDriver across inits with a driver that preserves populated
-  // slots would hand us our own StatementNew here — capturing it as "real" makes
-  // shim_StatementNew call itself forever. Already wrapped means nothing to do.
-  if (driver->StatementNew == shim_StatementNew) return ADBC_STATUS_OK;
+  // slots would hand us our own wrappers here — capturing one as "real" makes it
+  // call itself forever. Both slots are wrapped together, so either one already
+  // wrapped means nothing to do.
+  if (driver->StatementNew == shim_StatementNew || driver->DatabaseInit == shim_DatabaseInit)
+    return ADBC_STATUS_OK;
   real_StatementNew = driver->StatementNew;
   real_StatementSetOption = driver->StatementSetOption;
-  if (!real_StatementNew || !real_StatementSetOption) {
-    fprintf(stderr, LOG_PREFIX "driver table lacks StatementNew/StatementSetOption; passing through\n");
-    return ADBC_STATUS_OK;
+  if (real_StatementNew && real_StatementSetOption) {
+    driver->StatementNew = shim_StatementNew;
+  } else {
+    fprintf(stderr, LOG_PREFIX "driver table lacks StatementNew/StatementSetOption; statements pass through\n");
   }
-  driver->StatementNew = shim_StatementNew;
+  real_DatabaseInit = driver->DatabaseInit;
+  real_DatabaseSetOption = driver->DatabaseSetOption;
+  if (real_DatabaseInit && real_DatabaseSetOption) {
+    driver->DatabaseInit = shim_DatabaseInit;
+  } else {
+    fprintf(stderr, LOG_PREFIX "driver table lacks DatabaseInit/DatabaseSetOption; databases pass through\n");
+  }
 
   const char* dbg = getenv("ADBC_SHIM_DEBUG");
   debug_statements = dbg && *dbg;
   const char* q = getenv("ADBC_RESULT_QUEUE_SIZE");
   const char* p = getenv("ADBC_PREFETCH_CONCURRENCY");
-  // Quiet when the feature is off: with both variables unset there is nothing to
+  const char* a = getenv(APPLICATION_ENV);
+  // Quiet when the features are off: with every variable unset there is nothing to
   // report, and this runs once per pooled client. Anything set — valid or not —
   // is worth a line, because that line is the operator's acceptance check.
-  if ((q && *q) || (p && *p) || debug_statements) {
-    char qbuf[128], pbuf[128];
-    fprintf(stderr, LOG_PREFIX "wrapping %s (adbc %d); result_queue_size=%s prefetch_concurrency=%s\n",
+  if ((q && *q) || (p && *p) || (a && *a) || debug_statements) {
+    char qbuf[128], pbuf[128], abuf[128];
+    fprintf(stderr,
+            LOG_PREFIX "wrapping %s (adbc %d); result_queue_size=%s prefetch_concurrency=%s "
+                       "application=%s\n",
             path, version, describe("ADBC_RESULT_QUEUE_SIZE", qbuf, sizeof(qbuf)),
-            describe("ADBC_PREFETCH_CONCURRENCY", pbuf, sizeof(pbuf)));
+            describe("ADBC_PREFETCH_CONCURRENCY", pbuf, sizeof(pbuf)),
+            describe_application(abuf, sizeof(abuf)));
   }
   return ADBC_STATUS_OK;
 }

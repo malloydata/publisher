@@ -11,9 +11,9 @@ import {
    DEFAULT_QUERY_TIMEOUT_MS,
 } from "../../constants";
 import { setting } from "../setting";
-import { boolean, integer, number } from "../types";
+import { boolean, integer, number, string } from "../types";
 
-/** The configuration design's `query`, `postgres`, `memory`, `packageLoad` table. */
+/** The configuration design's `query`, `postgres`, `snowflake`, `memory`, `packageLoad` table. */
 export const query = [
    setting({
       key: "query.maxRows",
@@ -77,6 +77,21 @@ export const query = [
       description: "Open sessions per plain Postgres connection.",
       notes: "Per-process cap on open database sessions for each Postgres connection, including one reached through an SSH proxy. Each query uses its own session and closes it; when all are busy a query waits up to 30 s for one, then fails with HTTP 502. Across a fleet the ceiling is roughly this value times the pods serving the environment, so size it against the role's `CONNECTION LIMIT`. Must be a positive integer.",
       aliases: { env: ["PUBLISHER_POSTGRES_POOL_MAX"] },
+   }),
+   setting({
+      key: "snowflake.application",
+      type: string(),
+      // A variable and nothing else. The ADBC driver behind DuckDB's
+      // `snowflake` extension reads it from the process environment
+      // (adbc-shim/shim.c), where neither a flag nor the file ever lands, so
+      // either would tag live queries and not builds. A launch setting has no
+      // file key (a value there is reported as unknown and ignored), and
+      // noFlag drops the flag.
+      kind: "launch",
+      noFlag: true,
+      description:
+         "Client application name every Snowflake session reports (a Snowflake partner's connection identifier).",
+      notes: "The name every Snowflake session Publisher opens reports to Snowflake as its client application (`CLIENT_ENVIRONMENT:APPLICATION` in `SNOWFLAKE.ACCOUNT_USAGE.SESSIONS`). A Snowflake technology partner sets it to the connection string identifier it registered with the Snowflake Partner Network, so Snowflake can attribute the sessions to it. Unset, Publisher sets none and each driver reports its own default. Applied on both Snowflake paths: the snowflake-sdk connection behind live queries and connection tests (`application`), and, in the Docker image, the ADBC driver behind DuckDB-attached Snowflake and `storage=` build passthrough (`adbc.snowflake.sql.client_option.app_name`, set by the driver shim in `packages/server/adbc-shim/`). The ADBC driver puts its own `[ADBC][Go-<version>]` prefix in front of the name, so those sessions report `[ADBC][Go-1.12.0]<name>`. Must start with a letter, followed by 1 to 50 letters, digits, `.`, `-` or `_`, which is snowflake-sdk's rule; anything else fails startup. An environment variable only, with no flag or config-file key: the ADBC driver sees only the process environment, so any other source would tag one path and not the other.",
    }),
    setting({
       key: "memory.maxBytes",

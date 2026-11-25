@@ -34,6 +34,7 @@ import { getPrometheusMetricsHandler } from "./instrumentation";
 import { logger } from "./logger";
 import {
    assertDuckDBResourceConfig,
+   assertSnowflakeApplicationConfig,
    getDuckDBMemoryLimit,
    getDuckDBTempDirectory,
    getEmbeddingSettings,
@@ -209,6 +210,10 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    // reporting ready while every query failed. `SET temp_directory` accepts a
    // missing directory and fails only at the first spill.
    assertDuckDBResourceConfig();
+   // Validated at boot for the same reason: snowflake-sdk refuses a malformed
+   // application name on every connection, so a typo would otherwise surface
+   // as every Snowflake query failing.
+   assertSnowflakeApplicationConfig();
    const duckDBMemoryLimit = getDuckDBMemoryLimit();
    if (duckDBMemoryLimit === undefined && !isDuckDBMemoryLimitDisabled()) {
       // Warned rather than defaulted: no flat value suits every container size,

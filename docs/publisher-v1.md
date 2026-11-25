@@ -1856,6 +1856,7 @@ Under one precedence the flag replaces the variable, as it does for every other 
 | `PUBLISHER_MAX_CONCURRENT_QUERIES` | `query.maxConcurrent` | `PUBLISHER_QUERY_MAX_CONCURRENT` |
 | `PUBLISHER_QUERY_METADATA` | `query.metadataEnabled` (default `false`) | `PUBLISHER_QUERY_METADATA_ENABLED` |
 | `PUBLISHER_POSTGRES_POOL_MAX` | `postgres.poolMax` | unchanged |
+| (new) | `snowflake.application` (a variable only: launch kind, no flag, no file key) | `PUBLISHER_SNOWFLAKE_APPLICATION` |
 | `PUBLISHER_MAX_MEMORY_BYTES` | `memory.maxBytes` | `PUBLISHER_MEMORY_MAX_BYTES` |
 | `PUBLISHER_MEMORY_HIGH_WATER_FRACTION` | `memory.highWaterFraction` | unchanged |
 | `PUBLISHER_MEMORY_LOW_WATER_FRACTION` | `memory.lowWaterFraction` | unchanged |

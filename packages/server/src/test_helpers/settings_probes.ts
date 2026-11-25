@@ -30,6 +30,7 @@ import {
    getPersistCollisionEnforce,
    getPersistStorageMode,
    getPostgresPoolMax,
+   getSnowflakeApplication,
    getPublisherConfig,
    getQueryMetadataMode,
    getQueryTimeoutMs,
@@ -138,6 +139,7 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
    "query.maxConcurrent": () => getMaxConcurrentQueries(),
    "query.metadataEnabled": () => getQueryMetadataMode(),
    "postgres.poolMax": () => getPostgresPoolMax(),
+   "snowflake.application": () => getSnowflakeApplication(),
    "memory.maxBytes": () => getMemoryGovernorConfig()?.maxMemoryBytes ?? null,
    "memory.highWaterFraction": () =>
       getMemoryGovernorConfig()?.highWaterFraction,

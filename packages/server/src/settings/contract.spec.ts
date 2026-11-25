@@ -1310,6 +1310,39 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("PUBLISHER_POSTGRES_POOL_MAX"),
       },
    ],
+   "snowflake.application": [
+      { name: "unset", expect: value(undefined) },
+      {
+         name: "PUBLISHER_SNOWFLAKE_APPLICATION",
+         env: { PUBLISHER_SNOWFLAKE_APPLICATION: "Credible_Credible" },
+         expect: value("Credible_Credible"),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_SNOWFLAKE_APPLICATION: "" },
+         expect: value(undefined),
+      },
+      {
+         name: "a space is refused, as snowflake-sdk refuses it",
+         env: { PUBLISHER_SNOWFLAKE_APPLICATION: "Credible Data" },
+         expect: fails("PUBLISHER_SNOWFLAKE_APPLICATION"),
+      },
+      {
+         name: "a leading digit is refused",
+         env: { PUBLISHER_SNOWFLAKE_APPLICATION: "1Credible" },
+         expect: fails("PUBLISHER_SNOWFLAKE_APPLICATION"),
+      },
+      {
+         name: "52 characters is refused",
+         env: { PUBLISHER_SNOWFLAKE_APPLICATION: "A" + "b".repeat(51) },
+         expect: fails("PUBLISHER_SNOWFLAKE_APPLICATION"),
+      },
+      {
+         name: "the file is ignored: the ADBC driver reads only the environment",
+         file: { snowflake: { application: "Credible_Credible" } },
+         expect: warned(undefined, '"snowflake", which no setting reads'),
+      },
+   ],
    "memory.maxBytes": [
       { name: "unset turns the governor off", expect: value(null) },
       {

@@ -830,6 +830,40 @@ export const getPostgresPoolMax = (): number =>
    settings.get("postgres.poolMax");
 
 /**
+ * snowflake-sdk's rule for a client application name
+ * (`connection_config.js`, `APPLICATION_PATTERN`): it refuses to create a
+ * connection with anything else.
+ */
+const SNOWFLAKE_APPLICATION = /^[A-Za-z][A-Za-z0-9._-]{1,50}$/;
+
+/**
+ * The client application every Snowflake session reports
+ * (`PUBLISHER_SNOWFLAKE_APPLICATION`), or undefined to leave each driver's
+ * own. A variable only, as the ADBC driver shim reads it too. Throws on a
+ * value snowflake-sdk would refuse.
+ */
+export function getSnowflakeApplication(): string | undefined {
+   const application = settings.get("snowflake.application");
+   if (application === undefined) return undefined;
+   if (!SNOWFLAKE_APPLICATION.test(application)) {
+      throw new Error(
+         `Invalid value for PUBLISHER_SNOWFLAKE_APPLICATION: expected a letter ` +
+            `followed by 1 to 50 letters, digits, ".", "-" or "_" (Snowflake's ` +
+            `rule), got "${application}"`,
+      );
+   }
+   return application;
+}
+
+/**
+ * Validate `PUBLISHER_SNOWFLAKE_APPLICATION` at boot, so a typo fails startup
+ * rather than every Snowflake connection.
+ */
+export function assertSnowflakeApplicationConfig(): void {
+   getSnowflakeApplication();
+}
+
+/**
  * DuckDB extension-fetch policy. Governs whether Publisher's explicit extension
  * INSTALL step (see `installAndLoadExtension` in service/connection.ts) may
  * reach the DuckDB extension network.
