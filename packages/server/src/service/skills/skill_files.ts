@@ -23,8 +23,8 @@ const SKILLIGNORE = ".skillignore";
 const SKILLIGNORE_MAX_BYTES = 16 * 1024;
 const SKILLIGNORE_MAX_PATTERNS = 200;
 const SKILLIGNORE_PATTERN_MAX_CHARS = 200;
-/** Cheap insurance: `ignore` 7 matches these in under 1 ms, but 5.x cost about 8x more per further single `*`. */
-const SKILLIGNORE_MAX_SINGLE_STARS = 2;
+/** `ignore` backtracks on each further `*` or whole-segment `**` between literals, so a pattern holds at most this many. */
+const SKILLIGNORE_MAX_STARS = 2;
 
 export interface SkillFilesResult {
    /** POSIX paths relative to the skill directory, sorted. Candidates only: no per-file checks have run. */
@@ -98,16 +98,27 @@ function builtInExcluded(name: string, isDirectory: boolean): boolean {
       : lower.endsWith(".pyc");
 }
 
-/** `ignore` compiles a `**` that is not a whole path segment exactly like `*`, so a run counts as one star there. */
-function singleStars(pattern: string): number {
+/** A run of whole-segment `**` means what one does, and costs `ignore` one backtracking point. */
+function collapseGlobstars(pattern: string): string {
+   const negated = pattern.startsWith("!");
+   const segments: string[] = [];
+   for (const segment of (negated ? pattern.slice(1) : pattern).split("/")) {
+      if (segment !== "**" || segments.at(-1) !== "**") segments.push(segment);
+   }
+   return (negated ? "!" : "") + segments.join("/");
+}
+
+/** The `*` runs and whole-segment `**` of a collapsed pattern; `ignore` reads a `**` inside a segment like `*`, and an escaped star is a literal. */
+function stars(pattern: string): number {
    return pattern
       .replace(/^!/, "")
       .split("/")
       .reduce(
-         (stars, segment) =>
-            segment === "**"
-               ? stars
-               : stars + (segment.match(/\*+/g)?.length ?? 0),
+         (count, segment) =>
+            count +
+            (segment === "**"
+               ? 1
+               : (segment.replace(/\\./g, "").match(/\*+/g)?.length ?? 0)),
          0,
       );
 }
@@ -163,9 +174,10 @@ function readSkillignore(
          );
          continue;
       }
-      if (singleStars(line) > SKILLIGNORE_MAX_SINGLE_STARS) {
+      const collapsed = collapseGlobstars(line);
+      if (stars(collapsed) > SKILLIGNORE_MAX_STARS) {
          warnings.push(
-            `${SKILLIGNORE} pattern ${shown(line)} has more than ${SKILLIGNORE_MAX_SINGLE_STARS} single '*', so it is skipped`,
+            `${SKILLIGNORE} pattern ${shown(line)} has more than ${SKILLIGNORE_MAX_STARS} '*' or '**' segments, so it is skipped`,
          );
          continue;
       }
@@ -174,7 +186,7 @@ function readSkillignore(
             `${SKILLIGNORE} pattern ${shown(line)} starts with './', which matches nothing; drop the './'`,
          );
       }
-      matcher.add(line);
+      matcher.add(collapsed);
    }
    if (excess > 0) {
       warnings.push(

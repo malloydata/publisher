@@ -166,16 +166,48 @@ describe("skillFiles", () => {
    });
 
    describe(".skillignore bounds", () => {
-      it("skips a pattern with more than two single stars, but not `**`", () => {
+      it("skips a pattern with more than two stars", () => {
          write("SKILL.md");
          write("a1b2c3d.txt");
-         write("x/y/z/w.txt");
-         skillignore("*a*1*b*2*c*3*d.txt", "**/**/**/w.txt");
+         skillignore("*a*1*b*2*c*3*d.txt");
          const { files, warnings } = skillFiles(dir);
          expect(files).toEqual(["SKILL.md", "a1b2c3d.txt"]);
          expect(warnings).toHaveLength(1);
-         expect(warnings[0]).toContain("single '*'");
+         expect(warnings[0]).toContain("more than 2 '*'");
       });
+
+      it("applies a run of whole-segment `**` as one, with no warning", () => {
+         write("SKILL.md");
+         write("x/y/z/w.txt");
+         skillignore("**/**/**/w.txt", `a/${"**/".repeat(65)}b`);
+         expect(skillFiles(dir)).toMatchObject({
+            files: ["SKILL.md"],
+            warnings: [],
+         });
+      });
+
+      it("skips a pattern with more than two whole-segment `**` that are not in one run", () => {
+         write("SKILL.md");
+         write("a/b/c/d/e/f/w.txt");
+         skillignore("a/**/b/**/c/**/w.txt");
+         const { files, warnings } = skillFiles(dir);
+         expect(files).toContain("a/b/c/d/e/f/w.txt");
+         expect(warnings).toHaveLength(1);
+         expect(warnings[0]).toContain("more than 2 '*'");
+      });
+
+      it.skipIf(process.platform === "win32")(
+         "does not count an escaped star, which matches a literal one",
+         () => {
+            write("a*b*c*d.txt");
+            write("axbxcxd.txt");
+            skillignore("a\\*b\\*c\\*d.txt");
+            expect(skillFiles(dir)).toMatchObject({
+               files: ["axbxcxd.txt"],
+               warnings: [],
+            });
+         },
+      );
 
       it("warns on a leading ./", () => {
          write("SKILL.md");
@@ -324,6 +356,25 @@ describe("skillFiles", () => {
       const result = skillFiles(dir);
       const elapsed = performance.now() - started;
       expect(result.files).toHaveLength(981);
+      expect(elapsed).toBeLessThan(1000);
+   });
+
+   it("matches a full-depth walk against 200 patterns sharing a prefix, at the star cap, within a second", () => {
+      const deep = Array.from({ length: 6 }, (_, i) => `dir-number-${i}`);
+      for (let f = 0; f < 10; f++) write(`a/${deep.join("/")}/f${f}.txt`);
+      write("SKILL.md");
+      skillignore(
+         ...Array.from({ length: 200 }, (_, i) =>
+            i % 2 === 0
+               ? `a/${"**/".repeat(30)}b${i}`
+               : `a/**/${deep[i % 6]}/**/z${i}`,
+         ),
+      );
+      const started = performance.now();
+      const result = skillFiles(dir);
+      const elapsed = performance.now() - started;
+      expect(result.warnings).toEqual([]);
+      expect(result.files).toHaveLength(11);
       expect(elapsed).toBeLessThan(1000);
    });
 
@@ -675,7 +726,7 @@ describe("skillFiles", () => {
          expect(warnings).toHaveLength(1);
       });
 
-      it("counts a `**` inside a segment as a single star, but not a whole-segment one", () => {
+      it("counts a `**` inside a segment as one star, and a whole-segment one as another", () => {
          write("abcd.txt");
          write("x/y/w.txt");
          skillignore("a**b**c**d.txt", "!**/keep.txt", "x/**/y/**");
