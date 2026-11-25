@@ -236,7 +236,37 @@ def speed_issues(run: pathlib.Path) -> list[dict[str, Any]]:
     return sorted(got, key=lambda i: (-cost(i), i["issue_id"]))
 
 
-def speed_verdict(summaries: list[dict[str, Any]], band: float) -> tuple[bool, dict[str, str]]:
+def target_answers(run: pathlib.Path, targets: list[str]) -> dict[str, dict[str, Any]]:
+    """What answered each targeted query in one replay, from its path report:
+    `{qid: {"kind", "skipped"}}`. `kind` is None when the server sent no path
+    report, and the query is absent when the replay did not time it."""
+    path = run / "results.jsonl"
+    rows = read_jsonl(path) if path.is_file() else []
+    want = set(targets)
+    return {r["qid"]: {"kind": (r.get("served_by") or {}).get("kind"),
+                       "skipped": r.get("skipped") or []}
+            for r in rows if r.get("qid") in want and not r.get("error")}
+
+
+def still_live(answers: dict[str, dict[str, Any]]) -> list[str]:
+    """The targeted queries the path report says no table answered."""
+    return sorted(q for q, a in answers.items() if a["kind"] == "live")
+
+
+def why_live(answers: dict[str, dict[str, Any]], verdicts: list[dict[str, Any]] | None = None) -> str:
+    """The server's own reason a targeted query was answered live: a table that
+    does not serve at all, else the first skip on the first live query."""
+    for v in verdicts or []:
+        if v.get("verdict") not in (None, "serves", "awaiting_build"):
+            return f"{v.get('source')} does not serve: {v.get('message') or v.get('reason')}"
+    for q in still_live(answers):
+        for sk in answers[q]["skipped"]:
+            return f"{q}: {sk.get('reason')}" + (f" ({sk['detail']})" if sk.get("detail") else "")
+    return "no table answered them, and the path report gave no reason"
+
+
+def speed_verdict(summaries: list[dict[str, Any]], band: float,
+                  answers: list[dict[str, dict[str, Any]]] | None = None) -> tuple[bool, dict[str, str]]:
     """Is the edit a speed-up? (accepted, the rules it failed).
 
     Every replay of the edit must say the same thing: no stored answer's rows
@@ -244,10 +274,19 @@ def speed_verdict(summaries: list[dict[str, Any]], band: float) -> tuple[bool, d
     and the total is faster by more than the band. Two replays, because one
     replay's total moves by itself: an unchanged package measured 11 to 24%
     apart on a loaded machine.
+
+    With `answers` (one `target_answers` per replay), every targeted query
+    must also be answered by a table in every replay. Faster alone is not
+    proof: the noise band can pass a change whose table never answered.
     """
     failed: dict[str, str] = {}
     if len(summaries) < 2:
         failed["twice"] = f"{len(summaries)} replay(s) of the edit"
+    for n, a in enumerate(answers or [], 1):
+        live = still_live(a)
+        if live:
+            failed[f"answered by a table (replay {n})"] = (
+                f"{', '.join(live)} still answered live; {why_live(a)}")
     for n, s in enumerate(summaries, 1):
         c = s.get("compare")
         if not c:
@@ -278,27 +317,42 @@ def one_speed_edit(R: Any, repo: pathlib.Path, issue: dict[str, Any], k: int) ->
     iid, what = out["issue"], out["what"]
     name = f"{label}-c{k}"
     replays = [f"{name}-1", f"{name}-2"]
-    failed = None
+    runs = cfg.workdir() / "runs"
+    failed, early = None, None
     if R.do(f"experiment {name}", "experiment", "start", name, *s) != 0:
         failed = "the edit could not be served and built as an experiment"
     else:
         for r in replays:
             # Exit 1 is a replay that ran and found changed rows: a result.
-            if failed is None and R.do(f"query-replay {r}", "query-replay", *s, "--experiment", name,
-                                       "--from", label, "--baseline", label, "--label", r,
-                                       "--no-share") not in (0, 1):
+            if failed is None and early is None and R.do(
+                    f"query-replay {r}", "query-replay", *s, "--experiment", name,
+                    "--from", label, "--baseline", label, "--label", r, "--no-share") not in (0, 1):
                 failed = f"the replay {r} did not run"
+            if failed is None and early is None and r == replays[0]:
+                # A table that never answers a targeted query cannot be the
+                # speed-up, whatever the clock says: stop before the second
+                # replay, and record the server's reason.
+                a = target_answers(runs / r, out["targets"])
+                if a and len(still_live(a)) == len(a):
+                    meta = runs / r / "run.json"
+                    mat = (json.loads(meta.read_text()).get("materialization") or {}) \
+                        if meta.exists() else {}
+                    early = (f"no targeted query was answered by a table; "
+                             f"{why_live(a, mat.get('serveVerdicts'))}")
         R.do(f"stop {name}", "experiment", "stop", name, *s)
-    out["runs"] = replays
+    out["runs"] = replays if early is None else replays[:1]
     before = len(attempts.read(cfg.set_dir))
     accepted, rules, effect = False, {}, {}
     if failed is None:
-        runs = cfg.workdir() / "runs"
         got = [json.loads((runs / r / "summary.json").read_text())
-               for r in replays if (runs / r / "summary.json").exists()]
+               for r in out["runs"] if (runs / r / "summary.json").exists()]
         band = json.loads((runs / replays[0] / "run.json").read_text()).get("latencyBand") or 0.2 \
             if (runs / replays[0] / "run.json").exists() else 0.2
-        accepted, rules = speed_verdict(got, band)
+        if early:
+            rules = {"answered by a table (replay 1)": early}
+        else:
+            accepted, rules = speed_verdict(
+                got, band, [target_answers(runs / r, out["targets"]) for r in replays])
         last = (got[-1].get("compare") or {}) if got else {}
         effect = {"totalBeforeMs": last.get("total_before_ms"),
                   "totalAfterMs": last.get("total_after_ms"),
@@ -307,7 +361,7 @@ def one_speed_edit(R: Any, repo: pathlib.Path, issue: dict[str, Any], k: int) ->
         diff = (cluster / "edit.patch").read_text() if (cluster / "edit.patch").exists() else None
         attempts.append(cfg.set_dir, attempts.row(
             what=what, outcome="accepted" if accepted else "rejected", baseline=label,
-            candidates=replays, targets=out["targets"], issue_ids=[iid], failed=rules,
+            candidates=out["runs"], targets=out["targets"], issue_ids=[iid], failed=rules,
             effect=effect, diff=diff))
     out["effect"] = effect
     build = (effect.get("buildAfter") or {})

@@ -269,7 +269,10 @@ class Speed(Base):
             self.assertFalse(accepted)
             self.assertIn(rule, failed)
 
-    def go(self, summary):
+    def go(self, summary, kinds=None, mat=None):
+        """`kinds`: what answered target `a` in each replay, in order; None
+        writes no results (a server with no path report)."""
+        kinds = list(kinds or [])
         def improve(*args):
             d = self.run / "artifacts" / "clusters" / "perf-hot-orders"
             d.mkdir(parents=True, exist_ok=True)
@@ -282,7 +285,14 @@ class Speed(Base):
             d = self.root / "w" / "runs" / args[args.index("--label") + 1]
             d.mkdir(parents=True)
             (d / "summary.json").write_text(json.dumps(summary))
-            (d / "run.json").write_text(json.dumps({"latencyBand": 0.2}))
+            (d / "run.json").write_text(json.dumps({"latencyBand": 0.2, "materialization": mat or {}}))
+            if kinds:
+                kind = kinds.pop(0)
+                (d / "results.jsonl").write_text(json.dumps(
+                    {"qid": "a", "served_by": {"kind": kind},
+                     "skipped": [{"reason": "GRAIN_TOO_COARSE",
+                                  "detail": "the query groups by `month`, which the rollup does not"}]
+                     if kind == "live" else []}) + "\n")
             return 1 if summary["compare"]["rows_changed"] else 0
         R = FakeRoutine(self.cfg, "night", {"improve": improve, "query-replay": replay})
         return im.improve_speed(R), R
@@ -302,6 +312,29 @@ class Speed(Base):
         row = self.recorded()[-1]
         self.assertEqual((row["outcome"], row["issueIds"], row["effect"]["totalAfterMs"]),
                          ("accepted", ["perf-hot-orders"], 160.0))
+
+    def test_a_speed_edit_whose_table_answers_the_target_in_both_replays_is_kept(self):
+        r, _ = self.go(self.compare(), kinds=["rollup", "rollup"])
+        self.assertEqual(r["accepted"], 1)
+
+    def test_a_built_table_that_answers_no_target_stops_after_one_replay(self):
+        mat = {"serveVerdicts": [{"source": "orders_by_month", "verdict": "live",
+                                  "message": "fields_not_carried"}]}
+        r, R = self.go(self.compare(), kinds=["live"], mat=mat)
+        self.assertEqual([n.split()[0] for n, _ in R.ran],
+                         ["improve", "experiment", "query-replay", "stop"])
+        e = r["edits"][0]
+        self.assertEqual(e["outcome"], "rejected")
+        self.assertIn("orders_by_month does not serve: fields_not_carried", e["why"])
+        self.assertEqual(self.recorded()[-1]["candidates"], ["night-c1-1"])
+
+    def test_faster_on_the_clock_is_not_enough_when_the_target_stayed_live(self):
+        # The second replay answered the target live: the noise band passed it,
+        # the path report does not.
+        r, _ = self.go(self.compare(), kinds=["rollup", "live"])
+        self.assertEqual(r["edits"][0]["outcome"], "rejected")
+        self.assertIn("answered by a table (replay 2)", r["edits"][0]["why"])
+        self.assertIn("GRAIN_TOO_COARSE", r["edits"][0]["why"])
 
     def test_a_speed_edit_that_changes_rows_is_taken_off_and_recorded(self):
         r, _ = self.go(self.compare(rows_changed=["a"]))
