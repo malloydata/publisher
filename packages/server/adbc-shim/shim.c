@@ -15,7 +15,7 @@
 // and before each DatabaseInit it sets the client application name every
 // session reports, which the extension has no way to set either:
 //
-//   adbc.snowflake.sql.client_option.app_name <- PUBLISHER_SNOWFLAKE_APPLICATION
+//   adbc.snowflake.sql.client_option.app_name <- PUBLISHER_SNOWFLAKE_APPLICATION_NAME
 //
 // An unset or empty variable sets nothing for that option, so with none of
 // them set the shim is a pure pass-through. Why this exists, the measurements,
@@ -53,7 +53,7 @@ static AdbcStatusCode (*real_DatabaseSetOption)(struct AdbcDatabase*, const char
                                                 struct AdbcError*);
 static int debug_statements;
 
-#define APPLICATION_ENV "PUBLISHER_SNOWFLAKE_APPLICATION"
+#define APPLICATION_ENV "PUBLISHER_SNOWFLAKE_APPLICATION_NAME"
 #define APPLICATION_OPTION "adbc.snowflake.sql.client_option.app_name"
 
 // The driver rejects anything that is not a positive integer, but it does so per
@@ -75,7 +75,7 @@ static int is_positive_integer(const char* s) {
 }
 
 // snowflake-sdk's rule for a client application name, which the server checks
-// at boot (config.ts, getSnowflakeApplication): a letter, then 1 to 50 letters,
+// at boot (config.ts, getSnowflakeApplicationName): a letter, then 1 to 50 letters,
 // digits, '.', '-' or '_'. The Go driver accepts anything; checking here keeps
 // both paths reporting the same names, and a name the server refused cannot
 // reach this process anyway, since that refusal fails startup.

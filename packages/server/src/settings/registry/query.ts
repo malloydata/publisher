@@ -79,7 +79,7 @@ export const query = [
       aliases: { env: ["PUBLISHER_POSTGRES_POOL_MAX"] },
    }),
    setting({
-      key: "snowflake.application",
+      key: "snowflake.applicationName",
       type: string(),
       // A variable and nothing else. The ADBC driver behind DuckDB's
       // `snowflake` extension reads it from the process environment

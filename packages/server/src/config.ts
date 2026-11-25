@@ -838,16 +838,16 @@ const SNOWFLAKE_APPLICATION = /^[A-Za-z][A-Za-z0-9._-]{1,50}$/;
 
 /**
  * The client application every Snowflake session reports
- * (`PUBLISHER_SNOWFLAKE_APPLICATION`), or undefined to leave each driver's
+ * (`PUBLISHER_SNOWFLAKE_APPLICATION_NAME`), or undefined to leave each driver's
  * own. A variable only, as the ADBC driver shim reads it too. Throws on a
  * value snowflake-sdk would refuse.
  */
-export function getSnowflakeApplication(): string | undefined {
-   const application = settings.get("snowflake.application");
+export function getSnowflakeApplicationName(): string | undefined {
+   const application = settings.get("snowflake.applicationName");
    if (application === undefined) return undefined;
    if (!SNOWFLAKE_APPLICATION.test(application)) {
       throw new Error(
-         `Invalid value for PUBLISHER_SNOWFLAKE_APPLICATION: expected a letter ` +
+         `Invalid value for PUBLISHER_SNOWFLAKE_APPLICATION_NAME: expected a letter ` +
             `followed by 1 to 50 letters, digits, ".", "-" or "_" (Snowflake's ` +
             `rule), got "${application}"`,
       );
@@ -856,11 +856,11 @@ export function getSnowflakeApplication(): string | undefined {
 }
 
 /**
- * Validate `PUBLISHER_SNOWFLAKE_APPLICATION` at boot, so a typo fails startup
+ * Validate `PUBLISHER_SNOWFLAKE_APPLICATION_NAME` at boot, so a typo fails startup
  * rather than every Snowflake connection.
  */
-export function assertSnowflakeApplicationConfig(): void {
-   getSnowflakeApplication();
+export function assertSnowflakeApplicationNameConfig(): void {
+   getSnowflakeApplicationName();
 }
 
 /**

@@ -12,7 +12,7 @@ import type {
    RunSQLOptions,
 } from "@malloydata/malloy";
 import type { components } from "../api";
-import { getSnowflakeApplication } from "../config";
+import { getSnowflakeApplicationName } from "../config";
 import { removeUndefined } from "./connection_config";
 import { normalizeSnowflakePrivateKey } from "./dialects/snowflake";
 
@@ -40,7 +40,7 @@ type SnowflakeConnOptions = NonNullable<
  * throws on it.
  *
  * `application` is the client application name the session reports
- * (`PUBLISHER_SNOWFLAKE_APPLICATION`), set only when configured. A Snowflake
+ * (`PUBLISHER_SNOWFLAKE_APPLICATION_NAME`), set only when configured. A Snowflake
  * partner uses it to have Snowflake attribute the sessions to it. It is not
  * part of the connection's digest, so setting it changes no cache key.
  */
@@ -78,7 +78,7 @@ export function buildSnowflakeConnOptions(
          database: snowflake.database,
          schema: snowflake.schema,
          role: snowflake.role,
-         application: getSnowflakeApplication(),
+         application: getSnowflakeApplicationName(),
       }),
       jsTreatIntegerAsBigInt: true,
    };

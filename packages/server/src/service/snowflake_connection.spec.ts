@@ -16,7 +16,7 @@ import os from "os";
 import path from "path";
 import snowflake from "snowflake-sdk";
 import type { components } from "../api";
-import { assertSnowflakeApplicationConfig } from "../config";
+import { assertSnowflakeApplicationNameConfig } from "../config";
 import { bigIntReplacer } from "../json_utils";
 import { driverValue, fakeSnowflake } from "../test_helpers/fake_snowflake";
 import { installSettings } from "../test_helpers/settings_env";
@@ -142,8 +142,8 @@ describe("the client application a Snowflake session reports", () => {
       expect("application" in options).toBe(false);
    });
 
-   it("is PUBLISHER_SNOWFLAKE_APPLICATION on the password and key-pair paths", () => {
-      installEnv({ PUBLISHER_SNOWFLAKE_APPLICATION: "Credible_Credible" });
+   it("is PUBLISHER_SNOWFLAKE_APPLICATION_NAME on the password and key-pair paths", () => {
+      installEnv({ PUBLISHER_SNOWFLAKE_APPLICATION_NAME: "Credible_Credible" });
       for (const auth of [{ password: "pw" }, { privateKey: KEY }]) {
          const options = buildSnowflakeConnOptions("sf", { ...BASE, ...auth });
          expect(options.application).toBe("Credible_Credible");
@@ -151,7 +151,7 @@ describe("the client application a Snowflake session reports", () => {
    });
 
    it("reaches every Snowflake connection an environment builds", async () => {
-      installEnv({ PUBLISHER_SNOWFLAKE_APPLICATION: "Credible_Credible" });
+      installEnv({ PUBLISHER_SNOWFLAKE_APPLICATION_NAME: "Credible_Credible" });
       const root = await fs.mkdtemp(path.join(os.tmpdir(), "sf-app-spec-"));
       const configs: ApiConnection[] = [
          {
@@ -208,10 +208,10 @@ describe("the client application a Snowflake session reports", () => {
          } catch {
             sdkAccepts = false;
          }
-         installEnv({ PUBLISHER_SNOWFLAKE_APPLICATION: name });
+         installEnv({ PUBLISHER_SNOWFLAKE_APPLICATION_NAME: name });
          let publisherAccepts = true;
          try {
-            assertSnowflakeApplicationConfig();
+            assertSnowflakeApplicationNameConfig();
          } catch {
             publisherAccepts = false;
          }

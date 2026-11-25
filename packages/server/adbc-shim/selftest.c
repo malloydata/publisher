@@ -9,7 +9,7 @@
 //   2. a second init on the same table does not re-wrap (the self-wrap guard);
 //   3. the env-var validators accept exactly the positive integers a C int
 //      holds, and exactly the application names snowflake-sdk accepts;
-//   4. PUBLISHER_SNOWFLAKE_APPLICATION reaches the database before init: against
+//   4. PUBLISHER_SNOWFLAKE_APPLICATION_NAME reaches the database before init: against
 //      the stub driver (ADBC_REAL_DRIVER set), the app_name DatabaseInit saw for
 //      a valid, an invalid and an unset value; against the real driver, the
 //      app_name the driver reports back afterwards, with its "[ADBC]" prefix.
@@ -28,14 +28,14 @@ static const char* basename_of(const char* p) {
 
 #define APP_NAME_OPTION "adbc.snowflake.sql.client_option.app_name"
 
-// Opens one database through the (wrapped) table with PUBLISHER_SNOWFLAKE_APPLICATION
+// Opens one database through the (wrapped) table with PUBLISHER_SNOWFLAKE_APPLICATION_NAME
 // set to `value` (NULL to unset), runs DatabaseInit, and releases it. Returns the
 // DatabaseInit status. Account and user are set because the real driver's init
 // may want them; nothing connects until a connection is opened, which never is.
 static AdbcStatusCode open_database(struct AdbcDriver* driver, const char* value,
                                     char* reported, size_t reported_len) {
-  if (value) setenv("PUBLISHER_SNOWFLAKE_APPLICATION", value, 1);
-  else unsetenv("PUBLISHER_SNOWFLAKE_APPLICATION");
+  if (value) setenv("PUBLISHER_SNOWFLAKE_APPLICATION_NAME", value, 1);
+  else unsetenv("PUBLISHER_SNOWFLAKE_APPLICATION_NAME");
   struct AdbcDatabase db;
   memset(&db, 0, sizeof(db));
   struct AdbcError err;
@@ -200,7 +200,7 @@ int main(int argc, char** argv) {
     }
     printf("real driver reports app_name \"%s\"\n", reported);
   }
-  unsetenv("PUBLISHER_SNOWFLAKE_APPLICATION");
+  unsetenv("PUBLISHER_SNOWFLAKE_APPLICATION_NAME");
 
   printf("adbc-shim selftest ok: StatementNew and DatabaseInit wrapped in the shim, DatabaseNew in the real "
          "driver, re-init is a no-op, validator matrices hold, application name reaches the database\n");

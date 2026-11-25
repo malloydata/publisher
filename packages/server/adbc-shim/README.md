@@ -18,9 +18,9 @@ either.
 | --- | --- | --- | --- |
 | `ADBC_RESULT_QUEUE_SIZE` | `adbc.rpc.result_queue_size` | 100 | unset — opt in at deploy time with `1` |
 | `ADBC_PREFETCH_CONCURRENCY` | `adbc.snowflake.rpc.prefetch_concurrency` | 5 | unset — leave at the driver default |
-| `PUBLISHER_SNOWFLAKE_APPLICATION` | `adbc.snowflake.sql.client_option.app_name` (database option) | `[ADBC][Go-<version>]` | unset |
+| `PUBLISHER_SNOWFLAKE_APPLICATION_NAME` | `adbc.snowflake.sql.client_option.app_name` (database option) | `[ADBC][Go-<version>]` | unset |
 
-`PUBLISHER_SNOWFLAKE_APPLICATION` is also a server setting (`snowflake.application`
+`PUBLISHER_SNOWFLAKE_APPLICATION_NAME` is also a server setting (`snowflake.applicationName`
 in `docs/configuration.md`): the server sets the same name on its snowflake-sdk
 sessions, and refuses at startup a name snowflake-sdk would refuse, so both paths
 report the same partner identifier. It is named `PUBLISHER_*`, unlike the other two,
@@ -115,7 +115,7 @@ Checklist:
 **The application name outlives both issues above.** Neither the extension nor the
 driver issue gives the extension a way to set `app_name`. Before deleting the shim,
 either the extension has to expose it (a secret field or setting the server passes
-`snowflake.application` through), or the shim stays, reduced to its `DatabaseInit`
+`snowflake.applicationName` through), or the shim stays, reduced to its `DatabaseInit`
 wrapper. Removing it without one of those silently stops tagging the build and
 attach sessions, while snowflake-sdk sessions keep their name.
 
@@ -142,7 +142,7 @@ attach sessions, while snowflake-sdk sessions keep their name.
   `DatabaseNew` into the real driver, re-inits the same table to prove the
   self-wrap guard, and runs both validators over accept/reject matrices (including
   the `strtol` overflow cases). Then it opens a database with
-  `PUBLISHER_SNOWFLAKE_APPLICATION` set: against the stub it checks the `app_name`
+  `PUBLISHER_SNOWFLAKE_APPLICATION_NAME` set: against the stub it checks the `app_name`
   the stub's `DatabaseInit` saw for a valid, an invalid and an unset value; against
   the real driver it runs `DatabaseInit` offline and reads the name back with
   `DatabaseGetOption`, prefix and all. No network, no credentials; a broken
@@ -193,7 +193,7 @@ the bound were on.
 | shim compiles, dlopens the real driver, wraps `StatementNew` | `selftest.c`, in the `adbc-driver` build stage (fails the image build) |
 | one shim + one real driver beside every extension copy | Dockerfile count-match; CI smoke test 4a |
 | the pair loads in the runtime image and reaches Snowflake login | CI smoke test 4b (bogus secret, exit 124) |
-| `PUBLISHER_SNOWFLAKE_APPLICATION` reaches the database before `DatabaseInit` (valid applied, invalid and unset not) | `selftest.c` against `stub_driver.c`, which records the `app_name` its `DatabaseInit` saw |
+| `PUBLISHER_SNOWFLAKE_APPLICATION_NAME` reaches the database before `DatabaseInit` (valid applied, invalid and unset not) | `selftest.c` against `stub_driver.c`, which records the `app_name` its `DatabaseInit` saw |
 | the real driver takes it and reports `[ADBC][Go-<version>]<name>` | `selftest.c` against the real driver: `DatabaseInit` offline, then `DatabaseGetOption` |
 | **the option is actually applied on a statement** | **no automated test** — login fails before any `StatementNew` in 4b, and `selftest.c` has no connection. Evidence is the real-credential run recorded in the PR. A deployment that turns the bound on should treat `result_queue_size=1` in the worker's `wrapping` line as its acceptance check. | A driver that rejects an option logs `rejected by driver (status N)` and
 the statement proceeds unbounded — the behaviour without the shim, never a
