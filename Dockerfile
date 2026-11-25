@@ -203,6 +203,15 @@ COPY packages/sdk/package.json ./packages/sdk/package.json
 RUN --mount=type=cache,target=/root/.bun/install/cache,sharing=locked \
     bun install
 
+# The SDK build generates its API client with openapi-generator, whose npm wrapper
+# downloads the generator's JAR (the version packages/sdk/openapitools.json names,
+# ~32 MB) from Maven Central the first time it runs. Fetched here, in a layer keyed
+# on that file and the install above, so a build reuses it instead of downloading
+# it again: Maven Central rate-limits busy addresses, such as a CI provider's
+# shared ones, and a 429 there fails the build.
+COPY packages/sdk/openapitools.json ./packages/sdk/openapitools.json
+RUN cd packages/sdk && bunx openapi-generator-cli version
+
 # Build SDK first
 COPY packages/sdk/ ./packages/sdk/
 WORKDIR /publisher/packages/sdk
