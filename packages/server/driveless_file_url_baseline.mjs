@@ -75,7 +75,6 @@ export const DRIVELESS_FILE_URL_BASELINE = [
    "packages/server/src/service/materialization/domain/column_contract.spec.ts",
    "packages/server/src/service/materialization/domain/same_catalog_build.spec.ts",
    "packages/server/src/service/materialization/domain/upstream_schemas.spec.ts",
-   "packages/server/src/service/materialization/package_materialization_capability_replan.spec.ts",
    "packages/server/src/service/materialization/package_warning_fields.spec.ts",
    "packages/server/src/service/materialization/plan/addressing_destination.spec.ts",
    "packages/server/src/service/materialization/plan/build_file_generator.spec.ts",
