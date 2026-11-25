@@ -85,6 +85,28 @@ workload slower or stop a table from serving.
   was meant to answer). When the metric's definition changes, give it a new
   version, so history before and after is never compared as one.
 
+## Five more things a loop may need
+
+- **A map from each change to the items it targets.** What you change (a
+  table, a doc, a page) and what you measure (a query, a question, a prompt)
+  are often different things, many to many. Write the map down at step 1: a
+  rollup targets the queries its grain covers; a doc edit targets the cases
+  diagnosed to it. Acceptance and Learn read only the targeted items.
+- **Trials that cannot be undone.** When every real trial is public or costly
+  to reverse, there is no small private copy for step 4's third check. Lean on
+  the cheaper checks, keep each change small, and say in step 5 which options
+  can be taken back.
+- **Learn on a schedule.** When the outcome arrives days or weeks after the
+  change, step 7 runs when the outcome is due, not right after step 6. Record
+  the date each prediction can be checked.
+- **A measuring instrument nobody tunes.** The questions, queries or prompts
+  that measure the metric are frozen within a metric version. Rewording one to
+  suit a change scores a win that is not one, the same as reading the answer
+  key.
+- **Limits that are not numbers.** Some limits are pass or fail: a test suite,
+  a style rule, a review by a person. Step 6 checks them like any other limit,
+  and an option that fails one is not offered.
+
 ## Rules that hold for every kind
 
 - **Never land your own change.** The loop proposes; a person lands it.
