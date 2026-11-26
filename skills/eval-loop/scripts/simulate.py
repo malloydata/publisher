@@ -63,7 +63,7 @@ MAX_GRAIN = 6
 OPTION_COLUMNS = ["option", "kind", "source", "grain", "measures", "tier", "covered",
                   "objective_before", "objective_after", "saved_ms_per_day", "build_ms",
                   "refreshes_per_day", "build_ms_per_day", "net_ms_per_day", "staleness_hours",
-                  "usd_per_day", "feasible", "why_not"]
+                  "usd_per_day", "warehouse_ms_per_day", "feasible", "why_not", "how_found"]
 PREDICTION_COLUMNS = ["option", "qid", "source", "count", "before_ms", "predicted_ms", "covered",
                       "why_not"]
 
@@ -92,7 +92,8 @@ def objective(cfg: Any) -> dict[str, Any]:
             "max_usd_per_day": get("max_usd_per_day"),
             "usd_per_compute_hour": get("usd_per_compute_hour"),
             "usd_per_tb_scanned": get("usd_per_tb_scanned"),
-            "table_read_ms": get("table_read_ms")}
+            "table_read_ms": get("table_read_ms"),
+            "max_query_ms": get("max_query_ms")}
 
 
 # ------------------------------------------------------------------ coverage
@@ -259,6 +260,11 @@ def score(rows: list[dict[str, Any]], tables: list[dict[str, Any]],
         why_not.append(f"builds {build_day:g} ms a day, over max_build_ms_per_day")
     if obj["max_usd_per_day"] and usd is not None and usd > obj["max_usd_per_day"]:
         why_not.append(f"costs ${usd:g} a day, over max_usd_per_day")
+    limit = obj.get("max_query_ms")
+    over = [p["qid"] for p in preds if limit and p["predicted_ms"] > limit]
+    if over:
+        why_not.append(f"{len(over)} quer{'y' if len(over) == 1 else 'ies'} still over "
+                       f"max_query_ms: {', '.join(over[:5])}")
     if tables and not serving:
         why_not.append("no table would serve: " + "; ".join(
             f"{t.get('verdict_message') or t.get('verdict')}" for t in tables)[:500])
@@ -278,12 +284,67 @@ def score(rows: list[dict[str, Any]], tables: list[dict[str, Any]],
         "refreshes_per_day": per_day,
         "build_ms_per_day": build_day,
         "net_ms_per_day": round(saved - build_day, 1),
+        # Warehouse time a day, serving and building: what the solver minimizes.
+        "warehouse_ms_per_day": round(sum(ms * c for ms, c in after) + build_day, 1),
         "staleness_hours": round(24 / per_day, 2),
         "usd_per_day": usd,
         "feasible": not why_not,
         "why_not": "; ".join(why_not) or None,
     }
     return option, preds
+
+
+EXACT_LIMIT = 16   # candidates tried in every combination; 2**16 scorings is about a second
+
+
+def choose(rows: list[dict[str, Any]], tables: list[dict[str, Any]],
+           obj: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+    """The set of tables with the least warehouse time a day (serving plus
+    building) that meets every limit, and how it was found.
+
+    This is materialized view selection: each table costs its builds and saves
+    the time of the queries it answers. Up to EXACT_LIMIT useful candidates,
+    every combination is scored with score(), so the answer is the cheapest
+    there is under this file's estimates. Past that, tables are added greedily
+    by time saved per build time, and the result says it is not proven best.
+    Returns ([], why) when no combination meets the limits.
+    """
+    useful = [t for t in tables if any(covers(t, r)[0] for r in rows
+                                       if (r.get("served_by") or {}).get("kind") in ("live", None))]
+    limit = obj.get("max_query_ms")
+    if limit:
+        stuck = [r["qid"] for r in rows if r["median_ms"] > limit
+                 and (r.get("served_by") or {}).get("kind") in ("live", None)
+                 and not any(covers(t, r)[0] for t in useful)]
+        if stuck:
+            return [], (f"no candidate table answers {', '.join(stuck[:5])}, which run over "
+                        f"max_query_ms live: fix the query or the model, not a table")
+
+    def cost(ts: list[dict[str, Any]]) -> tuple[bool, float]:
+        o, _ = score(rows, ts, obj, "x")
+        return o["feasible"], o["warehouse_ms_per_day"]
+
+    if len(useful) <= EXACT_LIMIT:
+        best, best_cost = None, math.inf
+        for mask in range(1 << len(useful)):
+            ts = [t for i, t in enumerate(useful) if mask >> i & 1]
+            ok, c = cost(ts)
+            if ok and c < best_cost:
+                best, best_cost = ts, c
+        if best is None:
+            return [], "no combination of the candidates meets every limit"
+        return best, f"exact: every combination of {len(useful)} candidates tried"
+    chosen: list[dict[str, Any]] = []
+    while True:
+        base = cost(chosen)[1]
+        gains = [(base - cost(chosen + [t])[1], t) for t in useful if t not in chosen]
+        gain, t = max(gains, key=lambda g: g[0], default=(0, None))
+        if t is None or (gain <= 0 and cost(chosen)[0]):
+            break
+        chosen.append(t)
+    ok = cost(chosen)[0]
+    return (chosen if ok else []), (f"greedy over {len(useful)} candidates: not proven the cheapest"
+                                   + ("" if ok else "; it found none that meets every limit"))
 
 
 def options(rows: list[dict[str, Any]], tables: list[dict[str, Any]],
@@ -297,10 +358,22 @@ def options(rows: list[dict[str, Any]], tables: list[dict[str, Any]],
         sets += [(f"rollup-{t['source']}-{'-'.join(t['grain']) or 'total'}", [t]) for t in tables]
         if len(tables) > 1:
             sets.append(("all", tables))
+    solved: tuple[list[dict[str, Any]], str] | None = None
+    if not candidate and tables:
+        solved = choose(rows, tables, obj)
+        if solved[0]:
+            sets.append(("cheapest", solved[0]))
     got = [score(rows, ts, obj, name) for name, ts in sets]
     opts = [o for o, _ in got]
+    for o in opts:
+        if o["option"] == "cheapest":
+            o["how_found"] = solved[1]
+    if solved and not solved[0]:
+        opts.append({**score(rows, [], obj, "cheapest")[0], "feasible": False,
+                     "why_not": solved[1], "how_found": solved[1]})
     preds = [p for _, ps in got for p in ps]
-    opts.sort(key=lambda o: (not o["feasible"], o["objective_after"] if o["objective_after"]
+    opts.sort(key=lambda o: (not o["feasible"], o["option"] != "cheapest",
+                             o["objective_after"] if o["objective_after"]
                              is not None else math.inf, -o["net_ms_per_day"], o["option"]))
     return opts, preds
 
@@ -381,7 +454,8 @@ def report(sim: dict[str, Any]) -> str:
     lines = [f"objective: lower {o['objective']}"
              + (f", data at most {o['max_staleness_hours']:g} h old" if o["max_staleness_hours"] else "")
              + (f", builds at most {o['max_build_ms_per_day']:g} ms a day" if o["max_build_ms_per_day"] else "")
-             + (f", at most ${o['max_usd_per_day']:g} a day" if o["max_usd_per_day"] else ""), ""]
+             + (f", at most ${o['max_usd_per_day']:g} a day" if o["max_usd_per_day"] else "")
+             + (f", every query under {o['max_query_ms']:g} ms" if o.get("max_query_ms") else ""), ""]
     for x in sim["options"]:
         usd = "" if x["usd_per_day"] is None else f", ${x['usd_per_day']:g}/day"
         lines.append(f"  {'ok ' if x['feasible'] else 'NO '} {x['option']:<44} "
@@ -389,6 +463,9 @@ def report(sim: dict[str, Any]) -> str:
                      f"{x['covered']} queries answered by a table, build {x['build_ms_per_day']:g} "
                      f"ms/day, net {x['net_ms_per_day']:g} ms/day{usd}"
                      + (f"  ({x['why_not']})" if x["why_not"] else ""))
+    found = next((x.get("how_found") for x in sim["options"] if x["option"] == "cheapest"), None)
+    if found:
+        lines += ["", f"cheapest: the least warehouse time a day that meets every limit ({found})"]
     lines += ["", "assumptions:"] + [f"  - {a}" for a in sim["assumptions"]]
     return "\n".join(lines)
 

@@ -97,6 +97,40 @@ class Options(unittest.TestCase):
         self.assertEqual(sim.p95([(10, 90), (1000, 10)]), 1000)
 
 
+class Solver(unittest.TestCase):
+    T = {"kind": "rollup", "source": "order_items", "tier": "estimate"}
+
+    def test_the_cheapest_set_meeting_the_limit_is_chosen_exactly(self):
+        # Refreshed every 2 hours, a table on order_items costs 12 builds of
+        # 200 ms a day. The category table saves 3000 ms a day, so it pays; the
+        # brand table saves 1520, so it does not, until the limit forces it:
+        # by_brand runs 200 ms live, over 150.
+        a = {**self.T, "grain": ["category"], "measures": ["total_sales"]}
+        b = {**self.T, "grain": ["brand"], "measures": ["total_sales"]}
+        free, _ = sim.choose(ROWS, [a, b], {**OBJ, "max_staleness_hours": 2.0})
+        self.assertEqual([t["grain"] for t in free], [["category"]])
+        limited, how = sim.choose(ROWS, [a, b], {**OBJ, "max_staleness_hours": 2.0,
+                                                 "max_query_ms": 150.0})
+        self.assertEqual(sorted(t["grain"][0] for t in limited), ["brand", "category"])
+        self.assertTrue(how.startswith("exact: every combination of 2"))
+
+    def test_a_slow_query_no_table_can_answer_is_named_as_a_model_fix(self):
+        a = {**self.T, "grain": ["category"], "measures": ["total_sales"]}
+        got, why = sim.choose(ROWS, [a], {**OBJ, "max_query_ms": 150.0})
+        self.assertEqual(got, [])
+        self.assertIn("no candidate table answers by_brand", why)
+        opts, _ = sim.options(ROWS, [a], {**OBJ, "max_query_ms": 150.0}, candidate=False)
+        cheapest = next(o for o in opts if o["option"] == "cheapest")
+        self.assertFalse(cheapest["feasible"])
+        self.assertIn("fix the query or the model", cheapest["why_not"])
+
+    def test_the_cheapest_option_ranks_first_among_feasible_ones(self):
+        opts, _ = sim.options(ROWS, sim.proposed_tables(ROWS), OBJ, candidate=False)
+        self.assertEqual(opts[0]["option"], "cheapest")
+        self.assertTrue(all(opts[0]["warehouse_ms_per_day"] <= o["warehouse_ms_per_day"]
+                            for o in opts if o["feasible"]))
+
+
 class DryRun(unittest.TestCase):
     def reply(self, body):
         resp = unittest.mock.MagicMock()
