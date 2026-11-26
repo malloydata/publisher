@@ -1733,14 +1733,14 @@ const underSkillsDir = (value: string) => {
    );
 };
 
+/** A link out of the package decides nothing, whatever it leads to. */
 function hasSkillsDir(packagePath: string): boolean {
-   try {
-      return fs
-         .statSync(path.join(packagePath, PACKAGE_SKILLS_DIR))
-         .isDirectory();
-   } catch {
-      return false;
-   }
+   return (
+      directoryInside(
+         path.resolve(packagePath),
+         path.join(packagePath, PACKAGE_SKILLS_DIR),
+      ) !== undefined
+   );
 }
 
 /** Every set path and instructions file the manifest names, served or not, so fixing a refused workflow recompiles. Lexical: it names what to watch and reads nothing. */

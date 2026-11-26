@@ -1409,6 +1409,38 @@ describe("readPackageWorkflows", () => {
          write("skills", "not a directory");
          expect(skillsDirNotRead(undefined)).toBe(false);
       });
+
+      it.skipIf(isWindows)(
+         "is not looked through when it is a link out of the package, whether or not the target exists",
+         () => {
+            // What lies outside decides nothing: both targets answer the same.
+            fs.mkdirSync(path.join(outside, "real"));
+            fs.symlinkSync(
+               path.join(outside, "real"),
+               path.join(pkg, "skills"),
+            );
+            const toExisting = skillsDirNotRead(undefined);
+            fs.rmSync(path.join(pkg, "skills"));
+            fs.symlinkSync(
+               path.join(outside, "missing"),
+               path.join(pkg, "skills"),
+            );
+            const toMissing = skillsDirNotRead(undefined);
+            expect([toExisting, toMissing]).toEqual([false, false]);
+         },
+      );
+
+      it.skipIf(isWindows)(
+         "is flagged when it is a link to a folder inside the package",
+         () => {
+            writeSkill("old-skills", "old");
+            fs.symlinkSync(
+               path.join(pkg, "old-skills"),
+               path.join(pkg, "skills"),
+            );
+            expect(skillsDirNotRead(undefined)).toBe(true);
+         },
+      );
    });
 
    describe("assets", () => {
