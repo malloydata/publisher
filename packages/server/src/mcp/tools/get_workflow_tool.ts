@@ -135,6 +135,9 @@ function withAvailable<T>(
  *
  * SECURITY: returns author-written text from the package's tree, no row data. A
  * definition carries no tool, permission or hook setting, so it widens nothing.
+ *
+ * A SKILL.md is served here re-emitted (only a quoted name and description), for installing, and that form is what
+ * a set's digest and `definitionSha` hash; get_skill serves the file as written, for reading. An installer reads this.
  */
 export function registerGetWorkflowTool(
    mcpServer: McpServer,
@@ -155,6 +158,8 @@ export function registerGetWorkflowTool(
          `${scope!.environment}/${scope!.package}`,
       logFields: (params) => ({
          workflowName: params.workflow_name,
+         skillSet: params.skill_set,
+         skillPath: params.skill_path,
          environmentName: params.scopes[0]!.environment,
          packageName: params.scopes[0]!.package,
       }),
@@ -179,6 +184,7 @@ export function registerGetWorkflowTool(
          const sizeOf = (payload: Payload) =>
             wireChars(uri, reply(payload).payload, id);
          const skillSet = params.skill_set ?? undefined;
+         const noSkillSet = `Workflow ${JSON.stringify(params.workflow_name)} has no skill set named ${JSON.stringify(skillSet)}. Fix: use a name from the workflow's skill_sets in availableWorkflows.`;
          if (
             params.workflow_name === undefined ||
             params.workflow_name === null
@@ -207,10 +213,16 @@ export function registerGetWorkflowTool(
             );
             // No `workflow` key in any answer to a file read: it must not look like "no workflow matched".
             if (!skillFile) {
+               const setIsListed = availableWorkflows
+                  .find((w) => w.name === params.workflow_name)
+                  ?.skill_sets.some((set) => set.name === skillSet);
                return send({
                   skillFile: {
                      relative_filepath: params.skill_path,
-                     message: `Workflow ${JSON.stringify(params.workflow_name)} has no skill file ${JSON.stringify(params.skill_path)}${skillSet === undefined ? "" : ` in skill set ${JSON.stringify(skillSet)}`}. Fix: use a relative_filepath exactly as the definition lists it (a skill file in the summary, an asset in the full view).`,
+                     message:
+                        skillSet !== undefined && !setIsListed
+                           ? noSkillSet
+                           : `Workflow ${JSON.stringify(params.workflow_name)} has no skill file ${JSON.stringify(params.skill_path)}${skillSet === undefined ? "" : ` in skill set ${JSON.stringify(skillSet)}`}. Fix: use a relative_filepath exactly as the definition lists it (a skill file in the summary, an asset in the full view).`,
                   },
                });
             }
@@ -236,10 +248,7 @@ export function registerGetWorkflowTool(
          const view = params.skills ?? "full";
          const workflow = pkg.getWorkflow(params.workflow_name, view, skillSet);
          if (!workflow) {
-            return send({
-               workflow: null,
-               message: `Workflow ${JSON.stringify(params.workflow_name)} has no skill set named ${JSON.stringify(params.skill_set)}. Fix: use a name from the workflow's skill_sets in availableWorkflows.`,
-            });
+            return send({ workflow: null, message: noSkillSet });
          }
          const whole = reply({ workflow });
          if (whole.fits) return jsonResource(uri, whole.payload);

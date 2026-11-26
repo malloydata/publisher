@@ -1,9 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { FCJ_MAX_CHARS } from "../../constants";
 import { PackageNotFoundError } from "../../errors";
+import { logger } from "../../logger";
 import { getNotFoundError } from "../error_messages";
 import { registerGetWorkflowTool } from "./get_workflow_tool";
 import { fakeOf } from "../../test_helpers/store_fakes";
@@ -177,25 +178,67 @@ describe("get_workflow", () => {
       );
    });
 
-   it("scopes a skill file to the skill set it names, or says it is missing there", async () => {
+   it("scopes a skill file to the skill set it names, or says the file is missing there", async () => {
       const handler = getWorkflow();
-      const read = (skill_set: string) =>
+      const read = (skill_set: string, skill_path = "guide/SKILL.md") =>
          handler({
             scopes,
             workflow_name: "analyst",
-            skill_path: "guide/SKILL.md",
+            skill_path,
             skill_set,
          });
       expect(parse(await read("main")).skillFile.file_contents).toBe(
          "# in main",
       );
-      const missing = parse(await read("other"));
+      const missing = parse(await read("main", "x/SKILL.md"));
       expect("workflow" in missing).toBe(false);
       expect(missing.skillFile.file_contents).toBeUndefined();
       expect(missing.skillFile.message).toContain(
-         'has no skill file "guide/SKILL.md"',
+         'has no skill file "x/SKILL.md"',
       );
-      expect(missing.skillFile.message).toContain('in skill set "other"');
+      expect(missing.skillFile.message).toContain('in skill set "main"');
+   });
+
+   it("says a skill set that does not exist is not there, rather than that its file is missing", async () => {
+      const unknown = parse(
+         await getWorkflow()({
+            scopes,
+            workflow_name: "analyst",
+            skill_path: "guide/SKILL.md",
+            skill_set: "other",
+         }),
+      );
+      expect("workflow" in unknown).toBe(false);
+      expect(unknown.skillFile.relative_filepath).toBe("guide/SKILL.md");
+      expect(unknown.skillFile.file_contents).toBeUndefined();
+      expect(unknown.skillFile.message).toContain(
+         'has no skill set named "other"',
+      );
+      expect(unknown.skillFile.message).not.toContain("has no skill file");
+   });
+
+   it("logs the skill set and the skill file a failed read asked for", async () => {
+      const warn = spyOn(logger, "warn");
+      try {
+         await getWorkflow(async () => {
+            throw new PackageNotFoundError("Package pkg does not exist");
+         })({
+            scopes,
+            workflow_name: "analyst",
+            skill_set: "main",
+            skill_path: "guide/SKILL.md",
+         });
+         expect(warn.mock.calls as unknown[][]).toContainEqual([
+            "[MCP Tool getWorkflow] lookup failed",
+            expect.objectContaining({
+               workflowName: "analyst",
+               skillSet: "main",
+               skillPath: "guide/SKILL.md",
+            }),
+         ]);
+      } finally {
+         warn.mockRestore();
+      }
    });
 
    it("answers a missing package with a not-found error naming it", async () => {
