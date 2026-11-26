@@ -3351,7 +3351,7 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /environments/{environmentName}/packages/{packageName}/workflows/{workflowName}/skills/{relativeFilepath}:
+  /environments/{environmentName}/packages/{packageName}/workflows/{workflowName}/skills/{path}:
     get:
       tags:
         - workflows
@@ -3396,7 +3396,7 @@ paths:
             type: string
             pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
             maxLength: 64
-        - name: relativeFilepath
+        - name: path
           in: path
           description: >-
             A `<skill>/<file>` path from the workflow's skill summary, or from
@@ -6648,6 +6648,10 @@ components:
             skill's applied `.skillignore`. Editing another set, or a
             workflow's instructions, does not move it; a package past the 8 MiB
             asset cap can couple sets.
+      required:
+        - name
+        - path
+        - digest
 
     WorkflowSummary:
       type: object
@@ -6708,6 +6712,8 @@ components:
         bytes:
           type: integer
           description: Size of `file_contents` in UTF-8 bytes. Only in the `skills=summary` view.
+      required:
+        - relative_filepath
 
     WorkflowAsset:
       type: object
@@ -6718,7 +6724,7 @@ components:
         inline budget, text or binary, anywhere in the skill but `SKILL.md`. A
         skill's `.skillignore` decides which files the skill has. Listed
         without its contents; fetch a text one with
-        `GET .../workflows/{workflowName}/skills/{relative_filepath}`, which
+        `GET .../workflows/{workflowName}/skills/{path}`, which
         answers a binary one with a message naming its size.
       properties:
         relative_filepath:
@@ -6730,6 +6736,10 @@ components:
         sha256:
           type: string
           description: SHA-256 of the file's bytes.
+      required:
+        - relative_filepath
+        - bytes
+        - sha256
 
     WorkflowSkillSet:
       type: object
@@ -6785,6 +6795,9 @@ components:
             never served as a body.
         source:
           $ref: "#/components/schemas/WorkflowSource"
+      required:
+        - relative_filepath
+        - source
 
     WorkflowSource:
       type: object
@@ -6814,6 +6827,12 @@ components:
         servedRevision:
           type: string
           description: The package's `servedRevision` at the load this definition came from.
+      required:
+        - environment
+        - package
+        - sourceContentSha
+        - definitionSha
+        - servedRevision
 
     Workflow:
       type: object
