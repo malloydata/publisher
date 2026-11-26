@@ -49,6 +49,7 @@ import {
    closeCorpus,
    type CorpusModel,
    hammerModels,
+   HAMMER_URL,
    materializes,
    releasingEach,
 } from "../../../src/test_helpers/persist_corpus";
@@ -74,9 +75,6 @@ function firstDiagnostic(message: string): string | undefined {
    return message.split("\n").find((l) => /^line \d+:/.test(l));
 }
 
-/** The prefix the corpus gives a hammer model's in-memory URL. */
-const HAMMER_URL = "file:///hammer/";
-
 interface Planned {
    plan: string;
    build: string | undefined;
@@ -98,7 +96,7 @@ function readerOf(
 
 /**
  * Plan one corpus model as a package load plans a model, under `root`: its
- * files are rehomed from the corpus's `file:///hammer/` URLs to real paths,
+ * files are rehomed from the corpus's `HAMMER_URL` URLs to real paths,
  * so the companion URLs the planner derives from a package path agree on
  * every platform.
  */
