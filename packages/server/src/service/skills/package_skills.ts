@@ -1476,47 +1476,65 @@ function readSkillSet(
          "the skill set holds no skills. Fix: add <skill>/SKILL.md under it or remove the entry",
       );
    }
-   // Every SKILL.md is charged before any other Markdown, so the budget can only list a reference, never cost a skill that fit. A skill set aside is charged nothing.
-   let inlineLeft = SKILL_SET_MARKDOWN_MAX_BYTES;
-   const fitted: ScannedSkill[] = [];
-   for (const s of scan.skills) {
-      const refusal = s.assetsRefusal ?? s.manifestRefusal;
-      if (refusal) {
-         found.push(skillSetAside(s, refusal));
-         continue;
+   // A skill the strict assets/ rules set aside is only found after the budget has dropped a later skill for its SKILL.md, so the set is read again without it.
+   const refused = new Map<ScannedSkill, string>();
+   const fit = () => {
+      const findings: string[] = [];
+      const newRefusals: Array<[ScannedSkill, string]> = [];
+      let overBudget = false;
+      // Every SKILL.md is charged before any other Markdown, so the budget can only list a reference, never cost a skill that fit. A skill set aside is charged nothing.
+      let inlineLeft = SKILL_SET_MARKDOWN_MAX_BYTES;
+      const fitted: ScannedSkill[] = [];
+      for (const s of scan.skills) {
+         const refusal = refused.get(s) ?? s.assetsRefusal ?? s.manifestRefusal;
+         if (refusal) {
+            findings.push(skillSetAside(s, refusal));
+            continue;
+         }
+         const bytes = Buffer.byteLength(s.skillMd.text);
+         if (bytes > inlineLeft) {
+            overBudget = true;
+            findings.push(
+               `Package skill '${s.rel}/${SKILL_MD}' would take the skill set's Markdown over the ${SKILL_SET_MARKDOWN_MAX_BYTES} byte cap, so it is not served. Fix: shorten the skills, or move one to another skill set`,
+            );
+            continue;
+         }
+         inlineLeft -= bytes;
+         fitted.push(s);
       }
-      const bytes = Buffer.byteLength(s.skillMd.text);
-      if (bytes > inlineLeft) {
-         found.push(
-            `Package skill '${s.rel}/${SKILL_MD}' would take the skill set's Markdown over the ${SKILL_SET_MARKDOWN_MAX_BYTES} byte cap, so it is not served. Fix: shorten the skills, or move one to another skill set`,
-         );
-         continue;
+      const walk = newWalk(budget);
+      const ctx: FinishContext = {
+         packageRoot,
+         advertised,
+         walk,
+         inline: { left: inlineLeft },
+         warnings: [],
+         refusals: [],
+      };
+      const drafts: SkillDraft[] = [];
+      for (const s of fitted) {
+         const mark = markOf(ctx);
+         const draft = readFirst(s, ctx);
+         if (ctx.refusals.length > mark.refusals) {
+            const refusal = ctx.refusals[mark.refusals]!;
+            findings.push(skillSetAside(s, refusal));
+            newRefusals.push([s, refusal]);
+            rollBack(ctx, mark);
+            // Its SKILL.md was charged above, before this refusal was known.
+            ctx.inline.left += Buffer.byteLength(s.skillMd.text);
+            continue;
+         }
+         drafts.push(draft);
       }
-      inlineLeft -= bytes;
-      fitted.push(s);
-   }
-   const walk = newWalk(budget);
-   const ctx: FinishContext = {
-      packageRoot,
-      advertised,
-      walk,
-      inline: { left: inlineLeft },
-      warnings: [],
-      refusals: [],
+      return { findings, newRefusals, overBudget, walk, ctx, drafts };
    };
-   const drafts: SkillDraft[] = [];
-   for (const s of fitted) {
-      const mark = markOf(ctx);
-      const draft = readFirst(s, ctx);
-      if (ctx.refusals.length > mark.refusals) {
-         found.push(skillSetAside(s, ctx.refusals[mark.refusals]!));
-         rollBack(ctx, mark);
-         // Its SKILL.md was charged above, before this refusal was known.
-         ctx.inline.left += Buffer.byteLength(s.skillMd.text);
-         continue;
-      }
-      drafts.push(draft);
+   let pass = fit();
+   while (pass.newRefusals.length > 0 && pass.overBudget) {
+      for (const [s, refusal] of pass.newRefusals) refused.set(s, refusal);
+      pass = fit();
    }
+   const { walk, ctx, drafts } = pass;
+   found.push(...pass.findings);
    const skills = drafts
       .map((d) => readRest(d, ctx))
       .map(
@@ -1598,12 +1616,16 @@ function checkSkillSetRoot(
          `skill set directory '${root}' resolves outside the package`,
       );
    }
+   let isDirectory: boolean;
    try {
-      if (!fs.statSync(rootInside).isDirectory()) {
-         throw new Error("not a directory");
-      }
+      isDirectory = fs.statSync(rootInside).isDirectory();
    } catch {
       throw new WorkflowProblem(`skill set directory '${root}' does not exist`);
+   }
+   if (!isDirectory) {
+      throw new WorkflowProblem(
+         `skill set directory '${root}' is not a folder`,
+      );
    }
    // One at the set's root or above makes it a second package; one inside a skill only sets that skill aside.
    for (let dir = root; dir !== "."; dir = path.posix.dirname(dir)) {
@@ -1807,7 +1829,7 @@ const cannotRead = (error: unknown, packagePath: string) =>
  * is left out with a warning saying why and the rest still serve.
  *
  * Each distinct skill set a served workflow lists is read once, in sorted path
- * order, and charged to the package's 8 MiB cap in that order, so reordering
+ * order (a set only a refused workflow lists is not read), and charged to the package's 8 MiB cap in that order, so reordering
  * workflows or editing their instructions never moves a set's digest. Adding a
  * set can: one that sorts earlier is charged first.
  */
@@ -1835,11 +1857,6 @@ export function readPackageWorkflows(
    } catch {
       return result;
    }
-   const budget: PackageAssetBudget = {
-      bytes: 0,
-      paths: new Set(),
-      reads: new Map(),
-   };
    const entries = Object.entries(raw);
    // By manifest position, so the warnings read in manifest order.
    const notes: string[][] = entries.map(() => []);
@@ -1863,34 +1880,67 @@ export function readPackageWorkflows(
       }
    });
 
-   const setPaths = [
-      ...new Set([...declared.values()].flatMap((w) => w.sets)),
-   ].sort(compareText);
-   const advertised = new Set(declared.get(DEFAULT_WORKFLOW)?.sets);
-   const findings: string[] = [];
    // A set that throws refuses the workflows that list it, never the package load.
-   const unreadable = new Map<string, string>();
-   for (const setPath of setPaths) {
-      let read: ReturnType<typeof readSkillSet>;
-      try {
-         read = readSkillSet(
-            packagePath,
-            packageRoot,
-            setPath,
-            budget,
-            advertised.has(setPath),
-         );
-      } catch (error) {
-         unreadable.set(setPath, cannotRead(error, packagePath));
-         continue;
+   const readSets = (workflows: DeclaredWorkflow[]) => {
+      const budget: PackageAssetBudget = {
+         bytes: 0,
+         paths: new Set(),
+         reads: new Map(),
+      };
+      const advertised = new Set(
+         workflows.find((w) => w.name === DEFAULT_WORKFLOW)?.sets,
+      );
+      const read = {
+         sets: new Map<string, SkillSet>(),
+         paths: [] as string[],
+         contentShas: new Map<string, string>(),
+         findings: [] as string[],
+         unreadable: new Map<string, string>(),
+      };
+      const setPaths = [...new Set(workflows.flatMap((w) => w.sets))].sort(
+         compareText,
+      );
+      for (const setPath of setPaths) {
+         let one: ReturnType<typeof readSkillSet>;
+         try {
+            one = readSkillSet(
+               packagePath,
+               packageRoot,
+               setPath,
+               budget,
+               advertised.has(setPath),
+            );
+         } catch (error) {
+            read.unreadable.set(setPath, cannotRead(error, packagePath));
+            continue;
+         }
+         read.sets.set(setPath, one.set);
+         read.paths.push(...one.paths);
+         for (const [filePath, sha] of one.shas) {
+            read.contentShas.set(filePath, sha);
+         }
+         read.findings.push(...one.set.findings);
       }
-      result.sets.set(setPath, read.set);
-      result.paths.push(...read.paths);
-      for (const [filePath, sha] of read.shas) {
-         result.contentShas.set(filePath, sha);
-      }
-      findings.push(...read.set.findings);
+      return read;
+   };
+   const first = readSets([...declared.values()]);
+   // A set that only a refused workflow lists is read again out of the pass, so it takes none of the package's budget and adds no finding.
+   const serving = [...declared.values()].filter(
+      (w) => !w.sets.some((setPath) => first.unreadable.has(setPath)),
+   );
+   const needed = new Set(serving.flatMap((w) => w.sets));
+   const reading = [...first.sets.keys()].some(
+      (setPath) => !needed.has(setPath),
+   )
+      ? readSets(serving)
+      : first;
+   const unreadable = new Map([...first.unreadable, ...reading.unreadable]);
+   for (const [setPath, set] of reading.sets) result.sets.set(setPath, set);
+   result.paths.push(...reading.paths);
+   for (const [filePath, sha] of reading.contentShas) {
+      result.contentShas.set(filePath, sha);
    }
+   const findings = reading.findings;
 
    result.skillsDirNotRead =
       skillsDir && ![...result.sets.keys()].some(underSkillsDir);
@@ -2026,6 +2076,15 @@ export function withoutDotSlash(raw: string): string {
 export function skillFilePath(raw: string | null | undefined): string {
    if (!raw?.trim()) return SKILL_MD;
    return withoutDotSlash(raw) || SKILL_MD;
+}
+
+/** A workflow file path as a caller wrote it, `<skill>/<file>`: a blank file part (`<skill>/`) names the skill's SKILL.md, as a blank `path` does on the skill routes. */
+export function workflowFilePath(raw: string): string {
+   const relative = withoutDotSlash(raw);
+   const slash = relative.indexOf("/");
+   return slash > 0
+      ? `${relative.slice(0, slash)}/${skillFilePath(relative.slice(slash + 1))}`
+      : relative;
 }
 
 /** The answer for a listed file that is not text; the one sentence every surface uses. */

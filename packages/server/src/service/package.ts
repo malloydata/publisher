@@ -111,7 +111,7 @@ import {
    pickedSets,
    readPackageWorkflows,
    readWorkflowFile,
-   withoutDotSlash,
+   workflowFilePath,
    workflowSkillSet,
    type PackageWorkflows,
    type ServedSkill,
@@ -686,7 +686,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    ): ApiWorkflowSkillRead | { changed: true } | undefined {
       const workflow = this.workflows.workflows.get(name);
       if (!workflow) return undefined;
-      const relative = withoutDotSlash(relativeFilepath);
+      const relative = workflowFilePath(relativeFilepath);
       const skillName = relative.split("/")[0]!;
       const skill = pickedSets(workflow, skillSet)
          ?.flatMap(({ skills }) => skills)

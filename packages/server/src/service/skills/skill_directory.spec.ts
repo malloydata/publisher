@@ -589,6 +589,30 @@ describe("a skill is its whole directory", () => {
          );
       });
 
+      it.skipIf(isWindows)(
+         "charges nothing for a skill the strict assets/ rules set aside, so a later skill that fits without it is served",
+         () => {
+            write(
+               "SKILL.md",
+               `---\nname: pricing\ndescription: d\n---\n\n${"x".repeat(200_000)}\n`,
+            );
+            fs.symlinkSync(
+               path.join(pkg, "publisher.json"),
+               path.join(skillDir(), "assets/link.txt"),
+            );
+            writeSecondSkill(SKILLS_ROOT, 100_000);
+            const result = read();
+            expect(
+               workflowOf(result).sets[0]!.skills.map((s) => s.dirName),
+            ).toEqual(["second"]);
+            const findings = result.warnings.join("\n");
+            expect(findings).toContain(
+               `Package skill '${SKILL}' is not served: asset '${SKILL}/assets/link.txt' is a link`,
+            );
+            expect(findings).not.toContain("byte cap");
+         },
+      );
+
       it("gives each skill set a budget of its own", () => {
          write(
             "SKILL.md",

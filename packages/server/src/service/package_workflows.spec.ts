@@ -1302,6 +1302,24 @@ describe("package workflows", () => {
             ).rejects.toBeInstanceOf(WorkflowNotFoundError);
          });
 
+         it("reads a skill's SKILL.md for its own folder, as the skill routes do for a blank path", async () => {
+            const pkg = await loadWithReference();
+            const skillMd = fileOf(pkg, "analyst", "conventions/SKILL.md")!;
+            expect(skillMd.file_contents).toContain("name: ");
+            for (const alias of [
+               "conventions/",
+               "./conventions/",
+               "conventions/./",
+            ]) {
+               expect(fileOf(pkg, "analyst", alias)).toEqual(skillMd);
+            }
+            // Still no file named for the skill alone, and none for no skill.
+            expect(pkg.getWorkflowSkillFile("analyst", "conventions")).toBe(
+               undefined,
+            );
+            expect(pkg.getWorkflowSkillFile("analyst", "")).toBe(undefined);
+         });
+
          it("reads a file inside the picked set through the controller and get_workflow, where the whole workflow serves the first-listed copy", async () => {
             write(
                `${SECOND}/conventions/SKILL.md`,

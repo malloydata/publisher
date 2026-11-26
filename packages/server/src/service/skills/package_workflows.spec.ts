@@ -451,6 +451,16 @@ describe("readPackageWorkflows", () => {
          ).toContain("skill set directory 'nope' does not exist");
       });
 
+      it("says a skill set that is a file is not a folder, not that it does not exist", () => {
+         const why = refused({
+            analyst: analyst({ skill_sets: [INSTRUCTIONS] }),
+         });
+         expect(why).toContain(
+            `skill set directory '${INSTRUCTIONS}' is not a folder`,
+         );
+         expect(why).not.toContain("does not exist");
+      });
+
       it("refuses a workflow whose skill set is a link out of the package, the same whether or not the outside directory exists", () => {
          const answers: string[] = [];
          fs.mkdirSync(path.join(outside, "present"));
@@ -868,6 +878,38 @@ describe("readPackageWorkflows", () => {
                   `Workflow '${name}' is not served: skill set directory '${SECOND}' cannot be read (injected failure). Fix: correct the 'workflows.${name}' entry in publisher.json and the files it names.`,
             ),
          );
+      });
+   });
+
+   describe("a set only a refused workflow lists", () => {
+      const THIRD = "workflows/analyst/skill_sets/third";
+      let boom: ReturnType<typeof spyOn> | undefined;
+      afterEach(() => boom?.mockRestore());
+
+      it("is not read: it is not served, hashed, reported or charged to the package", () => {
+         analyst();
+         writeSkill(SECOND, "extra");
+         // An empty set has a finding of its own, which would be reported if it were read.
+         fs.mkdirSync(path.join(pkg, THIRD), { recursive: true });
+         const real = revision.canonicalSha;
+         boom = spyOn(revision, "canonicalSha").mockImplementation(
+            (value: unknown) => {
+               if ((value as { path?: string }).path === SECOND) {
+                  throw new Error("injected failure");
+               }
+               return real(value);
+            },
+         );
+         const result = read({
+            fine: { skill_sets: [MAIN] },
+            broken: { skill_sets: [THIRD, SECOND] },
+         });
+         expect([...result.workflows.keys()]).toEqual(["fine"]);
+         expect([...result.sets.keys()]).toEqual([MAIN]);
+         expect(result.paths.some((p) => p.startsWith(THIRD))).toBe(false);
+         expect(result.warnings).toEqual([
+            `Workflow 'broken' is not served: skill set directory '${SECOND}' cannot be read (injected failure). Fix: correct the 'workflows.broken' entry in publisher.json and the files it names.`,
+         ]);
       });
    });
 
