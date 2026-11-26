@@ -60,6 +60,7 @@ sys.path.insert(0, str(HERE))
 import config  # noqa: E402
 from optimization_package import APPENDED, append, install_for, metric_version, read  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
+from build_set import normal  # noqa: E402
 
 JUDGMENT_COLUMNS = APPENDED["prod_judgments"][2]
 SAFE = re.compile(r"[^A-Za-z0-9_-]+")
@@ -88,19 +89,55 @@ def judging_config(cfg: Any, dir_: pathlib.Path) -> dict[str, Any]:
     return out
 
 
+# What a judging set takes from the set it samples for: where its keys
+# re-derive, which model they describe, and the conventions the judge reads.
+INHERITED = ("truthPackage", "truthModel", "targetPackage", "targetModelPath", "conventions")
+
+
+def held_keys(parent: pathlib.Path) -> dict[str, dict[str, Any]]:
+    """The parent set's verified goldens, by question (case and spacing
+    ignored). A production turn asking a question the set already keys is
+    judged against that key, so an agent derives keys only for new ones."""
+    path = parent / "cases.jsonl"
+    if not path.is_file():
+        return {}
+    out = {}
+    for c in read_jsonl(path):
+        g = c.get("golden") or {}
+        if g.get("status") == "verified":
+            out[normal(c.get("question", ""))] = g
+    return out
+
+
 def write_set(dir_: pathlib.Path, label: str, chosen: list[dict[str, str]],
-              cfg_data: dict[str, Any]) -> None:
+              cfg_data: dict[str, Any], parent: pathlib.Path | None = None) -> int:
+    """Write the judging set. Returns how many cases took a key from `parent`."""
     dir_.mkdir(parents=True, exist_ok=True)
     (dir_ / "eval.json").write_text(json.dumps(cfg_data, indent=1) + "\n")
-    (dir_ / "set.json").write_text(json.dumps({
-        "name": f"production-{label}", "datasetVersion": 1,
-        "description": "Production turns drawn for judging by judge_sample.py. "
-                       "Each case's source is the turn id; goldens are derived, not imported."},
-        indent=1) + "\n")
+    meta = {"name": f"production-{label}", "datasetVersion": 1,
+            "description": "Production turns drawn for judging by judge_sample.py. "
+                           "Each case's source is the turn id. A question the sampled set "
+                           "already keys takes that verified key; the rest are derived."}
+    keys: dict[str, dict[str, Any]] = {}
+    if parent is not None:
+        if (parent / "set.json").is_file():
+            p = json.loads((parent / "set.json").read_text())
+            meta.update({k: p[k] for k in INHERITED if k in p})
+        keys = held_keys(parent)
+    n = 0
     with (dir_ / "cases.jsonl").open("w", encoding="utf-8") as f:
         for t in chosen:
-            f.write(json.dumps({"qid": qid_for(t["turn_id"]), "question": t["question"],
-                                "source": t["turn_id"], "split": "test", "tags": []}) + "\n")
+            # `dev`: diagnose never reads the `test` split, which a set holds
+            # back so its reported number stays honest. A judging set is never
+            # used to accept an edit, and diagnosing its failures is the point.
+            case = {"qid": qid_for(t["turn_id"]), "question": t["question"],
+                    "source": t["turn_id"], "split": "dev", "tags": []}
+            g = keys.get(normal(t["question"]))
+            if g:
+                case["golden"], n = g, n + 1
+            f.write(json.dumps(case) + "\n")
+    (dir_ / "set.json").write_text(json.dumps(meta, indent=1) + "\n")
+    return n
 
 
 def write_transcripts(run: pathlib.Path, chosen: list[dict[str, str]],
@@ -167,6 +204,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--set", dest="set_dir", required=True)
     ap.add_argument("--label", required=True, help="names the sample, its set and its run")
     ap.add_argument("--n", type=int, default=None, help="turns to draw ([optimization] judge_sample)")
+    ap.add_argument("--without-diagnosis", action="store_true",
+                    help="collect: keep wrong answers the run has not diagnosed, with no reason")
     a = ap.parse_args(argv)
     cfg = config.load(pathlib.Path(a.set_dir))
     data = install_for(cfg)
@@ -182,14 +221,18 @@ def main(argv: list[str] | None = None) -> int:
         if not chosen:
             print("every ingested turn is already judged")
             return 0
-        write_set(set_dir, a.label, chosen, judging_config(cfg, set_dir))
+        keyed = write_set(set_dir, a.label, chosen, judging_config(cfg, set_dir),
+                          pathlib.Path(a.set_dir))
         transcripts = {r["turn_id"]: r["transcript"] for r in read(data / "prod_transcripts.csv")}
         have = write_transcripts(run, chosen, transcripts)
         print(f"{len(chosen)} turns drawn ({len(turns) - len(judged)} not yet judged); "
               f"{have} transcripts written to {run / 'artifacts'}")
         if have < len(chosen):
             print(f"  {len(chosen) - have} need fetch_transcripts.py --set {set_dir} --out {run}")
-        print(f"next: derive each golden (skill:eval-import), then\n"
+        print(f"{keyed} of {len(chosen)} ask a question the set already keys and took its "
+              f"verified key")
+        print(f"next: derive a golden for each of the other {len(chosen) - keyed} "
+              f"(skill:eval-import), then\n"
               f"  python3 eval.py run --set {set_dir} --label {a.label} --rejudge\n"
               f"  python3 eval.py diagnose --set {set_dir} --label {a.label}\n"
               f"  python3 eval.py judge-sample collect --set {a.set_dir} --label {a.label}")
@@ -203,6 +246,14 @@ def main(argv: list[str] | None = None) -> int:
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     rows = [r for r in judgments(run, cases, now)
             if (r["turn_id"], r["metric_version"] or "") not in done]
+    undiagnosed = [r["turn_id"] for r in rows if r["right"] is False and not r["failure_code"]]
+    if undiagnosed and not a.without_diagnosis:
+        # Rows are only appended, so a wrong answer collected before its
+        # diagnosis keeps an empty reason for good.
+        raise SystemExit(f"{len(undiagnosed)} wrong answer(s) have no diagnosis yet, and a "
+                         f"collected row is never rewritten. Fix: eval.py diagnose --set "
+                         f"{set_dir} --label {a.label}, then collect again (or pass "
+                         f"--without-diagnosis to keep them with no reason)")
     append(data / "prod_judgments.csv", JUDGMENT_COLUMNS, rows)
     decided = [r for r in rows if r["right"] is not None]
     right = sum(1 for r in decided if r["right"])

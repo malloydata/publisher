@@ -12,6 +12,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "eval-answer" / "scripts"))
 import ingest_logs as il  # noqa: E402
 import judge_sample as js  # noqa: E402
+import optimization_package as op  # noqa: E402
 
 
 def turn(tid, q="top brands?", at="2026-11-24T10:00:00Z"):
@@ -53,6 +54,30 @@ class Collect(unittest.TestCase):
         self.assertEqual([got[t]["basis"] for t in "abc"], ["answer", "final_query", None])
 
 
+class Keys(unittest.TestCase):
+    def test_a_turn_asking_a_question_the_set_keys_takes_that_verified_key(self):
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        parent = root / "set"
+        parent.mkdir()
+        (parent / "set.json").write_text(json.dumps({"name": "s", "truthPackage": "s-truth",
+                                                     "conventions": ["summer is Jun-Aug"]}))
+        g = {"status": "verified", "kind": "rows", "value": [{"x": 1}]}
+        (parent / "cases.jsonl").write_text(
+            json.dumps({"qid": "a", "question": "Top  Brands?", "golden": g}) + "\n"
+            + json.dumps({"qid": "b", "question": "margin?",
+                          "golden": {"status": "provisional", "value": [{"y": 2}]}}) + "\n")
+        out = root / "judging"
+        n = js.write_set(out, "l", [{"turn_id": "t1", "question": "top brands?"},
+                                    {"turn_id": "t2", "question": "margin?"},
+                                    {"turn_id": "t3", "question": "new one"}], {}, parent)
+        cases = [json.loads(l) for l in (out / "cases.jsonl").read_text().splitlines()]
+        self.assertEqual(n, 1)
+        self.assertEqual([c.get("golden") for c in cases], [g, None, None])
+        meta = json.loads((out / "set.json").read_text())
+        self.assertEqual((meta["truthPackage"], meta["conventions"]), ("s-truth", ["summer is Jun-Aug"]))
+
+
 class Main(unittest.TestCase):
     def test_pick_writes_a_set_and_the_transcripts_the_history_tables_hold(self):
         root = pathlib.Path(tempfile.mkdtemp())
@@ -77,6 +102,29 @@ class Main(unittest.TestCase):
         self.assertTrue((judging / "work" / "runs" / "prod-01" / "artifacts" / "p-t1" / "answerer.jsonl").is_file())
         self.assertFalse((root / "w" / "runs").exists())
         self.assertIn("1 need fetch_transcripts.py", out.getvalue())
+
+    def test_collect_refuses_a_wrong_answer_with_no_diagnosis_unless_told(self):
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        (root / "set").mkdir()
+        (root / "set" / "set.json").write_text('{"name": "s"}')
+        (root / "set" / "eval.toml").write_text(
+            f'[paths]\nworkdir = "{root / "w"}"\n[model]\npackage = "storefront"\nenvironment = "e"\n')
+        judging = root / "w" / "judging" / "l"
+        run = judging / "work" / "runs" / "l"
+        run.mkdir(parents=True)
+        (judging / "cases.jsonl").write_text(json.dumps({"qid": "p-t1", "source": "t1"}) + "\n")
+        (run / "run.json").write_text('{"judgeVersion": "j"}')
+        (run / "events.jsonl").write_text(json.dumps({"kind": "score", "qid": "p-t1", "verdict": "no_match"}) + "\n")
+        argv = ["collect", "--set", str(root / "set"), "--label", "l"]
+        with self.assertRaises(SystemExit) as e:
+            js.main(argv)
+        self.assertIn("no diagnosis yet", str(e.exception))
+        data = root / "w" / "packages" / "optimization-s" / "data"
+        self.assertEqual(op.read(data / "prod_judgments.csv"), [])
+        with unittest.mock.patch("sys.stdout", new_callable=io.StringIO):
+            js.main(argv + ["--without-diagnosis"])
+        self.assertEqual(op.read(data / "prod_judgments.csv")[0]["right"], "False")
 
 
 if __name__ == "__main__":
