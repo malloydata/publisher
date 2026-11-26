@@ -6,7 +6,7 @@
  * kept until the routes are removed (the admin API serves watch mode now).
  */
 
-import { afterAll, describe, expect, it, spyOn } from "bun:test";
+import { afterAll, afterEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -107,4 +107,69 @@ describe("deprecated watch-mode routes", () => {
          error.mockRestore();
       }
    });
+});
+
+describe("live reload of what a package's workflows serve", () => {
+   const SET = "sets/main";
+   let envDir: string;
+   let controller: WatchModeController | undefined;
+
+   afterEach(async () => {
+      await controller?.unwatch();
+      controller = undefined;
+      fs.rmSync(envDir, { recursive: true, force: true });
+   });
+
+   /** A watcher over a real directory, and the package names the environment is asked to recompile. */
+   async function watchPackage() {
+      envDir = fs.mkdtempSync(path.join(root, "env-"));
+      fs.mkdirSync(path.join(envDir, "pkg", SET, "skill"), { recursive: true });
+      fs.mkdirSync(path.join(envDir, "pkg", "scripts"), { recursive: true });
+      const reloaded: string[] = [];
+      let onReload: (name: string) => void = () => {};
+      const nextReload = () =>
+         new Promise<string>((resolve) => {
+            onReload = resolve;
+         });
+      const environment = {
+         getEnvironmentPath: () => envDir,
+         getLoadedPackages: () => [
+            {
+               getPackageName: () => "pkg",
+               workflowPaths: () => [SET, "wf/instructions.md"],
+            },
+         ],
+         getPackage: async (name: string, reload: boolean) => {
+            if (reload) {
+               reloaded.push(name);
+               onReload(name);
+            }
+         },
+      };
+      controller = new WatchModeController(
+         fakeOf<PackageLookup & { serverRootPath: string }>({
+            serverRootPath: root,
+            getEnvironment: async () => environment,
+         }),
+      );
+      await controller.ensureWatching("env");
+      // Awaiting the setup takes microtasks only, so the initial scan has not reported yet.
+      await new Promise<void>((resolve) =>
+         controller!.watcher!.on("ready", resolve),
+      );
+      return { reloaded, nextReload };
+   }
+
+   it("recompiles the package for a script saved under a skill set, whatever its extension", async () => {
+      const { reloaded, nextReload } = await watchPackage();
+      // A script outside any skill set is not watched, so only the set's reaches the environment.
+      fs.writeFileSync(path.join(envDir, "pkg", "scripts", "other.py"), "x");
+      const reload = nextReload();
+      fs.writeFileSync(
+         path.join(envDir, "pkg", SET, "skill", "run.py"),
+         "print(1)",
+      );
+      expect(await reload).toBe("pkg");
+      expect(reloaded).toEqual(["pkg"]);
+   }, 10_000);
 });
