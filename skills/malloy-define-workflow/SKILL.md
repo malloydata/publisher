@@ -59,7 +59,7 @@ A workflow with neither `instructions` nor `skill_sets` has nothing to serve and
 
 ### Skill sets
 
-A **skill set** is a folder whose subfolders are skills (`<set>/<skill>/SKILL.md`). Its name is its folder's name, which is what a chat picks it by and what `skill_set=` takes. Convention: `workflows/<workflow>/skill_sets/<set>/`. A set can be listed by several workflows (list the path again); it is read once.
+A **skill set** is a folder whose subfolders are skills (`<set>/<skill>/SKILL.md`). Its name is its folder's name, which is what a chat picks it by and what `skill_set` (MCP) or `skillSet` (REST) takes. Convention: `workflows/<workflow>/skill_sets/<set>/`. A set can be listed by several workflows (list the path again); it is read once.
 
 - The folder name must meet the same regex as a workflow name, and two entries of one workflow may not share a name or a path.
 - A skill is its whole directory: `SKILL.md`, other Markdown (`references/` is the default folder for it; an existing `reference/` keeps working), `scripts/` the skill runs as commands, and `assets/` or any other folder of files it copies. Frontmatter `name` must equal the directory name.

@@ -2239,8 +2239,9 @@ paths:
       summary: Read a workflow's resolved definition
       description: Loads the version when it is not loaded (a hydrate when the compiled-model store has an entry). Publisher
         serves the definition and runs nothing; the caller's own harness executes it. A skill name that two of the
-        workflow's sets both hold is served from the first-listed set only, and `warnings` says so. Without
-        `include=files` a skill carries its `SKILL.md` text and each file's path and size.
+        workflow's sets both hold is served from the first-listed set only, and `warnings` says so, unless `skillSet`
+        picks one set, which is served whole. Without `include=files` a skill carries its `SKILL.md` text and each file's
+        path and size.
       parameters:
         - name: include
           in: query
@@ -2258,9 +2259,9 @@ paths:
           in: query
           schema:
             type: string
-          description: A skill set's name (its folder's name, as listed under `skillSets`). The reply carries that one set and
-            no `instructions`, so a chat that picks a set never runs the workflow's instructions. A 404 when the workflow has
-            no set of that name.
+          description: A skill set's name (its folder's name, as listed under `skillSets`). The reply carries that one set,
+            whole (every skill it holds), and no `instructions`, so a chat that picks a set never runs the workflow's
+            instructions. A 404 when the workflow has no set of that name; a repeated or empty value is a 400.
         - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
@@ -3705,7 +3706,7 @@ components:
       required: true
       schema:
         $ref: "#/components/schemas/IdentifierPattern"
-      description: "The skill's name: its directory under the version's `skills/`."
+      description: "The skill's name: a bundled guide's, or one the version's `default` workflow serves."
     path:
       name: path
       in: path
@@ -7966,11 +7967,12 @@ components:
           description: The file's path relative to the skill's directory (for example `reference/joins.md`, `assets/app.html`).
         content:
           type: string
-          description: "The file's text. Present only when the skill is read with its files: `?include=files`, on a skill or on a
-            workflow."
+          description: "The file's text. Present only for a text file, and only when the skill is read with its files:
+            `?include=files`, on a skill or on a workflow. A binary file has none."
         sizeBytes:
           type: integer
-          description: Size of the file's text in UTF-8 bytes.
+          description: Size of the file in bytes, as stored. A text file is served unchanged, so this is also the length of its
+            `content` in UTF-8 bytes.
         kind:
           type: string
           enum:
@@ -8940,62 +8942,41 @@ components:
     Workflow:
       description: A workflow a package declares, resolved to its instructions and its skill sets' skills. Adopt it only when
         the user asks for it by name. Carries the fields of `WorkflowSummary` with each skill set read in full.
-      type: object
       readOnly: true
-      required:
-        - resource
-        - name
-        - hasInstructions
-        - skillSets
-        - warnings
-        - definitionHash
-        - contentHash
-        - versionId
-      properties:
-        resource:
-          $ref: "#/components/schemas/ResourcePath"
-          readOnly: true
-        name:
-          type: string
-          pattern: ^[a-z0-9]+(-[a-z0-9]+)*$
-          maxLength: 64
-          description: "The workflow's name (its key in `publisher.json`'s `workflows` object): lowercase letters and digits in
-            hyphen-separated words."
-        description:
-          type: string
-          description: The workflow's description. Absent when `publisher.json` sets none.
-        hasInstructions:
-          type: boolean
-          description: Whether the workflow declares instructions. A workflow without them has nothing to run.
-        instructions:
-          type: string
-          description: The instructions file's Markdown, at most 16 KiB. Absent when the workflow declares none, and when the
-            read is for one `skillSet`.
-        skillSets:
-          type: array
-          description: The workflow's skill sets in the order `publisher.json` lists them, or only the one asked for with
-            `skillSet`.
-          items:
-            $ref: "#/components/schemas/WorkflowSkillSet"
-        warnings:
-          type: array
-          description: "What resolving the workflow found wrong but survivable: its own findings (for example a skill name two
-            of its sets both hold), then each of its sets' findings. With `skillSet`, the workflow's own and that set's."
-          items:
-            $ref: "#/components/schemas/Problem"
-        definitionHash:
-          type: string
-          description: SHA-256 (hex) over this workflow's name, description, instructions path and text, and each of its skill
-            sets' path and digest, in the order listed, so a runner can prove which definition ran. Editing another workflow,
-            or a model, does not move it.
-        contentHash:
-          type: string
-          description: "SHA-256 (hex) of the version's content this definition was read from: the version's
-            `VersionStatus.contentHash`."
-        versionId:
-          $ref: "#/components/schemas/VersionId"
-          readOnly: true
-          description: The version that answered, with `latest` resolved.
+      allOf:
+        - $ref: "#/components/schemas/WorkflowSummary"
+        - type: object
+          required:
+            - warnings
+            - definitionHash
+            - contentHash
+          properties:
+            instructions:
+              type: string
+              description: The instructions file's Markdown, at most 16 KiB. Absent when the workflow declares none, and when
+                the read is for one `skillSet`.
+            skillSets:
+              type: array
+              description: The workflow's skill sets in the order `publisher.json` lists them, or only the one asked for with
+                `skillSet`, whole.
+              items:
+                $ref: "#/components/schemas/WorkflowSkillSet"
+            warnings:
+              type: array
+              description: "What resolving the workflow found wrong but survivable: its own findings (for example a skill name
+                two of its sets both hold), then each of its sets' findings. With `skillSet`, the workflow's own except the one
+                about a repeated skill name, then that set's findings."
+              items:
+                $ref: "#/components/schemas/Problem"
+            definitionHash:
+              type: string
+              description: SHA-256 (hex) over this workflow's name, description, instructions path and text, and each of its
+                skill sets' path and content hash, in the order listed, so a runner can prove which definition ran. Editing
+                another workflow, or a model, does not move it.
+            contentHash:
+              type: string
+              description: "SHA-256 (hex) of the version's content this definition was read from: the version's
+                `VersionStatus.contentHash`."
 
     WorkflowList:
       type: object
@@ -9011,8 +8992,9 @@ components:
       readOnly: true
 
     WorkflowSkillSet:
-      description: A skill set as a workflow serves it, with its skills. A skill name an earlier set of the same workflow also
-        holds is left out here and served from that set.
+      description: A skill set as a workflow serves it, with its skills. In a whole-workflow view a skill name an earlier set
+        of the same workflow also holds is left out here and served from that set; a read for one `skillSet` holds every skill
+        the set has.
       allOf:
         - $ref: "#/components/schemas/WorkflowSkillSetRef"
         - type: object
@@ -9030,23 +9012,24 @@ components:
     WorkflowSkillSetRef:
       type: object
       readOnly: true
-      description: A skill set a workflow lists, by name, path and digest, without its skills.
+      description: A skill set a workflow lists, by name, path and content hash, without its skills.
       properties:
         name:
           type: string
           description: The set's folder name, which is what a chat picks it by and what `skillSet` takes.
         path:
           type: string
-          description: Version-relative path of the set's folder, as written in `publisher.json`.
-        digest:
+          description: "Version-relative path of the set's folder, normalized: `./` and `..` segments, doubled slashes and a
+            trailing slash are resolved or dropped from what `publisher.json` wrote."
+        contentHash:
           type: string
-          description: "SHA-256 (hex) over the set's path and what it serves: each file's digest and each skill's applied
-            `.skillignore`. Editing another set, or a workflow's instructions, does not move it; a package past the 8 MiB
-            listed-file cap can couple sets."
+          description: "SHA-256 (hex) over the set's path and what it serves: each file's content (a `SKILL.md` as the workflow
+            re-emits it) and each skill's applied `.skillignore`. Editing another set, or a workflow's instructions, does not
+            move it; a package past the 8 MiB listed-file cap can couple sets."
       required:
         - name
         - path
-        - digest
+        - contentHash
 
     WorkflowSummary:
       type: object
