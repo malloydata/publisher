@@ -1,0 +1,23 @@
+{
+   "name": "workflows-test",
+   "version": "0.0.1",
+   "description": "Package that ships skill sets and workflows.",
+   "workflows": {
+      "default": {
+         "description": "The package's advertised skills",
+         "skill_sets": ["skill_sets/house"]
+      },
+      "analyst": {
+         "description": "Answers questions using the house conventions",
+         "instructions": "workflows/analyst/instructions.md",
+         "skill_sets": [
+            "workflows/analyst/skill_sets/analysis",
+            "skill_sets/house"
+         ]
+      },
+      "weekly-summary": {
+         "description": "Summarizes last week's numbers",
+         "instructions": "workflows/weekly-summary/instructions.md"
+      }
+   }
+}

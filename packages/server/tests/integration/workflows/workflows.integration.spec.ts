@@ -4,9 +4,10 @@
 /// <reference types="bun-types" />
 
 /**
- * E2E coverage for the skill and agent routes against the real Express app:
- * name resolution (bundled skills, package skills, shadowing), wildcard paths
- * with slashes and percent-encoding, the `?skills=` validation, and the 404s.
+ * E2E coverage for the skill and workflow routes against the real Express app:
+ * name resolution (bundled skills, the default workflow's skills, shadowing),
+ * wildcard paths with slashes and percent-encoding, the `?skills=` and
+ * `?skill_set=` validation, and the 404s.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -18,11 +19,11 @@ import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const ENV_NAME = "skills-agents-test-env";
-const PACKAGE_NAME = "skills-agents-test";
-const fixtureDir = path.resolve(__dirname, "../../fixtures/skills-agents-test");
+const ENV_NAME = "workflows-test-env";
+const PACKAGE_NAME = "workflows-test";
+const fixtureDir = path.resolve(__dirname, "../../fixtures/workflows-test");
 
-describe("Package skills and agents (E2E)", () => {
+describe("Package skills and workflows (E2E)", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
 
@@ -81,11 +82,11 @@ describe("Package skills and agents (E2E)", () => {
    });
 
    describe("skills", () => {
-      const skillDir = path.join(fixtureDir, "skills/house-rules");
+      const skillDir = path.join(fixtureDir, "skill_sets/house/house-rules");
       const text = (relative: string) =>
          fs.readFileSync(path.join(skillDir, relative), "utf8");
 
-      it("lists bundled and package skills, the package's replacing a bundled name", async () => {
+      it("lists bundled skills and the default workflow's, the package's replacing a bundled name", async () => {
          const { status, body } = await get("/skills");
          expect(status).toBe(200);
          const byName = new Map(
@@ -97,6 +98,8 @@ describe("Package skills and agents (E2E)", () => {
          expect(byName.get("malloy-getting-started")).toBe("bundled");
          expect(byName.get("malloy-analysis")).toBe("package");
          expect(byName.get("house-rules")).toBe("package");
+         // Only the default workflow's skills are advertised, not the analyst's.
+         expect(byName.has("conventions")).toBe(false);
          // A skill's files are not skills.
          expect([...byName.keys()].some((n) => n.includes("/"))).toBe(false);
          expect(JSON.stringify(body)).not.toContain("OUR ANALYSIS GUIDE");
@@ -178,8 +181,9 @@ describe("Package skills and agents (E2E)", () => {
          expect(file.body.message).toContain("@malloy-publisher/skills");
       });
 
-      it("answers 404 for a name nothing defines, a path the skill lacks, the old <skill>/<stem> name, and an unknown package", async () => {
+      it("answers 404 for a name nothing defines, a skill only another workflow lists, a path the skill lacks, the old <skill>/<stem> name, and an unknown package", async () => {
          expect((await get("/skills/nope")).status).toBe(404);
+         expect((await get("/skills/conventions")).status).toBe(404);
          const missing = await get("/skills/house-rules/nope.md");
          expect(missing.status).toBe(404);
          expect(missing.body.message).toContain(
@@ -193,46 +197,102 @@ describe("Package skills and agents (E2E)", () => {
       });
    });
 
-   describe("agents", () => {
-      it("lists the agents the manifest declares, without their text", async () => {
-         const { status, body } = await get("/agents");
+   describe("workflows", () => {
+      const summary = (set: { name: string; path: string }) => ({
+         ...set,
+         digest: expect.stringMatching(/^[0-9a-f]{64}$/),
+      });
+      const analysis = {
+         name: "analysis",
+         path: "workflows/analyst/skill_sets/analysis",
+      };
+      const house = { name: "house", path: "skill_sets/house" };
+
+      it("lists the workflows the manifest declares, in its order, without their text", async () => {
+         const { status, body } = await get("/workflows");
          expect(status).toBe(200);
          expect(body).toEqual([
             {
+               name: "default",
+               description: "The package's advertised skills",
+               has_instructions: false,
+               skill_sets: [summary(house)],
+            },
+            {
                name: "analyst",
                description: "Answers questions using the house conventions",
-               model: "inherit",
-               schedules: [],
+               has_instructions: true,
+               skill_sets: [summary(analysis), summary(house)],
+            },
+            {
+               name: "weekly-summary",
+               description: "Summarizes last week's numbers",
+               has_instructions: true,
+               skill_sets: [],
             },
          ]);
+         // A set two workflows list is one set: the same digest in both.
+         expect(body[0].skill_sets[0].digest).toBe(
+            body[1].skill_sets[1].digest,
+         );
       });
 
-      it("returns the resolved agent with every skill file by default", async () => {
-         const { status, body } = await get("/agents/analyst");
+      it("returns the resolved workflow with every skill set's files by default", async () => {
+         const { status, body } = await get("/workflows/analyst");
          expect(status).toBe(200);
          // Windows checks the fixture out with CRLF.
          expect(body.instructions.replace(/\r\n/g, "\n")).toBe(
             "Be careful with revenue.\n",
          );
-         expect(
-            body.skills.map(
+         expect(body.skill_sets.map((s: { name: string }) => s.name)).toEqual([
+            "analysis",
+            "house",
+         ]);
+         const paths = (set: number) =>
+            body.skill_sets[set].skills.map(
                (f: { relative_filepath: string }) => f.relative_filepath,
+            );
+         expect(paths(0)).toEqual([
+            "conventions/SKILL.md",
+            "conventions/reference/glossary.md",
+            "conventions/reference/rule-of-50.md",
+         ]);
+         expect(paths(1)).toEqual([
+            "house-rules/SKILL.md",
+            "house-rules/reference/margin.md",
+            "malloy-analysis/SKILL.md",
+         ]);
+         expect(
+            body.skill_sets[1].assets.map(
+               (a: { relative_filepath: string }) => a.relative_filepath,
             ),
          ).toEqual([
-            "conventions/SKILL.md",
-            "conventions/reference/50%-rule.md",
-            "conventions/reference/glossary.md",
+            "house-rules/assets/blob.bin",
+            "house-rules/scripts/check.py",
          ]);
-         expect(body.skills[0].file_contents).toContain("Use net revenue.");
+         expect(body.skill_sets[0].skills[0].file_contents).toContain(
+            "Use net revenue.",
+         );
+         expect(body.warnings).toEqual([]);
          expect(body.source.sourceContentSha).toMatch(/^[0-9a-f]{64}$/);
+         expect(body.source.definitionSha).toMatch(/^[0-9a-f]{64}$/);
+      });
+
+      it("serves a workflow that is only instructions", async () => {
+         const { status, body } = await get("/workflows/weekly-summary");
+         expect(status).toBe(200);
+         expect(body.instructions).toContain("Summarize last week's revenue");
+         expect(body.skill_sets).toEqual([]);
       });
 
       it("summarizes skills without their text, under the same pin", async () => {
-         const full = await get("/agents/analyst");
-         const { status, body } = await get("/agents/analyst?skills=summary");
+         const full = await get("/workflows/analyst");
+         const { status, body } = await get(
+            "/workflows/analyst?skills=summary",
+         );
          expect(status).toBe(200);
          expect(JSON.stringify(body)).not.toContain("file_contents");
-         expect(body.skills[0]).toMatchObject({
+         expect(body.skill_sets[0].skills[0]).toMatchObject({
             relative_filepath: "conventions/SKILL.md",
             name: "conventions",
             description: "House rules for the analyst.",
@@ -240,26 +300,53 @@ describe("Package skills and agents (E2E)", () => {
          expect(body.source).toEqual(full.body.source);
       });
 
+      it("returns one skill set and no instructions for ?skill_set=", async () => {
+         const full = await get("/workflows/analyst");
+         const { status, body } = await get(
+            "/workflows/analyst?skill_set=house",
+         );
+         expect(status).toBe(200);
+         expect(body.instructions).toBeUndefined();
+         expect(body.has_instructions).toBe(true);
+         expect(body.skill_sets).toEqual([full.body.skill_sets[1]]);
+         expect(body.source).toEqual(full.body.source);
+      });
+
       it("rejects a skills value that is not full or summary, including an empty one", async () => {
          for (const value of ["bogus", ""]) {
             const { status, body } = await get(
-               `/agents/analyst?skills=${value}`,
+               `/workflows/analyst?skills=${value}`,
             );
             expect(status).toBe(400);
             expect(body.message).toContain("'skills' must be");
          }
       });
 
-      it("answers 404 for an undeclared agent and for a name that is not a valid agent name", async () => {
-         expect((await get("/agents/nope")).status).toBe(404);
-         expect((await get("/agents/Bad_Name")).status).toBe(404);
+      it("rejects a repeated skill_set", async () => {
+         const { status, body } = await get(
+            "/workflows/analyst?skill_set=house&skill_set=analysis",
+         );
+         expect(status).toBe(400);
+         expect(body.message).toContain("'skill_set' must be");
+      });
+
+      it("answers 404 for an undeclared workflow, a skill set the workflow lacks, and a name that is not a valid workflow name", async () => {
+         expect((await get("/workflows/nope")).status).toBe(404);
+         expect((await get("/workflows/analyst?skill_set=nope")).status).toBe(
+            404,
+         );
+         expect(
+            (await get("/workflows/weekly-summary?skill_set=house")).status,
+         ).toBe(404);
+         expect((await get("/workflows/Bad_Name")).status).toBe(404);
       });
    });
 
-   describe("agent skill files", () => {
-      const read = (p: string) => get(`/agents/analyst/skills/${p}`);
+   describe("workflow skill files", () => {
+      const read = (p: string, workflow = "analyst") =>
+         get(`/workflows/${workflow}/skills/${p}`);
 
-      it("returns one file by a path with slashes, literal or encoded", async () => {
+      it("returns one file by a path with slashes, literal or encoded, from any of the workflow's sets", async () => {
          for (const p of [
             "conventions/reference/glossary.md",
             "conventions%2Freference%2Fglossary.md",
@@ -272,35 +359,41 @@ describe("Package skills and agents (E2E)", () => {
             expect(body.file_contents).toContain("net = after refunds");
             expect(body.source.sourceContentSha).toMatch(/^[0-9a-f]{64}$/);
          }
+         // From the set the analyst shares with the default workflow.
+         const shared = await read("house-rules/scripts/check.py");
+         expect(shared.status).toBe(200);
+         expect(shared.body.file_contents).toContain("check margin");
       });
 
-      it("decodes the path once, so %25 names a file with a literal percent", async () => {
-         const { status, body } = await read(
-            "conventions/reference/50%25-rule.md",
-         );
+      it("answers a binary file with a message naming its size, never its bytes", async () => {
+         const { status, body } = await read("house-rules/assets/blob.bin");
          expect(status).toBe(200);
-         expect(body.relative_filepath).toBe(
-            "conventions/reference/50%-rule.md",
-         );
+         expect(body.file_contents).toBeUndefined();
+         expect(body.message).toContain("4 bytes");
       });
 
-      it("answers 404 for a file outside the resolved set and for an unknown agent", async () => {
+      it("decodes the path once, so an encoded percent does not name another file", async () => {
+         expect(
+            (await read("conventions%252Freference%252Fglossary.md")).status,
+         ).toBe(404);
+      });
+
+      it("answers 404 for a file outside the resolved set, a skill the workflow does not list, and an unknown workflow", async () => {
          expect((await read("conventions/nope.md")).status).toBe(404);
          expect((await read("..%2F..%2F..%2Fpublisher.json")).status).toBe(404);
-         const { status } = await get(
-            "/agents/nope/skills/conventions/SKILL.md",
+         expect((await read("conventions/SKILL.md", "default")).status).toBe(
+            404,
          );
-         expect(status).toBe(404);
+         expect((await read("conventions/SKILL.md", "nope")).status).toBe(404);
       });
    });
 
-   it("reports the served identity and the agents on the package itself", async () => {
+   it("reports the served identity on the package itself, and no agents", async () => {
       const { status, body } = await get("");
       expect(status).toBe(200);
       expect(body.sourceContentSha).toMatch(/^[0-9a-f]{64}$/);
       expect(body.servedRevision).toBeString();
-      expect(body.agents.map((a: { name: string }) => a.name)).toEqual([
-         "analyst",
-      ]);
+      expect(body).not.toHaveProperty("agents");
+      expect(body).not.toHaveProperty("workflows");
    });
 });
