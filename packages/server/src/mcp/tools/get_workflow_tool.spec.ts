@@ -4,7 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import { PackageNotFoundError } from "../../errors";
 import { getNotFoundError } from "../error_messages";
-import { registerGetAgentTool } from "./get_agent_tool";
+import { registerGetWorkflowTool } from "./get_workflow_tool";
 import { fakeOf } from "../../test_helpers/store_fakes";
 import type { PackageLookup } from "../../service/environment_ports";
 
@@ -19,15 +19,25 @@ type Result = {
 type Handler = (params: Record<string, unknown>) => Promise<Result>;
 
 const scopes = [{ environment: "env", package: "pkg" }];
-const AGENTS = [{ name: "analyst", description: "answers questions" }];
+const WORKFLOWS = [
+   {
+      name: "analyst",
+      description: "answers questions",
+      has_instructions: true,
+      skill_sets: [{ name: "main", path: "sets/main", digest: "d" }],
+   },
+];
 
-/** get_agent over a package that serves one agent with one skill file. */
-function getAgent(getPackage?: () => Promise<unknown>): Handler {
+/** get_workflow over a package that serves one workflow with one skill set and one skill file. */
+function getWorkflow(getPackage?: () => Promise<unknown>): Handler {
    const pkg = {
-      listAgents: () => AGENTS,
-      getAgent: (name: string, skills: string) => ({ name, skills }),
-      getAgentSkillFile: (_agent: string, path: string) =>
-         path === "guide.md"
+      listWorkflows: () => WORKFLOWS,
+      getWorkflow: (name: string, skills: string, skillSet?: string) =>
+         skillSet !== undefined && skillSet !== "main"
+            ? undefined
+            : { name, skills, skillSet },
+      getWorkflowSkillFile: (_workflow: string, path: string) =>
+         path === "guide/SKILL.md"
             ? { relative_filepath: path, file_contents: "# guide" }
             : undefined,
    };
@@ -37,7 +47,7 @@ function getAgent(getPackage?: () => Promise<unknown>): Handler {
       }),
    };
    let handler: Handler | undefined;
-   registerGetAgentTool(
+   registerGetWorkflowTool(
       {
          registerTool: (_n: string, _config: unknown, h: Handler) => {
             handler = h;
@@ -50,61 +60,104 @@ function getAgent(getPackage?: () => Promise<unknown>): Handler {
 
 const parse = (r: Result) => JSON.parse(r.content[0]!.resource!.text);
 
-describe("get_agent", () => {
-   it("lists the package's agents when no agent is named", async () => {
-      const result = await getAgent()({ scopes });
+describe("get_workflow", () => {
+   it("lists the package's workflows when no workflow is named", async () => {
+      const result = await getWorkflow()({ scopes });
       expect(result.isError).toBe(false);
       expect(result.content[0]!.resource!.uri).toBe(
-         "malloy://environment/env/package/pkg#getAgent",
+         "malloy://environment/env/package/pkg#getWorkflow",
       );
-      expect(parse(result)).toEqual({ agent: null, availableAgents: AGENTS });
+      expect(parse(result)).toEqual({
+         workflow: null,
+         availableWorkflows: WORKFLOWS,
+      });
    });
 
-   it("says skill_path needs agent_name", async () => {
+   it.each([
+      ["skill_path", { skill_path: "guide/SKILL.md" }],
+      ["skill_set", { skill_set: "main" }],
+   ])("says %s needs workflow_name", async (_label, extra) => {
+      const payload = parse(await getWorkflow()({ scopes, ...extra }));
+      expect(payload.workflow).toBeNull();
+      expect(payload.message).toContain(
+         "skill_path and skill_set need workflow_name",
+      );
+   });
+
+   it("names an unknown workflow and how to fix it", async () => {
       const payload = parse(
-         await getAgent()({ scopes, skill_path: "guide.md" }),
+         await getWorkflow()({ scopes, workflow_name: "nope" }),
       );
-      expect(payload.agent).toBeNull();
-      expect(payload.message).toContain("skill_path needs agent_name");
+      expect(payload.workflow).toBeNull();
+      expect(payload.message).toContain('No workflow named "nope"');
+      expect(payload.message).toContain("Fix:");
    });
 
-   it("names an unknown agent and how to fix it", async () => {
-      const payload = parse(await getAgent()({ scopes, agent_name: "nope" }));
-      expect(payload.agent).toBeNull();
-      expect(payload.message).toContain('No agent named "nope"');
-   });
-
-   it("resolves an agent, defaulting to full skills", async () => {
+   it("resolves a workflow, defaulting to full skills and every set", async () => {
       expect(
-         parse(await getAgent()({ scopes, agent_name: "analyst" })).agent,
+         parse(await getWorkflow()({ scopes, workflow_name: "analyst" }))
+            .workflow,
       ).toEqual({ name: "analyst", skills: "full" });
    });
 
-   it("returns one skill file without an agent key, or says it is missing", async () => {
-      const handler = getAgent();
+   it("passes the summary view and the skill set through", async () => {
+      expect(
+         parse(
+            await getWorkflow()({
+               scopes,
+               workflow_name: "analyst",
+               skills: "summary",
+               skill_set: "main",
+            }),
+         ).workflow,
+      ).toEqual({ name: "analyst", skills: "summary", skillSet: "main" });
+   });
+
+   it("says when the workflow has no skill set of that name", async () => {
+      const payload = parse(
+         await getWorkflow()({
+            scopes,
+            workflow_name: "analyst",
+            skill_set: "nope",
+         }),
+      );
+      expect(payload.workflow).toBeNull();
+      expect(payload.message).toContain('no skill set named "nope"');
+      expect(payload.availableWorkflows).toEqual(WORKFLOWS);
+   });
+
+   it("returns one skill file without a workflow key, or says it is missing", async () => {
+      const handler = getWorkflow();
       expect(
          parse(
             await handler({
                scopes,
-               agent_name: "analyst",
-               skill_path: "guide.md",
+               workflow_name: "analyst",
+               skill_path: "guide/SKILL.md",
             }),
          ),
       ).toEqual({
-         skillFile: { relative_filepath: "guide.md", file_contents: "# guide" },
-         availableAgents: AGENTS,
+         skillFile: {
+            relative_filepath: "guide/SKILL.md",
+            file_contents: "# guide",
+         },
+         availableWorkflows: WORKFLOWS,
       });
       const missing = parse(
-         await handler({ scopes, agent_name: "analyst", skill_path: "x.md" }),
+         await handler({
+            scopes,
+            workflow_name: "analyst",
+            skill_path: "x/SKILL.md",
+         }),
       );
-      expect(missing.agent).toBeNull();
-      expect(missing.message).toContain('has no skill file "x.md"');
+      expect(missing.workflow).toBeNull();
+      expect(missing.message).toContain('has no skill file "x/SKILL.md"');
    });
 
    it("answers a missing package with a not-found error naming it", async () => {
-      const result = await getAgent(async () => {
+      const result = await getWorkflow(async () => {
          throw new PackageNotFoundError("Package pkg does not exist");
-      })({ scopes, agent_name: "analyst" });
+      })({ scopes, workflow_name: "analyst" });
       expect(result.isError).toBe(true);
       const details = getNotFoundError("env/pkg");
       expect(parse(result)).toEqual({

@@ -80,7 +80,8 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       // a tool rather than more prompts because a package's set is per-package
       // and changes on reload; see registerGetSkillTool.
       expect(names.has("get_skill")).toBe(true);
-      expect(names.has("get_agent")).toBe(true);
+      expect(names.has("get_workflow")).toBe(true);
+      expect(names.has("get_agent")).toBe(false);
    });
 
    /**
@@ -270,9 +271,9 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       expect(instructions).toContain("get_status");
       // A guide's relative paths have one reader.
       expect(instructions).toContain("get_skill(skill_name, path)");
-      // Agents are an explicit user choice, so nothing pre-authorization names them.
-      expect(instructions).not.toContain("agent_name");
-      expect(instructions).not.toContain("get_agent");
+      // Workflows are an explicit user choice, so nothing pre-authorization names them.
+      expect(instructions).not.toContain("workflow_name");
+      expect(instructions).not.toContain("get_workflow");
    });
 
    it("orients a client to the sequence the schemas actually accept", async () => {

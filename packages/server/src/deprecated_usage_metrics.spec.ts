@@ -25,6 +25,7 @@ import type { DeprecatedPersistAnnotation } from "./service/deprecated/persist_a
 import {
    declaredDeprecatedManifestKeys,
    recordDeprecatedManifestKeys,
+   recordSkillsDirNotRead,
 } from "./service/deprecated/manifest_keys";
 import {
    isLegacyReportAlias,
@@ -263,15 +264,23 @@ describe("publisher_deprecated_usage_total", () => {
          declaredDeprecatedManifestKeys({
             explores: [],
             queryableSources: "all",
+            agents: {},
          }),
-      ).toEqual(["explores", "queryableSources"]);
+      ).toEqual(["explores", "queryableSources", "agents"]);
       expect(declaredDeprecatedManifestKeys({})).toEqual([]);
 
-      recordDeprecatedManifestKeys(["explores", "queryableSources"]);
+      recordDeprecatedManifestKeys(["explores", "queryableSources", "agents"]);
       recordDeprecatedManifestKeys(["explores"]);
       recordDeprecatedManifestKeys(undefined);
       expect(await used("explores")).toBe(2);
       expect(await used("queryable_sources")).toBe(1);
+      expect(await used("agents")).toBe(1);
+   });
+
+   it("counts a package whose root skills/ directory no workflow lists, once per call", async () => {
+      recordSkillsDirNotRead();
+      recordSkillsDirNotRead();
+      expect(await used("skills_dir")).toBe(2);
    });
 
    it("counts each .malloynb file, each source declaring #(filter), and each measure declaring #@ preaggregate", async () => {
