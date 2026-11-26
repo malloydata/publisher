@@ -13,6 +13,7 @@ import type { PackageLookup } from "../service/environment_ports";
 import { EnvironmentStore } from "../service/environment_store";
 import type { Environment } from "../service/environment";
 import { parseEnvironmentName, parsePackageName } from "../service/identity";
+import { workflowFileServed } from "../service/skills/package_skills";
 
 type WatchStatusRes = components["schemas"]["WatchStatus"];
 
@@ -109,19 +110,28 @@ export class WatchModeController {
       this.watchingEnvironmentName = watchName;
       this.watchingPath = watchPath;
       // A skill set holds scripts and data of any extension, and its listing
-      // is read at load, so a change to any file under one is a reload.
-      const servesWorkflowFile = (filePath: string): boolean => {
+      // is read at load, so a change to a file a skill serves is a reload.
+      // `exact` reads the skill's `.skillignore`, so the per-file filter,
+      // which runs for every file the watcher walks, leaves it off.
+      const servesWorkflowFile = (
+         filePath: string,
+         exact: boolean,
+      ): boolean => {
          const [pkgName, ...within] = path
             .relative(watchPath, filePath)
             .split(path.sep);
          if (!pkgName || within.length === 0) return false;
-         const inside = within.join("/");
+         const pkg = environment
+            .getLoadedPackages()
+            .find((p) => p.getPackageName() === pkgName);
          return (
-            environment
-               .getLoadedPackages()
-               .find((p) => p.getPackageName() === pkgName)
-               ?.workflowPaths()
-               .some((p) => inside === p || inside.startsWith(`${p}/`)) ?? false
+            pkg !== undefined &&
+            workflowFileServed(
+               path.join(watchPath, pkgName),
+               pkg.workflowPaths(),
+               within.join("/"),
+               exact,
+            )
          );
       };
       this.watcher = chokidar.watch(this.watchingPath, {
@@ -131,7 +141,7 @@ export class WatchModeController {
             return (
                !MODEL_EXTS.has(ext) &&
                !ASSET_EXTS.has(ext) &&
-               !servesWorkflowFile(filePath)
+               !servesWorkflowFile(filePath, false)
             );
          },
          ignoreInitial: true,
@@ -179,7 +189,11 @@ export class WatchModeController {
             // only once it recompiles, so a transient syntax error doesn't
             // bounce open pages into a compile error or 404.
             const ext = path.extname(filePath).toLowerCase();
-            if (MODEL_EXTS.has(ext) || servesWorkflowFile(filePath)) {
+            const recompile =
+               MODEL_EXTS.has(ext) || servesWorkflowFile(filePath, true);
+            // The per-file filter does not read `.skillignore`, so a file it rules out can get here.
+            if (!recompile && !ASSET_EXTS.has(ext)) return;
+            if (recompile) {
                const recompiled = await reloadPackage(pkgName);
                if (!recompiled) return;
             }

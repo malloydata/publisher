@@ -19,6 +19,7 @@ import {
    isInlineMarkdown,
    isReferenceDir,
    listBounded,
+   mayChangeSkill,
    newWalkBudget,
    REFERENCE_DIRS,
    skillFiles,
@@ -1761,6 +1762,36 @@ function declaredPaths(raw: Record<string, unknown>): string[] {
       if (Array.isArray(entry.skill_sets)) entry.skill_sets.forEach(add);
    }
    return [...found].sort(compareText);
+}
+
+/**
+ * Whether an edit to `relative` (package-relative) can change what a workflow serves, given the `watched` paths of its
+ * package: an instructions file always, and a file inside a skill of a set unless that skill never serves it. A file
+ * loose in a set's folder is no skill's. `exact` reads the skill's `.skillignore`; a watcher's per-file filter leaves it off.
+ */
+export function workflowFileServed(
+   packagePath: string,
+   watched: readonly string[],
+   relative: string,
+   exact: boolean,
+): boolean {
+   return watched.some((watchedPath) => {
+      if (relative === watchedPath) return true;
+      if (!relative.startsWith(`${watchedPath}/`)) return false;
+      const [skill, ...within] = relative
+         .slice(watchedPath.length + 1)
+         .split("/");
+      // A dot-named folder is no skill's, as the set's scan skips it.
+      return (
+         within.length > 0 &&
+         !skill!.startsWith(".") &&
+         mayChangeSkill(
+            path.join(packagePath, watchedPath, skill!),
+            within.join("/"),
+            exact,
+         )
+      );
+   });
 }
 
 const refusal = (name: string, why: string) =>

@@ -138,6 +138,34 @@ function builtInExcluded(name: string, isDirectory: boolean): boolean {
       : lower.endsWith(".pyc");
 }
 
+/**
+ * Whether an edit to `relative`, a path inside the skill at `skillDir`, can change what the skill serves. A name no walk
+ * keeps rules a path out without reading anything; `exact` also reads `.skillignore` to rule out what it matches. An edit
+ * to `.skillignore` itself always can, and so does anything that cannot be matched.
+ */
+export function mayChangeSkill(
+   skillDir: string,
+   relative: string,
+   exact: boolean,
+): boolean {
+   if (relative === SKILLIGNORE) return true;
+   const segments = segmentsOf(relative);
+   if (segments.length === 0) return true;
+   if (
+      segments.some((name, i) => builtInExcluded(name, i < segments.length - 1))
+   ) {
+      return false;
+   }
+   if (!exact) return true;
+   const matcher = ignore({ ignorecase: true });
+   readSkillignore(skillDir, matcher, []);
+   try {
+      return !matcher.ignores(segments.join("/"));
+   } catch {
+      return true;
+   }
+}
+
 /** A run of whole-segment `**` means what one does, and costs `ignore` one backtracking point. */
 function collapseGlobstars(pattern: string): string {
    const negated = pattern.startsWith("!");

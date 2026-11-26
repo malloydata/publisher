@@ -9,6 +9,7 @@ import path from "path";
 import {
    ASSET_MAX_DEPTH,
    ASSET_MAX_ENTRIES,
+   mayChangeSkill,
    newWalkBudget,
    REFERENCE_MAX_EXAMINED,
    skillFiles,
@@ -1065,5 +1066,71 @@ describe("skillFiles", () => {
             expect(result.warnings).toHaveLength(1);
          },
       );
+   });
+});
+
+describe("mayChangeSkill", () => {
+   let dir: string;
+
+   beforeEach(() => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), "may-change-skill-"));
+   });
+
+   afterEach(() => {
+      fs.rmSync(dir, { recursive: true, force: true });
+   });
+
+   const write = (rel: string) => {
+      const file = path.join(dir, rel);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, "x");
+   };
+
+   it("rules a path out exactly when the walk does not keep it, so a reload follows what is served", () => {
+      const paths = [
+         "SKILL.md",
+         "reference/glossary.md",
+         "reference/Draft.MD",
+         "scripts/run.py",
+         "scripts/__pycache__/run.pyc",
+         "scripts/run.PYC",
+         "node_modules/pkg/index.js",
+         ".env",
+         ".git/config",
+         "assets/index.html",
+         "assets/tmp/cache.json",
+         "data/raw.log",
+         "data/Raw.CSV",
+         "notes/todo.txt",
+         "notes/keep.txt",
+      ];
+      for (const rel of paths) write(rel);
+      fs.writeFileSync(
+         path.join(dir, ".skillignore"),
+         "assets/tmp/\n*.log\n*.csv\nnotes/*\n!notes/keep.txt\n",
+      );
+      const served = new Set(skillFiles(dir).files);
+      expect(served.has("scripts/run.py")).toBe(true);
+      expect(served.has("data/raw.log")).toBe(false);
+      for (const rel of paths) {
+         expect([rel, mayChangeSkill(dir, rel, true)]).toEqual([
+            rel,
+            served.has(rel),
+         ]);
+      }
+   });
+
+   it("without exact, rules out only the names no walk keeps, and reads no .skillignore", () => {
+      fs.writeFileSync(path.join(dir, ".skillignore"), "*.log\n");
+      expect(mayChangeSkill(dir, "data/raw.log", false)).toBe(true);
+      expect(mayChangeSkill(dir, "data/raw.log", true)).toBe(false);
+      expect(mayChangeSkill(dir, "a/__pycache__/b.txt", false)).toBe(false);
+      expect(mayChangeSkill(dir, ".env", false)).toBe(false);
+   });
+
+   it("always allows an edit to the .skillignore itself, but not to one in a subfolder", () => {
+      fs.writeFileSync(path.join(dir, ".skillignore"), "*\n");
+      expect(mayChangeSkill(dir, ".skillignore", true)).toBe(true);
+      expect(mayChangeSkill(dir, "sub/.skillignore", true)).toBe(false);
    });
 });

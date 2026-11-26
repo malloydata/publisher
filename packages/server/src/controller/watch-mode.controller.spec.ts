@@ -178,4 +178,35 @@ describe("live reload of what a package's workflows serve", () => {
       expect(announced).toEqual([sentinel, inSet]);
       expect(reloaded).toEqual(["pkg", "pkg"]);
    }, 10_000);
+
+   it("leaves a file the skill never serves alone, and recompiles for the .skillignore that decides it and for the instructions", async () => {
+      const { reloaded, announced, announcedFile } = await watchPackage();
+      const skill = path.join(envDir, "pkg", SET, "skill");
+      fs.mkdirSync(path.join(skill, "__pycache__"));
+      fs.mkdirSync(path.join(skill, "scratch"));
+      fs.mkdirSync(path.join(envDir, "pkg", "wf"));
+      const skillignore = path.join(skill, ".skillignore");
+      fs.writeFileSync(skillignore, "scratch/\n*.log\n");
+      await announcedFile(skillignore);
+      const never = [
+         path.join(skill, "__pycache__", "run.pyc"),
+         path.join(skill, ".env"),
+         path.join(skill, "scratch", "notes.txt"),
+         path.join(skill, "debug.log"),
+         path.join(envDir, "pkg", SET, "loose.txt"),
+      ];
+      for (const file of never) fs.writeFileSync(file, "x");
+      // A model save always recompiles, so its announcement closes the window in which a file above would have shown up.
+      const sentinel = path.join(envDir, "pkg", "scripts", "sentinel.malloy");
+      fs.writeFileSync(sentinel, "source: s is duckdb.sql('select 1')");
+      await announcedFile(sentinel);
+      const served = path.join(skill, "kept.txt");
+      fs.writeFileSync(served, "x");
+      await announcedFile(served);
+      const instructions = path.join(envDir, "pkg", "wf", "instructions.md");
+      fs.writeFileSync(instructions, "Be brief.");
+      await announcedFile(instructions);
+      expect(announced).toEqual([skillignore, sentinel, served, instructions]);
+      expect(reloaded).toEqual(["pkg", "pkg", "pkg", "pkg"]);
+   }, 10_000);
 });

@@ -15,6 +15,7 @@ import {
    readPackageWorkflows,
    resolveSkills,
    WORKFLOW_INSTRUCTIONS_MAX_BYTES,
+   workflowFileServed,
    workflowSkillSet,
    type PackageWorkflows,
 } from "./package_skills";
@@ -1906,5 +1907,27 @@ describe("readPackageWorkflows", () => {
             expect(files("sets/c")).toHaveLength(4);
          });
       });
+   });
+});
+
+describe("workflowFileServed", () => {
+   const watched = [INSTRUCTIONS, MAIN];
+   const served = (relative: string) =>
+      workflowFileServed("/nowhere", watched, relative, false);
+
+   it("serves an instructions file and any file a skill of a set could serve", () => {
+      expect(served(INSTRUCTIONS)).toBe(true);
+      expect(served(`${CONVENTIONS}/SKILL.md`)).toBe(true);
+      expect(served(`${CONVENTIONS}/scripts/run.py`)).toBe(true);
+   });
+
+   it("leaves out a file loose in a set's folder, a dot-named folder, a name no walk keeps, and a file outside every path", () => {
+      expect(served(`${MAIN}/README.md`)).toBe(false);
+      expect(served(`${MAIN}/.git/config`)).toBe(false);
+      expect(served(`${CONVENTIONS}/.env`)).toBe(false);
+      expect(served(`${CONVENTIONS}/scripts/__pycache__/run.pyc`)).toBe(false);
+      expect(served("scripts/run.py")).toBe(false);
+      // A sibling whose name only starts like the set's is not under it.
+      expect(served(`${MAIN}2/conventions/SKILL.md`)).toBe(false);
    });
 });
