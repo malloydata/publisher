@@ -34,7 +34,7 @@ info:
     nothing edits one in place.
 
     - Under a version: **models** (compiled metadata, query, compile), **reports** (a `.malloy` file carrying an `##
-    artifact` tag, grid or linear), **data apps**, **data files**, **agents**, **skills**, its **entities**,
+    artifact` tag, grid or linear), **data apps**, **data files**, **workflows**, **skills**, its **entities**,
     **classification**, **index**, **build plan**, **status** (with the **bindings** it serves per source), and its one
     own **connection**, the in-memory `duckdb` sandbox over its data files.
 
@@ -49,7 +49,8 @@ info:
     - Paths are kebab-case; parameters and fields are camelCase. `{xName}` is a named resource, `{versionId}` and
     `{runId}` are ids, and `{path}` is a file's version-relative path (relative to the version's root, `/`-separated;
     every path in a body is version-relative too, but a data app's `path`, relative to `public/`, and a skill file's,
-    relative to its skill's directory). `{path}` spans segments: send its `/` literally (the server also decodes `%2F`
+    relative to its skill's directory, except on a workflow's skill-file route, where it is `<skill>/<file>`, relative to the
+    skill set's folder). `{path}` spans segments: send its `/` literally (the server also decodes `%2F`
     within it as `/`, for generated clients that encode it), and a `:verb` follows its last segment. A path has no
     empty, `.` or `..` segment, no leading `/`, and no `\`, `:` or control
     character.
@@ -151,7 +152,7 @@ info:
     Durations are integers whose name carries the unit (`elapsedMs`, `windowSeconds`).
 
     - Every resource a `GET` reads carries `resource`, except `/status`, which is a snapshot of the server, list
-    envelopes, and an object embedded in another that has no read of its own (an agent's own skill): its canonical path
+    envelopes, and an object embedded in another that has no read of its own (a workflow's own skill): its canonical path
     relative to the API's base: no leading slash, and the resolved version id in place of `latest`
     (`environments/acme/packages/sales/versions/1.4.0/models/orders.malloy`). A list item carries it when its item has a
     `GET` of its own, so a data app, whose page is served outside the API, carries none. Relative, so it stays right
@@ -260,10 +261,11 @@ tags:
     description: The catalog of HTML data apps under a version's `public/`; the pages are served outside the API.
   - name: data-files
     description: Data files embedded in a version.
-  - name: agents
-    description: Agents a version declares in `publisher.json`, resolved to their definition.
+  - name: workflows
+    description: Workflows a version declares in `publisher.json`, resolved to their instructions and skill sets. Served,
+      never run.
   - name: skills
-    description: Agent skills in force for a version.
+    description: Agent skills in force for a version, the bundled guides and those of its `default` workflow.
   - name: discovery
     description: What a version declares for an indexer, its classification summary, and its discovery index.
   - name: materialization
@@ -2168,16 +2170,16 @@ paths:
           $ref: "#/components/responses/GatewayTimeout"
 
 
-  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/agents:
+  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/workflows:
     parameters:
       - $ref: "#/components/parameters/environmentName"
       - $ref: "#/components/parameters/packageName"
       - $ref: "#/components/parameters/versionId"
     get:
-      operationId: list-agents
+      operationId: list-workflows
       tags:
-        - agents
-      summary: List the agents the version declares
+        - workflows
+      summary: List the workflows the version declares
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
@@ -2185,11 +2187,12 @@ paths:
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
-          description: A page of agent summaries, by name.
+          description: A page of workflow summaries, by name. A workflow that failed validation is not listed; the version's
+            `VersionStatus.warnings` say why.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AgentList"
+                $ref: "#/components/schemas/WorkflowList"
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -2224,17 +2227,22 @@ paths:
       description: Loads the version when it is not loaded (a hydrate when the compiled-model store has an entry).
 
 
-  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/agents/{agentName}:
+  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/workflows/{workflowName}:
     parameters:
       - $ref: "#/components/parameters/environmentName"
       - $ref: "#/components/parameters/packageName"
       - $ref: "#/components/parameters/versionId"
-      - $ref: "#/components/parameters/agentName"
+      - $ref: "#/components/parameters/workflowName"
     get:
-      operationId: get-agent
+      operationId: get-workflow
       tags:
-        - agents
-      summary: Read an agent's resolved definition
+        - workflows
+      summary: Read a workflow's resolved definition
+      description: Loads the version when it is not loaded (a hydrate when the compiled-model store has an entry). Publisher
+        serves the definition and runs nothing; the caller's own harness executes it. A skill name that two of the
+        workflow's sets both hold is served from the first-listed set only, and `warnings` says so. Without
+        `include=files` a skill carries its `SKILL.md` text and each file's path and size; read one file with
+        `GET …/workflows/{workflowName}/skills/{path}`.
       parameters:
         - name: include
           in: query
@@ -2246,17 +2254,24 @@ paths:
               type: string
               enum:
                 - files
-          description: Larger parts to include. `files` includes the content of each file the agent's skills ship, as on `GET
-            …/skills/{skillName}`; each skill's `SKILL.md` text is always present.
+          description: Larger parts to include. `files` includes the content of each text file the workflow's skills ship, as on
+            `GET …/skills/{skillName}`; each skill's `SKILL.md` text is always present.
+        - name: skillSet
+          in: query
+          schema:
+            type: string
+          description: A skill set's name (its folder's name, as listed under `skillSets`). The reply carries that one set and
+            no `instructions`, so a chat that picks a set never runs the workflow's instructions. A 404 when the workflow has
+            no set of that name.
         - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
         "200":
-          description: The agent.
+          description: The workflow.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Agent"
+                $ref: "#/components/schemas/Workflow"
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -2288,7 +2303,73 @@ paths:
           $ref: "#/components/responses/Unavailable"
         "504":
           $ref: "#/components/responses/GatewayTimeout"
-      description: Loads the version when it is not loaded (a hydrate when the compiled-model store has an entry).
+
+
+  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/workflows/{workflowName}/skills/{path}:
+    parameters:
+      - $ref: "#/components/parameters/environmentName"
+      - $ref: "#/components/parameters/packageName"
+      - $ref: "#/components/parameters/versionId"
+      - $ref: "#/components/parameters/workflowName"
+      - name: path
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/PathPattern"
+        x-multi-segment: true
+        description: "A `<skill>/<file>` path, relative to the skill set's folder, as the workflow's skills list it. It spans the
+          remaining segments: send each `/` literally. A skill name is unique within a served workflow, so the path names
+          one file whichever set holds it."
+    get:
+      operationId: get-workflow-skill-file
+      tags:
+        - workflows
+      summary: Read one file of a workflow's skills
+      description: Loads the version when it is not loaded (a hydrate when the compiled-model store has an entry). An inline
+        Markdown file is served as the workflow serves it. A listed file is read from disk and served only while it still
+        hashes to its listed digest; one that changed, or became a link, since the load is a 404. A text file answers with
+        its `content`; a binary file answers with its size and a `message`, never its bytes.
+      parameters:
+        - $ref: "#/components/parameters/requestId"
+        - $ref: "#/components/parameters/ifNoneMatch"
+      responses:
+        "200":
+          description: The file.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillFile"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+          description: "The request is malformed, or the Malloy or SQL in it was refused. `reason`: `INVALID_REQUEST`."
+        "404":
+          $ref: "#/components/responses/NotFound"
+          description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `VERSION_NOT_FOUND`."
+        "410":
+          $ref: "#/components/responses/Gone"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
+          description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/skills:
@@ -2301,8 +2382,8 @@ paths:
       tags:
         - skills
       summary: List the skills in force for the version
-      description: The bundled guides plus the version's own `skills/`, a package skill replacing a bundled one of the same
-        name. Loads the version when it is not loaded (a hydrate when the compiled-model store has an entry).
+      description: The bundled guides plus those of the version's `default` workflow, a package skill replacing a bundled one of the
+        same name. Loads the version when it is not loaded (a hydrate when the compiled-model store has an entry).
       parameters:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
@@ -3677,13 +3758,16 @@ components:
         minLength: 1
       description: "A built table's stable identity, as a run manifest entry's `tableId` (or a `Binding.tableId`)
         returned it: opaque, assigned by the server."
-    agentName:
-      name: agentName
+    workflowName:
+      name: workflowName
       in: path
       required: true
       schema:
-        $ref: "#/components/schemas/IdentifierPattern"
-      description: The agent's name, as the version's `publisher.json` declares it.
+        type: string
+        pattern: ^[a-z0-9]+(-[a-z0-9]+)*$
+        maxLength: 64
+      description: The workflow's name, as the version's `publisher.json` declares it. A name outside the pattern is a 404,
+        not a 400.
     skillName:
       name: skillName
       in: path
@@ -3984,133 +4068,6 @@ components:
 
 
   schemas:
-    Agent:
-      description: An agent a package declares, resolved to its instructions, skill files and schedules. Adopt it only when
-        the user asks for it by name.
-      allOf:
-        - $ref: "#/components/schemas/AgentSummary"
-        - type: object
-          required:
-            - instructions
-            - skills
-            - warnings
-            - definitionHash
-            - contentHash
-          properties:
-            instructions:
-              type: string
-              description: The instructions file's Markdown, at most 16 KB.
-            skills:
-              type: array
-              description: "The agent's own skills, each a `Skill` read as `GET …/skills/{skillName}` reads one: its `content`
-                (`SKILL.md` text) always, and its `files` (reference files and assets) with their content only with
-                `?include=files`."
-              items:
-                $ref: "#/components/schemas/Skill"
-            warnings:
-              type: array
-              description: What resolving the agent found wrong but survivable, for example a skill it names that the version lacks.
-              items:
-                $ref: "#/components/schemas/Problem"
-            definitionHash:
-              type: string
-              description: SHA-256 (hex) over this agent's canonical config, instructions, skill files and task files, so a runner can
-                prove which definition ran. Editing another agent, or a model, does not move it.
-            contentHash:
-              type: string
-              description: "SHA-256 (hex) of the version's content this definition was read from: the version's
-                `VersionStatus.contentHash`."
-      readOnly: true
-
-    AgentBudget:
-      type: object
-      readOnly: true
-      description: "The run limits an agent declares. Validated and exposed only: the server never enforces them. A platform
-        that runs the agent decides how to apply them and may clamp each to its own maximum. Every field is optional and
-        only the fields `publisher.json` sets are present; an unset field keeps the platform's default. Absent when
-        `publisher.json` sets none."
-      properties:
-        turns:
-          type: integer
-          minimum: 1
-          description: The model turns one run may take.
-        wallClockMinutes:
-          type: integer
-          minimum: 1
-          description: The elapsed minutes one run may take, from its start to its end.
-        llmTokens:
-          type: integer
-          minimum: 1
-          description: The LLM tokens one run may spend.
-
-    AgentList:
-      type: object
-      required:
-        - items
-      properties:
-        items:
-          type: array
-          items:
-            $ref: "#/components/schemas/AgentSummary"
-        nextCursor:
-          $ref: "#/components/schemas/Cursor"
-      readOnly: true
-
-    AgentSchedule:
-      type: object
-      readOnly: true
-      description: "A cron schedule an agent declares. Validated and exposed only: the server never runs it."
-      properties:
-        cron:
-          type: string
-          description: A 5-field UNIX cron expression, evaluated in UTC.
-        taskContent:
-          type: string
-          description: The task file's Markdown. Only on the resolved agent, not the listing.
-        taskPath:
-          type: string
-          description: Version-relative path of the task file, as written in `publisher.json`.
-      required:
-        - cron
-        - taskPath
-
-    AgentSummary:
-      type: object
-      readOnly: true
-      description: One agent a package declares, without its instructions or skills.
-      properties:
-        resource:
-          $ref: "#/components/schemas/ResourcePath"
-          readOnly: true
-        name:
-          type: string
-          pattern: ^[a-z0-9]+(-[a-z0-9]+)*$
-          description: "The agent's name (its key in `publisher.json`'s `agents` object): lowercase letters and digits in
-            hyphen-separated words."
-        description:
-          type: string
-        schedules:
-          type: array
-          items:
-            $ref: "#/components/schemas/AgentSchedule"
-        budget:
-          $ref: "#/components/schemas/AgentBudget"
-          readOnly: true
-        llmModel:
-          type: string
-          description: The LLM the agent asks for; `inherit` when `publisher.json` sets none.
-        versionId:
-          $ref: "#/components/schemas/VersionId"
-          readOnly: true
-          description: The version that answered, with `latest` resolved.
-      required:
-        - resource
-        - name
-        - description
-        - llmModel
-        - schedules
-        - versionId
-
     AttachedDatabase:
       type: object
       description: Attached DuckDB database
@@ -8024,13 +7981,13 @@ components:
     Skill:
       type: object
       readOnly: true
-      description: "An agent skill with its full Markdown body. Not composed from `SkillSummary`: as an item of `Agent.skills`
-        it carries no `resource` or `versionId`, and its `origin` adds `agent`."
+      description: "An agent skill with its full Markdown body. Not composed from `SkillSummary`: as an item of
+        `WorkflowSkillSet.skills` it carries no `resource` or `versionId`, and its `origin` adds `workflow`."
       properties:
         resource:
           $ref: "#/components/schemas/ResourcePath"
-          description: The skill's path. Always present from `GET …/skills/{skillName}`; absent on `Agent.skills`, whose skills
-            have no read of their own.
+          description: The skill's path. Always present from `GET …/skills/{skillName}`; absent on `WorkflowSkillSet.skills`, whose
+            skills have no read of their own.
           readOnly: true
         name:
           type: string
@@ -8046,10 +8003,10 @@ components:
           enum:
             - bundled
             - package
-            - agent
-          description: "Where this skill came from. `bundled`: shipped with this server. `package`: shipped under the version's
-            `skills/`, replacing a bundled one of the same name. `agent`: one of an agent's own skills, on
-            `Agent.skills`."
+            - workflow
+          description: "Where this skill came from. `bundled`: shipped with this server. `package`: shipped by the version's
+            `default` workflow, replacing a bundled one of the same name. `workflow`: a skill of a workflow's skill set, on
+            `WorkflowSkillSet.skills`."
         files:
           type: array
           items:
@@ -8060,7 +8017,7 @@ components:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
           description: The version that answered, with `latest` resolved. Always present from `GET …/skills/{skillName}`; absent
-            on `Agent.skills`, where it is the agent's.
+            on `WorkflowSkillSet.skills`, where it is the workflow's.
       required:
         - name
         - description
@@ -8080,6 +8037,10 @@ components:
           type: string
           description: "The file's text. Present only when the skill is read with its files: `?include=files`, on a skill or on an
             agent."
+        message:
+          type: string
+          description: "Set instead of `content` when the file is binary; it names the file's size and says only text is
+            served. Only on `GET …/workflows/{workflowName}/skills/{path}`."
         sizeBytes:
           type: integer
           description: Size of the file's text in UTF-8 bytes.
@@ -8128,7 +8089,7 @@ components:
           enum:
             - bundled
             - package
-          description: "`bundled` = shipped with this server. `package` = shipped by the package under `skills/`, which includes a
+          description: "`bundled` = shipped with this server. `package` = shipped by the package's `default` workflow, which includes a
             package skill whose name matches a bundled one and therefore REPLACES it for this package. Present so a
             caller can tell a replaced skill from the original, which is otherwise invisible."
         versionId:
@@ -8973,7 +8934,7 @@ components:
         contentHash:
           type: string
           description: On a version's own status read (`GET …/versions/{versionId}/status`) and in the answers of `:load` and
-            `:reload`; left out of `GET /status`. SHA-256 (hex) over the model, skill and agent files being served; for
+            `:reload`; left out of `GET /status`. SHA-256 (hex) over the model, workflow and skill files being served; for
             a live package, whose version is always `live`, the receipt that an edit is served.
         bindings:
           type: array
@@ -9048,3 +9009,150 @@ components:
         type: string
       description: "Dotted paths of the stored write-only fields this response does not return: its credentials, and settings
         that can carry them (a connection's `setupSql`)."
+
+    Workflow:
+      description: A workflow a package declares, resolved to its instructions and its skill sets' skills. Adopt it only when
+        the user asks for it by name. Carries the fields of `WorkflowSummary` with each skill set read in full.
+      type: object
+      readOnly: true
+      required:
+        - resource
+        - name
+        - hasInstructions
+        - skillSets
+        - warnings
+        - definitionHash
+        - contentHash
+        - versionId
+      properties:
+        resource:
+          $ref: "#/components/schemas/ResourcePath"
+          readOnly: true
+        name:
+          type: string
+          pattern: ^[a-z0-9]+(-[a-z0-9]+)*$
+          maxLength: 64
+          description: "The workflow's name (its key in `publisher.json`'s `workflows` object): lowercase letters and digits in
+            hyphen-separated words."
+        description:
+          type: string
+          description: The workflow's description. Absent when `publisher.json` sets none.
+        hasInstructions:
+          type: boolean
+          description: Whether the workflow declares instructions. A workflow without them has nothing to run.
+        instructions:
+          type: string
+          description: The instructions file's Markdown, at most 16 KiB. Absent when the workflow declares none, and when the
+            read is for one `skillSet`.
+        skillSets:
+          type: array
+          description: The workflow's skill sets in the order `publisher.json` lists them, or only the one asked for with
+            `skillSet`.
+          items:
+            $ref: "#/components/schemas/WorkflowSkillSet"
+        warnings:
+          type: array
+          description: "What resolving the workflow found wrong but survivable: its own findings (for example a skill name two
+            of its sets both hold), then each of its sets' findings. With `skillSet`, the workflow's own and that set's."
+          items:
+            $ref: "#/components/schemas/Problem"
+        definitionHash:
+          type: string
+          description: SHA-256 (hex) over this workflow's name, description, instructions path and text, and each of its skill
+            sets' path and digest, in the order listed, so a runner can prove which definition ran. Editing another workflow,
+            or a model, does not move it.
+        contentHash:
+          type: string
+          description: "SHA-256 (hex) of the version's content this definition was read from: the version's
+            `VersionStatus.contentHash`."
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+          readOnly: true
+          description: The version that answered, with `latest` resolved.
+
+    WorkflowList:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowSummary"
+        nextCursor:
+          $ref: "#/components/schemas/Cursor"
+      readOnly: true
+
+    WorkflowSkillSet:
+      description: A skill set as a workflow serves it, with its skills. A skill name an earlier set of the same workflow also
+        holds is left out here and served from that set.
+      allOf:
+        - $ref: "#/components/schemas/WorkflowSkillSetSummary"
+        - type: object
+          required:
+            - skills
+          properties:
+            skills:
+              type: array
+              description: "The set's skills, by name, each a `Skill` read as `GET …/skills/{skillName}` reads one: its `content`
+                (`SKILL.md` text) always, and its `files` with their content only with `?include=files`."
+              items:
+                $ref: "#/components/schemas/Skill"
+      readOnly: true
+
+    WorkflowSkillSetSummary:
+      type: object
+      readOnly: true
+      description: A skill set a workflow lists, without its skills.
+      properties:
+        name:
+          type: string
+          description: The set's folder name, which is what a chat picks it by and what `skillSet` takes.
+        path:
+          type: string
+          description: Version-relative path of the set's folder, as written in `publisher.json`.
+        digest:
+          type: string
+          description: "SHA-256 (hex) over the set's path and what it serves: each file's digest and each skill's applied
+            `.skillignore`. Editing another set, or a workflow's instructions, does not move it; a package past the 8 MiB
+            listed-file cap can couple sets."
+      required:
+        - name
+        - path
+        - digest
+
+    WorkflowSummary:
+      type: object
+      readOnly: true
+      description: One workflow a package declares, without its instructions or skills.
+      properties:
+        resource:
+          $ref: "#/components/schemas/ResourcePath"
+          readOnly: true
+        name:
+          type: string
+          pattern: ^[a-z0-9]+(-[a-z0-9]+)*$
+          maxLength: 64
+          description: "The workflow's name (its key in `publisher.json`'s `workflows` object): lowercase letters and digits in
+            hyphen-separated words."
+        description:
+          type: string
+          description: The workflow's description. Absent when `publisher.json` sets none.
+        hasInstructions:
+          type: boolean
+          description: Whether the workflow declares instructions. A workflow without them has nothing to run.
+        skillSets:
+          type: array
+          description: The workflow's skill sets in the order `publisher.json` lists them.
+          items:
+            $ref: "#/components/schemas/WorkflowSkillSetSummary"
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+          readOnly: true
+          description: The version that answered, with `latest` resolved.
+      required:
+        - resource
+        - name
+        - hasInstructions
+        - skillSets
+        - versionId

@@ -44,7 +44,7 @@ Environment                     a namespace for packages and connections; the un
         ├── reports             a `.malloy` file with an `## artifact` tag (grid or linear); the report write
         ├── data-apps           the catalog of HTML data apps; pages are served outside the API (`DataApp.url`)
         ├── data-files          embedded CSV, Parquet, JSON and Excel files
-        ├── agents, skills      what the package declares for agents
+        ├── workflows, skills   what the package declares for agents: workflows; the guides in force
         ├── entities, classification, index
         ├── build-plan, status  the persist build plan; this server's serving state, with its bindings
         ├── :load, :unload, :reload
@@ -64,7 +64,8 @@ These are the rules the spec's `info` states, in the same words where they can b
 - **Path names.** Paths are kebab-case; parameters and fields are camelCase. `{xName}` is a named resource,
   `{versionId}` and `{runId}` are ids, and `{path}` is a file's version-relative path (relative to the version's root,
   `/`-separated; every path in a body is version-relative too, but a data app's `path`, relative to `public/`, and a
-  skill file's, relative to its skill's directory). `{path}` spans segments: send its `/` literally (the server
+  skill file's, relative to its skill's directory, except on a workflow's skill-file route, where it is `<skill>/<file>`,
+  relative to the skill set's folder). `{path}` spans segments: send its `/` literally (the server
   also decodes `%2F` within it as `/`), and a `:verb` follows its last segment. A path has no empty, `.` or `..` segment, no leading `/`, and no
   `\`, `:` or control character.
 - **Reads change no record.** A `GET` may load the version, or start work a `profile=light` publish deferred, which only
@@ -142,7 +143,7 @@ These are the rules the spec's `info` states, in the same words where they can b
 - **Resource paths.** Every resource a `GET` reads carries `resource`, its canonical path relative to the API's base: no
   leading slash, and the resolved version id in place of `latest`
   (`environments/acme/packages/sales/versions/1.4.0/models/orders.malloy`). The exceptions are `/status`, a snapshot of
-  the server, list envelopes, and an object embedded in another that has no read of its own (an agent's own skill). A
+  the server, list envelopes, and an object embedded in another that has no read of its own (a workflow's own skill). A
   list item carries it when its item has a `GET` of its own, so a data app, whose page is served outside the API,
   carries none. Relative, so it stays right behind a gateway that serves the API under another prefix, and
   percent-encoded per segment; a link and a stable key, never parsed. A create's `Location` is a relative reference
@@ -223,7 +224,7 @@ Each row names its operations by `operationId`, which the generated clients use.
 | `PUT …/versions/{versionId}/reports/{path}` | `write-report`, the builder's save. The body is a `Report` with only `content` and `contentHash` as read; a server-set field answers 400. Without `contentHash` it creates the file (201; 409 `FILE_EXISTS`); with it, it replaces the file (200; 409 `CONTENT_CHANGED` when the file no longer hashes to it). On a stored version it makes version `<root>+edit.N`, `N` counted against the root semantic version (`1.4.0+edit.4`), and moves `latestVersionId` unless `versionPromotion` is `explicit`; on a live package it writes through to the author's directory. Identical `content` answers 200 and makes no version, so a retry is safe; takes `Idempotency-Key`. Only the tip of the edit chain from `latest` can be written, with the compare-and-swap on that tip (409 `VERSION_NOT_LATEST`); the checks run 410, the content-equal no-op, `FILE_EXISTS`, `CONTENT_CHANGED`, `VERSION_NOT_LATEST`; `index.malloy`, `public/`, a non-report and a `readOnly` report answer 409 `FILE_NOT_WRITABLE`. Answers the `Report`. |
 | `GET …/versions/{versionId}/data-apps` | `list-data-apps`: the catalog of HTML data apps, each with the `url` its page is served at. Pages and the files they load are served outside the API, at `/environments/{environmentName}/packages/{packageName}/versions/{versionId}/public/{path}` (immutable under a stored version id; `private, no-cache` through `latest` or `live`, whose files change), with v0's `/environments/{environmentName}/packages/{packageName}/{path}` as the latest version's short form. |
 | `GET …/versions/{versionId}/data-files` | `list-data-files`: embedded data files and their schemas (`rowCountStatus` is `not_started` or `in_progress` after a `profile=light` publish, until the count this read starts finishes). |
-| `GET …/versions/{versionId}/agents`, `…/agents/{agentName}`, `…/skills`, `…/skills/{skillName}` | `list-agents`, `get-agent`, `list-skills`, `get-skill`: what the version declares for agents, and the skills in force for it (`origin`: `bundled`, `package` or `agent`); a skill's `SKILL.md` text comes on both reads, its files' content with `?include=files`. Adopt an agent only when the user names it. |
+| `GET …/versions/{versionId}/workflows`, `…/workflows/{workflowName}`, `…/workflows/{workflowName}/skills/{path}`, `…/skills`, `…/skills/{skillName}` | `list-workflows`, `get-workflow`, `get-workflow-skill-file`, `list-skills`, `get-skill`: the workflows the version declares (`?skillSet=` reads one skill set and no instructions), one file of a workflow's skills by its `<skill>/<file>` path, and the skills in force for the version (`origin`: `bundled`, `package` or `workflow`); a skill's `SKILL.md` text comes on both reads, its files' content with `?include=files`. Adopt a workflow only when the user names it. |
 | `GET …/versions/{versionId}/entities`, `…/classification`, `…/index` | `list-entities`, `get-classification`, `get-discovery-index`: what each model declares for an indexer; the classification summary; the discovery index's `status` (`not_started`, `in_progress`, `ready`, `failed`) and the version it is for. |
 | `GET …/versions/{versionId}/build-plan` | `get-build-plan`: the persist build plan (`status`: `not_started`, `in_progress`, `ready`, `failed`). What the version serves per source is `bindings` on its `…/status`. |
 | `GET …/packages/{packageName}/runs`, `POST`, `GET …/runs/{runId}`, `PATCH`, `DELETE` | `list-runs`, `create-run`, `get-run`, `update-run`, `delete-run`: materialization runs (`status`, `trigger`, `mode`, `scope`; `?status=` and `?callerRunId=` narrow); start one for a `versionId` (auto, or orchestrated with `buildInstructions` and a concrete `versionId`; `trigger` and a package-unique `callerRunId` set on create); cancel with `{"status": "cancelled"}`; delete a settled run's record, which drops no table (409 `RUN_BOUND` while a version's binding names it). |
@@ -303,7 +304,7 @@ The spec's nouns are the vocabulary, and the Console and the docs follow them:
 | report           | a `.malloy` file with an `## artifact` tag, `layout` grid or linear                                     |
 | data app         | an HTML page under `public/`                                                                            |
 | data file        | a CSV, Parquet, JSON or Excel file embedded in a version                                                |
-| agent, skill     | what a package declares for agents; the guides in force for it                                          |
+| workflow, skill  | what a package declares for agents: instructions and skill sets; the guides in force for it             |
 | run              | one attempt to build a slot's persisted sources; "materialization" is the feature's name                |
 | slot             | what one run at a time may build: the package under `scope: package`, one version under `scope: version` |
 | manifest entry   | what a run produced for one source; `tableId` names the physical table                                  |
