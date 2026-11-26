@@ -8,7 +8,7 @@ Step H1 of the optimization loop (reference/optimization-loop.md): production
 data in, nothing judged or derived. Each input is a JSONL file of rows pulled
 from wherever the host keeps its logs; a host-specific skill does the pulling.
 Each row is appended to one CSV under the optimization package's `data/`
-(`[history] package_dir`, default `<workdir>/optimization-package`):
+(optimization_package.py says where it is and owns every table's columns):
 
   prod_turns.csv         one question and its answer (a turn, not a session)
   prod_transcripts.csv   the transcript of a turn, when the row carries one
@@ -27,7 +27,7 @@ THREE RULES
 - **Only the served package's traffic.** Rows for another package are left
   out.
 - **Never the loop's own traffic.** Eval runs and replays query the served
-  package too. A row from an environment in `[history] exclude_environments`,
+  package too. A row from an environment in `[optimization] exclude_environments`,
   or whose `origin` is `eval` or `replay`, is left out and counted. Without
   this the loop would judge its own questions as production.
 
@@ -46,35 +46,12 @@ from typing import Any, Iterable
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent / "eval-answer" / "scripts"))
+sys.path.insert(0, str(HERE))
 
 import config  # noqa: E402
+from optimization_package import APPENDED, append, install_for  # noqa: E402
 
-# table -> (key columns, timestamp column, columns). The columns are the
-# history model's; history.malloy types each one.
-TABLES: dict[str, tuple[tuple[str, ...], str, tuple[str, ...]]] = {
-    "prod_turns": (("turn_id",), "at", (
-        "turn_id", "session_id", "at", "environment", "package", "model_version", "client",
-        "question", "n_get_context", "n_execute", "n_errors", "tokens", "cost_usd")),
-    "prod_transcripts": (("turn_id",), "", ("turn_id", "transcript")),
-    "prod_queries": (("execution_id",), "at", (
-        "execution_id", "at", "environment", "package", "model_version", "model_path", "source",
-        "query_text", "origin", "turn_id", "served_by", "table_id", "duration_ms", "bytes",
-        "status")),
-    "prod_table_builds": (("build_id",), "started_at", (
-        "build_id", "package", "model_version", "table_id", "source", "kind", "grain",
-        "started_at", "build_ms", "rows", "bytes", "status")),
-    "model_versions": (("package", "version"), "published_at", (
-        "package", "version", "commit", "published_at")),
-    # Written by judge_sample.py collect, never by ingest.
-    "prod_judgments": (("turn_id", "metric_version"), "judged_at", (
-        "turn_id", "judged_at", "run_id", "judge_version", "metric_version", "sampled_because",
-        "verdict", "right", "failure_code", "component", "owner", "note")),
-}
-# Written from eval.toml at every ingest, so the price the models use is the one
-# the config states: one row, overwritten, never appended.
-PRICE_COLUMNS = ("usd_per_compute_hour", "usd_per_gb_month", "usd_per_tb_scanned",
-                 "max_query_ms", "max_staleness_hours")
-TEMPLATE = HERE.parent / "templates" / "optimization-package"
+TABLES = APPENDED
 INPUT_TABLE = {"turns": "prod_turns", "queries": "prod_queries", "builds": "prod_table_builds",
                "versions": "model_versions"}
 # Other names hosts use for a column, mapped to the history model's.
@@ -149,38 +126,6 @@ def ingest(data: pathlib.Path, table: str, rows: Iterable[dict[str, Any]], packa
             "left_out": left_out, "newest": newest}
 
 
-def append(path: pathlib.Path, cols: tuple[str, ...], rows: list[dict[str, Any]]) -> None:
-    """Add rows to a table's CSV, writing the header when the file is new."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fresh = not path.is_file()
-    if not rows and not fresh:
-        return
-    with path.open("a", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=list(cols))
-        if fresh:
-            w.writeheader()
-        w.writerows(rows)
-
-
-def install(package: pathlib.Path, prices: dict[str, Any]) -> None:
-    """Lay the optimization package down: the template's model, app and
-    publisher.json, refreshed each time, a header-only CSV for every table not
-    yet written so the model compiles before its first row, and the price card.
-    `data/` rows are never touched."""
-    for src in TEMPLATE.rglob("*"):
-        if src.is_file() and "__pycache__" not in src.parts:
-            dst = package / src.relative_to(TEMPLATE)
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            dst.write_bytes(src.read_bytes())
-    data = package / "data"
-    for table, (_, _, cols) in TABLES.items():
-        append(data / f"{table}.csv", cols, [])
-    with (data / "price_card.csv").open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=list(PRICE_COLUMNS))
-        w.writeheader()
-        w.writerow({c: prices.get(c) for c in PRICE_COLUMNS})
-
-
 def update_watermarks(data: pathlib.Path, results: list[dict[str, Any]]) -> dict[str, str]:
     path = data / WATERMARKS
     marks = json.loads(path.read_text()) if path.is_file() else {}
@@ -215,9 +160,8 @@ def main(argv: list[str] | None = None) -> int:
     if not package:
         raise SystemExit("Missing eval.toml key 'model.package': the served package whose "
                          "traffic to keep. Fix: [model] package = \"storefront\"")
-    excluded = set(cfg.get("history", "exclude_environments") or [])
-    data = cfg.history_dir() / "data"
-    install(cfg.history_dir(), {c: cfg.get("performance", c) for c in PRICE_COLUMNS})
+    excluded = set(cfg.get("optimization", "exclude_environments") or [])
+    data = install_for(cfg)
     results = [ingest(data, INPUT_TABLE[n], read_jsonl(p), package, excluded)
                for n, p in inputs.items()]
     marks = update_watermarks(data, results)
@@ -226,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         extra = f" (+{r['transcripts']} transcripts)" if r["transcripts"] else ""
         print(f"{r['table']}: added {r['added']}{extra}" + (f"; left out {out}" if out else ""))
     if not excluded:
-        print("note: [history] exclude_environments is unset, so only rows tagged origin "
+        print("note: [optimization] exclude_environments is unset, so only rows tagged origin "
               "eval/replay are treated as the loop's own traffic")
     print(f"next pull starts after: {json.dumps(marks)}")
     print(data)

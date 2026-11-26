@@ -1,30 +1,29 @@
 #!/usr/bin/env python3
-"""Every run of one set as a servable Malloy package. Stdlib only.
+"""Every run of one set, as model 2 of the optimization package. Stdlib only.
 
   python3 eval.py history --set <set-dir>
 
 Reads the runs in the set's workdir (including any pulled from the store,
-run_store.py) and the routines' result files, and writes
-<workdir>/packages/history-<set>: four CSVs, a model
-(history.malloy) and a report (history_report.malloy), then registers it on
-the truth server, as a run package is, because it names the questions' tags
-and verdicts.
+run_store.py) and the routines' result files, and rewrites four of the
+optimization package's tables (runs, versions, tag_scores, routines), which
+`optimization.malloy`, `optimization_report.malloy` and the app at
+`public/optimization/` read. Then registers the package on the truth server,
+as a run package is, because it names the questions' tags and verdicts.
 
-It is a view, rebuilt from the runs every time and never edited, so two people
-building it from the same runs get the same page, and nothing needs to append
-to it. The version rows come from `run_index.versions`, the same code
+The package is the one optimization_package.py lays down, so the production
+history ingest_logs.py appends sits beside it and is never touched here.
+These four tables are a view, rebuilt from the runs every time and never
+edited, so two people building from the same runs get the same page. The version rows come from `run_index.versions`, the same code
 `eval.py versions` prints, so the page and the terminal cannot disagree.
 """
 from __future__ import annotations
 
 import argparse
 import pathlib
-import shutil
 import sys
 from typing import Any
 
 HERE = pathlib.Path(__file__).resolve().parent
-TEMPLATE = HERE.parent / "templates" / "history-package"
 sys.path.insert(0, str(HERE.parent.parent / "eval-answer" / "scripts"))
 sys.path.insert(0, str(HERE))
 
@@ -33,15 +32,12 @@ import run_index  # noqa: E402
 from build_run_package import register, stamp_version, write_csv  # noqa: E402
 from flip_table import verdicts  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
+from optimization_package import REBUILT, install_for  # noqa: E402
 
-RUN_COLUMNS = ["run", "kind", "version", "experiment", "started", "slice", "full", "passed",
-               "decided", "cases", "p50_ms", "total_ms", "slow", "dataset_version", "status"]
-VERSION_COLUMNS = ["version", "run", "passed", "decided", "vs", "fixed", "broke", "perf_run",
-                   "p50_ms", "total_ms", "faster", "slower", "rows_changed", "total_ratio"]
-TAG_COLUMNS = ["run", "version", "experiment", "started", "tag", "passed", "decided"]
-ROUTINE_COLUMNS = ["label", "kind", "mode", "started", "finished", "exit", "reason", "run",
-                   "passed", "decided", "total_ms", "cost_usd", "keys_verified",
-                   "edits_tried", "edits_accepted", "branch"]
+RUN_COLUMNS = list(REBUILT["runs"])
+VERSION_COLUMNS = list(REBUILT["versions"])
+TAG_COLUMNS = list(REBUILT["tag_scores"])
+ROUTINE_COLUMNS = list(REBUILT["routines"])
 
 
 def routine_rows(workdir: pathlib.Path) -> list[dict[str, Any]]:
@@ -106,10 +102,10 @@ def tag_rows(rows: list[dict[str, Any]], set_dir: pathlib.Path) -> list[dict[str
     return out
 
 
-def build(cfg: config.Config, out: pathlib.Path) -> dict[str, int]:
+def build(cfg: config.Config) -> dict[str, int]:
     rows = run_index.set_runs(cfg)
-    data = out / "data"
-    data.mkdir(parents=True, exist_ok=True)
+    out = cfg.optimization_dir()
+    data = install_for(cfg)
     runs = [{**r, "version": r.get("version") or run_index.WORKING_COPY,
              "dataset_version": r.get("datasetVersion")} for r in rows]
     versions, tags = version_rows(rows), tag_rows(rows, cfg.set_dir)
@@ -118,10 +114,7 @@ def build(cfg: config.Config, out: pathlib.Path) -> dict[str, int]:
     write_csv(data / "tag_scores.csv", tags, TAG_COLUMNS)
     routines = routine_rows(cfg.workdir())
     write_csv(data / "routines.csv", routines, ROUTINE_COLUMNS)
-    for name in ("publisher.json", "history.malloy", "history_report.malloy"):
-        shutil.copy(TEMPLATE / name, out / name)
     stamp_version(out / "publisher.json")   # a rebuild publishes as a new version
-    shutil.copytree(TEMPLATE / "public", out / "public", dirs_exist_ok=True)
     return {"runs": len(runs), "versions": len(versions), "tag rows": len(tags),
             "routines": len(routines)}
 
@@ -133,8 +126,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-register", action="store_true")
     a = ap.parse_args(argv)
     cfg = config.load(a.set_dir)
-    out = cfg.workdir() / "packages" / f"history-{cfg.set_name}"
-    counts = build(cfg, out)
+    out = cfg.optimization_dir()
+    counts = build(cfg)
     print(out)
     print("  " + ", ".join(f"{v} {k}" for k, v in counts.items()))
     base, env = cfg.truth_publisher(), cfg.get("truth", "environment")
@@ -146,8 +139,9 @@ def main(argv: list[str] | None = None) -> int:
     if failed:
         print(f"  ! could not register on {base}: {failed}", file=sys.stderr)
         return 1
-    print(f"  data app: {base}/environments/{env}/packages/{out.name}/")
-    print(f"  report:   {base}/{env}/{out.name}/history_report")
+    print(f"  eval runs:  {base}/environments/{env}/packages/{out.name}/optimization/")
+    print(f"  production: {base}/environments/{env}/packages/{out.name}/history/")
+    print(f"  report:     {base}/{env}/{out.name}/optimization_report")
     return 0
 
 

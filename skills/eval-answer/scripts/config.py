@@ -91,12 +91,12 @@ SCHEMA: dict[str, dict[str, Any]] = {
                     "usd_per_compute_hour": "positive", "usd_per_tb_scanned": "positive",
                     "usd_per_gb_month": "positive", "table_read_ms": "positive",
                     "max_query_ms": "positive"},
-    # Production history (eval-loop's ingest_logs.py, judge_sample.py): the
-    # optimization package the ingested tables and both models live in, the
-    # environments whose traffic is the loop's own and never production, and
-    # how many production turns a night's judging samples.
-    "history": {"package_dir": "path", "exclude_environments": "names",
-                "judge_sample": "count"},
+    # The optimization package (eval-loop's optimization_package.py): where its
+    # tables, both models and both apps live; the environments whose traffic is
+    # the loop's own and never production (ingest_logs.py); and how many
+    # production turns a night's judging samples (judge_sample.py).
+    "optimization": {"package_dir": "path", "exclude_environments": "names",
+                     "judge_sample": "count"},
 }
 
 BUILTIN: dict[tuple[str, str], Any] = {
@@ -109,7 +109,7 @@ BUILTIN: dict[tuple[str, str], Any] = {
     ("performance", "latency_band"): 0.2,
     ("performance", "objective"): "weighted_ms",
     ("performance", "table_read_ms"): 10.0,
-    ("history", "judge_sample"): 25,
+    ("optimization", "judge_sample"): 25,
 }
 
 
@@ -235,10 +235,11 @@ class Config:
     def truth_package_dir(self) -> pathlib.Path:
         return self.get("truth", "package_dir") or (self.set_dir / "truth-package")
 
-    def history_dir(self) -> pathlib.Path:
-        """The optimization package: production tables, both models, both apps.
-        Outside the served package, because its tables hold the answer key."""
-        return self.get("history", "package_dir") or (self.workdir() / "optimization-package")
+    def optimization_dir(self) -> pathlib.Path:
+        """The optimization package: production history, eval runs, both models
+        and both apps. Never inside the served package: it holds the answer key."""
+        return (self.get("optimization", "package_dir")
+                or self.workdir() / "packages" / f"optimization-{self.set_name}")
 
     def workdir(self) -> pathlib.Path:
         """Where runs, built packages and server roots go: never the repository.

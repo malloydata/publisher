@@ -9,6 +9,7 @@ import unittest
 import unittest.mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "eval-answer" / "scripts"))
 import ingest_logs as il  # noqa: E402
 import judge_sample as js  # noqa: E402
 
@@ -56,16 +57,21 @@ class Main(unittest.TestCase):
         (root / "set" / "set.json").write_text('{"name": "s"}')
         (root / "set" / "eval.toml").write_text(
             f'[paths]\nworkdir = "{root / "w"}"\n[model]\npackage = "storefront"\nenvironment = "e"\n')
-        data = root / "w" / "optimization-package" / "data"
+        data = root / "w" / "packages" / "optimization-s" / "data"
         il.ingest(data, "prod_turns", [{**turn("t1"), "transcript": [{"type": "user"}]}, turn("t2")],
                   "storefront", set())
         with unittest.mock.patch("sys.stdout", new_callable=io.StringIO) as out:
             js.main(["pick", "--set", str(root / "set"), "--label", "prod-01"])
-        cases = [json.loads(l) for l in
-                 (root / "w" / "optimization-package" / "judging" / "prod-01" / "cases.jsonl").read_text().splitlines()]
+        judging = root / "w" / "judging" / "prod-01"
+        cases = [json.loads(l) for l in (judging / "cases.jsonl").read_text().splitlines()]
         self.assertEqual(sorted(c["source"] for c in cases), ["t1", "t2"])
         self.assertNotIn("golden", cases[0])
-        self.assertTrue((root / "w" / "runs" / "prod-01" / "artifacts" / "p-t1" / "answerer.jsonl").is_file())
+        # Its own config and work directory: never one of this set's runs.
+        import config
+        jcfg = config.load(judging)
+        self.assertEqual((jcfg.workdir(), jcfg.get("model", "package")), ((judging / "work").resolve(), "storefront"))
+        self.assertTrue((judging / "work" / "runs" / "prod-01" / "artifacts" / "p-t1" / "answerer.jsonl").is_file())
+        self.assertFalse((root / "w" / "runs").exists())
         self.assertIn("1 need fetch_transcripts.py", out.getvalue())
 
 

@@ -1,5 +1,5 @@
-// Eval history app. Names come from ../history.malloy; DOM built with textContent only.
-const MODEL = "history.malloy";
+// Eval history app. Names come from ../../optimization.malloy; DOM built with textContent only.
+const MODEL = "optimization.malloy";
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -81,4 +81,39 @@ async function runs() {
   }
 }
 
+function grid(rows, cols) {
+  const t = el("table"), head = el("tr");
+  for (const [h, , r] of cols) head.append(el("th", r ? "r" : null, h));
+  t.append(head);
+  for (const row of rows) {
+    const tr = el("tr");
+    for (const [, f, r] of cols) tr.append(el("td", r ? "r" : null, f(row)));
+    t.append(tr);
+  }
+  return t;
+}
+const val = (v) => (v == null ? "" : Number(v).toLocaleString("en-US", { maximumFractionDigits: 4 }));
+
+async function predictionPanel(id, query, empty, cols) {
+  const host = document.getElementById(id);
+  try {
+    const rows = await Publisher.query(MODEL, query);
+    host.replaceChildren(rows.length ? grid(rows, cols) : el("div", "muted", empty));
+  } catch (e) {
+    host.replaceChildren(el("div", "is-error", `Could not load: ${e.message}`));
+  }
+}
+
 versions(); tags(); runs();
+predictionPanel("predictions", "run: predictions -> recent", "No prediction yet. eval.py predict records one.", [
+  ["made", (r) => String(r.made_at || "").slice(0, 10)], ["loop", (r) => r.loop], ["metric", (r) => r.metric],
+  ["from", (r) => r.made_from], ["production before", (r) => val(r.baseline), 1],
+  ["predicted", (r) => `${val(r.predicted)} (${val(r.low)} to ${val(r.high)})`, 1],
+  ["measured", (r) => val(r.measured), 1], ["on", (r) => r.version || ""], ["state", (r) => r.state],
+]);
+predictionPanel("calibration", "run: predictions -> calibration", "Nothing checked yet.", [
+  ["loop", (r) => r.loop], ["metric", (r) => r.metric], ["metric version", (r) => r.metric_version || ""],
+  ["predictions", (r) => val(r.prediction_count), 1], ["checked", (r) => val(r.checked), 1],
+  ["inside range", (r) => (r.inside_rate == null ? "n/a" : `${Math.round(r.inside_rate * 100)}%`), 1],
+  ["mean gap", (r) => val(r.mean_gap), 1],
+]);

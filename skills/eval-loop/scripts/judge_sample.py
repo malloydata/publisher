@@ -13,12 +13,16 @@ rows, so it measures production, not the eval set.
 A production turn comes with no answer key. This script does not make one and
 does not judge; both are existing steps an agent runs between the two verbs:
 
-1. `pick` draws the sample and writes it as an eval set under the
-   optimization package, `judging/<label>/`: one case per turn, its `source`
-   the turn id, no golden. Where `prod_transcripts` holds the turn's
-   transcript (as answerer events, the shape `log_transcript.py` writes), it
-   is written to `<workdir>/runs/<label>/artifacts/<qid>/answerer.jsonl`;
-   otherwise `fetch_transcripts.py` fetches it.
+1. `pick` draws the sample and writes it as an eval set of its own at
+   `<workdir>/judging/<label>/`: one case per turn, its `source` the turn id,
+   no golden, and an `eval.json` copied from this set's config with its own
+   work directory (`judging/<label>/work`) and no store. So the judging run
+   is never one of this set's runs, is never shared as one, and never sits
+   inside the optimization package, where a run's model snapshot would stop
+   the package loading. Where `prod_transcripts` holds the turn's transcript
+   (as answerer events, the shape `log_transcript.py` writes), it is written
+   to the judging run's `artifacts/<qid>/answerer.jsonl`; otherwise
+   `fetch_transcripts.py` fetches it.
 2. The agent derives each case's golden from the data (skill:eval-import),
    then runs `eval.py run --set <judging set> --label <label> --rebuild` to
    judge the logged answers against them, and `eval.py diagnose` for the
@@ -37,7 +41,6 @@ the same label picks the same turns.
 from __future__ import annotations
 
 import argparse
-import csv
 import datetime
 import json
 import pathlib
@@ -51,18 +54,11 @@ sys.path.insert(0, str(HERE.parent.parent / "eval-answer" / "scripts"))
 sys.path.insert(0, str(HERE))
 
 import config  # noqa: E402
-from ingest_logs import TABLES, append  # noqa: E402
+from optimization_package import APPENDED, append, install_for, metric_version, read  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 
-JUDGMENT_COLUMNS = TABLES["prod_judgments"][2]
+JUDGMENT_COLUMNS = APPENDED["prod_judgments"][2]
 SAFE = re.compile(r"[^A-Za-z0-9_-]+")
-
-
-def read_csv(path: pathlib.Path) -> list[dict[str, str]]:
-    if not path.is_file():
-        return []
-    with path.open(newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
 
 
 def qid_for(turn_id: str) -> str:
@@ -76,8 +72,22 @@ def pick(turns: list[dict[str, str]], judged: set[str], n: int, seed: str) -> li
     return sorted(chosen, key=lambda t: (t.get("at") or "", t["turn_id"]))
 
 
-def write_set(dir_: pathlib.Path, label: str, chosen: list[dict[str, str]]) -> None:
+def judging_config(cfg: Any, dir_: pathlib.Path) -> dict[str, Any]:
+    """This set's config for the judging set: the same servers, its own work
+    directory, no store and no optimization section."""
+    out: dict[str, Any] = {}
+    for section, values in cfg.data.items():
+        if section in ("store", "optimization"):
+            continue
+        out[section] = {k: str(v) if isinstance(v, pathlib.Path) else v for k, v in values.items()}
+    out.setdefault("paths", {})["workdir"] = str(dir_ / "work")
+    return out
+
+
+def write_set(dir_: pathlib.Path, label: str, chosen: list[dict[str, str]],
+              cfg_data: dict[str, Any]) -> None:
     dir_.mkdir(parents=True, exist_ok=True)
+    (dir_ / "eval.json").write_text(json.dumps(cfg_data, indent=1) + "\n")
     (dir_ / "set.json").write_text(json.dumps({
         "name": f"production-{label}", "datasetVersion": 1,
         "description": "Production turns drawn for judging by judge_sample.py. "
@@ -111,8 +121,7 @@ def judgments(run: pathlib.Path, cases: list[dict[str, Any]], now: str) -> list[
     """One row per case of the judging run, from its score and issue events."""
     meta = json.loads((run / "run.json").read_text())
     events = read_jsonl(run / "events.jsonl") if (run / "events.jsonl").is_file() else []
-    judge = meta.get("judgeVersion")
-    metric = ":".join(str(x) for x in (judge, (meta.get("rubricSha") or "")[:12]) if x) or None
+    judge, metric = meta.get("judgeVersion"), metric_version(meta)
     scores = {e.get("qid"): e for e in events if e.get("kind") == "score"}
     issues: dict[str, dict[str, Any]] = {}
     for e in events:
@@ -140,24 +149,24 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("verb", choices=("pick", "collect"))
     ap.add_argument("--set", dest="set_dir", required=True)
     ap.add_argument("--label", required=True, help="names the sample, its set and its run")
-    ap.add_argument("--n", type=int, default=None, help="turns to draw ([history] judge_sample)")
+    ap.add_argument("--n", type=int, default=None, help="turns to draw ([optimization] judge_sample)")
     a = ap.parse_args(argv)
     cfg = config.load(pathlib.Path(a.set_dir))
-    data = cfg.history_dir() / "data"
-    set_dir = cfg.history_dir() / "judging" / a.label
-    run = cfg.workdir() / "runs" / a.label
+    data = install_for(cfg)
+    set_dir = cfg.workdir() / "judging" / a.label
+    run = set_dir / "work" / "runs" / a.label
     if a.verb == "pick":
-        turns = read_csv(data / "prod_turns.csv")
+        turns = read(data / "prod_turns.csv")
         if not turns:
             raise SystemExit(f"No production turns in {data}. Fix: eval.py ingest --turns <file> first.")
-        judged = {r["turn_id"] for r in read_csv(data / "prod_judgments.csv")}
-        n = a.n or cfg.get("history", "judge_sample")
+        judged = {r["turn_id"] for r in read(data / "prod_judgments.csv")}
+        n = a.n or cfg.get("optimization", "judge_sample")
         chosen = pick(turns, judged, n, a.label)
         if not chosen:
             print("every ingested turn is already judged")
             return 0
-        write_set(set_dir, a.label, chosen)
-        transcripts = {r["turn_id"]: r["transcript"] for r in read_csv(data / "prod_transcripts.csv")}
+        write_set(set_dir, a.label, chosen, judging_config(cfg, set_dir))
+        transcripts = {r["turn_id"]: r["transcript"] for r in read(data / "prod_transcripts.csv")}
         have = write_transcripts(run, chosen, transcripts)
         print(f"{len(chosen)} turns drawn ({len(turns) - len(judged)} not yet judged); "
               f"{have} transcripts written to {run / 'artifacts'}")
@@ -173,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"No judging run at {run}. Fix: eval.py run --set {set_dir} "
                          f"--label {a.label} --rebuild")
     cases = read_jsonl(set_dir / "cases.jsonl")
-    done = {(r["turn_id"], r["metric_version"]) for r in read_csv(data / "prod_judgments.csv")}
+    done = {(r["turn_id"], r["metric_version"]) for r in read(data / "prod_judgments.csv")}
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     rows = [r for r in judgments(run, cases, now)
             if (r["turn_id"], r["metric_version"] or "") not in done]

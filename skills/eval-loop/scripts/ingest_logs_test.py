@@ -75,12 +75,12 @@ class Main(unittest.TestCase):
         (root / "set" / "set.json").write_text('{"name": "s"}')
         (root / "set" / "eval.toml").write_text(
             f'[paths]\nworkdir = "{root / "w"}"\n[model]\npackage = "storefront"\nenvironment = "e"\n'
-            f'[history]\nexclude_environments = ["evals"]\n')
+            f'[optimization]\nexclude_environments = ["evals"]\n')
         (root / "t.jsonl").write_text(json.dumps(turn("t1")) + "\n"
                                       + json.dumps(turn("t2", environment="evals")) + "\n")
         with unittest.mock.patch("sys.stdout", new_callable=io.StringIO) as out:
             self.assertEqual(il.main(["--set", str(root / "set"), "--turns", str(root / "t.jsonl")]), 0)
-        pkg = root / "w" / "optimization-package"
+        pkg = root / "w" / "packages" / "optimization-s"
         self.assertTrue((pkg / "history.malloy").is_file())
         # Every table exists before its first row, so the model compiles.
         self.assertEqual((pkg / "data" / "prod_judgments.csv").read_text().splitlines()[0][:16],

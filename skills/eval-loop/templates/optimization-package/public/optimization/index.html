@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Eval History</title>
+<title>Eval Runs</title>
 <style>
   :root {
     --bg: #f7f7f5; --surface: #fff; --text: #1d1d1b; --text-2: #5f5e5a; --border: #e2e1dc;
@@ -41,13 +41,15 @@
 </head>
 <body>
 <header>
-  <h1>Eval history</h1>
+  <h1>Eval runs</h1>
   <p>Every run of this set: how each package version scored and how fast it answered. Rebuilt from the runs by <code>eval.py history</code>.</p>
 </header>
 <main>
   <div id="versions"><div class="muted">Loading</div></div>
   <section class="panel"><h2>Pass rate by tag, over every answer run</h2><div id="tags"><div class="muted">Loading</div></div></section>
   <section class="panel"><h2>Runs, newest first</h2><div class="scroll" id="runs"><div class="muted">Loading</div></div></section>
+  <section class="panel"><h2>Predictions against production</h2><div class="scroll" id="predictions"><div class="muted">Loading</div></div></section>
+  <section class="panel"><h2>How well predictions have matched</h2><div class="scroll" id="calibration"><div class="muted">Loading</div></div></section>
 </main>
 <script src="/sdk/publisher.js"></script>
 <script type="module" src="./app.js"></script>

@@ -1,7 +1,7 @@
-// Semantic model over every run of one eval set. Rebuilt from the runs, never
-// edited: build_history.py writes the CSVs, and each column is typed here
-// because a set with no replays leaves a file header-only, which DuckDB would
-// otherwise read as text.
+// Model 2 of the optimization package: what the loop tried. Every run of one
+// eval set (rebuilt from the runs by build_history.py, never edited), and each
+// prediction with the production outcome it was checked against. Each column
+// is typed here because a table with no rows yet is a header-only file.
 
 #(doc) One routine: a quality or speed run, in run or improve mode, and what it did. Read from the routine's result file.
 source: routines is duckdb.sql("""
@@ -91,5 +91,52 @@ source: tag_scores is duckdb.sql("""
     group_by: run, line, version, started, tag
     aggregate: pass_rate, passed is passed.sum(), decided is decided.sum()
     order_by: started desc, tag
+  }
+}
+
+#(doc) What production showed for a prediction, once the change was published and enough traffic had passed. One per prediction, never rewritten.
+source: outcomes is duckdb.sql("""
+  select * from read_csv('data/outcomes.csv', header = true, columns = {
+    'prediction_id': 'VARCHAR', 'checked_at': 'TIMESTAMP', 'version': 'VARCHAR', 'measured': 'DOUBLE',
+    'n': 'INTEGER', 'inside_range': 'BOOLEAN', 'gap': 'DOUBLE', 'note': 'VARCHAR'})
+""") extend {
+  primary_key: prediction_id
+}
+
+#(doc) What a change was predicted to do in production, before a person reviewed it: from the candidate's eval run (quality) or a simulation (speed), with a range and the date it can be checked.
+source: predictions is duckdb.sql("""
+  select * from read_csv('data/predictions.csv', header = true, columns = {
+    'prediction_id': 'VARCHAR', 'made_at': 'TIMESTAMP', 'loop': 'VARCHAR', 'made_from': 'VARCHAR',
+    'candidate_commit': 'VARCHAR', 'pr_url': 'VARCHAR', 'metric': 'VARCHAR', 'metric_version': 'VARCHAR',
+    'baseline': 'DOUBLE', 'predicted': 'DOUBLE', 'low': 'DOUBLE', 'high': 'DOUBLE', 'method': 'VARCHAR',
+    'min_n': 'INTEGER', 'check_after': 'TIMESTAMP'})
+""") extend {
+  primary_key: prediction_id
+  join_one: outcome is outcomes on prediction_id = outcome.prediction_id
+  dimension:
+    #(doc) Where the prediction stands: waiting, checked inside or outside its range, or not published as predicted.
+    state is pick 'waiting' when outcome.prediction_id is null
+      pick 'not published as predicted' when outcome.measured is null
+      pick 'inside range' when outcome.inside_range
+      else 'outside range'
+  measure:
+    prediction_count is count()
+    checked is count() { where: outcome.measured is not null }
+    inside is count() { where: outcome.inside_range = true }
+    #(doc) Share of checked predictions production landed inside. Low means the eval set or simulation misleads.
+    inside_rate is inside / nullif(checked, 0)
+    #(doc) Average of measured minus predicted. Away from zero means a bias, which a range starting at zero would hide.
+    mean_gap is outcome.gap.avg()
+  #(doc) Every prediction, newest first, with production's answer.
+  view: recent is {
+    group_by: made_at, loop, metric, made_from, candidate_commit, baseline, predicted, low, high,
+      state, outcome.version, outcome.measured, outcome.n, pr_url
+    order_by: made_at desc
+    limit: 50
+  }
+  #(doc) How well each kind of prediction has matched production.
+  view: calibration is {
+    group_by: loop, metric, metric_version
+    aggregate: prediction_count, checked, inside, inside_rate, mean_gap
   }
 }

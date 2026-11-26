@@ -50,8 +50,8 @@ class History(unittest.TestCase):
         shutil.rmtree(self.root, ignore_errors=True)
 
     def test_versions_tags_and_experiments(self):
-        out = self.root / "pkg"
-        build_history.build(self.cfg, out)
+        build_history.build(self.cfg)
+        out = self.cfg.optimization_dir()
         versions = {r["version"]: r for r in read(out / "data" / "versions.csv")}
         self.assertEqual(versions["1.1.0 (unpublished)"]["run"], "r2")   # not the experiment
         self.assertEqual(versions["1.1.0 (unpublished)"]["fixed"], "1")
@@ -61,7 +61,10 @@ class History(unittest.TestCase):
         self.assertIn(("r2", "ratio", "1", "1"), tags)
         lines = {r["run"]: r["experiment"] for r in read(out / "data" / "runs.csv")}
         self.assertEqual(lines["x1"], "exp")
-        self.assertIn("##| artifact", (out / "history_report.malloy").read_text())
+        self.assertIn("##| artifact", (out / "optimization_report.malloy").read_text())
+        # Model 1 sits beside it, its tables header-only until something is ingested.
+        self.assertTrue((out / "history.malloy").is_file())
+        self.assertEqual(read(out / "data" / "prod_turns.csv"), [])
 
 
     def test_each_routine_is_one_row_saying_what_it_did(self):
@@ -78,8 +81,8 @@ class History(unittest.TestCase):
             "label": "s1", "kind": "speed", "mode": "run", "started": "2026-11-01T07:00:00",
             "exit": 4, "reason": "1 query errored", "number": {"totalMs": 4180}}))
         (rd / "broken.json").write_text("{")
-        out = self.root / "pkg"
-        build_history.build(self.cfg, out)
+        build_history.build(self.cfg)
+        out = self.cfg.optimization_dir()
         rows = read(out / "data" / "routines.csv")
         self.assertEqual([r["label"] for r in rows], ["s1", "q1"])          # oldest first
         q = rows[1]
@@ -89,7 +92,7 @@ class History(unittest.TestCase):
         s = rows[0]
         self.assertEqual((s["exit"], s["total_ms"], s["edits_tried"], s["keys_verified"]),
                          ("4", "4180", "", ""))
-        self.assertIn('"routines -> latest"', (out / "history_report.malloy").read_text())
+        self.assertIn('"routines -> latest"', (out / "optimization_report.malloy").read_text())
 
 
 if __name__ == "__main__":

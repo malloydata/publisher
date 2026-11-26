@@ -1,5 +1,5 @@
 ##" Every run of one eval set: how each package version scored and ran.
-##| artifact { layout=linear title="Eval history"
+##| artifact { layout=linear title="Eval runs"
   tiles=[
     routines_intro { kind=text },
     "routines -> latest",
@@ -13,7 +13,7 @@
   ]
 }
 |##
-import "history.malloy"
+import "optimization.malloy"
 
 ##|(markdown) routines_intro
 ## What each routine did
