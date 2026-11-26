@@ -58,16 +58,54 @@ step 7 can compare it with the outcome.
 | Step | Quality | Speed |
 |---|---|---|
 | 1 Objective | Pass rate on held-out cases (`test` split). Only model docs or package skills may change | Weighted p95 latency (each query weighted by how often it runs), a freshness limit, a monthly cost limit. May change: which sources get a table (`#(materialize)`), rollup grains (`#(rollup)`), persisted views and queries, storage, refresh |
-| 2 Ingest | The set (`eval-import`, questions from request logs); each run's verdicts, transcripts, tool calls, cost | A workload from query logs; a replay recording each query's time and path report (which table answered); build time, bytes, rows, freshness per table; prices |
-| 3 Model | `eval-diagnose` clusters failures by cause and owner; `quality.malloy` and `eval history` hold the trend | A performance model: queries, executions, tables, prices; measures for weighted p95, cost per day, freshness lag |
-| 4 Simulate | Weak: an agent's behaviour decides. Cheap checks: rerun only the failing cases plus a sample; check retrieval alone. Otherwise a full run on an experiment | Strong: the router is deterministic. Estimate which queries a table answers from each query's shape (grouped-by, filtered-by, measures) against the table's grain; dry-run publish for serve verdicts; build and replay the best few |
+| 2 Ingest | Production turns (`eval.py ingest`) and a judged sample of them (`eval.py judge-sample`); the set (`eval-import`); each run's verdicts, transcripts, tool calls, cost | Production queries and table builds (`eval.py ingest`); a workload from them (`workload_from_logs.py`); a replay recording each query's time and path report (which table answered); prices |
+| 3 Model | `history.malloy`: production quality per day and version; `eval-diagnose` clusters failures by cause and owner; `optimization.malloy` holds the eval runs | `history.malloy`: latency percentiles, serving and build cost per day, data age per table |
+| 4 Simulate | Weak: an agent's behaviour decides. Cheap checks: rerun only the failing cases plus a sample; check retrieval alone. Otherwise a full run on an experiment | Strong: the router is deterministic. Estimate which queries a table answers from each query's shape (grouped-by, filtered-by, measures) against the table's grain; pick the cheapest set that meets every limit (`simulate`'s `cheapest` option); dry-run publish for serve verdicts; build and replay the best few |
 | 5 Strategy | Diagnosed causes as options, each with the cases it would fix and its risk | Options with latency, freshness and cost; which queries each speeds up |
 | 6 Act | `accept`: beats the noise band twice, held-out pass rate does not drop; a branch a person merges | The same, plus: the targeted queries are answered by the new table (path report), rows unchanged, cost within the limit; a person publishes |
-| 7 Learn | `attempts.jsonl`: each edit tried, its effect, a one-line lesson | The same file, plus each option's projection against the next day's measurements |
+| 7 Learn | `eval.py predict` before review, `eval.py outcomes` once published: the run's pass rate against production's judged turns on that version. `attempts.jsonl`: each edit tried, its effect, a one-line lesson | The same, with the option's mean query time and share over `max_query_ms` against production's queries on that version |
 
 The two kinds are limits on each other. A speed change must not change
 answers (rows unchanged, pass rate holds). A quality change must not make the
 workload slower or stop a table from serving.
+
+## The optimization package
+
+Each served package gets one optimization package beside it, never inside it,
+served where the answerer cannot reach it because it holds verdicts. It is at
+`[optimization] package_dir` (default `<workdir>/packages/optimization-<set>`)
+and holds two models, each with an app:
+
+| | Model 1: `history.malloy` | Model 2: `optimization.malloy` |
+|---|---|---|
+| Answers | How did production do, per day and per model version? | What did the loop try, what did it predict, and was it right? |
+| Tables | `prod_turns`, `prod_transcripts`, `prod_queries`, `prod_table_builds`, `model_versions`, `prod_judgments`, `price_card` | `runs`, `versions`, `tag_scores`, `routines`, `predictions`, `outcomes` |
+| Written by | `eval.py ingest` (appends log rows once each, drops the loop's own traffic), `eval.py judge-sample collect` | `eval.py history` (rebuilt from the runs), `eval.py predict`, `eval.py outcomes` |
+| App | `public/history/` | `public/optimization/` |
+
+Model 1 knows nothing about eval sets. Every table is a CSV under `data/` in
+the columns `optimization_package.py` defines; a hosted run loads the same
+CSVs into a managed database, so local and hosted runs write one format.
+
+The production quality number comes from judging a sample, because a
+production turn has no answer key:
+
+```bash
+python3 eval.py ingest --set <set> --turns turns.jsonl --queries queries.jsonl --versions versions.jsonl
+python3 eval.py judge-sample pick --set <set> --label prod-20261125    # draw unjudged turns as a set
+# derive each case's golden (skill:eval-import), then judge the logged answers:
+python3 eval.py run --set <workdir>/judging/prod-20261125 --label prod-20261125 --rebuild
+python3 eval.py diagnose --set <workdir>/judging/prod-20261125 --label prod-20261125
+python3 eval.py judge-sample collect --set <set> --label prod-20261125
+```
+
+Name the environments the loop itself queries in
+`[optimization] exclude_environments`, or its eval runs are ingested as
+production. Before a change goes to review, `eval.py predict` writes down what
+it should do; after it ships, `eval.py outcomes` checks. Compare the total too,
+not only whether each outcome fell in its range: when every range is wide or
+starts at zero, "inside the range" teaches nothing, and the mean gap in model 2
+shows a bias the ranges hide.
 
 ## Three things every loop must declare
 

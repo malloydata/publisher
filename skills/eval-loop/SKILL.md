@@ -51,6 +51,7 @@ all of them for every run is how a skill stops being read.
 | keeping runs, sharing them with a team through a store, or comparing package versions | `reference/sharing-runs.md` |
 | the user asks to optimize the model: the objective, what to measure, the options, and going back a step | `reference/optimization-loop.md` |
 | timing queries, simulating a table before building it, or making queries faster with a rollup, materialization or persist | `reference/query-performance.md` |
+| measuring production: ingesting logs, judging a sample of real turns, or checking a prediction after a change shipped | `reference/optimization-loop.md` § The optimization package |
 | the run finished and someone has to read it | `skill:eval-report` |
 | you changed judge doctrine or its inputs | `reference/checking-the-judge.md` |
 

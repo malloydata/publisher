@@ -173,6 +173,17 @@ refresh `max_staleness_hours` needs, and the cost when prices are set, ranked
 against the `[performance]` objective in `eval.toml`. `--package` writes the
 options app: serve it and show it to the person choosing.
 
+The first option is `cheapest`: the set of candidate tables with the least
+warehouse time a day (serving plus building) that meets every limit,
+`max_query_ms` included. Choosing which tables to build is materialized view
+selection: each table costs its builds and saves the time of the queries it
+answers. Up to 16 useful candidates every combination is scored, so it is the
+cheapest under these estimates; past that a greedy pick says it is not proven
+best. A query that runs over `max_query_ms` live and that no candidate can
+answer makes `cheapest` infeasible, and the reason names it: that query needs
+a change to the query or the model (a slow regular expression, a join outside
+every grain), not a table.
+
 The second form dry-run publishes an edited package and predicts from the
 server's own build plan and serve verdicts. It costs nothing and catches what
 the first cannot: a rollup on a measure that cannot be merged
