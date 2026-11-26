@@ -2313,7 +2313,6 @@ paths:
       - $ref: "#/components/parameters/packageName"
       - $ref: "#/components/parameters/versionId"
       - $ref: "#/components/parameters/workflowName"
-      - $ref: "#/components/parameters/path"
     get:
       operationId: get-workflow-skill-file
       tags:
@@ -8058,16 +8057,19 @@ components:
         digest:
           type: string
           pattern: ^sha256:[0-9a-f]{64}$
-          description: "`sha256:<hex>` of the file's bytes as stored. A `SKILL.md` read from a workflow is hashed in the form
-            that read serves, which is re-emitted."
+          description: "`sha256:<hex>` of the file's bytes as the read serves them. A text file is served unchanged, so
+            these are its stored bytes; a `SKILL.md` read through a workflow is served re-emitted, so this is the hash of that
+            form, the one a skill set's digest covers."
         size:
           type: integer
-          description: Size of the file in bytes, as stored. A text file is served unchanged, so this is also the length of its
-            `content` in UTF-8 bytes.
+          description: Size in bytes of the file as the read serves it, the bytes `digest` hashes. A text file is served
+            unchanged, so this is also the length of its `content` in UTF-8 bytes; a `SKILL.md` read through a workflow is
+            served re-emitted, and this is the re-emitted length.
         content:
           type: string
-          description: "The file's text. Present only for a text file, and only when the skill is read with its files:
-            `?include=files`, on a skill or on a workflow. A binary file has none."
+          description: "The file's text. Present only for a text file, and only when the read asks for it: `?include=files`
+            on a skill or on a workflow, and always on a read of the one file (`GET …/workflows/{workflowName}/skills/{path}`).
+            A binary file has none."
       required:
         - path
         - digest
@@ -8087,8 +8089,10 @@ components:
             resource:
               $ref: "#/components/schemas/ResourcePath"
               readOnly: true
-              description: The file's path, `<skill>/<file>` under the workflow's `skills`; the entry's `path` is relative to the
-                skill's directory.
+              description: The file's canonical path from the API base, `environments/{environmentName}/packages/{packageName}/versions/{versionId}/workflows/{workflowName}/skills/{skill}/{file}`,
+                with the resolved version id; the entry's `path` is relative to the skill's directory. A read with `skillSet`
+                names the same path, which can be a different file when two sets hold the skill, since a set has no address of its
+                own yet.
             message:
               type: string
               description: Set instead of `content` when the file is binary, and so is never served as a body.
