@@ -748,10 +748,10 @@ export class SkillNotFoundError extends Error {
    }
 }
 
-/** No agent with that name is served for the package, whether undeclared or dropped by validation. */
-export class AgentNotFoundError extends Error {
-   get kind(): "agent_not_found" {
-      return "agent_not_found";
+/** No workflow with that name, or no skill set of that name in it, is served for the package, whether undeclared or refused by validation. */
+export class WorkflowNotFoundError extends Error {
+   get kind(): "workflow_not_found" {
+      return "workflow_not_found";
    }
 
    constructor(message: string) {
@@ -1744,7 +1744,7 @@ interface ErrorByKind {
    model_not_found: ModelNotFoundError;
    dashboard_not_found: DashboardNotFoundError;
    skill_not_found: SkillNotFoundError;
-   agent_not_found: AgentNotFoundError;
+   workflow_not_found: WorkflowNotFoundError;
    conflict: ConflictError;
    connection_not_found: ConnectionNotFoundError;
    table_not_found: TableNotFoundError;
@@ -1835,7 +1835,7 @@ const ERROR_CLASSES: {
    model_not_found: ModelNotFoundError,
    dashboard_not_found: DashboardNotFoundError,
    skill_not_found: SkillNotFoundError,
-   agent_not_found: AgentNotFoundError,
+   workflow_not_found: WorkflowNotFoundError,
    conflict: ConflictError,
    connection_not_found: ConnectionNotFoundError,
    table_not_found: TableNotFoundError,
@@ -2133,7 +2133,7 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    model_not_found: { ...NOT_FOUND, mcpSetup: "model" },
    dashboard_not_found: { status: 404, mcp: { advice: "internal" } },
    skill_not_found: { status: 404, mcp: { advice: "internal" } },
-   agent_not_found: { status: 404, mcp: { advice: "internal" } },
+   workflow_not_found: { status: 404, mcp: { advice: "internal" } },
    conflict: { status: 409, mcp: { advice: "internal" } },
    // A query-boundary denial is a deliberate 404; `not_found` also drops the
    // source name this class is careful not to confirm.

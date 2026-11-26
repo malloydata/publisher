@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { components } from "../api";
-import { AgentNotFoundError, SkillNotFoundError } from "../errors";
+import { SkillNotFoundError, WorkflowNotFoundError } from "../errors";
 import {
    BUNDLED_CATALOG,
    fileChangedMessage,
@@ -17,18 +17,19 @@ import type { PackageLookup } from "../service/environment_ports";
 import { VersionRef } from "../service/identity";
 import { loadedPackage } from "./loaded_package";
 
-type ApiAgent = components["schemas"]["Agent"];
-type ApiAgentSummary = components["schemas"]["AgentSummary"];
-type ApiAgentSkillRead = components["schemas"]["AgentSkillRead"];
+type ApiWorkflow = components["schemas"]["Workflow"];
+type ApiWorkflowSummary = components["schemas"]["WorkflowSummary"];
+type ApiWorkflowSkillRead = components["schemas"]["WorkflowSkillRead"];
 type ApiSkill = components["schemas"]["Skill"];
 type ApiSkillSummary = components["schemas"]["SkillSummary"];
 
 /**
- * The REST half of the `get_skill` and `get_agent` MCP tools: the bundled
- * guides, shadowed by the package's own `skills/` of the same name and read
- * file by file by path, and the package's declared agents. Serves state read at load; nothing compiles.
+ * The REST half of the `get_skill` and `get_workflow` MCP tools: the bundled
+ * guides, shadowed by the skills of the package's `default` workflow of the
+ * same name and read file by file by path, and the package's declared
+ * workflows. Serves state read at load; nothing compiles.
  * Every route takes the package's `versionId`, so a version's own skills and
- * agents are served, never `latest`'s.
+ * workflows are served, never `latest`'s.
  */
 export class SkillController {
    private environmentStore: PackageLookup;
@@ -122,50 +123,53 @@ export class SkillController {
       };
    }
 
-   /** Name, description, model, schedules and budget of every agent the package serves. */
-   public async listAgents(
+   /** Name, description, instructions flag and skill sets of every workflow the package serves. */
+   public async listWorkflows(
       environmentName: string,
       packageName: string,
       versionId: VersionRef = VersionRef.LATEST,
-   ): Promise<ApiAgentSummary[]> {
+   ): Promise<ApiWorkflowSummary[]> {
       return (
          await this.packageOf(environmentName, packageName, versionId)
-      ).listAgents();
+      ).listWorkflows();
    }
 
-   /** One agent resolved to its instructions, skill files and schedules. */
-   public async getAgent(
+   /** One workflow resolved to its instructions and skill sets, or to one set with `skillSet`. */
+   public async getWorkflow(
       environmentName: string,
       packageName: string,
-      agentName: string,
+      workflowName: string,
       skills: "full" | "summary" = "full",
+      skillSet?: string,
       versionId: VersionRef = VersionRef.LATEST,
-   ): Promise<ApiAgent> {
-      const agent = (
+   ): Promise<ApiWorkflow> {
+      const workflow = (
          await this.packageOf(environmentName, packageName, versionId)
-      ).getAgent(agentName, skills);
-      if (!agent) {
-         throw new AgentNotFoundError(
-            `Agent '${agentName}' not found in package '${packageName}'.`,
+      ).getWorkflow(workflowName, skills, skillSet);
+      if (!workflow) {
+         throw new WorkflowNotFoundError(
+            skillSet === undefined
+               ? `Workflow '${workflowName}' not found in package '${packageName}'.`
+               : `Workflow '${workflowName}' with a skill set '${skillSet}' not found in package '${packageName}'.`,
          );
       }
-      return agent;
+      return workflow;
    }
 
-   /** One file of an agent's skills, by a `relative_filepath` from the summary. */
-   public async getAgentSkillFile(
+   /** One file of a workflow's skills, by a `<skill>/<file>` path from the summary. */
+   public async getWorkflowSkillFile(
       environmentName: string,
       packageName: string,
-      agentName: string,
+      workflowName: string,
       relativeFilepath: string,
       versionId: VersionRef = VersionRef.LATEST,
-   ): Promise<ApiAgentSkillRead> {
+   ): Promise<ApiWorkflowSkillRead> {
       const file = (
          await this.packageOf(environmentName, packageName, versionId)
-      ).getAgentSkillFile(agentName, relativeFilepath);
+      ).getWorkflowSkillFile(workflowName, relativeFilepath);
       if (!file) {
-         throw new AgentNotFoundError(
-            `Skill file '${relativeFilepath}' not found for agent '${agentName}' in package '${packageName}'.`,
+         throw new WorkflowNotFoundError(
+            `Skill file '${relativeFilepath}' not found for workflow '${workflowName}' in package '${packageName}'.`,
          );
       }
       return file;

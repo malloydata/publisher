@@ -1298,19 +1298,19 @@
       ]
     }
   },
-  "AgentNotFoundError": {
-    "class": "AgentNotFoundError",
+  "WorkflowNotFoundError": {
+    "class": "WorkflowNotFoundError",
     "http": {
       "status": 404,
       "json": {
         "code": 404,
-        "message": "Agent not found"
+        "message": "Workflow not found"
       },
       "logged": false,
       "logs": []
     },
     "mcp": {
-      "message": "An unexpected internal error occurred during executeQuery.: Agent not found",
+      "message": "An unexpected internal error occurred during executeQuery.: Workflow not found",
       "suggestions": [
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."
@@ -1318,7 +1318,7 @@
       "logs": []
     },
     "mcpSetup": {
-      "message": "An unexpected internal error occurred during executeQuery (Setup).: Agent not found",
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Workflow not found",
       "suggestions": [
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."

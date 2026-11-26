@@ -33,7 +33,9 @@ import {
 import * as Malloy from "@malloydata/malloy-interfaces";
 import { parseMalloynb } from "../service/deprecated/malloynb";
 import {
+   agentsNotReadFindings,
    declaredDeprecatedManifestKeys,
+   type CodedFinding,
    type DeprecatedManifestKey,
 } from "../service/deprecated/manifest_keys";
 import * as fs from "fs";
@@ -791,7 +793,8 @@ async function readPackageMetadata(
    manifestWarnings?: string[];
    deprecatedManifestKeys?: DeprecatedManifestKey[];
    retrieval?: PackageRetrievalSettings;
-   agents?: unknown;
+   manifestFindings?: CodedFinding[];
+   workflows?: unknown;
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    // Inside the package only, and one answer for any manifest that cannot be
@@ -821,6 +824,7 @@ async function readPackageMetadata(
       queryMetadata?: unknown;
       retrieval?: unknown;
       agents?: unknown;
+      workflows?: unknown;
    };
    try {
       parsed = JSON.parse(contents);
@@ -902,7 +906,9 @@ async function readPackageMetadata(
       // Validated and read here so a bad key or unreadable prompt file fails
       // the load by name, and a prompt edit takes effect on reload.
       retrieval: await readPackageRetrieval(packagePath, parsed.retrieval),
-      agents: boundedManifestValue(parsed.agents),
+      // Findings with a code, which a manifestWarning has none of.
+      manifestFindings: agentsNotReadFindings(parsed),
+      workflows: boundedManifestValue(parsed.workflows),
    };
 }
 

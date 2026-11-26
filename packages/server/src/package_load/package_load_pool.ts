@@ -54,7 +54,10 @@ import type {
    PackageScope,
 } from "../service/package_manifest";
 import type { PackageRetrievalSettings } from "../service/package_retrieval_settings";
-import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys";
+import type {
+   CodedFinding,
+   DeprecatedManifestKey,
+} from "../service/deprecated/manifest_keys";
 import type {
    CompileServedCopyRequest,
    CompileServedCopyResult,
@@ -314,8 +317,10 @@ export interface LoadPackageOutcome {
       deprecatedManifestKeys?: DeprecatedManifestKey[];
       /** See {@link LoadPackageResult.packageMetadata.retrieval}. */
       retrieval?: PackageRetrievalSettings;
-      /** See {@link LoadPackageResult.packageMetadata.agents}. */
-      agents?: unknown;
+      /** See {@link LoadPackageResult.packageMetadata.manifestFindings}. */
+      manifestFindings?: CodedFinding[];
+      /** See {@link LoadPackageResult.packageMetadata.workflows}. */
+      workflows?: unknown;
    };
    replacementMatchedExisting?: boolean;
    models: Array<

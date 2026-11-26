@@ -620,7 +620,7 @@ function registerPackageRoutes(
       }),
    );
 
-   // A file path inside a skill, and an agent's skill file path, carry slashes,
+   // A file path inside a skill, and a workflow's skill file path, carry slashes,
    // so each is a wildcard rather than a named parameter. Express has already
    // decoded the wildcard; decoding again throws on a bare %.
    app.get(
@@ -711,9 +711,9 @@ function registerPackageRoutes(
       );
    }
    app.get(
-      `${pkg}/agents`,
+      `${pkg}/workflows`,
       apiRoute((req) =>
-         skillController.listAgents(
+         skillController.listWorkflows(
             req.params.environmentName,
             req.params.packageName,
             versionRefOf(req),
@@ -721,7 +721,7 @@ function registerPackageRoutes(
       ),
    );
    app.get(
-      `${pkg}/agents/:agentName`,
+      `${pkg}/workflows/:workflowName`,
       apiRoute((req, res) => {
          const skills = req.query.skills ?? "full";
          if (skills !== "full" && skills !== "summary") {
@@ -730,22 +730,30 @@ function registerPackageRoutes(
             });
             return;
          }
-         return skillController.getAgent(
+         const skillSet = req.query.skill_set;
+         if (skillSet !== undefined && typeof skillSet !== "string") {
+            res.status(400).json({
+               message: `'skill_set' must be one skill set name, got ${JSON.stringify(skillSet)}.`,
+            });
+            return;
+         }
+         return skillController.getWorkflow(
             req.params.environmentName,
             req.params.packageName,
-            req.params.agentName,
+            req.params.workflowName,
             skills,
+            skillSet,
             versionRefOf(req),
          );
       }),
    );
    app.get(
-      `${pkg}/agents/:agentName/skills/*`,
+      `${pkg}/workflows/:workflowName/skills/*`,
       apiRoute((req) =>
-         skillController.getAgentSkillFile(
+         skillController.getWorkflowSkillFile(
             req.params.environmentName,
             req.params.packageName,
-            req.params.agentName,
+            req.params.workflowName,
             wildcardParam(req) ?? "",
             versionRefOf(req),
          ),

@@ -106,12 +106,12 @@ import {
 } from "../package_load_metrics";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
 import {
-   PACKAGE_SKILLS_DIR,
-   readAgentAsset,
-   readPackageAgents,
-   readSkillsDir,
-   summarizeAgentSkillFile,
-   type PackageAgent,
+   advertisedSkills,
+   emptyWorkflows,
+   readPackageWorkflows,
+   readWorkflowFile,
+   workflowSkillSet,
+   type PackageWorkflows,
    type ServedSkill,
 } from "./skills/package_skills";
 import {
@@ -188,7 +188,12 @@ import {
    joinBypasses,
 } from "./join_bypass";
 import { type ReportViewPackage } from "./legacy_report_views";
-import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
+import {
+   recordDeprecatedManifestKeys,
+   recordSkillsDirNotRead,
+   SKILLS_DIR_NOT_READ,
+   type CodedFinding,
+} from "./deprecated/manifest_keys";
 import {
    isMalloynbPath,
    listMalloynbCellFindings,
@@ -319,10 +324,10 @@ interface ClassificationMemo {
    warnings?: ApiPackageWarning[];
    joinBypass?: string[];
 }
-type ApiAgent = components["schemas"]["Agent"];
-type ApiAgentSummary = components["schemas"]["AgentSummary"];
-type ApiAgentSource = components["schemas"]["AgentSource"];
-type ApiAgentSkillRead = components["schemas"]["AgentSkillRead"];
+type ApiWorkflow = components["schemas"]["Workflow"];
+type ApiWorkflowSummary = components["schemas"]["WorkflowSummary"];
+type ApiWorkflowSource = components["schemas"]["WorkflowSource"];
+type ApiWorkflowSkillRead = components["schemas"]["WorkflowSkillRead"];
 
 type ApiColumn = components["schemas"]["Column"];
 type ApiTableDescription = components["schemas"]["TableDescription"];
@@ -356,8 +361,8 @@ function packageLoadFailureStatus(error: unknown): PackageLoadStatus {
 /**
  * The fields `Package.getPackageMetadata` computes and overlays on what the
  * package declares: what this server holds now (the load, its manifest
- * binding, the sources it serves from storage), the build plan and agents,
- * the secure givens, and the warnings. Never stored, so a caller that
+ * binding, the sources it serves from storage), the build plan, the secure
+ * givens, and the warnings. Never stored, so a caller that
  * round-trips a response (a version load, a manifest rebind) cannot freeze
  * them: the next read computes them again, and omits the inline ones while
  * PUBLISHER_PACKAGE_INLINE_FIELDS is off.
@@ -371,7 +376,6 @@ const COMPUTED_PACKAGE_FIELDS = [
    "storageServeBindings",
    "serveVerdicts",
    "buildPlan",
-   "agents",
    "secureGivens",
    "exploresWarnings",
    "warnings",
@@ -536,18 +540,20 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    private servedRevision: string = mintServedRevision();
    private sourceContentSha: string = "";
    /**
-    * The skills in `skills/`, refreshed with the content sha so a skill edit is
-    * covered by the reload receipt by construction.
+    * The workflows the manifest declares and the skill sets they list, refreshed
+    * with the content sha so an edit to either is covered by the reload receipt
+    * by construction.
     */
+   private workflows: PackageWorkflows = emptyWorkflows();
+   /** The skills the package advertises: its `default` workflow's, read from `workflows`. */
    private packageSkills: ServedSkill[] = [];
-   private packageSkillWarnings: string[] = [];
    /**
-    * The manifest's raw `agents` value, held apart from `packageMetadata` so a
-    * metadata PATCH cannot replace it.
+    * The manifest's raw `workflows` value, held apart from `packageMetadata` so
+    * a metadata PATCH cannot replace it.
     */
-   private rawAgents: unknown;
-   private packageAgents = new Map<string, PackageAgent>();
-   private packageAgentWarnings: string[] = [];
+   private rawWorkflows: unknown;
+   /** What the load worker found in the manifest that an earlier release read and this one does not. */
+   private manifestFindings: CodedFinding[] = [];
    /** The manifest's `retrieval` block (prompt files included), re-read on reload. */
    private retrievalSettings: PackageRetrievalSettings =
       DEFAULT_PACKAGE_RETRIEVAL;
@@ -596,28 +602,36 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.sourceContentSha;
    }
 
-   /** The agent skills this package ships, in on-disk order. */
+   /** The agent skills this package advertises: its `default` workflow's, none without one. */
    public listSkills(): ServedSkill[] {
       return this.packageSkills;
    }
 
-   /** The agents the manifest declares that passed validation, without their text. */
-   public listAgents(): ApiAgentSummary[] {
-      return [...this.packageAgents.values()].map((a) => ({
-         name: a.name,
-         description: a.description,
-         model: a.model,
-         schedules: a.schedules.map(({ cron, task }) => ({ cron, task })),
-         ...(a.budget && { budget: a.budget }),
+   /** The workflows the manifest declares that passed validation, without their text. */
+   public listWorkflows(): ApiWorkflowSummary[] {
+      return [...this.workflows.workflows.values()].map((w) => ({
+         name: w.name,
+         ...(w.description !== undefined && { description: w.description }),
+         has_instructions: w.instructions !== undefined,
+         skill_sets: w.sets.map(({ set }) => ({
+            name: set.name,
+            path: set.path,
+            digest: set.digest,
+         })),
       }));
    }
 
-   private agentSource(definitionSha: string): ApiAgentSource {
+   /** The package-relative paths an edit to which changes what a workflow serves: each skill set and each instructions file. */
+   public workflowPaths(): readonly string[] {
+      return this.workflows.watched;
+   }
+
+   private workflowSource(definitionSha: string): ApiWorkflowSource {
       const versionId = this.getVersionId();
       return {
          environment: this.environmentName,
          package: this.packageName,
-         // A published version's agent can be fetched again by it after
+         // A published version's workflow can be fetched again by it after
          // `latest` moves; absent for a package with no versions.
          ...(versionId ? { versionId } : {}),
          sourceContentSha: this.sourceContentSha,
@@ -627,102 +641,100 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
-    * One agent resolved, pinned to the load and content it was read from.
-    * `summary` swaps each skill's text for its name, description and size; the
-    * pin is the same because both are views of one resolved definition.
+    * One workflow resolved, pinned to the load and content it was read from.
+    * `summary` swaps each skill file's text for its name, description and size;
+    * the pin is the same because both are views of one resolved definition.
+    * With `skillSet`, only that set and no instructions: a chat that picks a
+    * set never runs them. Undefined when the workflow, or a set of that name
+    * in it, is not served.
     */
-   public getAgent(
+   public getWorkflow(
       name: string,
       skills: "full" | "summary" = "full",
-   ): ApiAgent | undefined {
-      const agent = this.packageAgents.get(name);
-      if (!agent) return undefined;
-      const {
-         definitionSha,
-         skillMeta,
-         catalog: _catalog,
-         asset_roots,
-         assets,
-         ...definition
-      } = agent;
-      const counts = new Map<string, number>();
-      for (const a of assets ?? []) {
-         const skill = a.relative_filepath.split("/")[0]!;
-         counts.set(skill, (counts.get(skill) ?? 0) + 1);
-      }
-      const assetCounts = Object.fromEntries(counts);
+      skillSet?: string,
+   ): ApiWorkflow | undefined {
+      const workflow = this.workflows.workflows.get(name);
+      if (!workflow) return undefined;
+      const sets =
+         skillSet === undefined
+            ? workflow.sets
+            : workflow.sets.filter(({ set }) => set.name === skillSet);
+      if (skillSet !== undefined && sets.length === 0) return undefined;
       return {
-         ...definition,
-         skills:
-            skills === "full"
-               ? definition.skills
-               : definition.skills.map((f) =>
-                    summarizeAgentSkillFile(f, skillMeta),
-                 ),
-         ...(assets &&
-            (skills === "full"
-               ? { asset_roots, assets }
-               : { asset_counts: assetCounts })),
-         source: this.agentSource(definitionSha),
+         name,
+         ...(workflow.description !== undefined && {
+            description: workflow.description,
+         }),
+         has_instructions: workflow.instructions !== undefined,
+         ...(skillSet === undefined &&
+            workflow.instructions && {
+               instructions: workflow.instructions.text,
+            }),
+         skill_sets: sets.map((entry) => workflowSkillSet(entry, skills)),
+         warnings: [
+            ...workflow.warnings,
+            ...sets.flatMap(({ set }) => set.findings),
+         ],
+         source: this.workflowSource(workflow.definitionSha),
       };
    }
 
-   /** One agent skill file, looked up in the resolved set and never joined onto the filesystem; a listed file is matched exactly, then read from disk and re-checked against its listed sha. A binary one answers with a message, not its bytes. */
-   public getAgentSkillFile(
+   /** One file of a workflow's skills by its `<skill>/<file>` path, looked up in the resolved skills and never joined onto the filesystem; a listed file is matched exactly, then read from disk and re-checked against its listed sha. A binary one answers with a message, not its bytes. */
+   public getWorkflowSkillFile(
       name: string,
       relativeFilepath: string,
-   ): ApiAgentSkillRead | undefined {
-      const agent = this.packageAgents.get(name);
-      const file = agent?.skills.find(
-         (f) => f.relative_filepath === relativeFilepath,
-      );
-      if (!agent) return undefined;
-      if (file) {
-         return { ...file, source: this.agentSource(agent.definitionSha) };
-      }
-      const listed = readAgentAsset(this.packagePath, agent, relativeFilepath);
-      if (listed === undefined) return undefined;
+   ): ApiWorkflowSkillRead | undefined {
+      const workflow = this.workflows.workflows.get(name);
+      if (!workflow) return undefined;
+      const skillName = relativeFilepath.split("/")[0]!;
+      const skill = workflow.sets
+         .flatMap(({ skills }) => skills)
+         .find((s) => s.dirName === skillName);
+      const read =
+         skill && readWorkflowFile(this.packagePath, skill, relativeFilepath);
+      if (!read) return undefined;
       return {
          relative_filepath: relativeFilepath,
-         ...("text" in listed
-            ? { file_contents: listed.text }
-            : { message: listed.message }),
-         source: this.agentSource(agent.definitionSha),
+         ...("text" in read
+            ? { file_contents: read.text }
+            : { message: read.message }),
+         source: this.workflowSource(workflow.definitionSha),
       };
    }
 
    /**
-    * Re-derive the serving identity and re-read the package's skills and
-    * agents, as one operation so the set that is served and the set that is
-    * hashed are the same (a skill edit must move the reload receipt).
+    * Re-derive the serving identity and re-read the package's workflows and
+    * the skill sets they list, as one operation so the set that is served and
+    * the set that is hashed are the same (an edit must move the reload receipt).
     *
     * Not run by the constructor: {@link lintWorkerOutcome}'s throwaway Package
     * has no use for it. Call after anything that changes the served files.
     */
    public refreshServingIdentity(): void {
       this.servedRevision = mintServedRevision();
-      const skills = readSkillsDir(this.packagePath, PACKAGE_SKILLS_DIR);
-      this.packageSkills = skills.skills;
-      this.packageSkillWarnings = skills.warnings;
-      const agents = readPackageAgents(this.packagePath, this.rawAgents);
-      this.packageAgents = agents.agents;
-      this.packageAgentWarnings = agents.warnings;
+      const workflows = readPackageWorkflows(
+         this.packagePath,
+         this.rawWorkflows,
+      );
+      this.workflows = workflows;
+      this.packageSkills = advertisedSkills(workflows);
+      if (workflows.skillsDirNotRead && !this.dryRun) recordSkillsDirNotRead();
       let declaration: string | undefined;
       try {
          declaration =
-            this.rawAgents === undefined
+            this.rawWorkflows === undefined
                ? undefined
-               : canonicalJson(this.rawAgents);
+               : canonicalJson(this.rawWorkflows);
       } catch {
          // Reload must not stop between the model swap and the serve bindings.
          declaration = "[unhashable]";
       }
       this.sourceContentSha = computeSourceContentSha(
          this.packagePath,
-         [...this.models.keys(), ...skills.paths, ...agents.paths],
-         // The declaration is hashed whole, so an edit to a dropped agent moves it too.
+         [...this.models.keys(), ...workflows.paths],
+         // The declaration is hashed whole, so an edit to a refused workflow moves it too.
          declaration,
-         new Map([...skills.contentShas, ...agents.contentShas]),
+         workflows.contentShas,
       );
    }
 
@@ -2222,12 +2234,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          // The deprecated inline fields, added while
          // PUBLISHER_PACKAGE_INLINE_FIELDS is on: the serving and binding
          // fields (getOperationalFields, also at `GET …/packages/{pkg}/status`)
-         // and the build plan and agents (also at their own routes).
+         // and the build plan (also at its own route).
          Object.assign(metadata, this.getOperationalFields(), {
             buildPlan: this.buildPlan,
-            // Overlaid so a metadata PATCH body can neither set nor wipe it.
-            agents:
-               this.rawAgents === undefined ? undefined : this.listAgents(),
          });
          // Never stored in `packageMetadata` (see storableMetadata): memoized
          // per models map and frozen, so it is returned by reference. Left
@@ -2248,11 +2257,15 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.entitiesWarnings,
          ...this.readerWarnings,
          ...this.reportWarnings,
-         ...this.packageSkillWarnings.map((message) => ({
+         ...this.manifestFindings.map(({ code, message }) => ({
+            code,
             message,
             severity: "warn" as const,
          })),
-         ...this.packageAgentWarnings.map((message) => ({
+         ...(this.workflows.skillsDirNotRead
+            ? [{ ...SKILLS_DIR_NOT_READ, severity: "warn" as const }]
+            : []),
+         ...this.workflows.warnings.map((message) => ({
             message,
             severity: "warn" as const,
          })),
@@ -3492,11 +3505,12 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /**
     * Take the publisher.json settings a load or reload read, and count the
     * deprecated features the installed models use. Before
-    * `refreshServingIdentity`, which reads the agents.
+    * `refreshServingIdentity`, which reads the workflows.
     */
    private adoptOutcomeMetadata(outcome: LoadPackageOutcome): void {
       const metadata = outcome.packageMetadata;
-      this.rawAgents = metadata.agents;
+      this.rawWorkflows = metadata.workflows;
+      this.manifestFindings = metadata.manifestFindings ?? [];
       this.manifestWarnings = metadata.manifestWarnings ?? [];
       this.retrievalSettings = metadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
       if (this.dryRun) return;

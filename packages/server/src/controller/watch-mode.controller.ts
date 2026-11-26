@@ -11,6 +11,7 @@ import { logger } from "../logger";
 import { assertSafePackageName } from "../path_safety";
 import type { PackageLookup } from "../service/environment_ports";
 import { EnvironmentStore } from "../service/environment_store";
+import type { Environment } from "../service/environment";
 import { parseEnvironmentName, parsePackageName } from "../service/identity";
 
 type WatchStatusRes = components["schemas"]["WatchStatus"];
@@ -89,7 +90,7 @@ export class WatchModeController {
                await this.watcher.close();
                this.watcher = null;
             }
-            this.startWatcher(environmentName, watchPath);
+            this.startWatcher(environmentName, watchPath, env);
          });
       this.setupChain = run;
       await run;
@@ -100,14 +101,38 @@ export class WatchModeController {
       return !!this.watcher && this.watchingEnvironmentName === environmentName;
    }
 
-   private startWatcher(watchName: string, watchPath: string) {
+   private startWatcher(
+      watchName: string,
+      watchPath: string,
+      environment: Environment,
+   ) {
       this.watchingEnvironmentName = watchName;
       this.watchingPath = watchPath;
+      // A skill set holds scripts and data of any extension, and its listing
+      // is read at load, so a change to any file under one is a reload.
+      const servesWorkflowFile = (filePath: string): boolean => {
+         const [pkgName, ...within] = path
+            .relative(watchPath, filePath)
+            .split(path.sep);
+         if (!pkgName || within.length === 0) return false;
+         const inside = within.join("/");
+         return (
+            environment
+               .getLoadedPackages()
+               .find((p) => p.getPackageName() === pkgName)
+               ?.workflowPaths()
+               .some((p) => inside === p || inside.startsWith(`${p}/`)) ?? false
+         );
+      };
       this.watcher = chokidar.watch(this.watchingPath, {
          ignored: (filePath, stats) => {
             if (!stats?.isFile()) return false;
             const ext = path.extname(filePath).toLowerCase();
-            return !MODEL_EXTS.has(ext) && !ASSET_EXTS.has(ext);
+            return (
+               !MODEL_EXTS.has(ext) &&
+               !ASSET_EXTS.has(ext) &&
+               !servesWorkflowFile(filePath)
+            );
          },
          ignoreInitial: true,
       });
@@ -154,7 +179,7 @@ export class WatchModeController {
             // only once it recompiles, so a transient syntax error doesn't
             // bounce open pages into a compile error or 404.
             const ext = path.extname(filePath).toLowerCase();
-            if (MODEL_EXTS.has(ext)) {
+            if (MODEL_EXTS.has(ext) || servesWorkflowFile(filePath)) {
                const recompiled = await reloadPackage(pkgName);
                if (!recompiled) return;
             }

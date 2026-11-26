@@ -2,21 +2,27 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * DEPRECATED: the publisher.json keys a package still declares, `explores`
- * and `queryableSources`. The package-load worker reads them off the raw
- * manifest (the resolved `explores` is also filled in from `index.malloy`, and
- * the resolved `queryableSources` always has a value, so neither says whether
- * the key was written) and the main thread counts them once per load or
- * reload. Dropping a key is deleting its entry here.
+ * DEPRECATED: the publisher.json keys a package still declares: `explores`
+ * and `queryableSources`, which still work, and `agents`, which an earlier
+ * release read and this one does not. The package-load worker reads them off
+ * the raw manifest (the resolved `explores` is also filled in from
+ * `index.malloy`, and the resolved `queryableSources` always has a value, so
+ * neither says whether the key was written) and the main thread counts them
+ * once per load or reload. Dropping a key is deleting its entry here.
+ *
+ * Two findings say a package's content is no longer read, each with a stable
+ * `code` so affected packages can be counted before a deploy: the `agents`
+ * key, and a root `skills/` directory no workflow lists as a skill set.
  */
 
 import { recordDeprecatedUsage } from "../../deprecated_usage_metrics";
 
-export type DeprecatedManifestKey = "explores" | "queryableSources";
+export type DeprecatedManifestKey = "explores" | "queryableSources" | "agents";
 
 const FEATURE = {
    explores: "explores",
    queryableSources: "queryable_sources",
+   agents: "agents",
 } as const satisfies Record<DeprecatedManifestKey, string>;
 
 /** Which deprecated keys a parsed publisher.json declares, at any value. */
@@ -33,4 +39,38 @@ export function recordDeprecatedManifestKeys(
    keys: readonly DeprecatedManifestKey[] | undefined,
 ): void {
    for (const key of keys ?? []) recordDeprecatedUsage(FEATURE[key]);
+}
+
+/** A package warning with a stable `code`. */
+export interface CodedFinding {
+   code: string;
+   message: string;
+}
+
+export const PACKAGE_AGENTS_NOT_READ = "PACKAGE_AGENTS_NOT_READ";
+export const PACKAGE_SKILLS_DIR_NOT_READ = "PACKAGE_SKILLS_DIR_NOT_READ";
+
+/** The finding for a manifest that declares `agents` at any value; none when it does not. */
+export function agentsNotReadFindings(parsed: {
+   agents?: unknown;
+}): CodedFinding[] {
+   return parsed.agents === undefined
+      ? []
+      : [
+           {
+              code: PACKAGE_AGENTS_NOT_READ,
+              message: '"agents" is no longer read; declare "workflows"',
+           },
+        ];
+}
+
+export const SKILLS_DIR_NOT_READ: CodedFinding = {
+   code: PACKAGE_SKILLS_DIR_NOT_READ,
+   message:
+      'skills/ is no longer read; move each skill into a skill set and list it under "workflows.default"',
+};
+
+/** Count one load or reload of a package whose root `skills/` nothing reads. */
+export function recordSkillsDirNotRead(): void {
+   recordDeprecatedUsage("skills_dir");
 }

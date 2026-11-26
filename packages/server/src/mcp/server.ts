@@ -14,7 +14,7 @@ import {
    RELOAD_FAILURE_IS_SAFE,
    RELOAD_NEEDS_WATCH_MODE,
 } from "./tools/reload_package_tool";
-import { registerGetAgentTool } from "./tools/get_agent_tool";
+import { registerGetWorkflowTool } from "./tools/get_workflow_tool";
 import { registerGetSkillTool } from "./tools/get_skill_tool";
 import { registerSearchDatabaseSchemaTool } from "./tools/search_database_schema_tool";
 import { registerGetStatusTool } from "./tools/get_status_tool";
@@ -89,7 +89,7 @@ export function initializeMcpServer(services: McpServices): McpServer {
    );
    registerGetStatusTool(mcpServer, environmentStore);
    registerGetSkillTool(mcpServer, environmentStore, BUNDLED_CATALOG);
-   registerGetAgentTool(mcpServer, environmentStore);
+   registerGetWorkflowTool(mcpServer, environmentStore);
    registerReportAppTools(mcpServer, {
       environmentStore,
       reportController,

@@ -7,7 +7,7 @@ import { describe, expect, it } from "bun:test";
 import * as net from "net";
 import {
    AccessDeniedError,
-   AgentNotFoundError,
+   WorkflowNotFoundError,
    BadRequestError,
    ConnectionAuthError,
    ConnectionError,
@@ -51,10 +51,10 @@ describe("internalErrorToHttpError", () => {
       });
    });
 
-   it("maps SkillNotFoundError and AgentNotFoundError to 404", () => {
+   it("maps SkillNotFoundError and WorkflowNotFoundError to 404", () => {
       for (const error of [
          new SkillNotFoundError("no skill"),
-         new AgentNotFoundError("no agent"),
+         new WorkflowNotFoundError("no workflow"),
       ]) {
          const { status, json } = internalErrorToHttpError(error);
          expect(status).toBe(404);

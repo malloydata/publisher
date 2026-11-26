@@ -77,13 +77,14 @@ tags:
       directory)
   - name: skills
     description:
-      Agent skills in force for a package - the bundled guides plus the package's
-      own `skills/`, with the package's copy replacing a bundled one of the same
-      name, each read file by file by its path in the skill
-  - name: agents
+      Agent skills in force for a package - the bundled guides plus the skills
+      of the package's `default` workflow, with the package's copy replacing a
+      bundled one of the same name, each read file by file by its path in the
+      skill
+  - name: workflows
     description:
-      Agents a package declares in `publisher.json`, resolved to their
-      instructions, skill files and schedules (served, never run)
+      Workflows a package declares in `publisher.json`, resolved to their
+      instructions and skill sets (served, never run)
   - name: databases
     description: Embedded database management and access
   - name: watch-mode
@@ -2765,7 +2766,8 @@ paths:
       summary: List the agent skills in force for a package
       description: |
         Lists the agent skills that apply to this package: the guides bundled
-        with this server, plus any the package ships under `skills/`.
+        with this server, plus the skills of the package's `default` workflow
+        (none when the package declares no `default`).
 
         Resolution is name shadowing. A package skill whose `name` matches a
         bundled skill REPLACES it for this package; one with a new name is
@@ -3207,19 +3209,21 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /environments/{environmentName}/packages/{packageName}/agents:
+  /environments/{environmentName}/packages/{packageName}/workflows:
     get:
       tags:
-        - agents
-      operationId: list-agents
-      summary: List the agents a package declares
+        - workflows
+      operationId: list-workflows
+      summary: List the workflows a package declares
       description: |
-        Lists the agents declared under `agents` in the package's
-        `publisher.json` that passed validation, without instructions or
-        skills. An agent that failed validation is not listed; the package's
-        `warnings` say why. Empty when the manifest declares none.
+        Lists the workflows declared under `workflows` in the package's
+        `publisher.json` that passed validation, without instructions or skill
+        text: each one's name, description, whether it has instructions, and
+        its skill sets (name, path and digest). A workflow that failed
+        validation is not listed; the package's `warnings` say why. Empty when
+        the manifest declares none.
 
-        The REST half of the `get_agent` MCP tool.
+        The REST half of the `get_workflow` MCP tool.
       parameters:
         - name: environmentName
           in: path
@@ -3236,13 +3240,13 @@ paths:
         - $ref: "#/components/parameters/versionId"
       responses:
         "200":
-          description: The agents the package declares
+          description: The workflows the package declares
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/AgentSummary"
+                  $ref: "#/components/schemas/WorkflowSummary"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -3256,20 +3260,29 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /environments/{environmentName}/packages/{packageName}/agents/{agentName}:
+  /environments/{environmentName}/packages/{packageName}/workflows/{workflowName}:
     get:
       tags:
-        - agents
-      operationId: get-agent
-      summary: Get one agent, resolved
+        - workflows
+      operationId: get-workflow
+      summary: Get one workflow, resolved
       description: |
-        Returns one agent with its instructions, its own skill files and each
-        schedule's task text, plus `source`, which pins the package load and the
-        agent's own content so a runner can prove which bytes ran. Publisher
-        serves the definition and runs nothing: the caller's own harness
-        executes it, and schedules are never fired by the server.
+        Returns one workflow with its instructions and each of its skill sets
+        (their skill files and listed files), plus `source`, which pins the
+        package load and the workflow's own content so a runner can prove which
+        bytes ran. Publisher serves the definition and runs nothing: the
+        caller's own harness executes it.
 
-        404 when no agent of that name is served.
+        A skill name that two of the workflow's sets both hold is served from
+        the first-listed set only, and the workflow's `warnings` say so.
+
+        With `skill_set`, the reply carries the summary fields and that one
+        set only, and no `instructions`: a chat that picks a set never runs the
+        workflow's instructions. `warnings` is then the workflow's own plus that
+        set's findings.
+
+        404 when no workflow of that name is served, or it has no set named
+        `skill_set`.
       parameters:
         - name: environmentName
           in: path
@@ -3283,10 +3296,10 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
-        - name: agentName
+        - name: workflowName
           in: path
           description: >-
-            Agent name as returned by the listing. Names are 1-64 lowercase
+            Workflow name as returned by the listing. Names are 1-64 lowercase
             letters, digits and single hyphens; any other value is a 404, not a
             400.
           required: true
@@ -3299,23 +3312,32 @@ paths:
           description: >-
             `full` (the default) returns every skill file with its text.
             `summary` returns each file's `relative_filepath` and `bytes`, plus
-            `name` and `description` for a `SKILL.md`, and no `file_contents`;
-            fetch a file with `GET .../agents/{agentName}/skills/{path}`. The
-            `source` pin is identical in both. Any other value, including an
-            empty one, is a 400.
+            `name` and `description` for a `SKILL.md`, and no `file_contents`
+            and no `assets`; fetch a file with
+            `GET .../workflows/{workflowName}/skills/{path}`. The `source` pin
+            is identical in both. Any other value, including an empty one, is a
+            400.
           required: false
           schema:
             type: string
             enum: [full, summary]
             default: full
+        - name: skill_set
+          in: query
+          description: >-
+            A skill set's name (its folder's name, as listed under
+            `skill_sets`). Returns that set only and no `instructions`.
+          required: false
+          schema:
+            type: string
         - $ref: "#/components/parameters/versionId"
       responses:
         "200":
-          description: The resolved agent
+          description: The resolved workflow
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Agent"
+                $ref: "#/components/schemas/Workflow"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -3329,26 +3351,27 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /environments/{environmentName}/packages/{packageName}/agents/{agentName}/skills/{relativeFilepath}:
+  /environments/{environmentName}/packages/{packageName}/workflows/{workflowName}/skills/{relativeFilepath}:
     get:
       tags:
-        - agents
-      operationId: get-agent-skill-file
-      summary: Get one of an agent's skill files
+        - workflows
+      operationId: get-workflow-skill-file
+      summary: Get one of a workflow's skill files
       description: |
-        Returns one file from the agent's resolved skill set, named by a
-        `relative_filepath` from `GET .../agents/{agentName}?skills=summary`
-        (for example `analyst-conventions/SKILL.md`), with the same `source`
-        pin as the full definition. The path is looked up in the resolved set,
-        never joined onto the filesystem. A `relative_filepath` from the
-        agent's `assets` listing (`<skill>/<path>`, full view only) is matched
-        exactly against the listing, then read from disk and served only if it
-        still hashes to its listed `sha256`; one that changed, or became a
-        link, since the load is a 404. A text file answers with
-        `file_contents`; a binary one (not UTF-8, or holding a NUL byte) has
-        no `file_contents` and answers with a `message` naming its size.
+        Returns one file from the workflow's resolved skills, named by a
+        `<skill>/<file>` path (for example `analyst-conventions/SKILL.md`)
+        from `GET .../workflows/{workflowName}?skills=summary`, with the same
+        `source` pin as the full definition. A skill name is unique within a
+        served workflow, so the path names one file whichever set holds it. The
+        path is looked up in the resolved skills, never joined onto the
+        filesystem. A file from a set's `assets` listing is matched exactly
+        against the listing, then read from disk and served only if it still
+        hashes to its listed `sha256`; one that changed, or became a link, since
+        the load is a 404. A text file answers with `file_contents`; a binary
+        one (not UTF-8, or holding a NUL byte) has no `file_contents` and
+        answers with a `message` naming its size.
 
-        404 when the agent or the file is not served.
+        404 when the workflow or the file is not served.
       parameters:
         - name: environmentName
           in: path
@@ -3362,10 +3385,10 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
-        - name: agentName
+        - name: workflowName
           in: path
           description: >-
-            Agent name as returned by the listing. Names are 1-64 lowercase
+            Workflow name as returned by the listing. Names are 1-64 lowercase
             letters, digits and single hyphens; any other value is a 404, not a
             400.
           required: true
@@ -3376,8 +3399,8 @@ paths:
         - name: relativeFilepath
           in: path
           description: >-
-            A `relative_filepath` from the agent's skill summary, or from the
-            full view's `assets`. Slashes may be
+            A `<skill>/<file>` path from the workflow's skill summary, or from
+            a set's `assets` in the full view. Slashes may be
             sent literally or as `%2F`; a literal `%` in a name must be sent as
             `%25`.
           required: true
@@ -3390,7 +3413,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AgentSkillRead"
+                $ref: "#/components/schemas/WorkflowSkillRead"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -5380,9 +5403,10 @@ components:
           description: >-
             Server-computed, read-only: SHA-256 over the package-relative path
             and bytes of every file the package is serving: each model file,
-            each package skill file under `skills/`, and, when the manifest
-            declares `agents`, the canonical form of that `agents` object plus
-            every instructions, task and skill file those agents read.
+            each file of each skill set a served workflow lists, and, when the
+            manifest declares `workflows`, the canonical form of that
+            `workflows` object plus every instructions file those workflows
+            read.
 
             This is the reload receipt. Publisher serves a COPY of a package
             under `publisher_data/<env>/<pkg>/` unless the environment was
@@ -5856,15 +5880,24 @@ components:
             `report-layout-unknown` (a `layout=` other than `grid` or
             `linear`). The rest are `warn` (a mistyped `(markdown)` opener, a
             block that never closes, and similar).
-            Skill and agent findings, all `warn`: a package skill under
-            `skills/` that is not served (unreadable or linked-out `SKILL.md`,
-            a frontmatter `name` that is not its directory name, a `skills/`
-            directory that links out of the package) or served with a gap (no
-            `description`, frontmatter that is not valid YAML, a file of the
-            skill's directory that is skipped with its reason); and
-            each agent the manifest declares that is not served, or is served
-            with a finding (an agent skill with no `description`, a skills
-            directory with no skills, a skipped skill file).
+            Workflow and skill set findings, all `warn`: each workflow the
+            manifest declares that is not served (`Workflow '<name>' is not
+            served: <why>`), a skill name two of a workflow's sets both hold
+            (`Workflow '<name>' <finding>`), and, once per skill set however
+            many workflows list it, each finding of the set
+            (`Skill set '<path>' skill finding: <finding>`): a skill that is
+            not served (unreadable or linked-out `SKILL.md`, a frontmatter
+            `name` that is not its directory name, an `assets/` that breaks a
+            rule, a `SKILL.md` past the set's inline budget), a skill served
+            with a gap (no `description`, frontmatter that is not valid YAML,
+            a file of the skill's directory that is skipped with its reason,
+            a file over the reply budget of `get_skill`), and a set that holds
+            no skills.
+            Hard-break findings, all `warn`, each with a `code`: a manifest
+            that declares `agents`, which is no longer read
+            (`PACKAGE_AGENTS_NOT_READ`), and a root `skills/` directory that no
+            workflow lists as a skill set, which is no longer read
+            (`PACKAGE_SKILLS_DIR_NOT_READ`).
             Deprecated-format findings, all `warn`: each `.malloynb` notebook
             (`model` is its path), and each source a file declares deprecated
             `#(filter)` annotations on (`model` is that file, `subject` the
@@ -6017,6 +6050,11 @@ components:
                   spelling it found (one per measure, `model` its file, `subject` the source and the
                   message the measure; `warn`; only while
                   `PUBLISHER_MATERIALIZE` is on).
+                  `PACKAGE_AGENTS_NOT_READ`: the manifest declares `agents`,
+                  which is no longer read (one per load; the message says to
+                  declare `workflows`). `PACKAGE_SKILLS_DIR_NOT_READ`: the
+                  package has a root `skills/` directory that no workflow lists
+                  as a skill set, so it is no longer read (one per load).
                   `deprecated-rollup-namespace`: a rollup line placed with
                   `namespace=`, the deprecated spelling of its `name=`
                   container; still read, in that container under the readable
@@ -6553,20 +6591,6 @@ components:
           readOnly: true
           description: >-
             **Moved** to `GET …/packages/{packageName}/status` (`PackageServingState.sourceContentSha`). Always present on a `?reload=true` response, as that reload's receipt. Otherwise present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it from all but the reload response.
-        agents:
-          deprecated: true
-          type: array
-          readOnly: true
-          description: >-
-            **Moved** to `GET …/packages/{packageName}/agents`. Present here only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
-
-            Server-computed, read-only: the agents this package's
-            `publisher.json` declares and the server accepted, without their
-            instructions. Absent when the manifest declares no `agents`. An
-            agent that failed validation is left out and named in `warnings`.
-            Fetch one with `GET .../agents/{agentName}`.
-          items:
-            $ref: "#/components/schemas/AgentSummary"
         secureGivens:
           deprecated: true
           type: array
@@ -6601,86 +6625,72 @@ components:
             body carrying it is ignored.
           items:
             $ref: "#/components/schemas/SecureGivenSummary"
-    AgentSchedule:
+    WorkflowSkillSetSummary:
       type: object
       readOnly: true
       description: >-
-        A cron schedule an agent declares. Validated and exposed only: the
-        server never runs it.
-      properties:
-        cron:
-          type: string
-          description: A 5-field UNIX cron expression, evaluated in UTC.
-        task:
-          type: string
-          description: Package-relative path of the task file, as written in the manifest.
-        taskContent:
-          type: string
-          description: >-
-            The task file's Markdown. Only on the resolved agent, not the
-            listing.
-
-    AgentBudget:
-      type: object
-      readOnly: true
-      description: >-
-        The run limits an agent declares. Validated and exposed only: the
-        server never enforces them. A platform that runs the agent decides
-        how to apply them and may clamp each to its own maximum. Every field
-        is optional and only the fields the manifest sets are present; an
-        unset field keeps the platform's default. Absent when the manifest
-        sets none.
-      properties:
-        turns:
-          type: integer
-          minimum: 1
-        wall_clock_minutes:
-          type: integer
-          minimum: 1
-        llm_tokens:
-          type: integer
-          format: int64
-          minimum: 1
-        job_minutes:
-          type: integer
-          minimum: 1
-
-    AgentSummary:
-      type: object
-      readOnly: true
-      description: One agent a package declares, without its instructions or skills.
+        A skill set a workflow lists, without its skills: the set's folder
+        name, its path as the manifest writes it, and its digest.
       properties:
         name:
           type: string
-          description: The agent's name (its key in the manifest's `agents` object).
+          description: >-
+            The set's folder name, which is what a chat picks it by and what
+            `skill_set=` takes.
+        path:
+          type: string
+          description: Package-relative path of the set's folder, as written in the manifest.
+        digest:
+          type: string
+          description: >-
+            SHA-256 over the set's path and what it serves: each inline file's
+            path and text, each listed file's path and SHA-256, and each
+            skill's applied `.skillignore`. Editing another set, or a
+            workflow's instructions, does not move it; a package past the 8 MiB
+            asset cap can couple sets.
+
+    WorkflowSummary:
+      type: object
+      readOnly: true
+      description: One workflow a package declares, without its instructions or skills.
+      properties:
+        name:
+          type: string
+          description: The workflow's name (its key in the manifest's `workflows` object).
         description:
           type: string
-        model:
-          type: string
-          description: The model the agent asks for; `inherit` when the manifest sets none.
-        schedules:
+          description: The workflow's description. Absent when the manifest sets none.
+        has_instructions:
+          type: boolean
+          description: >-
+            Whether the workflow declares instructions. A workflow without
+            them has nothing to run.
+        skill_sets:
           type: array
+          description: The workflow's skill sets, in the order the manifest lists them.
           items:
-            $ref: "#/components/schemas/AgentSchedule"
-        budget:
-          $ref: "#/components/schemas/AgentBudget"
+            $ref: "#/components/schemas/WorkflowSkillSetSummary"
+      required:
+        - name
+        - has_instructions
+        - skill_sets
 
-    AgentSkillFile:
+    WorkflowSkillFile:
       type: object
       readOnly: true
       description: >-
-        One of an agent's inline skill files: a skill's `SKILL.md` and every
+        One of a set's inline skill files: a skill's `SKILL.md` and every
         other Markdown file in its directory outside `assets/`, at any depth,
-        while they fit the 256 KiB inline budget. Markdown past the budget is
-        listed as an `AgentAsset` instead. The snake_case keys
-        (`relative_filepath`, `file_contents`) mirror the MCP `get_agent` tool
-        the shape is shared with, unlike the camelCase used elsewhere in this
-        API.
+        while they fit the set's 256 KiB inline budget. Markdown past the
+        budget is listed as a `WorkflowAsset` instead. The snake_case keys
+        (`relative_filepath`, `file_contents`) mirror the MCP `get_workflow`
+        tool the shape is shared with, unlike the camelCase used elsewhere in
+        this API.
       properties:
         relative_filepath:
           type: string
           description: >-
-            Path relative to the agent's skills directory, for example
+            `<skill>/<file>`, relative to the set's folder, for example
             `analyst-conventions/SKILL.md` or
             `analyst-conventions/references/glossary.md`.
         file_contents:
@@ -6688,7 +6698,7 @@ components:
           description: >-
             A `SKILL.md` is re-emitted with only a quoted `name` and
             `description` in its frontmatter; other Markdown is served raw.
-            Absent when the agent was fetched with `skills=summary`.
+            Absent when the workflow was fetched with `skills=summary`.
         name:
           type: string
           description: A `SKILL.md`'s name. Only in the `skills=summary` view.
@@ -6699,7 +6709,7 @@ components:
           type: integer
           description: Size of `file_contents` in UTF-8 bytes. Only in the `skills=summary` view.
 
-    AgentAsset:
+    WorkflowAsset:
       type: object
       readOnly: true
       description: >-
@@ -6708,12 +6718,12 @@ components:
         inline budget, text or binary, anywhere in the skill but `SKILL.md`. A
         skill's `.skillignore` decides which files the skill has. Listed
         without its contents; fetch a text one with
-        `GET .../agents/{agentName}/skills/{relative_filepath}`, which answers a
-        binary one with a message naming its size.
+        `GET .../workflows/{workflowName}/skills/{relative_filepath}`, which
+        answers a binary one with a message naming its size.
       properties:
         relative_filepath:
           type: string
-          description: "`<skill>/<path>`, relative to the agent's skill roots."
+          description: "`<skill>/<path>`, relative to the set's folder."
         bytes:
           type: integer
           description: Size in bytes, under 1 MiB.
@@ -6721,13 +6731,48 @@ components:
           type: string
           description: SHA-256 of the file's bytes.
 
-    AgentSkillRead:
+    WorkflowSkillSet:
       type: object
       readOnly: true
       description: >-
-        One agent skill file or listed file, with the pin of the definition it
-        belongs to. A listed file that is binary (not UTF-8 text, or holding a
-        NUL byte) has no `file_contents`: `message` says so and names its size.
+        A skill set as a workflow serves it: its skills' inline files and the
+        files its skills list. A skill name an earlier set of the same workflow
+        also holds is left out here and served from that set.
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+        digest:
+          type: string
+          description: See `WorkflowSkillSetSummary.digest`.
+        skills:
+          type: array
+          description: The set's inline skill files, sorted by `relative_filepath`.
+          items:
+            $ref: "#/components/schemas/WorkflowSkillFile"
+        assets:
+          type: array
+          description: >-
+            Every file the set's skills list for copying, without contents and
+            sorted by `relative_filepath`. Absent when there are none and in
+            the `skills=summary` view.
+          items:
+            $ref: "#/components/schemas/WorkflowAsset"
+      required:
+        - name
+        - path
+        - digest
+        - skills
+
+    WorkflowSkillRead:
+      type: object
+      readOnly: true
+      description: >-
+        One workflow skill file or listed file, with the pin of the definition
+        it belongs to. A listed file that is binary (not UTF-8 text, or holding
+        a NUL byte) has no `file_contents`: `message` says so and names its
+        size.
       properties:
         relative_filepath:
           type: string
@@ -6739,12 +6784,12 @@ components:
             Set instead of `file_contents` when the file is binary and so is
             never served as a body.
         source:
-          $ref: "#/components/schemas/AgentSource"
+          $ref: "#/components/schemas/WorkflowSource"
 
-    AgentSource:
+    WorkflowSource:
       type: object
       readOnly: true
-      description: What a resolved agent was read from, so a runner can prove which bytes ran.
+      description: What a resolved workflow was read from, so a runner can prove which bytes ran.
       properties:
         environment:
           type: string
@@ -6762,71 +6807,55 @@ components:
         definitionSha:
           type: string
           description: >-
-            SHA-256 over this agent's canonical config, instructions, task
-            files and every file of its skills: inline text, the SHA-256 of
-            each listed file, and each skill's applied `.skillignore`. Editing
-            another agent, or a model, does not move it.
+            SHA-256 over this workflow's name, description, instructions path
+            and text, and each of its skill sets' path and digest, in the
+            order listed. Editing another workflow, or a model, does not move
+            it.
         servedRevision:
           type: string
           description: The package's `servedRevision` at the load this definition came from.
 
-    Agent:
+    Workflow:
       type: object
       readOnly: true
       description: >-
-        An agent a package declares, resolved to its instructions, skill files
-        and schedules. Adopt it only when the user asks for it by name.
+        A workflow a package declares, resolved to its instructions and its
+        skill sets' files. Adopt it only when the user asks for it by name.
       properties:
         name:
           type: string
         description:
           type: string
-        model:
-          type: string
-          description: The model the agent asks for; `inherit` when the manifest sets none.
+        has_instructions:
+          type: boolean
         instructions:
           type: string
-          description: The instructions file's Markdown, at most 16 KB.
-        skills:
-          type: array
-          description: The agent's own skill files, sorted by `relative_filepath`.
-          items:
-            $ref: "#/components/schemas/AgentSkillFile"
-        asset_roots:
-          type: object
           description: >-
-            For each skill that lists files, the package-relative directory
-            holding it. Absent when no skill does. Not in the
-            `skills=summary` view.
-          additionalProperties:
-            type: string
-        assets:
+            The instructions file's Markdown, at most 16 KB. Absent when the
+            workflow declares none and when the reply is for one `skill_set`.
+        skill_sets:
           type: array
           description: >-
-            Every file the agent's skills list for copying, without contents
-            and sorted by `relative_filepath`. Absent when there are none and
-            in the `skills=summary` view.
+            The workflow's skill sets in the order the manifest lists them, or
+            just the one asked for with `skill_set`.
           items:
-            $ref: "#/components/schemas/AgentAsset"
-        asset_counts:
-          type: object
-          description: >-
-            Only in the `skills=summary` view, and only when there are listed
-            files: how many each skill lists.
-          additionalProperties:
-            type: integer
-        schedules:
-          type: array
-          items:
-            $ref: "#/components/schemas/AgentSchedule"
-        budget:
-          $ref: "#/components/schemas/AgentBudget"
+            $ref: "#/components/schemas/WorkflowSkillSet"
         warnings:
           type: array
+          description: >-
+            The workflow's own findings (for instance a skill name two of its
+            sets both hold), then each of its sets' findings. With `skill_set`,
+            the workflow's own and that set's.
           items:
             type: string
         source:
-          $ref: "#/components/schemas/AgentSource"
+          $ref: "#/components/schemas/WorkflowSource"
+      required:
+        - name
+        - has_instructions
+        - skill_sets
+        - warnings
+        - source
 
     SkillSummary:
       type: object
@@ -6851,8 +6880,9 @@ components:
             - package
           description: >-
             `bundled` = shipped with this server. `package` = shipped by the
-            package under `skills/`, which includes a package skill whose name
-            matches a bundled one and therefore REPLACES it for this package.
+            package's `default` workflow, which includes a package skill whose
+            name matches a bundled one and therefore REPLACES it for this
+            package.
             Present so a caller can tell a replaced skill from the original,
             which is otherwise invisible.
 
@@ -6902,7 +6932,8 @@ components:
           additionalProperties: true
           description: >-
             The YAML block of `SKILL.md` as an object, parsed as YAML 1.2 core
-            (so `yes`, `on` and `0755` are not booleans or octal, and a plain
+            (so `yes` and `on` stay strings, `0755` is the number 755 and not
+            octal, and a plain
             date stays the string as written; keys are strings). Only when `path` is `SKILL.md`; empty
             when the block did not parse.
         files:

@@ -47,7 +47,10 @@ import type {
    PackageScope,
 } from "../service/package_manifest";
 import type { PackageRetrievalSettings } from "../service/package_retrieval_settings";
-import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys";
+import type {
+   CodedFinding,
+   DeprecatedManifestKey,
+} from "../service/deprecated/manifest_keys";
 import type { ModelEntitiesPlan } from "../service/entities/plan";
 import type {
    UpstreamSchemaReadings,
@@ -282,8 +285,10 @@ export interface LoadPackageResult {
       deprecatedManifestKeys?: DeprecatedManifestKey[];
       /** The manifest's `retrieval` block, validated, with prompt files read. */
       retrieval?: PackageRetrievalSettings;
-      /** The manifest's `agents` value, unvalidated: the main thread validates it and warns instead of throwing. */
-      agents?: unknown;
+      /** Findings with a code the manifest raised (a key an earlier release read). */
+      manifestFindings?: CodedFinding[];
+      /** The manifest's `workflows` value, unvalidated: the main thread validates it and warns instead of throwing. */
+      workflows?: unknown;
    };
    models: SerializedModel[];
    /** Whether the replacement path exactly matched an enumerated package file. */
