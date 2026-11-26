@@ -619,14 +619,14 @@ describe("package workflows", () => {
          expect(picked.source).toEqual(full.source);
       });
 
-      it("carries the workflow's own warnings and that set's findings, not another set's", async () => {
+      it("carries that set's findings and not another set's, and not the whole workflow's shadowing warning", async () => {
          const pkg = await load();
          const second = pkg.getWorkflow("analyst", "full", "second")!;
-         expect(second.warnings).toContain(DUPLICATE);
          expect(second.warnings.join("\n")).toContain("a..b.py");
+         // This reply serves the set's own copy of the name, so the copy in the first-listed set is not the one served.
+         expect(second.warnings).not.toContain(DUPLICATE);
          const main = pkg.getWorkflow("analyst", "full", "main")!;
-         expect(main.warnings).toContain(DUPLICATE);
-         expect(main.warnings.join("\n")).not.toContain("a..b.py");
+         expect(main.warnings).toEqual([]);
          expect(pkg.getWorkflow("analyst")!.warnings).toContain(DUPLICATE);
          expect(pkg.getWorkflow("analyst")!.warnings.join("\n")).toContain(
             "a..b.py",

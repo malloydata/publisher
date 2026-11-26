@@ -228,6 +228,23 @@ describe("get_workflow: the reply stays within the tool-result limit", () => {
       expect(wire(result)).toBeLessThanOrEqual(FCJ_MAX_CHARS);
    });
 
+   it("says the summary leaves out the listed files, and where to get them", async () => {
+      const handler = getWorkflow(undefined, {
+         getWorkflow: (_name: string, skills: string) => workflowOf(skills),
+      });
+      const whole = parse(await handler(call));
+      expect(whole.message).toContain("leaves out the sets' listed files");
+      expect(whole.message).toContain("skill_set");
+      expect(whole.message).toContain(
+         "GET /api/v0/environments/env/packages/pkg/workflows/analyst",
+      );
+      // A set already picked has no narrower full view: REST is the way to its listed files.
+      const picked = parse(await handler({ ...call, skill_set: "main" }));
+      expect(picked.message).toContain("leaves out the sets' listed files");
+      expect(picked.message).toContain("workflows/analyst?skill_set=main");
+      expect(picked.message).not.toContain("with skill_set");
+   });
+
    it("leaves a full view that fits, and a summary that was asked for, as they are", async () => {
       const handler = getWorkflow(undefined, {
          getWorkflow: (_name: string, skills: string) =>
@@ -281,6 +298,93 @@ describe("get_workflow: the reply stays within the tool-result limit", () => {
          "GET /api/v0/environments/env/packages/pkg/workflows/analyst/skills/guide/assets/big.txt",
       );
       expect(wire(result)).toBeLessThanOrEqual(FCJ_MAX_CHARS);
+   });
+
+   it("hints the REST path with each segment URL-encoded", async () => {
+      const result = await getWorkflow(undefined, {
+         getWorkflowSkillFile: (_workflow: string, path: string) => ({
+            relative_filepath: path,
+            file_contents: text,
+            source,
+         }),
+      })({ ...call, skill_path: "guide/reference/a b#c%d?.md" });
+      expect(parse(result).skillFile.message).toContain(
+         "/skills/guide/reference/a%20b%23c%25d%3F.md",
+      );
+   });
+
+   /** The text length at which `handlerFor`'s answer, with the workflow list beside it, just fills the limit. */
+   const edgeOf = async (
+      handlerFor: (n: number) => Handler,
+      params: Record<string, unknown>,
+   ) => 1000 + FCJ_MAX_CHARS - wire(await handlerFor(1000)(params));
+
+   /** Every answer fits while one part of it grows through the limit; returns the shapes the answers took. */
+   async function sweep(
+      handlerFor: (n: number) => Handler,
+      params: Record<string, unknown>,
+      shape: (payload: ReturnType<typeof parse>) => string,
+      past: number,
+   ) {
+      const edge = await edgeOf(handlerFor, params);
+      const shapes = new Set<string>();
+      for (let n = edge - 20; n <= edge + past; n++) {
+         const result = await handlerFor(n)(params);
+         expect(wire(result)).toBeLessThanOrEqual(FCJ_MAX_CHARS);
+         shapes.add(shape(parse(result)));
+      }
+      return shapes;
+   }
+
+   it("keeps every answer within the limit as a full view grows through it", async () => {
+      const shapes = await sweep(
+         (n) =>
+            getWorkflow(undefined, {
+               getWorkflow: (_name: string, skills: string) =>
+                  skills === "full"
+                     ? { name: "analyst", text: "y".repeat(n) }
+                     : { name: "analyst" },
+            }),
+         call,
+         (payload) =>
+            payload.workflow.text === undefined ? "summary" : "full",
+         500,
+      );
+      expect([...shapes].sort()).toEqual(["full", "summary"]);
+   });
+
+   it("keeps every answer within the limit as a summary grows through it, message included", async () => {
+      const shapes = await sweep(
+         (n) =>
+            getWorkflow(undefined, {
+               getWorkflow: (_name: string, skills: string) => ({
+                  name: "analyst",
+                  text: "y".repeat(skills === "full" ? FCJ_MAX_CHARS : n),
+               }),
+            }),
+         call,
+         (payload) => (payload.workflow === null ? "refused" : "summary"),
+         900,
+      );
+      expect([...shapes].sort()).toEqual(["refused", "summary"]);
+   });
+
+   it("keeps every answer within the limit as a skill file grows through it", async () => {
+      const shapes = await sweep(
+         (n) =>
+            getWorkflow(undefined, {
+               getWorkflowSkillFile: (_workflow: string, path: string) => ({
+                  relative_filepath: path,
+                  file_contents: "y".repeat(n),
+                  source,
+               }),
+            }),
+         { ...call, skill_path: "guide/SKILL.md" },
+         (payload) =>
+            payload.skillFile.file_contents === undefined ? "message" : "file",
+         500,
+      );
+      expect([...shapes].sort()).toEqual(["file", "message"]);
    });
 
    it("lists as many workflows as fit beside the answer, and counts the rest", async () => {

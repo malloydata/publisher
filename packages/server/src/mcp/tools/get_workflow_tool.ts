@@ -81,13 +81,13 @@ type GetWorkflowParams = z.infer<z.ZodObject<typeof getWorkflowShape>>;
 
 type Payload = { message?: string; [key: string]: unknown };
 
-/** `payload` with as many of `available` as fit the tool-result limit beside it, and a note counting the rest. */
+/** `payload` with as many of `available` as fit the tool-result limit beside it, and a note counting the rest; `fits` is false when not even an empty list leaves room. */
 function withAvailable<T>(
    uri: string,
    id: string | number | undefined,
    available: T[],
    payload: Payload,
-) {
+): { payload: Payload; fits: boolean } {
    const answer = (listed: number) => {
       const unlisted = available.length - listed;
       const message = [
@@ -108,7 +108,7 @@ function withAvailable<T>(
       (n) => wireChars(uri, answer(n), id) <= FCJ_MAX_CHARS,
       available.length,
    );
-   return answer(listed ?? 0);
+   return { payload: answer(listed ?? 0), fits: listed !== undefined };
 }
 
 /**
@@ -156,19 +156,19 @@ export function registerGetWorkflowTool(
          const availableWorkflows = pkg.listWorkflows();
          const id = extra?.requestId;
          const reply = (payload: Payload) =>
-            jsonResource(
-               uri,
-               withAvailable(uri, id, availableWorkflows, payload),
-            );
-         // The answer's own size: the workflow list is cut to what is left, so it does not count here.
-         const wireOf = (payload: object) =>
+            withAvailable(uri, id, availableWorkflows, payload);
+         // An answer short by nature: sent with the list cut to what is left, whether or not that is enough.
+         const send = (payload: Payload) =>
+            jsonResource(uri, reply(payload).payload);
+         // The size a message names for an answer: the list is cut to what is left, so it does not count.
+         const sizeOf = (payload: object) =>
             wireChars(uri, { ...payload, availableWorkflows: [] }, id);
          const skillSet = params.skill_set ?? undefined;
          if (
             params.workflow_name === undefined ||
             params.workflow_name === null
          ) {
-            return reply({
+            return send({
                workflow: null,
                ...((params.skill_path || params.skill_set) && {
                   message:
@@ -178,7 +178,7 @@ export function registerGetWorkflowTool(
          }
 
          if (!availableWorkflows.some((w) => w.name === params.workflow_name)) {
-            return reply({
+            return send({
                workflow: null,
                message: `No workflow named ${JSON.stringify(params.workflow_name)} for package ${scope.environment}/${scope.package}. Fix: use a name from availableWorkflows exactly as spelled there. A workflow that failed validation is not served; the package's warnings say why.`,
             });
@@ -191,18 +191,19 @@ export function registerGetWorkflowTool(
                skillSet,
             );
             if (!skillFile) {
-               return reply({
+               return send({
                   workflow: null,
                   message: `Workflow ${JSON.stringify(params.workflow_name)} has no skill file ${JSON.stringify(params.skill_path)}${skillSet === undefined ? "" : ` in skill set ${JSON.stringify(skillSet)}`}. Fix: use a relative_filepath exactly as the definition lists it (a skill file in the summary, an asset in the full view).`,
                });
             }
-            const wire = wireOf({ skillFile });
             // No `workflow` key: a file read must not look like "no workflow matched".
-            if (wire <= FCJ_MAX_CHARS) return reply({ skillFile });
-            return reply({
+            const whole = reply({ skillFile });
+            if (whole.fits) return jsonResource(uri, whole.payload);
+            const path = params.skill_path.split("/").map(encodeURIComponent);
+            return send({
                skillFile: {
                   relative_filepath: skillFile.relative_filepath,
-                  message: `'${params.skill_path}' would be ${wire} characters as a tool result, over the limit of ${FCJ_MAX_CHARS}, so get_workflow cannot return it. REST has no such limit: GET ${rest}/skills/${params.skill_path}${skillSet === undefined ? "" : `?skill_set=${skillSet}`}`,
+                  message: `'${params.skill_path}' would be ${sizeOf({ skillFile })} characters as a tool result, over the limit of ${FCJ_MAX_CHARS}, so get_workflow cannot return it. REST has no such limit: GET ${rest}/skills/${path.join("/")}${skillSet === undefined ? "" : `?skill_set=${encodeURIComponent(skillSet)}`}`,
                   source: skillFile.source,
                },
             });
@@ -210,28 +211,32 @@ export function registerGetWorkflowTool(
          const view = params.skills ?? "full";
          const workflow = pkg.getWorkflow(params.workflow_name, view, skillSet);
          if (!workflow) {
-            return reply({
+            return send({
                workflow: null,
                message: `Workflow ${JSON.stringify(params.workflow_name)} has no skill set named ${JSON.stringify(params.skill_set)}. Fix: use a name from the workflow's skill_sets in availableWorkflows.`,
             });
          }
-         const wire = wireOf({ workflow });
-         if (wire <= FCJ_MAX_CHARS) return reply({ workflow });
-         // The summary names every file the full view carries, so a caller can read the ones it needs by skill_path.
+         const whole = reply({ workflow });
+         if (whole.fits) return jsonResource(uri, whole.payload);
+         // The summary names each inline file, so a caller can read the ones it needs by skill_path; no summary lists the sets' listed files.
          const summary =
             view === "full"
                ? pkg.getWorkflow(params.workflow_name, "summary", skillSet)
                : undefined;
-         const summaryWire = summary && wireOf({ workflow: summary });
-         if (summary && summaryWire! <= FCJ_MAX_CHARS) {
-            return reply({
+         if (summary) {
+            const listed =
+               skillSet === undefined
+                  ? `Read one skill set whole with skill_set, whose full view lists them under assets, or use REST, which has no such limit: GET ${rest}`
+                  : `REST has no such limit: GET ${rest}?skill_set=${encodeURIComponent(skillSet)}`;
+            const degraded = reply({
                workflow: summary,
-               message: `The full view would be ${wire} characters as a tool result, over the limit of ${FCJ_MAX_CHARS}, so this is the summary view. Read a file by skill_path, a relative_filepath from the summary, or one skill set whole with skill_set.`,
+               message: `The full view would be ${sizeOf({ workflow })} characters as a tool result, over the limit of ${FCJ_MAX_CHARS}, so this is the summary view. It leaves out the sets' listed files (scripts, templates and other assets). ${listed}. Read a file of the summary by skill_path.`,
             });
+            if (degraded.fits) return jsonResource(uri, degraded.payload);
          }
-         return reply({
+         return send({
             workflow: null,
-            message: `The ${summary ? "summary" : view} view would be ${summaryWire ?? wire} characters as a tool result, over the limit of ${FCJ_MAX_CHARS}, so get_workflow cannot return it. ${skillSet === undefined ? "Fix: pass skill_set with a set name from availableWorkflows to read one set at a time. " : ""}REST has no such limit: GET ${rest}?${skillSet === undefined ? "" : `skill_set=${skillSet}&`}skills=summary`,
+            message: `The ${summary ? "summary" : view} view would be ${sizeOf({ workflow: summary ?? workflow })} characters as a tool result, over the limit of ${FCJ_MAX_CHARS}, so get_workflow cannot return it. ${skillSet === undefined ? "Fix: pass skill_set with a set name from availableWorkflows to read one set at a time. " : ""}REST has no such limit: GET ${rest}?${skillSet === undefined ? "" : `skill_set=${encodeURIComponent(skillSet)}&`}skills=summary`,
          });
       },
    });
