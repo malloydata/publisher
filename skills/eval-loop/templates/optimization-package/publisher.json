@@ -1,0 +1,5 @@
+{
+    "name": "optimization",
+    "version": "1.0.0",
+    "description": "How the served package does in production, and what the optimization loop tried. history.malloy is production (ingest_logs.py, judge_sample.py); its app is public/history/. Kept apart from the served package because its tables hold the answer key."
+}

@@ -89,7 +89,14 @@ SCHEMA: dict[str, dict[str, Any]] = {
                     "objective": str, "max_staleness_hours": "positive",
                     "max_build_ms_per_day": "positive", "max_usd_per_day": "positive",
                     "usd_per_compute_hour": "positive", "usd_per_tb_scanned": "positive",
-                    "usd_per_gb_month": "positive", "table_read_ms": "positive"},
+                    "usd_per_gb_month": "positive", "table_read_ms": "positive",
+                    "max_query_ms": "positive"},
+    # Production history (eval-loop's ingest_logs.py, judge_sample.py): the
+    # optimization package the ingested tables and both models live in, the
+    # environments whose traffic is the loop's own and never production, and
+    # how many production turns a night's judging samples.
+    "history": {"package_dir": "path", "exclude_environments": "names",
+                "judge_sample": "count"},
 }
 
 BUILTIN: dict[tuple[str, str], Any] = {
@@ -102,6 +109,7 @@ BUILTIN: dict[tuple[str, str], Any] = {
     ("performance", "latency_band"): 0.2,
     ("performance", "objective"): "weighted_ms",
     ("performance", "table_read_ms"): 10.0,
+    ("history", "judge_sample"): 25,
 }
 
 
@@ -227,6 +235,11 @@ class Config:
     def truth_package_dir(self) -> pathlib.Path:
         return self.get("truth", "package_dir") or (self.set_dir / "truth-package")
 
+    def history_dir(self) -> pathlib.Path:
+        """The optimization package: production tables, both models, both apps.
+        Outside the served package, because its tables hold the answer key."""
+        return self.get("history", "package_dir") or (self.workdir() / "optimization-package")
+
     def workdir(self) -> pathlib.Path:
         """Where runs, built packages and server roots go: never the repository.
 
@@ -344,6 +357,13 @@ def _check(path: pathlib.Path, raw: dict[str, Any]) -> dict[str, dict[str, Any]]
                     raise ConfigError(f"Invalid {path} on '{section}.{key}': "
                                       f"expected a number above 0, such as 24, got {value!r}.")
                 out[section][key] = float(value)
+            elif kind == "names":
+                if (not isinstance(value, list) or not value
+                        or not all(isinstance(v, str) and v for v in value)):
+                    raise ConfigError(f"Invalid {path} on '{section}.{key}': "
+                                      f"expected a list of names, such as [\"evals\"], "
+                                      f"got {value!r}.")
+                out[section][key] = list(value)
             elif kind is bool:
                 if not isinstance(value, bool):
                     raise ConfigError(f"Invalid {path} on '{section}.{key}': "
