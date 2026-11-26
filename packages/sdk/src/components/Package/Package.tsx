@@ -722,7 +722,7 @@ export default function Package({
                   <PackageSection
                      title="Workflows"
                      count={workflows.length}
-                     description="Declared in publisher.json. Name one in an agent session to run it."
+                     description="Declared in publisher.json. Name one in an agent session to run it or use its skills. The default workflow's skills are offered to every session."
                   >
                      {workflows.map((workflow) => (
                         <PackageWorkflowRow
@@ -814,7 +814,14 @@ function PackageItemRow({
    );
 }
 
+/** The default workflow is not run by name: its skills are advertised to every session. */
+function workflowLabel(workflow: WorkflowSummary): string | undefined {
+   if (workflow.name === "default") return "Advertised skills";
+   return workflow.has_instructions ? undefined : "No instructions";
+}
+
 function PackageWorkflowRow({ workflow }: { workflow: WorkflowSummary }) {
+   const label = workflowLabel(workflow);
    return (
       <>
          <PackageItemRow
@@ -823,9 +830,7 @@ function PackageWorkflowRow({ workflow }: { workflow: WorkflowSummary }) {
             {...(workflow.description
                ? { description: workflow.description }
                : {})}
-            {...(workflow.has_instructions
-               ? {}
-               : { rightLabel: "No instructions" })}
+            {...(label ? { rightLabel: label } : {})}
          />
          {workflow.skill_sets.length > 0 && (
             <Typography

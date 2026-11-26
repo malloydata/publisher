@@ -65,7 +65,28 @@ it("lists each workflow with its description and its skill sets by name, and fla
             },
          ],
       },
-      { name: "default", has_instructions: false, skill_sets: [] },
+      {
+         name: "default",
+         has_instructions: false,
+         skill_sets: [
+            {
+               name: "house",
+               path: "workflows/default/skill_sets/house",
+               digest: "b",
+            },
+         ],
+      },
+      {
+         name: "skills-only",
+         has_instructions: false,
+         skill_sets: [
+            {
+               name: "house",
+               path: "workflows/default/skill_sets/house",
+               digest: "b",
+            },
+         ],
+      },
    ];
 
    mount();
@@ -74,7 +95,15 @@ it("lists each workflow with its description and its skill sets by name, and fla
    expect(section.textContent).toContain("weekly-report");
    expect(section.textContent).toContain("Writes the weekly revenue report");
    expect(section.textContent).toContain("Skill sets: analyst, house");
-   expect(section.textContent).toContain("default");
+   // The label sits on the row it describes: `default` is advertised, not
+   // "without instructions", and only the other skills-only workflow says so.
+   const row = (name: string) =>
+      screen.getByText(name, { exact: true }).closest("li, [role], div")
+         ?.parentElement?.textContent ?? "";
+   expect(row("default")).toContain("Advertised skills");
+   expect(row("default")).not.toContain("No instructions");
+   expect(row("skills-only")).toContain("No instructions");
+   expect(row("weekly-report")).not.toContain("No instructions");
    expect(section.textContent?.match(/No instructions/g)).toHaveLength(1);
    expect(section.querySelectorAll('[role="button"]')).toHaveLength(0);
 });
