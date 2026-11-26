@@ -62,7 +62,7 @@ The fields the server reads:
 | `queryableSources` | `"declared"` (the default) or `"all"`. Deprecated. `"declared"` does nothing, and writing it gets a warning. `"all"` still works with no warning, because nothing replaces it: the surface then decides listings only, and every source stays queryable by name. Use it to hide an `#(authorize)`-gated source from listings while authorized callers still query it. See [discovery-and-access.md](discovery-and-access.md).                                                                                                                                                                                                                                                                                 |
 | `materialization`  | Persisted-source build policy (`schedule`, `freshness`, `scope`). Package root only. Its `queryMetadata` is deprecated; declare `queryMetadata` at the root. See [materialization.md](materialization.md).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `scope`            | Deprecated at the root: declare it as `materialization.scope`. `"package"` (the default) or `"version"`. Any other value fails the package load.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `agents`           | Named agents the package declares, keyed by agent name. See [Agents](#agents).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `workflows`        | Named workflows the package declares, keyed by workflow name: instructions and skill sets. Its `default` workflow holds the package's own skills. See [Workflows](#workflows). |
 | `retrieval`        | How `get_context` searches and indexes this package: `fcj` (the engine's settings, such as `perTarget` and `judge`), `sourceSummary` (`{ "enabled": "auto" \| true \| false }`), and `prompts` (a file path inside the package for each of `judge`, `docParts`, `questions`, `sourceSummary`). Any other key under `retrieval`, or an invalid value, fails the package load, except `engine`, `representation`, `keyphrases`, `refine`, `rerank`, `sourceMatch` and the prompts `keyphrase`, `refine`, `rerank` and `sourceMatch`: those no longer do anything, are ignored, and are named in the package's `warnings`. See [configuration.md](configuration.md#package-settings-retrieval-in-publisherjson). |
 
 Unknown top-level keys are ignored and preserved. Inside `retrieval` they are not: an unknown key fails the
@@ -75,19 +75,101 @@ control-plane deployments; a locally authored package never needs it. It is depr
 away with the package `PATCH` that writes it: bind a version's build manifest with
 `PUT …/versions/{v}/manifest` instead. See [#1540](https://github.com/malloydata/publisher/issues/1540).)
 
+## Workflows
+
+A package can declare workflows: named jobs its author wrote for working with this package. A workflow is optional instructions (a Markdown brief) and skill sets (folders of skills to use). Publisher parses and serves the definition. It does not run the workflow. A client adopts one by fetching it (`get_workflow`, or `GET …/packages/{pkg}/workflows/{name}`) and following it in its own session, with its own tools and permissions; the bundled `malloy-run-workflow` skill is the recipe, and `malloy-define-workflow` covers writing a definition. Adopt a workflow only when the user names it: nothing advertises one in discovery. The exception is the `default` workflow, whose skills are the package's own skills ([below](#the-default-workflow)).
+
+```json
+{
+  "name": "storefront",
+  "workflows": {
+    "default": {
+      "skill_sets": ["workflows/default/skill_sets/house"]
+    },
+    "weekly-report": {
+      "description": "Writes the weekly storefront report as the analyst",
+      "instructions": "workflows/weekly-report/instructions.md",
+      "skill_sets": [
+        "workflows/weekly-report/skill_sets/analyst",
+        "workflows/default/skill_sets/house"
+      ]
+    }
+  }
+}
+```
+
+| Key            | Meaning                                                                                                                                                                              |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `description`  | Optional. A non-empty line saying what the workflow is for.                                                                                                                          |
+| `instructions` | Optional. Package-relative path of a `.md` file: the brief the workflow works from. At most 16 KiB.                                                                                  |
+| `skill_sets`   | Optional. At most 8 package-relative folders, each a [skill set](#skill-sets). The order decides which set serves a skill name that two of them hold.                                |
+
+The workflow's name is its key: 1 to 64 characters of lowercase letters, digits and single hyphens. A workflow needs `instructions` or `skill_sets`; with neither it is refused. One with skill sets and no instructions is a bundle of skills: `get_workflow` reports `has_instructions: false` and there is nothing to run.
+
+**Strict allowlist.** A workflow with a key this server does not know is refused, because a key it does not understand might limit the workflow, and an unknown key never runs. `tools`, `mcp-servers`, `hooks`, `permission-mode`, `model`, `budget` and `schedules` are not part of the schema, so they are refused too: a definition adds words to a session and never widens what the session may do. A key starting `x-` is ignored, for notes and tool metadata.
+
+A client reads workflows two ways, with the same definition and the same `source` shas:
+
+- `get_workflow` with `scopes` alone lists them (name, description, `has_instructions`, and each set's `name`, `path` and `digest`). With `workflow_name` it returns the definition: `instructions`, each set's skill files as `{relative_filepath, file_contents}` and its listed files in `assets`, `warnings`, and `source`. `skill_set` returns that one set and no `instructions`, so a chat that picks a set never runs the workflow's instructions. `skills: "summary"` lists each inline file's `relative_filepath`, `bytes` and, for a `SKILL.md`, its `name` and `description`, and `skill_path` reads one file by its `<skill>/<file>` path.
+- `GET …/packages/{pkg}/workflows` lists, `…/workflows/{name}` reads one (`?skills=full|summary`, `?skill_set=`), and `…/workflows/{name}/skills/{path}` reads one file by its `<skill>/<file>` path.
+
+### The default workflow
+
+A workflow named `default` holds the package's own skills. Its skill sets' skills, beside the bundled ones, are what `get_skill`, `get_context` and the `…/skills` routes advertise to every session on the package, with no one naming a workflow. A package that declares no `default` has no package skills. Put guidance in `default` only when it applies to every use of the package (what a measure counts, vocabulary, house rules); guidance for one job belongs in that job's workflow. A `default` with `instructions` still serves them through `get_workflow`, and adopting them is still the user's choice.
+
+### Skill sets
+
+A skill set is a folder whose subfolders are skills (`<set>/<skill>/SKILL.md`). Its name is its folder's name, which is what a chat picks it by and what `skill_set` takes. By convention a set lives at `workflows/<workflow>/skill_sets/<set>/`, but any folder inside the package works, including a root `skills/` folder.
+
+- The folder name meets the same rule as a workflow name, and two entries of one workflow may not share a name or a path.
+- Several workflows can list the same set. Publisher reads it once per load, and every workflow that lists it serves the same bytes.
+- A skill name that two sets of one workflow both hold is served from the first-listed set, and the workflow's `warnings` say so.
+- A set that holds no skills is a warning, not a refusal.
+- A `publisher.json` at or above a set's root refuses the workflows that list it, because it would make the folder a second package root. One inside a skill (at the skill's root, in `reference/` or `references/`, or below `assets/`) sets that skill aside with a finding; one elsewhere in a skill only skips that file. One inside a dot-named directory is not read.
+
+Skills are read with the rules in [Skills](#skills). Each set is measured on its own, and the limits are in the [Budgets](agent-skills/authoring-skills.md#budgets) table: 256 KiB of inline Markdown, and 4 MiB and 200 listed files, per set. The 8 MiB cap on listed files for the whole package is charged once per distinct set, in sorted path order, so reordering workflows never moves a set's `digest`.
+
+### A broken workflow never fails the package
+
+Publisher never takes a package offline for a workflow mistake. What breaks decides how much is lost, and each finding is in the package's load warnings with a `Fix:` line.
+
+- **The workflow is refused** (not served; `Workflow '<name>' is not served: <why>`): a bad name, a key Publisher does not know, an entry that is not an object, an empty `description`, an `instructions` file that is missing, not `.md`, over 16 KiB, outside the package or under a nested `publisher.json`, a bad `skill_sets` list (not a list, more than 8, a folder that is missing, outside the package, badly named, listed twice, or at or above a `publisher.json`), a set folder that cannot be read, or nothing to serve. Other workflows and the models keep serving.
+- **One skill is skipped** (the workflow still serves, with a finding on its set): a `SKILL.md` that cannot be read or is not UTF-8, a frontmatter `name` that is not its directory name, a `SKILL.md` that would take the set's inline Markdown past 256 KiB, a `publisher.json` inside the skill, or a strict finding under `assets/` (a link, a link out of the skill, `..` or two names that differ only by case, a `SKILL.md`). A file that `.skillignore` or a walk budget hides is never looked at, so a `SKILL.md` below `assets/` that either one hides sets nothing aside; a `publisher.json` is the exception, found whether or not `.skillignore` matches it.
+- **One file is skipped** (the skill still serves): a file that breaks a limit, a reserved name, or a path or walk past its bound. See [Which files a skill holds](#which-files-a-skill-holds).
+- **A name repeated across a workflow's sets** is served from the first-listed set, with a finding on the workflow.
+
+A skill with no `description` is served but flagged, since nothing tells a caller when to read it.
+
+### Migrating from agents and a root `skills/`
+
+Package agents are gone: the `agents` key, its schedules, budget and model, tasks, `get_agent` and the `…/agents` routes. A manifest that declares `agents` loads with the warning `"agents" is no longer read; declare "workflows"`. A root `skills/` directory is no longer read on its own either. A package with one that no workflow lists as a skill set loads with the warning `skills/ is no longer read; move each skill into a skill set and list it under "workflows.default"`. Both warnings carry a code (`PACKAGE_AGENTS_NOT_READ`, `PACKAGE_SKILLS_DIR_NOT_READ`), and each load that hits one is counted in `publisher_deprecated_usage_total` (features `agents` and `skills_dir`).
+
+To migrate a package:
+
+1. Each old agent task becomes its own workflow, with the task file as `instructions`. A task's name is the workflow's name (`weekly-report.md` becomes `workflows.weekly-report`); move the file to `workflows/<name>/instructions.md`.
+2. An old agent's standing guidance (its `instructions`) moves into a skill, in a set of its own (`workflows/<name>/skill_sets/<set>/<skill>/SKILL.md`), with a one-sentence `description` saying when to read it. The agent's own `skills/<x>/` folders move into that set too. List the set in each workflow that needs it.
+3. Root `skills/<x>/` move to `workflows/default/skill_sets/<set>/<x>/`, and `default` is declared with that set. Declaring `"default": { "skill_sets": ["skills"] }` instead keeps the folder where it is.
+4. Drop `schedules`, `budget` and `model`. Nothing runs a workflow on a schedule, and nothing sets a model or a budget. A recurring job needs a scheduler of your own that fetches the workflow.
+5. Delete `agents/` and the old root `skills/` in the same change, unless `default` lists `skills`.
+
+### What a digest covers
+
+Two hashes say which bytes a definition came from. `sourceContentSha`, in the package's serving state (`GET …/packages/{pkg}/status`), covers the models, the `workflows` object, every file a served workflow or skill set reads, and each applied `.skillignore`; a `version` bump or another manifest key does not move it. On a workflow, `definitionSha` covers its name, description, the path and text of its instructions, and each skill set's path and `digest`. A set's `digest` covers its path and what it serves: each file's digest and each skill's applied `.skillignore` text. So editing one workflow, one set or a model leaves another workflow's `definitionSha` alone. The digests hash a file's bytes, not what is served from it, so a change to a `#` comment or a YAML escape in a `SKILL.md`'s frontmatter moves them even though the served `name` and `description` are the same. `GET …/workflows/{name}` returns both hashes under `source`, with `servedRevision`.
+
 ## Skills
 
-A package can carry agent skills of its own in a `skills/` directory at its root: one directory per skill, each holding a `SKILL.md` in the [agentskills.io](https://agentskills.io) format (a `name` and `description` in the frontmatter, then the body). A skill is its whole directory: the spec's `scripts/`, `references/` and `assets/` folders, and any other file under it, are part of the skill, and the body names them by paths relative to the skill root. Publisher serves a package's skills next to the bundled skills, scoped to that package, so an agent learns how to work with this package's data from the package itself:
+A skill is a directory with a `SKILL.md` in the [agentskills.io](https://agentskills.io) format (a `name` and `description` in the frontmatter, then the body). A skill is its whole directory: the spec's `scripts/`, `references/` and `assets/` folders, and any other file under it, are part of the skill, and the body names them by paths relative to the skill root. A package's skills live in the skill sets of its workflows, and the `default` workflow's are served next to the bundled skills, scoped to that package, so an agent learns how to work with this package's data from the package itself:
 
 - `get_skill(skill_name, path)` reads any file of a skill by its path, for example `references/joins.md` or `scripts/check.py`. `path` defaults to `SKILL.md`. Reading `SKILL.md` also returns the parsed `frontmatter` and `files`, every file of the skill as `{path, size}`, which is the skill's served set unless the reply says some entries were cut to keep it under the 35,000-character tool-result limit. A binary file answers with its size and a message, never its bytes.
-- `GET …/packages/{pkg}/skills` lists the skills, `…/skills/{skill}` reads `SKILL.md` and `…/skills/{skill}/{path}` reads one file. `content` is the file as written, with nothing appended. A listed file (not Markdown, or Markdown that was listed) that changed on disk since the package loaded answers 404 until the package reloads; inline Markdown is served from the text read at load.
+- `GET …/packages/{pkg}/skills` lists the skills, `…/skills/{skill}` reads `SKILL.md` and `…/skills/{skill}/{path}` reads one file. `content` is the file as written, frontmatter included, with nothing appended. A listed file (not Markdown, or Markdown that was listed) that changed on disk since the package loaded answers 404 until the package reloads; inline Markdown is served from the text read at load.
+- A workflow's own reads (`get_workflow`, `…/workflows/{name}`) carry the same skills per set. There a `SKILL.md` is re-emitted with only a quoted `name` and `description` in its frontmatter, and the other Markdown is served as written.
 
 Rules for what is served:
 
 - A skill whose `name` matches a bundled skill replaces it for this package. Nothing is merged. Every entry carries an `origin` (`package` or `bundled`) saying which one you are reading.
-- Every file is read through its real path, and one that resolves outside the package is not served, so a link cannot pull in a file from elsewhere on the machine. A link to a Markdown file inside the package is followed; any other link is skipped with a warning. A `skills/` directory that is itself a link out of the package is skipped with a load warning.
-- A skill whose `SKILL.md` cannot be read or is not UTF-8 text, or whose frontmatter `name` differs from its directory name, is skipped; in a skill an agent names, any of these drops the agent. One with no `description` is served but flagged, since nothing tells a caller when to read it. A file that breaks a limit is skipped alone, without dropping its skill. Each case is a load warning naming the fix, and the package still loads.
-- The frontmatter is read as YAML 1.2. One that does not parse, repeats a key, or expands past 5 times its source plus 10,000 characters is served as an empty `frontmatter`, with `name` and `description` read line by line and a warning.
+- Every file is read through its real path, and one that resolves outside the package is not served, so a link cannot pull in a file from elsewhere on the machine. A link to a Markdown file inside the package is followed; any other link is skipped with a warning. A skill set folder that is itself a link out of the package refuses the workflows that list it.
+- A skill whose `SKILL.md` cannot be read or is not UTF-8 text, or whose frontmatter `name` differs from its directory name, is skipped with a finding on its set. One with no `description` is served but flagged. A file that breaks a limit is skipped alone, without dropping its skill. Each case is a load warning naming the fix, and the package still loads.
+- The frontmatter is read as YAML 1.2. One that does not parse, repeats a key, is over 4 KiB, or expands past 5 times its source plus 10,000 characters is served as an empty `frontmatter`, with `name` and `description` read line by line and a warning.
 
 ### Which files a skill holds
 
@@ -95,7 +177,8 @@ A skill is every file under its directory except these, which never reach an age
 
 - Dotfiles and dot-folders (`.skillignore` itself, `.env`, `.DS_Store`, `.git/`, `.claude/`), `node_modules/`, `__pycache__/` and `*.pyc`. No `.skillignore` pattern brings one back. Rename the file (`env.example`) to ship it.
 - Whatever `.skillignore` at the skill's root matches. It takes gitignore syntax, matched without regard to case, and only the root file is read. `SKILL.md` stays whatever it says, with a warning.
-- A `SKILL.md` below the root, and `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` and `publisher.json` anywhere in the skill, in any case. An agent computer reads those files with authority, so each is skipped with a warning. In a skill an agent names, a `publisher.json` at the skill's root, in `reference/` or `references/`, or below `assets/`, and a `SKILL.md` below `assets/`, drop the whole agent instead.
+- A `SKILL.md` below the root, and `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` and `publisher.json` anywhere in the skill, in any case. An agent computer reads those files with authority, so each is skipped with a warning. A `publisher.json` at the skill's root, in `reference/` or `references/`, or below `assets/`, and a `SKILL.md` below `assets/`, set the whole skill aside instead.
+- A `.malloy` or `.malloynb` file, which is a model and not skill content.
 - A file that breaks a limit (see [the budgets](agent-skills/authoring-skills.md#budgets)), each named in a warning.
 
 `.skillignore` and `.credignore` decide different things:
@@ -103,71 +186,27 @@ A skill is every file under its directory except these, which never reach an age
 | | `.skillignore` | `.credignore` |
 | --- | --- | --- |
 | Decides | What an agent is given: the files a skill lists, hashes, serves and installs | What `cred publish` uploads |
-| Sits | At the skill's root, `skills/<x>/.skillignore` | At the package root, beside `publisher.json` |
+| Sits | At the skill's root, `<set>/<skill>/.skillignore` | At the package root, beside `publisher.json` |
 | Dialect | Full gitignore, including `!` to bring a file back | A path or glob per line; refuses `!` |
 | Case | Matches without regard to case | Matches without regard to case |
 
-Editing `.skillignore` moves the agent's `definitionSha` and the package's `sourceContentSha`, as editing any skill file does. The file is bounded: at most 16 KiB, 50 patterns of at most 200 characters each and 1,024 together (comments and blank lines are free), and two `*` or `**` segments in a pattern (a run of `**` counts once). Every pattern runs against every path the walk examines, so these, with the walk's entry limits and a limit of 200 characters on a path from the skill's root (an entry past it is skipped with a warning, and a directory past it is not descended), bound the time a skill's walk can take. Ignored entries still count toward the 1,000-entry walk limit, and a Markdown file in `reference/` or `references/` counts toward its 1,000 whether or not `.skillignore` matches it. A pattern past a bound is skipped with a warning, and one that starts with `./` warns because it matches nothing.
+Editing `.skillignore` moves the set's `digest`, the `definitionSha` of every workflow that lists it and the package's `sourceContentSha`, as editing any skill file does. The file is bounded: at most 16 KiB, 50 patterns of at most 200 characters each and 1,024 together (comments and blank lines are free), and two `*` or `**` segments in a pattern (a run of `**` counts once). Every pattern runs against every path the walk examines, so these, with the walk's entry limits and a limit of 200 characters on a path from the skill's root (an entry past it is skipped with a warning, and a directory past it is not descended), bound the time a skill's walk can take. Ignored entries still count toward the 1,000-entry walk limit, and a Markdown file in `reference/` or `references/` counts toward its 1,000 whether or not `.skillignore` matches it. A pattern past a bound is skipped with a warning, and one that starts with `./` warns because it matches nothing.
 
 **An ignored file is still in the package.** `.skillignore` curates what an agent is given; it is not a way to hide a secret. The file stays in the package copy that Publisher holds and that an agent computer can read, and `.credignore` alone decides what is uploaded. Keep a secret out with `.credignore`, or do not commit it. A skill that another client reads from disk (Claude Code from `.claude/skills`, `npx skills`) is read whole, because those clients do not read `.skillignore`.
 
 To see what a skill holds before an agent does:
 
 - A package skill: `GET …/packages/{pkg}/skills/{skill}`, whose `files` is the served set, or `get_skill` on its `SKILL.md`, which trims `files` past 35,000 characters and says so.
-- An agent's skills: `get_agent` with `skills: "summary"` lists each inline file and counts the listed files of each skill. The default view lists each listed file with its size and sha256.
+- A workflow's skills: `get_workflow` with `skills: "summary"` lists each inline file and, in the full view, each listed file with its size and sha256.
 - The upload: `cred publish --dry-run` lists the files that would be uploaded. That is the upload set, not the skill set.
-
-## Agents
-
-A package can declare agents: a named brief for working with this package, made of instructions, the agent's own skills, optional scheduled tasks and an optional run budget. Publisher parses and serves the definition. It does not run the agent. A client adopts one by fetching it (`get_agent`, or `GET …/packages/{pkg}/agents/{name}`) and following it in its own session, with its own tools and permissions; the bundled `malloy-run-agent` skill is the recipe, and `malloy-define-agent` covers writing a definition. A large skill set can be read in two steps: `skills=summary` (MCP `skills: "summary"`) lists each inline file's `relative_filepath`, `bytes`, and for a `SKILL.md` its `name` and `description`, with a count of each skill's listed files (see [Listed files](#listed-files)), and `GET …/agents/{name}/skills/{relative_filepath}` (MCP `skill_path`) returns one file. Both are views of the same resolved definition and carry the same `source`. Adopt an agent only when the user names it: nothing advertises one in discovery.
-
-```json
-{
-  "name": "storefront",
-  "agents": {
-    "analyst": {
-      "description": "Answers revenue questions using the storefront conventions",
-      "model": "inherit",
-      "instructions": "agents/analyst/instructions.md",
-      "skills": ["agents/analyst/skills"],
-      "schedules": [
-        {
-          "cron": "0 13 * * MON",
-          "task": "agents/analyst/tasks/weekly-report.md"
-        }
-      ],
-      "budget": { "turns": 30, "wall_clock_minutes": 60 }
-    }
-  }
-}
-```
-
-| Key            | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `description`  | Required. One line saying what the agent is for.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `instructions` | Required. Package-relative path of a Markdown file (no frontmatter): the brief the agent works from. At most 16 KiB.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `model`        | Optional. The model the agent asks for; `inherit` (the default) means the caller's own.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `skills`       | Optional. Package-relative directories, each holding `<skill>/SKILL.md` as in [Skills](#skills). Two directories holding the same `<skill>/SKILL.md` collide and drop the agent. The Markdown the agent carries inline may total at most 256 KiB; Markdown past that is listed instead (see [Listed files](#listed-files)).                                                                                                                                                                                                                                                                                                                      |
-| `schedules`    | Optional. A list of `{ "cron", "task" }`: a 5-field UNIX cron in UTC and the package-relative path of a Markdown task file (at most 16 KiB). **Schedules are parsed, validated and shown. Nothing executes them yet.** A task runs when someone asks for it.                                                                                                                                                                                                                                                                                                            |
-| `budget`       | Optional. Run limits as an object whose optional fields are `turns`, `wall_clock_minutes`, `llm_tokens` and `job_minutes`, each a positive integer. Set only the fields you care about (`{ "wall_clock_minutes": 60 }` alone is fine); an unset field keeps the platform's default. An unknown sub-key or any other value drops the agent. Publisher serves it (`get_agent`, the agent endpoints) and enforces nothing; a platform that runs the agent may clamp each field to its own maximum. A Publisher release that predates the key drops an agent that sets it. |
-
-The agent's name is its key: 1 to 64 characters of lowercase letters, digits and single hyphens.
-
-**Strict allowlist.** An agent, schedule or budget entry with a key this server does not know is dropped, because a key it does not understand might limit the agent, and an unknown key never runs. `tools`, `mcp-servers`, `hooks`, `permission-mode` and `base` are not part of the schema, so they are dropped too: a definition adds words to a session and never widens what the session may do. A key starting `x-` is ignored, for notes and tool metadata.
-
-**A broken agent never fails the package.** An agent that fails validation (a bad name, a missing file, a path that escapes the package or resolves outside it through a link, a nested `publisher.json` under an agent path, a skills directory, a skill's root, `reference/` or `references/`, or below `assets/`, an over-cap file, a bad cron, a bad `budget`) is left out and reported in the package's load warnings with a `Fix:` line. The model and the other agents keep serving. An agent skill with no `description`, a `reference/` that cannot be read, or a skills directory with no skills is not a failure: the agent is served and the finding appears in its `warnings`. A package with no `agents` key is unchanged, and an older Publisher serves a package that has one as before, without the agents.
 
 ### Listed files
 
-A skill an agent serves carries its Markdown inline, in the definition's `skills` as `{relative_filepath, file_contents}`: `SKILL.md` and every `*.md` file outside `assets/`, at any depth, while they fit the 256 KiB inline budget. Every other file of the skill is listed: scripts, templates, data, images, and any Markdown under `assets/`, that does not fit the budget, or that is not UTF-8. Publisher lists each one without its contents in `assets` (`{relative_filepath, bytes, sha256}`, with `asset_roots` naming each skill's package-relative directory; the summary view carries only `asset_counts`). It serves a text file on request through the same skill-file route (`GET …/agents/{name}/skills/<skill>/<path>`, MCP `skill_path`). A binary file answers with its size and a `message`, never its bytes, so a caller copies it from the package. Listed files never count against the 256 KiB Markdown budget.
+A skill carries its Markdown inline: `SKILL.md` and every `*.md` file outside `assets/`, at any depth, while they fit the set's 256 KiB inline budget. Every other file of the skill is listed: scripts, templates, data, images, and any Markdown under `assets/`, that does not fit the budget, or that is not UTF-8. Publisher lists each one without its contents, in the set's `assets` (`{relative_filepath, bytes, sha256}`, with the path relative to the set's folder; the summary view leaves `assets` out). It serves a text file on request through the skill-file route (`GET …/workflows/{name}/skills/<skill>/<path>`, MCP `skill_path`, or `get_skill` with `path`). A binary file answers with its size and a `message`, never its bytes, so a caller copies it from the package. Listed files never count against the 256 KiB Markdown budget.
 
-A package's own `skills/<x>/` lists its files the same way, against budgets of its own, and serves them through `get_skill`.
+Every limit is in one table, [Budgets](agent-skills/authoring-skills.md#budgets). Problems fall in two classes. **Security** problems set the whole skill aside, with a finding on its set naming the file and the fix: a link anywhere under `assets/`, an `assets/` that is itself a link or resolves outside the skill, a nested `publisher.json` or `SKILL.md` under `assets/`, `..` in a name under `assets/`, or two paths under `assets/` that differ only by case. **Everything else** skips that one file, leaves it out of the listing and warns naming the file and the limit: a link elsewhere in the skill, 1 MiB or more, over a file or byte budget, a bad segment name or a path over 200 characters, a Malloy extension, a reserved name, or a walk past the depth or entry limit. A set with a very large skill directory is still served. The caps bound what is listed, not every byte examined: a file under the size cap is read to check it, and each file is read and hashed at most once per load however many workflows share its set; a skipped file is never charged to a budget.
 
-Every limit is in one table, [Budgets](agent-skills/authoring-skills.md#budgets). Problems fall in two classes. **Security** problems drop the whole agent, with a `Package agent '<name>' is not served:` warning naming the file and the fix: a link anywhere under `assets/`, an `assets/` that is itself a link or resolves outside the skill, a nested `publisher.json` or `SKILL.md` under `assets/`, `..` in a name under `assets/`, or two paths under `assets/` that differ only by case. **Everything else** skips that one file, leaves it out of the listing and warns naming the file and the limit: a link elsewhere in the skill, 1 MiB or more, over a file or byte budget, a bad segment name or a path over 200 characters, a Malloy extension, a reserved name, or a walk past the depth or entry limit. An agent that ships a very large skill directory is still served. The caps bound what is listed, not every byte examined: a file under the size cap is read to check it, and each file is read and hashed at most once per load however many agents share its skill; a skipped file is never charged to a budget.
-
-**Trust.** A listed file is copied unread. A script runs as a command in the agent's session, and an asset copied into an app runs with the viewing user's data authority wherever that app opens, previews while it is being built included. Review listed files as code before adopting an agent that ships them.
-
-Two hashes say which bytes a definition came from. `sourceContentSha`, in the package's serving state (`GET …/packages/{pkg}/status`), covers the models, the package skill files, the `agents` object, every file an agent reads and each applied `.skillignore`; a `version` bump or another manifest key does not move it. `definitionSha` on the resolved agent covers only that agent's configuration, instructions, skills, listing of listed files (paths and sha256s), applied `.skillignore` text and task files, so editing one agent or a model leaves another agent's `definitionSha` alone. `GET …/agents/{name}` returns both under `source`, with `servedRevision`.
+**Trust.** A listed file is copied unread. A script runs as a command in the agent's session, and an asset copied into an app runs with the viewing user's data authority wherever that app opens, previews while it is being built included. Review listed files as code before adopting a workflow that ships them.
 
 ## Where the data comes from
 
