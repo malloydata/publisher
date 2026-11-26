@@ -35,7 +35,6 @@ import {
 import type { PackageLookup } from "./environment_ports";
 import { Package } from "./package";
 import { computeSourceContentSha } from "./package_revision";
-import type { PackageWorkflows } from "./skills/package_skills";
 
 const MAIN = "workflows/analyst/skill_sets/main";
 const SECOND = "workflows/analyst/skill_sets/second";
@@ -610,7 +609,7 @@ describe("package workflows", () => {
             "---\nname: extra\ndescription: d\n---\n",
          );
          write(`${SECOND}/extra/scripts/a..b.py`, "x");
-         // A name both sets hold gives the workflow a warning of its own.
+         // A name both sets hold is a shadowing finding on the workflow.
          write(
             `${SECOND}/conventions/SKILL.md`,
             "---\nname: conventions\ndescription: Second copy.\n---\n",
@@ -632,7 +631,7 @@ describe("package workflows", () => {
          expect(picked.source).toEqual(full.source);
       });
 
-      it("carries the workflow's own warnings and that set's findings, not another set's and not the shadowing ones", async () => {
+      it("carries that set's findings, not another set's and not the shadowing ones", async () => {
          const pkg = await load();
          const second = pkg.getWorkflow("analyst", "full", "second")!;
          expect(second.warnings.join("\n")).toContain("a..b.py");
@@ -640,16 +639,6 @@ describe("package workflows", () => {
          expect(second.warnings).not.toContain(DUPLICATE);
          const main = pkg.getWorkflow("analyst", "full", "main")!;
          expect(main.warnings).toEqual([]);
-         // A warning of the workflow's own rides every view of it.
-         const held = (
-            pkg as unknown as { workflows: PackageWorkflows }
-         ).workflows.workflows.get("analyst")!;
-         held.warnings.push("its own");
-         expect(pkg.getWorkflow("analyst", "full", "main")!.warnings).toEqual([
-            "its own",
-         ]);
-         expect(pkg.getWorkflow("analyst")!.warnings).toContain("its own");
-         held.warnings.pop();
          expect(pkg.getWorkflow("analyst")!.warnings).toContain(DUPLICATE);
          expect(pkg.getWorkflow("analyst")!.warnings.join("\n")).toContain(
             "a..b.py",
@@ -913,9 +902,14 @@ describe("package workflows", () => {
                })
             ).content[0]!.resource!.text,
          );
-         expect(viaMcp.skillFile).toBeUndefined();
-         expect(viaMcp.message).toContain("changed on disk after the package");
-         expect(viaMcp.message).not.toContain("Fix:");
+         // Not `workflow: null`, which the run-workflow recipe reads as "the name did not match".
+         expect("workflow" in viaMcp).toBe(false);
+         expect(viaMcp.skillFile.relative_filepath).toBe(listed);
+         expect(viaMcp.skillFile.message).toContain(
+            "changed on disk after the package",
+         );
+         expect(viaMcp.skillFile.message).not.toContain("Fix:");
+         expect(viaMcp.message).toBeUndefined();
       });
 
       it("reads a path that starts with ./ as the file it names", async () => {

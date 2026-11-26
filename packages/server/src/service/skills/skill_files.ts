@@ -141,14 +141,15 @@ function builtInExcluded(name: string, isDirectory: boolean): boolean {
 /**
  * Whether an edit to `relative`, a path inside the skill at `skillDir`, can change what the skill serves. A name no walk
  * keeps rules a path out without reading anything; `exact` also reads `.skillignore` to rule out what it matches. An edit
- * to `.skillignore` itself always can, and so does anything that cannot be matched.
+ * to `.skillignore` itself always can, and so does `SKILL.md`, which a skill keeps whatever it matches, and anything that
+ * cannot be matched.
  */
 export function mayChangeSkill(
    skillDir: string,
    relative: string,
    exact: boolean,
 ): boolean {
-   if (relative === SKILLIGNORE) return true;
+   if (relative === SKILLIGNORE || relative === SKILL_MD) return true;
    const segments = segmentsOf(relative);
    if (segments.length === 0) return true;
    if (

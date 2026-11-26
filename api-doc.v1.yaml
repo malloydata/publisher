@@ -8963,9 +8963,9 @@ components:
                 $ref: "#/components/schemas/WorkflowSkillSet"
             warnings:
               type: array
-              description: "What resolving the workflow found wrong but survivable: its own findings (for example a skill name
-                two of its sets both hold), then each of its sets' findings. With `skillSet`, the workflow's own except the one
-                about a repeated skill name, then that set's findings."
+              description: "What resolving the workflow found wrong but survivable: a finding for each skill name two of its sets
+                both hold (served from the first-listed set), then each of its sets' findings. With `skillSet`, only that set's
+                findings: the set is served whole, so which set serves a repeated name does not describe the reply."
               items:
                 $ref: "#/components/schemas/Problem"
             definitionHash:

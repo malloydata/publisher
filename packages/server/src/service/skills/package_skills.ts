@@ -992,8 +992,7 @@ function packageSkill(packagePath: string, read: ReadSkill): ServedSkill {
             relative,
             read.catalog.files[relative]!.digest.slice(SHA_PREFIX.length),
          );
-         if (listed === undefined) return { changed: true };
-         return "text" in listed ? listed : { binary: true };
+         return listed ?? { changed: true };
       },
    };
 }
@@ -1199,7 +1198,7 @@ const emitSkillMd = (name: string, description: string, body: string) =>
  * A listed file of the skill at `skillRel`, re-checked on every request with
  * the checks that listed it, and only when its bytes still hash to `sha`:
  * files can change after load, and a watch-mode edit does not reload. A binary
- * file answers with its size, never its bytes. Undefined (a 404) when it is no
+ * file answers `{binary: true}`, never its bytes. Undefined (a 404) when it is no
  * longer servable.
  */
 function readListedFile(
@@ -1207,7 +1206,7 @@ function readListedFile(
    skillRel: string,
    relative: string,
    sha: string,
-): { text: string } | { binarySize: number } | undefined {
+): { text: string } | { binary: true } | undefined {
    try {
       const skillDir = path.join(packagePath, skillRel);
       // The skill directory is resolved by the package's own walk first, so
@@ -1221,7 +1220,7 @@ function readListedFile(
       );
       if (!("bytes" in read) || sha256(read.bytes) !== sha) return undefined;
       const text = decodeText(read.bytes);
-      return text === undefined ? { binarySize: read.bytes.length } : { text };
+      return text === undefined ? { binary: true } : { text };
    } catch {
       return undefined;
    }
@@ -1258,8 +1257,6 @@ export interface PackageWorkflow {
    instructions?: { path: string; text: string };
    /** In the order the manifest lists them. */
    sets: WorkflowSet[];
-   /** What the workflow itself warns of, as it is published, besides `shadowing`; its sets' findings are on the sets. */
-   warnings: string[];
    /** A skill name two of its sets both hold, served from the first-listed set when the workflow is read whole; a read of one set serves that set's copy, so it has none of these. */
    shadowing: string[];
    definitionSha: string;
@@ -1273,7 +1270,7 @@ export interface PackageWorkflows {
    paths: string[];
    /** sha256 of each listed file in `paths`, hashed at load so the content hash does not read it again. */
    contentShas: Map<string, string>;
-   /** Why each refused workflow is not served, or a served one's own warnings, in manifest order; then each set's findings, once. */
+   /** Why each refused workflow is not served, or a served one's shadowing findings, in manifest order; then each set's findings, once. */
    warnings: string[];
    /** Package-relative paths whose edit changes what is served: each skill set and each instructions file. */
    watched: string[];
@@ -1941,7 +1938,6 @@ export function readPackageWorkflows(
             },
          }),
          sets,
-         warnings: [],
          shadowing,
          definitionSha: canonicalSha({
             name,

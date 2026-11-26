@@ -1128,6 +1128,22 @@ describe("mayChangeSkill", () => {
       expect(mayChangeSkill(dir, ".env", false)).toBe(false);
    });
 
+   it("always allows SKILL.md, which the walk keeps whatever .skillignore matches", () => {
+      write("SKILL.md");
+      write("reference/glossary.md");
+      write("notes.md");
+      fs.writeFileSync(
+         path.join(dir, ".skillignore"),
+         "*.md\n!reference/*.md\n",
+      );
+      const served = new Set(skillFiles(dir).files);
+      expect(served.has("SKILL.md")).toBe(true);
+      expect(served.has("notes.md")).toBe(false);
+      expect(mayChangeSkill(dir, "SKILL.md", true)).toBe(true);
+      expect(mayChangeSkill(dir, "notes.md", true)).toBe(false);
+      expect(mayChangeSkill(dir, "reference/glossary.md", true)).toBe(true);
+   });
+
    it("always allows an edit to the .skillignore itself, but not to one in a subfolder", () => {
       fs.writeFileSync(path.join(dir, ".skillignore"), "*\n");
       expect(mayChangeSkill(dir, ".skillignore", true)).toBe(true);

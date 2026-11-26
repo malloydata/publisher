@@ -670,7 +670,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             }),
          skill_sets: sets.map((entry) => workflowSkillSet(entry, skills)),
          warnings: [
-            ...workflow.warnings,
             // A picked set is served whole, so which set serves a repeated name does not describe it.
             ...(skillSet === undefined ? workflow.shadowing : []),
             ...sets.flatMap(({ set }) => set.findings),

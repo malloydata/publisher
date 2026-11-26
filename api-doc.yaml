@@ -3281,9 +3281,9 @@ paths:
         workflow's instructions. The set is served whole, every skill it holds
         included, because the reply has no other set for a name to collide
         with; its `digest` then pins exactly what the reply carries.
-        `warnings` is then the workflow's own warnings plus that set's
-        findings; the finding that says which set serves a repeated skill name
-        is left out, since this reply serves the set's own copy.
+        `warnings` is then that set's findings only: the finding that says
+        which set serves a repeated skill name is left out, since this reply
+        serves the set's own copy.
 
         404 when no workflow of that name is served, or it has no set named
         `skillSet`. A repeated or empty `skillSet` is a 400.
@@ -6892,10 +6892,10 @@ components:
         warnings:
           type: array
           description: >-
-            The workflow's own findings (for instance a skill name two of its
-            sets both hold), then each of its sets' findings. With `skillSet`,
-            the workflow's own except the one about a repeated skill name,
-            then that set's findings.
+            A finding for each skill name two of its sets both hold (served
+            from the first-listed set), then each of its sets' findings. With
+            `skillSet`, only that set's findings: the set is served whole, so
+            which set serves a repeated name does not describe the reply.
           items:
             type: string
         source:

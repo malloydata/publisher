@@ -60,7 +60,7 @@ const viewOf = (workflow: PackageWorkflow) => {
          file_contents: string;
       }>,
       assets: assets ?? [],
-      warnings: [...workflow.warnings, ...entry.set.findings],
+      warnings: [...workflow.shadowing, ...entry.set.findings],
       definitionSha: workflow.definitionSha,
       catalog: entry.skills.map((s) => s.catalog),
    };
@@ -73,7 +73,7 @@ const wireOf = (workflow: PackageWorkflow) => ({
    instructions: workflow.instructions?.text,
    skill_sets: workflow.sets.map((entry) => workflowSkillSet(entry, "full")),
    warnings: [
-      ...workflow.warnings,
+      ...workflow.shadowing,
       ...workflow.sets.flatMap(({ set }) => set.findings),
    ],
    source: { definitionSha: workflow.definitionSha },

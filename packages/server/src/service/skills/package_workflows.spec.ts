@@ -126,7 +126,7 @@ describe("readPackageWorkflows", () => {
                path: INSTRUCTIONS,
                text: "Be careful with revenue.",
             },
-            warnings: [],
+            shadowing: [],
          });
          expect(workflow.definitionSha).toMatch(/^[0-9a-f]{64}$/);
          expect(workflow.sets).toHaveLength(1);
@@ -883,7 +883,6 @@ describe("readPackageWorkflows", () => {
          expect(workflow.shadowing).toEqual([
             `Workflow 'analyst' lists skill 'conventions' in both '${MAIN}' and '${SECOND}'; the copy in '${MAIN}', listed first, is the one served.`,
          ]);
-         expect(workflow.warnings).toEqual([]);
          expect(result.warnings).toEqual(workflow.shadowing);
          expect(
             workflow.sets.map(({ skills }) => skills.map((s) => s.dirName)),
