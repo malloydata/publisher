@@ -181,8 +181,8 @@ assuming it is always loaded.
 ## Budgets
 
 A skill's files are read, hashed and listed when Publisher loads a package. Most of that has a
-bound, set out below; the number of skills in a skill set, and the Markdown one package skill
-carries inline in a set under its own total, have none. Each skill set is measured on its own.
+bound, set out below; the number of skills in a skill set has none. Each skill set is measured on
+its own.
 Each crossing is a load warning on the package, and for a workflow also in `get_workflow`'s
 `warnings`; `cred publish --dry-run` shows the upload set. A crossing skips the one file it
 concerns, unless the row says it sets the skill aside or refuses the workflow. Inline files are a
