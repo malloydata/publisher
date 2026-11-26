@@ -121,12 +121,23 @@ def write_transcripts(run: pathlib.Path, chosen: list[dict[str, str]],
     return n
 
 
+def basis(attempt: dict[str, Any]) -> str | None:
+    """What a verdict judged. `answer`: the prose the person saw. `final_query`:
+    the log held no prose (an MCP or API client logs only its calls), so the
+    judge read the last query that succeeded and its re-run rows. The two are
+    different numbers and the history model never averages them."""
+    if (attempt.get("answer_text") or "").strip():
+        return "answer"
+    return "final_query" if attempt.get("final_query") else None
+
+
 def judgments(run: pathlib.Path, cases: list[dict[str, Any]], now: str) -> list[dict[str, Any]]:
     """One row per case of the judging run, from its score and issue events."""
     meta = json.loads((run / "run.json").read_text())
     events = read_jsonl(run / "events.jsonl") if (run / "events.jsonl").is_file() else []
     judge, metric = meta.get("judgeVersion"), metric_version(meta)
     scores = {e.get("qid"): e for e in events if e.get("kind") == "score"}
+    attempts = {e.get("qid"): e for e in events if e.get("kind") == "attempt"}
     issues: dict[str, dict[str, Any]] = {}
     for e in events:
         if e.get("kind") == "issue":
@@ -135,6 +146,7 @@ def judgments(run: pathlib.Path, cases: list[dict[str, Any]], now: str) -> list[
     out = []
     for c in cases:
         s, i = scores.get(c["qid"]) or {}, issues.get(c["qid"]) or {}
+        a = attempts.get(c["qid"]) or {}
         v = s.get("verdict")
         right = True if v == "match" else False if v == "no_match" else None
         out.append({"turn_id": c["source"], "judged_at": now, "run_id": run.name,
@@ -144,7 +156,8 @@ def judgments(run: pathlib.Path, cases: list[dict[str, Any]], now: str) -> list[
                     "component": i.get("component") if right is False else None,
                     "owner": i.get("owner") if right is False else None,
                     "note": None if v else "no score: the golden was not established, or the "
-                                           "case did not run"})
+                                           "case did not run",
+                    "basis": basis(a)})
     return out
 
 

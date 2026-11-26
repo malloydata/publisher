@@ -25,7 +25,7 @@ source: turns is duckdb.sql("""
     'turn_id': 'VARCHAR', 'session_id': 'VARCHAR', 'at': 'TIMESTAMP', 'environment': 'VARCHAR',
     'package': 'VARCHAR', 'model_version': 'VARCHAR', 'client': 'VARCHAR', 'question': 'VARCHAR',
     'n_get_context': 'INTEGER', 'n_execute': 'INTEGER', 'n_errors': 'INTEGER',
-    'tokens': 'BIGINT', 'cost_usd': 'DOUBLE'})
+    'tokens': 'BIGINT', 'cost_usd': 'DOUBLE', 'kind': 'VARCHAR'})
 """) extend {
   primary_key: turn_id
   dimension: on_day is `at`.day
@@ -44,13 +44,13 @@ source: turns is duckdb.sql("""
   }
 }
 
-#(doc) A judged production turn: right, wrong, or undecided, and for a wrong one the diagnosed reason and owner. Rows are only appended; a new judge or rubric starts a new metric_version, and every quality number is read within one.
+#(doc) A judged production turn: right, wrong, or undecided, and its `basis`: `answer` when the verdict judged the prose the person saw, `final_query` when the log held no answer and it judged the last query that succeeded. Never compare a rate across the two bases. For a wrong one, the diagnosed reason and owner. Rows are only appended; a new judge or rubric starts a new metric_version, and every quality number is read within one.
 source: judgments is duckdb.sql("""
   select * from read_csv('data/prod_judgments.csv', header = true, columns = {
     'turn_id': 'VARCHAR', 'judged_at': 'TIMESTAMP', 'run_id': 'VARCHAR',
     'judge_version': 'VARCHAR', 'metric_version': 'VARCHAR', 'sampled_because': 'VARCHAR',
     'verdict': 'VARCHAR', 'right': 'BOOLEAN', 'failure_code': 'VARCHAR', 'component': 'VARCHAR',
-    'owner': 'VARCHAR', 'note': 'VARCHAR'})
+    'owner': 'VARCHAR', 'note': 'VARCHAR', 'basis': 'VARCHAR'})
 """) extend {
   join_one: turn is turns on turn_id = turn.turn_id
   dimension:
@@ -63,23 +63,23 @@ source: judgments is duckdb.sql("""
     decided is count() { where: `right` is not null }
     #(doc) Turns answered right.
     right_count is count() { where: `right` = true }
-    #(doc) Production quality: right answers over decided turns. Read within one metric_version.
+    #(doc) Production quality: right answers over decided turns. Read within one metric_version and one basis.
     quality_rate is right_count / nullif(decided, 0)
   #(doc) Quality per day, version and metric version: the production number the loop moves.
   view: by_day is {
-    group_by: metric_version, on_day, model_version
+    group_by: metric_version, basis, on_day, model_version
     aggregate: judged, decided, right_count, quality_rate
     order_by: on_day desc
   }
   #(doc) Quality per model version: the number a prediction is checked against.
   view: by_version is {
-    group_by: metric_version, model_version
+    group_by: metric_version, basis, model_version
     aggregate: judged, decided, right_count, quality_rate
   }
   #(doc) Why production answers were wrong, and who owns the fix.
   view: failures is {
     where: `right` = false
-    group_by: metric_version, failure_code, owner
+    group_by: metric_version, basis, failure_code, owner
     aggregate: judged
     order_by: judged desc
   }

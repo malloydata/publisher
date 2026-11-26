@@ -34,7 +34,9 @@ class Collect(unittest.TestCase):
         run = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, run, True)
         (run / "run.json").write_text(json.dumps({"judgeVersion": "j3", "rubricSha": "abcdef0123456789"}))
-        ev = [{"kind": "score", "qid": "p-a", "verdict": "match"},
+        ev = [{"kind": "attempt", "qid": "p-a", "answer_text": "Top is X.", "final_query": "run: q"},
+              {"kind": "attempt", "qid": "p-b", "answer_text": "", "final_query": "run: q"},
+              {"kind": "score", "qid": "p-a", "verdict": "match"},
               {"kind": "score", "qid": "p-b", "verdict": "no_match"},
               {"kind": "issue", "qids": ["p-b"], "primary_code": "MISSING", "component": "model-definition",
                "owner": "model"}]
@@ -47,6 +49,8 @@ class Collect(unittest.TestCase):
         self.assertIsNone(got["c"]["right"])
         self.assertEqual(got["c"]["verdict"], "not judged")
         self.assertEqual(got["a"]["metric_version"], "j3:abcdef012345")
+        # An MCP client logs no prose, so its verdict rests on the last query.
+        self.assertEqual([got[t]["basis"] for t in "abc"], ["answer", "final_query", None])
 
 
 class Main(unittest.TestCase):

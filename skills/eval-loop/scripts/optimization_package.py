@@ -51,7 +51,7 @@ APPENDED: dict[str, tuple[tuple[str, ...], str, tuple[str, ...]]] = {
     # Model 1, written by judge_sample.py collect.
     "prod_judgments": (("turn_id", "metric_version"), "judged_at", (
         "turn_id", "judged_at", "run_id", "judge_version", "metric_version", "sampled_because",
-        "verdict", "right", "failure_code", "component", "owner", "note")),
+        "verdict", "right", "failure_code", "component", "owner", "note", "basis")),
     # Model 2, written by predictions.py.
     "predictions": (("prediction_id",), "made_at", (
         "prediction_id", "made_at", "loop", "made_from", "candidate_commit", "pr_url", "metric",
