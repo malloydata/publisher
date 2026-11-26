@@ -364,10 +364,19 @@ export class VersionStore {
     *    last is put back (see heldLastFirst).
     *  - In a versioned package's folder, a version folder with no row is
     *    removed: a placement whose publish never committed. Folders of
-    *    packages with no rows are never touched, since those hold unversioned
-    *    packages.
+    *    packages with no version rows are never touched there, since those
+    *    hold unversioned packages.
+    *  - With `packagesWithRows` (every package that has a package row), a
+    *    package folder none owns is removed when it holds only version
+    *    folders, each with a publisher.json, and no publisher.json of its
+    *    own: a new package's first publish placed it and crashed before its
+    *    commit wrote the rows. A real package always has its own
+    *    publisher.json, and a symlink (a watch mount) is never touched.
     */
-   async cleanup(versionedPackages: Map<string, Set<string>>): Promise<void> {
+   async cleanup(
+      versionedPackages: Map<string, Set<string>>,
+      packagesWithRows?: Set<string>,
+   ): Promise<void> {
       const allHeld = (await this.listHeldLegacy()).sort(heldLastFirst);
       const newest = new Map<string, (typeof allHeld)[number]>();
       for (const held of allHeld) {
@@ -422,6 +431,60 @@ export class VersionStore {
                dirName: entry.name,
             });
             await this.remove(packageName, entry.name);
+         }
+      }
+
+      if (packagesWithRows)
+         await this.removeUnownedPlacements(packagesWithRows);
+   }
+
+   /** See cleanup: a crashed first publish's folder, with no package row. */
+   private async removeUnownedPlacements(
+      packagesWithRows: Set<string>,
+   ): Promise<void> {
+      let entries: fs.Dirent[];
+      try {
+         entries = await fs.promises.readdir(this.environmentPath, {
+            withFileTypes: true,
+         });
+      } catch {
+         return;
+      }
+      for (const entry of entries) {
+         const name = entry.name;
+         // A symlink is a watch mount, and a dot-folder the server's own.
+         if (!entry.isDirectory() || name.startsWith(".")) continue;
+         if (packagesWithRows.has(name)) continue;
+         try {
+            assertSafePackageName(name);
+            const packagePath = safeJoinUnderRoot(this.environmentPath, name);
+            const inside = await fs.promises.readdir(packagePath);
+            if (inside.length === 0 || inside.includes(PACKAGE_MANIFEST_NAME)) {
+               continue;
+            }
+            if (!(await this.versionFoldersOnly(packagePath, inside))) continue;
+            let placed = true;
+            for (const dirName of inside) {
+               if (
+                  !(await exists(
+                     path.join(packagePath, dirName, PACKAGE_MANIFEST_NAME),
+                  ))
+               ) {
+                  placed = false;
+                  break;
+               }
+            }
+            if (!placed) continue;
+            logger.info(
+               "Removing a package folder a first publish placed and never committed",
+               { packageName: name, versionFolders: inside },
+            );
+            await this.removePackage(name);
+         } catch (err) {
+            logger.warn("Could not check a package folder no row owns", {
+               packageName: name,
+               error: err,
+            });
          }
       }
    }

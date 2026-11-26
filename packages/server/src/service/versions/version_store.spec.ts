@@ -491,6 +491,57 @@ describe("VersionStore.cleanup", () => {
    });
 });
 
+describe("VersionStore.cleanup: a package folder no row owns", () => {
+   it("removes a new package's version folders a crashed first publish left with no row", async () => {
+      // Placed, then the server died before the commit wrote the rows.
+      await store.place(
+         await store.stage("ghost", writes({ version: "1.0.0" })),
+      );
+      await store.cleanup(new Map(), new Set());
+      expect(fs.existsSync(path.join(envPath, "ghost"))).toBe(false);
+   });
+
+   it("keeps anything that is not only version folders, or that a row owns", async () => {
+      // An unversioned package's tree: its own publisher.json.
+      await writes({ name: "plain" })(path.join(envPath, "plain"));
+      fs.mkdirSync(path.join(envPath, "plain", "1.0.0"));
+      // Version-shaped, beside a file that is not.
+      await store.place(
+         await store.stage("mixed", writes({ version: "1.0.0" })),
+      );
+      fs.writeFileSync(path.join(envPath, "mixed", "notes.txt"), "keep me");
+      // Version-shaped, but with no publisher.json inside: not a placement.
+      fs.mkdirSync(path.join(envPath, "bare", "1.0.0"), { recursive: true });
+      // A placement whose package has a row (an unversioned package's row).
+      await store.place(
+         await store.stage("owned", writes({ version: "1.0.0" })),
+      );
+      // A watch mount.
+      const outside = path.join(root, "src-pkg");
+      await store.place(
+         await store.stage("linked-src", writes({ version: "1.0.0" })),
+      );
+      fs.renameSync(path.join(envPath, "linked-src"), outside);
+      fs.symlinkSync(outside, path.join(envPath, "linked"));
+
+      await store.cleanup(new Map(), new Set(["owned"]));
+      for (const name of ["plain", "mixed", "bare", "owned", "linked"]) {
+         expect([name, fs.existsSync(path.join(envPath, name))]).toEqual([
+            name,
+            true,
+         ]);
+      }
+   });
+
+   it("removes nothing when the caller does not say which packages have rows", async () => {
+      await store.place(
+         await store.stage("ghost", writes({ version: "1.0.0" })),
+      );
+      await store.cleanup(new Map());
+      expect(fs.existsSync(path.join(envPath, "ghost", "1.0.0"))).toBe(true);
+   });
+});
+
 describe("VersionStore path containment", () => {
    it("refuses to remove or move a staged or held path outside its folder", async () => {
       const outside = path.join(root, "outside");

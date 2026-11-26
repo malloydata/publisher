@@ -1133,8 +1133,20 @@ export class EnvironmentStore
             dirs.add(version.dirName);
             owned.set(version.packageName, dirs);
          }
+         // Every package with a row, unversioned ones included, so a folder
+         // only a crashed first publish left (no row at all) can go. Not for
+         // an environment whose row is new: its folders may predate a store
+         // that was reset, and no row says what they were.
+         const packagesWithRows = newRow
+            ? undefined
+            : new Set(
+                 (await repository.listPackages(environmentId)).map(
+                    (row) => row.name,
+                 ),
+              );
          await new VersionStore(environment.getEnvironmentPath()).cleanup(
             owned,
+            packagesWithRows,
          );
       } catch (error) {
          logger.warn("Could not clean up package version folders", {
