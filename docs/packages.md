@@ -125,7 +125,7 @@ A skill set is a folder whose subfolders are skills (`<set>/<skill>/SKILL.md`). 
 - Several workflows can list the same set. Publisher reads it once per load, and every workflow that lists it serves the same bytes.
 - A skill name that two sets of one workflow both hold is served from the first-listed set, and the workflow's `warnings` say so.
 - A set that holds no skills is a warning, not a refusal.
-- A `publisher.json` at or above a set's root refuses the workflows that list it, because it would make the folder a second package root. One inside a skill (at the skill's root, in `reference/` or `references/`, or below `assets/`) sets that skill aside with a finding; one elsewhere in a skill only skips that file. One inside a dot-named directory is not read.
+- A `publisher.json` at or above a set's root (the package's own at its root does not count) refuses the workflows that list it, because it would make the folder a second package root. One inside a skill (at the skill's root, in `reference/` or `references/`, or below `assets/`) sets that skill aside with a finding; one elsewhere in a skill only skips that file. One inside a dot-named directory is not read.
 
 Skills are read with the rules in [Skills](#skills). Each set is measured on its own, and the limits are in the [Budgets](agent-skills/authoring-skills.md#budgets) table: 256 KiB of inline Markdown, and 4 MiB and 200 listed files, per set. The 8 MiB cap on listed files for the whole package is charged once per distinct set, in sorted path order, so reordering workflows never moves a set's `digest`.
 
