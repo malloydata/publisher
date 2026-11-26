@@ -19,10 +19,18 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
+import { testFileURL } from "./test_file_url";
 
 const REPO = path.resolve(__dirname, "../../../..");
 const FIXTURES = path.join(REPO, "packages/server/tests/fixtures");
 const HAMMER = path.join(REPO, "hammer/scenarios");
+
+/**
+ * The root of a hammer model's in-memory URL. Absolute on every platform (on
+ * Windows it carries the current drive), so a spec can read an entry as a
+ * path.
+ */
+export const HAMMER_URL = testFileURL("hammer/");
 
 // Shared by every spec file that loads the corpus: one test run keeps one
 // module instance, so a spec's close must leave the helper usable by the next.
@@ -300,13 +308,13 @@ export async function hammerModels(
          }
          const files = new Map<string, string>();
          for (const [rel, text] of scenario.models) {
-            files.set(`file:///hammer/${rel}`, text);
+            files.set(`${HAMMER_URL}${rel}`, text);
          }
          for (const [rel] of persisting) {
             models.push({
                label: `hammer/${scenario.id}/${rel}`,
                files,
-               entry: `file:///hammer/${rel}`,
+               entry: `${HAMMER_URL}${rel}`,
                connections,
             });
          }
