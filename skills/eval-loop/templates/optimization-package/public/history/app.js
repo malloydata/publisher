@@ -10,6 +10,8 @@ const pct = (v) => (v == null ? "n/a" : `${Math.round(v * 100)}%`);
 const num = (v, d = 0) => (v == null ? "" : Number(v).toLocaleString("en-US", { maximumFractionDigits: d }));
 const usd = (v) => (v == null ? "" : `$${Number(v).toFixed(v < 1 ? 4 : 2)}`);
 const date = (v) => String(v || "").slice(0, 10);
+// What a verdict judged: never compare a rate across the two.
+const BASIS = { answer: "judged the answer", final_query: "judged the final query (no answer logged)" };
 
 function stat(k, v, cls) {
   const s = el("div", "stat");
@@ -45,7 +47,7 @@ panel("versions", "run: judgments -> by_version", "No production turn judged yet
   for (const r of rows) {
     const card = el("div", "version");
     card.append(el("div", "v-name", r.model_version || "unknown version"),
-                el("div", "v-tag", `metric ${r.metric_version || "unversioned"}`),
+                el("div", "v-tag", `${BASIS[r.basis] || "basis unknown"} · metric ${r.metric_version || "unversioned"}`),
                 el("div", "big", pct(r.quality_rate)),
                 stat("right / decided", `${r.right_count} / ${r.decided}`),
                 stat("judged, undecided", `${r.judged}, ${r.judged - r.decided}`));
@@ -55,7 +57,7 @@ panel("versions", "run: judgments -> by_version", "No production turn judged yet
 });
 
 panel("quality", "run: judgments -> by_day", "No judgments yet.", (rows) => table(rows, [
-  ["day", (r) => date(r.on_day)], ["version", (r) => r.model_version], ["metric", (r) => r.metric_version],
+  ["day", (r) => date(r.on_day)], ["version", (r) => r.model_version], ["basis", (r) => r.basis || ""], ["metric", (r) => r.metric_version],
   ["judged", (r) => num(r.judged), 1], ["decided", (r) => num(r.decided), 1], ["quality", (r) => pct(r.quality_rate), 1],
 ]));
 
@@ -66,7 +68,7 @@ panel("failures", "run: judgments -> failures", "No wrong answer judged yet.", (
     const row = el("div", "tag"), track = el("div", "track"), fill = el("div", "fill");
     fill.style.width = `${(r.judged / max) * 100}%`;
     track.append(fill);
-    row.append(el("div", null, `${r.failure_code || "not diagnosed"} (${r.owner || "no owner"})`), track, el("div", "num", String(r.judged)));
+    row.append(el("div", null, `${r.failure_code || "not diagnosed"} (${r.owner || "no owner"}${r.basis === "final_query" ? ", final query" : ""})`), track, el("div", "num", String(r.judged)));
     frag.append(row);
   }
   return frag;
