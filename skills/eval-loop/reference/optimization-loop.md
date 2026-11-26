@@ -93,11 +93,46 @@ production turn has no answer key:
 ```bash
 python3 eval.py ingest --set <set> --turns turns.jsonl --queries queries.jsonl --versions versions.jsonl
 python3 eval.py judge-sample pick --set <set> --label prod-20261125    # draw unjudged turns as a set
-# derive each case's golden (skill:eval-import), then judge the logged answers:
+# a turn asking a question the set already keys takes that verified key;
+# derive the rest (skill:eval-import), then judge the logged answers:
 python3 eval.py run --set <workdir>/judging/prod-20261125 --label prod-20261125 --rejudge
 python3 eval.py diagnose --set <workdir>/judging/prod-20261125 --label prod-20261125
-python3 eval.py judge-sample collect --set <set> --label prod-20261125
+python3 eval.py judge-sample collect --set <set> --label prod-20261125   # refuses an undiagnosed wrong answer
 ```
+
+Each verdict records its `basis`. `answer`: the log held the prose the person
+saw. `final_query`: an MCP or API client logs only its calls, so the judge read
+the last query that succeeded and its re-run rows. The two are different
+numbers; model 1 groups every quality view by basis and never averages them.
+
+The improve side then works from production rather than from questions someone
+thought to ask (step O1):
+
+```bash
+python3 eval.py build-set --set <set> --label prod-20261125   # cases + workloads/prod-20261125.jsonl
+# key each new case (skill:eval-import, verify_goldens.py --refresh then --promote), then:
+python3 eval.py routine --kind quality --mode improve --set <set>
+python3 eval.py routine --kind speed --mode improve --set <set> --queries <set>/workloads/prod-20261125.jsonl
+```
+
+`build-set` adds one case per distinct question, those judged wrong first, then
+the undecided, then the most asked, and never a build request (`kind: build`).
+The workload is every production query that succeeded, counted.
+
+What the host's log skill must write, learned on real logs:
+
+- **One turn per user message.** Fold a continuation into the message before it.
+- **`kind`.** `build` for a turn that edited files or published, `question`
+  otherwise. Build requests have no answer to judge.
+- **`origin: draft`** for traffic against an unpublished edit. A host may log
+  it under the published package's name.
+- **Transcripts at tier T2** (`log_transcript.build_transcript`): the answer
+  was logged, the agent's isolation was not. T3 voids every production turn,
+  because the run looks for the start-up event a local answerer writes.
+- **Clients with no session** (MCP connectors, API callers): group one user's
+  calls to one package into a conversation, broken after 30 minutes of
+  silence, and start a turn at each new `user_prompt`. A turn with no prompt
+  has no question and is not judged.
 
 Name the environments the loop itself queries in
 `[optimization] exclude_environments`, or its eval runs are ingested as
