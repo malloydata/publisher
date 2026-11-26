@@ -1454,9 +1454,7 @@ export function readAgentAsset(
       listing.sha256,
    );
    if (read === undefined || "text" in read) return read;
-   return {
-      message: `'${relativeFilepath}' is a binary file of ${read.binarySize} bytes. It is listed for the agent computer to copy, and is not served as text.`,
-   };
+   return { message: binaryFileMessage(relativeFilepath, read.binarySize) };
 }
 
 /** What an agent's skill roots read into, sorted by relative path. */
@@ -1935,11 +1933,33 @@ export function resolveSkills(
    ];
 }
 
-/** A path as a caller wrote it, as a path of the skill: without a leading `./`, and `SKILL.md` when empty. */
+/** A path as a caller wrote it, as a path of the skill: without a leading `./`, and `SKILL.md` when blank. Never trimmed otherwise, because a listed name may end in a space. */
 export function skillFilePath(raw: string | null | undefined): string {
-   let relative = (raw ?? "").trim();
+   if (!raw?.trim()) return SKILL_MD;
+   let relative = raw;
    while (relative.startsWith("./")) relative = relative.slice(2);
    return relative || SKILL_MD;
+}
+
+/** The answer for a listed file that is not text; the one sentence every surface uses. */
+export function binaryFileMessage(relative: string, size: number): string {
+   return `'${relative}' is a binary file (${size} bytes), and only text files are served.`;
+}
+
+/** One listed file of a skill read for an answer: its text, a message saying why there is none, or `changed` when it is no longer the file that was listed. */
+export function readSkillFile(
+   skill: ServedSkill,
+   relative: string,
+): { text: string } | { message: string } | { changed: true } {
+   const read = skill.read(relative);
+   return "binary" in read
+      ? {
+           message: binaryFileMessage(
+              relative,
+              skill.catalog.files[relative]!.size,
+           ),
+        }
+      : read;
 }
 
 /** Every file of a skill as path and size, SKILL.md first, then by path. */

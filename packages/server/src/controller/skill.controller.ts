@@ -9,6 +9,7 @@ import {
    namedSkillFiles,
    resolveSkills,
    skillFilePath,
+   readSkillFile,
    skillFileView,
    type ResolvedSkill,
 } from "../service/skills/package_skills";
@@ -106,7 +107,7 @@ export class SkillController {
             `File '${relative}' not found in skill '${skillName}' of package '${packageName}'. Its files: ${namedSkillFiles(skill)}.`,
          );
       }
-      const read = skill.read(relative);
+      const read = readSkillFile(skill, relative);
       if ("changed" in read) {
          throw new SkillNotFoundError(fileChangedMessage(relative));
       }
@@ -117,14 +118,7 @@ export class SkillController {
             "text" in read ? read.text : undefined,
          ),
          description: skill.description,
-         ...("text" in read
-            ? {}
-            : {
-                 message:
-                    "message" in read
-                       ? read.message
-                       : `'${relative}' is a binary file (${skill.catalog.files[relative]!.size} bytes), and only text files are served.`,
-              }),
+         ...("text" in read ? {} : { message: read.message }),
       };
    }
 

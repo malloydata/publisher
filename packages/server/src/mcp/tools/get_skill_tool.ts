@@ -6,10 +6,13 @@ import { z } from "zod/v3";
 import type { PackageLookup } from "../../service/environment_ports";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
+import type { RequestExtra } from "../request_extra";
+import { FCJ_MAX_CHARS } from "../../retrieval/search/pages";
 import { type BundledSkill } from "../../service/skills/build_skills_bundle";
 import {
    fileChangedMessage,
    namedSkillFiles,
+   readSkillFile,
    resolveSkills,
    SKILL_MD,
    skillFileList,
@@ -19,9 +22,6 @@ import {
 } from "../../service/skills/package_skills";
 import { jsonResource } from "../tool_response";
 import { parseEnvironmentName, parsePackageName } from "../../service/identity";
-
-/** Cursor rejects a tool result over 35K characters, the strictest host cap. */
-export const GET_SKILL_MAX_CHARS = 35_000;
 
 const GET_SKILL_DESCRIPTION = `Fetch a task guide, or list the guides available. Guides are concise procedural instructions for working with Malloy and this server: query patterns, chart and rendering tags, analysis pitfalls, how to build or review a model.
 
@@ -88,19 +88,28 @@ function summarize(skills: ResolvedSkill[]) {
    }));
 }
 
-/** Characters of the JSON-RPC message the host receives for this answer, with a client-chosen id of up to 64 characters. */
-function wireChars(uri: string, payload: unknown): number {
+/** The id a host is assumed to send when the request carries none. */
+const ASSUMED_ID = "i".repeat(62);
+
+/** Characters of the JSON-RPC message the host receives for this answer, which echoes the request's own id. */
+function wireChars(
+   uri: string,
+   payload: unknown,
+   id: string | number = ASSUMED_ID,
+): number {
    return JSON.stringify({
       jsonrpc: "2.0",
-      id: "i".repeat(62),
+      id,
       result: jsonResource(uri, payload),
    }).length;
 }
 
 function oversizeMessage(relative: string, wire: number): string {
-   const smaller =
-      relative === SKILL_MD ? "one of the other files" : "a smaller file";
-   return `'${relative}' would be ${wire} characters as a tool result, over the limit of ${GET_SKILL_MAX_CHARS}, so get_skill cannot return it. Read ${smaller} listed in \`files\`.`;
+   const next =
+      relative === SKILL_MD
+         ? "Read one of the other files listed in `files`."
+         : "Call get_skill with this skill_name and no path for its file list, then read a smaller file by `path`.";
+   return `'${relative}' would be ${wire} characters as a tool result, over the limit of ${FCJ_MAX_CHARS}, so get_skill cannot return it. ${next}`;
 }
 
 /** The most files that fit: all `hi` if that does, else the largest n below it (a cut list carries a longer message, so the full count is checked on its own), or undefined when not even 0 fit. */
@@ -125,7 +134,12 @@ function largest(fits: (n: number) => boolean, hi: number): number | undefined {
  * because the list can be read from the skill's own files one by one, and the
  * body cannot.
  */
-function guideAnswer(skill: ResolvedSkill, text: string, uri: string) {
+function guideAnswer(
+   skill: ResolvedSkill,
+   text: string,
+   uri: string,
+   id?: string | number,
+) {
    const entries = skillFileList(skill);
    const answer = (
       content: boolean,
@@ -159,8 +173,8 @@ function guideAnswer(skill: ResolvedSkill, text: string, uri: string) {
       };
    };
    const full = answer(true, true, entries.length, 0);
-   const wire = wireChars(uri, full);
-   if (wire <= GET_SKILL_MAX_CHARS) return full;
+   const wire = wireChars(uri, full, id);
+   if (wire <= FCJ_MAX_CHARS) return full;
    for (const [content, frontmatter] of [
       [true, true],
       [true, false],
@@ -169,8 +183,8 @@ function guideAnswer(skill: ResolvedSkill, text: string, uri: string) {
    ] as const) {
       const listed = largest(
          (n) =>
-            wireChars(uri, answer(content, frontmatter, n, wire)) <=
-            GET_SKILL_MAX_CHARS,
+            wireChars(uri, answer(content, frontmatter, n, wire), id) <=
+            FCJ_MAX_CHARS,
          entries.length,
       );
       if (listed !== undefined) {
@@ -180,23 +194,55 @@ function guideAnswer(skill: ResolvedSkill, text: string, uri: string) {
    return answer(false, false, 0, wire);
 }
 
+/** The guides' names and descriptions that fit the tool-result limit, with `message` (if any) and a count of the guides left out. */
+function availableAnswer(
+   skills: ResolvedSkill[],
+   uri: string,
+   id: string | number | undefined,
+   message?: string,
+) {
+   const entries = summarize(skills);
+   const answer = (listed: number) => {
+      const unlisted = entries.length - listed;
+      const text = [
+         message,
+         unlisted > 0
+            ? `${unlisted} of ${entries.length} guides are not listed to keep this reply within the host's tool-result limit. Any guide is read by its \`skill_name\`, listed or not, and \`scopes\` lists one package's guides.`
+            : "",
+      ]
+         .filter(Boolean)
+         .join(" ");
+      return {
+         availableSkills: entries.slice(0, listed),
+         ...(text ? { message: text } : {}),
+      };
+   };
+   const listed = largest(
+      (n) => wireChars(uri, answer(n), id) <= FCJ_MAX_CHARS,
+      entries.length,
+   );
+   return answer(listed ?? 0);
+}
+
 /** One file of a skill as the tool answers it; `relative` is a path the skill lists. */
-function fileAnswer(skill: ResolvedSkill, relative: string, uri: string) {
-   const read = skill.read(relative);
+function fileAnswer(
+   skill: ResolvedSkill,
+   relative: string,
+   uri: string,
+   id?: string | number,
+) {
+   const read = readSkillFile(skill, relative);
    if ("changed" in read) return { message: fileChangedMessage(relative) };
    if (!("text" in read)) {
       return {
          skill: skillFileView(skill, relative, undefined),
-         message:
-            "message" in read
-               ? read.message
-               : `'${relative}' is a binary file (${skill.catalog.files[relative]!.size} bytes); get_skill returns text files only.`,
+         message: read.message,
       };
    }
-   if (relative === SKILL_MD) return guideAnswer(skill, read.text, uri);
+   if (relative === SKILL_MD) return guideAnswer(skill, read.text, uri, id);
    const full = { skill: skillFileView(skill, relative, read.text) };
-   const wire = wireChars(uri, full);
-   return wire <= GET_SKILL_MAX_CHARS
+   const wire = wireChars(uri, full, id);
+   return wire <= FCJ_MAX_CHARS
       ? full
       : {
            skill: skillFileView(skill, relative, undefined),
@@ -246,7 +292,7 @@ export function registerGetSkillTool(
          environmentName: params.scopes?.[0]?.environment,
          packageName: params.scopes?.[0]?.package,
       }),
-      run: async (params: GetSkillParams, uri) => {
+      run: async (params: GetSkillParams, uri, extra: RequestExtra) => {
          const scope = params.scopes?.[0];
          let resolved = resolveSkills(bundledSkills, []);
          if (scope) {
@@ -262,27 +308,29 @@ export function registerGetSkillTool(
          }
 
          if (params.skill_name === undefined || params.skill_name === null) {
-            return jsonResource(uri, { availableSkills: summarize(resolved) });
+            return jsonResource(
+               uri,
+               availableAnswer(resolved, uri, extra?.requestId),
+            );
          }
 
          const skill = resolved.find((s) => s.name === params.skill_name);
          if (!skill) {
-            return jsonResource(uri, {
-               availableSkills: summarize(resolved),
-               message: `No guide named ${JSON.stringify(params.skill_name)}${
-                  scope
-                     ? ` for package ${scope.environment}/${scope.package}`
-                     : ""
-               }. Fix: use a name from availableSkills exactly as spelled there${
-                  scope
-                     ? "."
-                     : ", or pass scopes to include a package's own guides."
-               }${
-                  params.skill_name.includes("/")
-                     ? " A file inside a guide is read with `skill_name` plus `path`."
-                     : ""
-               }`,
-            });
+            const fix = `No guide named ${JSON.stringify(params.skill_name)}${
+               scope ? ` for package ${scope.environment}/${scope.package}` : ""
+            }. Fix: use a name from availableSkills exactly as spelled there${
+               scope
+                  ? "."
+                  : ", or pass scopes to include a package's own guides."
+            }${
+               params.skill_name.includes("/")
+                  ? " A file inside a guide is read with `skill_name` plus `path`."
+                  : ""
+            }`;
+            return jsonResource(
+               uri,
+               availableAnswer(resolved, uri, extra?.requestId, fix),
+            );
          }
 
          const relative = skillFilePath(params.path);
@@ -291,7 +339,10 @@ export function registerGetSkillTool(
                message: `'${relative}' is not a file of skill '${skill.name}'. Its files: ${namedSkillFiles(skill)}. Call get_skill again with one of these as \`path\`.`,
             });
          }
-         return jsonResource(uri, fileAnswer(skill, relative, uri));
+         return jsonResource(
+            uri,
+            fileAnswer(skill, relative, uri, extra?.requestId),
+         );
       },
    });
 }

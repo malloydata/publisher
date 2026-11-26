@@ -512,12 +512,14 @@ describe("a path of a skill", () => {
       [],
    );
 
-   it("defaults to SKILL.md, and drops whitespace and a leading ./", () => {
+   it("defaults to SKILL.md when blank, and drops a leading ./ but never trims a name", () => {
       expect(skillFilePath(undefined)).toBe("SKILL.md");
       expect(skillFilePath(null)).toBe("SKILL.md");
       expect(skillFilePath("  ")).toBe("SKILL.md");
       expect(skillFilePath("./scripts/run.py")).toBe("scripts/run.py");
-      expect(skillFilePath(" ././references/a.md ")).toBe("references/a.md");
+      expect(skillFilePath("././references/a.md")).toBe("references/a.md");
+      // A listed name may end in a space, and a trimmed path would never match it.
+      expect(skillFilePath("scripts/run.py ")).toBe("scripts/run.py ");
       expect(skillFilePath("scripts/../scripts/run.py")).toBe(
          "scripts/../scripts/run.py",
       );
