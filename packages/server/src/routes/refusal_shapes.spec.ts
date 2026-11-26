@@ -129,23 +129,41 @@ it("a workflow's bad skills value answers { message } without a code", async () 
    });
 });
 
-it("a repeated skill_set answers { message } without a code", async () => {
+it("a repeated skillSet answers { message } without a code", async () => {
    const res = await request(app).get(
-      `${PKG}/workflows/a?skill_set=x&skill_set=y`,
+      `${PKG}/workflows/a?skillSet=x&skillSet=y`,
    );
    expect(res.status).toBe(400);
    expect(res.body).toEqual({
-      message: `'skill_set' must be one skill set name, got ["x","y"].`,
+      message: `'skillSet' must be one skill set name, got ["x","y"].`,
    });
 });
 
-it("a repeated skill_set on a workflow's skill file answers { message } without a code", async () => {
+it("an empty skillSet is refused as MCP refuses an empty skill_set, with { message } and no code", async () => {
+   const res = await request(app).get(`${PKG}/workflows/a?skillSet=`);
+   expect(res.status).toBe(400);
+   expect(res.body).toEqual({
+      message: `'skillSet' must be one skill set name, got "".`,
+   });
+});
+
+it("a repeated skillSet on a workflow's skill file answers { message } without a code", async () => {
    const res = await request(app).get(
-      `${PKG}/workflows/a/skills/s/SKILL.md?skill_set=x&skill_set=y`,
+      `${PKG}/workflows/a/skills/s/SKILL.md?skillSet=x&skillSet=y`,
    );
    expect(res.status).toBe(400);
    expect(res.body).toEqual({
-      message: `'skill_set' must be one skill set name, got ["x","y"].`,
+      message: `'skillSet' must be one skill set name, got ["x","y"].`,
+   });
+});
+
+it("an empty skillSet on a workflow's skill file is refused the same way", async () => {
+   const res = await request(app).get(
+      `${PKG}/workflows/a/skills/s/SKILL.md?skillSet=`,
+   );
+   expect(res.status).toBe(400);
+   expect(res.body).toEqual({
+      message: `'skillSet' must be one skill set name, got "".`,
    });
 });
 

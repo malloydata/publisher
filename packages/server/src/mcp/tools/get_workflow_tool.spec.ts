@@ -241,7 +241,7 @@ describe("get_workflow: the reply stays within the tool-result limit", () => {
       // A set already picked has no narrower full view: REST is the way to its listed files.
       const picked = parse(await handler({ ...call, skill_set: "main" }));
       expect(picked.message).toContain("leaves out the sets' listed files");
-      expect(picked.message).toContain("workflows/analyst?skill_set=main");
+      expect(picked.message).toContain("workflows/analyst?skillSet=main");
       expect(picked.message).not.toContain("with skill_set");
    });
 
@@ -331,6 +331,11 @@ describe("get_workflow: the reply stays within the tool-result limit", () => {
       for (let n = edge - 20; n <= edge + past; n++) {
          const result = await handlerFor(n)(params);
          expect(wire(result)).toBeLessThanOrEqual(FCJ_MAX_CHARS);
+         // A message that names a size names one over the limit, never one at or under it.
+         const text = JSON.stringify(parse(result));
+         for (const [, size] of text.matchAll(/would be (\d+) characters/g)) {
+            expect(Number(size)).toBeGreaterThan(FCJ_MAX_CHARS);
+         }
          shapes.add(shape(parse(result)));
       }
       return shapes;
@@ -385,6 +390,50 @@ describe("get_workflow: the reply stays within the tool-result limit", () => {
          500,
       );
       expect([...shapes].sort()).toEqual(["file", "message"]);
+   });
+
+   it("pins every REST fallback URL to the version the reply was read from, after the skill set when one is picked", async () => {
+      const versioned = { ...source, versionId: "1.2.3" };
+      const fileHandler = getWorkflow(undefined, {
+         getWorkflowSkillFile: (_workflow: string, path: string) => ({
+            relative_filepath: path,
+            file_contents: text,
+            source: versioned,
+         }),
+      });
+      const fileCall = { ...call, skill_path: "guide/SKILL.md" };
+      expect(parse(await fileHandler(fileCall)).skillFile.message).toContain(
+         "/skills/guide/SKILL.md?versionId=1.2.3",
+      );
+      expect(
+         parse(await fileHandler({ ...fileCall, skill_set: "main" })).skillFile
+            .message,
+      ).toContain("/skills/guide/SKILL.md?versionId=1.2.3&skillSet=main");
+      const view = getWorkflow(undefined, {
+         getWorkflow: (_name: string, skills: string) => ({
+            ...workflowOf(skills),
+            source: versioned,
+         }),
+      });
+      expect(parse(await view(call)).message).toContain(
+         "workflows/analyst?versionId=1.2.3.",
+      );
+      expect(
+         parse(await view({ ...call, skill_set: "main" })).message,
+      ).toContain("workflows/analyst?versionId=1.2.3&skillSet=main.");
+      const refusing = getWorkflow(undefined, {
+         getWorkflow: () => ({ name: "analyst", text, source: versioned }),
+      });
+      expect(
+         parse(await refusing({ ...call, skills: "summary" })).message,
+      ).toContain("workflows/analyst?versionId=1.2.3&skills=summary");
+      expect(
+         parse(
+            await refusing({ ...call, skills: "summary", skill_set: "main" }),
+         ).message,
+      ).toContain(
+         "workflows/analyst?versionId=1.2.3&skillSet=main&skills=summary",
+      );
    });
 
    it("lists as many workflows as fit beside the answer, and counts the rest", async () => {

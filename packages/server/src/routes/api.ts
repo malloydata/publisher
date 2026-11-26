@@ -497,15 +497,16 @@ function givensParam(
    throw new BadRequestError("givens must be one JSON object");
 }
 
-/** The `skill_set` query value, one set name or undefined; any other shape is answered 400 as `{ message }`, as a bad `skills` is, and `false` returned. */
+/** The `skillSet` query value, one non-empty set name or undefined; any other shape is answered 400 as `{ message }`, as a bad `skills` is, and `false` returned. */
 function skillSetParam(
    req: express.Request,
    res: express.Response,
 ): string | undefined | false {
-   const skillSet = req.query.skill_set;
-   if (skillSet === undefined || typeof skillSet === "string") return skillSet;
+   const skillSet = req.query.skillSet;
+   if (skillSet === undefined) return undefined;
+   if (typeof skillSet === "string" && skillSet !== "") return skillSet;
    res.status(400).json({
-      message: `'skill_set' must be one skill set name, got ${JSON.stringify(skillSet)}.`,
+      message: `'skillSet' must be one skill set name, got ${JSON.stringify(skillSet)}.`,
    });
    return false;
 }

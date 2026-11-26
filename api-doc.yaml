@@ -3276,17 +3276,17 @@ paths:
         A skill name that two of the workflow's sets both hold is served from
         the first-listed set only, and the workflow's `warnings` say so.
 
-        With `skill_set`, the reply carries the summary fields and that one
+        With `skillSet`, the reply carries the summary fields and that one
         set only, and no `instructions`: a chat that picks a set never runs the
         workflow's instructions. The set is served whole, every skill it holds
         included, because the reply has no other set for a name to collide
         with; its `digest` then pins exactly what the reply carries.
-        `warnings` is then that set's findings only: the workflow's own say
-        which set serves a repeated skill name, and this reply serves the
-        set's own copy.
+        `warnings` is then the workflow's own warnings plus that set's
+        findings; the finding that says which set serves a repeated skill name
+        is left out, since this reply serves the set's own copy.
 
         404 when no workflow of that name is served, or it has no set named
-        `skill_set`.
+        `skillSet`. A repeated or empty `skillSet` is a 400.
       parameters:
         - name: environmentName
           in: path
@@ -3326,12 +3326,12 @@ paths:
             type: string
             enum: [full, summary]
             default: full
-        - name: skill_set
+        - name: skillSet
           in: query
           description: >-
             A skill set's name (its folder's name, as listed under
             `skill_sets`). Returns that set only, with every skill it holds,
-            and no `instructions`.
+            and no `instructions`. A repeated or empty value is a 400.
           required: false
           schema:
             type: string
@@ -3366,20 +3366,22 @@ paths:
         Returns one file from the workflow's resolved skills, named by a
         `<skill>/<file>` path (for example `analyst-conventions/SKILL.md`)
         from `GET .../workflows/{workflowName}?skills=summary`, with the same
-        `source` pin as the full definition. Without `skill_set` a skill name
+        `source` pin as the full definition. Without `skillSet` a skill name
         is served from the first-listed set that holds it, so the path names
-        one file whichever set holds it. With `skill_set` the path is looked
+        one file whichever set holds it. With `skillSet` the path is looked
         up in that set, whole: use it after installing one set with
-        `GET .../workflows/{workflowName}?skill_set=`, so a skill another set
+        `GET .../workflows/{workflowName}?skillSet=`, so a skill another set
         also holds is read from the set you installed. The path is looked up
         in the resolved skills, never joined onto the filesystem. A file from a set's `assets` listing is matched exactly
         against the listing, then read from disk and served only if it still
         hashes to its listed `sha256`; one that changed, or became a link, since
-        the load is a 404. A text file answers with `file_contents`; a binary
+        the load is a 404 that says it changed and is not served until the
+        package reloads, as `GET .../skills/{skillName}/{path}` answers for a
+        changed file. A text file answers with `file_contents`; a binary
         one (not UTF-8, or holding a NUL byte) has no `file_contents` and
         answers with a `message` naming its size.
 
-        404 when the workflow, the set named by `skill_set` or the file is not
+        404 when the workflow, the set named by `skillSet` or the file is not
         served.
       parameters:
         - name: environmentName
@@ -3415,12 +3417,12 @@ paths:
           required: true
           schema:
             type: string
-        - name: skill_set
+        - name: skillSet
           in: query
           description: >-
             A skill set's name, as listed under `skill_sets`. Looks the path up
-            in that set only, with every skill it holds. A repeated value is a
-            400.
+            in that set only, with every skill it holds. A repeated or empty
+            value is a 400.
           required: false
           schema:
             type: string
@@ -6648,22 +6650,26 @@ components:
       readOnly: true
       description: >-
         A skill set a workflow lists, without its skills: the set's folder
-        name, its path as the manifest writes it, and its digest.
+        name, its normalized path, and its digest.
       properties:
         name:
           type: string
           description: >-
             The set's folder name, which is what a chat picks it by and what
-            `skill_set=` takes.
+            `skillSet=` takes.
         path:
           type: string
-          description: Package-relative path of the set's folder, as written in the manifest.
+          description: >-
+            Package-relative path of the set's folder, normalized: `./` and
+            `..` segments, doubled slashes and a trailing slash are resolved or
+            dropped from what the manifest wrote.
         digest:
           type: string
           description: >-
             SHA-256 over the set's path and what it serves: each inline file's
-            path and text, each listed file's path and SHA-256, and each
-            skill's applied `.skillignore`. Editing another set, or a
+            path and the text the reply carries (a `SKILL.md` as re-emitted),
+            each listed file's path and SHA-256, and each skill's applied
+            `.skillignore`. Editing another set, or a
             workflow's instructions, does not move it; a package past the 8 MiB
             asset cap can couple sets.
       required:
@@ -6729,7 +6735,10 @@ components:
           description: A `SKILL.md`'s description. Only in the `skills=summary` view.
         bytes:
           type: integer
-          description: Size of `file_contents` in UTF-8 bytes. Only in the `skills=summary` view.
+          description: >-
+            Length in UTF-8 bytes of the `file_contents` the full view serves
+            for this file, so a re-emitted `SKILL.md` is shorter than its file
+            on disk. Only in the `skills=summary` view.
       required:
         - relative_filepath
 
@@ -6750,7 +6759,9 @@ components:
           description: "`<skill>/<path>`, relative to the set's folder."
         bytes:
           type: integer
-          description: Size in bytes, under 1 MiB.
+          description: >-
+            Size of the file on disk in bytes, under 1 MiB. The file is served
+            unchanged, so this is also its size when fetched.
         sha256:
           type: string
           description: SHA-256 of the file's bytes.
@@ -6766,7 +6777,7 @@ components:
         A skill set as a workflow serves it: its skills' inline files and the
         files its skills list. In a whole-workflow view a skill name an earlier
         set of the same workflow also holds is left out here and served from
-        that set; a reply for one `skill_set` holds every skill the set has.
+        that set; a reply for one `skillSet` holds every skill the set has.
       properties:
         name:
           type: string
@@ -6870,20 +6881,21 @@ components:
           type: string
           description: >-
             The instructions file's Markdown, at most 16 KiB. Absent when the
-            workflow declares none and when the reply is for one `skill_set`.
+            workflow declares none and when the reply is for one `skillSet`.
         skill_sets:
           type: array
           description: >-
             The workflow's skill sets in the order the manifest lists them, or
-            just the one asked for with `skill_set`.
+            just the one asked for with `skillSet`.
           items:
             $ref: "#/components/schemas/WorkflowSkillSet"
         warnings:
           type: array
           description: >-
             The workflow's own findings (for instance a skill name two of its
-            sets both hold), then each of its sets' findings. With `skill_set`,
-            only that set's.
+            sets both hold), then each of its sets' findings. With `skillSet`,
+            the workflow's own except the one about a repeated skill name,
+            then that set's findings.
           items:
             type: string
         source:
@@ -6937,7 +6949,9 @@ components:
           description: Path relative to the skill's root, usable as the `path` of `GET .../skills/{skillName}/{path}`.
         size:
           type: integer
-          description: Size in bytes.
+          description: >-
+            Size of the file on disk in bytes. A skill's files are served
+            verbatim, so this is also the length of its `content`.
 
     Skill:
       type: object

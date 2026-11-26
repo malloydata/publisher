@@ -82,6 +82,20 @@ type GetWorkflowParams = z.infer<z.ZodObject<typeof getWorkflowShape>>;
 
 type Payload = { message?: string; [key: string]: unknown };
 
+/** The query string of a REST fallback URL: the `versionId` this reply was read from, so the read answers from the same version after `latest` moves, then `extra`. */
+function restQuery(
+   source: { versionId?: string } | undefined,
+   ...extra: string[]
+): string {
+   const parts = [
+      ...(source?.versionId
+         ? [`versionId=${encodeURIComponent(source.versionId)}`]
+         : []),
+      ...extra,
+   ];
+   return parts.length === 0 ? "" : `?${parts.join("&")}`;
+}
+
 /** `payload` with as many of `available` as fit the tool-result limit beside it, and a note counting the rest; `fits` is false when not even an empty list leaves room. */
 function withAvailable<T>(
    uri: string,
@@ -161,9 +175,9 @@ export function registerGetWorkflowTool(
          // An answer short by nature: sent with the list cut to what is left, whether or not that is enough.
          const send = (payload: Payload) =>
             jsonResource(uri, reply(payload).payload);
-         // The size a message names for an answer: the list is cut to what is left, so it does not count.
-         const sizeOf = (payload: object) =>
-            wireChars(uri, { ...payload, availableWorkflows: [] }, id);
+         // The size a message names for an answer that does not fit: as it would be sent, so it is over the limit.
+         const sizeOf = (payload: Payload) =>
+            wireChars(uri, reply(payload).payload, id);
          const skillSet = params.skill_set ?? undefined;
          if (
             params.workflow_name === undefined ||
@@ -210,7 +224,7 @@ export function registerGetWorkflowTool(
             return send({
                skillFile: {
                   relative_filepath: skillFile.relative_filepath,
-                  message: `'${params.skill_path}' would be ${sizeOf({ skillFile })} characters as a tool result, over the limit of ${FCJ_MAX_CHARS}, so get_workflow cannot return it. REST has no such limit: GET ${rest}/skills/${path.join("/")}${skillSet === undefined ? "" : `?skill_set=${encodeURIComponent(skillSet)}`}`,
+                  message: `'${params.skill_path}' would be ${sizeOf({ skillFile })} characters as a tool result, over the limit of ${FCJ_MAX_CHARS}, so get_workflow cannot return it. REST has no such limit: GET ${rest}/skills/${path.join("/")}${restQuery(skillFile.source, ...(skillSet === undefined ? [] : [`skillSet=${encodeURIComponent(skillSet)}`]))}`,
                   source: skillFile.source,
                },
             });
@@ -230,20 +244,23 @@ export function registerGetWorkflowTool(
             view === "full"
                ? pkg.getWorkflow(params.workflow_name, "summary", skillSet)
                : undefined;
+         let refused: Payload = { workflow };
          if (summary) {
             const listed =
                skillSet === undefined
-                  ? `Read one skill set whole with skill_set, whose full view lists them under assets, or use REST, which has no such limit: GET ${rest}`
-                  : `REST has no such limit: GET ${rest}?skill_set=${encodeURIComponent(skillSet)}`;
-            const degraded = reply({
+                  ? `Read one skill set whole with skill_set, whose full view lists them under assets, or use REST, which has no such limit: GET ${rest}${restQuery(workflow.source)}`
+                  : `REST has no such limit: GET ${rest}${restQuery(workflow.source, `skillSet=${encodeURIComponent(skillSet)}`)}`;
+            const degraded = {
                workflow: summary,
                message: `The full view would be ${sizeOf({ workflow })} characters as a tool result, over the limit of ${FCJ_MAX_CHARS}, so this is the summary view. It leaves out the sets' listed files (scripts, templates and other assets). ${listed}. Read a file of the summary by skill_path.`,
-            });
-            if (degraded.fits) return jsonResource(uri, degraded.payload);
+            };
+            const sent = reply(degraded);
+            if (sent.fits) return jsonResource(uri, sent.payload);
+            refused = degraded;
          }
          return send({
             workflow: null,
-            message: `The ${summary ? "summary" : view} view would be ${sizeOf({ workflow: summary ?? workflow })} characters as a tool result, over the limit of ${FCJ_MAX_CHARS}, so get_workflow cannot return it. ${skillSet === undefined ? "Fix: pass skill_set with a set name from availableWorkflows to read one set at a time. " : ""}REST has no such limit: GET ${rest}?${skillSet === undefined ? "" : `skill_set=${encodeURIComponent(skillSet)}&`}skills=summary`,
+            message: `The ${summary ? "summary" : view} view would be ${sizeOf(refused)} characters as a tool result, over the limit of ${FCJ_MAX_CHARS}, so get_workflow cannot return it. ${skillSet === undefined ? "Fix: pass skill_set with a set name from availableWorkflows to read one set at a time. " : ""}REST has no such limit: GET ${rest}${restQuery(workflow.source, ...(skillSet === undefined ? [] : [`skillSet=${encodeURIComponent(skillSet)}`]), "skills=summary")}`,
          });
       },
    });
