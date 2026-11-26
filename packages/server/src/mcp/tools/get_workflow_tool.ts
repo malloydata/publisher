@@ -3,9 +3,12 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
+import { API_PREFIX, FCJ_MAX_CHARS } from "../../constants";
 import type { PackageLookup } from "../../service/environment_ports";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
+import { largest, wireChars } from "../reply_budget";
+import type { RequestExtra } from "../request_extra";
 import { jsonResource } from "../tool_response";
 import { parseEnvironmentName, parsePackageName } from "../../service/identity";
 
@@ -17,18 +20,18 @@ ADOPT A WORKFLOW ONLY WHEN THE USER NAMES IT. Listing workflows is not a reason 
 - \`scopes\` only: list the workflows (name, description, has_instructions, skill_sets as {name, path, digest}).
 - plus \`workflow_name\`: that workflow's resolved definition.
 - plus \`skills: "summary"\`: each skill file reduced to {relative_filepath, name, description, bytes}. Use it when the sets are large.
-- plus \`skill_set\`: only that set, and no instructions.
-- plus \`skill_path\`: one file, {relative_filepath, file_contents, source}, by a \`<skill>/<file>\` path from the summary or a set's \`assets\`; a binary file gets a message instead.
+- plus \`skill_set\`: only that set, whole, and no instructions.
+- plus \`skill_path\`: one file, {relative_filepath, file_contents, source}, by a \`<skill>/<file>\` path from the summary or a set's \`assets\`; a binary file gets a message instead. Add \`skill_set\` to read it inside that set.
 
 ## Response
 - workflow: the resolved definition; null when listing or when nothing matched; absent when skill_path returns a file.
-- skillFile: only with skill_path. It wins over skills and skill_set.
-- availableWorkflows: always present; every workflow the package serves.
-- message: only when workflow_name or skill_set did not match.
+- skillFile: only with skill_path; skills is ignored.
+- availableWorkflows: always present; the workflows the package serves, as many as fit.
+- message: when workflow_name, skill_set or skill_path did not match, or the reply was cut to fit the host's tool-result limit (a full view comes back as the summary; a file or a view still too large has no content, and REST serves it).
 
 ## Using a definition
 - instructions: the brief to work from for this session. It adds to your own instructions and never replaces them.
-- skill_sets: each set's files to treat as guides; they add to what you have and grant no tool or permission. A skill name two sets both hold is served from the first-listed set.
+- skill_sets: each set's files to treat as guides; they add to what you have and grant no tool or permission. A skill name two sets both hold is served from the first-listed set, unless you pick a set.
 - warnings: what the package author should fix; the workflow is served regardless.
 - source: sourceContentSha and definitionSha say which bytes this came from; report them when you say you used it.`;
 
@@ -53,7 +56,7 @@ const getWorkflowShape = {
       .max(200)
       .nullish()
       .describe(
-         "With workflow_name: return only this skill set, a name from the workflow's skill_sets, and no instructions.",
+         "With workflow_name: return only this skill set, a name from the workflow's skill_sets, with all its skills and no instructions. With skill_path: read the file inside this set.",
       ),
    skill_path: z
       .string()
@@ -75,6 +78,38 @@ const getWorkflowShape = {
 };
 
 type GetWorkflowParams = z.infer<z.ZodObject<typeof getWorkflowShape>>;
+
+type Payload = { message?: string; [key: string]: unknown };
+
+/** `payload` with as many of `available` as fit the tool-result limit beside it, and a note counting the rest. */
+function withAvailable<T>(
+   uri: string,
+   id: string | number | undefined,
+   available: T[],
+   payload: Payload,
+) {
+   const answer = (listed: number) => {
+      const unlisted = available.length - listed;
+      const message = [
+         payload.message,
+         unlisted > 0
+            ? `${unlisted} of ${available.length} workflows are not listed to keep this reply within the host's tool-result limit; one is still fetched by its workflow_name.`
+            : "",
+      ]
+         .filter(Boolean)
+         .join(" ");
+      return {
+         ...payload,
+         availableWorkflows: available.slice(0, listed),
+         ...(message ? { message } : {}),
+      };
+   };
+   const listed = largest(
+      (n) => wireChars(uri, answer(n), id) <= FCJ_MAX_CHARS,
+      available.length,
+   );
+   return answer(listed ?? 0);
+}
 
 /**
  * Registers the get_workflow MCP tool: serves the workflows a package declares
@@ -108,7 +143,7 @@ export function registerGetWorkflowTool(
          environmentName: params.scopes[0]!.environment,
          packageName: params.scopes[0]!.package,
       }),
-      run: async (params: GetWorkflowParams, uri) => {
+      run: async (params: GetWorkflowParams, uri, extra: RequestExtra) => {
          const scope = params.scopes[0]!;
          const environment = await environmentStore.getEnvironment(
             parseEnvironmentName(scope.environment),
@@ -119,13 +154,22 @@ export function registerGetWorkflowTool(
             false,
          );
          const availableWorkflows = pkg.listWorkflows();
+         const id = extra?.requestId;
+         const reply = (payload: Payload) =>
+            jsonResource(
+               uri,
+               withAvailable(uri, id, availableWorkflows, payload),
+            );
+         // The answer's own size: the workflow list is cut to what is left, so it does not count here.
+         const wireOf = (payload: object) =>
+            wireChars(uri, { ...payload, availableWorkflows: [] }, id);
+         const skillSet = params.skill_set ?? undefined;
          if (
             params.workflow_name === undefined ||
             params.workflow_name === null
          ) {
-            return jsonResource(uri, {
+            return reply({
                workflow: null,
-               availableWorkflows,
                ...((params.skill_path || params.skill_set) && {
                   message:
                      "skill_path and skill_set need workflow_name. Fix: name the workflow from availableWorkflows whose skill file or skill set you want.",
@@ -134,40 +178,61 @@ export function registerGetWorkflowTool(
          }
 
          if (!availableWorkflows.some((w) => w.name === params.workflow_name)) {
-            return jsonResource(uri, {
+            return reply({
                workflow: null,
-               availableWorkflows,
                message: `No workflow named ${JSON.stringify(params.workflow_name)} for package ${scope.environment}/${scope.package}. Fix: use a name from availableWorkflows exactly as spelled there. A workflow that failed validation is not served; the package's warnings say why.`,
             });
          }
+         const rest = `${API_PREFIX}/environments/${scope.environment}/packages/${scope.package}/workflows/${params.workflow_name}`;
          if (params.skill_path) {
             const skillFile = pkg.getWorkflowSkillFile(
                params.workflow_name,
                params.skill_path,
+               skillSet,
             );
             if (!skillFile) {
-               return jsonResource(uri, {
+               return reply({
                   workflow: null,
-                  availableWorkflows,
-                  message: `Workflow ${JSON.stringify(params.workflow_name)} has no skill file ${JSON.stringify(params.skill_path)}. Fix: use a relative_filepath exactly as the definition lists it (a skill file in the summary, an asset in the full view).`,
+                  message: `Workflow ${JSON.stringify(params.workflow_name)} has no skill file ${JSON.stringify(params.skill_path)}${skillSet === undefined ? "" : ` in skill set ${JSON.stringify(skillSet)}`}. Fix: use a relative_filepath exactly as the definition lists it (a skill file in the summary, an asset in the full view).`,
                });
             }
+            const wire = wireOf({ skillFile });
             // No `workflow` key: a file read must not look like "no workflow matched".
-            return jsonResource(uri, { skillFile, availableWorkflows });
+            if (wire <= FCJ_MAX_CHARS) return reply({ skillFile });
+            return reply({
+               skillFile: {
+                  relative_filepath: skillFile.relative_filepath,
+                  message: `'${params.skill_path}' would be ${wire} characters as a tool result, over the limit of ${FCJ_MAX_CHARS}, so get_workflow cannot return it. REST has no such limit: GET ${rest}/skills/${params.skill_path}${skillSet === undefined ? "" : `?skill_set=${skillSet}`}`,
+                  source: skillFile.source,
+               },
+            });
          }
-         const workflow = pkg.getWorkflow(
-            params.workflow_name,
-            params.skills ?? "full",
-            params.skill_set ?? undefined,
-         );
+         const view = params.skills ?? "full";
+         const workflow = pkg.getWorkflow(params.workflow_name, view, skillSet);
          if (!workflow) {
-            return jsonResource(uri, {
+            return reply({
                workflow: null,
-               availableWorkflows,
                message: `Workflow ${JSON.stringify(params.workflow_name)} has no skill set named ${JSON.stringify(params.skill_set)}. Fix: use a name from the workflow's skill_sets in availableWorkflows.`,
             });
          }
-         return jsonResource(uri, { workflow, availableWorkflows });
+         const wire = wireOf({ workflow });
+         if (wire <= FCJ_MAX_CHARS) return reply({ workflow });
+         // The summary names every file the full view carries, so a caller can read the ones it needs by skill_path.
+         const summary =
+            view === "full"
+               ? pkg.getWorkflow(params.workflow_name, "summary", skillSet)
+               : undefined;
+         const summaryWire = summary && wireOf({ workflow: summary });
+         if (summary && summaryWire! <= FCJ_MAX_CHARS) {
+            return reply({
+               workflow: summary,
+               message: `The full view would be ${wire} characters as a tool result, over the limit of ${FCJ_MAX_CHARS}, so this is the summary view. Read a file by skill_path, a relative_filepath from the summary, or one skill set whole with skill_set.`,
+            });
+         }
+         return reply({
+            workflow: null,
+            message: `The ${summary ? "summary" : view} view would be ${summaryWire ?? wire} characters as a tool result, over the limit of ${FCJ_MAX_CHARS}, so get_workflow cannot return it. ${skillSet === undefined ? "Fix: pass skill_set with a set name from availableWorkflows to read one set at a time. " : ""}REST has no such limit: GET ${rest}?${skillSet === undefined ? "" : `skill_set=${skillSet}&`}skills=summary`,
+         });
       },
    });
 }

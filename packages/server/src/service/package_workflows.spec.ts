@@ -1244,6 +1244,68 @@ describe("package workflows", () => {
             ).rejects.toBeInstanceOf(WorkflowNotFoundError);
          });
 
+         it("reads a file inside the picked set through the controller and get_workflow, where the whole workflow serves the first-listed copy", async () => {
+            write(
+               `${SECOND}/conventions/SKILL.md`,
+               "---\nname: conventions\ndescription: Second copy.\n---\n",
+            );
+            manifest({
+               workflows: {
+                  analyst: { ...analyst(), skill_sets: [MAIN, SECOND] },
+               },
+            });
+            const pkg = await load();
+            const controller = new SkillController(storeFor(pkg));
+            const tool = toolFor(pkg);
+            const file = "conventions/SKILL.md";
+
+            const viaRest = await controller.getWorkflowSkillFile(
+               "env",
+               "pkg",
+               "analyst",
+               file,
+               "second",
+            );
+            expect(viaRest.file_contents).toContain("Second copy.");
+            const viaMcp = body(
+               await tool({
+                  scopes,
+                  workflow_name: "analyst",
+                  skill_path: file,
+                  skill_set: "second",
+               }),
+            );
+            expect(viaMcp.skillFile).toEqual(viaRest);
+            const whole = body(
+               await tool({
+                  scopes,
+                  workflow_name: "analyst",
+                  skill_path: file,
+               }),
+            );
+            expect(whole.skillFile.file_contents).toContain("Use net revenue.");
+
+            await expect(
+               controller.getWorkflowSkillFile(
+                  "env",
+                  "pkg",
+                  "analyst",
+                  "extra/SKILL.md",
+                  "main",
+               ),
+            ).rejects.toBeInstanceOf(WorkflowNotFoundError);
+            const miss = body(
+               await tool({
+                  scopes,
+                  workflow_name: "analyst",
+                  skill_path: "extra/SKILL.md",
+                  skill_set: "nope",
+               }),
+            );
+            expect(miss.skillFile).toBeUndefined();
+            expect(miss.message).toContain("Fix:");
+         });
+
          it("get_workflow summary and skill_set match REST and leave the default alone", async () => {
             const pkg = await loadWithReference();
             const controller = new SkillController(storeFor(pkg));

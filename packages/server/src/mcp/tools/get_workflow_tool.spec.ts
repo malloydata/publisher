@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import { FCJ_MAX_CHARS } from "../../constants";
 import { PackageNotFoundError } from "../../errors";
 import { getNotFoundError } from "../error_messages";
 import { registerGetWorkflowTool } from "./get_workflow_tool";
@@ -16,7 +17,10 @@ type Result = {
       resource?: { uri: string; text: string };
    }>;
 };
-type Handler = (params: Record<string, unknown>) => Promise<Result>;
+type Handler = (
+   params: Record<string, unknown>,
+   extra?: { requestId?: string | number },
+) => Promise<Result>;
 
 const scopes = [{ environment: "env", package: "pkg" }];
 const WORKFLOWS = [
@@ -28,18 +32,31 @@ const WORKFLOWS = [
    },
 ];
 
-/** get_workflow over a package that serves one workflow with one skill set and one skill file. */
-function getWorkflow(getPackage?: () => Promise<unknown>): Handler {
+/** get_workflow over a package that serves one workflow with one skill set and one skill file; `over` replaces what the package answers. */
+function getWorkflow(
+   getPackage?: () => Promise<unknown>,
+   over: Record<string, unknown> = {},
+): Handler {
    const pkg = {
       listWorkflows: () => WORKFLOWS,
       getWorkflow: (name: string, skills: string, skillSet?: string) =>
          skillSet !== undefined && skillSet !== "main"
             ? undefined
             : { name, skills, skillSet },
-      getWorkflowSkillFile: (_workflow: string, path: string) =>
-         path === "guide/SKILL.md"
-            ? { relative_filepath: path, file_contents: "# guide" }
+      getWorkflowSkillFile: (
+         _workflow: string,
+         path: string,
+         skillSet?: string,
+      ) =>
+         path === "guide/SKILL.md" &&
+         (skillSet === undefined || skillSet === "main")
+            ? {
+                 relative_filepath: path,
+                 file_contents:
+                    skillSet === undefined ? "# guide" : "# in main",
+              }
             : undefined,
+      ...over,
    };
    const store = {
       getEnvironment: async () => ({
@@ -154,6 +171,25 @@ describe("get_workflow", () => {
       expect(missing.message).toContain('has no skill file "x/SKILL.md"');
    });
 
+   it("scopes a skill file to the skill set it names, or says it is missing there", async () => {
+      const handler = getWorkflow();
+      const read = (skill_set: string) =>
+         handler({
+            scopes,
+            workflow_name: "analyst",
+            skill_path: "guide/SKILL.md",
+            skill_set,
+         });
+      expect(parse(await read("main")).skillFile.file_contents).toBe(
+         "# in main",
+      );
+      const missing = parse(await read("other"));
+      expect(missing.skillFile).toBeUndefined();
+      expect(missing.workflow).toBeNull();
+      expect(missing.message).toContain('has no skill file "guide/SKILL.md"');
+      expect(missing.message).toContain('in skill set "other"');
+   });
+
    it("answers a missing package with a not-found error naming it", async () => {
       const result = await getWorkflow(async () => {
          throw new PackageNotFoundError("Package pkg does not exist");
@@ -164,5 +200,133 @@ describe("get_workflow", () => {
          error: details.message,
          suggestions: details.suggestions,
       });
+   });
+});
+
+describe("get_workflow: the reply stays within the tool-result limit", () => {
+   const wire = (r: Result, id: string | number = "i".repeat(62)) =>
+      JSON.stringify({ jsonrpc: "2.0", id, result: r }).length;
+   const text = "x".repeat(FCJ_MAX_CHARS);
+   const source = { sourceContentSha: "s", definitionSha: "d" };
+   const workflowOf = (skills: string) =>
+      skills === "full"
+         ? { name: "analyst", view: "full", text }
+         : { name: "analyst", view: "summary" };
+   const call = { scopes, workflow_name: "analyst" };
+
+   it("answers a full view that does not fit with the summary view, and says so", async () => {
+      const result = await getWorkflow(undefined, {
+         getWorkflow: (_name: string, skills: string) => workflowOf(skills),
+      })(call);
+      const payload = parse(result);
+      expect(payload.workflow).toEqual({ name: "analyst", view: "summary" });
+      expect(payload.message).toContain("The full view would be");
+      expect(payload.message).toContain(
+         `over the limit of ${FCJ_MAX_CHARS}, so this is the summary view`,
+      );
+      expect(payload.availableWorkflows).toEqual(WORKFLOWS);
+      expect(wire(result)).toBeLessThanOrEqual(FCJ_MAX_CHARS);
+   });
+
+   it("leaves a full view that fits, and a summary that was asked for, as they are", async () => {
+      const handler = getWorkflow(undefined, {
+         getWorkflow: (_name: string, skills: string) =>
+            skills === "full"
+               ? { name: "analyst", view: "full" }
+               : workflowOf(skills),
+      });
+      const full = parse(await handler(call));
+      expect(full.workflow.view).toBe("full");
+      expect(full.message).toBeUndefined();
+      const summary = parse(await handler({ ...call, skills: "summary" }));
+      expect(summary.workflow.view).toBe("summary");
+      expect(summary.message).toBeUndefined();
+   });
+
+   it("refuses a view that does not fit even as a summary, naming the narrower reads and REST", async () => {
+      const result = await getWorkflow(undefined, {
+         getWorkflow: () => ({ name: "analyst", text }),
+      })({ ...call, skills: "summary" });
+      const payload = parse(result);
+      expect(payload.workflow).toBeNull();
+      expect(payload.message).toContain(
+         `over the limit of ${FCJ_MAX_CHARS}, so get_workflow cannot return it`,
+      );
+      expect(payload.message).toContain("skill_set");
+      expect(payload.message).toContain(
+         "GET /api/v0/environments/env/packages/pkg/workflows/analyst",
+      );
+      expect(payload.availableWorkflows).toEqual(WORKFLOWS);
+      expect(wire(result)).toBeLessThanOrEqual(FCJ_MAX_CHARS);
+   });
+
+   it("answers a skill file that does not fit with a message in place of its text, keeping its pin", async () => {
+      const result = await getWorkflow(undefined, {
+         getWorkflowSkillFile: (_workflow: string, path: string) => ({
+            relative_filepath: path,
+            file_contents: text,
+            source,
+         }),
+      })({ ...call, skill_path: "guide/assets/big.txt" });
+      const { skillFile, workflow } = parse(result);
+      expect(workflow).toBeUndefined();
+      expect(skillFile).toEqual({
+         relative_filepath: "guide/assets/big.txt",
+         message: expect.stringContaining(
+            `over the limit of ${FCJ_MAX_CHARS}, so get_workflow cannot return it`,
+         ),
+         source,
+      });
+      expect(skillFile.message).toContain(
+         "GET /api/v0/environments/env/packages/pkg/workflows/analyst/skills/guide/assets/big.txt",
+      );
+      expect(wire(result)).toBeLessThanOrEqual(FCJ_MAX_CHARS);
+   });
+
+   it("lists as many workflows as fit beside the answer, and counts the rest", async () => {
+      const many = Array.from({ length: 1000 }, (_, i) => ({
+         ...WORKFLOWS[0]!,
+         name: i === 0 ? "analyst" : `analyst-${i}`,
+      }));
+      const handler = getWorkflow(undefined, { listWorkflows: () => many });
+      for (const params of [
+         { scopes },
+         call,
+         { ...call, workflow_name: "nope" },
+      ]) {
+         const result = await handler(params);
+         const payload = parse(result);
+         expect(payload.availableWorkflows.length).toBeGreaterThan(0);
+         expect(payload.availableWorkflows.length).toBeLessThan(many.length);
+         expect(payload.availableWorkflows[0].name).toBe("analyst");
+         expect(payload.message).toContain(
+            `${many.length - payload.availableWorkflows.length} of ${many.length} workflows are not listed`,
+         );
+         expect(wire(result)).toBeLessThanOrEqual(FCJ_MAX_CHARS);
+      }
+      // A name beyond the cut is still resolved.
+      const beyond = parse(
+         await handler({ ...call, workflow_name: "analyst-999" }),
+      );
+      expect(beyond.workflow).toMatchObject({ name: "analyst-999" });
+   });
+
+   it("measures the reply with the request's own id", async () => {
+      const handler = getWorkflow(undefined, {
+         getWorkflow: (_name: string, skills: string) => ({
+            name: "analyst",
+            skills,
+            ...(skills === "full" && {
+               text: "y".repeat(FCJ_MAX_CHARS - 1500),
+            }),
+         }),
+      });
+      const plain = await handler(call);
+      expect(parse(plain).message).toBeUndefined();
+      // A long id of escaping characters leaves the reply no room for the full view.
+      const requestId = '"'.repeat(1000);
+      const escaped = await handler(call, { requestId });
+      expect(parse(escaped).message).toContain("so this is the summary view");
+      expect(wire(escaped, requestId)).toBeLessThanOrEqual(FCJ_MAX_CHARS);
    });
 });

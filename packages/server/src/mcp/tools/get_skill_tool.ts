@@ -20,6 +20,7 @@ import {
    skillFileView,
    type ResolvedSkill,
 } from "../../service/skills/package_skills";
+import { largest, wireChars } from "../reply_budget";
 import { jsonResource } from "../tool_response";
 import { parseEnvironmentName, parsePackageName } from "../../service/identity";
 
@@ -88,42 +89,12 @@ function summarize(skills: ResolvedSkill[]) {
    }));
 }
 
-/** The id a host is assumed to send when the request carries none. */
-const ASSUMED_ID = "i".repeat(62);
-
-/** Characters of the JSON-RPC message the host receives for this answer, which echoes the request's own id. */
-function wireChars(
-   uri: string,
-   payload: unknown,
-   id: string | number = ASSUMED_ID,
-): number {
-   return JSON.stringify({
-      jsonrpc: "2.0",
-      id,
-      result: jsonResource(uri, payload),
-   }).length;
-}
-
 function oversizeMessage(relative: string, wire: number): string {
    const next =
       relative === SKILL_MD
          ? "Read one of the other files listed in `files`."
          : "Call get_skill with this skill_name and no path for its file list, then read a smaller file by `path`.";
    return `'${relative}' would be ${wire} characters as a tool result, over the limit of ${FCJ_MAX_CHARS}, so get_skill cannot return it. ${next}`;
-}
-
-/** The most files that fit: all `hi` if that does, else the largest n below it (a cut list carries a longer message, so the full count is checked on its own), or undefined when not even 0 fit. */
-function largest(fits: (n: number) => boolean, hi: number): number | undefined {
-   if (fits(hi)) return hi;
-   if (hi === 0 || !fits(0)) return undefined;
-   let lo = 0;
-   let top = hi - 1;
-   while (lo < top) {
-      const mid = Math.ceil((lo + top) / 2);
-      if (fits(mid)) lo = mid;
-      else top = mid - 1;
-   }
-   return lo;
 }
 
 /**
@@ -273,8 +244,8 @@ function fileAnswer(
 }
 
 /**
- * Registers the get_skill MCP tool: serves the bundled guides, and the guides a
- * package ships under `skills/`, with the package's copy shadowing a bundled
+ * Registers the get_skill MCP tool: serves the bundled guides, and the skills of
+ * a package's `default` workflow, with the package's copy shadowing a bundled
  * one of the same name. A guide is read file by file, by path.
  *
  * A tool rather than more prompts: prompts are registered once at start, while
