@@ -338,6 +338,39 @@ describe("Environment loading of published versions", () => {
       expect(await env.listPackages()).toEqual([]);
    });
 
+   it("reclaims every version a package delete removed, one that committed while it ran included", async () => {
+      const env = await newEnvironment();
+      await publish(env, source("1.0.0", 1));
+      const reclaimed: string[] = [];
+      env.setVersionDeletedHook(
+         (_pkg, versionId) => void reclaimed.push(versionId),
+      );
+      await env.deletePackage(PKG, {
+         removeRecords: async () => {
+            // A further version committing between the delete's read of the
+            // versions and the transaction that removes the rows: it does not
+            // take the package lock the delete holds.
+            await repo.commitPublish(
+               {
+                  versionId: "2.0.0",
+                  environmentId: ENV_ID,
+                  packageName: PKG,
+                  dirName: "2.0.0",
+                  contentHash: "hash-2",
+                  sourceLocation: "/src/2.0.0",
+                  manifestPath: null,
+                  description: null,
+               },
+               () => false,
+            );
+            const row = await repo.getPackageByName(ENV_ID, PKG);
+            return repo.deletePackage(row!.id);
+         },
+      });
+      expect(reclaimed.sort()).toEqual(["1.0.0", "2.0.0"]);
+      expect(await repo.listVersions(ENV_ID, PKG)).toEqual([]);
+   });
+
    it("keeps the folder of a package that is not versioned and failed to load", async () => {
       fs.mkdirSync(path.join(envPath, "broken"));
       fs.writeFileSync(path.join(envPath, "broken", "notes.txt"), "keep me");

@@ -129,14 +129,17 @@ export function inMemoryVersionRegistry(): Record<string, unknown> {
       },
       deletePackage: async (id: string) => {
          const found = findPackageById(id);
-         if (!found) return;
+         if (!found) return [];
          const [key, row] = found;
          packages.delete(key);
+         const deleted: string[] = [];
          for (const v of versionsOf(row.environmentId, row.name)) {
             versions.delete(
                versionKey(v.environmentId, v.packageName, v.versionId),
             );
+            deleted.push(v.versionId);
          }
+         return deleted;
       },
 
       listVersions: async (environmentId: string, packageName: string) =>

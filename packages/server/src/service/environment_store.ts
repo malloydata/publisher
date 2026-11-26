@@ -1664,7 +1664,7 @@ export class EnvironmentStore
    public async deletePackageFromDatabase(
       environmentName: string,
       packageName: string,
-   ): Promise<void> {
+   ): Promise<string[]> {
       // Before the metadata lookups: embeddings are written off the
       // in-memory environment, which can outlive a lost metadata row,
       // so the cleanup must not sit behind the missing-row early return.
@@ -1677,7 +1677,7 @@ export class EnvironmentStore
 
       if (!dbEnvironment) {
          logger.error(`Environment "${environmentName}" not found in database`);
-         return;
+         return [];
       }
 
       const existingPackage = await repository.getPackageByName(
@@ -1685,10 +1685,10 @@ export class EnvironmentStore
          packageName,
       );
 
-      if (existingPackage) {
-         await repository.deletePackage(existingPackage.id);
-         logger.info(`Deleted package "${packageName}" from database`);
-      }
+      if (!existingPackage) return [];
+      const deleted = await repository.deletePackage(existingPackage.id);
+      logger.info(`Deleted package "${packageName}" from database`);
+      return deleted;
    }
 
    /**

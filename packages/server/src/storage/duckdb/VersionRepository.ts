@@ -356,15 +356,17 @@ export class VersionRepository {
     * transaction, so a publish of a further version, which does not take the
     * package lock a package delete holds, commits either before it (and its
     * version goes too) or after it (and is refused with a 404: the package has
-    * no row). A crash leaves all of it or none.
+    * no row). A crash leaves all of it or none. Returns the version ids it
+    * deleted: what the transaction saw, a version that committed just before
+    * it included.
     */
-   async deletePackage(id: string): Promise<void> {
-      await this.db.transaction(async (tx) => {
+   async deletePackage(id: string): Promise<string[]> {
+      return this.db.transaction(async (tx) => {
          const pkg = await tx.get<{ environment_id: string; name: string }>(
             "SELECT environment_id, name FROM packages WHERE id = ?",
             [id],
          );
-         if (!pkg) return;
+         if (!pkg) return [];
          const byPackage = "WHERE environment_id = ? AND package_name = ?";
          const key = [pkg.environment_id, pkg.name];
          await tx.run(`DELETE FROM incremental_ledger ${byPackage}`, key);
@@ -372,8 +374,12 @@ export class VersionRepository {
             `DELETE FROM materializations ${byPackage} AND NOT (${OWED_RECLAIM_RUN}) AND NOT (${RUNNING_VERSION_RUN})`,
             key,
          );
-         await tx.run(`DELETE FROM versions ${byPackage}`, key);
+         const deleted = await tx.all<{ version_id: string }>(
+            `DELETE FROM versions ${byPackage} RETURNING version_id`,
+            key,
+         );
          await tx.run("DELETE FROM packages WHERE id = ?", [id]);
+         return deleted.map((r) => r.version_id);
       });
    }
 

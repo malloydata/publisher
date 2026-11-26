@@ -56,8 +56,12 @@ export interface ResourceRepository {
       id: string,
       updates: Partial<PackageRecord>,
    ): Promise<PackageRecord>;
-   /** Deletes the package's row and everything keyed by it, versions included. */
-   deletePackage(id: string): Promise<void>;
+   /**
+    * Deletes the package's row and everything keyed by it, versions included,
+    * in one transaction. Returns the ids of the versions it deleted (none when
+    * the package has no row), which their reclaim needs.
+    */
+   deletePackage(id: string): Promise<string[]>;
    /**
     * Set a package's own description (null clears it) on its existing row,
     * in one statement. Never creates the row: false when there is none (the

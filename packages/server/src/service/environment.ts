@@ -5526,9 +5526,11 @@ export class Environment {
           * the rows going. For a package with versions, before anything else
           * goes: once the rows are gone no request can resolve a version, so
           * none can fetch a version's files again while they are removed. For
-          * one without, after it is unloaded, as before.
+          * one without, after it is unloaded, as before. Returns the ids of
+          * the versions it removed, whose reclaim then runs; without them,
+          * the versions read before it are reclaimed.
           */
-         removeRecords?: () => Promise<void>;
+         removeRecords?: () => Promise<string[] | void>;
       } = {},
    ): Promise<void> {
       assertSafePackageName(packageName);
@@ -5568,7 +5570,11 @@ export class Environment {
                deletedVersions = (
                   await versions!.listVersions(packageName)
                ).versions.map((version) => version.versionId);
-               await options.removeRecords?.();
+               // What the delete's transaction removed, when it says: a
+               // further version publishes without this lock, so one can
+               // commit after the read above, and its reclaim must run too.
+               const removed = await options.removeRecords?.();
+               if (Array.isArray(removed)) deletedVersions = removed;
             }
             if (versioned && this.versionService) {
                this.versionService.forgetPackage(packageName);

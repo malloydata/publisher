@@ -696,18 +696,29 @@ describe("VersionRepository", () => {
       // is one transaction.
       const { db, repo, packageId } = await freshRepo();
       await repo.commitPublish(newVersion("1.0.0"), always);
+      // Either statement path: the delete reads back what it removed.
       const conn = db as unknown as {
          runUnlocked(c: unknown, q: string, p?: unknown[]): Promise<void>;
+         allUnlocked(c: unknown, q: string, p?: unknown[]): Promise<unknown[]>;
       };
-      const runUnlocked = conn.runUnlocked.bind(db);
       let racing: Promise<unknown> | undefined;
-      conn.runUnlocked = async (c, q, p) => {
-         await runUnlocked(c, q, p);
+      const raceAfter = (q: string) => {
          if (!racing && /^DELETE FROM versions WHERE/.test(q.trim())) {
             racing = repo
                .commitPublish(newVersion("2.0.0"), always)
                .catch((err: unknown) => err);
          }
+      };
+      const runUnlocked = conn.runUnlocked.bind(db);
+      conn.runUnlocked = async (c, q, p) => {
+         await runUnlocked(c, q, p);
+         raceAfter(q);
+      };
+      const allUnlocked = conn.allUnlocked.bind(db);
+      conn.allUnlocked = async (c, q, p) => {
+         const rows = await allUnlocked(c, q, p);
+         raceAfter(q);
+         return rows;
       };
       await repo.deletePackage(packageId);
       expect(racing).toBeDefined();
