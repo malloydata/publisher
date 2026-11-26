@@ -297,6 +297,24 @@ class ResolveArm(unittest.TestCase):
         self.assertRegex(a.package_skills_sha, r"^[0-9a-f]{64}$")
         self.assertEqual(a.package_skills_dirs, [])
 
+    def test_the_tool_arm_pins_nothing_when_the_served_files_are_not_local(self):
+        # The server serves skills but their tree is not on this machine: a
+        # hash of nothing would pin the run as "guidance: none".
+        self.served_dir = None
+        self.serve(["house"])
+        a = self.args("tool")
+        rb.resolve_package_skills(a)
+        self.assertEqual(a.package_skills, "tool")
+        self.assertIsNone(a.package_skills_sha)
+
+    def test_the_tool_arm_pins_nothing_when_local_skills_differ_from_served(self):
+        # Hashing local skills the answerer cannot fetch would pin guidance
+        # it never had.
+        self.serve(["not-local"])
+        a = self.args("tool")
+        rb.resolve_package_skills(a)
+        self.assertIsNone(a.package_skills_sha)
+
     def test_a_package_with_no_default_workflow_has_nothing_to_install(self):
         (self.pkg / "publisher.json").write_text('{"name": "pkg"}')
         self.serve([])

@@ -275,8 +275,8 @@
                "size": 28571
             },
             "scripts/run_baseline.py": {
-               "digest": "sha256:19c78c0cd78b5caf631555eef1213b2c4a2166a572f944b4dce64b206e125b7d",
-               "size": 227401
+               "digest": "sha256:14e4ffb963d2ec00980ef9a2045e08c458b1475bb3e8ee53971eea99f8c09d22",
+               "size": 227666
             },
             "scripts/serve.py": {
                "digest": "sha256:d09ca7246b9beaf10037bd0792449627f63a04a8a08af8a072255b79777f2734",

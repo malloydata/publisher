@@ -3084,7 +3084,9 @@ def resolve_package_skills(a: argparse.Namespace,
     So each mode is checked, not assumed:
 
     - `install`: the package's `default` workflow must have a skill set to
-      copy. Nothing to copy means this arm is silently the `off` arm.
+      copy, and the server (which must be reachable) must report serving
+      exactly those skills. Nothing to copy means this arm is silently the
+      `off` arm; a different set means it differs in content, not delivery.
     - `tool`: the server must be serving the package's skills, or the answerer
       has nothing to fetch and this arm is silently the `off` arm too.
     - `off`: the served package must hold no skills, or the answerer can reach
@@ -3182,8 +3184,9 @@ def resolve_package_skills(a: argparse.Namespace,
                 "get_skill, so this is not a baseline. Serve a copy of the "
                 "package without its default workflow's skill sets.")
 
-    # Only a run whose answerer can reach package skills carries the pin.
-    if served:
+    # The pin is of guidance the answerer can reach: skills the server serves
+    # and this machine holds the same names of, never a hash of nothing.
+    if served and sorted(installable) == served:
         a.package_skills_sha = package_skills_sha(installable)
 
 
