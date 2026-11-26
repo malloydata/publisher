@@ -58,6 +58,11 @@ const anchors = Array.from(
    { length: 10_700 },
    (_, i) => `a${i}: &k${i} x\nb${i}: *k${i}`,
 ).join("\n");
+const anchorsLed = (lead: string) =>
+   Array.from(
+      { length: 10_700 },
+      (_, i) => `a${i}: &${lead}k${i} x\nb${i}: *${lead}k${i}`,
+   ).join("\n");
 const wide = `[${Array.from({ length: 2000 }, (_, i) => i).join(", ")}]`;
 const refs = Array.from({ length: 99 }, (_, i) => `r${i}: *l`).join("\n");
 
@@ -114,6 +119,34 @@ const PARITY: [string, string, string, string, string][] = [
       "dir",
       "x",
       "d",
+   ],
+   [
+      "10,700 anchors with names led by U+00A0",
+      `---\nname: x\ndescription: d\n${anchorsLed("\u00a0")}\n---\n`,
+      "dir",
+      "x",
+      "d",
+   ],
+   [
+      "10,700 anchors with names led by U+3000",
+      `---\nname: x\ndescription: d\n${anchorsLed("\u3000")}\n---\n`,
+      "dir",
+      "x",
+      "d",
+   ],
+   [
+      "an empty name read line by line after the anchor bound",
+      `---\nname:\ndescription: foo\n${anchors}\n---\n`,
+      "dir",
+      "dir",
+      "foo",
+   ],
+   [
+      "an empty name read line by line from invalid YAML",
+      "---\nname:\ndescription: Use when: a thing\n---\n",
+      "dir",
+      "dir",
+      "Use when: a thing",
    ],
    [
       "an anchored list referenced 99 times",

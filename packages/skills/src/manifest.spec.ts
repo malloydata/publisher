@@ -16,7 +16,7 @@ import { describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { isCredible } from "../scripts/exclusions";
+import { isCredible } from "../../server/src/service/skills/skill_files";
 import {
    manifestPath,
    manifestSkillNames,

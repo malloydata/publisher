@@ -67,20 +67,28 @@ describe("parseFrontmatter: what an alias can expand to", () => {
       expect(out.frontmatter.c).toEqual({ x: 1 });
    });
 
-   it("falls back, quickly, on 10,700 distinct anchors each referenced once", () => {
-      const pairs = Array.from(
-         { length: 10_700 },
-         (_, i) => `a${i}: &k${i} x\nb${i}: *k${i}`,
-      ).join("\n");
-      const text = skill(`name: many\ndescription: d\n${pairs}`);
-      expect(text.length).toBeGreaterThan(240 * 1024);
-      const started = performance.now();
-      const out = parseFrontmatter(text, "many");
-      // Resolving every alias took seconds; the bound is loose so a slow runner never flakes.
-      expect(performance.now() - started).toBeLessThan(1_000);
-      expect(out.frontmatter).toEqual({});
-      expect(out.warnings[0]).toContain("not valid YAML");
-      expect(out.name).toBe("many");
-      expect(out.description).toBe("d");
-   });
+   // YAML ends an anchor name only at a space, tab, line break or flow indicator, so a no-break or ideographic space can lead one.
+   it.each([
+      ["", "ASCII names"],
+      ["\u00a0", "names led by U+00A0"],
+      ["\u3000", "names led by U+3000"],
+   ])(
+      "falls back, quickly, on 10,700 distinct anchors each referenced once (%j: %s)",
+      (lead) => {
+         const pairs = Array.from(
+            { length: 10_700 },
+            (_, i) => `a${i}: &${lead}k${i} x\nb${i}: *${lead}k${i}`,
+         ).join("\n");
+         const text = skill(`name: many\ndescription: d\n${pairs}`);
+         expect(text.length).toBeGreaterThan(240 * 1024);
+         const started = performance.now();
+         const out = parseFrontmatter(text, "many");
+         // Resolving every alias took seconds; the bound is loose so a slow runner never flakes.
+         expect(performance.now() - started).toBeLessThan(1_000);
+         expect(out.frontmatter).toEqual({});
+         expect(out.warnings[0]).toContain("not valid YAML");
+         expect(out.name).toBe("many");
+         expect(out.description).toBe("d");
+      },
+   );
 });

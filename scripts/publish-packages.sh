@@ -88,8 +88,8 @@ fi
 SKILLS_CONTENT_PATHS=(skills/ packages/skills/ bun.lock package.json)
 # git pathspecs excluding files skills_diff_status's diff must NOT treat as
 # published content, because the packer never ships them. Mirrors
-# packages/skills/src/exclusions.ts; workflow-exclusions.spec.ts asserts
-# the two agree.
+# what `packedSkillFiles` (packages/skills/scripts/exclusions.ts) ships;
+# workflow-exclusions.spec.ts asserts the two agree.
 EXCLUDE=(':!skills/README.md' ':!packages/skills/src/*.spec.ts')
 
 # The paths @malloy-publisher/create-malloy-package's published content is

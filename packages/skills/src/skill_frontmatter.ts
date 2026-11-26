@@ -17,8 +17,8 @@ const EMIT_SLACK = 10_000;
 
 /** Resolving each alias scans the anchors before it, so distinct anchors cost quadratic time that the alias and emit bounds do not see. */
 const MAX_ANCHORS_AND_ALIASES = 1_000;
-/** Counted on the text because the stall is in `parseDocument` itself; over-counts a stray `*word` in a string, which only costs the line read. */
-const ANCHOR_OR_ALIAS = /[&*][^\s,[\]{}]/g;
+/** Counted on the text because the stall is in `parseDocument` itself; a name ends only where YAML ends it (not at a Unicode space), and a stray `*word` in a string over-counts, which only costs the line read. */
+const ANCHOR_OR_ALIAS = /[&*][^ \t\r\n,[\]{}]/g;
 
 function hasTooManyAnchors(front: string): boolean {
    let count = 0;
@@ -75,7 +75,7 @@ export function readFrontmatter(
 ): { name: string; description: string } {
    const line = (key: string) => {
       const value = frontmatter.match(
-         new RegExp(`^${key}:\\s*(.+)$`, "m"),
+         new RegExp(`^${key}:[ \\t]*(\\S.*)$`, "m"),
       )?.[1];
       return value === undefined ? undefined : unquote(value);
    };

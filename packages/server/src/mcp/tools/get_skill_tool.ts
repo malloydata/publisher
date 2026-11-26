@@ -197,23 +197,45 @@ function guideAnswer(
 /** The guides' names and descriptions that fit the tool-result limit, with `message` (if any) and a count of the guides left out. */
 function availableAnswer(
    skills: ResolvedSkill[],
+   scoped: boolean,
    uri: string,
    id: string | number | undefined,
    message?: string,
 ) {
    const entries = summarize(skills);
+   // What a cut keeps first: a scoped caller asked for the package's guides, and a call with no scopes lists the built-in ones. The answer keeps the resolved order.
+   const priority = entries
+      .map((_, i) => i)
+      .sort(
+         (a, b) =>
+            Number(scoped && entries[b]!.origin === "package") -
+               Number(scoped && entries[a]!.origin === "package") || a - b,
+      );
+   const own = entries.filter((e) => e.origin === "package").length;
    const answer = (listed: number) => {
-      const unlisted = entries.length - listed;
-      const text = [
-         message,
-         unlisted > 0
-            ? `${unlisted} of ${entries.length} guides are not listed to keep this reply within the host's tool-result limit. Any guide is read by its \`skill_name\`, listed or not, and \`scopes\` lists one package's guides.`
-            : "",
-      ]
-         .filter(Boolean)
-         .join(" ");
+      const ownCut = Math.max(0, own - listed);
+      const builtInCut = Math.min(
+         entries.length - own,
+         entries.length - listed,
+      );
+      const notes = scoped
+         ? [
+              ownCut > 0
+                 ? `${ownCut} of the package's ${own} own guides are not listed to keep this reply within the host's tool-result limit; one is still read by its \`skill_name\`.`
+                 : "",
+              builtInCut > 0
+                 ? `${builtInCut} built-in guides are not listed either; a call with no \`scopes\` lists them.`
+                 : "",
+           ]
+         : [
+              entries.length > listed
+                 ? `${entries.length - listed} of ${entries.length} guides are not listed to keep this reply within the host's tool-result limit; one is still read by its \`skill_name\`.`
+                 : "",
+           ];
+      const text = [message, ...notes].filter(Boolean).join(" ");
+      const kept = new Set(priority.slice(0, listed));
       return {
-         availableSkills: entries.slice(0, listed),
+         availableSkills: entries.filter((_, i) => kept.has(i)),
          ...(text ? { message: text } : {}),
       };
    };
@@ -310,7 +332,12 @@ export function registerGetSkillTool(
          if (params.skill_name === undefined || params.skill_name === null) {
             return jsonResource(
                uri,
-               availableAnswer(resolved, uri, extra?.requestId),
+               availableAnswer(
+                  resolved,
+                  scope !== undefined,
+                  uri,
+                  extra?.requestId,
+               ),
             );
          }
 
@@ -329,7 +356,13 @@ export function registerGetSkillTool(
             }`;
             return jsonResource(
                uri,
-               availableAnswer(resolved, uri, extra?.requestId, fix),
+               availableAnswer(
+                  resolved,
+                  scope !== undefined,
+                  uri,
+                  extra?.requestId,
+                  fix,
+               ),
             );
          }
 

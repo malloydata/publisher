@@ -567,17 +567,25 @@ describe("get_skill tool: a listing and an unknown-name reply fit the limit", ()
       }),
    );
 
-   it("lists the guides that fit and says how many are not listed", async () => {
+   it("lists the package's own guides ahead of the built-in ones, and says what is not listed", async () => {
       const { handler } = register(many);
       const result = await handler({ scopes });
       const out = body(result);
       expect(wire(result)).toBeLessThanOrEqual(FCJ_MAX_CHARS);
       expect(out.availableSkills.length).toBeGreaterThan(10);
-      expect(out.availableSkills.length).toBeLessThan(302);
+      expect(out.availableSkills.length).toBeLessThan(300);
+      expect(
+         out.availableSkills.every(
+            (s: { origin: string }) => s.origin === "package",
+         ),
+      ).toBe(true);
+      const own = out.availableSkills.length;
       expect(out.message).toContain(
-         `${302 - out.availableSkills.length} of 302 guides are not listed`,
+         `${300 - own} of the package's 300 own guides are not listed`,
       );
-      expect(out.message).toContain("skill_name");
+      expect(out.message).toContain("2 built-in guides are not listed either");
+      expect(out.message).toContain("a call with no `scopes`");
+      expect(out.message).not.toContain("pass scopes");
    });
 
    it("keeps an unknown-name reply within the limit, with its fix and the count", async () => {
@@ -586,7 +594,7 @@ describe("get_skill tool: a listing and an unknown-name reply fit the limit", ()
       const out = body(result);
       expect(wire(result)).toBeLessThanOrEqual(FCJ_MAX_CHARS);
       expect(out.message).toContain('No guide named "nope"');
-      expect(out.message).toContain("guides are not listed");
+      expect(out.message).toContain("own guides are not listed");
    });
 
    it("lists every guide, with no message, when they fit", async () => {

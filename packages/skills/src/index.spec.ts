@@ -5,7 +5,8 @@ import { describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { isCredible, packedSkillFiles } from "../scripts/exclusions";
+import { isCredible } from "../../server/src/service/skills/skill_files";
+import { packedSkillFiles } from "../scripts/exclusions";
 import { manifestSkillNames } from "../scripts/manifest";
 import { listSkills, skillsDir } from "./index";
 
