@@ -28,7 +28,7 @@ ADOPT A WORKFLOW ONLY WHEN THE USER NAMES IT. Listing workflows is not a reason 
 - workflow: the resolved definition; null when listing or when nothing matched; absent when skill_path returns a file.
 - skillFile: only with skill_path; skills is ignored.
 - availableWorkflows: always present; the workflows the package serves, as many as fit.
-- message: when workflow_name, skill_set or skill_path did not match, or the reply was cut to fit the host's tool-result limit (a full view comes back as the summary; a file or a view still too large has no content, and REST serves it).
+- message: when workflow_name, skill_set or skill_path did not match, or the reply was cut to fit the tool-result limit (a full view becomes the summary; a view still too large keeps only name, has_instructions, source, a file only its message; REST serves both).
 
 ## Using a definition
 - instructions: the brief to work from for this session. It adds to your own instructions and never replaces them.
@@ -262,8 +262,13 @@ export function registerGetWorkflowTool(
             if (sent.fits) return jsonResource(uri, sent.payload);
             refused = degraded;
          }
+         // The workflow matched: its name and pin stay, so this does not read as "no workflow matched".
          return send({
-            workflow: null,
+            workflow: {
+               name: workflow.name,
+               has_instructions: workflow.has_instructions,
+               source: workflow.source,
+            },
             message: `The ${summary ? "summary" : view} view would be ${sizeOf(refused)} characters as a tool result, over the limit of ${FCJ_MAX_CHARS}, so get_workflow cannot return it. ${skillSet === undefined ? "Fix: pass skill_set with a set name from availableWorkflows to read one set at a time. " : ""}REST has no such limit: GET ${rest}${restQuery(workflow.source, ...(skillSet === undefined ? [] : [`skillSet=${encodeURIComponent(skillSet)}`]), "skills=summary")}`,
          });
       },

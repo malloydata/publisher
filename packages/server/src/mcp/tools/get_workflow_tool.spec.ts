@@ -270,10 +270,20 @@ describe("get_workflow: the reply stays within the tool-result limit", () => {
 
    it("refuses a view that does not fit even as a summary, naming the narrower reads and REST", async () => {
       const result = await getWorkflow(undefined, {
-         getWorkflow: () => ({ name: "analyst", text }),
+         getWorkflow: () => ({
+            name: "analyst",
+            has_instructions: true,
+            text,
+            source,
+         }),
       })({ ...call, skills: "summary" });
       const payload = parse(result);
-      expect(payload.workflow).toBeNull();
+      // Matched, not "no workflow matched": its name and pin stay, and nothing of its body.
+      expect(payload.workflow).toEqual({
+         name: "analyst",
+         has_instructions: true,
+         source,
+      });
       expect(payload.message).toContain(
          `over the limit of ${FCJ_MAX_CHARS}, so get_workflow cannot return it`,
       );
@@ -376,7 +386,8 @@ describe("get_workflow: the reply stays within the tool-result limit", () => {
                }),
             }),
          call,
-         (payload) => (payload.workflow === null ? "refused" : "summary"),
+         (payload) =>
+            payload.workflow.text === undefined ? "refused" : "summary",
          900,
       );
       expect([...shapes].sort()).toEqual(["refused", "summary"]);
