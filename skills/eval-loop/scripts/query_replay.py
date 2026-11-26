@@ -165,7 +165,11 @@ def canon(v: Any) -> Any:
     if isinstance(v, bool) or v is None:
         return v
     if isinstance(v, float):
-        return float(f"{v:.9g}")
+        # A whole number as an int: a sum that lands on one arrives as 9212760
+        # from one path and 9212760.0 from another, and the two hashed apart,
+        # so every rollup over a float sum read as "rows changed".
+        r = float(f"{v:.9g}")
+        return int(r) if r.is_integer() else r
     if isinstance(v, dict):
         return {str(k): canon(x) for k, x in v.items()}
     if isinstance(v, list):

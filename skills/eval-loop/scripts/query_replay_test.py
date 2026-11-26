@@ -88,6 +88,13 @@ class Rows(unittest.TestCase):
         self.assertNotEqual(qr.rows_sha([{"v": 0.3}]), qr.rows_sha([{"v": 0.31}]))
         self.assertNotEqual(qr.rows_sha([{"v": 1}]), qr.rows_sha([{"v": 1}, {"v": 1}]))
 
+    def test_a_whole_number_is_the_same_value_as_an_int_or_a_float(self):
+        # A rollup summing in another order lands 9212760 where the live
+        # query returned 9212760.0, or 9212759.999999 where it returned 9212760.
+        self.assertEqual(qr.rows_sha([{"s": 9212760.0}]), qr.rows_sha([{"s": 9212760}]))
+        self.assertEqual(qr.rows_sha([{"s": 9212759.99999999}]), qr.rows_sha([{"s": 9212760}]))
+        self.assertNotEqual(qr.rows_sha([{"s": 9212761}]), qr.rows_sha([{"s": 9212760}]))
+
 
 class Timing(unittest.TestCase):
     def a(self, repeats=3):
