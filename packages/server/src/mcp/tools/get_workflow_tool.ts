@@ -5,6 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
 import { API_PREFIX, FCJ_MAX_CHARS } from "../../constants";
 import type { PackageLookup } from "../../service/environment_ports";
+import { fileChangedMessage } from "../../service/skills/package_skills";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
 import { largest, wireChars } from "../reply_budget";
@@ -194,6 +195,12 @@ export function registerGetWorkflowTool(
                return send({
                   workflow: null,
                   message: `Workflow ${JSON.stringify(params.workflow_name)} has no skill file ${JSON.stringify(params.skill_path)}${skillSet === undefined ? "" : ` in skill set ${JSON.stringify(skillSet)}`}. Fix: use a relative_filepath exactly as the definition lists it (a skill file in the summary, an asset in the full view).`,
+               });
+            }
+            if ("changed" in skillFile) {
+               return send({
+                  workflow: null,
+                  message: fileChangedMessage(params.skill_path),
                });
             }
             // No `workflow` key: a file read must not look like "no workflow matched".

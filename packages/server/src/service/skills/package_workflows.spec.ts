@@ -361,6 +361,15 @@ describe("readPackageWorkflows", () => {
          },
       );
 
+      it("refuses instructions that are not UTF-8 text, as Markdown is", () => {
+         const entry = analyst();
+         fs.writeFileSync(
+            path.join(pkg, INSTRUCTIONS),
+            Buffer.from([0x62, 0xff, 0xfe, 0x62]),
+         );
+         expect(refused({ analyst: entry })).toContain("is not UTF-8 text");
+      });
+
       it("names the backslash", () => {
          expect(
             refused({
@@ -783,6 +792,56 @@ describe("readPackageWorkflows", () => {
       let boom: ReturnType<typeof spyOn> | undefined;
       afterEach(() => boom?.mockRestore());
 
+      for (const [label, mode] of [
+         ["no access at all", 0o000],
+         ["no right to list it", 0o311],
+      ] as const) {
+         it.skipIf(isWindows || isRoot)(
+            `refuses the workflows that list a set whose folder it cannot list, with ${label}`,
+            () => {
+               analyst();
+               writeSkill(SECOND, "extra");
+               fs.chmodSync(path.join(pkg, SECOND), mode);
+               try {
+                  const result = read({
+                     fine: { skill_sets: [MAIN] },
+                     broken: { skill_sets: [SECOND] },
+                  });
+                  expect([...result.workflows.keys()]).toEqual(["fine"]);
+                  expect(result.warnings).toHaveLength(1);
+                  expect(
+                     result.warnings[0]!.startsWith(
+                        "Workflow 'broken' is not served: ",
+                     ),
+                  ).toBe(true);
+                  expect(result.warnings[0]).toContain("cannot be read");
+                  expect(result.warnings.join("\n")).not.toContain(
+                     "holds no skills",
+                  );
+               } finally {
+                  fs.chmodSync(path.join(pkg, SECOND), 0o755);
+               }
+            },
+         );
+      }
+
+      it.skipIf(isWindows || isRoot)(
+         "refuses the workflows that list a set under a folder it can walk through but not list, since a publisher.json there cannot be ruled out",
+         () => {
+            writeSkill(MAIN, "one");
+            const above = path.join(pkg, "workflows/analyst/skill_sets");
+            fs.chmodSync(above, 0o311);
+            try {
+               const result = read({ broken: { skill_sets: [MAIN] } });
+               expect(result.workflows.size).toBe(0);
+               expect(result.warnings).toHaveLength(1);
+               expect(result.warnings[0]).toContain("cannot be read");
+            } finally {
+               fs.chmodSync(above, 0o755);
+            }
+         },
+      );
+
       it("refuses only the workflows that list it, with a warning, and never throws", () => {
          analyst();
          writeSkill(SECOND, "extra");
@@ -820,10 +879,11 @@ describe("readPackageWorkflows", () => {
             analyst: { ...entry, skill_sets: [MAIN, SECOND] },
          });
          const workflow = result.workflows.get("analyst")!;
-         expect(workflow.warnings).toEqual([
+         expect(workflow.shadowing).toEqual([
             `Workflow 'analyst' lists skill 'conventions' in both '${MAIN}' and '${SECOND}'; the copy in '${MAIN}', listed first, is the one served.`,
          ]);
-         expect(result.warnings).toEqual(workflow.warnings);
+         expect(workflow.warnings).toEqual([]);
+         expect(result.warnings).toEqual(workflow.shadowing);
          expect(
             workflow.sets.map(({ skills }) => skills.map((s) => s.dirName)),
          ).toEqual([["conventions"], ["extra"]]);
@@ -1081,6 +1141,58 @@ describe("readPackageWorkflows", () => {
          );
       const definition = (result: PackageWorkflows, name = "analyst") =>
          result.workflows.get(name)!.definitionSha;
+
+      /** The `files` map of the set at `setPath` as it is hashed, with the set's workflow reads as served. */
+      const hashedFiles = (workflows: unknown, setPath: string) => {
+         const real = revision.canonicalSha;
+         const payloads: Array<{
+            path?: string;
+            skills?: Array<{ files: Record<string, string> }>;
+         }> = [];
+         const spy = spyOn(revision, "canonicalSha").mockImplementation(
+            (value: unknown) => {
+               payloads.push(value as (typeof payloads)[number]);
+               return real(value);
+            },
+         );
+         try {
+            const result = read(workflows);
+            const hashed = payloads.find((p) => p.path === setPath)!;
+            return { result, files: hashed.skills![0]!.files };
+         } finally {
+            spy.mockRestore();
+         }
+      };
+
+      it("hashes a SKILL.md as the workflow serves it, so the digest pins what the reply carries", () => {
+         // Its frontmatter carries keys the re-emission drops.
+         const { result, files } = hashedFiles({ analyst: analyst() }, MAIN);
+         const served = viewOf(result).skills.find(
+            (f) => f.relative_filepath === "conventions/SKILL.md",
+         )!.file_contents;
+         expect(served).not.toContain("allowed-tools");
+         expect(files["SKILL.md"]).toBe(sha(served));
+         expect(files["reference/glossary.md"]).toBe(
+            sha("# Glossary\n\nnet = after refunds\n"),
+         );
+      });
+
+      it("does not move for an edit the served bytes do not carry, and moves for one they do", () => {
+         const entry = analyst();
+         const before = read({ analyst: entry }).sets.get(MAIN)!.digest;
+         write(
+            `${CONVENTIONS}/SKILL.md`,
+            "---\nname: conventions\ndescription: House rules.\nallowed-tools: Read\nx-owner: you\n---\n\nUse net revenue.\n",
+         );
+         expect(read({ analyst: entry }).sets.get(MAIN)!.digest).toBe(before);
+         write(
+            `${CONVENTIONS}/SKILL.md`,
+            "---\nname: conventions\ndescription: House rules.\n---\n\nUse gross revenue.\n",
+         );
+         expect(read({ analyst: entry }).sets.get(MAIN)!.digest).not.toBe(
+            before,
+         );
+      });
 
       it("is stable across reads, and moves a workflow's definitionSha on every part of the definition", () => {
          const entry = analyst();

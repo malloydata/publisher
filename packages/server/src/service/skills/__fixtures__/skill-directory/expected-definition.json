@@ -6,7 +6,7 @@
       {
          "name": "main",
          "path": "workflows/analyst/skill_sets/main",
-         "digest": "4a5c17c97ff93d962d4dfb5730e4dae500275cf9ca40b6f877609ce312a863a2",
+         "digest": "363e170eaed57680671c58ae49f5a3f183ad800cb9eff638ddd2ef59bfaff04b",
          "skills": [
             {
                "relative_filepath": "pricing/NOTES.md",
@@ -60,6 +60,6 @@
       "Skill set 'workflows/analyst/skill_sets/main' skill finding: asset 'workflows/analyst/skill_sets/main/pricing/scripts/run-link.sh' is not served: it is a link."
    ],
    "source": {
-      "definitionSha": "49ac06b31b2e5f0a1099c6c2c631cf05f4693a9c74c76fcc939926135fc0d1f9"
+      "definitionSha": "aa36a02166b7d7fe7f0e5855a926c358d24b9bd8e0942d1aa8cf0f465cec59bb"
    }
 }

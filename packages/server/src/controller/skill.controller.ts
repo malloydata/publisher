@@ -168,6 +168,9 @@ export class SkillController {
       const file = (
          await this.packageOf(environmentName, packageName, versionId)
       ).getWorkflowSkillFile(workflowName, relativeFilepath, skillSet);
+      if (file && "changed" in file) {
+         throw new WorkflowNotFoundError(fileChangedMessage(relativeFilepath));
+      }
       if (!file) {
          throw new WorkflowNotFoundError(
             skillSet === undefined

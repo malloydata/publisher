@@ -309,17 +309,17 @@ describe("a skill is its whole directory", () => {
 
    it("serves a listed text file, and refuses a binary one with a message naming its size and not its bytes", () => {
       const skill = workflowOf().sets[0]!.skills[0]!;
-      expect(readWorkflowFile(pkg, skill, "pricing/scripts/run.py")).toEqual({
+      expect(readWorkflowFile(skill, "pricing/scripts/run.py")).toEqual({
          text: FILES["scripts/run.py"] as string,
       });
-      const refused = readWorkflowFile(pkg, skill, "pricing/assets/logo.png");
+      const refused = readWorkflowFile(skill, "pricing/assets/logo.png");
       expect(refused).toEqual({
          message: expect.stringContaining(`${PNG.length} bytes`),
       });
       expect(JSON.stringify(refused)).not.toContain(PNG.toString("base64"));
       // Listed, and still a 404 for what is not.
       expect(
-         readWorkflowFile(pkg, skill, "pricing/fixtures/data.csv"),
+         readWorkflowFile(skill, "pricing/fixtures/data.csv"),
       ).toBeUndefined();
    });
 

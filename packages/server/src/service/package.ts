@@ -111,6 +111,7 @@ import {
    pickedSets,
    readPackageWorkflows,
    readWorkflowFile,
+   withoutDotSlash,
    workflowSkillSet,
    type PackageWorkflows,
    type ServedSkill,
@@ -669,31 +670,33 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             }),
          skill_sets: sets.map((entry) => workflowSkillSet(entry, skills)),
          warnings: [
-            // Its own are about which set serves a repeated skill name, and a reply of one picked set serves its own copy.
-            ...(skillSet === undefined ? workflow.warnings : []),
+            ...workflow.warnings,
+            // A picked set is served whole, so which set serves a repeated name does not describe it.
+            ...(skillSet === undefined ? workflow.shadowing : []),
             ...sets.flatMap(({ set }) => set.findings),
          ],
          source: this.workflowSource(workflow.definitionSha),
       };
    }
 
-   /** One file of a workflow's skills by its `<skill>/<file>` path, looked up in the resolved skills (or, with `skillSet`, in that set whole) and never joined onto the filesystem; a listed file is matched exactly, then read from disk and re-checked against its listed sha. A binary one answers with a message, not its bytes. */
+   /** One file of a workflow's skills by its `<skill>/<file>` path, looked up in the resolved skills (or, with `skillSet`, in that set whole) and never joined onto the filesystem; a listed file is matched exactly, then read from disk and re-checked against its listed sha. A binary one answers with a message, not its bytes, and one that changed since load with `changed`. */
    public getWorkflowSkillFile(
       name: string,
       relativeFilepath: string,
       skillSet?: string,
-   ): ApiWorkflowSkillRead | undefined {
+   ): ApiWorkflowSkillRead | { changed: true } | undefined {
       const workflow = this.workflows.workflows.get(name);
       if (!workflow) return undefined;
-      const skillName = relativeFilepath.split("/")[0]!;
+      const relative = withoutDotSlash(relativeFilepath);
+      const skillName = relative.split("/")[0]!;
       const skill = pickedSets(workflow, skillSet)
          ?.flatMap(({ skills }) => skills)
          .find((s) => s.dirName === skillName);
-      const read =
-         skill && readWorkflowFile(this.packagePath, skill, relativeFilepath);
+      const read = skill && readWorkflowFile(skill, relative);
       if (!read) return undefined;
+      if ("changed" in read) return read;
       return {
-         relative_filepath: relativeFilepath,
+         relative_filepath: relative,
          ...("text" in read
             ? { file_contents: read.text }
             : { message: read.message }),

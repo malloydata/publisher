@@ -270,7 +270,7 @@ type AssetRead =
    | { unread: true }
    | { problem: string; link?: true };
 
-/** Whether `get_skill` can answer with this text: it travels JSON-escaped inside a payload that is escaped again in the reply. */
+/** Whether `get_skill` can answer with this text: it travels JSON-escaped inside a payload that is escaped again in the reply. An estimate made at load, which leaves out the reply's own envelope. */
 function fitsReply(text: string): boolean {
    // Escaping grows a character at most sevenfold, so a short text needs no measuring.
    return (
@@ -469,24 +469,15 @@ function scanSkills(
       scan.warnings.push(message);
    };
 
-   let entries: fs.Dirent[];
-   let escapes: boolean;
-   try {
-      fs.realpathSync(packagePath);
-      // Settled before anything is looked at through it: a skills directory
-      // that leads out is refused whatever it leads to.
-      const inside = insidePackage(packageRoot, root);
-      escapes = inside === undefined;
-      if (inside !== undefined) {
-         if (!fs.statSync(inside).isDirectory()) return scan;
-         entries = fs.readdirSync(inside, { withFileTypes: true });
-      } else {
-         entries = [];
-      }
-   } catch {
-      // No skills directory is the common case, and one that vanishes mid-load is the same.
-      return scan;
-   }
+   // Settled before anything is looked at through it: a skills directory
+   // that leads out is refused whatever it leads to.
+   const inside = insidePackage(packageRoot, root);
+   const escapes = inside === undefined;
+   // The set's folder was checked when its workflow was declared, so a failure to list it now throws: the caller refuses the workflows that list the set rather than serve it empty.
+   const entries =
+      inside === undefined
+         ? []
+         : fs.readdirSync(inside, { withFileTypes: true });
    if (escapes) {
       unserved(
          `Skills directory '${dirRel}' resolves outside the package through a link, so it is not served. Fix: copy the skills into the package.`,
@@ -1052,11 +1043,12 @@ function manifestPath(value: unknown, what: string): string {
 
 const isManifest = (name: string) => name.toLowerCase() === "publisher.json";
 
-/** The name of a publisher.json sitting directly in `dir`, which must resolve inside the package; undefined when there is none. A skill's `reference/` is read as skillFiles reads it, so a link to a huge directory is not listed whole. */
+/** The name of a publisher.json sitting directly in `dir`, which must resolve inside the package; undefined when there is none. A skill's `reference/` is read as skillFiles reads it, so a link to a huge directory is not listed whole. With `strict`, a directory that exists and cannot be read throws, since not knowing is not the same as none. */
 function manifestIn(
    packageRoot: string,
    dir: string,
    reference = false,
+   strict = false,
 ): string | undefined {
    try {
       const inside = insidePackage(packageRoot, dir);
@@ -1067,7 +1059,9 @@ function manifestIn(
            )
          : fs.readdirSync(inside);
       return names.find(isManifest);
-   } catch {
+   } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (strict && code !== "ENOENT" && code !== "ENOTDIR") throw error;
       return undefined;
    }
 }
@@ -1092,7 +1086,7 @@ function manifestAt(
    dir: string,
 ): string | undefined {
    if (!checks.manifests.has(dir)) {
-      checks.manifests.set(dir, manifestIn(packageRoot, dir));
+      checks.manifests.set(dir, manifestIn(packageRoot, dir, false, true));
    }
    return checks.manifests.get(dir);
 }
@@ -1190,6 +1184,10 @@ function readInstructions(
    if ("problem" in read) {
       throw new WorkflowProblem(`${what} '${rel}' ${read.problem}`);
    }
+   // Served as text, so a lossy decode would be the instructions.
+   if (decodeText(read.raw) === undefined) {
+      throw new WorkflowProblem(`${what} '${rel}' is not UTF-8 text`);
+   }
    return { rel, text: read.text };
 }
 
@@ -1259,8 +1257,10 @@ export interface PackageWorkflow {
    instructions?: { path: string; text: string };
    /** In the order the manifest lists them. */
    sets: WorkflowSet[];
-   /** What the workflow itself warns of, as it is published; its sets' findings are on the sets. */
+   /** What the workflow itself warns of, as it is published, besides `shadowing`; its sets' findings are on the sets. */
    warnings: string[];
+   /** A skill name two of its sets both hold, served from the first-listed set when the workflow is read whole; a read of one set serves that set's copy, so it has none of these. */
+   shadowing: string[];
    definitionSha: string;
 }
 
@@ -1358,12 +1358,11 @@ export function workflowSkillSet(
    };
 }
 
-/** One file of a workflow's skill by its `<skill>/<file>` path: an inline file as the workflow serves it, or a listed file read from disk and re-checked against its listed sha (a binary one answers with a message naming its size). Undefined when it is not served. */
+/** One file of a workflow's skill by its `<skill>/<file>` path: an inline file as the workflow serves it, or a listed file as the skill reads it (a binary one answers with a message naming its size, one that changed since load with `changed`). Undefined when it is not served. */
 export function readWorkflowFile(
-   packagePath: string,
-   skill: ReadSkill,
+   skill: SetSkill,
    relativeFilepath: string,
-): { text: string } | { message: string } | undefined {
+): { text: string } | { message: string } | { changed: true } | undefined {
    const inline = servedInline(skill).find(
       (f) => f.relative_filepath === relativeFilepath,
    );
@@ -1372,14 +1371,13 @@ export function readWorkflowFile(
       (a) => a.relative_filepath === relativeFilepath,
    );
    if (!listing) return undefined;
-   const read = readListedFile(
-      packagePath,
-      skill.rel,
+   const read = skill.served.read(
       relativeFilepath.slice(skill.dirName.length + 1),
-      listing.sha256,
    );
-   if (read === undefined || "text" in read) return read;
-   return { message: binaryFileMessage(relativeFilepath, read.binarySize) };
+   if ("text" in read || "changed" in read) return read;
+   return {
+      message: binaryFileMessage(relativeFilepath, listing.bytes),
+   };
 }
 
 /** The skills a package advertises: its `default` workflow's, each skill name served from the first set that holds it. */
@@ -1549,12 +1547,17 @@ function readSkillSet(
       path: setPath,
       skills: skills.map((skill) => ({
          name: skill.dirName,
-         files: Object.fromEntries(
-            Object.entries(skill.catalog.files).map(([file, { digest }]) => [
-               file,
-               digest,
+         // What a workflow serves, not what is on disk: an inline file's text as emitted (a SKILL.md is re-emitted), every listed file by its sha.
+         files: Object.fromEntries([
+            ...servedInline(skill).map((f) => [
+               f.relative_filepath.slice(skill.dirName.length + 1),
+               sha256(f.file_contents),
             ]),
-         ),
+            ...skill.listed.map((a) => [
+               a.relative_filepath.slice(skill.dirName.length + 1),
+               a.sha256,
+            ]),
+         ]),
          ...(skill.skillignore !== null && { skillignore: skill.skillignore }),
       })),
    });
@@ -1776,8 +1779,9 @@ const cannotRead = (error: unknown, packagePath: string) =>
  * is left out with a warning saying why and the rest still serve.
  *
  * Each distinct skill set a served workflow lists is read once, in sorted path
- * order, and charged to the package's 8 MiB cap in that order, so editing or
- * reordering workflows never moves a set's digest.
+ * order, and charged to the package's 8 MiB cap in that order, so reordering
+ * workflows or editing their instructions never moves a set's digest. Adding a
+ * set can: one that sorts earlier is charged first.
  */
 export function readPackageWorkflows(
    packagePath: string,
@@ -1877,7 +1881,7 @@ export function readPackageWorkflows(
          );
          return;
       }
-      const warnings: string[] = [];
+      const shadowing: string[] = [];
       const holder = new Map<string, string>();
       const sets = decl.sets.map((setPath): WorkflowSet => {
          const set = result.sets.get(setPath)!;
@@ -1887,7 +1891,7 @@ export function readPackageWorkflows(
                holder.set(skill.dirName, setPath);
                return true;
             }
-            warnings.push(
+            shadowing.push(
                `Workflow '${name}' lists skill '${skill.dirName}' in both '${first}' and '${setPath}'; the copy in '${first}', listed first, is the one served.`,
             );
             return false;
@@ -1906,7 +1910,8 @@ export function readPackageWorkflows(
             },
          }),
          sets,
-         warnings,
+         warnings: [],
+         shadowing,
          definitionSha: canonicalSha({
             name,
             ...(decl.description !== undefined && {
@@ -1923,7 +1928,7 @@ export function readPackageWorkflows(
          }),
       });
       if (decl.instructions) instructionPaths.push(decl.instructions.rel);
-      notes[i]!.push(...warnings);
+      notes[i]!.push(...shadowing);
    });
    result.paths.push(...instructionPaths);
    result.watched = declaredPaths(raw);
@@ -1983,12 +1988,17 @@ export function resolveSkills(
    ];
 }
 
+/** A path without a leading `./`, which names the same file. */
+export function withoutDotSlash(raw: string): string {
+   let relative = raw;
+   while (relative.startsWith("./")) relative = relative.slice(2);
+   return relative;
+}
+
 /** A path as a caller wrote it, as a path of the skill: without a leading `./`, and `SKILL.md` when blank. Never trimmed otherwise, because a listed name may end in a space. */
 export function skillFilePath(raw: string | null | undefined): string {
    if (!raw?.trim()) return SKILL_MD;
-   let relative = raw;
-   while (relative.startsWith("./")) relative = relative.slice(2);
-   return relative || SKILL_MD;
+   return withoutDotSlash(raw) || SKILL_MD;
 }
 
 /** The answer for a listed file that is not text; the one sentence every surface uses. */

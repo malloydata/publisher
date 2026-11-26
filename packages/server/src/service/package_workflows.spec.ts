@@ -35,6 +35,7 @@ import {
 import type { PackageLookup } from "./environment_ports";
 import { Package } from "./package";
 import { computeSourceContentSha } from "./package_revision";
+import type { PackageWorkflows } from "./skills/package_skills";
 
 const MAIN = "workflows/analyst/skill_sets/main";
 const SECOND = "workflows/analyst/skill_sets/second";
@@ -109,6 +110,18 @@ describe("package workflows", () => {
    }
 
    const load = () => Package.create("env", "pkg", dir, malloyConfig);
+
+   /** A workflow skill file as the tests that are not about a changed file expect it: served, or not served at all. */
+   const fileOf = (
+      pkg: Package,
+      workflow: string,
+      file: string,
+      skillSet?: string,
+   ) => {
+      const read = pkg.getWorkflowSkillFile(workflow, file, skillSet);
+      expect(read !== undefined && "changed" in read).toBe(false);
+      return read as Exclude<typeof read, { changed: true }>;
+   };
 
    const warningsOf = (pkg: Package) =>
       (pkg.getPackageMetadata().warnings ?? []).map((w) => w.message ?? "");
@@ -619,7 +632,7 @@ describe("package workflows", () => {
          expect(picked.source).toEqual(full.source);
       });
 
-      it("carries that set's findings and not another set's, and not the whole workflow's shadowing warning", async () => {
+      it("carries the workflow's own warnings and that set's findings, not another set's and not the shadowing ones", async () => {
          const pkg = await load();
          const second = pkg.getWorkflow("analyst", "full", "second")!;
          expect(second.warnings.join("\n")).toContain("a..b.py");
@@ -627,6 +640,16 @@ describe("package workflows", () => {
          expect(second.warnings).not.toContain(DUPLICATE);
          const main = pkg.getWorkflow("analyst", "full", "main")!;
          expect(main.warnings).toEqual([]);
+         // A warning of the workflow's own rides every view of it.
+         const held = (
+            pkg as unknown as { workflows: PackageWorkflows }
+         ).workflows.workflows.get("analyst")!;
+         held.warnings.push("its own");
+         expect(pkg.getWorkflow("analyst", "full", "main")!.warnings).toEqual([
+            "its own",
+         ]);
+         expect(pkg.getWorkflow("analyst")!.warnings).toContain("its own");
+         held.warnings.pop();
          expect(pkg.getWorkflow("analyst")!.warnings).toContain(DUPLICATE);
          expect(pkg.getWorkflow("analyst")!.warnings.join("\n")).toContain(
             "a..b.py",
@@ -685,25 +708,21 @@ describe("package workflows", () => {
       it("reads a file inside the picked set, where the whole workflow serves the first-listed copy", async () => {
          const pkg = await load();
          const file = "conventions/SKILL.md";
-         expect(
-            pkg.getWorkflowSkillFile("analyst", file)!.file_contents,
-         ).toContain("Use net revenue.");
-         const picked = pkg.getWorkflowSkillFile("analyst", file, "second")!;
+         expect(fileOf(pkg, "analyst", file)!.file_contents).toContain(
+            "Use net revenue.",
+         );
+         const picked = fileOf(pkg, "analyst", file, "second")!;
          expect(picked.file_contents).toContain("Second copy.");
          expect(picked.source).toEqual(pkg.getWorkflow("analyst")!.source);
          expect(
-            pkg.getWorkflowSkillFile("analyst", "extra/SKILL.md", "second"),
+            fileOf(pkg, "analyst", "extra/SKILL.md", "second"),
          ).toBeDefined();
          // A name the picked set does not hold is not served, though another set of the workflow does.
          expect(
-            pkg.getWorkflowSkillFile("analyst", "extra/SKILL.md", "main"),
+            fileOf(pkg, "analyst", "extra/SKILL.md", "main"),
          ).toBeUndefined();
-         expect(
-            pkg.getWorkflowSkillFile("analyst", file, "nope"),
-         ).toBeUndefined();
-         expect(
-            pkg.getWorkflowSkillFile("other", file, "main"),
-         ).toBeUndefined();
+         expect(fileOf(pkg, "analyst", file, "nope")).toBeUndefined();
+         expect(fileOf(pkg, "other", file, "main")).toBeUndefined();
       });
    });
 
@@ -755,7 +774,7 @@ describe("package workflows", () => {
             source: pkg.getWorkflow("analyst")!.source,
          };
 
-         expect(pkg.getWorkflowSkillFile("analyst", listed)).toEqual(expected);
+         expect(fileOf(pkg, "analyst", listed)).toEqual(expected);
          const store = fakeOf<PackageLookup>({
             getEnvironment: async () => ({ getPackage: async () => pkg }),
          });
@@ -796,7 +815,7 @@ describe("package workflows", () => {
             `${LISTED}/../../../../../secret.txt`,
             "conventions/assets",
          ]) {
-            expect(pkg.getWorkflowSkillFile("analyst", bad)).toBeUndefined();
+            expect(fileOf(pkg, "analyst", bad)).toBeUndefined();
          }
       });
 
@@ -813,16 +832,12 @@ describe("package workflows", () => {
          });
          const pkg = await load();
          expect(
-            pkg.getWorkflowSkillFile("analyst", "extra/scripts/run.py")
-               ?.file_contents,
+            fileOf(pkg, "analyst", "extra/scripts/run.py")?.file_contents,
          ).toBe("print('hi')\n");
          expect(
-            pkg.getWorkflowSkillFile("analyst", "conventions/SKILL.md")
-               ?.file_contents,
+            fileOf(pkg, "analyst", "conventions/SKILL.md")?.file_contents,
          ).toContain("Use net revenue.");
-         expect(pkg.getWorkflowSkillFile("nope", "extra/SKILL.md")).toBe(
-            undefined,
-         );
+         expect(fileOf(pkg, "nope", "extra/SKILL.md")).toBe(undefined);
       });
 
       it("serves a skill name two sets hold from the first-listed set, and the shadowed copy's files are unreachable", async () => {
@@ -843,25 +858,77 @@ describe("package workflows", () => {
 
          const first = await served([MAIN, SECOND]);
          const skill = (pkg: Package) =>
-            pkg.getWorkflowSkillFile("analyst", "conventions/SKILL.md")
-               ?.file_contents ?? "";
+            fileOf(pkg, "analyst", "conventions/SKILL.md")?.file_contents ?? "";
          expect(skill(first)).toContain("Use net revenue.");
          expect(skill(first)).not.toContain("Second copy.");
          expect(
-            first.getWorkflowSkillFile(
-               "analyst",
-               "conventions/reference/only-second.md",
-            ),
+            fileOf(first, "analyst", "conventions/reference/only-second.md"),
          ).toBeUndefined();
 
          const reversed = await served([SECOND, MAIN]);
          expect(skill(reversed)).toContain("Second copy.");
          expect(
-            reversed.getWorkflowSkillFile(
-               "analyst",
-               "conventions/reference/only-second.md",
-            )?.file_contents,
+            fileOf(reversed, "analyst", "conventions/reference/only-second.md")
+               ?.file_contents,
          ).toBe("# Only here\n");
+      });
+
+      it("answers a listed asset that changed since the load as changed, on every surface, though it keeps its size", async () => {
+         write(`${ASSETS}/index.html`, "<h1>hi</h1>");
+         const pkg = await load();
+         const listed = `${LISTED}/index.html`;
+         write(`${ASSETS}/index.html`, "<h1>ho</h1>");
+         expect(pkg.getWorkflowSkillFile("analyst", listed)).toEqual({
+            changed: true,
+         });
+         const store = fakeOf<PackageLookup>({
+            getEnvironment: async () => ({ getPackage: async () => pkg }),
+         });
+         await expect(
+            new SkillController(store).getWorkflowSkillFile(
+               "env",
+               "pkg",
+               "analyst",
+               listed,
+            ),
+         ).rejects.toThrow("changed on disk after the package loaded");
+         type Handler = (p: unknown) => Promise<{
+            content: Array<{ resource?: { text: string } }>;
+         }>;
+         let handler: Handler | undefined;
+         registerGetWorkflowTool(
+            {
+               registerTool: (_n: string, _config: unknown, h: Handler) => {
+                  handler = h;
+               },
+            } as never,
+            store,
+         );
+         const viaMcp = JSON.parse(
+            (
+               await handler!({
+                  scopes: [{ environment: "env", package: "pkg" }],
+                  workflow_name: "analyst",
+                  skill_path: listed,
+               })
+            ).content[0]!.resource!.text,
+         );
+         expect(viaMcp.skillFile).toBeUndefined();
+         expect(viaMcp.message).toContain("changed on disk after the package");
+         expect(viaMcp.message).not.toContain("Fix:");
+      });
+
+      it("reads a path that starts with ./ as the file it names", async () => {
+         write(`${ASSETS}/index.html`, "<h1>hi</h1>");
+         const pkg = await load();
+         const plain = fileOf(pkg, "analyst", `${LISTED}/index.html`);
+         expect(plain).toBeDefined();
+         expect(fileOf(pkg, "analyst", `./${LISTED}/index.html`)).toEqual(
+            plain,
+         );
+         expect(
+            fileOf(pkg, "analyst", "./conventions/SKILL.md")?.relative_filepath,
+         ).toBe("conventions/SKILL.md");
       });
 
       it("refuses to serve a listed asset that became a link after the load", async () => {
@@ -875,7 +942,7 @@ describe("package workflows", () => {
          );
          expect(
             pkg.getWorkflowSkillFile("analyst", `${LISTED}/index.html`),
-         ).toBeUndefined();
+         ).toEqual({ changed: true });
       });
 
       it("sets the skill aside and says why when an asset is a link, and still serves the workflow", async () => {
@@ -987,10 +1054,7 @@ describe("package workflows", () => {
                .getWorkflow("analyst")!
                .skill_sets[0]!.assets!.map((a) => a.relative_filepath),
          ).toEqual([`${LISTED}/logo.png`, `${LISTED}/ok.txt`]);
-         const read = pkg.getWorkflowSkillFile(
-            "analyst",
-            `${LISTED}/logo.png`,
-         )!;
+         const read = fileOf(pkg, "analyst", `${LISTED}/logo.png`)!;
          expect(read).not.toHaveProperty("file_contents");
          expect(read.message).toContain(`${png.length} bytes`);
          expect(read.message).toContain("binary");
@@ -1025,7 +1089,7 @@ describe("package workflows", () => {
          fs.symlinkSync(path.join(dir, "elsewhere"), path.join(dir, ASSETS));
          expect(
             pkg.getWorkflowSkillFile("analyst", `${LISTED}/index.html`),
-         ).toBeUndefined();
+         ).toEqual({ changed: true });
       });
 
       it("refuses a listed asset edited after the load, since it no longer matches its sha", async () => {
@@ -1034,7 +1098,7 @@ describe("package workflows", () => {
          write(`${ASSETS}/index.html`, "<h1>changed</h1>");
          expect(
             pkg.getWorkflowSkillFile("analyst", `${LISTED}/index.html`),
-         ).toBeUndefined();
+         ).toEqual({ changed: true });
       });
 
       it("keeps a skill named __proto__ and serves its asset", async () => {
@@ -1045,15 +1109,14 @@ describe("package workflows", () => {
          write(`${MAIN}/__proto__/assets/a.txt`, "x");
          const pkg = await load();
          expect(
-            pkg.getWorkflowSkillFile("analyst", "__proto__/assets/a.txt")
-               ?.file_contents,
+            fileOf(pkg, "analyst", "__proto__/assets/a.txt")?.file_contents,
          ).toBe("x");
       });
 
       it("pins the hashes of a package whose workflows ship no assets", async () => {
          const pkg = await load();
          expect(pkg.getWorkflow("analyst")!.source.definitionSha).toBe(
-            "1c4c1c2eee109b85a7da409d3459cc53feb60857e630af09dc52e067e6d0f48d",
+            "82232f8282d7b2d5b82fe7eb6e9f0e9b8b3531dac6eab27b8d70221a3373a4a6",
          );
          expect(pkg.getSourceContentSha()).toBe(
             "8f00adde5bd6cee01894a3d90776a20624db003cdf21790c115603efc842e073",
