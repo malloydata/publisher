@@ -312,6 +312,12 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
                 "why": f"no verify_goldens.py at {script}"}
     if not diff.strip():
         return {"ran": False, "why": "no edit to invalidate anything"}
+    cases = a.set_dir / "cases.jsonl"
+    if not cases.is_file() or not any((c.get("golden") or {}) for c in read_jsonl(cases)):
+        # A speed set made only of a logged workload holds no golden, so an
+        # edit cannot invalidate one; the replay's own row check is what
+        # guards it. Calling that "could not run" blocked every speed edit.
+        return {"ran": False, "why": "the set holds no golden, so the edit cannot invalidate one"}
 
     model = model_under_test(a)
     # Without `--model` the verifier skips its stale-rubric and name checks and

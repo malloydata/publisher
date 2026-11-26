@@ -32,7 +32,7 @@ class Invocation(unittest.TestCase):
         self.tmp = pathlib.Path(tempfile.mkdtemp())
         self.set_dir = self.tmp / "set"
         self.set_dir.mkdir()
-        (self.set_dir / "cases.jsonl").write_text("")
+        (self.set_dir / "cases.jsonl").write_text(json.dumps({"qid": "q", "question": "?", "golden": {"kind": "scalar", "value": {"n": 1}}}) + "\n")
         self.art = self.tmp / "art"
         self.art.mkdir()
         (self.tmp / "model").mkdir()
@@ -85,6 +85,13 @@ class Invocation(unittest.TestCase):
         if r.get("ran") is False:
             self.assertNotIn("clean", r)
             self.assertIn("why", r)
+
+    def test_a_set_with_no_golden_skips_the_audit_without_blocking(self):
+        # A speed set built from a workload: no case, so no golden.
+        (self.set_dir / "cases.jsonl").write_text("")
+        r = improve.verify_goldens(self.a, self.art, "a diff")
+        self.assertEqual((r["ran"], r.get("couldNotRun")), (False, None))
+        self.assertIn("holds no golden", r["why"])
 
     def test_no_diff_skips_the_audit(self):
         r = improve.verify_goldens(self.a, self.art, "   ")
@@ -177,7 +184,7 @@ class NoTruthServerNamed(unittest.TestCase):
         self.tmp = pathlib.Path(tempfile.mkdtemp())
         self.set_dir = self.tmp / "set"
         self.set_dir.mkdir()
-        (self.set_dir / "cases.jsonl").write_text("")
+        (self.set_dir / "cases.jsonl").write_text(json.dumps({"qid": "q", "question": "?", "golden": {"kind": "scalar", "value": {"n": 1}}}) + "\n")
         (self.set_dir / "set.json").write_text('{"truthPackage": "t"}')
         self.art = self.tmp / "art"
         self.art.mkdir()
