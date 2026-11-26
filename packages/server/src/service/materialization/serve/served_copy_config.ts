@@ -57,6 +57,18 @@ export function withoutServedCopyAliases(text: string): string {
 }
 
 /**
+ * A connection the served copy compiles with, in a caller's words: a
+ * served-copy alias as the storage destination it stands for, by its
+ * configured name (never the alias), any other name as a connection.
+ */
+export function servedConnectionLabel(name: string): string {
+   const destination = destinationsByAlias.get(name);
+   return destination !== undefined
+      ? `storage destination '${destination}'`
+      : `connection '${name}'`;
+}
+
+/**
  * The package's connections, plus `destinations` (those in `allowed`) under
  * their aliases. The default connection is the package's.
  */

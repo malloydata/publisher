@@ -363,7 +363,7 @@
       "path": {
         "considered": [
           {
-            "detail": "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.",
+            "detail": "The query uses the join `c` of `ext_joined` (connection 'duckdb' into storage destination 'lake'), whose joined source is on another connection than the storage destination its table is read from, so it is answered live.",
             "kind": "materialized",
             "origin": "persist",
             "outcome": "skipped",
@@ -732,7 +732,7 @@
       "path": {
         "considered": [
           {
-            "detail": "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.",
+            "detail": "The query uses the join `c` of `ext_joined` (connection 'duckdb' into storage destination 'lake'), whose joined source is on another connection than the storage destination its table is read from, so it is answered live.",
             "kind": "materialized",
             "origin": "persist",
             "outcome": "skipped",

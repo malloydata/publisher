@@ -141,7 +141,11 @@ import {
    storedMalloyType,
    TIMEFRAMES,
 } from "./served_copy";
-import { servedCopyConfig, servedCopyAlias } from "./served_copy_config";
+import {
+   servedConnectionLabel,
+   servedCopyConfig,
+   servedCopyAlias,
+} from "./served_copy_config";
 import {
    failingReroots,
    rerootKey,
@@ -221,28 +225,58 @@ const NO_DESTINATIONS = (): MalloyConfig =>
 const PAIR_BLOCKS_DETAIL =
    "The table stores more than one inlined join_many, one block of rows each, and the query reads more than one of them (live aggregates each by its own key over their cross product, which no block holds), so it is answered without this table.";
 
-/** The caller's detail for a query through a join left out across connections. */
-const LEFT_OUT_JOIN_DETAIL =
-   "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.";
+/**
+ * The caller's detail for a query through joins left out across connections:
+ * each join, by its source, and the two connections it would join.
+ */
+export function leftOutJoinDetail(joins: readonly LeftOutDefinition[]): string {
+   const named = joins.map((j) => {
+      const join = j.join ?? j.name;
+      // A source left out whole for its join is named by the definition.
+      const source =
+         j.declaration ?? (j.join !== undefined ? j.name : undefined);
+      const where = source ? ` of \`${source}\`` : "";
+      const across = j.connections
+         ? ` (${servedConnectionLabel(j.connections.joined)} into ` +
+           `${servedConnectionLabel(j.connections.into)})`
+         : "";
+      return `\`${join}\`${where}${across}`;
+   });
+   const subject =
+      named.length === 0
+         ? "a join"
+         : `the join${named.length === 1 ? "" : "s"} ${named.join(", ")}`;
+   return (
+      `The query uses ${subject}, whose joined source is on another connection ` +
+      "than the storage destination its table is read from, so it is answered live."
+   );
+}
 
 /**
- * Whether a query's compile failure reads a definition the served copy left
- * out across connections: a missing field whose name, where the problem points
- * in the query's text, is one left out (the copy keeps every other field of
- * the author's). A problem whose place cannot be read counts, since declining
- * only sends the query on to live.
+ * The joins left out across connections that a query's compile failure
+ * reads, or undefined when it reads none: a missing field whose name, where
+ * the problem points in the query's text, is one left out (the copy keeps
+ * every other field of the author's). A problem whose place cannot be read
+ * counts, since declining only sends the query on to live. A query that
+ * reads only what a join's leaving out took with it (a dimension through
+ * the join) is answered with every join left out, which the compile does
+ * not tie to it.
  */
-function readsLeftOutDefinition(
+function leftOutJoinsRead(
    compiled: Compiled,
    error: unknown,
    queryString: string,
-): boolean {
-   if (!compiled.leftOut?.length) return false;
-   return readsMissingName(
+): readonly LeftOutDefinition[] | undefined {
+   if (!compiled.leftOut?.length) return undefined;
+   const read = missingNamesRead(
       new Set(compiled.leftOut.map((l) => l.name)),
       error,
       queryString,
    );
+   if (read === undefined) return undefined;
+   const joins = compiled.leftOut.filter((l) => l.crossConnection);
+   const direct = joins.filter((l) => read.has(l.name));
+   return direct.length > 0 ? direct : joins;
 }
 
 /**
@@ -254,25 +288,46 @@ function readsMissingName(
    error: unknown,
    queryString: string,
 ): boolean {
-   if (!(error instanceof MalloyError)) return false;
-   return (
-      error.problems as {
-         code?: string;
-         at?: { range?: { start: { line: number; character: number } } };
-      }[]
-   ).some((p) => {
-      if (p.code === undefined || !MISSING_FIELD_CODES.has(p.code)) {
-         return false;
-      }
+   return missingNamesRead(names, error, queryString) !== undefined;
+}
+
+/**
+ * The names of `names` a compile reading fields the model lacks reads, by
+ * the paths the problems point at; empty when one such problem is at a place
+ * the query text cannot show; undefined when it reads none of them.
+ */
+function missingNamesRead(
+   names: ReadonlySet<string>,
+   error: unknown,
+   queryString: string,
+): ReadonlySet<string> | undefined {
+   if (!(error instanceof MalloyError)) return undefined;
+   const read = new Set<string>();
+   let any = false;
+   for (const p of error.problems as {
+      code?: string;
+      at?: { range?: { start: { line: number; character: number } } };
+   }[]) {
+      if (p.code === undefined || !MISSING_FIELD_CODES.has(p.code)) continue;
       const start = p.at?.range?.start;
       const offset = start ? offsetOf(queryString, start) : -1;
-      if (offset < 0) return true;
-      const path = /^[`A-Za-z0-9_.]+/.exec(queryString.slice(offset))?.[0];
-      if (!path) return true;
-      return path
-         .split(".")
-         .some((part) => names.has(part.replace(/^`|`$/g, "")));
-   });
+      const path =
+         offset < 0
+            ? undefined
+            : /^[`A-Za-z0-9_.]+/.exec(queryString.slice(offset))?.[0];
+      if (!path) {
+         any = true;
+         continue;
+      }
+      for (const part of path.split(".")) {
+         const name = part.replace(/^`|`$/g, "");
+         if (names.has(name)) {
+            read.add(name);
+            any = true;
+         }
+      }
+   }
+   return any ? read : undefined;
 }
 
 /** Malloy's codes for a compile that reads a field the model does not have. */
@@ -840,11 +895,13 @@ export class ServedCopyServe {
          try {
             return await work();
          } catch (error) {
-            if (readsLeftOutDefinition(compiled, error, queryString)) {
+            const leftOutJoins = leftOutJoinsRead(compiled, error, queryString);
+            if (leftOutJoins) {
+               const detail = leftOutJoinDetail(leftOutJoins);
                decline(
-                  "the query reads a join the served copy leaves out across connections",
+                  `the query reads a join the served copy leaves out across connections: ${detail}`,
                   "served_copy_cross_connection",
-                  LEFT_OUT_JOIN_DETAIL,
+                  detail,
                );
             }
             const zoned = new Set(
@@ -2667,7 +2724,18 @@ export class ServedCopyServe {
       for (const l of leftOut) {
          if (!l.crossConnection) continue;
          const sourceName = l.declaration ?? l.name;
+         // The stored side is this source unless the whole source is left
+         // out for its join, whose advice is about the joined source.
+         const sourceID =
+            l.join === undefined
+               ? candidates.find(
+                    (c) =>
+                       c.reroot.sourceName === sourceName &&
+                       c.reroot.url === l.url,
+                 )?.reroot.sourceID
+               : undefined;
          problems.push({
+            ...(sourceID !== undefined ? { storedSourceID: sourceID } : {}),
             sourceName,
             reason: "cross_connection_join",
             join: l.join ?? l.name,
