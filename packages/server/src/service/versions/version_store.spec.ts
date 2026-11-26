@@ -324,6 +324,24 @@ describe("VersionStore legacy trees", () => {
       ]);
    });
 
+   it("removes the version folders a failed publish left beside a held tree, and holds the held tree again", async () => {
+      await writes(
+         { name: "sales" },
+         { "old.malloy": "old" },
+      )(path.join(envPath, "sales"));
+      const held = await store.holdLegacy("sales");
+      // A failed first publish whose folder removal and put-back both failed:
+      // its placed version folder is left where the unversioned tree was.
+      await store.place(
+         await store.stage("sales", writes({ version: "1.0.0" })),
+      );
+
+      const again = await store.holdLegacy("sales");
+      expect(again).toEqual(held);
+      expect(fs.existsSync(path.join(envPath, "sales"))).toBe(false);
+      expect(fs.readdirSync(path.join(envPath, ".legacy"))).toHaveLength(1);
+   });
+
    it("refuses to hold files of no package beside a held tree, moving nothing", async () => {
       await writes({ name: "sales" })(path.join(envPath, "sales"));
       const held = await store.holdLegacy("sales");

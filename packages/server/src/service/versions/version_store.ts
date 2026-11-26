@@ -227,8 +227,9 @@ export class VersionStore {
     * still the package's unversioned tree, so it is this publish's hold too,
     * and the empty folder beside it is removed rather than held. A tree
     * installed at `<pkg>/` since (its own publisher.json) is newer, so it is
-    * held and the older one dropped. Anything else beside a held tree is
-    * refused, moving nothing.
+    * held and the older one dropped. Version folders beside a held tree are a
+    * failed publish's uncommitted placements and are removed. Anything else
+    * beside a held tree is refused, moving nothing.
     */
    async holdLegacy(packageName: string): Promise<LegacyTree | null> {
       assertSafePackageName(packageName);
@@ -244,6 +245,22 @@ export class VersionStore {
          .filter((held) => held.packageName === packageName)
          .sort(heldLastFirst);
       if (prior.length > 0) {
+         // Version folders beside a held tree are a failed publish's
+         // placements: a first publish holds the tree only when the package
+         // has no version rows, so none of them was committed. They go, as
+         // startup's cleanup removes a version folder no row owns.
+         if (contents !== null && contents.length > 0) {
+            const leftovers = await this.versionFoldersOnly(
+               packagePath,
+               contents,
+            );
+            if (leftovers) {
+               for (const dirName of leftovers) {
+                  await this.remove(packageName, dirName);
+               }
+               contents.length = 0;
+            }
+         }
          if (contents === null || contents.length === 0) {
             const [kept, ...older] = prior;
             for (const held of older) await this.dropLegacy(held);
@@ -310,6 +327,24 @@ export class VersionStore {
          throw err;
       }
       if (leftover) await removeQuietly(leftover);
+   }
+
+   /**
+    * The entries of `<pkg>/` when every one is a version folder (a directory
+    * named as `versionDirName` names one), or null when any is not.
+    */
+   private async versionFoldersOnly(
+      packagePath: string,
+      entries: string[],
+   ): Promise<string[] | null> {
+      for (const name of entries) {
+         if (!DIR_NAME_RE.test(name)) return null;
+         const stat = await fs.promises
+            .lstat(path.join(packagePath, name))
+            .catch(() => undefined);
+         if (!stat?.isDirectory()) return null;
+      }
+      return entries;
    }
 
    /** Remove a held unversioned tree once the publish that held it commits. */
