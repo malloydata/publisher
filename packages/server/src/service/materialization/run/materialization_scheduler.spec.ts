@@ -520,7 +520,36 @@ describe("MaterializationScheduler: published versions", () => {
       ]);
    });
 
-   it("warns once when ticks are skipped behind a sweep that has not settled, and once more when it settles", async () => {
+   it("a fire that never returns stalls only its own schedule; the others keep firing", async () => {
+      // `b`'s fire hangs, as a fire waiting on a lock or a warehouse with no
+      // bound would. Every later tick still fires `a`, and never `b` again.
+      const service = fakeService({ lastFireAt: new Date(t0 - 10 * 60_000) });
+      const fire = service.createMaterialization;
+      service.createMaterialization = ((...args: Parameters<typeof fire>) => {
+         const result = fire(...args);
+         return args[1] === "b" ? new Promise(() => {}) : result;
+      }) as typeof fire;
+      const sched = makeScheduler(
+         [
+            fakePackage("a", { schedule: "* * * * *" }),
+            fakePackage("b", { schedule: "* * * * *" }),
+         ],
+         service,
+      );
+      // Not awaited: it is the sweep that reached `b`, and stays there.
+      void sched.tick(t0);
+      await Bun.sleep(0);
+      for (let i = 1; i <= 3; i++) await sched.tick(t0 + i * 61_000);
+      expect(service.calls.map((c) => c.pkg)).toEqual([
+         "a",
+         "b",
+         "a",
+         "a",
+         "a",
+      ]);
+   });
+
+   it("warns once when a schedule is skipped behind its own fire that has not returned, and once more when it does", async () => {
       const warn = spyOn(logger, "warn").mockImplementation(() => logger);
       try {
          const service = fakeService();
@@ -539,7 +568,7 @@ describe("MaterializationScheduler: published versions", () => {
          );
          const skipWarns = () =>
             (warn.mock.calls as unknown as unknown[][]).filter(([message]) =>
-               String(message).includes("skipped a tick"),
+               String(message).includes("skipped a due schedule"),
             );
          const settledWarns = () =>
             (warn.mock.calls as unknown as unknown[][]).filter(([message]) =>
@@ -557,7 +586,7 @@ describe("MaterializationScheduler: published versions", () => {
          release();
          await stuck;
          expect(settledWarns()).toHaveLength(1);
-         expect(settledWarns()[0][1]).toMatchObject({ skippedTicks: 2 });
+         expect(settledWarns()[0][1]).toMatchObject({ skippedFires: 2 });
          await sched.tick(dueLater + 3);
          expect(settledWarns()).toHaveLength(1);
       } finally {

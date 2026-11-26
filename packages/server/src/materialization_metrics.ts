@@ -419,10 +419,11 @@ const scheduledFireCounter = lazyCounter(
    "Standalone-scheduler attempts to fire a package's materialization.schedule. " +
       "Label: outcome ('fired'|'conflict'|'error').",
 );
-const schedulerTickSkippedCounter = lazyCounter(
-   "publisher_materialization_scheduler_ticks_skipped_total",
-   "Standalone-scheduler ticks skipped because the sweep before was still " +
-      "running (its fires outlasted the tick interval).",
+const schedulerFireSkippedCounter = lazyCounter(
+   "publisher_materialization_scheduler_fires_skipped_total",
+   "Standalone-scheduler fires skipped because the schedule's previous fire " +
+      "was still running when it came due again. A run of skips for one " +
+      "schedule means its fire is stuck; other schedules are not affected.",
 );
 const queryRouteCounter = lazyCounter(
    "publisher_query_route_total",
@@ -565,9 +566,9 @@ export function recordScheduledFire(
    scheduledFireCounter().add(1, { outcome });
 }
 
-/** Record a standalone-scheduler tick skipped while the sweep before ran. */
-export function recordSchedulerTickSkipped(): void {
-   schedulerTickSkippedCounter().add(1);
+/** Record a due standalone-scheduler fire skipped while its previous fire ran. */
+export function recordSchedulerFireSkipped(): void {
+   schedulerFireSkippedCounter().add(1);
 }
 
 /** Record the outcome and duration of a materialization build. */
