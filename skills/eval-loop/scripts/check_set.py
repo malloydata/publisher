@@ -44,8 +44,11 @@ def ours(cfg: config.Config, role: str, port: int) -> bool:
     return port in (info.get("port"), info.get("mcpPort"))
 
 
-def check_cases(cfg: config.Config) -> tuple[list[str], list[str]]:
+def check_cases(cfg: config.Config, workload_only: bool = False) -> tuple[list[str], list[str]]:
     path = cfg.set_dir / "cases.jsonl"
+    if workload_only and (not path.exists() or not path.read_text().strip()):
+        # A speed routine timing a logged workload asks no questions.
+        return [], ["no cases: fine, this run times a query workload"]
     if not path.exists():
         return [f"no cases.jsonl in {cfg.set_dir}. Fix: import the questions "
                 f"(skill:eval-import, then `import_cases.py --set "
@@ -173,7 +176,7 @@ def check_ports(cfg: config.Config) -> tuple[list[str], list[str]]:
     return problems, notes
 
 
-def report(set_dir: pathlib.Path) -> tuple[list[str], list[str]]:
+def report(set_dir: pathlib.Path, workload_only: bool = False) -> tuple[list[str], list[str]]:
     """(problems, notes) for the set."""
     try:
         cfg = config.load(set_dir)
@@ -187,7 +190,7 @@ def report(set_dir: pathlib.Path) -> tuple[list[str], list[str]]:
     if cfg.path is None:
         problems.append(f"no eval.toml in {set_dir}, so every command needs its "
                         f"server flags. Fix: write one (template in {GUIDE})")
-    p, n = check_cases(cfg)
+    p, n = check_cases(cfg, workload_only)
     problems += p
     notes += n
     p, n = check_model(cfg)
@@ -234,8 +237,10 @@ def git_toplevel(path: pathlib.Path) -> pathlib.Path | None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
+    ap.add_argument("--workload-only", action="store_true",
+                    help="the run times a query workload, so the set needs no cases")
     a = ap.parse_args(argv)
-    problems, notes = report(a.set_dir.resolve())
+    problems, notes = report(a.set_dir.resolve(), a.workload_only)
     for line in notes:
         print(f"  {line}")
     for line in problems:

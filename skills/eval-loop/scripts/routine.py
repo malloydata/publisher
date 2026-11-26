@@ -332,7 +332,10 @@ class Routine:
         return DONE, said
 
     def speed(self) -> tuple[int, str]:
-        code = self.do("check", "check", *self.s)
+        # Timing the day's logged queries asks no questions, so the set may
+        # hold none: a speed set built from logs is a workload, not cases.
+        code = self.do("check", "check", *self.s,
+                       *(("--workload-only",) if self.a.queries else ()))
         if code != 0:
             return STEP_FAILED, f"stopped at check (exit {code}); nothing after it ran"
         source, compared = speed_source(self.cfg)

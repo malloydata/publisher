@@ -54,6 +54,17 @@ class Report(unittest.TestCase):
         self.assertEqual(problems, [])
         self.assertIn("1 cases from 1 lines", notes)
 
+    def test_a_workload_only_run_needs_no_cases_but_a_bad_case_still_fails(self):
+        with mock.patch.object(check_set.serve, "listening", return_value=False):
+            for cases in (None, []):
+                problems, notes = check_set.report(a_set(MODEL, cases), workload_only=True)
+                self.assertEqual(problems, [])
+                self.assertIn("no cases: fine, this run times a query workload", notes)
+            problems, _ = check_set.report(a_set(MODEL, None))
+            self.assertIn("no cases.jsonl", "\n".join(problems))
+            problems, _ = check_set.report(a_set(MODEL, [{"question": "no qid"}]), workload_only=True)
+            self.assertTrue(problems)
+
     def test_every_gap_is_named_at_once(self):
         # No cases.jsonl, no [model] environment, a truth package named in
         # set.json with no [truth]: three scripts used to find these one by one.
