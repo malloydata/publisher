@@ -54,7 +54,11 @@ const viewOf = (workflow: PackageWorkflow) => {
    const entry = workflow.sets[0]!;
    const { skills, assets } = workflowSkillSet(entry, "full");
    return {
-      skills,
+      // The full view's files; the view's own type is the union with the summary's.
+      skills: skills as Array<{
+         relative_filepath: string;
+         file_contents: string;
+      }>,
       assets: assets ?? [],
       warnings: [...workflow.warnings, ...entry.set.findings],
       definitionSha: workflow.definitionSha,

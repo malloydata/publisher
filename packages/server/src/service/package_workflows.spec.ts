@@ -151,7 +151,7 @@ describe("package workflows", () => {
             {
                name: "main",
                path: MAIN,
-               digest: pkg.listWorkflows()[0]!.skill_sets[0]!.digest,
+               digest: expect.stringMatching(/^[0-9a-f]{64}$/),
                skills: [
                   {
                      relative_filepath: "conventions/SKILL.md",

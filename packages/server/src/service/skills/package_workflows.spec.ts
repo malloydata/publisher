@@ -36,6 +36,8 @@ const SECOND = "workflows/analyst/skill_sets/second";
 const LINKED = "workflows/analyst/linked";
 const CONVENTIONS = `${MAIN}/conventions`;
 const INSTRUCTIONS = "workflows/analyst/instructions.md";
+/** A file of the full view; the view's own type is the union with the summary's. */
+type FullFile = { relative_filepath: string; file_contents: string };
 const sha = (data: string | Buffer) =>
    createHash("sha256").update(data).digest("hex");
 
@@ -102,8 +104,13 @@ describe("readPackageWorkflows", () => {
    };
 
    /** The files of one set of a served workflow, as the wire carries them. */
-   const viewOf = (result: PackageWorkflows, index = 0, name = "analyst") =>
-      workflowSkillSet(result.workflows.get(name)!.sets[index]!, "full");
+   const viewOf = (result: PackageWorkflows, index = 0, name = "analyst") => {
+      const set = workflowSkillSet(
+         result.workflows.get(name)!.sets[index]!,
+         "full",
+      );
+      return { ...set, skills: set.skills as FullFile[] };
+   };
 
    describe("a workflow", () => {
       it("resolves to the contract shape", () => {
