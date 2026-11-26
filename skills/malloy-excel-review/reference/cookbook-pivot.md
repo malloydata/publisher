@@ -15,7 +15,7 @@ source used here (the `Data` table).
 
 ## Status of the evidence
 
-**The committed fixture has no pivot.** `fixtures/fixture.xlsx` is the `python` build, and
+**The committed fixture has no pivot.** The repository's `fixtures/fixture.xlsx` (not shipped with this skill) is the `python` build, and
 that build ships without the `Pivot` sheet: a pivot is created in Excel, and Excel
 silently repairs or strips one a script writes. So no recipe here compares against a
 cached pivot cell. The recipes are labelled in place. Where one says it ran, the Malloy

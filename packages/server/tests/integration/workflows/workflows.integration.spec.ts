@@ -149,6 +149,18 @@ describe("Package skills and workflows (E2E)", () => {
          expect(script.body.content).toBe(text("scripts/check.py"));
       });
 
+      it("serves nothing the skill's .skillignore drops, though the files are in the package", async () => {
+         expect(
+            fs.existsSync(path.join(skillDir, "scratch/notes.txt")) &&
+               fs.existsSync(path.join(skillDir, "margin.draft")),
+         ).toBe(true);
+         for (const dropped of ["scratch/notes.txt", "margin.draft"]) {
+            expect((await get(`/skills/house-rules/${dropped}`)).status).toBe(
+               404,
+            );
+         }
+      });
+
       it("answers a binary file with its size and a message, never its bytes", async () => {
          const { status, body } = await get(
             "/skills/house-rules/assets/blob.bin",
@@ -278,6 +290,32 @@ describe("Package skills and workflows (E2E)", () => {
          expect(body.source.definitionSha).toMatch(/^[0-9a-f]{64}$/);
       });
 
+      it("does not serve a workflow whose skill set is missing, and says why in the package's warnings, while the others serve", async () => {
+         expect((await get("/workflows/broken")).status).toBe(404);
+         const { body } = await get("");
+         const messages = (body.warnings as Array<{ message: string }>).map(
+            (w) => w.message,
+         );
+         expect(
+            messages.some((m) =>
+               m.startsWith(
+                  "Workflow 'broken' is not served: skill set directory 'skill_sets/missing' does not exist",
+               ),
+            ),
+         ).toBe(true);
+         expect((await get("/workflows/analyst")).status).toBe(200);
+      });
+
+      it("serves workflows beside an agents key, which it no longer reads, and says so", async () => {
+         const { body } = await get("");
+         expect(
+            (body.warnings as Array<{ message: string }>).some((w) =>
+               w.message.includes('"agents" is no longer read'),
+            ),
+         ).toBe(true);
+         expect((await get("/agents")).status).toBe(404);
+      });
+
       it("serves a workflow that is only instructions", async () => {
          const { status, body } = await get("/workflows/weekly-summary");
          expect(status).toBe(200);
@@ -384,6 +422,12 @@ describe("Package skills and workflows (E2E)", () => {
          );
          expect(status).toBe(400);
          expect(body.message).toContain("'skillSet' must be");
+      });
+
+      it("serves nothing a skill's .skillignore drops", async () => {
+         for (const dropped of ["scratch/notes.txt", "margin.draft"]) {
+            expect((await read(`house-rules/${dropped}`)).status).toBe(404);
+         }
       });
 
       it("answers a binary file with a message naming its size, never its bytes", async () => {

@@ -21,6 +21,7 @@ A commit cannot name its own hash, so the generator is pinned by its source SHA-
 ## Rebuild
 
 ```bash
+# From a checkout of the Publisher repository: build_fixture.py is not part of the installed skill.
 python3 skills/malloy-excel-review/fixtures/build_fixture.py                       # --recalc python (default)
 python3 skills/malloy-excel-review/fixtures/build_fixture.py --recalc libreoffice  # soffice --headless --convert-to xlsx
 python3 skills/malloy-excel-review/fixtures/build_fixture.py --recalc excel        # writes the files and prints the steps

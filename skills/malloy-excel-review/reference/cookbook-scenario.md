@@ -17,7 +17,7 @@ source this file builds on.
 
 **The recipes below are worked, each labelled `executed` or `semantics-cited` in place.** Where
 a recipe says it ran, it ran on a local Publisher (0.9.0, DuckDB v1.5.5, REST) against
-`fixtures/fixture.xlsx` and the numbers shown are what came back. The labels are the ones in
+the repository's `fixtures/fixture.xlsx` (not shipped with this skill) and the numbers shown are what came back. The labels are the ones in
 `cookbook-lookup-aggregate.md`:
 
 | Label | Meaning |

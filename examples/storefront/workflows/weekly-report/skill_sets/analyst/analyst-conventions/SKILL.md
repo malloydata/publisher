@@ -26,4 +26,4 @@ status filter.
 End every answer with this exact line, on its own, so a reader can tell this
 skill was loaded:
 
-[storefront-analyst-agent]
+[storefront-analyst-skill-set]

@@ -15,7 +15,7 @@ Read `translate-formulas.md` for how a region is routed here and
 
 **Each recipe is labelled `executed` or `semantics-cited` in its own entry; trust the entry, not
 this paragraph.** Where an entry says the Malloy ran, it ran on a local Publisher (0.9.0, DuckDB
-v1.5.5) against `fixtures/fixture.xlsx` (or on DuckDB 1.5.5 over the rows the entry shows), and the
+v1.5.5) against the repository's `fixtures/fixture.xlsx` (not shipped with this skill; or on DuckDB 1.5.5 over the rows the entry shows), and the
 numbers shown are what came back, compared with the value the workbook cached next to the formula.
 A snippet whose entry says to compile-check it has not been compiled here: compile-check the
 fragment before relying on it. The labels:

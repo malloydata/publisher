@@ -18,6 +18,13 @@
       "weekly-summary": {
          "description": "Summarizes last week's numbers",
          "instructions": "workflows/weekly-summary/instructions.md"
+      },
+      "broken": {
+         "description": "Names a skill set the package does not have, so it is refused",
+         "skill_sets": ["skill_sets/missing"]
       }
+   },
+   "agents": {
+      "analyst": { "instructions": "agents/analyst/instructions.md" }
    }
 }

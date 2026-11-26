@@ -183,6 +183,20 @@ const PARITY: [string, string, string, string, string][] = [
       ">-",
    ],
    [
+      "CRLF line endings",
+      "---\r\nname: x\r\ndescription: d\r\n---\r\nBody\r\n",
+      "dir",
+      "x",
+      "d",
+   ],
+   [
+      "a leading BOM, which hides the fence from both",
+      "\uFEFF---\nname: x\ndescription: d\n---\n",
+      "dir",
+      "dir",
+      "",
+   ],
+   [
       "an anchored list referenced 99 times",
       `---\nname: x\ndescription: d\nl: &l ${wide}\n${refs}\n---\n`,
       "dir",
@@ -195,7 +209,11 @@ describe("the server's and the package's frontmatter readers", () => {
    it.each(PARITY)(
       "agree on %s",
       (_label, markdown, dir, name, description) => {
-         const front = markdown.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "";
+         // As listSkills reads a file: line endings normalized, then the fence.
+         const front =
+            markdown
+               .replace(/\r\n/g, "\n")
+               .match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "";
          expect(readFrontmatter(front, dir)).toEqual({ name, description });
          const server = parseFrontmatter(markdown, dir);
          expect({ name: server.name, description: server.description }).toEqual(
