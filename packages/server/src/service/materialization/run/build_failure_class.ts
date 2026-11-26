@@ -316,6 +316,67 @@ export function classifySourceFailure(
 }
 
 /**
+ * The file a source id (`name@<model>`) names, as an author reads it: the
+ * package-relative path a served model's id carries, or a URL's last path
+ * segment, so a reason never quotes the server's path to a model file.
+ */
+function modelLabelOf(sourceID: string): string | undefined {
+   const at = sourceID.indexOf("@");
+   if (at < 0) return undefined;
+   const model = sourceID.slice(at + 1);
+   if (!model) return undefined;
+   if (!model.includes("://")) return model;
+   try {
+      const segments = new URL(model).pathname.split("/").filter(Boolean);
+      return segments.length > 0
+         ? decodeURIComponent(segments[segments.length - 1])
+         : undefined;
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * The reason a build refused by Malloy's strict manifest miss records, in the
+ * author's terms rather than the compiler's ("Persisted source 'x@m.malloy'
+ * not found in manifest (buildId: …)"): the upstream by name and file, and
+ * either the build error it failed with in this run or that it has no table
+ * the build can read. Undefined for any other error, which keeps its own message.
+ */
+export function strictMissReason(
+   sourceName: string,
+   err: unknown,
+   failedUpstreams: readonly FailedUpstream[],
+): string | undefined {
+   const miss = strictMissSourceId(err);
+   if (miss === undefined) return undefined;
+   const prefix = `Failed to materialize source '${sourceName}': `;
+   const label = miss.sourceID ? modelLabelOf(miss.sourceID) : undefined;
+   const named = (name: string) =>
+      `its persisted upstream '${name}'${label ? ` (${label})` : ""}`;
+   if (failedUpstreams.length > 0) {
+      return (
+         prefix +
+         failedUpstreams
+            .map(
+               (u) =>
+                  `${named(u.name)} failed to build in this run: ${u.reason}`,
+            )
+            .join("; ")
+      );
+   }
+   const upstream = miss.sourceID
+      ? named(miss.sourceID.split("@")[0])
+      : "a persisted upstream it reads";
+   return (
+      prefix +
+      `${upstream} has no table this build can read (it is not built ` +
+      `yet, or was supplied where this build cannot read it), and a build ` +
+      `never recomputes a persisted upstream from its definition`
+   );
+}
+
+/**
  * The upstream sources of `sourceID` that failed earlier in this run: the
  * ones the missing-upstream error names (by sourceID for Malloy's strict
  * miss; by name among this source's declared upstreams for the chained

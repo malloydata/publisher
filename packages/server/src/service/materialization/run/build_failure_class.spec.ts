@@ -20,6 +20,7 @@ import {
    BuildRunFailedError,
    classifyRunFailure,
    combineRetryable,
+   strictMissReason,
 } from "./build_failure_class";
 
 function strictMiss(sourceID: string): Error {
@@ -405,5 +406,54 @@ describe("the run-level answer", () => {
          undefined,
       );
       expect(classifyRunFailure(new Error("socket hang up"))).toBe(true);
+   });
+});
+
+describe("strictMissReason", () => {
+   const bad: FailedUpstream = {
+      name: "bad",
+      reason: "Invalid Input Error: boom",
+      retryable: false,
+   };
+
+   it("names the upstream, its file and its build error when it failed in this run", () => {
+      const reason = strictMissReason(
+         "bad_down",
+         strictMiss("bad@fail.malloy"),
+         [bad],
+      );
+      expect(reason).toBe(
+         "Failed to materialize source 'bad_down': its persisted upstream " +
+            "'bad' (fail.malloy) failed to build in this run: " +
+            "Invalid Input Error: boom",
+      );
+   });
+
+   it("says the upstream has no table when nothing in this run failed", () => {
+      const reason = strictMissReason(
+         "bad_down",
+         strictMiss("bad@models/fail.malloy"),
+         [],
+      );
+      expect(reason).toContain(
+         "its persisted upstream 'bad' (models/fail.malloy) has no table this build can read",
+      );
+      expect(reason).not.toContain("manifest");
+   });
+
+   it("never quotes a server path from a URL source id", () => {
+      const reason = strictMissReason(
+         "down",
+         strictMiss("up@file:///srv/data/pkg/m.malloy"),
+         [],
+      );
+      expect(reason).toContain("'up' (m.malloy)");
+      expect(reason).not.toContain("/srv/");
+   });
+
+   it("leaves any other error to its own message", () => {
+      expect(
+         strictMissReason("down", new Error("boom"), [bad]),
+      ).toBeUndefined();
    });
 });
