@@ -179,15 +179,17 @@ export class VersionStore {
     * Put a registered version's missing folder back, from `downloader` (its
     * `source_location`). Kept only when it hashes to the published hash: a
     * location whose content has changed must not be served under the old
-    * version's name. A folder already present is left alone. Returns whether
-    * the folder is in place afterwards.
+    * version's name. A folder already present is left alone. Returns `placed`
+    * when the folder is in place afterwards, `mismatch` when the location was
+    * fetched but holds other content (fetching it again would only repeat
+    * that), and `failed` when the fetch itself failed.
     */
    async restore(
       packageName: string,
       expected: { versionId: string; dirName: string; contentHash: string },
       downloader: (stagingPath: string) => Promise<void>,
-   ): Promise<boolean> {
-      if (await this.isPlaced(packageName, expected.dirName)) return true;
+   ): Promise<"placed" | "mismatch" | "failed"> {
+      if (await this.isPlaced(packageName, expected.dirName)) return "placed";
       let staged: StagedVersion;
       try {
          staged = await this.stage(packageName, downloader);
@@ -197,7 +199,7 @@ export class VersionStore {
             versionId: expected.versionId,
             error: err,
          });
-         return false;
+         return "failed";
       }
       if (
          staged.versionId !== expected.versionId ||
@@ -212,10 +214,10 @@ export class VersionStore {
             },
          );
          await this.discard(staged);
-         return false;
+         return "mismatch";
       }
       await this.place(staged);
-      return true;
+      return "placed";
    }
 
    /**

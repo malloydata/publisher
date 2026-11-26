@@ -226,7 +226,7 @@ describe("Environment loading of published versions", () => {
 
       const restarted = await newEnvironment();
       await expect(restarted.getPackage(parsePackageName(PKG))).rejects.toThrow(
-         /missing and could not be fetched again/,
+         /no longer holds what was published/,
       );
       expect(fs.existsSync(path.join(envPath, PKG, "1.0.0"))).toBe(false);
    });
@@ -681,9 +681,51 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       for (let i = 0; i < 3; i++) {
          await expect(
             restarted.getPackage(parsePackageName(PKG)),
-         ).rejects.toThrow(/missing and could not be fetched again/);
+         ).rejects.toThrow(/no longer holds what was published/);
       }
       expect(restoreDownloads).toBe(1);
+   });
+
+   it("a version whose location no longer hashes to it is not fetched again, past the retry window or a restart, until it is published again", async () => {
+      const location = source("1.0.0", 1);
+      await publish(await newEnvironment(), location);
+      fs.rmSync(path.join(envPath, PKG, "1.0.0"), { recursive: true });
+      // The location now holds other content under the same version.
+      const original = fs.mkdtempSync(path.join(root, "original-"));
+      fs.cpSync(location, original, { recursive: true });
+      writePackage(location, { version: "1.0.0" }, 99);
+      const restarted = await newEnvironment();
+      restoreDownloads = 0;
+      await expect(restarted.getPackage(parsePackageName(PKG))).rejects.toThrow(
+         /no longer holds what was published/,
+      );
+      expect(restoreDownloads).toBe(1);
+      // Recorded on the version: not fetched again an hour later, nor after
+      // another restart.
+      const now = Date.now();
+      const later = spyOn(Date, "now").mockReturnValue(now + 60 * 60_000);
+      try {
+         await expect(
+            restarted.getPackage(parsePackageName(PKG)),
+         ).rejects.toThrow(/no longer holds what was published/);
+         await expect(
+            (await newEnvironment()).getPackage(parsePackageName(PKG)),
+         ).rejects.toThrow(/no longer holds what was published/);
+      } finally {
+         later.mockRestore();
+      }
+      expect(restoreDownloads).toBe(1);
+      // Publishing the same content again puts the folder back, and serves.
+      fs.rmSync(location, { recursive: true });
+      fs.cpSync(original, location, { recursive: true });
+      const env = await newEnvironment();
+      await publish(env, location);
+      expect(await answerOf(await env.getPackage(parsePackageName(PKG)))).toBe(
+         1,
+      );
+      expect(
+         (await repo.getVersion(ENV_ID, PKG, "1.0.0"))!.restoreStatus ?? null,
+      ).toBeNull();
    });
 
    it("closing the environment releases every loaded version's connections", async () => {

@@ -11,6 +11,7 @@ import {
    PromoteRule,
    Version,
    VersionArchiveStatus,
+   VersionRestoreStatus,
 } from "../DatabaseInterface";
 import {
    DuckDBConnection,
@@ -406,6 +407,25 @@ export class VersionRepository {
       return mapRow(row);
    }
 
+   async setRestoreStatus(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+      status: VersionRestoreStatus | null,
+   ): Promise<void> {
+      await this.db.run(
+         `UPDATE versions SET restore_status = ?, updated_at = ? WHERE ${KEY} AND restore_status IS DISTINCT FROM ?`,
+         [
+            status,
+            new Date().toISOString(),
+            environmentId,
+            packageName,
+            versionId,
+            status,
+         ],
+      );
+   }
+
    async markHostOwned(
       environmentId: string,
       packageName: string,
@@ -499,6 +519,7 @@ function mapRow(row: Row): Version {
       hostOwned:
          row.host_owned === true ||
          (row.host_owned == null && row.manifest_path != null),
+      restoreStatus: text(row.restore_status) as VersionRestoreStatus | null,
       archiveStatus: row.archive_status as VersionArchiveStatus,
       archivedAt: date(row.archived_at),
       promotedAt: date(row.promoted_at),

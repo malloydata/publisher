@@ -858,6 +858,7 @@ describe("versions schema upgrade", () => {
          "created_at",
          "updated_at",
          "host_owned",
+         "restore_status",
       ]);
 
       const repo = createDuckDBRepository(db);

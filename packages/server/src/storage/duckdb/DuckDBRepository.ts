@@ -93,6 +93,18 @@ export function createDuckDBRepository(
          ),
       markVersionHostOwned: (environmentId, packageName, versionId) =>
          versions.markHostOwned(environmentId, packageName, versionId),
+      setVersionRestoreStatus: (
+         environmentId,
+         packageName,
+         versionId,
+         status,
+      ) =>
+         versions.setRestoreStatus(
+            environmentId,
+            packageName,
+            versionId,
+            status,
+         ),
       deleteVersion: (environmentId, packageName, versionId) =>
          versions.delete(environmentId, packageName, versionId),
       deletePackageIfNoVersions: (environmentId, packageName) =>

@@ -141,6 +141,13 @@ export interface ResourceRepository {
       packageName: string,
       versionId: string,
    ): Promise<void>;
+   /** Record, or clear with null, why a version's folder is not fetched again. */
+   setVersionRestoreStatus(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+      status: VersionRestoreStatus | null,
+   ): Promise<void>;
    /**
     * Delete a version's row. While other versions remain it refuses the
     * package's `latest` (VERSION_IS_LATEST) and its last version in service
@@ -291,6 +298,9 @@ export type VersionArchiveStatus = "archive" | "unarchive";
  * One published, immutable version of a package. Its files never change after
  * publish; its lifecycle state, `latest` stamps and manifest binding do.
  */
+/** Why a missing version's folder is not fetched again (Version.restoreStatus). */
+export type VersionRestoreStatus = "hash_mismatch";
+
 export interface Version {
    /** The semantic version, exactly as the version's publisher.json declared it. */
    versionId: string;
@@ -311,6 +321,13 @@ export interface Version {
     * cleared.
     */
    hostOwned: boolean;
+   /**
+    * `hash_mismatch`: the version's folder went missing and its location no
+    * longer hashes to what was published, so it is not fetched again until
+    * the version is placed again (a publish of the same content). Absent or
+    * null otherwise.
+    */
+   restoreStatus?: VersionRestoreStatus | null;
    archiveStatus: VersionArchiveStatus;
    archivedAt: Date | null;
    /** When it last became the package's `latest`. */

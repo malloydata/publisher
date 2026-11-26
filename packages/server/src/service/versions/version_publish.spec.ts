@@ -503,7 +503,7 @@ describe("VersionService.getLoaded", () => {
       fs.rmSync(path.join(envPath, PKG, "1.0.0"), { recursive: true });
       fs.writeFileSync(path.join(location, "model.malloy"), "edited");
       await expect(service().getLoaded(PKG, "1.0.0")).rejects.toThrow(
-         /missing and could not be fetched again/,
+         /no longer holds what was published/,
       );
    });
 

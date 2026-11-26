@@ -38,6 +38,7 @@ export type VersionRegistry = Pick<
    | "setVersionArchiveStatus"
    | "setVersionManifestPath"
    | "markVersionHostOwned"
+   | "setVersionRestoreStatus"
    | "deleteVersion"
    | "deletePackageIfNoVersions"
 >;
@@ -1479,15 +1480,34 @@ export class VersionService<P = unknown> {
 
    /**
     * Put a registered version's missing folder back from where it was
-    * published, kept only when it hashes to the published hash. A failure is
-    * remembered for a while, so reads that keep touching the version do not
-    * fetch the location again each time. Called holding the folder's lock.
+    * published, kept only when it hashes to the published hash. A fetch that
+    * failed is remembered for a while, so reads that keep touching the version
+    * do not fetch the location again each time. A location that answered with
+    * other content is recorded on the version (`restore_status`), and never
+    * fetched again until the version is placed again: fetching it would only
+    * find the same content. Called holding the folder's lock.
     */
    private async restoreIfMissing(row: Version): Promise<void> {
       const store = this.requireStore();
       const host = this.requireHost();
       const { packageName, versionId, dirName } = row;
-      if (await store.isPlaced(packageName, dirName)) return;
+      if (await store.isPlaced(packageName, dirName)) {
+         // Placed again (a publish of the same content): it can serve, and a
+         // later loss may be fetched again.
+         if (row.restoreStatus) {
+            await this.registry.setVersionRestoreStatus(
+               this.environmentId,
+               packageName,
+               versionId,
+               null,
+            );
+         }
+         return;
+      }
+      const mismatch = new VersionFilesMissingError(
+         `The files of version ${versionId} of package ${packageName} are missing, and the location it was published from no longer holds what was published, so it is not fetched again. Publish the version again from its original content to serve it.`,
+      );
+      if (row.restoreStatus === "hash_mismatch") throw mismatch;
       const failureKey = `${packageName}@${versionId}@${row.contentHash}`;
       const failedAt = this.restoreFailedAt.get(failureKey);
       const missing = new VersionFilesMissingError(
@@ -1500,13 +1520,23 @@ export class VersionService<P = unknown> {
          throw missing;
       }
       const restored =
-         row.sourceLocation !== null &&
-         (await store.restore(
+         row.sourceLocation === null
+            ? "failed"
+            : await store.restore(
+                 packageName,
+                 row,
+                 host.downloaderFor(packageName, row.sourceLocation),
+              );
+      if (restored === "mismatch") {
+         await this.registry.setVersionRestoreStatus(
+            this.environmentId,
             packageName,
-            row,
-            host.downloaderFor(packageName, row.sourceLocation),
-         ));
-      if (!restored) {
+            versionId,
+            "hash_mismatch",
+         );
+         throw mismatch;
+      }
+      if (restored !== "placed") {
          this.restoreFailedAt.set(failureKey, Date.now());
          throw missing;
       }

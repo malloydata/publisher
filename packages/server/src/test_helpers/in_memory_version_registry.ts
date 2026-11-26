@@ -277,6 +277,17 @@ export function inMemoryVersionRegistry(): Record<string, unknown> {
          target.updatedAt = new Date();
          return { ...target };
       },
+      setVersionRestoreStatus: async (
+         environmentId: string,
+         packageName: string,
+         versionId: string,
+         status: "hash_mismatch" | null,
+      ) => {
+         const row = versions.get(
+            versionKey(environmentId, packageName, versionId),
+         );
+         if (row) row.restoreStatus = status;
+      },
       markVersionHostOwned: async (
          environmentId: string,
          packageName: string,

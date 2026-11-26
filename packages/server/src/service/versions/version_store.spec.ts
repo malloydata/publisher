@@ -182,7 +182,7 @@ describe("VersionStore.restore", () => {
 
       expect(
          await store.restore("sales", published, writes({ version: "1.0.0" })),
-      ).toBe(true);
+      ).toBe("placed");
       expect(await store.isPlaced("sales", "1.0.0")).toBe(true);
    });
 
@@ -198,15 +198,15 @@ describe("VersionStore.restore", () => {
             published,
             writes({ version: "1.0.0" }, { "model.malloy": "edited since" }),
          ),
-      ).toBe(false);
+      ).toBe("mismatch");
       expect(
          await store.restore("sales", published, writes({ version: "1.0.1" })),
-      ).toBe(false);
+      ).toBe("mismatch");
       expect(
          await store.restore("sales", published, async () => {
             throw new Error("gone");
          }),
-      ).toBe(false);
+      ).toBe("failed");
       expect(await store.isPlaced("sales", "1.0.0")).toBe(false);
       expect(stagingEntries()).toEqual([]);
    });
@@ -219,7 +219,7 @@ describe("VersionStore.restore", () => {
          await store.restore("sales", staged, async () => {
             fetched = true;
          }),
-      ).toBe(true);
+      ).toBe("placed");
       expect(fetched).toBe(false);
    });
 });
