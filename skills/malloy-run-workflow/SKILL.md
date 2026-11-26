@@ -63,7 +63,7 @@ Rules:
 A set's `assets` lists every file of its skills that is not inline Markdown as `{relative_filepath, bytes, sha256}`, with no contents. These are scripts the skill runs, files its instructions tell you to copy into what you build (a chart module, a template), data and images. Install each one at `<dir>/<relative_filepath>`, beside the skill's `SKILL.md`, and **never read it into your context or retype it**:
 
 - **You have the package's files** (a checkout or a mounted package): copy it from `<set.path>/<relative_filepath>` in the package. This is the only way to install a binary file, which the Publisher never serves as text.
-- **You have a shell that reaches the Publisher:** fetch a text file over REST (`.../workflows/{name}/skills/{relative_filepath}?versionId=<source.versionId>`, adding `&skillSet=<set>` when you installed one set), not through `get_workflow`'s `skill_path`, which would put it in your context. Write it to a temporary file and move it into place only when `file_contents` came back and its SHA-256 is the listed `sha256`, so a failed or altered fetch installs nothing. Set `failed=0` once, before the first file, then call this for each one (`DIR` is the skills directory, `BASE` the `.../skills` URL above, `Q` its query string; `shasum -a 256` stands in for `sha256sum` on macOS):
+- **You have a shell that reaches the Publisher:** fetch a text file over REST (`.../workflows/{name}/skills/{relative_filepath}?versionId=<source.versionId>`, each path segment percent-encoded, adding `&skillSet=<set>` when you installed one set), not through `get_workflow`'s `skill_path`, which would put it in your context. Write it to a temporary file and move it into place only when `file_contents` came back and its SHA-256 is the listed `sha256`, so a failed or altered fetch installs nothing. Set `failed=0` once, before the first file, then call this for each one (`DIR` is the skills directory, `BASE` the `.../skills` URL above, `Q` its query string; `shasum -a 256` stands in for `sha256sum` on macOS):
 
   ```bash
   set -o pipefail
@@ -71,8 +71,9 @@ A set's `assets` lists every file of its skills that is not inline Markdown as `
     rel=$1; sha=$2; dest="$DIR/$rel"
     case "$rel" in /*|..|../*|*/..|*/../*) echo "refused path: $rel" >&2; failed=1; return ;; esac
     if [ -e "$dest" ]; then echo "exists, skipped: $dest" >&2; return; fi
+    uri=$(jq -nr --arg p "$rel" '$p | split("/") | map(@uri) | join("/")')  # each segment percent-encoded
     mkdir -p "$(dirname "$dest")" \
-      && curl -sf "$BASE/$rel?$Q" | jq -ej .file_contents > "$dest.part" \
+      && curl -sf "$BASE/$uri?$Q" | jq -ej .file_contents > "$dest.part" \
       && [ "$(sha256sum "$dest.part" | cut -d' ' -f1)" = "$sha" ] \
       || { echo "not installed: $dest" >&2; failed=1; rm -f "$dest.part"; return; }
     mv -n "$dest.part" "$dest"
