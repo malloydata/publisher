@@ -354,6 +354,22 @@ describe("get_workflow: the reply stays within the tool-result limit", () => {
       expect(wire(result)).toBeLessThanOrEqual(FCJ_MAX_CHARS);
    });
 
+   it("does not say it keeps instructions for a workflow that has none", async () => {
+      const { instructions: _dropped, ...noInstructions } = withInstructions(
+         "unused",
+         text,
+      );
+      const result = await getWorkflow(undefined, {
+         getWorkflow: () => ({ ...noInstructions, has_instructions: false }),
+      })(call);
+      const payload = parse(result);
+      expect(payload.workflow.instructions).toBeUndefined();
+      expect(payload.message).toContain(
+         "so this keeps each skill set's name, path and digest",
+      );
+      expect(payload.message).not.toContain("keeps the instructions");
+   });
+
    it("refuses a view that does not fit even without its skill entries, naming the narrower reads and REST", async () => {
       const result = await getWorkflow(undefined, {
          getWorkflow: () => withInstructions(text, text),

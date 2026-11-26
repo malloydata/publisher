@@ -293,7 +293,7 @@ export function registerGetWorkflowTool(
                ),
                source: workflow.source,
             },
-            message: `${tooLarge}, so this keeps the instructions and each skill set's name, path and digest, and leaves out the skill entries and warnings. ${narrower}`,
+            message: `${tooLarge}, so this keeps ${workflow.instructions === undefined ? "" : "the instructions and "}each skill set's name, path and digest, and leaves out the skill entries and warnings. ${narrower}`,
          };
          const sentPinned = reply(pinned);
          if (sentPinned.fits) return jsonResource(uri, sentPinned.payload);
