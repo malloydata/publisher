@@ -25,7 +25,9 @@ THREE RULES
   `build_id`, package + version). A key already stored is skipped, so a rerun,
   or a pull that overlaps the last one, adds nothing twice.
 - **Only the served package's traffic.** Rows for another package are left
-  out.
+  out. A package name is unique only within an environment, so with
+  `[optimization] production_environment` set, rows from any other
+  environment are left out too.
 - **Never the loop's own traffic.** Eval runs and replays query the served
   package too. A row from an environment in `[optimization] exclude_environments`,
   or whose `origin` is `eval` or `replay`, is left out and counted. Without
@@ -85,7 +87,7 @@ def stored_keys(path: pathlib.Path, key: tuple[str, ...]) -> set[tuple[str, ...]
 
 
 def why_left_out(row: dict[str, Any], table: str, package: str,
-                 excluded: set[str]) -> str | None:
+                 excluded: set[str], environment: str | None = None) -> str | None:
     key = TABLES[table][0]
     if any(row.get(k) in (None, "") for k in key):
         return f"no {' + '.join(key)}"
@@ -93,13 +95,15 @@ def why_left_out(row: dict[str, Any], table: str, package: str,
         return "another package"
     if row.get("environment") in excluded:
         return "the loop's own environment"
+    if environment and row.get("environment") not in (None, "", environment):
+        return "another environment"
     if row.get("origin") in LOOP_ORIGINS:
         return f"origin {row['origin']}"
     return None
 
 
 def ingest(data: pathlib.Path, table: str, rows: Iterable[dict[str, Any]], package: str,
-           excluded: set[str]) -> dict[str, Any]:
+           excluded: set[str], environment: str | None = None) -> dict[str, Any]:
     """Append the new rows of one table. Returns what was added and left out."""
     key, ts, cols = TABLES[table]
     data.mkdir(parents=True, exist_ok=True)
@@ -108,7 +112,7 @@ def ingest(data: pathlib.Path, table: str, rows: Iterable[dict[str, Any]], packa
     new, left_out, transcripts = [], {}, []
     for raw in rows:
         row = normalise(raw)
-        why = why_left_out(row, table, package, excluded)
+        why = why_left_out(row, table, package, excluded, environment)
         if why is None and tuple(str(row.get(k)) for k in key) in seen:
             why = "already stored"
         if why:
@@ -161,14 +165,18 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("Missing eval.toml key 'model.package': the served package whose "
                          "traffic to keep. Fix: [model] package = \"storefront\"")
     excluded = set(cfg.get("optimization", "exclude_environments") or [])
+    environment = cfg.get("optimization", "production_environment")
     data = install_for(cfg)
-    results = [ingest(data, INPUT_TABLE[n], read_jsonl(p), package, excluded)
+    results = [ingest(data, INPUT_TABLE[n], read_jsonl(p), package, excluded, environment)
                for n, p in inputs.items()]
     marks = update_watermarks(data, results)
     for r in results:
         out = "; ".join(f"{n} {why}" for why, n in sorted(r["left_out"].items()))
         extra = f" (+{r['transcripts']} transcripts)" if r["transcripts"] else ""
         print(f"{r['table']}: added {r['added']}{extra}" + (f"; left out {out}" if out else ""))
+    if not environment:
+        print("note: [optimization] production_environment is unset, so rows for a package "
+              f"named {package} in any environment are kept")
     if not excluded:
         print("note: [optimization] exclude_environments is unset, so only rows tagged origin "
               "eval/replay are treated as the loop's own traffic")

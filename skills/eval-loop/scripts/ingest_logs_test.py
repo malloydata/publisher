@@ -43,6 +43,11 @@ class Ingest(unittest.TestCase):
         self.assertEqual(got["left_out"], {"the loop's own environment": 1, "origin replay": 1,
                                            "another package": 1, "no turn_id": 1})
 
+    def test_a_package_of_the_same_name_in_another_environment_is_left_out(self):
+        got = il.ingest(self.data, "prod_turns", [turn("t1"), turn("t2", environment="staging")],
+                        "storefront", set(), "prod")
+        self.assertEqual((got["added"], got["left_out"]), (1, {"another environment": 1}))
+
     def test_a_transcript_goes_to_its_own_table_and_host_names_are_mapped(self):
         il.ingest(self.data, "prod_turns",
                   [{**turn(None), "request_id": "r9", "transcript": [{"role": "user"}]}],

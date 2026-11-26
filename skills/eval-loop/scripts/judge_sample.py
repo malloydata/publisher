@@ -22,11 +22,15 @@ does not judge; both are existing steps an agent runs between the two verbs:
    the package loading. Where `prod_transcripts` holds the turn's transcript
    (as answerer events, the shape `log_transcript.py` writes), it is written
    to the judging run's `artifacts/<qid>/answerer.jsonl`; otherwise
-   `fetch_transcripts.py` fetches it.
+   `fetch_transcripts.py` fetches it. Build a production transcript at tier
+   T2 (the answer was logged, the agent's isolation was not): the production
+   agent was never isolated from an answer key, and T3 voids every turn for
+   want of the start-up event a local answerer writes.
 2. The agent derives each case's golden from the data (skill:eval-import),
-   then runs `eval.py run --set <judging set> --label <label> --rebuild` to
+   then runs `eval.py run --set <judging set> --label <label> --rejudge` to
    judge the logged answers against them, and `eval.py diagnose` for the
-   failures.
+   failures. `--rejudge`, not `--rebuild`: a rebuild reuses saved verdicts,
+   and a production turn has none, so every turn would come back unjudged.
 3. `collect` reads that run and appends one row per turn to `prod_judgments`:
    the verdict, and for a wrong answer the diagnosed reason and owner.
 
@@ -173,14 +177,14 @@ def main(argv: list[str] | None = None) -> int:
         if have < len(chosen):
             print(f"  {len(chosen) - have} need fetch_transcripts.py --set {set_dir} --out {run}")
         print(f"next: derive each golden (skill:eval-import), then\n"
-              f"  python3 eval.py run --set {set_dir} --label {a.label} --rebuild\n"
+              f"  python3 eval.py run --set {set_dir} --label {a.label} --rejudge\n"
               f"  python3 eval.py diagnose --set {set_dir} --label {a.label}\n"
               f"  python3 eval.py judge-sample collect --set {a.set_dir} --label {a.label}")
         print(set_dir)
         return 0
     if not (run / "run.json").is_file():
         raise SystemExit(f"No judging run at {run}. Fix: eval.py run --set {set_dir} "
-                         f"--label {a.label} --rebuild")
+                         f"--label {a.label} --rejudge")
     cases = read_jsonl(set_dir / "cases.jsonl")
     done = {(r["turn_id"], r["metric_version"]) for r in read(data / "prod_judgments.csv")}
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")

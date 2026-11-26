@@ -95,8 +95,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
     # tables, both models and both apps live; the environments whose traffic is
     # the loop's own and never production (ingest_logs.py); and how many
     # production turns a night's judging samples (judge_sample.py).
-    "optimization": {"package_dir": "path", "exclude_environments": "names",
-                     "judge_sample": "count"},
+    "optimization": {"package_dir": "path", "production_environment": str,
+                     "exclude_environments": "names", "judge_sample": "count"},
 }
 
 BUILTIN: dict[tuple[str, str], Any] = {

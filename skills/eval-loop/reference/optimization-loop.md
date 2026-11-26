@@ -94,14 +94,16 @@ production turn has no answer key:
 python3 eval.py ingest --set <set> --turns turns.jsonl --queries queries.jsonl --versions versions.jsonl
 python3 eval.py judge-sample pick --set <set> --label prod-20261125    # draw unjudged turns as a set
 # derive each case's golden (skill:eval-import), then judge the logged answers:
-python3 eval.py run --set <workdir>/judging/prod-20261125 --label prod-20261125 --rebuild
+python3 eval.py run --set <workdir>/judging/prod-20261125 --label prod-20261125 --rejudge
 python3 eval.py diagnose --set <workdir>/judging/prod-20261125 --label prod-20261125
 python3 eval.py judge-sample collect --set <set> --label prod-20261125
 ```
 
 Name the environments the loop itself queries in
 `[optimization] exclude_environments`, or its eval runs are ingested as
-production. Before a change goes to review, `eval.py predict` writes down what
+production. Set `[optimization] production_environment` too: a package name is
+unique only within an environment, and two environments in one organization
+can each serve a package of the same name. Before a change goes to review, `eval.py predict` writes down what
 it should do; after it ships, `eval.py outcomes` checks. Compare the total too,
 not only whether each outcome fell in its range: when every range is wide or
 starts at zero, "inside the range" teaches nothing, and the mean gap in model 2
