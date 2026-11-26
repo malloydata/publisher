@@ -205,13 +205,15 @@ export function registerGetWorkflowTool(
                params.skill_path,
                skillSet,
             );
+            // No `workflow` key in any answer to a file read: it must not look like "no workflow matched".
             if (!skillFile) {
                return send({
-                  workflow: null,
-                  message: `Workflow ${JSON.stringify(params.workflow_name)} has no skill file ${JSON.stringify(params.skill_path)}${skillSet === undefined ? "" : ` in skill set ${JSON.stringify(skillSet)}`}. Fix: use a relative_filepath exactly as the definition lists it (a skill file in the summary, an asset in the full view).`,
+                  skillFile: {
+                     relative_filepath: params.skill_path,
+                     message: `Workflow ${JSON.stringify(params.workflow_name)} has no skill file ${JSON.stringify(params.skill_path)}${skillSet === undefined ? "" : ` in skill set ${JSON.stringify(skillSet)}`}. Fix: use a relative_filepath exactly as the definition lists it (a skill file in the summary, an asset in the full view).`,
+                  },
                });
             }
-            // No `workflow` key in either answer: a file read must not look like "no workflow matched".
             if ("changed" in skillFile) {
                return send({
                   skillFile: {

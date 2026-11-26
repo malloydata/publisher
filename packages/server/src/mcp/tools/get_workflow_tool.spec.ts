@@ -167,8 +167,14 @@ describe("get_workflow", () => {
             skill_path: "x/SKILL.md",
          }),
       );
-      expect(missing.workflow).toBeNull();
-      expect(missing.message).toContain('has no skill file "x/SKILL.md"');
+      // Not `workflow: null`, which the run-workflow recipe reads as "the name did not match".
+      expect("workflow" in missing).toBe(false);
+      expect(missing.message).toBeUndefined();
+      expect(missing.skillFile.relative_filepath).toBe("x/SKILL.md");
+      expect(missing.skillFile.file_contents).toBeUndefined();
+      expect(missing.skillFile.message).toContain(
+         'has no skill file "x/SKILL.md"',
+      );
    });
 
    it("scopes a skill file to the skill set it names, or says it is missing there", async () => {
@@ -184,10 +190,12 @@ describe("get_workflow", () => {
          "# in main",
       );
       const missing = parse(await read("other"));
-      expect(missing.skillFile).toBeUndefined();
-      expect(missing.workflow).toBeNull();
-      expect(missing.message).toContain('has no skill file "guide/SKILL.md"');
-      expect(missing.message).toContain('in skill set "other"');
+      expect("workflow" in missing).toBe(false);
+      expect(missing.skillFile.file_contents).toBeUndefined();
+      expect(missing.skillFile.message).toContain(
+         'has no skill file "guide/SKILL.md"',
+      );
+      expect(missing.skillFile.message).toContain('in skill set "other"');
    });
 
    it("answers a missing package with a not-found error naming it", async () => {

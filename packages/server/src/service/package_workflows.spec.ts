@@ -1288,8 +1288,9 @@ describe("package workflows", () => {
                      skill_path: bad,
                   }),
                );
-               expect(miss.skillFile).toBeUndefined();
-               expect(miss.message).toContain("Fix:");
+               expect("workflow" in miss).toBe(false);
+               expect(miss.skillFile.file_contents).toBeUndefined();
+               expect(miss.skillFile.message).toContain("Fix:");
             }
             const noWorkflow = body(
                await tool({ scopes, skill_path: paths[0]! }),
@@ -1359,8 +1360,9 @@ describe("package workflows", () => {
                   skill_set: "nope",
                }),
             );
-            expect(miss.skillFile).toBeUndefined();
-            expect(miss.message).toContain("Fix:");
+            expect("workflow" in miss).toBe(false);
+            expect(miss.skillFile.file_contents).toBeUndefined();
+            expect(miss.skillFile.message).toContain("Fix:");
          });
 
          it("get_workflow summary and skill_set match REST and leave the default alone", async () => {
