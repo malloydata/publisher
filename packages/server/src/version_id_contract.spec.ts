@@ -59,7 +59,7 @@ describe("versionId in api-doc.yaml", () => {
       const taking = operations().filter(([, op]) =>
          (op.parameters ?? []).some((p) => p.$ref === VERSION_ID_REF),
       );
-      // The package-scoped read routes, compile, skills, agents, data apps,
+      // The package-scoped read routes, compile, skills, workflows, data apps,
       // events and the materialization routes.
       expect(taking.length).toBeGreaterThanOrEqual(30);
       const undeclared = taking

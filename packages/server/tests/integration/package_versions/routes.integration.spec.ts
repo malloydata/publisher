@@ -33,33 +33,55 @@ function writePackage(
 ): string {
    fs.mkdirSync(path.join(dir, "dashboards"), { recursive: true });
    fs.mkdirSync(path.join(dir, "public"), { recursive: true });
-   fs.mkdirSync(path.join(dir, "skills", "house-rules"), { recursive: true });
-   fs.mkdirSync(path.join(dir, "agents", "analyst", "skills", "conventions"), {
+   fs.mkdirSync(path.join(dir, "skill_sets", "house", "house-rules"), {
       recursive: true,
    });
+   fs.mkdirSync(
+      path.join(
+         dir,
+         "workflows",
+         "analyst",
+         "skill_sets",
+         "analysis",
+         "conventions",
+      ),
+      { recursive: true },
+   );
    fs.writeFileSync(
       path.join(dir, "publisher.json"),
       JSON.stringify({
          ...manifest,
-         agents: {
+         workflows: {
+            default: {
+               description: `Default v${answer}`,
+               skill_sets: ["skill_sets/house"],
+            },
             analyst: {
                description: `Analyst v${answer}`,
-               instructions: "agents/analyst/instructions.md",
-               skills: ["agents/analyst/skills"],
+               instructions: "workflows/analyst/instructions.md",
+               skill_sets: ["workflows/analyst/skill_sets/analysis"],
             },
          },
       }),
    );
    fs.writeFileSync(
-      path.join(dir, "skills", "house-rules", "SKILL.md"),
+      path.join(dir, "skill_sets", "house", "house-rules", "SKILL.md"),
       `---\nname: house-rules\ndescription: House rules v${answer}\n---\n\nrules v${answer}\n`,
    );
    fs.writeFileSync(
-      path.join(dir, "agents", "analyst", "instructions.md"),
+      path.join(dir, "workflows", "analyst", "instructions.md"),
       `instructions v${answer}\n`,
    );
    fs.writeFileSync(
-      path.join(dir, "agents", "analyst", "skills", "conventions", "SKILL.md"),
+      path.join(
+         dir,
+         "workflows",
+         "analyst",
+         "skill_sets",
+         "analysis",
+         "conventions",
+         "SKILL.md",
+      ),
       `---\nname: conventions\ndescription: Conventions v${answer}\n---\n\nconventions v${answer}\n`,
    );
    fs.writeFileSync(
@@ -88,13 +110,13 @@ function writePackage(
 const api = (suffix: string) =>
    `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${suffix}`;
 
-/** The skill and agent routes, each reading the package a request names. */
-const SKILL_AND_AGENT_ROUTES = [
+/** The skill and workflow routes, each reading the package a request names. */
+const SKILL_AND_WORKFLOW_ROUTES = [
    `${PKG}/skills`,
    `${PKG}/skills/house-rules`,
-   `${PKG}/agents`,
-   `${PKG}/agents/analyst`,
-   `${PKG}/agents/analyst/skills/conventions/SKILL.md`,
+   `${PKG}/workflows`,
+   `${PKG}/workflows/analyst`,
+   `${PKG}/workflows/analyst/skills/conventions/SKILL.md`,
 ];
 
 async function json(res: Response): Promise<Record<string, unknown>> {
@@ -319,7 +341,7 @@ describe("package-scoped routes of a versioned package", () => {
       ).toBe(404);
    });
 
-   it("skills and agents are the named version's, and an agent's pin names it", async () => {
+   it("skills and workflows are the named version's, and a workflow's pin names it", async () => {
       const read = async (sub: string) =>
          json(await fetch(api(`${PKG}${sub}`)));
       const list = async (sub: string) =>
@@ -340,22 +362,22 @@ describe("package-scoped routes of a versioned package", () => {
       );
 
       expect(
-         (await list("/agents?versionId=1.0.0")).map((a) => a.description),
-      ).toEqual(["Analyst v1"]);
-      const v1 = await read("/agents/analyst?versionId=1.0.0");
+         (await list("/workflows?versionId=1.0.0")).map((w) => w.description),
+      ).toEqual(["Default v1", "Analyst v1"]);
+      const v1 = await read("/workflows/analyst?versionId=1.0.0");
       expect(String(v1.instructions)).toContain("instructions v1");
       expect(v1.source).toMatchObject({ versionId: "1.0.0" });
-      const latest = await read("/agents/analyst");
+      const latest = await read("/workflows/analyst");
       expect(String(latest.instructions)).toContain("instructions v2");
       expect(latest.source).toMatchObject({ versionId: "2.0.0" });
       const file = await read(
-         "/agents/analyst/skills/conventions/SKILL.md?versionId=1.0.0",
+         "/workflows/analyst/skills/conventions/SKILL.md?versionId=1.0.0",
       );
       expect(String(file.file_contents)).toContain("conventions v1");
       expect(file.source).toMatchObject({ versionId: "1.0.0" });
 
       // A package with no versions has none in its pin.
-      const plain = await json(await fetch(api(`${PLAIN}/agents/analyst`)));
+      const plain = await json(await fetch(api(`${PLAIN}/workflows/analyst`)));
       expect(plain.source).not.toHaveProperty("versionId");
    });
 
@@ -382,7 +404,7 @@ describe("package-scoped routes of a versioned package", () => {
          `${PKG}/reports/dashboards/overview.malloy`,
          `${PKG}/databases`,
          `${PKG}/data-apps`,
-         ...SKILL_AND_AGENT_ROUTES,
+         ...SKILL_AND_WORKFLOW_ROUTES,
       ];
       for (const route of routes) {
          const sep = route.includes("?") ? "&" : "?";
@@ -482,7 +504,7 @@ describe("package-scoped routes of a versioned package", () => {
       expect((await fetch(api(`${PLAIN}?reload=true`))).status).toBe(200);
    });
 
-   it("answers an archived version 410 on the skill and agent routes", async () => {
+   it("answers an archived version 410 on the skill and workflow routes", async () => {
       const lifecycle = (archiveStatus: string) =>
          fetch(api(`${PKG}/versions/1.0.0`), {
             method: "PATCH",
@@ -491,7 +513,7 @@ describe("package-scoped routes of a versioned package", () => {
          });
       expect((await lifecycle("archive")).status).toBe(200);
       try {
-         for (const route of SKILL_AND_AGENT_ROUTES) {
+         for (const route of SKILL_AND_WORKFLOW_ROUTES) {
             const res = await fetch(api(`${route}?versionId=1.0.0`));
             expect([route, res.status]).toEqual([route, 410]);
             expect((await json(res)).reason).toBe("VERSION_ARCHIVED");

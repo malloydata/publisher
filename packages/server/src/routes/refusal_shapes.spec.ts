@@ -121,11 +121,21 @@ it("givens that are not one JSON object answer { code, message }", async () => {
    });
 });
 
-it("an agent's bad skills value answers { message } without a code", async () => {
-   const res = await request(app).get(`${PKG}/agents/a?skills=some`);
+it("a workflow's bad skills value answers { message } without a code", async () => {
+   const res = await request(app).get(`${PKG}/workflows/a?skills=some`);
    expect(res.status).toBe(400);
    expect(res.body).toEqual({
       message: `'skills' must be 'full' or 'summary', got "some".`,
+   });
+});
+
+it("a repeated skill_set answers { message } without a code", async () => {
+   const res = await request(app).get(
+      `${PKG}/workflows/a?skill_set=x&skill_set=y`,
+   );
+   expect(res.status).toBe(400);
+   expect(res.body).toEqual({
+      message: `'skill_set' must be one skill set name, got ["x","y"].`,
    });
 });
 

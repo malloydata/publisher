@@ -62,7 +62,6 @@ const HELPER = `source: helper is ${ROWS}
 /** Fields that moved off Package to a route. */
 const MOVED = [
    "buildPlan",
-   "agents",
    "secureGivens",
    "embeddingIndex",
    "classification",

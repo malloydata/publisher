@@ -102,7 +102,7 @@ describe("Package serving identity", () => {
       fs.rmSync(dir, { recursive: true, force: true });
    });
 
-   const build = () => {
+   const build = (workflows?: unknown) => {
       const pkg = new Package(
          "env",
          "pkg",
@@ -131,8 +131,20 @@ describe("Package serving identity", () => {
             ],
          ]),
       );
+      // What a load takes from publisher.json before it refreshes the identity.
+      (pkg as unknown as { rawWorkflows: unknown }).rawWorkflows = workflows;
       pkg.refreshServingIdentity();
       return pkg;
+   };
+
+   const DEFAULT_WORKFLOW = { default: { skill_sets: ["skill_sets/main"] } };
+   const writeSkill = (name: string, body: string) => {
+      const skillDir = path.join(dir, "skill_sets", "main", name);
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(
+         path.join(skillDir, "SKILL.md"),
+         `---\nname: ${name}\ndescription: d\n---\n\n${body}\n`,
+      );
    };
 
    it("reaches the API payload, which is where every caller reads it", () => {
@@ -156,34 +168,43 @@ describe("Package serving identity", () => {
       expect(build().getSourceContentSha()).not.toBe(before);
    });
 
-   it("moves the sha when a package skill changes, so a skill edit has a receipt", () => {
+   it("moves the sha when a skill of a workflow's skill set changes, so a skill edit has a receipt", () => {
       // eval-improve reads the sha to prove its edit reached the served copy.
       // If skill files were outside the hash, a skill-only edit would report
       // "nothing changed" while in fact being served: a false negative on the
       // one check that catches the publisher_data/ copy trap.
-      const skillDir = path.join(dir, "skills", "house");
-      fs.mkdirSync(skillDir, { recursive: true });
-      fs.writeFileSync(
-         path.join(skillDir, "SKILL.md"),
-         "---\nname: house\ndescription: d\n---\n\nPrefer net revenue.\n",
-      );
-      const before = build().getSourceContentSha();
-      fs.writeFileSync(
-         path.join(skillDir, "SKILL.md"),
-         "---\nname: house\ndescription: d\n---\n\nPrefer gross revenue.\n",
-      );
-      expect(build().getSourceContentSha()).not.toBe(before);
+      writeSkill("house", "Prefer net revenue.");
+      const before = build(DEFAULT_WORKFLOW).getSourceContentSha();
+      writeSkill("house", "Prefer gross revenue.");
+      expect(build(DEFAULT_WORKFLOW).getSourceContentSha()).not.toBe(before);
    });
 
-   it("moves the sha when a package skill is added", () => {
-      const before = build().getSourceContentSha();
-      const skillDir = path.join(dir, "skills", "new");
-      fs.mkdirSync(skillDir, { recursive: true });
+   it("moves the sha when a skill is added to a workflow's skill set", () => {
+      writeSkill("house", "Prefer net revenue.");
+      const before = build(DEFAULT_WORKFLOW).getSourceContentSha();
+      writeSkill("new", "body");
+      expect(build(DEFAULT_WORKFLOW).getSourceContentSha()).not.toBe(before);
+   });
+
+   it("moves the sha when the workflows a package declares change", () => {
+      writeSkill("house", "Prefer net revenue.");
+      const before = build(DEFAULT_WORKFLOW).getSourceContentSha();
+      const described = {
+         default: { ...DEFAULT_WORKFLOW.default, description: "Now described" },
+      };
+      expect(build(described).getSourceContentSha()).not.toBe(before);
+   });
+
+   it("leaves the sha alone for a root skills/ directory no workflow lists", () => {
+      writeSkill("house", "Prefer net revenue.");
+      const before = build(DEFAULT_WORKFLOW).getSourceContentSha();
+      const unread = path.join(dir, "skills", "unread");
+      fs.mkdirSync(unread, { recursive: true });
       fs.writeFileSync(
-         path.join(skillDir, "SKILL.md"),
-         "---\nname: new\ndescription: d\n---\n\nbody\n",
+         path.join(unread, "SKILL.md"),
+         "---\nname: unread\ndescription: d\n---\n\nbody\n",
       );
-      expect(build().getSourceContentSha()).not.toBe(before);
+      expect(build(DEFAULT_WORKFLOW).getSourceContentSha()).toBe(before);
    });
 
    it("leaves the sha alone when a non-model file in the package changes", () => {
