@@ -63,8 +63,14 @@ const anchorsLed = (lead: string) =>
       { length: 10_700 },
       (_, i) => `a${i}: &${lead}k${i} x\nb${i}: *${lead}k${i}`,
    ).join("\n");
-const wide = `[${Array.from({ length: 2000 }, (_, i) => i).join(", ")}]`;
+const wide = `[${Array.from({ length: 1000 }, (_, i) => i).join(", ")}]`;
 const refs = Array.from({ length: 99 }, (_, i) => `r${i}: *l`).join("\n");
+
+/** A folded description whose YAML reading ("one two") differs from the line read (">-"), padded by a comment to `bytes`. */
+const atCap = (bytes: number) => {
+   const head = "name: x\ndescription: >-\n  one\n  two\n#";
+   return head + "c".repeat(bytes - Buffer.byteLength(head));
+};
 
 /** [label, SKILL.md text, directory name, expected name, expected description] */
 const PARITY: [string, string, string, string, string][] = [
@@ -147,6 +153,34 @@ const PARITY: [string, string, string, string, string][] = [
       "dir",
       "dir",
       "Use when: a thing",
+   ],
+   [
+      "21,400 plain keys",
+      `---\nname: x\ndescription: d\n${Array.from({ length: 21_400 }, (_, i) => `a${i}: x`).join("\n")}\n---\n`,
+      "dir",
+      "x",
+      "d",
+   ],
+   [
+      "10,700 empty-name pairs",
+      `---\nname: x\ndescription: d\n${Array.from({ length: 10_700 }, (_, i) => `a${i}: & x\nb${i}: *`).join("\n")}\n---\n`,
+      "dir",
+      "x",
+      "d",
+   ],
+   [
+      "exactly 8 KiB, read as YAML",
+      `---\n${atCap(8192)}\n---\n`,
+      "dir",
+      "x",
+      "one two",
+   ],
+   [
+      "one byte over 8 KiB, read line by line",
+      `---\n${atCap(8193)}\n---\n`,
+      "dir",
+      "x",
+      ">-",
    ],
    [
       "an anchored list referenced 99 times",

@@ -15,23 +15,12 @@ const SKILL_NAME_MAX_CHARS = 64;
 const EMIT_FACTOR = 5;
 const EMIT_SLACK = 10_000;
 
-/** Resolving each alias scans the anchors before it, so distinct anchors cost quadratic time that the alias and emit bounds do not see. */
-const MAX_ANCHORS_AND_ALIASES = 1_000;
-/** Counted on the text because the stall is in `parseDocument` itself; a name ends only where YAML ends it (not at a Unicode space), and a stray `*word` in a string over-counts, which only costs the line read. */
-const ANCHOR_OR_ALIAS = /[&*][^ \t\r\n,[\]{}]/g;
-
-function hasTooManyAnchors(front: string): boolean {
-   let count = 0;
-   for (const _ of front.matchAll(ANCHOR_OR_ALIAS)) {
-      count += 1;
-      if (count > MAX_ANCHORS_AND_ALIASES) return true;
-   }
-   return false;
-}
+/** YAML's parse time grows faster than its input, so a longer frontmatter is line-read; kept equal to the server reader's cap. */
+const FRONTMATTER_MAX_BYTES = 8 * 1024;
 
 /** The frontmatter as a JSON object, or undefined when YAML cannot be trusted to read it. */
 function parseYaml(front: string): Record<string, unknown> | undefined {
-   if (hasTooManyAnchors(front)) return undefined;
+   if (Buffer.byteLength(front) > FRONTMATTER_MAX_BYTES) return undefined;
    try {
       const doc = parseDocument(front, { logLevel: "silent" });
       if (doc.errors.length > 0) return undefined;

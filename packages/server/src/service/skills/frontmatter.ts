@@ -33,29 +33,13 @@ function lineRead(front: string, key: string): string | undefined {
 const EMIT_FACTOR = 5;
 const EMIT_SLACK = 10_000;
 
-/** Anchors plus aliases a frontmatter may hold: resolving each alias scans the anchors before it, so distinct anchors cost quadratic time that the alias and emit bounds do not see. */
-const MAX_ANCHORS_AND_ALIASES = 1_000;
-/** Counted on the text because the stall is in `parseDocument` itself, before any node exists to walk; a name ends only where YAML ends it (not at a Unicode space), and a stray `*word` in a string over-counts, which only costs the line read. */
-const ANCHOR_OR_ALIAS = /[&*][^ \t\r\n,[\]{}]/g;
-
-function hasTooManyAnchors(front: string): boolean {
-   let count = 0;
-   for (const _ of front.matchAll(ANCHOR_OR_ALIAS)) {
-      count += 1;
-      if (count > MAX_ANCHORS_AND_ALIASES) return true;
-   }
-   return false;
-}
+/** YAML's parse time grows faster than its input (plain keys, anchors and errors alike), so the text it is given is capped; the largest bundled frontmatter is under 1 KiB. */
+const FRONTMATTER_MAX_BYTES = 8 * 1024;
 
 /** The frontmatter block as a JSON object, or why it is not one. Never throws. */
 function parseYaml(
    front: string,
 ): { value: Record<string, unknown> } | { problem: string } {
-   if (hasTooManyAnchors(front)) {
-      return {
-         problem: `it has more than ${MAX_ANCHORS_AND_ALIASES} anchors and aliases`,
-      };
-   }
    try {
       // Silent so a warning is not printed; the document's errors are read below.
       const doc = parseDocument(front, { logLevel: "silent" });
@@ -93,8 +77,9 @@ function parseYaml(
 
 /**
  * A SKILL.md's frontmatter and body. The reader never throws: YAML that does
- * not parse, or a `name` outside the spec's character set, warns and falls
- * back to a line-by-line read of `name` and `description`.
+ * not parse, a frontmatter over 8 KiB, or a `name` outside the spec's
+ * character set, warns and falls back to a line-by-line read of `name` and
+ * `description`.
  */
 export function parseFrontmatter(md: string, dirName: string): Frontmatter {
    const text = md.replace(/\r\n/g, "\n"); // tolerate CRLF-committed files
@@ -113,6 +98,17 @@ export function parseFrontmatter(md: string, dirName: string): Frontmatter {
       name: lineRead(front, "name") ?? dirName,
       description: lineRead(front, "description") ?? "",
    });
+   const bytes = Buffer.byteLength(front);
+   if (bytes > FRONTMATTER_MAX_BYTES) {
+      return {
+         ...fallback(),
+         frontmatter: {},
+         body,
+         warnings: [
+            `has frontmatter of ${bytes} bytes, over 8 KiB, so it is not read as YAML and its name and description are read line by line`,
+         ],
+      };
+   }
    const parsed = parseYaml(front);
    if ("problem" in parsed) {
       return {
