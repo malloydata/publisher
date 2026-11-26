@@ -23,6 +23,11 @@ import { parseSkill } from "../service/skills/build_skills_bundle";
 import { BUNDLED_CATALOG, SKILL_MD } from "../service/skills/package_skills";
 import { SERVER_VERSION } from "../version";
 
+/** Parsed once at load: `initializeMcpServer` runs on every stateless MCP POST. */
+const BUNDLED_PROMPTS = BUNDLED_CATALOG.map(({ name, bodies }) =>
+   parseSkill(bodies[SKILL_MD] ?? "", name),
+);
+
 const testServerInfo = {
    name: "malloy-publisher-mcp-server",
    version: SERVER_VERSION,
@@ -97,20 +102,15 @@ export function initializeMcpServer(services: McpServices): McpServer {
    // same guidance. Skill-aware hosts (Claude Code/Desktop) use the native skill
    // files. Note: MCP prompts are on-demand, so always-on "prevention" skills
    // become on-demand here; see docs/agent-skills/design-principles.md.
-   for (const { name, bodies } of BUNDLED_CATALOG) {
-      const skill = parseSkill(bodies[SKILL_MD] ?? "", name);
-      mcpServer.registerPrompt(
-         skill.name,
-         { description: skill.description },
-         () => ({
-            messages: [
-               {
-                  role: "user" as const,
-                  content: { type: "text" as const, text: skill.body },
-               },
-            ],
-         }),
-      );
+   for (const { name, description, body } of BUNDLED_PROMPTS) {
+      mcpServer.registerPrompt(name, { description }, () => ({
+         messages: [
+            {
+               role: "user" as const,
+               content: { type: "text" as const, text: body },
+            },
+         ],
+      }));
    }
 
    return mcpServer;
