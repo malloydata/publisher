@@ -6,10 +6,8 @@ import { SkillNotFoundError, WorkflowNotFoundError } from "../errors";
 import {
    BUNDLED_CATALOG,
    fileChangedMessage,
-   namedSkillFiles,
    resolveSkills,
-   skillFilePath,
-   readSkillFile,
+   SKILL_MD,
    skillFileView,
    type ResolvedSkill,
 } from "../service/skills/package_skills";
@@ -26,8 +24,8 @@ type ApiSkillSummary = components["schemas"]["SkillSummary"];
 /**
  * The REST half of the `get_skill` and `get_workflow` MCP tools: the bundled
  * guides, shadowed by the skills of the package's `default` workflow of the
- * same name and read file by file by path, and the package's declared
- * workflows. Serves state read at load; nothing compiles.
+ * same name, and the package's declared workflows, whose skill files are the
+ * one REST read of a skill's other files. Serves state read at load; nothing compiles.
  * Every route takes the package's `versionId`, so a version's own skills and
  * workflows are served, never `latest`'s.
  */
@@ -78,17 +76,11 @@ export class SkillController {
       }));
    }
 
-   /**
-    * One file of a skill, its `SKILL.md` when `path` is omitted. Text comes
-    * back verbatim as `content`; a file with none (binary, or one a bundled
-    * skill does not carry) comes back as its `size` and a `message`, never as
-    * bytes. A `SKILL.md` also carries the skill's `frontmatter` and every file.
-    */
+   /** A skill's `SKILL.md`, verbatim as `content`, with its `frontmatter` and every file it holds. */
    public async getSkill(
       environmentName: string,
       packageName: string,
       skillName: string,
-      path?: string,
       versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiSkill> {
       const resolved = await this.resolvedSkills(
@@ -102,24 +94,11 @@ export class SkillController {
             `Skill '${skillName}' not found in package '${packageName}'.`,
          );
       }
-      const relative = skillFilePath(path);
-      if (!Object.hasOwn(skill.catalog.files, relative)) {
-         throw new SkillNotFoundError(
-            `File '${relative}' not found in skill '${skillName}' of package '${packageName}'. Its files: ${namedSkillFiles(skill)}.`,
-         );
-      }
-      const read = readSkillFile(skill, relative);
-      if ("changed" in read) {
-         throw new SkillNotFoundError(fileChangedMessage(relative));
-      }
+      // A SKILL.md is held inline from the load, so it always reads as text.
+      const { text } = skill.read(SKILL_MD) as { text: string };
       return {
-         ...skillFileView(
-            skill,
-            relative,
-            "text" in read ? read.text : undefined,
-         ),
+         ...skillFileView(skill, SKILL_MD, text),
          description: skill.description,
-         ...("text" in read ? {} : { message: read.message }),
       };
    }
 

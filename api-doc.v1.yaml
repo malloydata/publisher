@@ -2242,7 +2242,8 @@ paths:
         workflow's sets both hold is served from the first-listed set only, and `warnings` says so, unless `skillSet`
         picks one set, which is served whole. Without `include=files` a skill carries its `SKILL.md` text and each file's
         path and size. A `SKILL.md` is served re-emitted, with only its `name` and `description` quoted, for installing, and
-        the digests hash that form; `GET …/skills/{skillName}` serves a file as written, for reading.
+        the digests hash that form; `GET …/skills/{skillName}` serves `SKILL.md` as written, for reading. One file of a
+        workflow's skills is read at `GET …/workflows/{workflowName}/skills/{path}`.
       parameters:
         - name: include
           in: query
@@ -2273,6 +2274,86 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Workflow"
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControl"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+          description: "The request is malformed, or the Malloy or SQL in it was refused. `reason`: `INVALID_REQUEST`."
+        "404":
+          $ref: "#/components/responses/NotFound"
+          description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `VERSION_NOT_FOUND`."
+        "410":
+          $ref: "#/components/responses/Gone"
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
+          description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
+
+
+  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/workflows/{workflowName}/skills/{path}:
+    parameters:
+      - $ref: "#/components/parameters/environmentName"
+      - $ref: "#/components/parameters/packageName"
+      - $ref: "#/components/parameters/versionId"
+      - $ref: "#/components/parameters/workflowName"
+      - $ref: "#/components/parameters/path"
+    get:
+      operationId: get-workflow-skill-file
+      tags:
+        - workflows
+      summary: Read one file of a workflow's skills
+      description: Loads the version when it is not loaded (a hydrate when the compiled-model store has an entry). The one
+        route that reads a single file of a package skill. `path` is `<skill>/<file>`, a skill's name and a path relative to
+        its directory, as `Skill.files` lists it; the path is looked up in the resolved skills and never joined onto the
+        filesystem. Without `skillSet` a skill name is served from the first-listed set that holds it; with `skillSet` the
+        path is looked up in that set, whole. A text file answers with its `content`; a binary one (not UTF-8, or holding a
+        NUL byte) has none and answers with a `message` naming its size. A file that changed on disk since the load is a 404
+        that says so, and is not served until the package reloads. A `SKILL.md` answers re-emitted, as in `GET
+        …/workflows/{workflowName}`, which is the form the digests hash. A 404 when the workflow, the set `skillSet` names or
+        the file is not served.
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/PathPattern"
+          x-multi-segment: true
+          description: "A `<skill>/<file>` path from a skill's `files` (for example `analyst-conventions/scripts/run.py`). Send
+            each `/` literally; the server also accepts `%2F` within `{path}` as `/`."
+        - name: skillSet
+          in: query
+          schema:
+            type: string
+            minLength: 1
+          description: A skill set's name (its folder's name, as listed under `skillSets`). Looks the path up in that set only,
+            with every skill it holds, so a skill another set also holds is read from the set that was installed. A 404 when the
+            workflow has no set of that name; a repeated or empty value is a 400.
+        - $ref: "#/components/parameters/requestId"
+        - $ref: "#/components/parameters/ifNoneMatch"
+      responses:
+        "200":
+          description: The file.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowSkillFile"
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -2374,8 +2455,10 @@ paths:
       tags:
         - skills
       summary: Read a skill
-      description: Serves the skill's files as written, for reading. A workflow's own read serves a `SKILL.md` re-emitted, with
-        only its `name` and `description` quoted, for installing, and the digests hash that form.
+      description: Serves the skill's `SKILL.md` as written, for reading, with every file the skill ships in `files`. A
+        workflow's own read serves a `SKILL.md` re-emitted, with only its `name` and `description` quoted, for
+        installing, and the digests hash that form. A skill's other files are read at
+        `GET …/workflows/{workflowName}/skills/{path}`, or, for a bundled skill, through MCP `get_skill`.
       parameters:
         - name: include
           in: query
@@ -7947,8 +8030,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/SkillFile"
-          description: The files the skill ships beside its `SKILL.md`, by path; each carries its `content` only when the skill is
-            read with its files.
+          description: Every file the skill ships, its `SKILL.md` included, by path, the served set, which leaves out the
+            built-in excludes, what the skill's root `.skillignore` matches and the files the reader skips one by one
+            (reserved names, links, a file over a limit). Each carries its `content` only when the skill is read with its
+            files, and only a text file has any.
         versionId:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
@@ -7963,30 +8048,54 @@ components:
     SkillFile:
       type: object
       readOnly: true
-      description: "One file a skill ships beside its `SKILL.md`: a reference file it loads on demand, or an asset an agent
-        copies into an app it builds."
+      description: One file of a skill, as the MCP skills extension lists it. A `scripts/` or `templates/` file is neither a
+        reference nor an asset, so the entry carries no kind.
       properties:
         path:
           type: string
-          description: The file's path relative to the skill's directory (for example `reference/joins.md`, `assets/app.html`).
+          description: The file's path relative to the skill's directory (for example `SKILL.md`, `reference/joins.md`,
+            `scripts/run.py`).
+        digest:
+          type: string
+          pattern: ^sha256:[0-9a-f]{64}$
+          description: "`sha256:<hex>` of the file's bytes as stored. A `SKILL.md` read from a workflow is hashed in the form
+            that read serves, which is re-emitted."
+        size:
+          type: integer
+          description: Size of the file in bytes, as stored. A text file is served unchanged, so this is also the length of its
+            `content` in UTF-8 bytes.
         content:
           type: string
           description: "The file's text. Present only for a text file, and only when the skill is read with its files:
             `?include=files`, on a skill or on a workflow. A binary file has none."
-        sizeBytes:
-          type: integer
-          description: Size of the file in bytes, as stored. A text file is served unchanged, so this is also the length of its
-            `content` in UTF-8 bytes.
-        kind:
-          type: string
-          enum:
-            - reference
-            - asset
-          description: "`reference`: text the skill loads on demand. `asset`: a file to copy, not to read."
       required:
         - path
-        - kind
-        - sizeBytes
+        - digest
+        - size
+
+    WorkflowSkillFile:
+      description: One file of a workflow's skills, read by `GET …/workflows/{workflowName}/skills/{path}`. A text file
+        carries its `content`; a binary one carries a `message` naming its size instead.
+      readOnly: true
+      allOf:
+        - $ref: "#/components/schemas/SkillFile"
+        - type: object
+          required:
+            - resource
+            - versionId
+          properties:
+            resource:
+              $ref: "#/components/schemas/ResourcePath"
+              readOnly: true
+              description: The file's path, `<skill>/<file>` under the workflow's `skills`; the entry's `path` is relative to the
+                skill's directory.
+            message:
+              type: string
+              description: Set instead of `content` when the file is binary, and so is never served as a body.
+            versionId:
+              $ref: "#/components/schemas/VersionId"
+              readOnly: true
+              description: The version that answered, with `latest` resolved.
 
     SkillList:
       type: object

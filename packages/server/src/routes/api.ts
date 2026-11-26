@@ -630,9 +630,9 @@ function registerPackageRoutes(
       }),
    );
 
-   // A file path inside a skill, and a workflow's skill file path, carry slashes,
-   // so each is a wildcard rather than a named parameter. Express has already
-   // decoded the wildcard; decoding again throws on a bare %.
+   // A workflow's skill file path carries slashes, so it is a wildcard rather
+   // than a named parameter. Express has already decoded the wildcard; decoding
+   // again throws on a bare %.
    app.get(
       `${pkg}/skills`,
       apiRoute((req) =>
@@ -650,19 +650,6 @@ function registerPackageRoutes(
             req.params.environmentName,
             req.params.packageName,
             req.params.skillName,
-            undefined,
-            versionRefOf(req),
-         ),
-      ),
-   );
-   app.get(
-      `${pkg}/skills/:skillName/*`,
-      apiRoute((req) =>
-         skillController.getSkill(
-            req.params.environmentName,
-            req.params.packageName,
-            req.params.skillName,
-            wildcardParam(req),
             versionRefOf(req),
          ),
       ),

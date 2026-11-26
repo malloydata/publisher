@@ -1302,7 +1302,7 @@ describe("package workflows", () => {
             ).rejects.toBeInstanceOf(WorkflowNotFoundError);
          });
 
-         it("reads a skill's SKILL.md for its own folder, as the skill routes do for a blank path", async () => {
+         it("reads a skill's SKILL.md for its own folder, as get_skill does for a blank path", async () => {
             const pkg = await loadWithReference();
             const skillMd = fileOf(pkg, "analyst", "conventions/SKILL.md")!;
             expect(skillMd.file_contents).toContain("name: ");

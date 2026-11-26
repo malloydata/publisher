@@ -2088,7 +2088,7 @@ export function skillFilePath(raw: string | null | undefined): string {
    return withoutDotSlash(raw) || SKILL_MD;
 }
 
-/** A workflow file path as a caller wrote it, `<skill>/<file>`: a blank file part (`<skill>/`) names the skill's SKILL.md, as a blank `path` does on the skill routes. */
+/** A workflow file path as a caller wrote it, `<skill>/<file>`: a blank file part (`<skill>/`) names the skill's SKILL.md, as a blank `path` does in `get_skill`. */
 export function workflowFilePath(raw: string): string {
    const relative = withoutDotSlash(raw);
    const slash = relative.indexOf("/");

@@ -2776,8 +2776,9 @@ paths:
         on each entry to tell a replaced skill from the original.
 
         Bodies are not returned here. Fetch one with
-        `GET .../skills/{skillName}`, and any other file of a skill with
-        `GET .../skills/{skillName}/{path}`.
+        `GET .../skills/{skillName}`. Any other file of a package skill is read
+        at `GET .../workflows/default/skills/{skill}/{file}`; a bundled skill's
+        other files are read through the `get_skill` MCP tool.
 
         The REST half of the `get_skill` MCP tool, for callers running
         unattended.
@@ -2831,10 +2832,13 @@ paths:
         of a `.skillignore`. `skillName` is a name from the listing, exactly as
         spelled there.
 
-        The file is served as written, for reading. A workflow's own read
+        The `SKILL.md` is served as written, for reading. A workflow's own read
         (`GET .../workflows/{workflowName}`) serves a `SKILL.md` re-emitted with
         only its `name` and `description` quoted, for installing, and the set
-        digests hash that form; an installer reads that route.
+        digests hash that form; an installer reads that route. A package
+        skill's other files are read at
+        `GET .../workflows/default/skills/{skill}/{file}`; a bundled skill's
+        other files are read through the `get_skill` MCP tool.
 
         404 when no skill of that name is in force.
       parameters:
@@ -2860,79 +2864,6 @@ paths:
       responses:
         "200":
           description: The skill's SKILL.md
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Skill"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "410":
-          $ref: "#/components/responses/Gone"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
-  /environments/{environmentName}/packages/{packageName}/skills/{skillName}/{path}:
-    get:
-      tags:
-        - skills
-      operationId: get-skill-file
-      summary: Get one file of an agent skill
-      description: |
-        Returns one file of a skill in force for this package, named by a path
-        from the skill's `files` (for example `references/joins.md` or
-        `scripts/check.py`). The path is looked up in the skill's own file list,
-        never joined onto the filesystem. A text file comes back verbatim as
-        `content`. A binary file, or a file of a bundled skill that this server
-        does not carry (a bundled skill serves its Markdown; install
-        `@malloy-publisher/skills` for the rest), has no `content`: it answers
-        with its `size` and a `message`, never with bytes. A package skill's
-        listed file is read from disk and served only if it still hashes to its
-        listed digest. The file is served as written, for reading; a
-        workflow's skill file route serves a `SKILL.md` re-emitted, for
-        installing.
-
-        404 when no skill of that name is in force, the skill has no such file
-        (the message names the skill's files), or a package skill's listed file
-        changed on disk after the package loaded (it is served again once the
-        package reloads).
-      parameters:
-        - name: environmentName
-          in: path
-          description: Name of the environment
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: path
-          description: Name of the package
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: skillName
-          in: path
-          description: Skill name as returned by the listing.
-          required: true
-          schema:
-            type: string
-        - name: path
-          in: path
-          description: >-
-            A path from the skill's `files`, relative to the skill's root.
-            Slashes may be sent literally or as `%2F`; a literal `%` in a name
-            must be sent as `%25`.
-          required: true
-          schema:
-            type: string
-        - $ref: "#/components/parameters/versionId"
-      responses:
-        "200":
-          description: The file
           content:
             application/json:
               schema:
@@ -3286,7 +3217,7 @@ paths:
         A `SKILL.md` is served re-emitted, with only its `name` and
         `description` quoted, because this route is what an installer reads;
         the set `digest` and `definitionSha` hash that form. `GET
-        .../skills/{skillName}` serves the file as written, for reading.
+        .../skills/{skillName}` serves `SKILL.md` as written, for reading.
 
         With `skillSet`, the reply carries the summary fields and that one
         set only, and no `instructions`: a chat that picks a set never runs the
@@ -3376,7 +3307,8 @@ paths:
       operationId: get-workflow-skill-file
       summary: Get one of a workflow's skill files
       description: |
-        Returns one file from the workflow's resolved skills, named by a
+        The one route that reads a single file of a package skill. Returns
+        one file from the workflow's resolved skills, named by a
         `<skill>/<file>` path (for example `analyst-conventions/SKILL.md`)
         from `GET .../workflows/{workflowName}?skills=summary`, with the same
         `source` pin as the full definition. Without `skillSet` a skill name
@@ -3389,13 +3321,12 @@ paths:
         against the listing, then read from disk and served only if it still
         hashes to its listed `sha256`; one that changed, or became a link, since
         the load is a 404 that says it changed and is not served until the
-        package reloads, as `GET .../skills/{skillName}/{path}` answers for a
-        changed file. A text file answers with `file_contents`; a binary
+        package reloads. A text file answers with `file_contents`; a binary
         one (not UTF-8, or holding a NUL byte) has no `file_contents` and
         answers with a `message` naming its size. A `SKILL.md` answers
         re-emitted, as in `GET .../workflows/{workflowName}`, which is the form
-        the set `digest` hashes; `GET .../skills/{skillName}/{path}` serves it
-        as written.
+        the set `digest` hashes; `GET .../skills/{skillName}` serves it as
+        written.
 
         404 when the workflow, the set named by `skillSet` or the file is not
         served.
@@ -6967,7 +6898,7 @@ components:
       properties:
         path:
           type: string
-          description: Path relative to the skill's root, usable as the `path` of `GET .../skills/{skillName}/{path}`.
+          description: Path relative to the skill's root. A package skill's file is read at `GET .../workflows/{workflowName}/skills/{skill}/{path}`.
         size:
           type: integer
           description: >-
@@ -6977,7 +6908,7 @@ components:
     Skill:
       type: object
       readOnly: true
-      description: One file of an agent skill, `SKILL.md` unless another path was asked for.
+      description: An agent skill's `SKILL.md`, with its frontmatter and the files it holds.
       properties:
         name:
           type: string
@@ -6987,19 +6918,10 @@ components:
           description: One line saying when to read this skill.
         path:
           type: string
-          description: The file's path relative to the skill's root.
+          description: The file's path relative to the skill's root, always `SKILL.md`.
         content:
           type: string
-          description: >-
-            The file verbatim. Absent for a binary file, and for a bundled
-            skill's file this server does not carry; `size` and `message` are
-            set instead.
-        size:
-          type: integer
-          description: Size in bytes. Only when `content` is absent.
-        message:
-          type: string
-          description: Why the file has no `content`. Never base64 or other bytes.
+          description: The `SKILL.md` text, verbatim.
         frontmatter:
           type: object
           additionalProperties: true
@@ -7007,13 +6929,13 @@ components:
             The YAML block of `SKILL.md` as an object, parsed as YAML 1.2 core
             (so `yes` and `on` stay strings, `0755` is the number 755 and not
             octal, and a plain
-            date stays the string as written; keys are strings). Only when `path` is `SKILL.md`; empty
-            when the block did not parse.
+            date stays the string as written; keys are strings). Empty when
+            the block did not parse.
         files:
           type: array
           description: >-
             Every file the skill holds. For a package skill exactly the set this
-            server serves. Only when `path` is `SKILL.md`.
+            server serves.
           items:
             $ref: "#/components/schemas/SkillFileEntry"
         origin:
