@@ -3,6 +3,9 @@
 
 import { MalloyError } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
+import * as os from "os";
+import * as path from "path";
+import { pathToFileURL } from "url";
 import {
    BadRequestError,
    ChainedShapeNotCarriedError,
@@ -449,6 +452,60 @@ describe("strictMissReason", () => {
       );
       expect(reason).toContain("'up' (m.malloy)");
       expect(reason).not.toContain("/srv/");
+   });
+
+   it("keeps Malloy's per-value hint for a source split by givens", () => {
+      const err = Object.assign(
+         new Error(
+            "Persisted source 'bad@sub/fail.malloy' not found in manifest (buildId: b1); " +
+               "strict manifest mode forbids fallback to live compilation. " +
+               "This source reads givens, and no table was built for the given values this query supplies.",
+         ),
+         { code: "runtime-manifest-strict-miss" },
+      );
+      const reason = strictMissReason("bad_down", err, []);
+      expect(reason).toBe(
+         "Failed to materialize source 'bad_down': its persisted upstream " +
+            "'bad' (sub/fail.malloy) has no table this build can read. " +
+            "This source reads givens, and no table was built for the given values this query supplies.",
+      );
+      expect(reason).not.toContain("not built yet");
+   });
+
+   it("keeps the build manifest's load error, from the redacted message", () => {
+      const err = Object.assign(
+         new Error(
+            "Persisted source 'bad@sub/fail.malloy' not found in manifest (buildId: b1); " +
+               "strict manifest mode forbids fallback to live compilation.\n  " +
+               "manifest read failed: password=hunter2",
+         ),
+         { code: "runtime-manifest-strict-miss" },
+      );
+      const redacted = err.message.replace("hunter2", "***");
+      const reason = strictMissReason("bad_down", err, [bad], {
+         message: redacted,
+      });
+      expect(reason).toBe(
+         "Failed to materialize source 'bad_down': its persisted upstream " +
+            "'bad' (sub/fail.malloy) failed to build in this run: " +
+            "Invalid Input Error: boom. The build manifest failed to load: " +
+            "manifest read failed: password=***",
+      );
+   });
+
+   it("names a file URL's upstream by its path in the package, directories kept", () => {
+      const root = path.join(os.tmpdir(), "pkg-root");
+      const url = pathToFileURL(path.join(root, "sub", "fail.malloy")).href;
+      const reason = strictMissReason(
+         "bad_down",
+         strictMiss(`bad@${url}`),
+         [],
+         {
+            packagePath: root,
+         },
+      );
+      expect(reason).toContain("'bad' (sub/fail.malloy)");
+      expect(reason).not.toContain(root);
    });
 
    it("leaves any other error to its own message", () => {

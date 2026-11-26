@@ -360,17 +360,18 @@ describe("a live Snowflake answer equals the served one", () => {
  * Each session sees only the temp views it created, as Snowflake's do.
  */
 describe("a .sql() source's schema read on a pooled Snowflake connection", () => {
-   type Session = { id: number; views: Set<string> };
+   type Session = { id: number; views: Set<string>; variant: Set<string> };
 
    function pooledFake() {
       const connection = new PublisherSnowflakeConnection("snowflake", {
          connOptions: { ...BASE, password: "pw" },
          poolOptions: { min: 0, max: 1 },
       });
-      const idle: Session[] = [
-         { id: 1, views: new Set() },
-         { id: 2, views: new Set() },
-      ];
+      const idle: Session[] = [1, 2, 3].map((id) => ({
+         id,
+         views: new Set(),
+         variant: new Set(),
+      }));
       const log: { session: number; sql: string }[] = [];
       const destroyed: number[] = [];
       const pool_ = {
@@ -383,13 +384,25 @@ describe("a .sql() source's schema read on a pooled Snowflake connection", () =>
          },
       };
       const _execute = async (sql: string, s: Session) => {
+         // Yield, so concurrent reads interleave as they would on a network.
+         await new Promise((resolve) => setTimeout(resolve, 0));
          log.push({ session: s.id, sql });
+         const tempRead = /\bfrom (tt\w+)/i.exec(sql);
+         if (tempRead && !s.views.has(tempRead[1].toUpperCase())) {
+            throw new Error(
+               `Table '${tempRead[1].toUpperCase()}' does not exist or not authorized.`,
+            );
+         }
+         if (tempRead) return [{ PATH: "o.k", TYPE: "decimal" }];
          if (sql.includes("missing_table")) {
             throw new Error("Object 'MISSING_TABLE' does not exist.");
          }
          const create = /CREATE OR REPLACE TEMP VIEW (\w+)/i.exec(sql);
          if (create) {
             s.views.add(create[1].toUpperCase());
+            if (sql.includes("variant_src")) {
+               s.variant.add(create[1].toUpperCase());
+            }
             return [];
          }
          const describe = /^\s*DESCRIBE TABLE (\w+)/i.exec(sql);
@@ -400,10 +413,12 @@ describe("a .sql() source's schema read on a pooled Snowflake connection", () =>
                   `SQL compilation error:\nTable '${name}' does not exist or not authorized.`,
                );
             }
-            return [
-               { name: "id", type: "NUMBER(38,0)" },
-               { name: "label", type: "VARCHAR(16777216)" },
-            ];
+            return s.variant.has(name)
+               ? [{ name: "o", type: "VARIANT" }]
+               : [
+                    { name: "id", type: "NUMBER(38,0)" },
+                    { name: "label", type: "VARCHAR(16777216)" },
+                 ];
          }
          return [];
       };
@@ -466,7 +481,7 @@ describe("a .sql() source's schema read on a pooled Snowflake connection", () =>
       expect(log[0].sql).toMatch(/^CREATE OR REPLACE TEMP VIEW tt/);
       expect(log[1].sql).toMatch(/^DESCRIBE TABLE tt/);
       // The session goes back to the pool; nothing was destroyed.
-      expect(idle.map((s) => s.id).sort()).toEqual([1, 2]);
+      expect(idle.map((s) => s.id).sort()).toEqual([1, 2, 3]);
       expect(destroyed).toEqual([]);
    });
 
@@ -479,7 +494,72 @@ describe("a .sql() source's schema read on a pooled Snowflake connection", () =>
          }),
       ).rejects.toThrow(/MISSING_TABLE/);
       expect(destroyed).toEqual([1]);
-      expect(idle.map((s) => s.id)).toEqual([2]);
+      expect(idle.map((s) => s.id)).toEqual([2, 3]);
+   });
+
+   it("keeps concurrent reads each on its own session", async () => {
+      const { connection, log, idle } = pooledFake();
+      const [a, b] = await Promise.all([
+         connection.fetchSelectSchema(REF),
+         connection.fetchSelectSchema({
+            ...REF,
+            selectStr: "SELECT id, label FROM looker.other",
+         }),
+      ]);
+      expect(a.fields.map((f) => f.name)).toEqual(["id", "label"]);
+      expect(b.fields.map((f) => f.name)).toEqual(["id", "label"]);
+      // Both reads interleaved, each CREATE and DESCRIBE on one session.
+      const byView = new Map<string, Set<number>>();
+      for (const { session, sql } of log) {
+         const view = /\b(tt\w+)/i.exec(sql)?.[1] ?? "";
+         byView.set(view, new Set([...(byView.get(view) ?? []), session]));
+      }
+      expect(byView.size).toBe(2);
+      for (const sessions of byView.values()) expect(sessions.size).toBe(1);
+      expect(new Set([...byView.values()].map((v) => [...v][0])).size).toBe(2);
+      expect(idle).toHaveLength(3);
+   });
+
+   it("samples a VARIANT column on the session that created the temp view", async () => {
+      const { connection, log } = pooledFake();
+      const def = await connection.fetchSelectSchema({
+         ...REF,
+         selectStr: "SELECT o FROM variant_src",
+      });
+      expect(def.fields.map((f) => f.name)).toEqual(["o"]);
+      // CREATE, DESCRIBE, then at least one sampling query, all on session 1.
+      expect(log.length).toBeGreaterThanOrEqual(3);
+      expect(log.some((l) => /TABLESAMPLE|limit/i.test(l.sql))).toBe(true);
+      expect(new Set(log.map((l) => l.session))).toEqual(new Set([1]));
+   });
+
+   it("reads unpinned when the connector calls an executor method it does not pin", async () => {
+      const { connection, idle, destroyed } = pooledFake();
+      const executor = (connection as unknown as { executor: object })
+         .executor as Record<string, unknown>;
+      executor.describeTemp = async (sql: string) =>
+         (executor.batch as (s: string) => Promise<unknown>)(sql);
+      const upstream = Object.getPrototypeOf(
+         PublisherSnowflakeConnection.prototype,
+      ) as { schemaFromTablePath: unknown };
+      const original = upstream.schemaFromTablePath;
+      // A newer connector whose read reaches a method the pin lacks.
+      upstream.schemaFromTablePath = async function (
+         this: { executor: Record<string, (s: string) => Promise<unknown>> },
+         tablePath: string,
+         structDef: { fields: unknown[] },
+      ) {
+         await this.executor.describeTemp(`SELECT 1 /* ${tablePath} */`);
+         structDef.fields.push({ name: "x", type: "number" });
+      };
+      try {
+         const def = await connection.fetchSelectSchema(REF);
+         expect(def.fields.map((f) => f.name)).toEqual(["x"]);
+         expect(destroyed).toEqual([]);
+         expect(idle).toHaveLength(3);
+      } finally {
+         upstream.schemaFromTablePath = original;
+      }
    });
 
    it("keeps a connector without the pool internals on the upstream path", async () => {

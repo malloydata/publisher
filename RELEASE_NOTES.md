@@ -27,7 +27,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 ## [Unreleased] — a source over a failed persisted upstream says why
 
-**[fix] A persisted source whose persisted upstream failed to build names that upstream and its error.** When a `#@ persist` source failed to build, every persisted source reading it failed with Malloy's internal "Persisted source 'bad@fail.malloy' not found in manifest (buildId: …); strict manifest mode forbids fallback to live compilation." The run's failure reason for such a source now reads "Failed to materialize source 'bad_down': its persisted upstream 'bad' (fail.malloy) failed to build in this run: <its error>", and, when no build of the upstream failed in the run, that the upstream has no table the build can read. How the failure is classified for retry is unchanged.
+**[fix] A persisted source whose persisted upstream failed to build names that upstream and its error.** When a `#@ persist` source failed to build, every persisted source reading it failed with Malloy's internal "Persisted source 'bad@fail.malloy' not found in manifest (buildId: …); strict manifest mode forbids fallback to live compilation." The run's failure reason for such a source now reads "Failed to materialize source 'bad_down': its persisted upstream 'bad' (fail.malloy) failed to build in this run: <its error>", and, when no build of the upstream failed in the run, that the upstream has no table the build can read. Malloy's note for a source split by givens, and a build manifest's load error, are kept. How the failure is classified for retry is unchanged.
 
 ## [Unreleased] — a `MISSING_FIELD` detail names only the queried source's columns
 

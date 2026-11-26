@@ -4,7 +4,7 @@
 /**
  * P5-03: a persisted source whose persisted upstream failed to build fails
  * for its upstream's reason, said in the author's terms: the upstream's name,
- * its file and its own build error, never the compiler's "not found in
+ * its file (with its directory) and its own build error, never the compiler's "not found in
  * manifest". End to end through a real Environment and MaterializationService
  * on DuckDB.
  */
@@ -33,7 +33,7 @@ const BOOM = "bad_build_boom_7311";
 
 const FILES = {
    // Compiles (the schema read never evaluates error()), fails at its build.
-   "fail.malloy": [
+   "sub/fail.malloy": [
       "##! experimental.persistence",
       `source: bad_base is duckdb.sql("SELECT error('${BOOM}')::VARCHAR AS who")`,
       "#@ persist",
@@ -42,7 +42,7 @@ const FILES = {
    ].join("\n"),
    "down.malloy": [
       "##! experimental.persistence",
-      'import "fail.malloy"',
+      'import "sub/fail.malloy"',
       `source: base is duckdb.sql("SELECT 'a' AS who")`,
       "#@ persist",
       "source: good is base -> { group_by: who }",
@@ -125,7 +125,7 @@ describe("a persisted source over an upstream that failed to build", () => {
 
       const reason = byName.get("bad_down") ?? "";
       expect(reason).toContain(
-         "its persisted upstream 'bad' (fail.malloy) failed to build in this run:",
+         "its persisted upstream 'bad' (sub/fail.malloy) failed to build in this run:",
       );
       expect(reason).toContain(BOOM);
       expect(reason).not.toContain("not found in manifest");

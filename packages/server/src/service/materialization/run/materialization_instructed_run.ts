@@ -667,11 +667,13 @@ export function recordInstructedBuildFailure(
    );
    // Malloy's strict manifest miss is the compiler's wording (a source id, a
    // build id): said instead as the upstream by name and file, and why it has
-   // no table. The upstreams' reasons were redacted when recorded.
+   // no table, with what Malloy adds after it read from the redacted
+   // message. The upstreams' reasons were redacted when recorded.
    const missReason = strictMissReason(
       persistSource.name,
       buildErr,
       failedUpstreams,
+      { message: reason, packagePath: run.environment.getPackagePath?.() },
    );
    if (missReason !== undefined) reason = missReason;
    else if (upstreamDetail) reason = `${reason}; ${upstreamDetail}`;

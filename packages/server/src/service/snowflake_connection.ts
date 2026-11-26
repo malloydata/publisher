@@ -190,28 +190,66 @@ function executorInternals(
 }
 
 /**
- * An executor whose `batch` and `tryBatch` run every statement on the one
- * session `conn`, with the connector's own session setup and the same
- * semantics as its pooled ones (`tryBatch` answers undefined on a failure).
+ * A pinned schema read reached an executor method Publisher does not pin: a
+ * connector newer than this mitigation. The read is retried unpinned.
+ */
+class UnpinnedExecutorMethodError extends Error {
+   constructor(readonly method: string) {
+      super(
+         `the Snowflake schema read called executor.${method}, which Publisher ` +
+            `does not pin to one session`,
+      );
+   }
+}
+
+/**
+ * An executor that runs every statement on the one session `conn`, with the
+ * connector's own session setup and the same semantics as its pooled calls:
+ * `batch`, `tryBatch` (undefined on a failure), `stream` (the batch's rows,
+ * up to `rowLimit`), `_execute` (already per session) and `done` (a no-op:
+ * the shared executor owns the pool). Any other method a newer connector
+ * calls throws {@link UnpinnedExecutorMethodError} rather than reaching the
+ * shared executor or failing as a `TypeError`.
  */
 function pinnedExecutor(
    base: SnowflakeExecutorInternals<unknown>,
    conn: unknown,
-): { batch: BatchFn; tryBatch: BatchFn } {
+): object {
    const batch: BatchFn = async (sql, options, timeoutMs, binds) => {
       await base.ensureSessionInitialized(conn, options, timeoutMs);
       return base._execute(sql, conn, options, timeoutMs, binds);
    };
-   return {
+   const pinned: Record<string, unknown> = {
       batch,
-      tryBatch: async (sql, options, timeoutMs, binds) => {
+      tryBatch: (async (sql, options, timeoutMs, binds) => {
          try {
             return await batch(sql, options, timeoutMs, binds);
          } catch {
             return undefined;
          }
+      }) satisfies BatchFn,
+      stream: async (sql: string, options?: RunSQLOptions) => {
+         const rows = (await batch(sql, options)) ?? [];
+         const limit = options?.rowLimit ?? rows.length;
+         return (async function* () {
+            yield* rows.slice(0, limit);
+         })();
       },
+      _execute: base._execute.bind(base),
+      done: async () => {},
    };
+   return new Proxy(pinned, {
+      get(target, prop, receiver) {
+         if (typeof prop === "string" && !(prop in target)) {
+            const value = (base as unknown as Record<string, unknown>)[prop];
+            if (typeof value === "function") {
+               throw new UnpinnedExecutorMethodError(prop);
+            }
+            return value;
+         }
+         return Reflect.get(target, prop, receiver);
+      },
+   });
 }
 
 /**
@@ -232,7 +270,8 @@ export class PublisherSnowflakeConnection extends SnowflakeConnection {
     * exist or not authorized". Here the whole read runs on one session
     * borrowed for it, released afterwards, or destroyed on a failure exactly
     * as `pool.use()` would. A connector whose executor does not expose the
-    * internals this needs is read the upstream way, unpinned. Remove once the
+    * internals this needs, or whose read calls an executor method this does
+    * not pin, is read the upstream way, unpinned. Remove once the
     * connector pins the read itself.
     */
    async fetchSelectSchema(sqlRef: SQLSourceRequest): Promise<SQLSourceDef> {
@@ -252,6 +291,12 @@ export class PublisherSnowflakeConnection extends SnowflakeConnection {
       try {
          result = await super.fetchSelectSchema.call(pinned, sqlRef);
       } catch (error) {
+         if (error instanceof UnpinnedExecutorMethodError) {
+            // A newer connector's read this cannot pin: read unpinned, as
+            // the connector does, on a session left as it was.
+            await base.pool_.release(conn).catch(() => {});
+            return super.fetchSelectSchema(sqlRef);
+         }
          await base.pool_.destroy(conn).catch(() => {});
          throw error;
       }
