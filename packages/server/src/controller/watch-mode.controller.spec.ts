@@ -120,16 +120,19 @@ describe("live reload of what a package's workflows serve", () => {
       fs.rmSync(envDir, { recursive: true, force: true });
    });
 
-   /** A watcher over a real directory, and the package names the environment is asked to recompile. */
+   /** A watcher over a real directory: the package names the environment is asked to recompile, and the files the controller then announced. */
    async function watchPackage() {
       envDir = fs.mkdtempSync(path.join(root, "env-"));
       fs.mkdirSync(path.join(envDir, "pkg", SET, "skill"), { recursive: true });
       fs.mkdirSync(path.join(envDir, "pkg", "scripts"), { recursive: true });
       const reloaded: string[] = [];
-      let onReload: (name: string) => void = () => {};
-      const nextReload = () =>
-         new Promise<string>((resolve) => {
-            onReload = resolve;
+      const announced: string[] = [];
+      const waiting = new Map<string, () => void>();
+      /** Resolves once the controller has announced `file`, which it does after any recompile the file calls for. */
+      const announcedFile = (file: string) =>
+         new Promise<void>((resolve) => {
+            if (announced.includes(file)) resolve();
+            else waiting.set(file, resolve);
          });
       const environment = {
          getEnvironmentPath: () => envDir,
@@ -140,10 +143,7 @@ describe("live reload of what a package's workflows serve", () => {
             },
          ],
          getPackage: async (name: string, reload: boolean) => {
-            if (reload) {
-               reloaded.push(name);
-               onReload(name);
-            }
+            if (reload) reloaded.push(name);
          },
       };
       controller = new WatchModeController(
@@ -152,24 +152,30 @@ describe("live reload of what a package's workflows serve", () => {
             getEnvironment: async () => environment,
          }),
       );
+      controller.events.on("env/pkg", ({ path: file }: { path: string }) => {
+         announced.push(file);
+         waiting.get(file)?.();
+      });
       await controller.ensureWatching("env");
       // Awaiting the setup takes microtasks only, so the initial scan has not reported yet.
       await new Promise<void>((resolve) =>
          controller!.watcher!.on("ready", resolve),
       );
-      return { reloaded, nextReload };
+      return { reloaded, announced, announcedFile };
    }
 
-   it("recompiles the package for a script saved under a skill set, whatever its extension", async () => {
-      const { reloaded, nextReload } = await watchPackage();
-      // A script outside any skill set is not watched, so only the set's reaches the environment.
-      fs.writeFileSync(path.join(envDir, "pkg", "scripts", "other.py"), "x");
-      const reload = nextReload();
-      fs.writeFileSync(
-         path.join(envDir, "pkg", SET, "skill", "run.py"),
-         "print(1)",
-      );
-      expect(await reload).toBe("pkg");
-      expect(reloaded).toEqual(["pkg"]);
+   it("recompiles the package for a script saved under a skill set, whatever its extension, and not for one outside any set", async () => {
+      const { reloaded, announced, announcedFile } = await watchPackage();
+      const outside = path.join(envDir, "pkg", "scripts", "other.py");
+      // A model save always recompiles, so its announcement closes the window in which `outside` would have shown up.
+      const sentinel = path.join(envDir, "pkg", "scripts", "sentinel.malloy");
+      const inSet = path.join(envDir, "pkg", SET, "skill", "run.py");
+      fs.writeFileSync(outside, "x");
+      fs.writeFileSync(sentinel, "source: s is duckdb.sql('select 1')");
+      await announcedFile(sentinel);
+      fs.writeFileSync(inSet, "print(1)");
+      await announcedFile(inSet);
+      expect(announced).toEqual([sentinel, inSet]);
+      expect(reloaded).toEqual(["pkg", "pkg"]);
    }, 10_000);
 });

@@ -203,6 +203,15 @@ describe("package workflows", () => {
       expect(warnings.join("\n")).toContain("Fix:");
    });
 
+   it("watches the instructions and skill sets of a workflow it refused, so fixing one reloads the package", async () => {
+      manifest({ workflows: { broken: { ...analyst(), surprise: true } } });
+      const pkg = await load();
+      expect(pkg.listWorkflows()).toEqual([]);
+      expect([...pkg.workflowPaths()].sort()).toEqual(
+         ["workflows/analyst/instructions.md", MAIN].sort(),
+      );
+   });
+
    it("lets a hostile workflows value reach the main thread without failing the worker", async () => {
       for (const workflows of [
          "text",
@@ -544,6 +553,20 @@ describe("package workflows", () => {
          expect(await used("skills_dir")).toBe(2);
       });
 
+      it("still warns of a root skills/ directory, and counts it, when the only workflow that lists it is refused", async () => {
+         write(
+            "skills/old/SKILL.md",
+            "---\nname: old\ndescription: d\n---\n\nbody\n",
+         );
+         manifest({
+            workflows: { default: { description: "", skill_sets: ["skills"] } },
+         });
+         const pkg = await load();
+         expect(pkg.listSkills()).toEqual([]);
+         expect(codes(pkg)).toContain("PACKAGE_SKILLS_DIR_NOT_READ");
+         expect(await used("skills_dir")).toBe(1);
+      });
+
       it("says nothing of skills/ when the default workflow lists it", async () => {
          write(
             "skills/old/SKILL.md",
@@ -566,12 +589,19 @@ describe("package workflows", () => {
    });
 
    describe("a skill set picked alone", () => {
+      const DUPLICATE = `Workflow 'analyst' lists skill 'conventions' in both '${MAIN}' and '${SECOND}'; the copy in '${MAIN}', listed first, is the one served.`;
+
       beforeEach(() => {
          write(
             `${SECOND}/extra/SKILL.md`,
             "---\nname: extra\ndescription: d\n---\n",
          );
          write(`${SECOND}/extra/scripts/a..b.py`, "x");
+         // A name both sets hold gives the workflow a warning of its own.
+         write(
+            `${SECOND}/conventions/SKILL.md`,
+            "---\nname: conventions\ndescription: Second copy.\n---\n",
+         );
          manifest({
             workflows: {
                analyst: { ...analyst(), skill_sets: [MAIN, SECOND] },
@@ -592,10 +622,12 @@ describe("package workflows", () => {
       it("carries the workflow's own warnings and that set's findings, not another set's", async () => {
          const pkg = await load();
          const second = pkg.getWorkflow("analyst", "full", "second")!;
+         expect(second.warnings).toContain(DUPLICATE);
          expect(second.warnings.join("\n")).toContain("a..b.py");
-         expect(
-            pkg.getWorkflow("analyst", "full", "main")!.warnings.join("\n"),
-         ).not.toContain("a..b.py");
+         const main = pkg.getWorkflow("analyst", "full", "main")!;
+         expect(main.warnings).toContain(DUPLICATE);
+         expect(main.warnings.join("\n")).not.toContain("a..b.py");
+         expect(pkg.getWorkflow("analyst")!.warnings).toContain(DUPLICATE);
          expect(pkg.getWorkflow("analyst")!.warnings.join("\n")).toContain(
             "a..b.py",
          );
@@ -724,6 +756,45 @@ describe("package workflows", () => {
          expect(pkg.getWorkflowSkillFile("nope", "extra/SKILL.md")).toBe(
             undefined,
          );
+      });
+
+      it("serves a skill name two sets hold from the first-listed set, and the shadowed copy's files are unreachable", async () => {
+         write(
+            `${SECOND}/conventions/SKILL.md`,
+            "---\nname: conventions\ndescription: d\n---\n\nSecond copy.\n",
+         );
+         write(
+            `${SECOND}/conventions/reference/only-second.md`,
+            "# Only here\n",
+         );
+         const served = async (sets: string[]) => {
+            manifest({
+               workflows: { analyst: { ...analyst(), skill_sets: sets } },
+            });
+            return load();
+         };
+
+         const first = await served([MAIN, SECOND]);
+         const skill = (pkg: Package) =>
+            pkg.getWorkflowSkillFile("analyst", "conventions/SKILL.md")
+               ?.file_contents ?? "";
+         expect(skill(first)).toContain("Use net revenue.");
+         expect(skill(first)).not.toContain("Second copy.");
+         expect(
+            first.getWorkflowSkillFile(
+               "analyst",
+               "conventions/reference/only-second.md",
+            ),
+         ).toBeUndefined();
+
+         const reversed = await served([SECOND, MAIN]);
+         expect(skill(reversed)).toContain("Second copy.");
+         expect(
+            reversed.getWorkflowSkillFile(
+               "analyst",
+               "conventions/reference/only-second.md",
+            )?.file_contents,
+         ).toBe("# Only here\n");
       });
 
       it("refuses to serve a listed asset that became a link after the load", async () => {
