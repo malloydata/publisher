@@ -1213,10 +1213,10 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
 /**
  * `PUBLISHER_PACKAGE_INLINE_FIELDS`: `on` (the default) or `off`. A TRANSITION
  * flag. On, a package response still carries the fields that moved off
- * `Package` (`buildPlan`, `agents`, `secureGivens`, `embeddingIndex`, the
+ * `Package` (`buildPlan`, `secureGivens`, `embeddingIndex`, the
  * manifest-binding and serving fields), marked deprecated, as it did before
  * they moved. Off, it carries only the package's own fields, and each moved
- * field is read where it now lives: `GET …/build-plan`, `…/agents`,
+ * field is read where it now lives: `GET …/build-plan`,
  * `…/entities`, `…/embedding-index`, or the package's entry in `GET /status`. A later
  * release turns it off by default, and the one after removes it with the
  * fields.
