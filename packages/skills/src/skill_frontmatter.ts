@@ -16,7 +16,7 @@ const EMIT_FACTOR = 5;
 const EMIT_SLACK = 10_000;
 
 /** YAML's parse time grows faster than its input, so a longer frontmatter is line-read; kept equal to the server reader's cap. */
-const FRONTMATTER_MAX_BYTES = 8 * 1024;
+const FRONTMATTER_MAX_BYTES = 4 * 1024;
 
 /** The frontmatter as a JSON object, or undefined when YAML cannot be trusted to read it. */
 function parseYaml(front: string): Record<string, unknown> | undefined {

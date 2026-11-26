@@ -63,7 +63,7 @@ const anchorsLed = (lead: string) =>
       { length: 10_700 },
       (_, i) => `a${i}: &${lead}k${i} x\nb${i}: *${lead}k${i}`,
    ).join("\n");
-const wide = `[${Array.from({ length: 1000 }, (_, i) => i).join(", ")}]`;
+const wide = `[${Array.from({ length: 300 }, (_, i) => i).join(", ")}]`;
 const refs = Array.from({ length: 99 }, (_, i) => `r${i}: *l`).join("\n");
 
 /** A folded description whose YAML reading ("one two") differs from the line read (">-"), padded by a comment to `bytes`. */
@@ -169,15 +169,15 @@ const PARITY: [string, string, string, string, string][] = [
       "d",
    ],
    [
-      "exactly 8 KiB, read as YAML",
-      `---\n${atCap(8192)}\n---\n`,
+      "exactly 4 KiB, read as YAML",
+      `---\n${atCap(4096)}\n---\n`,
       "dir",
       "x",
       "one two",
    ],
    [
-      "one byte over 8 KiB, read line by line",
-      `---\n${atCap(8193)}\n---\n`,
+      "one byte over 4 KiB, read line by line",
+      `---\n${atCap(4097)}\n---\n`,
       "dir",
       "x",
       ">-",

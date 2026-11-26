@@ -34,7 +34,7 @@ const EMIT_FACTOR = 5;
 const EMIT_SLACK = 10_000;
 
 /** YAML's parse time grows faster than its input (plain keys, anchors and errors alike), so the text it is given is capped; the largest bundled frontmatter is under 1 KiB. */
-const FRONTMATTER_MAX_BYTES = 8 * 1024;
+const FRONTMATTER_MAX_BYTES = 4 * 1024;
 
 /** The frontmatter block as a JSON object, or why it is not one. Never throws. */
 function parseYaml(
@@ -77,7 +77,7 @@ function parseYaml(
 
 /**
  * A SKILL.md's frontmatter and body. The reader never throws: YAML that does
- * not parse, a frontmatter over 8 KiB, or a `name` outside the spec's
+ * not parse, a frontmatter over 4 KiB, or a `name` outside the spec's
  * character set, warns and falls back to a line-by-line read of `name` and
  * `description`.
  */
@@ -105,7 +105,7 @@ export function parseFrontmatter(md: string, dirName: string): Frontmatter {
          frontmatter: {},
          body,
          warnings: [
-            `has frontmatter of ${bytes} bytes, over 8 KiB, so it is not read as YAML and its name and description are read line by line`,
+            `has frontmatter of ${bytes} bytes, over 4 KiB, so it is not read as YAML and its name and description are read line by line`,
          ],
       };
    }
