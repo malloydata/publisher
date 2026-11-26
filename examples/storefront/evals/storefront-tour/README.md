@@ -49,10 +49,11 @@ The conventions themselves are written down in
 [`as-received/questions.md`](as-received/questions.md), as part of the material
 the questions arrived with. They are deliberately nowhere in the model.
 
-The package's `skills/storefront-conventions` guide does teach the net-sales
-filter, which is the product as shipped, so the default `--package-skills tool`
-arm measures the question with that guidance on. To compare against no guidance,
-serve a copy of the package without `skills/` and run a second arm with
+The package's `workflows/default/skill_sets/house/storefront-conventions` guide
+does teach the net-sales filter, which is the product as shipped, so the default
+`--package-skills tool` arm measures the question with that guidance on. To
+compare against no guidance, serve a copy of the package without `workflows/`
+(and its `workflows` manifest key) and run a second arm with
 `--package <that copy> --package-skills off`; `off` refuses while the server
 still serves package skills.
 
