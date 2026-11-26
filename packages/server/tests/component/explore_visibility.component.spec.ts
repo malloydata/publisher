@@ -780,13 +780,11 @@ source: secret_tiles is secret extend { view: by_id is { group_by: id } }
          path.join(tempDir, "dashboards/d.malloy"),
          `## artifact { tiles=["dq -> v"] }\nsource: dq is duckdb.sql("select 1 as id") extend { view: v is { group_by: id } }\n`,
       );
-      fs.writeFileSync(
-         path.join(tempDir, "index.malloy"),
-         `import "orders.malloy"\nexport { orders }`,
-      );
       const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         // A surface added broken: a file that compiled before keeps its
+         // last good model on a reload, so only a new one fails it.
          fs.writeFileSync(
             path.join(tempDir, "index.malloy"),
             `import "orders.malloy"\nexport { ordrs }`,
@@ -822,17 +820,15 @@ source: secret_tiles is secret extend { view: by_id is { group_by: id } }
          path.join(tempDir, "orders.malloy"),
          `source: orders is duckdb.sql("select 1 as id")\nexport { orders }`,
       );
-      fs.writeFileSync(
-         path.join(tempDir, "index.malloy"),
-         `import "orders.malloy"\nexport { orders }`,
-      );
 
       const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(pkg.brokenSurfaceWarnings()).toEqual([]);
 
-         // Now break it the way an author does: a typo in the export list.
+         // Now add it broken, the way an author does: a typo in the export
+         // list. (A surface that compiled before keeps its last good model
+         // on a reload, so only a new one takes the package down here.)
          fs.writeFileSync(
             path.join(tempDir, "index.malloy"),
             `import "orders.malloy"\nexport { ordrs }`,
@@ -1028,20 +1024,12 @@ source: secret_tiles is secret extend { view: by_id is { group_by: id } }
          // Two broken files on one surface used to produce two messages, each
          // claiming to BE the whole surface, and the collateral count included
          // hidden models that had failed to compile on their own.
-         writeManifest({ explores: ["a.malloy", "b.malloy"] });
-         for (const name of ["a", "b"]) {
-            fs.writeFileSync(
-               path.join(tempDir, `${name}.malloy`),
-               `source: ${name}_src is duckdb.sql("select 1 as id")\nexport { ${name}_src }`,
-            );
-         }
+         // Added after the load: a file that compiled before keeps its last
+         // good model on a reload, so only new files fail it.
+         writeManifest({ explores: ["fine.malloy"] });
          fs.writeFileSync(
             path.join(tempDir, "fine.malloy"),
             `source: fine is duckdb.sql("select 1 as id")\nexport { fine }`,
-         );
-         fs.writeFileSync(
-            path.join(tempDir, "alsobroken.malloy"),
-            `source: ab is duckdb.sql("select 1 as id")\nexport { ab }`,
          );
 
          const { malloyConfig, duckdb } = duckdbMalloyConfig();
@@ -1052,6 +1040,7 @@ source: secret_tiles is secret extend { view: by_id is { group_by: id } }
                tempDir,
                malloyConfig,
             );
+            writeManifest({ explores: ["a.malloy", "b.malloy"] });
             for (const name of ["a", "b"]) {
                fs.writeFileSync(
                   path.join(tempDir, `${name}.malloy`),

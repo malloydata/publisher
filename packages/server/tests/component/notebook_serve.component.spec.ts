@@ -366,15 +366,11 @@ describe("served notebooks (worker path)", () => {
 
    it("does not take an artifact line inside a block body for a dashboard", async () => {
       manifest();
-      write(
-         "dashboards/x.malloy",
-         `## artifact { tiles=["base -> v"] }\n` +
-            `source: base is duckdb.sql("select 1 as id") extend { view: v is { group_by: id } }\n`,
-      );
+      write("base.malloy", BASE);
+      // Added after the load: a file that compiled before keeps its last
+      // good model on a reload, so only a new one is read as it fails.
       await withPackage(async (pkg) => {
-         expect(gridReports(pkg).map((d) => d.path)).toEqual([
-            "dashboards/x.malloy",
-         ]);
+         expect(gridReports(pkg)).toEqual([]);
          write(
             "dashboards/x.malloy",
             `##|"\n## artifact kinds\n|##\nsource: oops is\n`,
@@ -518,10 +514,9 @@ describe("served notebooks (worker path)", () => {
 
    it("lists a notebook that failed to compile with its error, after a reload", async () => {
       manifest();
-      write(
-         "notebooks/nb.malloy",
-         `## artifact { layout=linear tiles=[] }\n${BASE}`,
-      );
+      write("base.malloy", BASE);
+      // Added after the load: a file that compiled before keeps its last
+      // good model on a reload, so only a new one is listed with its error.
       await withPackage(async (pkg) => {
          write(
             "notebooks/nb.malloy",

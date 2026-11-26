@@ -192,21 +192,46 @@ export class PackageModelPolicy {
         }
       | undefined;
 
+   /** The policy that replaced this one ({@link handOffTo}), if any. */
+   private successor: PackageModelPolicy | undefined;
+
    /** The live view one model reads. */
    public forModel(modelPath: string): ModelPolicy {
+      const live = () => this.current();
       return Object.freeze({
          origin: "package" as const,
-         discoveryCurationEnabled: () => this.discoveryCuration,
+         discoveryCurationEnabled: () => live().discoveryCuration,
          // A path the package did not decide is refused, never admitted.
          queryBoundary: () =>
-            this.boundaries?.get(modelPath) ?? UNDECIDED_PACKAGE_BOUNDARY,
-         siblingModelDefResolver: () => this.siblingResolver,
-         snapshot: () => this.serving?.snapshot(),
-         preaggregateEntityIds: () => this.serving?.preaggregateEntityIds(),
-         materializedTables: () => this.serving?.materializedTables?.(),
+            live().boundaries?.get(modelPath) ?? UNDECIDED_PACKAGE_BOUNDARY,
+         siblingModelDefResolver: () => live().siblingResolver,
+         snapshot: () => live().serving?.snapshot(),
+         preaggregateEntityIds: () => live().serving?.preaggregateEntityIds(),
+         materializedTables: () => live().serving?.materializedTables?.(),
          reportIncompatible: (handles: readonly string[]) =>
-            this.serving?.reportIncompatible?.(handles),
+            live().serving?.reportIncompatible?.(handles),
       });
+   }
+
+   /**
+    * Make every model hydrated under this policy read `next` from now on: a
+    * reload that keeps a model it could not recompile installs it beside
+    * models hydrated under `next`, and all of them read the package's one
+    * current policy.
+    */
+   public handOffTo(next: PackageModelPolicy): void {
+      if (next !== this) this.successor = next;
+   }
+
+   /**
+    * The policy in force: the last one handed off to. Points this one
+    * straight at it, so a model kept across many reloads holds no chain of
+    * the policies between.
+    */
+   private current(): PackageModelPolicy {
+      if (!this.successor) return this;
+      this.successor = this.successor.current();
+      return this.successor;
    }
 
    /** Whether discovery curates to each model's `export {}` closure (`explores` declared). */

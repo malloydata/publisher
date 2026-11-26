@@ -6078,6 +6078,18 @@ components:
                   `cross_connection_join`, `inline_join_kept`,
                   `reroot_not_compiled`, `classification_not_kept`; an open
                   set) (`subject` the source; `warn`).
+                  `model-recompile-failed`: a model file that compiled before
+                  did not compile when the package bound new tables (most
+                  often because a table it reads directly was dropped), so
+                  the file keeps serving the model it last compiled rather
+                  than answering every query on its sources with the compile
+                  error. The message carries the compile error and names the
+                  file's sources, and which of them stopped serving their
+                  stored tables because an upstream table they were built
+                  from changed (those answer live, and read `incompatible`,
+                  `upstream_altered`) (`model` the file; `reason`
+                  `compile_failed`; `warn`). Cleared by the next bind or
+                  reload that compiles the file.
                   `row-level-gate-unexpressible`: a row-level gate an entry
                   point inherits, whose field it no longer carries, so that
                   entry point denies every request; `row-level-gate-reads-no-given`:
@@ -6233,7 +6245,8 @@ components:
                   The bounded cause of a finding, so a client branches on it
                   rather than on the message (whose wording may change): the
                   refusal record's `reason` on a `*-not-built` warning; the served copy's reason on
-                  `served-copy-not-served`; the unread reason on
+                  `served-copy-not-served`; `compile_failed` on
+                  `model-recompile-failed`; the unread reason on
                   `database-table-unread` and `storage-table-unread`; the kept table's reason on
                   `table-kept`; the serve verdict's reason on a
                   `materialization-*` verdict warning; `storage_mode` on

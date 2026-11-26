@@ -310,6 +310,48 @@ interface ReportDiscovery {
 export type ApiPackage = components["schemas"]["Package"];
 type ApiModelEntities = components["schemas"]["ModelEntities"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
+
+/** A file a reload could not recompile and kept serving from its last good model. */
+interface KeptModel {
+   modelPath: string;
+   /** The recompile's error, package-relative. */
+   error: string;
+   /** The sources the kept model declares, sorted. */
+   sources: string[];
+}
+
+/** The package's warning code for a {@link KeptModel}. */
+export const MODEL_RECOMPILE_FAILED = "model-recompile-failed";
+
+/**
+ * The `model-recompile-failed` warning for `kept`, naming its sources and
+ * which of them `withdrawn` took out of serving (they answer live).
+ */
+function recompileFailedWarning(
+   kept: KeptModel,
+   withdrawn: { sources: string[]; tables: string[] },
+): ApiPackageWarning {
+   const live = withdrawn.sources.filter((s) => kept.sources.includes(s));
+   const parts = [
+      `${kept.modelPath} did not recompile, so its sources ` +
+         `(${kept.sources.join(", ") || "none"}) are served from the model ` +
+         `it last compiled: ${kept.error}`,
+   ];
+   if (live.length > 0) {
+      parts.push(
+         `Upstream table ${withdrawn.tables.join(", ")} changed since the ` +
+            `last build, so ${live.join(", ")} answer live until a reload ` +
+            `compiles and a run rebuilds them.`,
+      );
+   }
+   return {
+      code: MODEL_RECOMPILE_FAILED,
+      model: kept.modelPath,
+      reason: "compile_failed",
+      message: parts.join(" "),
+      severity: "warn",
+   };
+}
 type ApiServeVerdict = components["schemas"]["ServeVerdict"];
 
 interface ClassificationMemo {
@@ -480,6 +522,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    // Non-fatal render-tag findings across the models; a bad tag does not fail
    // the load, so this is its signal.
    private renderTagWarnings: ApiPackageWarning[] = [];
+   /**
+    * `model-recompile-failed`: each file the last {@link reloadAllModels}
+    * could not recompile and kept serving from its last good model.
+    */
+   private recompileFailedWarnings: ApiPackageWarning[] = [];
    /**
     * What the models were last compiled against (by {@link reloadAllModels},
     * or by a load given its manifest), so a rebind can skip the compile.
@@ -2241,6 +2288,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       // API because the load tolerates it, so otherwise only the log says so.
       const allWarnings = [
          ...this.renderTagWarnings,
+         ...this.recompileFailedWarnings,
          ...this.entitiesWarnings,
          ...this.readerWarnings,
          ...this.reportWarnings,
@@ -3167,13 +3215,40 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             },
             "placeholder",
          );
+      // A file that compiled before and does not now (most often a table it
+      // reads directly was dropped) keeps its last good model, as a failed
+      // package reload keeps the package: one table must not take every
+      // source in the file to a 424. Its sources whose upstream changed stop
+      // serving their stored tables, so they answer live, as the warehouse
+      // now stands; the rest keep serving.
+      const kept = this.keepLastGoodModels(nextModels);
+      const withdrawn =
+         kept.length > 0
+            ? await this.withdrawChangedUpstreams().catch(
+                 (error): { sources: string[]; tables: string[] } => {
+                    logger.warn(
+                       "Could not read the upstream tables of a model kept from before a failed recompile",
+                       {
+                          packageName: this.packageName,
+                          error: errMessage(error),
+                       },
+                    );
+                    return { sources: [], tables: [] };
+                 },
+              )
+            : { sources: [], tables: [] };
       // Discover before installing, then install models and reports in one
       // synchronous step: a query must never see one without the other.
       const discoveryStarted = performance.now();
       const discovery = await this.discoverReportsIn(nextModels, "reload");
       const discoveryMs = performance.now() - discoveryStarted;
       this.models = nextModels;
+      // A kept model was hydrated under the policy being replaced.
+      this.modelPolicy.handOffTo(nextModelPolicy);
       this.modelPolicy = nextModelPolicy;
+      this.recompileFailedWarnings = kept.map((k) =>
+         recompileFailedWarning(k, withdrawn),
+      );
       this.adoptOutcomeMetadata(outcome);
       // Move the identity as soon as the new models are installed.
       this.refreshServingIdentity();
@@ -3224,6 +3299,32 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       warnInvalidExplores(this);
       this.logEmptyDiscoveryWarnings();
       return true;
+   }
+
+   /**
+    * Put back, in `nextModels`, the last good model of each file whose
+    * recompile failed and whose installed model compiled; returns those
+    * files, with the compile error and the sources the kept model declares.
+    */
+   private keepLastGoodModels(nextModels: Map<string, Model>): KeptModel[] {
+      const kept: KeptModel[] = [];
+      for (const [modelPath, next] of nextModels) {
+         const error = next.getCompilationError();
+         const prior = this.models.get(modelPath);
+         if (!error || !prior || prior.getCompilationError()) continue;
+         nextModels.set(modelPath, prior);
+         const sources = (prior.getSources() ?? [])
+            .map((s) => s.name)
+            .filter((name): name is string => typeof name === "string")
+            .sort();
+         kept.push({ modelPath, error: error.message, sources });
+         logger.warn("A model did not recompile; serving its last good model", {
+            packageName: this.packageName,
+            modelPath,
+            error: error.message,
+         });
+      }
+      return kept;
    }
 
    /**
