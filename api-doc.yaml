@@ -7886,8 +7886,8 @@ components:
         sourceName:
           type: string
           description: >-
-            The source the join reads, absent for a join read straight from a
-            table.
+            The source the join reads, absent for a table read or a record
+            column.
         sourcePath:
           type: string
           description: Package-relative path of the file declaring that source.
@@ -7904,9 +7904,8 @@ components:
             How many rows of the joined source each row of the parent meets,
             from the compiled join: `one` for `join_one:` and a record column,
             `many` for `join_many:` and a repeated-record or array column,
-            `cross` for `join_cross:`. A field reached through a `many` or
-            `cross` join fans out: an aggregate over the parent counts each of
-            its rows once per joined row.
+            `cross` for `join_cross:`. Grouping by a field reached through a
+            `many` or `cross` join gives one group per joined row.
 
     IndexFingerprint:
       type: object

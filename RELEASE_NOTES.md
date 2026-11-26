@@ -25,7 +25,9 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 The package entities (`ModelEntities.fields`) walked a record or repeated-record column (a BigQuery RECORD, a DuckDB STRUCT or STRUCT[]) as if it were a join to a source of the same name. When the model also had a top-level source with that name, the column's members (`lines.sku`, `lines.qty`) were never listed, and the column's `join` named that unrelated source. A record column is now always `nested`, with no `sourceName`, and its members are always listed under dotted names.
 
-`EntityJoin` gains an optional `relationship`: `one`, `many` or `cross`, from Malloy's compiled join. A record column is `one` and a repeated record or array column is `many`, the same as `join_one:` and `join_many:`, so a reader can tell that a field reached through it fans out.
+The same walk keys a record column's entries in `ModelEntities.sources` (its givens and `#(authorize)` gates) under its dotted path. On `orders` with record columns `delivery`, `lines` and `tags`, the entries were keyed `delivery` and `tags`, with nothing for `lines`. They are now `orders.delivery`, `orders.lines` and `orders.tags`, the same key the column's fields carry. A reader that looked a record column's givens up by its bare name finds them under the dotted path.
+
+`EntityJoin` gains an optional `relationship`: `one`, `many` or `cross`, from Malloy's compiled join. A record column is `one` and a repeated record or array column is `many`, the same as `join_one:` and `join_many:`. Grouping by a field reached through a `many` or `cross` join gives one group per joined row.
 
 ## [Unreleased] — a materialization refusal names the annotation it is about
 

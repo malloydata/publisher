@@ -23,11 +23,12 @@ import type {
    SourceMetadata,
 } from "./internal_types";
 
-import type {
-   Explore as MalloyExplore,
-   Model as MalloyModel,
+import {
+   isJoined,
+   isJoinedSource,
+   type Explore as MalloyExplore,
+   type Model as MalloyModel,
 } from "@malloydata/malloy";
-import type { Relationship } from "@malloydata/malloy-interfaces";
 
 import { type Refuse, throwRefusal } from "./dim_index_discovery";
 import { errMessage } from "../../utils";
@@ -178,23 +179,19 @@ export function joinMetadataOf(
    docString: string,
    sourceToModelPath: Map<string, string>,
 ): JoinSourceMetadata {
-   const structDef = field.structDef as
-      | { type?: string; join?: Relationship }
-      | undefined;
-   const relationship = structDef?.join;
-   const metadata: JoinSourceMetadata =
-      structDef?.type === "record" || structDef?.type === "array"
-         ? {
-              original_source_name: null,
-              original_source_path: null,
-              is_nested_index: true,
-           }
-         : parseJoinCode(
-              extractCodeFromEntity(field, docString),
-              field.name,
-              sourceToModelPath,
-           );
-   if (relationship) metadata.relationship = relationship;
+   const structDef = field.structDef;
+   const metadata: JoinSourceMetadata = isJoinedSource(structDef)
+      ? parseJoinCode(
+           extractCodeFromEntity(field, docString),
+           field.name,
+           sourceToModelPath,
+        )
+      : {
+           original_source_name: null,
+           original_source_path: null,
+           is_nested_index: true,
+        };
+   if (isJoined(structDef)) metadata.relationship = structDef.join;
    return metadata;
 }
 

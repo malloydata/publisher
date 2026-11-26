@@ -24,6 +24,7 @@ import { Malloy } from "@malloydata/malloy";
 import { FileURLReader } from "./field_helpers";
 import { ConnectionLookup } from "./test_support";
 import { sourceExtraction } from "./source_extraction";
+import { BoundaryDescents } from "./explore_walk";
 
 async function compileModel(
    workspaceRoot: string,
@@ -392,6 +393,26 @@ describe("extractEntitiesFromExplores (integration)", () => {
             ofOrders.get(`orders::${member}`)?.field_data_type,
             type,
             `orders::${member} should be indexed as ${type}`,
+         );
+      }
+
+      // The `#(index)` candidate walk descends by the same rule. Unprovisional
+      // descents into a top-level source are left untaken, so reading `lines`
+      // as a join to the top-level `lines` would skip the record's members.
+      const descends = sourceExtraction.joinDescent(
+         model.explores,
+         "entry.malloy",
+         workspace,
+         docString,
+         new BoundaryDescents(false),
+      );
+      const orders = model.explores.find((e) => e.name === "orders")!;
+      for (const column of ["delivery", "lines", "tags"]) {
+         const field = orders.allFields.find((f) => f.name === column);
+         assert.strictEqual(
+            descends(field as never, "orders"),
+            true,
+            `the candidate walk should descend into orders.${column}`,
          );
       }
    }, 60_000);
