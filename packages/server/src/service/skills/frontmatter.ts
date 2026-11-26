@@ -33,10 +33,29 @@ function lineRead(front: string, key: string): string | undefined {
 const EMIT_FACTOR = 5;
 const EMIT_SLACK = 10_000;
 
+/** Anchors plus aliases a frontmatter may hold: resolving each alias scans the anchors before it, so distinct anchors cost quadratic time that the alias and emit bounds do not see. */
+const MAX_ANCHORS_AND_ALIASES = 1_000;
+/** Counted on the text because the stall is in `parseDocument` itself, before any node exists to walk; over-counts a stray `*word` in a string, which only costs the line read. */
+const ANCHOR_OR_ALIAS = /[&*][^\s,[\]{}]/g;
+
+function hasTooManyAnchors(front: string): boolean {
+   let count = 0;
+   for (const _ of front.matchAll(ANCHOR_OR_ALIAS)) {
+      count += 1;
+      if (count > MAX_ANCHORS_AND_ALIASES) return true;
+   }
+   return false;
+}
+
 /** The frontmatter block as a JSON object, or why it is not one. Never throws. */
 function parseYaml(
    front: string,
 ): { value: Record<string, unknown> } | { problem: string } {
+   if (hasTooManyAnchors(front)) {
+      return {
+         problem: `it has more than ${MAX_ANCHORS_AND_ALIASES} anchors and aliases`,
+      };
+   }
    try {
       // Silent so a warning is not printed; the document's errors are read below.
       const doc = parseDocument(front, { logLevel: "silent" });

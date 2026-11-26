@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import { parseFrontmatter } from "../../server/src/service/skills/frontmatter";
 import { readFrontmatter } from "./skill_frontmatter";
 
 describe("readFrontmatter", () => {
@@ -51,4 +52,91 @@ describe("readFrontmatter", () => {
          description: "",
       });
    });
+});
+
+const anchors = Array.from(
+   { length: 10_700 },
+   (_, i) => `a${i}: &k${i} x\nb${i}: *k${i}`,
+).join("\n");
+const wide = `[${Array.from({ length: 2000 }, (_, i) => i).join(", ")}]`;
+const refs = Array.from({ length: 99 }, (_, i) => `r${i}: *l`).join("\n");
+
+/** [label, SKILL.md text, directory name, expected name, expected description] */
+const PARITY: [string, string, string, string, string][] = [
+   ["a bare name", "---\nname:\ndescription: foo\n---\n", "dir", "dir", "foo"],
+   ["a null name", "---\nname: ~\ndescription: d\n---\n", "dir", "dir", "d"],
+   [
+      "an empty description",
+      "---\nname: x\ndescription:\n---\n",
+      "dir",
+      "x",
+      "",
+   ],
+   [
+      "a null description",
+      "---\nname: x\ndescription: ~\n---\n",
+      "dir",
+      "x",
+      "",
+   ],
+   [
+      "a folded block scalar",
+      "---\nname: x\ndescription: >-\n  one\n  two\n---\n",
+      "dir",
+      "x",
+      "one two",
+   ],
+   [
+      "a literal block scalar",
+      "---\nname: x\ndescription: |\n  one\n  two\n---\n",
+      "dir",
+      "x",
+      "one\ntwo",
+   ],
+   ["no frontmatter", "# Just a body\n", "dir", "dir", ""],
+   [
+      "YAML that does not parse",
+      "---\nname: x\ndescription: Use when: a thing\n---\n",
+      "dir",
+      "x",
+      "Use when: a thing",
+   ],
+   [
+      "a name outside the spec",
+      "---\nname: a--b\ndescription: d\n---\n",
+      "dir",
+      "a--b",
+      "d",
+   ],
+   [
+      "10,700 distinct anchors",
+      `---\nname: x\ndescription: d\n${anchors}\n---\n`,
+      "dir",
+      "x",
+      "d",
+   ],
+   [
+      "an anchored list referenced 99 times",
+      `---\nname: x\ndescription: d\nl: &l ${wide}\n${refs}\n---\n`,
+      "dir",
+      "x",
+      "d",
+   ],
+];
+
+describe("the server's and the package's frontmatter readers", () => {
+   it.each(PARITY)(
+      "agree on %s",
+      (_label, markdown, dir, name, description) => {
+         const front = markdown.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "";
+         expect(readFrontmatter(front, dir)).toEqual({ name, description });
+         const server = parseFrontmatter(markdown, dir);
+         expect({ name: server.name, description: server.description }).toEqual(
+            {
+               name,
+               description,
+            },
+         );
+      },
+   );
 });
