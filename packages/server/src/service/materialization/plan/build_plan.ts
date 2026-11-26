@@ -2095,6 +2095,7 @@ async function collectGeneratedTables(
          );
       }
    }
+   const materializeOn = getMaterializeEnabled();
    // `#@ persist` on a named query: its key findings always, and, with
    // PUBLISHER_MATERIALIZE off, the warning that it is not built. A query
    // needs no persistence flag.
@@ -2102,12 +2103,12 @@ async function collectGeneratedTables(
       modelPath,
       packagePath,
       malloyModel,
-      notBuilt: !getMaterializeEnabled(),
+      notBuilt: !materializeOn,
    });
    // `#@ persist` on a view, read in both modes as a query's line is: with
    // the switch off nothing is compiled, but an invalid line still fails the
    // load and a valid one warns that it is not built.
-   if (!getMaterializeEnabled()) {
+   if (!materializeOn) {
       collectPersistViewFindingsSwitchedOff(parts, {
          modelPath,
          packagePath,
@@ -2115,7 +2116,7 @@ async function collectGeneratedTables(
       });
    }
    let materialized: MaterializedBases | undefined;
-   if (getMaterializeEnabled()) {
+   if (materializeOn) {
       materialized = await collectGeneratedMaterialize(parts, {
          modelPath,
          packagePath,
@@ -2347,8 +2348,15 @@ function reportPersistLineFindings(
             `#@ persist source "${name}" is not a source Malloy can ` +
             `materialize: only a query or aggregate source builds, and a ` +
             `filtered pass-through, a table with only added fields, or an ` +
-            `unbound parameterized source does not. Persist a query source ` +
-            `over it, invoke a parameterized source with a bound argument, or ` +
+            `unbound parameterized source does not. ` +
+            // `#(materialize)` stores a table-shaped source too, but not
+            // an unbound parameterized one, which has no single relation.
+            (getMaterializeEnabled()
+               ? `Mark a table-shaped source \`#(materialize)\` instead, ` +
+                 `which stores a table-shaped source as well as a ` +
+                 `query-shaped one; or persist a query source over it, `
+               : `Persist a query source over it, `) +
+            `invoke a parameterized source with a bound argument, or ` +
             `remove the annotation`,
          subject: name,
          model: modelPath,

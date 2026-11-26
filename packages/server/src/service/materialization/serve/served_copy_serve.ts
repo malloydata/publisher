@@ -1718,6 +1718,7 @@ export class ServedCopyServe {
             reroot.sourceID,
             reroot.url,
             fileText,
+            this.declarationOf,
          ),
       );
       const needed =
@@ -1727,7 +1728,11 @@ export class ServedCopyServe {
          // A base the re-root replaces declares a measure, view or join
          // the source inherits; only its block, written again over the
          // table, keeps it (else the source is not carried, call 2).
-         confirmed.some((a) => declaresBlocks(map.node(a.sourceID)?.def));
+         confirmed.some((a) =>
+            declaresBlocks(
+               map.node(a.sourceID)?.def ?? this.declarationOf?.(a.sourceID),
+            ),
+         );
       if (!needed) return undefined;
       return confirmed
          .flatMap((a) => (a.runText ? [a.runText] : []))
