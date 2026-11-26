@@ -58,6 +58,16 @@ export interface ResourceRepository {
    ): Promise<PackageRecord>;
    /** Deletes the package's row and everything keyed by it, versions included. */
    deletePackage(id: string): Promise<void>;
+   /**
+    * Set a package's own description (null clears it) on its existing row,
+    * in one statement. Never creates the row: false when there is none (the
+    * package was deleted), so a write that raced a delete changes nothing.
+    */
+   setPackageDescription(
+      environmentId: string,
+      packageName: string,
+      description: string | null,
+   ): Promise<boolean>;
 
    // Versions
    listVersions(environmentId: string, packageName: string): Promise<Version[]>;

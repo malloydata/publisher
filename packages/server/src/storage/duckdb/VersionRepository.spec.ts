@@ -670,6 +670,23 @@ describe("VersionRepository", () => {
       expect(await repo.listVersionsByEnvironment(ENV_ID)).toEqual([]);
    });
 
+   it("sets a package's description only on a row that exists, never creating one", async () => {
+      const { repo, packageId } = await freshRepo();
+      expect(await repo.setPackageDescription(ENV_ID, PKG, "Sales")).toBe(true);
+      expect((await repo.getPackageByName(ENV_ID, PKG))!.description).toBe(
+         "Sales",
+      );
+      expect(await repo.setPackageDescription(ENV_ID, PKG, null)).toBe(true);
+      expect(
+         (await repo.getPackageByName(ENV_ID, PKG))!.description ?? null,
+      ).toBeNull();
+      await repo.deletePackage(packageId);
+      expect(await repo.setPackageDescription(ENV_ID, PKG, "Sales")).toBe(
+         false,
+      );
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
+   });
+
    it("lets no publish commit between a package delete's statements", async () => {
       // A further version publishes without the package lock a package
       // delete holds, so only the database keeps its commit out of the

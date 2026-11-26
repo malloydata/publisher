@@ -3009,10 +3009,6 @@ export class Environment {
             packageName: string,
             location: string,
          ): (stagingPath: string) => Promise<void>;
-         ensurePackageRecord(
-            packageName: string,
-            description: string | null | undefined,
-         ): Promise<boolean>;
          /** A package went with its last version: drop what is kept on it. */
          packageRemoved?(packageName: string): void;
       },
@@ -3071,7 +3067,6 @@ export class Environment {
                   unversioned.releaseConnections(),
                );
             },
-            ensurePackageRecord: hooks.ensurePackageRecord,
             // A manifest whose bind failed is not bound, so naming it again
             // binds it again rather than answering for a bind that failed.
             boundManifestOf: (loaded) =>

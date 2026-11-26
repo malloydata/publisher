@@ -6,6 +6,7 @@ import * as path from "path";
 import type { VersionPromotionMode } from "../../config";
 import {
    BadRequestError,
+   PackageNotFoundError,
    PackageVersionError,
    refuseVersionDelete,
    VersionFilesMissingError,
@@ -27,6 +28,7 @@ import { readPackageURL } from "../../utils";
 export type VersionRegistry = Pick<
    ResourceRepository,
    | "getPackageByName"
+   | "setPackageDescription"
    | "listVersions"
    | "hasVersions"
    | "listVersionsByEnvironment"
@@ -111,15 +113,6 @@ export interface VersionHost<P> {
     * copy, if one is loaded. Called holding the package lock.
     */
    retireUnversioned(packageName: string): void;
-   /**
-    * Make sure the package has its registry row, with this description when
-    * one is given (null clears it; undefined leaves it). Returns whether this
-    * call created the row.
-    */
-   ensurePackageRecord(
-      packageName: string,
-      description: string | null | undefined,
-   ): Promise<boolean>;
    /**
     * The build manifest a loaded version is bound to now, or null: never
     * one whose bind failed, so naming it again binds it again.
@@ -758,7 +751,10 @@ export class VersionService<P = unknown> {
          // publisher.json: its first version clears it, so the package reads
          // as its latest version's until a request sets one.
          if (first || options.description !== undefined) {
-            await host.ensurePackageRecord(
+            // On the row the commit wrote, never creating one: a whole-package
+            // delete that landed after the commit leaves no row to bring back.
+            await this.registry.setPackageDescription(
+               this.environmentId,
                packageName,
                options.description ?? null,
             );
@@ -841,7 +837,12 @@ export class VersionService<P = unknown> {
          return loaded;
       });
       if (options.description !== undefined) {
-         await host.ensurePackageRecord(packageName, options.description);
+         // Never creates the row, as after a commit.
+         await this.registry.setPackageDescription(
+            this.environmentId,
+            packageName,
+            options.description,
+         );
       }
       if (options.promotion === "on-publish") {
          const moved = await this.registry.setLatestVersion(
@@ -909,7 +910,17 @@ export class VersionService<P = unknown> {
       description: string,
    ): Promise<void> {
       try {
-         await this.requireHost().ensurePackageRecord(packageName, description);
+         if (
+            !(await this.registry.setPackageDescription(
+               this.environmentId,
+               packageName,
+               description,
+            ))
+         ) {
+            throw new PackageNotFoundError(
+               `Package ${packageName} was deleted while its description was being set.`,
+            );
+         }
       } finally {
          this.forgetRecords(packageName);
       }

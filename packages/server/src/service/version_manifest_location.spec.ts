@@ -95,16 +95,6 @@ async function bootEnvironment(): Promise<Environment> {
       downloaderFor: (_packageName, location) => async (stagingPath) => {
          await fs.promises.cp(location, stagingPath, { recursive: true });
       },
-      ensurePackageRecord: async (packageName, description) => {
-         if (await repo.getPackageByName(ENV_ID, packageName)) return false;
-         await repo.createPackage({
-            environmentId: ENV_ID,
-            name: packageName,
-            description,
-            manifestPath: "",
-         });
-         return true;
-      },
    });
    env.setStorageBindingResolver(async () => localStore);
    return env;

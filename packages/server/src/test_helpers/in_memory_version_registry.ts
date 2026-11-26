@@ -117,6 +117,16 @@ export function inMemoryVersionRegistry(): Record<string, unknown> {
          Object.assign(row, rest, { updatedAt: new Date() });
          return { ...row };
       },
+      setPackageDescription: async (
+         environmentId: string,
+         name: string,
+         description: string | null,
+      ) => {
+         const row = packages.get(packageKey(environmentId, name));
+         if (!row) return false;
+         Object.assign(row, { description, updatedAt: new Date() });
+         return true;
+      },
       deletePackage: async (id: string) => {
          const found = findPackageById(id);
          if (!found) return;

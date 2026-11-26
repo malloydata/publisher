@@ -52,6 +52,8 @@ export function createDuckDBRepository(
       createPackage: (pkg) => packages.createPackage(pkg),
       updatePackage: (id, updates) => packages.updatePackage(id, updates),
       deletePackage: (id) => versions.deletePackage(id),
+      setPackageDescription: (environmentId, name, description) =>
+         packages.setPackageDescription(environmentId, name, description),
 
       listVersions: (environmentId, packageName) =>
          versions.list(environmentId, packageName),

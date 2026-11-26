@@ -1112,29 +1112,6 @@ export class EnvironmentStore
                location,
                stagingPath,
             ),
-         ensurePackageRecord: async (packageName, description) => {
-            const existing = await repository.getPackageByName(
-               environmentId,
-               packageName,
-            );
-            if (!existing) {
-               await repository.createPackage({
-                  environmentId,
-                  name: packageName,
-                  description: description ?? undefined,
-                  manifestPath: "",
-                  metadata: {},
-               });
-               return true;
-            }
-            if (
-               description !== undefined &&
-               description !== (existing.description ?? null)
-            ) {
-               await repository.updatePackage(existing.id, { description });
-            }
-            return false;
-         },
          packageRemoved: (packageName) =>
             this.cleanupPackageEmbeddings(environmentName, packageName),
       });

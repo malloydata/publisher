@@ -275,17 +275,6 @@ for (const tier of TIERS)
             downloaderFor: (_packageName, location) => async (stagingPath) => {
                await fs.promises.cp(location, stagingPath, { recursive: true });
             },
-            ensurePackageRecord: async (packageName, description) => {
-               if (await repo.getPackageByName(ENV_ID, packageName))
-                  return false;
-               await repo.createPackage({
-                  environmentId: ENV_ID,
-                  name: packageName,
-                  description,
-                  manifestPath: "",
-               });
-               return true;
-            },
          });
          env.setStorageBindingResolver(storageBindingResolverFor(repo, ENV_ID));
          service = serviceOverEnvironment(

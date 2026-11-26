@@ -230,16 +230,6 @@ describe("publishing a version refetches table schemas", () => {
       env.bindVersions(repo, ENV_ID, {
          downloaderFor: (_packageName, location) => (stagingPath) =>
             fs.promises.cp(location, stagingPath, { recursive: true }),
-         ensurePackageRecord: async (packageName, description) => {
-            if (await repo.getPackageByName(ENV_ID, packageName)) return false;
-            await repo.createPackage({
-               environmentId: ENV_ID,
-               name: packageName,
-               description,
-               manifestPath: "",
-            });
-            return true;
-         },
       });
    });
 
