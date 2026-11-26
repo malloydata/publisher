@@ -10,6 +10,8 @@ import type {
    QueryRecord,
    QueryValue,
    RunSQLOptions,
+   SQLSourceDef,
+   SQLSourceRequest,
 } from "@malloydata/malloy";
 import type { components } from "../api";
 import { removeUndefined } from "./connection_config";
@@ -142,11 +144,121 @@ function normalizeRecord(row: QueryRecord): QueryRecord {
 }
 
 /**
+ * The parts of `@malloydata/db-snowflake`'s `SnowflakeExecutor` that
+ * {@link pinnedExecutor} reaches. They are private in its typings, so each is
+ * checked before use and a connector that lacks one is left unpinned.
+ */
+interface SnowflakePool<C> {
+   acquire(): Promise<C>;
+   release(conn: C): Promise<void>;
+   destroy(conn: C): Promise<void>;
+}
+interface SnowflakeExecutorInternals<C> {
+   pool_: SnowflakePool<C>;
+   ensureSessionInitialized(
+      conn: C,
+      options?: RunSQLOptions,
+      timeoutMs?: number,
+   ): Promise<void>;
+   _execute(
+      sql: string,
+      conn: C,
+      options?: RunSQLOptions,
+      timeoutMs?: number,
+      binds?: unknown,
+   ): Promise<QueryRecord[]>;
+}
+type BatchFn = (
+   sql: string,
+   options?: RunSQLOptions,
+   timeoutMs?: number,
+   binds?: unknown,
+) => Promise<QueryRecord[] | undefined>;
+
+function executorInternals(
+   executor: unknown,
+): SnowflakeExecutorInternals<unknown> | undefined {
+   const e = executor as Partial<SnowflakeExecutorInternals<unknown>>;
+   const pool = e?.pool_ as Partial<SnowflakePool<unknown>> | undefined;
+   return typeof pool?.acquire === "function" &&
+      typeof pool.release === "function" &&
+      typeof pool.destroy === "function" &&
+      typeof e.ensureSessionInitialized === "function" &&
+      typeof e._execute === "function"
+      ? (e as SnowflakeExecutorInternals<unknown>)
+      : undefined;
+}
+
+/**
+ * An executor whose `batch` and `tryBatch` run every statement on the one
+ * session `conn`, with the connector's own session setup and the same
+ * semantics as its pooled ones (`tryBatch` answers undefined on a failure).
+ */
+function pinnedExecutor(
+   base: SnowflakeExecutorInternals<unknown>,
+   conn: unknown,
+): { batch: BatchFn; tryBatch: BatchFn } {
+   const batch: BatchFn = async (sql, options, timeoutMs, binds) => {
+      await base.ensureSessionInitialized(conn, options, timeoutMs);
+      return base._execute(sql, conn, options, timeoutMs, binds);
+   };
+   return {
+      batch,
+      tryBatch: async (sql, options, timeoutMs, binds) => {
+         try {
+            return await batch(sql, options, timeoutMs, binds);
+         } catch {
+            return undefined;
+         }
+      },
+   };
+}
+
+/**
  * A Snowflake connection whose rows hold the values a stored copy's do
  * ({@link normalizeSnowflakeValue}), for query answers and Publisher's own
  * warehouse reads alike.
  */
 export class PublisherSnowflakeConnection extends SnowflakeConnection {
+   /**
+    * R-08 MITIGATION for an upstream race in `@malloydata/db-snowflake`
+    * (`SnowflakeConnection.fetchSelectSchema`): a `.sql()` source's schema is
+    * read by creating a session-scoped `TEMP VIEW tt<hash>` and then running
+    * `DESCRIBE TABLE` (and, for a VARIANT column, sampling queries) against
+    * it, each statement on its own `pool.use()`. The pool is generic-pool,
+    * FIFO, and Publisher sizes it up to 20, so once it holds more than one
+    * idle session the `DESCRIBE` is handed a different session from the one
+    * that created the view, and the publish fails with "Table 'TT…' does not
+    * exist or not authorized". Here the whole read runs on one session
+    * borrowed for it, released afterwards, or destroyed on a failure exactly
+    * as `pool.use()` would. A connector whose executor does not expose the
+    * internals this needs is read the upstream way, unpinned. Remove once the
+    * connector pins the read itself.
+    */
+   async fetchSelectSchema(sqlRef: SQLSourceRequest): Promise<SQLSourceDef> {
+      const base = executorInternals(
+         (this as unknown as { executor: unknown }).executor,
+      );
+      if (!base) return super.fetchSelectSchema(sqlRef);
+      const conn = await base.pool_.acquire();
+      // The upstream method reads `this.executor` for every statement, its
+      // `runSQL` (ours, which normalizes rows) included; a per-call view of
+      // this connection with the pinned executor keeps concurrent reads
+      // apart without touching the shared executor.
+      const pinned = Object.create(this, {
+         executor: { value: pinnedExecutor(base, conn) },
+      }) as this;
+      let result: SQLSourceDef;
+      try {
+         result = await super.fetchSelectSchema.call(pinned, sqlRef);
+      } catch (error) {
+         await base.pool_.destroy(conn).catch(() => {});
+         throw error;
+      }
+      await base.pool_.release(conn).catch(() => {});
+      return result;
+   }
+
    async runSQL(
       sql: string,
       options?: RunSQLOptions,

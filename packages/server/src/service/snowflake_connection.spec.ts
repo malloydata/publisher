@@ -351,3 +351,147 @@ describe("a live Snowflake answer equals the served one", () => {
       }
    });
 });
+
+/**
+ * R-08: a `.sql()` source's schema is read by creating a session-scoped TEMP
+ * VIEW and describing it. The fake pool below behaves as generic-pool's FIFO
+ * pool does once it holds two idle sessions: each `use()` takes the session
+ * idle the longest, so consecutive statements land on different sessions.
+ * Each session sees only the temp views it created, as Snowflake's do.
+ */
+describe("a .sql() source's schema read on a pooled Snowflake connection", () => {
+   type Session = { id: number; views: Set<string> };
+
+   function pooledFake() {
+      const connection = new PublisherSnowflakeConnection("snowflake", {
+         connOptions: { ...BASE, password: "pw" },
+         poolOptions: { min: 0, max: 1 },
+      });
+      const idle: Session[] = [
+         { id: 1, views: new Set() },
+         { id: 2, views: new Set() },
+      ];
+      const log: { session: number; sql: string }[] = [];
+      const destroyed: number[] = [];
+      const pool_ = {
+         acquire: async () => idle.shift() as Session,
+         release: async (s: Session) => {
+            idle.push(s);
+         },
+         destroy: async (s: Session) => {
+            destroyed.push(s.id);
+         },
+      };
+      const _execute = async (sql: string, s: Session) => {
+         log.push({ session: s.id, sql });
+         if (sql.includes("missing_table")) {
+            throw new Error("Object 'MISSING_TABLE' does not exist.");
+         }
+         const create = /CREATE OR REPLACE TEMP VIEW (\w+)/i.exec(sql);
+         if (create) {
+            s.views.add(create[1].toUpperCase());
+            return [];
+         }
+         const describe = /^\s*DESCRIBE TABLE (\w+)/i.exec(sql);
+         if (describe) {
+            const name = describe[1].toUpperCase();
+            if (!s.views.has(name)) {
+               throw new Error(
+                  `SQL compilation error:\nTable '${name}' does not exist or not authorized.`,
+               );
+            }
+            return [
+               { name: "id", type: "NUMBER(38,0)" },
+               { name: "label", type: "VARCHAR(16777216)" },
+            ];
+         }
+         return [];
+      };
+      const executor = {
+         pool_,
+         ensureSessionInitialized: async () => {},
+         _execute,
+         // The connector's own pooled calls: one session per statement.
+         async batch(sql: string) {
+            const s = await pool_.acquire();
+            try {
+               const rows = await _execute(sql, s);
+               await pool_.release(s);
+               return rows;
+            } catch (e) {
+               await pool_.destroy(s);
+               throw e;
+            }
+         },
+         async tryBatch(sql: string) {
+            const s = await pool_.acquire();
+            try {
+               return await _execute(sql, s);
+            } catch {
+               return undefined;
+            } finally {
+               await pool_.release(s);
+            }
+         },
+         done: async () => {},
+      };
+      (connection as unknown as { executor: unknown }).executor = executor;
+      return { connection, log, idle, destroyed };
+   }
+
+   const REF = {
+      connection: "snowflake",
+      selectStr: "SELECT id, label FROM looker.sf_types",
+   };
+
+   it("fails the upstream way: the DESCRIBE lands on another session", async () => {
+      const { connection, log } = pooledFake();
+      const upstream = Object.getPrototypeOf(
+         PublisherSnowflakeConnection.prototype,
+      ) as PublisherSnowflakeConnection;
+      await expect(
+         upstream.fetchSelectSchema.call(connection, REF),
+      ).rejects.toThrow(/Table 'TT[0-9A-F]+' does not exist or not authorized/);
+      expect(log.map((l) => l.session)).toEqual([1, 2]);
+   });
+
+   it("reads the schema on the session that created the temp view, and returns it", async () => {
+      const { connection, log, idle, destroyed } = pooledFake();
+      const def = await connection.fetchSelectSchema(REF);
+      expect(def.fields.map((f) => [f.name, f.type])).toEqual([
+         ["id", "number"],
+         ["label", "string"],
+      ]);
+      expect(log.map((l) => l.session)).toEqual([1, 1]);
+      expect(log[0].sql).toMatch(/^CREATE OR REPLACE TEMP VIEW tt/);
+      expect(log[1].sql).toMatch(/^DESCRIBE TABLE tt/);
+      // The session goes back to the pool; nothing was destroyed.
+      expect(idle.map((s) => s.id).sort()).toEqual([1, 2]);
+      expect(destroyed).toEqual([]);
+   });
+
+   it("destroys the borrowed session when the read fails, as pool.use() would", async () => {
+      const { connection, idle, destroyed } = pooledFake();
+      await expect(
+         connection.fetchSelectSchema({
+            ...REF,
+            selectStr: "SELECT * FROM missing_table",
+         }),
+      ).rejects.toThrow(/MISSING_TABLE/);
+      expect(destroyed).toEqual([1]);
+      expect(idle.map((s) => s.id)).toEqual([2]);
+   });
+
+   it("keeps a connector without the pool internals on the upstream path", async () => {
+      const connection = fakeSnowflake(
+         () => [],
+         [{ name: "id", type: "NUMBER(38,0)" }],
+      );
+      try {
+         const def = await connection.fetchSelectSchema(REF);
+         expect(def.fields.map((f) => f.name)).toEqual(["id"]);
+      } finally {
+         await connection.close();
+      }
+   });
+});
