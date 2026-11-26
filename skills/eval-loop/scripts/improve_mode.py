@@ -275,18 +275,29 @@ def speed_verdict(summaries: list[dict[str, Any]], band: float,
     replay's total moves by itself: an unchanged package measured 11 to 24%
     apart on a loaded machine.
 
-    With `answers` (one `target_answers` per replay), every targeted query
-    must also be answered by a table in every replay. Faster alone is not
-    proof: the noise band can pass a change whose table never answered.
+    With `answers` (one `target_answers` per replay), the speed-up must come
+    from tables, in every replay: at least one targeted query is answered by
+    a table, and every targeted query counted faster is one a table answered.
+    Faster alone is not proof: the noise band can pass a change whose table
+    never answered. A target that stays live is allowed, since "nothing
+    slower" already holds it: a hot source's targets are all its queries, and
+    some (a distinct count, say) no rollup can answer, so requiring every one
+    rejected an edit that made the rest 20% faster with the same rows.
     """
     failed: dict[str, str] = {}
     if len(summaries) < 2:
         failed["twice"] = f"{len(summaries)} replay(s) of the edit"
     for n, a in enumerate(answers or [], 1):
         live = still_live(a)
-        if live:
+        c = (summaries[n - 1].get("compare") or {}) if n <= len(summaries) else {}
+        faster_live = sorted({e["qid"] for e in c.get("faster") or []} & set(live))
+        if a and len(live) == len(a):
             failed[f"answered by a table (replay {n})"] = (
-                f"{', '.join(live)} still answered live; {why_live(a)}")
+                f"no targeted query was answered by a table; {why_live(a)}")
+        elif faster_live:
+            failed[f"answered by a table (replay {n})"] = (
+                f"{', '.join(faster_live)} counted faster but still answered live, so the "
+                f"gain is noise; {why_live({q: a[q] for q in faster_live})}")
     for n, s in enumerate(summaries, 1):
         c = s.get("compare")
         if not c:

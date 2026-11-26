@@ -336,6 +336,19 @@ class Speed(Base):
         self.assertIn("answered by a table (replay 2)", r["edits"][0]["why"])
         self.assertIn("GRAIN_TOO_COARSE", r["edits"][0]["why"])
 
+    def test_a_target_no_table_can_answer_may_stay_live_when_it_is_not_counted_faster(self):
+        # Targets a and b; the table answers a, which is the faster one. b (a
+        # distinct count, say) stays live and is not slower.
+        answers = {"a": {"kind": "rollup", "skipped": []},
+                   "b": {"kind": "live", "skipped": [{"reason": "NOT_MERGEABLE"}]}}
+        ok = self.compare()
+        self.assertEqual(im.speed_verdict([ok, ok], 0.2, [answers, answers]), (True, {}))
+        # Counted faster while live: the gain is noise.
+        noisy = self.compare(faster=[{"qid": "a"}, {"qid": "b"}])
+        accepted, failed = im.speed_verdict([noisy, noisy], 0.2, [answers, answers])
+        self.assertFalse(accepted)
+        self.assertIn("b counted faster but still answered live", failed["answered by a table (replay 1)"])
+
     def test_a_speed_edit_that_changes_rows_is_taken_off_and_recorded(self):
         r, _ = self.go(self.compare(rows_changed=["a"]))
         self.assertEqual(r["edits"][0]["outcome"], "rejected")
