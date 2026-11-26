@@ -6,6 +6,8 @@ and not the other stops the model loading. This test holds them equal.
 """
 import pathlib
 import re
+import shutil
+import tempfile
 import sys
 import unittest
 
@@ -27,6 +29,28 @@ class Columns(unittest.TestCase):
                     self.assertIn(table, tables)
                     self.assertEqual(tuple(re.findall(r"'(\w+)'\s*:", cols)), tuple(tables[table]))
         self.assertGreater(seen, 10)
+
+
+
+class Append(unittest.TestCase):
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, True)
+
+    def test_a_table_that_gained_a_column_keeps_its_rows_and_new_rows_line_up(self):
+        path = self.dir / "t.csv"
+        op.append(path, ("a", "b"), [{"a": "1", "b": "2"}])
+        op.append(path, ("a", "x", "b"), [{"a": "3", "x": "9", "b": "4"}])
+        self.assertEqual(path.read_text().splitlines()[0], "a,x,b")
+        self.assertEqual(op.read(path), [{"a": "1", "x": "", "b": "2"}, {"a": "3", "x": "9", "b": "4"}])
+
+    def test_a_dropped_column_is_refused_not_lost(self):
+        path = self.dir / "t.csv"
+        op.append(path, ("a", "b"), [{"a": "1", "b": "2"}])
+        with self.assertRaises(SystemExit) as e:
+            op.append(path, ("a",), [])
+        self.assertIn("column(s) b", str(e.exception))
+        self.assertEqual(op.read(path), [{"a": "1", "b": "2"}])
 
 
 if __name__ == "__main__":

@@ -87,9 +87,37 @@ def metric_version(run_meta: dict[str, Any]) -> str | None:
     return ":".join(str(x) for x in (judge, rubric) if x) or None
 
 
+def upgrade(path: pathlib.Path, cols: tuple[str, ...]) -> None:
+    """Bring an existing CSV's header up to the table's columns.
+
+    A table that gained columns keeps every stored row, with the new columns
+    empty: the file is rewritten once under the new header. Without this a
+    row appended under an older header lands its values in the wrong columns.
+    A column that was dropped or renamed is refused: the stored values would
+    have nowhere to go."""
+    if not path.is_file():
+        return
+    with path.open(newline="", encoding="utf-8") as f:
+        have = tuple(next(csv.reader(f), []))
+    if have == tuple(cols):
+        return
+    gone = [c for c in have if c not in cols]
+    if gone:
+        raise SystemExit(f"Invalid {path.name}: it holds column(s) {', '.join(gone)} the table no "
+                         f"longer defines (expected {', '.join(cols)}). Fix: move the file aside, "
+                         f"or map those columns to the new names by hand")
+    rows = read(path)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=list(cols))
+        w.writeheader()
+        w.writerows(rows)
+
+
 def append(path: pathlib.Path, cols: tuple[str, ...], rows: list[dict[str, Any]]) -> None:
-    """Add rows to a table's CSV, writing the header when the file is new."""
+    """Add rows to a table's CSV, writing the header when the file is new and
+    upgrading it when the table has gained columns since."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    upgrade(path, cols)
     fresh = not path.is_file()
     if not rows and not fresh:
         return
