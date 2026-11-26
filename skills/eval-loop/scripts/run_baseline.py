@@ -3209,11 +3209,14 @@ def default_skill_sets(pkg_dir: pathlib.Path) -> list[pathlib.Path]:
     for entry in entries if isinstance(entries, list) else []:
         if not isinstance(entry, str):
             return []
+        path = pkg_dir
+        for part in pathlib.PurePosixPath(entry).parts:
+            path = path / part
+            if path.is_symlink():
+                raise SystemExit(
+                    f"{path} is a link; refusing to read or install "
+                    f"through it, since it can point at the eval set.")
         path = pkg_dir / entry
-        if path.is_symlink():
-            raise SystemExit(
-                f"{path} is a link; refusing to read or install through "
-                f"it, since it can point at the eval set.")
         if path.is_dir() and path.resolve().is_relative_to(root):
             found.append(path)
     return found

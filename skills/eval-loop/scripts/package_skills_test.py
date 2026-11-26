@@ -391,6 +391,18 @@ class ResolveArm(unittest.TestCase):
         with self.assertRaises(SystemExit):
             rb.resolve_package_skills(self.args("tool"))
 
+    def test_refuses_a_served_skill_set_under_a_folder_that_is_a_link(self):
+        # A link above the set, not on it, reaches the eval set just the same,
+        # and stays inside the package, so the escape check does not catch it.
+        pkg = self.tmp / "served"
+        (pkg / "evals" / "house").mkdir(parents=True)
+        (pkg / "sets").symlink_to(pkg / "evals", target_is_directory=True)
+        (pkg / "publisher.json").write_text(json.dumps(
+            {"workflows": {"default": {"skill_sets": ["sets/house"]}}}))
+        self.served_dir = pkg
+        with self.assertRaises(SystemExit):
+            rb.resolve_package_skills(self.args("tool"))
+
     def test_tool_passes_when_the_server_serves_them(self):
         self.serve(["house"])
         a = self.args("tool")
