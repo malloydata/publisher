@@ -2241,7 +2241,8 @@ paths:
         serves the definition and runs nothing; the caller's own harness executes it. A skill name that two of the
         workflow's sets both hold is served from the first-listed set only, and `warnings` says so, unless `skillSet`
         picks one set, which is served whole. Without `include=files` a skill carries its `SKILL.md` text and each file's
-        path and size.
+        path and size. A `SKILL.md` is served re-emitted, with only its `name` and `description` quoted, for installing, and
+        the digests hash that form; `GET …/skills/{skillName}` serves a file as written, for reading.
       parameters:
         - name: include
           in: query
@@ -2373,6 +2374,8 @@ paths:
       tags:
         - skills
       summary: Read a skill
+      description: Serves the skill's files as written, for reading. A workflow's own read serves a `SKILL.md` re-emitted, with
+        only its `name` and `description` quoted, for installing, and the digests hash that form.
       parameters:
         - name: include
           in: query
@@ -8941,43 +8944,67 @@ components:
         that can carry them (a connection's `setupSql`)."
 
     Workflow:
-      description: A workflow a package declares, resolved to its instructions and its skill sets' skills. Adopt it only when
-        the user asks for it by name. Carries the fields of `WorkflowSummary` with each skill set read in full.
+      description: "A workflow a package declares, resolved to its instructions and its skill sets' skills. Adopt it only when
+        the user asks for it by name. Not composed from `WorkflowSummary`: its `skillSets` carry their skills, which the
+        summary's references to them do not."
       readOnly: true
-      allOf:
-        - $ref: "#/components/schemas/WorkflowSummary"
-        - type: object
-          required:
-            - warnings
-            - definitionHash
-            - contentHash
-          properties:
-            instructions:
-              type: string
-              description: The instructions file's Markdown, at most 16 KiB. Absent when the workflow declares none, and when
-                the read is for one `skillSet`.
-            skillSets:
-              type: array
-              description: The workflow's skill sets in the order `publisher.json` lists them, or only the one asked for with
-                `skillSet`, whole.
-              items:
-                $ref: "#/components/schemas/WorkflowSkillSet"
-            warnings:
-              type: array
-              description: "What resolving the workflow found wrong but survivable: a finding for each skill name two of its sets
-                both hold (served from the first-listed set), then each of its sets' findings. With `skillSet`, only that set's
-                findings: the set is served whole, so which set serves a repeated name does not describe the reply."
-              items:
-                $ref: "#/components/schemas/Problem"
-            definitionHash:
-              type: string
-              description: SHA-256 (hex) over this workflow's name, description, instructions path and text, and each of its
-                skill sets' path and content hash, in the order listed, so a runner can prove which definition ran. Editing
-                another workflow, or a model, does not move it.
-            contentHash:
-              type: string
-              description: "SHA-256 (hex) of the version's content this definition was read from: the version's
-                `VersionStatus.contentHash`."
+      type: object
+      properties:
+        resource:
+          $ref: "#/components/schemas/ResourcePath"
+          readOnly: true
+        name:
+          type: string
+          pattern: ^[a-z0-9]+(-[a-z0-9]+)*$
+          maxLength: 64
+          description: "The workflow's name (its key in `publisher.json`'s `workflows` object): lowercase letters and digits in
+            hyphen-separated words."
+        description:
+          type: string
+          description: The workflow's description. Absent when `publisher.json` sets none.
+        hasInstructions:
+          type: boolean
+          description: Whether the workflow declares instructions. A workflow without them has nothing to run.
+        versionId:
+          $ref: "#/components/schemas/VersionId"
+          readOnly: true
+          description: The version that answered, with `latest` resolved.
+        instructions:
+          type: string
+          description: The instructions file's Markdown, at most 16 KiB. Absent when the workflow declares none, and when
+            the read is for one `skillSet`.
+        skillSets:
+          type: array
+          description: The workflow's skill sets in the order `publisher.json` lists them, or only the one asked for with
+            `skillSet`, whole.
+          items:
+            $ref: "#/components/schemas/WorkflowSkillSet"
+        warnings:
+          type: array
+          description: "What resolving the workflow found wrong but survivable: a finding for each skill name two of its sets
+            both hold (served from the first-listed set), then each of its sets' findings. With `skillSet`, only that set's
+            findings: the set is served whole, so which set serves a repeated name does not describe the reply."
+          items:
+            $ref: "#/components/schemas/Problem"
+        definitionHash:
+          type: string
+          description: SHA-256 (hex) over this workflow's name, description, instructions path and text, and each of its
+            skill sets' path and content hash, in the order listed, so a runner can prove which definition ran. A set's
+            content hash covers every skill in the set, whether or not this workflow serves it, so this can move when no
+            reply changed. Editing another workflow, or a model, does not move it.
+        contentHash:
+          type: string
+          description: "SHA-256 (hex) of the version's content this definition was read from: the version's
+            `VersionStatus.contentHash`."
+      required:
+        - resource
+        - name
+        - hasInstructions
+        - versionId
+        - skillSets
+        - warnings
+        - definitionHash
+        - contentHash
 
     WorkflowList:
       type: object
@@ -9024,9 +9051,11 @@ components:
             trailing slash are resolved or dropped from what `publisher.json` wrote."
         contentHash:
           type: string
-          description: "SHA-256 (hex) over the set's path and what it serves: each file's content (a `SKILL.md` as the workflow
-            re-emits it) and each skill's applied `.skillignore`. Editing another set, or a workflow's instructions, does not
-            move it; a package past the 8 MiB listed-file cap can couple sets."
+          description: "SHA-256 (hex) over the set's path and each of its skills as a workflow serves it: each file's content
+            (a `SKILL.md` as the workflow re-emits it) and each skill's applied `.skillignore`. It covers every skill in the
+            set, including one a workflow serves from an earlier set, so editing that skill moves it though that workflow's
+            reply does not carry the skill. Editing another set, or a workflow's instructions, does not move it; a package
+            past the 8 MiB listed-file cap can couple sets."
       required:
         - name
         - path

@@ -2831,6 +2831,11 @@ paths:
         of a `.skillignore`. `skillName` is a name from the listing, exactly as
         spelled there.
 
+        The file is served as written, for reading. A workflow's own read
+        (`GET .../workflows/{workflowName}`) serves a `SKILL.md` re-emitted with
+        only its `name` and `description` quoted, for installing, and the set
+        digests hash that form; an installer reads that route.
+
         404 when no skill of that name is in force.
       parameters:
         - name: environmentName
@@ -2888,7 +2893,9 @@ paths:
         `@malloy-publisher/skills` for the rest), has no `content`: it answers
         with its `size` and a `message`, never with bytes. A package skill's
         listed file is read from disk and served only if it still hashes to its
-        listed digest.
+        listed digest. The file is served as written, for reading; a
+        workflow's skill file route serves a `SKILL.md` re-emitted, for
+        installing.
 
         404 when no skill of that name is in force, the skill has no such file
         (the message names the skill's files), or a package skill's listed file
@@ -3276,6 +3283,11 @@ paths:
         A skill name that two of the workflow's sets both hold is served from
         the first-listed set only, and the workflow's `warnings` say so.
 
+        A `SKILL.md` is served re-emitted, with only its `name` and
+        `description` quoted, because this route is what an installer reads;
+        the set `digest` and `definitionSha` hash that form. `GET
+        .../skills/{skillName}` serves the file as written, for reading.
+
         With `skillSet`, the reply carries the summary fields and that one
         set only, and no `instructions`: a chat that picks a set never runs the
         workflow's instructions. The set is served whole, every skill it holds
@@ -3380,7 +3392,10 @@ paths:
         package reloads, as `GET .../skills/{skillName}/{path}` answers for a
         changed file. A text file answers with `file_contents`; a binary
         one (not UTF-8, or holding a NUL byte) has no `file_contents` and
-        answers with a `message` naming its size.
+        answers with a `message` naming its size. A `SKILL.md` answers
+        re-emitted, as in `GET .../workflows/{workflowName}`, which is the form
+        the set `digest` hashes; `GET .../skills/{skillName}/{path}` serves it
+        as written.
 
         404 when the workflow, the set named by `skillSet` or the file is not
         served.
@@ -6668,12 +6683,15 @@ components:
         digest:
           type: string
           description: >-
-            SHA-256 over the set's path and what it serves: each inline file's
-            path and the text the reply carries (a `SKILL.md` as re-emitted),
-            each listed file's path and SHA-256, and each skill's applied
-            `.skillignore`. Editing another set, or a
-            workflow's instructions, does not move it; a package past the 8 MiB
-            asset cap can couple sets.
+            SHA-256 over the set's path and each of its skills as a workflow
+            serves it: each inline file's path and the text a reply carries (a
+            `SKILL.md` as re-emitted), each listed file's path and SHA-256, and
+            each skill's applied `.skillignore`. It covers every skill in the
+            set, including one a workflow serves from an earlier set, so
+            editing that skill moves it though that workflow's reply does not
+            carry the skill. Editing another set, or a workflow's instructions,
+            does not move it; a package past the 8 MiB asset cap can couple
+            sets.
       required:
         - name
         - path
@@ -6854,8 +6872,9 @@ components:
           description: >-
             SHA-256 over this workflow's name, description, instructions path
             and text, and each of its skill sets' path and digest, in the
-            order listed. Editing another workflow, or a model, does not move
-            it.
+            order listed. A set's digest covers every skill in the set, whether
+            or not this workflow serves it, so this can move when no reply
+            changed. Editing another workflow, or a model, does not move it.
         servedRevision:
           type: string
           description: The package's `servedRevision` at the load this definition came from.
@@ -7003,6 +7022,10 @@ components:
             - bundled
             - package
           description: Where this skill came from. See SkillSummary.origin.
+      required:
+        - name
+        - path
+        - origin
 
     PackageEmbeddingIndex:
       type: object

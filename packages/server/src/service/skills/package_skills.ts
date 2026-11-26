@@ -1237,7 +1237,7 @@ export interface SkillSet {
    name: string;
    /** Package-relative, as a workflow's manifest writes it. */
    path: string;
-   /** sha256 over the set's path and what it serves: the digest of each inline file and of each listed file, and each skill's applied `.skillignore`. */
+   /** sha256 over the set's path and each skill as a workflow serves it (files by digest, plus the applied `.skillignore`), one that another set shadows included, so it can move when a reply does not. */
    digest: string;
    skills: SetSkill[];
    /** Each finding as it is published, once per set. */
