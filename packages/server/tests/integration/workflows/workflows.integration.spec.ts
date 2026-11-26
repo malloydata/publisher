@@ -365,6 +365,27 @@ describe("Package skills and workflows (E2E)", () => {
          expect(shared.body.file_contents).toContain("check margin");
       });
 
+      it("reads a file inside the skill set a skill_set names, and nothing another set holds", async () => {
+         const own = await read("house-rules/scripts/check.py?skill_set=house");
+         expect(own.status).toBe(200);
+         expect(own.body.file_contents).toContain("check margin");
+         expect(
+            (await read("house-rules/scripts/check.py?skill_set=analysis"))
+               .status,
+         ).toBe(404);
+         expect(
+            (await read("conventions/SKILL.md?skill_set=nope")).status,
+         ).toBe(404);
+      });
+
+      it("rejects a repeated skill_set", async () => {
+         const { status, body } = await read(
+            "conventions/SKILL.md?skill_set=house&skill_set=analysis",
+         );
+         expect(status).toBe(400);
+         expect(body.message).toContain("'skill_set' must be");
+      });
+
       it("answers a binary file with a message naming its size, never its bytes", async () => {
          const { status, body } = await read("house-rules/assets/blob.bin");
          expect(status).toBe(200);

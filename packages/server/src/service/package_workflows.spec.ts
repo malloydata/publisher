@@ -638,6 +638,73 @@ describe("package workflows", () => {
          expect(pkg.getWorkflow("analyst", "full", "nope")).toBeUndefined();
          expect(pkg.getWorkflow("other", "full", "main")).toBeUndefined();
       });
+
+      const paths = (set: { skills: Array<{ relative_filepath: string }> }) =>
+         set.skills.map((f) => f.relative_filepath);
+
+      it("serves the picked set whole, though the whole workflow serves a name from the first-listed set only", async () => {
+         const pkg = await load();
+         expect(paths(pkg.getWorkflow("analyst")!.skill_sets[1]!)).toEqual([
+            "extra/SKILL.md",
+         ]);
+         for (const view of ["full", "summary"] as const) {
+            const picked = pkg.getWorkflow("analyst", view, "second")!;
+            expect(paths(picked.skill_sets[0]!)).toEqual([
+               "conventions/SKILL.md",
+               "extra/SKILL.md",
+            ]);
+         }
+         const [conventions] = pkg.getWorkflow("analyst", "full", "second")!
+            .skill_sets[0]!.skills as Array<{ file_contents: string }>;
+         expect(conventions!.file_contents).toContain("Second copy.");
+      });
+
+      it("keeps the picked set's skills when an earlier set gains a skill it holds, as its digest does", async () => {
+         fs.rmSync(path.join(dir, MAIN, "conventions"), { recursive: true });
+         write(
+            `${MAIN}/other/SKILL.md`,
+            "---\nname: other\ndescription: d\n---\n",
+         );
+         const before = (await load()).getWorkflow("analyst", "full", "second")!
+            .skill_sets[0]!;
+         expect(paths(before)).toEqual([
+            "conventions/SKILL.md",
+            "extra/SKILL.md",
+         ]);
+
+         write(
+            `${MAIN}/conventions/SKILL.md`,
+            "---\nname: conventions\ndescription: Now in main.\n---\n",
+         );
+         const after = (await load()).getWorkflow("analyst", "full", "second")!
+            .skill_sets[0]!;
+         expect(after).toEqual(before);
+         expect(after.digest).toBe(before.digest);
+      });
+
+      it("reads a file inside the picked set, where the whole workflow serves the first-listed copy", async () => {
+         const pkg = await load();
+         const file = "conventions/SKILL.md";
+         expect(
+            pkg.getWorkflowSkillFile("analyst", file)!.file_contents,
+         ).toContain("Use net revenue.");
+         const picked = pkg.getWorkflowSkillFile("analyst", file, "second")!;
+         expect(picked.file_contents).toContain("Second copy.");
+         expect(picked.source).toEqual(pkg.getWorkflow("analyst")!.source);
+         expect(
+            pkg.getWorkflowSkillFile("analyst", "extra/SKILL.md", "second"),
+         ).toBeDefined();
+         // A name the picked set does not hold is not served, though another set of the workflow does.
+         expect(
+            pkg.getWorkflowSkillFile("analyst", "extra/SKILL.md", "main"),
+         ).toBeUndefined();
+         expect(
+            pkg.getWorkflowSkillFile("analyst", file, "nope"),
+         ).toBeUndefined();
+         expect(
+            pkg.getWorkflowSkillFile("other", file, "main"),
+         ).toBeUndefined();
+      });
    });
 
    describe("skill assets", () => {

@@ -597,6 +597,8 @@ export interface ReadSkill {
 
 interface FinishContext {
    packageRoot: string;
+   /** Whether `get_skill` serves this set, the only tool its reply-size warnings are about. */
+   advertised: boolean;
    walk: AssetWalk;
    /** Bytes of inline Markdown the set still has free. */
    inline: { left: number };
@@ -718,7 +720,9 @@ function inlineMarkdown(
       digest: `sha256:${sha256(read.raw)}`,
       size: read.raw.length,
    };
-   if (!fitsReply(read.text)) ctx.warnings.push(unreturnableWarning(shown));
+   if (ctx.advertised && !fitsReply(read.text)) {
+      ctx.warnings.push(unreturnableWarning(shown));
+   }
 }
 
 const recordListed = (d: SkillDraft, relative: string, asset: ListedFile) => {
@@ -956,7 +960,9 @@ function listFile(
       walk.bytes += read.bytes;
       if (!charged) walk.newBytes += read.bytes;
       walk.charges.set(shown, { bytes: read.bytes, sha256: read.sha256 });
-      if (read.unreturnable) ctx.warnings.push(unreturnableWarning(shown));
+      if (ctx.advertised && read.unreturnable) {
+         ctx.warnings.push(unreturnableWarning(shown));
+      }
       return {
          relative_filepath: listed,
          bytes: read.bytes,
@@ -1066,8 +1072,30 @@ function manifestIn(
    }
 }
 
-const holdsManifest = (packageRoot: string, dir: string) =>
-   manifestIn(packageRoot, dir) !== undefined;
+/** What one `readPackageWorkflows` call has already looked up, so a path that many workflows name is checked once. */
+interface PathChecks {
+   /** A directory's publisher.json, by the directory's path. */
+   manifests: Map<string, string | undefined>;
+   /** A skill set directory's verdict by its manifest path: what refused it, or nothing. */
+   roots: Map<string, { problem?: unknown }>;
+}
+
+const newPathChecks = (): PathChecks => ({
+   manifests: new Map(),
+   roots: new Map(),
+});
+
+/** {@link manifestIn} for a plain directory, asked once per path in a call. */
+function manifestAt(
+   checks: PathChecks,
+   packageRoot: string,
+   dir: string,
+): string | undefined {
+   if (!checks.manifests.has(dir)) {
+      checks.manifests.set(dir, manifestIn(packageRoot, dir));
+   }
+   return checks.manifests.get(dir);
+}
 
 /**
  * The path, relative to the skill directory, of the first publisher.json inside
@@ -1135,6 +1163,7 @@ function readInstructions(
    packageRoot: string,
    value: unknown,
    what: string,
+   checks: PathChecks,
 ): { rel: string; text: string } {
    const rel = manifestPath(value, what);
    if (!rel.toLowerCase().endsWith(".md")) {
@@ -1147,7 +1176,7 @@ function readInstructions(
       dir !== ".";
       dir = path.posix.dirname(dir)
    ) {
-      if (holdsManifest(packageRoot, path.join(packagePath, dir))) {
+      if (manifestAt(checks, packageRoot, path.join(packagePath, dir))) {
          throw new WorkflowProblem(
             `${what} '${rel}' sits under a nested publisher.json at '${dir}'`,
          );
@@ -1281,6 +1310,16 @@ function servedInline(skill: ReadSkill) {
          }),
       };
    });
+}
+
+/** The sets a read covers: the workflow's own, each without a skill name an earlier set holds, or with `skillSet` that one set whole, since a reply of one set has nothing to collide with and its digest then pins exactly what it serves. Undefined when the workflow lists no set of that name. */
+export function pickedSets(
+   workflow: PackageWorkflow,
+   skillSet?: string,
+): WorkflowSet[] | undefined {
+   if (skillSet === undefined) return workflow.sets;
+   const picked = workflow.sets.find(({ set }) => set.name === skillSet);
+   return picked && [{ set: picked.set, skills: picked.set.skills }];
 }
 
 /**
@@ -1431,6 +1470,7 @@ function readSkillSet(
    packageRoot: string,
    setPath: string,
    budget: PackageAssetBudget,
+   advertised: boolean,
 ): { set: SkillSet; paths: string[]; shas: Map<string, string> } {
    const name = path.posix.basename(setPath);
    const scan = scanSkills(packagePath, setPath, newWalkBudget("skill set"));
@@ -1440,10 +1480,15 @@ function readSkillSet(
          "the skill set holds no skills. Fix: add <skill>/SKILL.md under it or remove the entry",
       );
    }
-   // Every SKILL.md is charged before any other Markdown, so the budget can only list a reference, never cost a skill that fit.
+   // Every SKILL.md is charged before any other Markdown, so the budget can only list a reference, never cost a skill that fit. A skill set aside is charged nothing.
    let inlineLeft = SKILL_SET_MARKDOWN_MAX_BYTES;
    const fitted: ScannedSkill[] = [];
    for (const s of scan.skills) {
+      const refusal = s.assetsRefusal ?? s.manifestRefusal;
+      if (refusal) {
+         found.push(skillSetAside(s, refusal));
+         continue;
+      }
       const bytes = Buffer.byteLength(s.skillMd.text);
       if (bytes > inlineLeft) {
          found.push(
@@ -1457,6 +1502,7 @@ function readSkillSet(
    const walk = newWalk(budget);
    const ctx: FinishContext = {
       packageRoot,
+      advertised,
       walk,
       inline: { left: inlineLeft },
       warnings: [],
@@ -1464,16 +1510,13 @@ function readSkillSet(
    };
    const drafts: SkillDraft[] = [];
    for (const s of fitted) {
-      const refusal = s.assetsRefusal ?? s.manifestRefusal;
-      if (refusal) {
-         found.push(skillSetAside(s, refusal));
-         continue;
-      }
       const mark = markOf(ctx);
       const draft = readFirst(s, ctx);
       if (ctx.refusals.length > mark.refusals) {
          found.push(skillSetAside(s, ctx.refusals[mark.refusals]!));
          rollBack(ctx, mark);
+         // Its SKILL.md was charged above, before this refusal was known.
+         ctx.inline.left += Buffer.byteLength(s.skillMd.text);
          continue;
       }
       drafts.push(draft);
@@ -1487,7 +1530,7 @@ function readSkillSet(
          }),
       );
    for (const skill of skills) {
-      if (!fitsReply(skill.inline[0]!.text)) {
+      if (advertised && !fitsReply(skill.inline[0]!.text)) {
          ctx.warnings.push(unreturnableWarning(`${skill.rel}/${SKILL_MD}`));
       }
    }
@@ -1539,11 +1582,56 @@ interface DeclaredWorkflow {
    sets: string[];
 }
 
+/** A skill set directory's own checks, which depend on its path alone: it resolves inside the package, is a directory, has no publisher.json at or above it, and is named as a set must be. Throws a WorkflowProblem. */
+function checkSkillSetRoot(
+   packagePath: string,
+   packageRoot: string,
+   root: string,
+   checks: PathChecks,
+): void {
+   // Settled before it is looked at: one that leads out of the package
+   // is refused the same whether or not what it names exists.
+   const rootInside = insidePackage(packageRoot, path.join(packagePath, root));
+   if (rootInside === undefined) {
+      throw new WorkflowProblem(
+         `skill set directory '${root}' resolves outside the package`,
+      );
+   }
+   try {
+      if (!fs.statSync(rootInside).isDirectory()) {
+         throw new Error("not a directory");
+      }
+   } catch {
+      throw new WorkflowProblem(`skill set directory '${root}' does not exist`);
+   }
+   // One at the set's root or above makes it a second package; one inside a skill only sets that skill aside.
+   for (let dir = root; dir !== "."; dir = path.posix.dirname(dir)) {
+      const nested = manifestAt(
+         checks,
+         packageRoot,
+         path.join(packagePath, dir),
+      );
+      if (nested === undefined) continue;
+      throw new WorkflowProblem(
+         dir === root
+            ? `skill set directory '${root}' contains a nested publisher.json at '${displayPath(nested)}'`
+            : `skill set directory '${root}' sits under a nested publisher.json at '${dir}'`,
+      );
+   }
+   const name = path.posix.basename(root);
+   if (!WORKFLOW_NAME.test(name) || name.length > WORKFLOW_NAME_MAX) {
+      throw new WorkflowProblem(
+         `skill set directory '${root}' is named '${name}', which must be 1-64 characters of lowercase letters, digits and single hyphens`,
+      );
+   }
+}
+
 /** `skill_sets` after its checks: each entry's path, in order. Throws a WorkflowProblem naming the first entry that breaks a rule. */
 function declareSkillSets(
    packagePath: string,
    packageRoot: string,
    raw: unknown,
+   checks: PathChecks,
 ): string[] {
    if (raw === undefined) return [];
    if (!Array.isArray(raw)) {
@@ -1557,42 +1645,18 @@ function declareSkillSets(
    const named = new Map<string, string>();
    return raw.map((entry) => {
       const root = manifestPath(entry, "'skill_sets' entry");
-      // Settled before it is looked at: one that leads out of the package
-      // is refused the same whether or not what it names exists.
-      const rootInside = insidePackage(
-         packageRoot,
-         path.join(packagePath, root),
-      );
-      if (rootInside === undefined) {
-         throw new WorkflowProblem(
-            `skill set directory '${root}' resolves outside the package`,
-         );
-      }
-      try {
-         if (!fs.statSync(rootInside).isDirectory()) {
-            throw new Error("not a directory");
+      let verdict = checks.roots.get(root);
+      if (!verdict) {
+         verdict = {};
+         try {
+            checkSkillSetRoot(packagePath, packageRoot, root, checks);
+         } catch (error) {
+            verdict = { problem: error };
          }
-      } catch {
-         throw new WorkflowProblem(
-            `skill set directory '${root}' does not exist`,
-         );
+         checks.roots.set(root, verdict);
       }
-      // One at the set's root or above makes it a second package; one inside a skill only sets that skill aside.
-      for (let dir = root; dir !== "."; dir = path.posix.dirname(dir)) {
-         const nested = manifestIn(packageRoot, path.join(packagePath, dir));
-         if (nested === undefined) continue;
-         throw new WorkflowProblem(
-            dir === root
-               ? `skill set directory '${root}' contains a nested publisher.json at '${displayPath(nested)}'`
-               : `skill set directory '${root}' sits under a nested publisher.json at '${dir}'`,
-         );
-      }
+      if (verdict.problem !== undefined) throw verdict.problem;
       const name = path.posix.basename(root);
-      if (!WORKFLOW_NAME.test(name) || name.length > WORKFLOW_NAME_MAX) {
-         throw new WorkflowProblem(
-            `skill set directory '${root}' is named '${name}', which must be 1-64 characters of lowercase letters, digits and single hyphens`,
-         );
-      }
       const clash = named.get(name);
       if (clash !== undefined) {
          throw new WorkflowProblem(
@@ -1611,6 +1675,7 @@ function declareWorkflow(
    packageRoot: string,
    name: string,
    raw: unknown,
+   checks: PathChecks,
 ): DeclaredWorkflow {
    if (!WORKFLOW_NAME.test(name) || name.length > WORKFLOW_NAME_MAX) {
       throw new WorkflowProblem(
@@ -1638,8 +1703,14 @@ function declareWorkflow(
               packageRoot,
               raw.instructions,
               "'instructions'",
+              checks,
            );
-   const sets = declareSkillSets(packagePath, packageRoot, raw.skill_sets);
+   const sets = declareSkillSets(
+      packagePath,
+      packageRoot,
+      raw.skill_sets,
+      checks,
+   );
    if (instructions === undefined && sets.length === 0) {
       throw new WorkflowProblem(
          "it declares nothing to serve: add 'instructions' or 'skill_sets'",
@@ -1741,11 +1812,12 @@ export function readPackageWorkflows(
    // By manifest position, so the warnings read in manifest order.
    const notes: string[][] = entries.map(() => []);
    const declared = new Map<string, DeclaredWorkflow>();
+   const checks = newPathChecks();
    entries.forEach(([name, entry], i) => {
       try {
          declared.set(
             name,
-            declareWorkflow(packagePath, packageRoot, name, entry),
+            declareWorkflow(packagePath, packageRoot, name, entry, checks),
          );
       } catch (error) {
          notes[i]!.push(
@@ -1762,13 +1834,20 @@ export function readPackageWorkflows(
    const setPaths = [
       ...new Set([...declared.values()].flatMap((w) => w.sets)),
    ].sort(compareText);
+   const advertised = new Set(declared.get(DEFAULT_WORKFLOW)?.sets);
    const findings: string[] = [];
    // A set that throws refuses the workflows that list it, never the package load.
    const unreadable = new Map<string, string>();
    for (const setPath of setPaths) {
       let read: ReturnType<typeof readSkillSet>;
       try {
-         read = readSkillSet(packagePath, packageRoot, setPath, budget);
+         read = readSkillSet(
+            packagePath,
+            packageRoot,
+            setPath,
+            budget,
+            advertised.has(setPath),
+         );
       } catch (error) {
          unreadable.set(setPath, cannotRead(error, packagePath));
          continue;

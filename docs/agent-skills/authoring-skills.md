@@ -222,7 +222,8 @@ synchronously, on creation and on every reload, so the event loop does nothing e
 it takes. A host that reloads on every turn pays it every turn. `bun run perf:skills-reload` in
 `packages/server` builds a package with nine skill sets of one skill each, listed by two workflows,
 and times it. The first row is the largest each budget allows for those nine skills. A package with
-more skills costs more, since nothing bounds their number. On a development machine with a warm
+more skills costs more, since nothing bounds their number; the checks of a set's folder run once per
+path however many workflows list it. On a development machine with a warm
 page cache, the median of 5 reloads:
 
 | Package | Blocks the loop for |

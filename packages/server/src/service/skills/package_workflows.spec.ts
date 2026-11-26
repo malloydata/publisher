@@ -727,6 +727,58 @@ describe("readPackageWorkflows", () => {
       });
    });
 
+   describe("per-path checks", () => {
+      /** How often `run` asks the filesystem the named questions. */
+      const calls = (
+         names: Array<
+            "readdirSync" | "statSync" | "lstatSync" | "realpathSync"
+         >,
+         run: () => void,
+      ) => {
+         const spies = names.map((name) => spyOn(fs, name));
+         try {
+            run();
+            return spies.reduce((sum, spy) => sum + spy.mock.calls.length, 0);
+         } finally {
+            for (const spy of spies) spy.mockRestore();
+         }
+      };
+
+      it("looks up each skill set directory once, whatever number of workflows lists it", () => {
+         writeSkill("sets/a/b/c", "one");
+         writeSkill("sets/d/e/f", "two");
+         const workflows = (n: number) =>
+            Object.fromEntries(
+               Array.from({ length: n }, (_, i) => [
+                  `w${i}`,
+                  { skill_sets: ["sets/a/b/c", "sets/d/e/f"] },
+               ]),
+            );
+         const all = [
+            "readdirSync",
+            "statSync",
+            "lstatSync",
+            "realpathSync",
+         ] as const;
+         const one = calls([...all], () => read(workflows(1)));
+         expect(one).toBeGreaterThan(0);
+         expect(calls([...all], () => read(workflows(50)))).toBe(one);
+      });
+
+      it("looks in each directory above an instructions file for a publisher.json once", () => {
+         const workflows = (n: number) =>
+            Object.fromEntries(
+               Array.from({ length: n }, (_, i) => {
+                  write(`briefs/deep/w${i}.md`, "brief");
+                  return [`w${i}`, { instructions: `briefs/deep/w${i}.md` }];
+               }),
+            );
+         const one = calls(["readdirSync"], () => read(workflows(1)));
+         expect(one).toBeGreaterThan(0);
+         expect(calls(["readdirSync"], () => read(workflows(50)))).toBe(one);
+      });
+   });
+
    describe("a set that cannot be read", () => {
       let boom: ReturnType<typeof spyOn> | undefined;
       afterEach(() => boom?.mockRestore());
@@ -957,7 +1009,7 @@ describe("readPackageWorkflows", () => {
       const warning = (file: string) =>
          `Package skill file '${CONVENTIONS}/${file}' is over the ${FCJ_MAX_CHARS}-character reply budget of get_skill, so get_skill cannot return it whole`;
 
-      it("is warned of once, for SKILL.md, an inline reference and a listed text file", () => {
+      const writeLong = () => {
          write(
             `${MAIN}/long/SKILL.md`,
             `---\nname: long\ndescription: d\n---\n\n${tooLong}\n`,
@@ -965,7 +1017,11 @@ describe("readPackageWorkflows", () => {
          write(`${CONVENTIONS}/references/long.md`, tooLong);
          write(`${CONVENTIONS}/assets/long.txt`, tooLong);
          write(`${CONVENTIONS}/scripts/short.py`, "print()\n");
-         const result = read({ analyst: analyst() });
+      };
+
+      it("is warned of once, for SKILL.md, an inline reference and a listed text file, in a set the default workflow lists", () => {
+         writeLong();
+         const result = read({ default: analyst() });
          const findings = result.sets.get(MAIN)!.findings;
          for (const file of ["references/long.md", "assets/long.txt"]) {
             expect(
@@ -981,7 +1037,27 @@ describe("readPackageWorkflows", () => {
          ).toHaveLength(1);
          expect(findings.join("\n")).not.toContain("short.py");
          // Still served: the warning is for the author.
+         expect(result.workflows.has("default")).toBe(true);
+      });
+
+      it("is warned of when the default workflow lists the set though another workflow lists it too", () => {
+         writeLong();
+         const result = read({
+            analyst: analyst(),
+            default: { skill_sets: [MAIN] },
+         });
+         expect(
+            result.sets
+               .get(MAIN)!
+               .findings.filter((f) => f.includes(warning("assets/long.txt"))),
+         ).toHaveLength(1);
+      });
+
+      it("is not warned of for a set only another workflow lists, which get_skill never serves", () => {
+         writeLong();
+         const result = read({ analyst: analyst() });
          expect(result.workflows.has("analyst")).toBe(true);
+         expect(result.warnings.join("\n")).not.toContain("get_skill");
       });
    });
 
@@ -1585,6 +1661,52 @@ describe("readPackageWorkflows", () => {
                   .get("analyst")!
                   .sets[0]!.skills.map((s) => s.dirName),
             ).toEqual(["zebra"]);
+         });
+
+         describe("without spending the set's inline budget on its SKILL.md", () => {
+            const bigSkill = (name: string, kib: number) =>
+               write(
+                  `${MAIN}/${name}/SKILL.md`,
+                  `---\nname: ${name}\ndescription: d\n---\n\n${"x".repeat(kib * 1024)}\n`,
+               );
+
+            it("for a publisher.json inside it, which a later skill's SKILL.md would otherwise be refused over", () => {
+               analyst();
+               bigSkill("aaa", 200);
+               write(`${MAIN}/aaa/publisher.json`, "{}");
+               bigSkill("zzz", 100);
+               const result = read({ analyst: analyst() });
+               expect(
+                  viewOf(result).skills.map((f) => f.relative_filepath),
+               ).toContain("zzz/SKILL.md");
+               const findings = result.sets.get(MAIN)!.findings.join("\n");
+               expect(findings).toContain(
+                  `Package skill '${MAIN}/aaa' is not served`,
+               );
+               expect(findings).not.toContain("over the 262144 byte cap");
+            });
+
+            it("for a strict rule met while its files are read, which a later skill's reference would otherwise be listed over", () => {
+               analyst();
+               bigSkill("aaa", 200);
+               write(`${MAIN}/aaa/assets/a..b.txt`, "x");
+               bigSkill("zzz", 1);
+               write(
+                  `${MAIN}/zzz/reference/part.md`,
+                  `#\n${"y".repeat(100 * 1024)}`,
+               );
+               const result = read({ analyst: analyst() });
+               const view = viewOf(result);
+               expect(view.skills.map((f) => f.relative_filepath)).toContain(
+                  "zzz/reference/part.md",
+               );
+               expect(
+                  (view.assets ?? []).map((a) => a.relative_filepath),
+               ).not.toContain("zzz/reference/part.md");
+               expect(result.sets.get(MAIN)!.findings.join("\n")).toContain(
+                  `Package skill '${MAIN}/aaa' is not served`,
+               );
+            });
          });
       });
 

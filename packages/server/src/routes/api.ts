@@ -497,6 +497,19 @@ function givensParam(
    throw new BadRequestError("givens must be one JSON object");
 }
 
+/** The `skill_set` query value, one set name or undefined; any other shape is answered 400 as `{ message }`, as a bad `skills` is, and `false` returned. */
+function skillSetParam(
+   req: express.Request,
+   res: express.Response,
+): string | undefined | false {
+   const skillSet = req.query.skill_set;
+   if (skillSet === undefined || typeof skillSet === "string") return skillSet;
+   res.status(400).json({
+      message: `'skill_set' must be one skill set name, got ${JSON.stringify(skillSet)}.`,
+   });
+   return false;
+}
+
 function registerPackageRoutes(
    app: express.Express,
    apiPrefix: string,
@@ -730,13 +743,8 @@ function registerPackageRoutes(
             });
             return;
          }
-         const skillSet = req.query.skill_set;
-         if (skillSet !== undefined && typeof skillSet !== "string") {
-            res.status(400).json({
-               message: `'skill_set' must be one skill set name, got ${JSON.stringify(skillSet)}.`,
-            });
-            return;
-         }
+         const skillSet = skillSetParam(req, res);
+         if (skillSet === false) return;
          return skillController.getWorkflow(
             req.params.environmentName,
             req.params.packageName,
@@ -749,15 +757,18 @@ function registerPackageRoutes(
    );
    app.get(
       `${pkg}/workflows/:workflowName/skills/*`,
-      apiRoute((req) =>
-         skillController.getWorkflowSkillFile(
+      apiRoute((req, res) => {
+         const skillSet = skillSetParam(req, res);
+         if (skillSet === false) return;
+         return skillController.getWorkflowSkillFile(
             req.params.environmentName,
             req.params.packageName,
             req.params.workflowName,
             wildcardParam(req) ?? "",
+            skillSet,
             versionRefOf(req),
-         ),
-      ),
+         );
+      }),
    );
 
    app.put(

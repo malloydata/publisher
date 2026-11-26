@@ -108,6 +108,7 @@ import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
 import {
    advertisedSkills,
    emptyWorkflows,
+   pickedSets,
    readPackageWorkflows,
    readWorkflowFile,
    workflowSkillSet,
@@ -643,9 +644,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * One workflow resolved, pinned to the load and content it was read from.
     * `summary` swaps each skill file's text for its name, description and size;
     * the pin is the same because both are views of one resolved definition.
-    * With `skillSet`, only that set and no instructions: a chat that picks a
-    * set never runs them. Undefined when the workflow, or a set of that name
-    * in it, is not served.
+    * With `skillSet`, only that set, whole, and no instructions: a chat that
+    * picks a set never runs them. Undefined when the workflow, or a set of that
+    * name in it, is not served.
     */
    public getWorkflow(
       name: string,
@@ -654,11 +655,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    ): ApiWorkflow | undefined {
       const workflow = this.workflows.workflows.get(name);
       if (!workflow) return undefined;
-      const sets =
-         skillSet === undefined
-            ? workflow.sets
-            : workflow.sets.filter(({ set }) => set.name === skillSet);
-      if (skillSet !== undefined && sets.length === 0) return undefined;
+      const sets = pickedSets(workflow, skillSet);
+      if (!sets) return undefined;
       return {
          name,
          ...(workflow.description !== undefined && {
@@ -678,16 +676,17 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       };
    }
 
-   /** One file of a workflow's skills by its `<skill>/<file>` path, looked up in the resolved skills and never joined onto the filesystem; a listed file is matched exactly, then read from disk and re-checked against its listed sha. A binary one answers with a message, not its bytes. */
+   /** One file of a workflow's skills by its `<skill>/<file>` path, looked up in the resolved skills (or, with `skillSet`, in that set whole) and never joined onto the filesystem; a listed file is matched exactly, then read from disk and re-checked against its listed sha. A binary one answers with a message, not its bytes. */
    public getWorkflowSkillFile(
       name: string,
       relativeFilepath: string,
+      skillSet?: string,
    ): ApiWorkflowSkillRead | undefined {
       const workflow = this.workflows.workflows.get(name);
       if (!workflow) return undefined;
       const skillName = relativeFilepath.split("/")[0]!;
-      const skill = workflow.sets
-         .flatMap(({ skills }) => skills)
+      const skill = pickedSets(workflow, skillSet)
+         ?.flatMap(({ skills }) => skills)
          .find((s) => s.dirName === skillName);
       const read =
          skill && readWorkflowFile(this.packagePath, skill, relativeFilepath);

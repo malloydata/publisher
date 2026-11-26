@@ -112,8 +112,8 @@ The workflow's name is its key: 1 to 64 characters of lowercase letters, digits 
 
 A client reads workflows two ways, with the same definition and the same `source` shas:
 
-- `get_workflow` with `scopes` alone lists them (name, description, `has_instructions`, and each set's `name`, `path` and `digest`). With `workflow_name` it returns the definition: `instructions`, each set's skill files as `{relative_filepath, file_contents}` and its listed files in `assets`, `warnings`, and `source`. `skill_set` returns that one set and no `instructions`, so a chat that picks a set never runs the workflow's instructions. `skills: "summary"` lists each inline file's `relative_filepath`, `bytes` and, for a `SKILL.md`, its `name` and `description`, and `skill_path` reads one file by its `<skill>/<file>` path.
-- `GET …/packages/{pkg}/workflows` lists, `…/workflows/{name}` reads one (`?skills=full|summary`, `?skill_set=`), and `…/workflows/{name}/skills/{path}` reads one file by its `<skill>/<file>` path.
+- `get_workflow` with `scopes` alone lists them (name, description, `has_instructions`, and each set's `name`, `path` and `digest`). With `workflow_name` it returns the definition: `instructions`, each set's skill files as `{relative_filepath, file_contents}` and its listed files in `assets`, `warnings`, and `source`. `skill_set` returns that one set, whole, and no `instructions`, so a chat that picks a set never runs the workflow's instructions. `skills: "summary"` lists each inline file's `relative_filepath`, `bytes` and, for a `SKILL.md`, its `name` and `description`, and `skill_path` reads one file by its `<skill>/<file>` path (add `skill_set` to read it inside that set). A reply over the host's 35,000-character tool-result limit comes back as the summary view, or with a message and no content when even that is too large; REST has no such limit.
+- `GET …/packages/{pkg}/workflows` lists, `…/workflows/{name}` reads one (`?skills=full|summary`, `?skill_set=`), and `…/workflows/{name}/skills/{path}` reads one file by its `<skill>/<file>` path (`?skill_set=` looks it up in that set).
 
 ### The default workflow
 
@@ -125,7 +125,7 @@ A skill set is a folder whose subfolders are skills (`<set>/<skill>/SKILL.md`). 
 
 - The folder name meets the same rule as a workflow name, and two entries of one workflow may not share a name or a path.
 - Several workflows can list the same set. Publisher reads it once per load, and every workflow that lists it serves the same bytes.
-- A skill name that two sets of one workflow both hold is served from the first-listed set, and the workflow's `warnings` say so.
+- A skill name that two sets of one workflow both hold is served from the first-listed set when the workflow is read whole, and the workflow's `warnings` say so. Read with `skill_set`, a set is served whole, every skill it holds included, and its `digest` pins exactly that.
 - A set that holds no skills is a warning, not a refusal.
 - A `publisher.json` at or above a set's root (the package's own at its root does not count) refuses the workflows that list it, because it would make the folder a second package root. One inside a skill (at the skill's root, in `reference/` or `references/`, or below `assets/`) sets that skill aside with a finding; one elsewhere in a skill only skips that file. One inside a dot-named directory is not read.
 

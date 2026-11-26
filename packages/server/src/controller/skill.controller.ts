@@ -156,20 +156,23 @@ export class SkillController {
       return workflow;
    }
 
-   /** One file of a workflow's skills, by a `<skill>/<file>` path from the summary. */
+   /** One file of a workflow's skills, by a `<skill>/<file>` path from the summary, read inside one set with `skillSet`. */
    public async getWorkflowSkillFile(
       environmentName: string,
       packageName: string,
       workflowName: string,
       relativeFilepath: string,
+      skillSet?: string,
       versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiWorkflowSkillRead> {
       const file = (
          await this.packageOf(environmentName, packageName, versionId)
-      ).getWorkflowSkillFile(workflowName, relativeFilepath);
+      ).getWorkflowSkillFile(workflowName, relativeFilepath, skillSet);
       if (!file) {
          throw new WorkflowNotFoundError(
-            `Skill file '${relativeFilepath}' not found for workflow '${workflowName}' in package '${packageName}'.`,
+            skillSet === undefined
+               ? `Skill file '${relativeFilepath}' not found for workflow '${workflowName}' in package '${packageName}'.`
+               : `Skill file '${relativeFilepath}' not found in skill set '${skillSet}' of workflow '${workflowName}' in package '${packageName}'.`,
          );
       }
       return file;

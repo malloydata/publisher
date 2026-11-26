@@ -3278,8 +3278,10 @@ paths:
 
         With `skill_set`, the reply carries the summary fields and that one
         set only, and no `instructions`: a chat that picks a set never runs the
-        workflow's instructions. `warnings` is then the workflow's own plus that
-        set's findings.
+        workflow's instructions. The set is served whole, every skill it holds
+        included, because the reply has no other set for a name to collide
+        with; its `digest` then pins exactly what the reply carries.
+        `warnings` is then the workflow's own plus that set's findings.
 
         404 when no workflow of that name is served, or it has no set named
         `skill_set`.
@@ -3326,7 +3328,8 @@ paths:
           in: query
           description: >-
             A skill set's name (its folder's name, as listed under
-            `skill_sets`). Returns that set only and no `instructions`.
+            `skill_sets`). Returns that set only, with every skill it holds,
+            and no `instructions`.
           required: false
           schema:
             type: string
@@ -3361,17 +3364,21 @@ paths:
         Returns one file from the workflow's resolved skills, named by a
         `<skill>/<file>` path (for example `analyst-conventions/SKILL.md`)
         from `GET .../workflows/{workflowName}?skills=summary`, with the same
-        `source` pin as the full definition. A skill name is unique within a
-        served workflow, so the path names one file whichever set holds it. The
-        path is looked up in the resolved skills, never joined onto the
-        filesystem. A file from a set's `assets` listing is matched exactly
+        `source` pin as the full definition. Without `skill_set` a skill name
+        is served from the first-listed set that holds it, so the path names
+        one file whichever set holds it. With `skill_set` the path is looked
+        up in that set, whole: use it after installing one set with
+        `GET .../workflows/{workflowName}?skill_set=`, so a skill another set
+        also holds is read from the set you installed. The path is looked up
+        in the resolved skills, never joined onto the filesystem. A file from a set's `assets` listing is matched exactly
         against the listing, then read from disk and served only if it still
         hashes to its listed `sha256`; one that changed, or became a link, since
         the load is a 404. A text file answers with `file_contents`; a binary
         one (not UTF-8, or holding a NUL byte) has no `file_contents` and
         answers with a `message` naming its size.
 
-        404 when the workflow or the file is not served.
+        404 when the workflow, the set named by `skill_set` or the file is not
+        served.
       parameters:
         - name: environmentName
           in: path
@@ -3404,6 +3411,15 @@ paths:
             sent literally or as `%2F`; a literal `%` in a name must be sent as
             `%25`.
           required: true
+          schema:
+            type: string
+        - name: skill_set
+          in: query
+          description: >-
+            A skill set's name, as listed under `skill_sets`. Looks the path up
+            in that set only, with every skill it holds. A repeated value is a
+            400.
+          required: false
           schema:
             type: string
         - $ref: "#/components/parameters/versionId"
@@ -6746,8 +6762,9 @@ components:
       readOnly: true
       description: >-
         A skill set as a workflow serves it: its skills' inline files and the
-        files its skills list. A skill name an earlier set of the same workflow
-        also holds is left out here and served from that set.
+        files its skills list. In a whole-workflow view a skill name an earlier
+        set of the same workflow also holds is left out here and served from
+        that set; a reply for one `skill_set` holds every skill the set has.
       properties:
         name:
           type: string
@@ -6850,7 +6867,7 @@ components:
         instructions:
           type: string
           description: >-
-            The instructions file's Markdown, at most 16 KB. Absent when the
+            The instructions file's Markdown, at most 16 KiB. Absent when the
             workflow declares none and when the reply is for one `skill_set`.
         skill_sets:
           type: array

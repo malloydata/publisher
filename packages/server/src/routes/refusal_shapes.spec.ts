@@ -139,6 +139,16 @@ it("a repeated skill_set answers { message } without a code", async () => {
    });
 });
 
+it("a repeated skill_set on a workflow's skill file answers { message } without a code", async () => {
+   const res = await request(app).get(
+      `${PKG}/workflows/a/skills/s/SKILL.md?skill_set=x&skill_set=y`,
+   );
+   expect(res.status).toBe(400);
+   expect(res.body).toEqual({
+      message: `'skill_set' must be one skill set name, got ["x","y"].`,
+   });
+});
+
 it("a malformed param is logged once as a refusal", async () => {
    const warn = spyOn(logger, "warn");
    try {
