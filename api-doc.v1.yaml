@@ -2259,6 +2259,7 @@ paths:
           in: query
           schema:
             type: string
+            minLength: 1
           description: A skill set's name (its folder's name, as listed under `skillSets`). The reply carries that one set,
             whole (every skill it holds), and no `instructions`, so a chat that picks a set never runs the workflow's
             instructions. A 404 when the workflow has no set of that name; a repeated or empty value is a 400.

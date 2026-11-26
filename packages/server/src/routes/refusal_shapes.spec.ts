@@ -3,8 +3,7 @@
 
 /**
  * The exact 400 bodies the routes answer for a malformed parameter, before any
- * controller runs. Most are `{ code, message }`; one older route keeps a
- * shape of its own, pinned here so a shared parser cannot quietly change it.
+ * controller runs, each `{ code, message }`.
  */
 
 import { describe, expect, it, spyOn } from "bun:test";
@@ -121,38 +120,42 @@ it("givens that are not one JSON object answer { code, message }", async () => {
    });
 });
 
-it("a workflow's bad skills value answers { message } without a code", async () => {
+it("a workflow's bad skills value answers { code, message }", async () => {
    const res = await request(app).get(`${PKG}/workflows/a?skills=some`);
    expect(res.status).toBe(400);
    expect(res.body).toEqual({
+      code: 400,
       message: `'skills' must be 'full' or 'summary', got "some".`,
    });
 });
 
-it("a repeated skillSet answers { message } without a code", async () => {
+it("a repeated skillSet answers { code, message }", async () => {
    const res = await request(app).get(
       `${PKG}/workflows/a?skillSet=x&skillSet=y`,
    );
    expect(res.status).toBe(400);
    expect(res.body).toEqual({
+      code: 400,
       message: `'skillSet' must be one skill set name, got ["x","y"].`,
    });
 });
 
-it("an empty skillSet is refused as MCP refuses an empty skill_set, with { message } and no code", async () => {
+it("an empty skillSet is refused as MCP refuses an empty skill_set, with { code, message }", async () => {
    const res = await request(app).get(`${PKG}/workflows/a?skillSet=`);
    expect(res.status).toBe(400);
    expect(res.body).toEqual({
+      code: 400,
       message: `'skillSet' must be one skill set name, got "".`,
    });
 });
 
-it("a repeated skillSet on a workflow's skill file answers { message } without a code", async () => {
+it("a repeated skillSet on a workflow's skill file answers { code, message }", async () => {
    const res = await request(app).get(
       `${PKG}/workflows/a/skills/s/SKILL.md?skillSet=x&skillSet=y`,
    );
    expect(res.status).toBe(400);
    expect(res.body).toEqual({
+      code: 400,
       message: `'skillSet' must be one skill set name, got ["x","y"].`,
    });
 });
@@ -163,8 +166,32 @@ it("an empty skillSet on a workflow's skill file is refused the same way", async
    );
    expect(res.status).toBe(400);
    expect(res.body).toEqual({
+      code: 400,
       message: `'skillSet' must be one skill set name, got "".`,
    });
+});
+
+it("a workflow's malformed skillSet and skills are logged as refusals", async () => {
+   const warn = spyOn(logger, "warn");
+   try {
+      await request(app).get(
+         `${API_PREFIX}/environments/workflow-marker/packages/pkg/workflows/a?skillSet=`,
+      );
+      await request(app).get(
+         `${API_PREFIX}/environments/workflow-marker/packages/pkg/workflows/a?skills=some`,
+      );
+      expect(
+         linesMentioning(warn, "workflow-marker").map(([message, fields]) => [
+            message,
+            (fields as { status: number }).status,
+         ]),
+      ).toEqual([
+         ["Request refused", 400],
+         ["Request refused", 400],
+      ]);
+   } finally {
+      warn.mockRestore();
+   }
 });
 
 it("a malformed param is logged once as a refusal", async () => {
