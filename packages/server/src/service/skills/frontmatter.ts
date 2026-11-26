@@ -36,10 +36,10 @@ const EMIT_SLACK = 10_000;
 /** YAML's parse time grows faster than its input (plain keys, anchors and errors alike), so the text it is given is capped; the largest bundled frontmatter is under 1 KiB. */
 const FRONTMATTER_MAX_BYTES = 4 * 1024;
 
-/** The frontmatter block as a JSON object, or why it is not one. Never throws. */
+/** The frontmatter block as a JSON object, or why it is not one; `bound` marks YAML that parsed but is past an expansion limit. Never throws. */
 function parseYaml(
    front: string,
-): { value: Record<string, unknown> } | { problem: string } {
+): { value: Record<string, unknown> } | { problem: string; bound?: true } {
    try {
       // Silent so a warning is not printed; the document's errors are read below.
       const doc = parseDocument(front, { logLevel: "silent" });
@@ -71,7 +71,7 @@ function parseYaml(
       }
       return { value: value as Record<string, unknown> };
    } catch (error) {
-      return { problem: (error as Error).message.split("\n")[0]! };
+      return { problem: (error as Error).message.split("\n")[0]!, bound: true };
    }
 }
 
@@ -116,7 +116,9 @@ export function parseFrontmatter(md: string, dirName: string): Frontmatter {
          frontmatter: {},
          body,
          warnings: [
-            `has frontmatter that is not valid YAML (${parsed.problem}), so its name and description are read line by line`,
+            parsed.bound
+               ? `has frontmatter that is valid YAML but too large to read once its aliases are expanded (${parsed.problem}), so its name and description are read line by line`
+               : `has frontmatter that is not valid YAML (${parsed.problem}), so its name and description are read line by line`,
          ],
       };
    }

@@ -18,7 +18,8 @@ describe("parseFrontmatter: what an alias can expand to", () => {
          "wide",
       );
       expect(out.frontmatter).toEqual({});
-      expect(out.warnings[0]).toContain("not valid YAML");
+      expect(out.warnings[0]).toContain("valid YAML but too large");
+      expect(out.warnings[0]).not.toContain("not valid YAML");
       expect(out.name).toBe("wide");
       expect(out.description).toBe("d");
    });
@@ -31,7 +32,7 @@ describe("parseFrontmatter: what an alias can expand to", () => {
          "fat",
       );
       expect(out.frontmatter).toEqual({});
-      expect(out.warnings[0]).toContain("not valid YAML");
+      expect(out.warnings[0]).toContain("valid YAML but too large");
    });
 
    it("still parses an alias-free list of 400 items", () => {
