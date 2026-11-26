@@ -142,3 +142,58 @@ describe("the tier decision at each site", () => {
       expect(resolveStorageDestination(source)).toBe("lake");
    });
 });
+
+describe("the no-destination refusal names the annotation that declared storage=", () => {
+   /** The refusal for source `name`, planned as `table`, instructed with no destination. */
+   function refusal(name: string, table: Record<string, unknown>): string {
+      restore?.();
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on" },
+      }).restore;
+      const source = fakeSource({
+         name,
+         sourceEntityId: `addr-${name}`,
+         annotationFields: { storage: "lake" },
+      });
+      try {
+         assertInstructedDestinationWritable(source, makeInstruction({}), {
+            tables: { [name]: { source, ...table } },
+         } as never);
+      } catch (err) {
+         return (err as Error).message;
+      }
+      throw new Error("not refused");
+   }
+
+   it("a #@ persist source names #@ persist", () => {
+      expect(refusal("daily", { kind: "persist" })).toStartWith(
+         "Source 'daily' declares `#@ persist storage=lake`, but the build was instructed with no storage destination",
+      );
+   });
+
+   it("a #(materialize) source names #(materialize) and the author's source, not its build source", () => {
+      const message = refusal("orders__build", {
+         kind: "materialize",
+         materialize: { sourceName: "orders" },
+      });
+      expect(message).toStartWith(
+         "Source 'orders' declares `#(materialize) storage=lake`, but the build was instructed",
+      );
+      expect(message).not.toContain("#@ persist");
+   });
+
+   it("a rollup names #(rollup), by its base and grain", () => {
+      const message = refusal("orders__preagg__category", {
+         kind: "rollup",
+         rollup: {
+            baseSourceName: "orders",
+            grainDimensions: ["category"],
+            measures: [],
+         },
+      });
+      expect(message).toStartWith(
+         "Measures of `orders` pre-aggregated at grain (category) declare `storage=lake` on `#(rollup)` (or v1's `#@ preaggregate`), but the build",
+      );
+      expect(message).not.toContain("#@ persist");
+   });
+});

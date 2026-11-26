@@ -292,7 +292,7 @@ export const RATCHET_LONG_FUNCTIONS = {};
 export const RATCHET_SWITCH_READS = {
    "service/environment.ts": { count: 2, step: "2q" },
    "service/materialization/plan/addressing.ts": { count: 3, step: "2q" },
-   "service/materialization/plan/build_plan.ts": { count: 3, step: "2q" },
+   "service/materialization/plan/build_plan.ts": { count: 2, step: "2q" },
    "service/materialization/plan/materialization_eligibility.ts": {
       count: 4,
       step: "2q",
