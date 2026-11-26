@@ -131,6 +131,13 @@ class InstallPackageSkills(unittest.TestCase):
         self.assertNotEqual(
             before, package_skills_sha(package_skill_dirs([self.pkg_skills])))
 
+    def test_the_sha_ignores_a_linked_file_that_is_not_installed(self):
+        before = package_skills_sha(package_skill_dirs([self.pkg_skills]))
+        (self.pkg_skills / "house-conventions" / "notes.md").symlink_to(
+            self.package / "publisher.json")
+        self.assertEqual(
+            before, package_skills_sha(package_skill_dirs([self.pkg_skills])))
+
     def test_the_sha_ignores_a_link_that_is_not_installed(self):
         before = package_skills_sha(package_skill_dirs([self.pkg_skills]))
         (self.pkg_skills / "house-conventions" / "evals").symlink_to(
@@ -239,7 +246,7 @@ class ResolveArm(unittest.TestCase):
                     "extra")
         self.manifest(["workflows/default/skill_sets/house",
                        "workflows/weekly/skill_sets/extra"])
-        self.serve(["house", "extra"])
+        self.serve(["extra", "house"])
         a = self.args("install")
         rb.resolve_package_skills(a)
         self.assertEqual(a.package_skill_names, ["extra", "house"])
@@ -253,6 +260,33 @@ class ResolveArm(unittest.TestCase):
         a = self.args("install")
         rb.resolve_package_skills(a)
         self.assertEqual(a.package_skill_names, ["legacy"])
+
+    def test_a_default_the_server_refuses_installs_and_pins_nothing(self):
+        # The server refuses the whole workflow for one missing set, so it
+        # serves no package skills; the valid set beside it must not leak
+        # into the install arm or the pin.
+        self.manifest(["workflows/default/skill_sets/house", "nope"])
+        self.serve([])
+        with self.assertRaises(SystemExit):
+            rb.resolve_package_skills(self.args("install"))
+        a = self.args("tool")
+        rb.resolve_package_skills(a)
+        self.assertEqual(a.package_skills, "off")
+        self.assertIsNone(a.package_skills_sha)
+
+    def test_install_refuses_when_the_server_serves_other_skills(self):
+        self.serve(["house", "someone-elses"])
+        with self.assertRaises(SystemExit) as raised:
+            rb.resolve_package_skills(self.args("install"))
+        self.assertIn("someone-elses", str(raised.exception))
+
+    def test_install_refuses_a_set_that_holds_no_skills(self):
+        empty = self.pkg / "workflows" / "default" / "skill_sets" / "empty"
+        empty.mkdir()
+        self.manifest(["workflows/default/skill_sets/empty"])
+        self.serve([])
+        with self.assertRaises(SystemExit):
+            rb.resolve_package_skills(self.args("install"))
 
     def test_the_tool_arm_pins_the_sha_of_the_default_sets(self):
         # The pin that tells two runs apart by guidance must not go null for

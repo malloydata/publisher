@@ -95,8 +95,7 @@ it("lists each workflow with its description and its skill sets by name, and fla
    expect(section.textContent).toContain("weekly-report");
    expect(section.textContent).toContain("Writes the weekly revenue report");
    expect(section.textContent).toContain("Skill sets: analyst, house");
-   // The label sits on the row it describes: `default` is advertised, not
-   // "without instructions", and only the other skills-only workflow says so.
+   // `default` is advertised, not "without instructions"; only skills-only says so.
    const row = (name: string) =>
       screen.getByText(name, { exact: true }).closest("li, [role], div")
          ?.parentElement?.textContent ?? "";

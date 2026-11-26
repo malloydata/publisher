@@ -106,7 +106,7 @@ The manifest is an allowlist, and Publisher never takes the package offline for 
 2. **An old agent's standing guidance (its `instructions`) moves into a skill**, in a set of its own (`workflows/<name>/skill_sets/<set>/<skill>/SKILL.md`), with a one-sentence `description` saying when to read it; its old `skills/<x>/` folders move into that set too. List the set in each workflow that needs it.
 3. **Root `skills/<x>/` move to `workflows/default/skill_sets/<set>/<x>/`**, and `default` is declared with that set. (Declaring `"default": { "skill_sets": ["skills"] }` instead keeps the folder where it is; the move is only for tidiness.)
 4. `schedules`, `budget`, `model` and tasks are gone: nothing runs a workflow on a schedule, and nothing here sets a model or a budget. Drop them, and tell the user a recurring job now needs a scheduler of their own that fetches the workflow.
-5. Delete `agents/` and the old root `skills/` in the same change; leaving them behind keeps the load warnings.
+5. Delete `agents/` and the old root `skills/` in the same change (unless `default` lists `skills`); leaving them behind keeps the load warnings.
 
 ## Writing instructions that work unattended
 

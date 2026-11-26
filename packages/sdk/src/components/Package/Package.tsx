@@ -814,7 +814,7 @@ function PackageItemRow({
    );
 }
 
-/** The default workflow is not run by name: its skills are advertised to every session. */
+/** The default workflow's skills are advertised to every session, so it is not labelled as lacking instructions. */
 function workflowLabel(workflow: WorkflowSummary): string | undefined {
    if (workflow.name === "default") return "Advertised skills";
    return workflow.has_instructions ? undefined : "No instructions";

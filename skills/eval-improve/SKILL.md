@@ -16,10 +16,10 @@ The two owners license different edits and are never interchangeable:
 - **`package-skill`** changes what the agent is told about using this package:
   a skill in one of the skill sets the package's `default` workflow lists
   (`workflows.default.skill_sets` in `publisher.json`). A root `skills/` folder
-  is served only if a workflow lists it as a set. Use it for a rule that spans
-  entities or is not a property of any one of them. A fact about a single field
-  belongs in that field's `#(doc)`, which reaches every agent whether or not it
-  loaded a guide.
+  reaches the answerer only if the `default` workflow lists it as a set. Use it
+  for a rule that spans entities or is not a property of any one of them. A fact
+  about a single field belongs in that field's `#(doc)`, which reaches every
+  agent whether or not it loaded a guide.
 
 Both live in the model repo, so one git commit checkpoints and rolls back
 either.

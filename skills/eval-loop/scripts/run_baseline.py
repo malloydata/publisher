@@ -3149,12 +3149,22 @@ def resolve_package_skills(a: argparse.Namespace,
     served = package_skill_names(a.publisher, a.environment, a.package)
 
     if a.package_skills == "install":
-        if not local:
+        if not installable:
             raise SystemExit(
-                "--package-skills=install, but the package's default workflow "
-                "lists no skill set that was found. Installing nothing "
-                "measures the 'off' arm under the 'install' label. Pass "
-                "--package-skills-dir, or pick another mode.")
+                "--package-skills=install, but no skill set of the package's "
+                "default workflow was found holding a skill. Installing "
+                "nothing measures the 'off' arm under the 'install' label. "
+                "Pass --package-skills-dir, or pick another mode.")
+        # The server decides what it serves (a refused default workflow, a
+        # skill it sets aside), so what is installed must be what it reports.
+        if sorted(installable) != served:
+            raise SystemExit(
+                f"--package-skills=install would install "
+                f"{', '.join(sorted(installable))}, but the server serves "
+                f"{', '.join(served) or 'no package skills'} for "
+                f"{a.environment}/{a.package}. The arms would differ in "
+                f"content, not delivery. Check the package's load warnings "
+                f"for a refused default workflow or a skipped skill.")
         a.package_skills_dirs = local
         a.package_skill_names = sorted(installable)
     elif a.package_skills == "tool":
@@ -3172,16 +3182,19 @@ def resolve_package_skills(a: argparse.Namespace,
                 "get_skill, so this is not a baseline. Serve a copy of the "
                 "package without its default workflow's skill sets.")
 
-    if local:
+    # Only a run whose answerer can reach package skills carries the pin.
+    if served:
         a.package_skills_sha = package_skills_sha(installable)
 
 
 def default_skill_sets(pkg_dir: pathlib.Path) -> list[pathlib.Path]:
     """The skill-set folders `workflows.default` lists in `publisher.json`, in order.
 
-    Read from the served copy's manifest, as the server reads them. An entry
-    that is not a directory inside the package is left out: the server refuses
-    the whole workflow for one, so the package then serves no package skills.
+    Read from the served copy's manifest. An entry that is not a directory
+    inside the package is left out. This does not apply the server's manifest
+    rules (it refuses the whole workflow for a missing set, a bad or repeated
+    set name, an unknown key and more); the caller checks the result against
+    the skills the server reports serving.
     """
     try:
         manifest = json.loads((pkg_dir / "publisher.json").read_text())

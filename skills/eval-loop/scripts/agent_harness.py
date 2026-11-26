@@ -351,6 +351,9 @@ def package_skill_dirs(sets: Iterable[pathlib.Path]) -> dict[str, pathlib.Path]:
     serves it. Only a skill folder (a real directory holding a real SKILL.md) is
     taken, never the package: an eval set lives at `<package>/evals/`, so a copy
     that reached one directory too wide would hand the answerer the goldens.
+    This does not apply the server's rules for which skills it serves (a nested
+    `publisher.json` in any case or above the set, a skill set aside); the
+    caller checks the names against what the server reports.
     """
     found: dict[str, pathlib.Path] = {}
     for root in sets:
