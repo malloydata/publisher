@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { linkTextKeptVerbatim } from "../../test_helpers/link_text";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs";
 import os from "os";
 import { createHash } from "crypto";
 import path from "path";
 import { FCJ_MAX_CHARS } from "../../constants";
+import * as revision from "../package_revision";
 import {
    advertisedSkills,
    emptyWorkflows,
@@ -533,28 +534,46 @@ describe("readPackageWorkflows", () => {
          expect(read({ analyst: entry }).workflows.has("analyst")).toBe(true);
       });
 
-      it("refuses a workflow with a nested publisher.json at the set root, in a skill, in reference/ and below assets/", () => {
+      it("refuses a workflow with a nested publisher.json at the set root", () => {
          const entry = analyst();
-         for (const [where, found] of [
-            [`${MAIN}/publisher.json`, "publisher.json"],
-            [`${CONVENTIONS}/publisher.json`, "conventions/publisher.json"],
-            [
-               `${CONVENTIONS}/reference/publisher.json`,
-               "conventions/reference/publisher.json",
-            ],
-            [
-               `${CONVENTIONS}/assets/a/Publisher.JSON`,
-               "conventions/assets/a/Publisher.JSON",
-            ],
-         ] as const) {
-            write(where, "{}");
-            expect(refused({ analyst: entry })).toContain(
-               `skill set directory '${MAIN}' contains a nested publisher.json at '${found}'`,
-            );
-            fs.rmSync(path.join(pkg, where));
-         }
+         write(`${MAIN}/publisher.json`, "{}");
+         expect(refused({ analyst: entry })).toContain(
+            `skill set directory '${MAIN}' contains a nested publisher.json at 'publisher.json'`,
+         );
+         fs.rmSync(path.join(pkg, MAIN, "publisher.json"));
          expect(read({ analyst: entry }).workflows.has("analyst")).toBe(true);
       });
+
+      it.each([
+         ["its directory", "publisher.json"],
+         ["reference/", "reference/publisher.json"],
+         ["references/", "references/publisher.json"],
+         ["a folder below assets/", "assets/a/Publisher.JSON"],
+      ])(
+         "sets a skill aside for a nested publisher.json in %s, and serves every workflow that lists the set",
+         (_where, inside) => {
+            const entry = analyst();
+            writeSkill(MAIN, "bad");
+            write(`${MAIN}/bad/${inside}`, "{}");
+            const result = read({
+               default: { skill_sets: [MAIN] },
+               analyst: entry,
+            });
+            expect([...result.workflows.keys()]).toEqual([
+               "default",
+               "analyst",
+            ]);
+            expect(advertisedSkills(result).map((s) => s.name)).toEqual([
+               "conventions",
+            ]);
+            expect(
+               viewOf(result).skills.map((s) => s.relative_filepath),
+            ).not.toContainEqual(expect.stringContaining("bad/"));
+            expect(result.warnings).toEqual([
+               `Skill set '${MAIN}' skill finding: Package skill '${MAIN}/bad' is not served: '${MAIN}/bad/${inside}' is a publisher.json, which would make its directory a second package root; remove it or rename it.`,
+            ]);
+         },
+      );
 
       it("refuses a workflow whose skill set sits under a nested publisher.json, whatever the depth", () => {
          const entry = analyst({ instructions: undefined });
@@ -573,7 +592,7 @@ describe("readPackageWorkflows", () => {
          expect(read({ analyst: entry }).workflows.has("analyst")).toBe(true);
       });
 
-      it("refuses a nested publisher.json behind a linked skill directory", () => {
+      it("sets aside a linked skill directory that holds a publisher.json, and serves the workflow", () => {
          write(
             "shared/linked/SKILL.md",
             "---\nname: linked\ndescription: d\n---\n\nbody\n",
@@ -584,7 +603,11 @@ describe("readPackageWorkflows", () => {
             path.join(pkg, "shared/linked"),
             path.join(pkg, MAIN, "linked"),
          );
-         expect(refused({ analyst: entry })).toContain("nested publisher.json");
+         const result = read({ analyst: entry });
+         expect(result.workflows.has("analyst")).toBe(true);
+         expect(result.warnings).toEqual([
+            `Skill set '${MAIN}' skill finding: Package skill '${MAIN}/linked' is not served: '${MAIN}/linked/publisher.json' is a publisher.json, which would make its directory a second package root; remove it or rename it.`,
+         ]);
       });
 
       it("skips a publisher.json anywhere else below a skill, with the files a skill may not hold", () => {
@@ -617,6 +640,23 @@ describe("readPackageWorkflows", () => {
          );
       });
 
+      it("accepts a set folder name of 64 characters and refuses one of 65", () => {
+         const fits = "a".repeat(64);
+         const over = "a".repeat(65);
+         writeSkill(`sets/${fits}`, "k");
+         writeSkill(`sets/${over}`, "k");
+         expect(
+            read({ analyst: { skill_sets: [`sets/${fits}`] } }).workflows.has(
+               "analyst",
+            ),
+         ).toBe(true);
+         expect(
+            refused({ analyst: { skill_sets: [`sets/${over}`] } }),
+         ).toContain(
+            `skill set directory 'sets/${over}' is named '${over}', which must be 1-64 characters`,
+         );
+      });
+
       it("refuses two sets with the same folder name, and the same path twice", () => {
          writeSkill("a/main", "one");
          writeSkill("b/main", "two");
@@ -639,6 +679,83 @@ describe("readPackageWorkflows", () => {
          });
          expect(result.warnings).toEqual([]);
          expect([...result.sets.keys()]).toEqual(["a/main", "b/main"]);
+      });
+
+      it("publishes a shared set's finding once, however many workflows list it, served or refused", () => {
+         writeSkill(MAIN, "conventions");
+         write(`${MAIN}/conventions/scripts/a..b.py`, "x = 1");
+         const result = read({
+            one: { skill_sets: [MAIN] },
+            two: { skill_sets: [MAIN] },
+            three: { description: "", skill_sets: [MAIN] },
+         });
+         expect([...result.workflows.keys()]).toEqual(["one", "two"]);
+         expect(
+            result.warnings.filter((w) =>
+               w.startsWith(`Skill set '${MAIN}' skill finding:`),
+            ),
+         ).toHaveLength(1);
+      });
+
+      it("watches every set path and instructions file a workflow declares, refused or not, so fixing it recompiles", () => {
+         write(INSTRUCTIONS, "i");
+         const result = read({
+            analyst: {
+               instructions: INSTRUCTIONS,
+               skill_sets: [MAIN],
+               surprise: 1,
+            },
+            broken: {
+               instructions: "workflows/broken/instructions.md",
+               skill_sets: [
+                  "workflows/broken/skill_sets/main",
+                  "../out",
+                  "/abs",
+               ],
+            },
+            junk: { skill_sets: "not a list" },
+         });
+         expect(result.workflows.size).toBe(0);
+         expect([...result.watched].sort()).toEqual(
+            [
+               INSTRUCTIONS,
+               MAIN,
+               "workflows/broken/instructions.md",
+               "workflows/broken/skill_sets/main",
+            ].sort(),
+         );
+      });
+   });
+
+   describe("a set that cannot be read", () => {
+      let boom: ReturnType<typeof spyOn> | undefined;
+      afterEach(() => boom?.mockRestore());
+
+      it("refuses only the workflows that list it, with a warning, and never throws", () => {
+         analyst();
+         writeSkill(SECOND, "extra");
+         const real = revision.canonicalSha;
+         boom = spyOn(revision, "canonicalSha").mockImplementation(
+            (value: unknown) => {
+               if ((value as { path?: string }).path === SECOND) {
+                  throw new Error("injected failure");
+               }
+               return real(value);
+            },
+         );
+         const result = read({
+            fine: { skill_sets: [MAIN] },
+            broken: { skill_sets: [SECOND] },
+            both: { skill_sets: [MAIN, SECOND] },
+         });
+         expect([...result.workflows.keys()]).toEqual(["fine"]);
+         expect([...result.sets.keys()]).toEqual([MAIN]);
+         expect(result.warnings).toEqual(
+            ["broken", "both"].map(
+               (name) =>
+                  `Workflow '${name}' is not served: skill set directory '${SECOND}' cannot be read (injected failure). Fix: correct the 'workflows.${name}' entry in publisher.json and the files it names.`,
+            ),
+         );
       });
    });
 
@@ -1080,6 +1197,21 @@ describe("readPackageWorkflows", () => {
          ).toBe(false);
       });
 
+      it("is flagged when the only workflow that lists it is refused, since nothing reads it, and not when a served one does too", () => {
+         writeSkill("skills", "old");
+         expect(
+            skillsDirNotRead({
+               default: { description: "", skill_sets: ["skills"] },
+            }),
+         ).toBe(true);
+         expect(
+            skillsDirNotRead({
+               broken: { description: "", skill_sets: ["skills"] },
+               default: { skill_sets: ["skills"] },
+            }),
+         ).toBe(false);
+      });
+
       it("is not flagged when there is none", () => {
          expect(skillsDirNotRead(undefined)).toBe(false);
          expect(skillsDirNotRead({ analyst: analyst() })).toBe(false);
@@ -1238,6 +1370,35 @@ describe("readPackageWorkflows", () => {
             expect(warned(bytes, "big4.txt", "per-set cap")).toBe(true);
          });
 
+         it("holds the 4 MiB to the skill set, not to each skill in it", () => {
+            const entry = analyst();
+            writeSkill(MAIN, "second");
+            for (const skill of ["conventions", "second"]) {
+               for (let i = 0; i < 3; i++) {
+                  write(
+                     `${MAIN}/${skill}/assets/big${i}.txt`,
+                     Buffer.alloc(900_000, "a"),
+                  );
+               }
+            }
+            const result = read({ analyst: entry });
+            const files = result.sets
+               .get(MAIN)!
+               .skills.flatMap((s) => s.listed.map((a) => a.relative_filepath));
+            expect(files).toEqual([
+               "conventions/assets/big0.txt",
+               "conventions/assets/big1.txt",
+               "conventions/assets/big2.txt",
+               "second/assets/big0.txt",
+            ]);
+            expect(
+               warned(result, "second/assets/big1.txt", "per-set cap"),
+            ).toBe(true);
+            expect(
+               warned(result, "second/assets/big2.txt", "per-set cap"),
+            ).toBe(true);
+         });
+
          it("walks eight levels and warns about a ninth", () => {
             const seven = Array.from({ length: 7 }, (_, i) => `d${i}`).join(
                "/",
@@ -1386,6 +1547,17 @@ describe("readPackageWorkflows", () => {
             setAside("a..b.txt");
          });
 
+         it("for a publisher.json below assets/, in any case", () => {
+            for (const name of ["publisher.json", "Publisher.JSON"]) {
+               fs.rmSync(path.join(pkg, ASSETS), {
+                  recursive: true,
+                  force: true,
+               });
+               write(`${ASSETS}/sub/${name}`, "{}");
+               setAside(`conventions/assets/sub/${name}`);
+            }
+         });
+
          it.skipIf(!caseSensitiveFs)(
             "on two assets that differ only by case",
             () => {
@@ -1413,21 +1585,6 @@ describe("readPackageWorkflows", () => {
                   .get("analyst")!
                   .sets[0]!.skills.map((s) => s.dirName),
             ).toEqual(["zebra"]);
-         });
-      });
-
-      describe("refuses the workflow", () => {
-         it("for a publisher.json below assets/, in any case", () => {
-            for (const name of ["publisher.json", "Publisher.JSON"]) {
-               fs.rmSync(path.join(pkg, ASSETS), {
-                  recursive: true,
-                  force: true,
-               });
-               write(`${ASSETS}/sub/${name}`, "{}");
-               expect(refused({ analyst: analyst() })).toContain(
-                  `nested publisher.json at 'conventions/assets/sub/${name}'`,
-               );
-            }
          });
       });
 
@@ -1467,6 +1624,35 @@ describe("readPackageWorkflows", () => {
                ),
             ).toBe(true);
             expect(result.sets.size).toBe(3);
+         });
+
+         it("moves no set's digest when workflows are reordered at the package cap, where charging order decides what is listed", () => {
+            writeAssets("sets/a", 4);
+            writeAssets("sets/b", 4);
+            writeAssets("sets/c", 4);
+            const flow = (setPath: string) => ({ skill_sets: [setPath] });
+            const digests = (result: PackageWorkflows) =>
+               Object.fromEntries(
+                  [...result.sets].map(([setPath, set]) => [
+                     setPath,
+                     set.digest,
+                  ]),
+               );
+            const forward = read({
+               a: flow("sets/a"),
+               b: flow("sets/b"),
+               c: flow("sets/c"),
+            });
+            const backward = read({
+               c: flow("sets/c"),
+               b: flow("sets/b"),
+               a: flow("sets/a"),
+            });
+            // c is the set the cap cuts off; first-come charging would cut a or b instead.
+            expect(
+               forward.sets.get("sets/c")!.skills.flatMap((s) => s.listed),
+            ).toHaveLength(0);
+            expect(digests(backward)).toEqual(digests(forward));
          });
 
          it("does not read or charge the set of a workflow that is refused", () => {

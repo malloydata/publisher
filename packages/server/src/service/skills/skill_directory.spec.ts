@@ -389,20 +389,24 @@ describe("a skill is its whole directory", () => {
          }
       });
 
-      it("refuses the workflow for a publisher.json inside an assets/ folder .skillignore ignores", () => {
+      it("sets aside a skill with a publisher.json inside an assets/ folder .skillignore ignores, and serves the workflow", () => {
          write("assets/hidden/Publisher.JSON", "{}");
          write(".skillignore", "assets/hidden/\n");
          const result = read();
-         expect(result.workflows.has("analyst")).toBe(false);
-         expect(result.warnings[0]).toContain("assets/hidden/Publisher.JSON");
+         expect(workflowOf(result).sets[0]!.skills).toEqual([]);
+         expect(result.warnings.join("\n")).toContain(
+            `Package skill '${SKILL}' is not served: '${SKILL}/assets/hidden/Publisher.JSON' is a publisher.json`,
+         );
       });
 
-      it("refuses the workflow for a publisher.json in a reference/ that .skillignore ignores", () => {
+      it("sets aside a skill with a publisher.json in a reference/ that .skillignore ignores, and serves the workflow", () => {
          write("reference/publisher.json", "{}");
          write(".skillignore", "reference/\n");
          const result = read();
-         expect(result.workflows.has("analyst")).toBe(false);
-         expect(result.warnings[0]).toContain("reference/publisher.json");
+         expect(workflowOf(result).sets[0]!.skills).toEqual([]);
+         expect(result.warnings.join("\n")).toContain(
+            `Package skill '${SKILL}' is not served: '${SKILL}/reference/publisher.json' is a publisher.json`,
+         );
       });
 
       it("cannot bring a dotfile back with a negation", () => {
@@ -418,19 +422,29 @@ describe("a skill is its whole directory", () => {
    });
 
    describe("a publisher.json", () => {
-      it("refuses the workflow for a publisher.json in the skill set root, in a skill directory, in reference/ and anywhere below assets/", () => {
-         for (const where of [
-            path.join(pkg, SKILLS_ROOT, "publisher.json"),
-            path.join(skillDir(), "publisher.json"),
-            path.join(skillDir(), "reference/publisher.json"),
-            path.join(skillDir(), "assets/a/b/publisher.json"),
+      it("refuses the workflow for a publisher.json in the skill set root", () => {
+         const where = path.join(pkg, SKILLS_ROOT, "publisher.json");
+         fs.writeFileSync(where, "{}");
+         const result = read();
+         expect(result.workflows.has("analyst")).toBe(false);
+         expect(result.warnings[0]).toContain("nested publisher.json");
+         fs.rmSync(where);
+         expect(viewOf(workflowOf())).toBeDefined();
+      });
+
+      it("sets the skill aside for a publisher.json in its directory, in reference/ and anywhere below assets/, and serves the workflow", () => {
+         for (const inside of [
+            "publisher.json",
+            "reference/publisher.json",
+            "assets/a/b/publisher.json",
          ]) {
-            fs.mkdirSync(path.dirname(where), { recursive: true });
-            fs.writeFileSync(where, "{}");
+            write(inside, "{}");
             const result = read();
-            expect(result.workflows.has("analyst")).toBe(false);
-            expect(result.warnings[0]).toContain("nested publisher.json");
-            fs.rmSync(where);
+            expect(workflowOf(result).sets[0]!.skills).toEqual([]);
+            expect(result.warnings.join("\n")).toContain(
+               `'${SKILL}/${inside}' is a publisher.json`,
+            );
+            fs.rmSync(path.join(skillDir(), inside));
          }
          expect(viewOf(workflowOf())).toBeDefined();
       });
@@ -1136,7 +1150,8 @@ describe("a skill read whole still serves what it served before", () => {
          expect(result.sets.size).toBe(1);
          // The spy must see the walk, or the comparison below is vacuous.
          expect(calls1).toBeGreaterThanOrEqual(32);
-         expect(calls8).toBeLessThan(2 * calls1);
+         // Each workflow adds a few directory reads for its own declaration; walking the set eight times would be near 8x.
+         expect(calls8).toBeLessThan(4 * calls1);
       } finally {
          listings.mockRestore();
       }
@@ -1288,15 +1303,17 @@ describe("a skill read whole still serves what it served before", () => {
             expect(largest).toBeLessThanOrEqual(REFERENCE_MAX_EXAMINED + 1);
          });
 
-         it("still refuses the workflow when it holds a publisher.json", () => {
+         it("still sets the skill aside when it holds a publisher.json", () => {
             skill("s");
             write("shared-ref/a.md", "# A\n");
             write("shared-ref/publisher.json", "{}");
             linkReference("shared-ref");
             const result = read();
-            expect(result.workflows.has("analyst")).toBe(false);
+            expect(result.workflows.get("analyst")!.sets[0]!.skills).toEqual(
+               [],
+            );
             expect(result.warnings.join("\n")).toContain(
-               "nested publisher.json at 's/reference/publisher.json'",
+               `'${ROOT}/s/reference/publisher.json' is a publisher.json`,
             );
          });
       });
@@ -1326,17 +1343,15 @@ describe("a skill read whole still serves what it served before", () => {
          expect(largest).toBeLessThanOrEqual(REFERENCE_MAX_EXAMINED + 1);
       });
 
-      // A dot-named skill directory is never scanned, so its linked assets/ is refused only by the publisher.json check.
-      it("still refuses the workflow for a publisher.json behind it in a dot-named skill directory", () => {
+      // A dot-named directory is not a skill and is never scanned, so what sits in it neither refuses the workflow nor sets anything aside.
+      it("does not read a publisher.json behind it in a dot-named directory, and serves the workflow", () => {
          skill("s");
          write(`${ROOT}/.old/SKILL.md`, "x");
          write("shared-assets/publisher.json", "{}");
          linkAssets(".old", "shared-assets");
          const result = read();
-         expect(result.workflows.has("analyst")).toBe(false);
-         expect(result.warnings.join("\n")).toContain(
-            "nested publisher.json at '.old/assets/publisher.json'",
-         );
+         expect(result.workflows.has("analyst")).toBe(true);
+         expect(result.warnings.join("\n")).not.toContain(".old");
       });
    });
 });
