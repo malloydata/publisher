@@ -15,7 +15,7 @@ import {
 } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Database, type AgentSummary } from "../../client";
+import { Database, type WorkflowSummary } from "../../client";
 import { useNarrowScreen } from "../../hooks/useNarrowScreen";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { AddButton } from "../buttons";
@@ -42,7 +42,6 @@ import ContentTypeIcon, {
 } from "./ContentTypeIcon";
 import { ItemRow } from "../ItemRow";
 import { Materializations } from "../Materializations";
-import { describeCron } from "../Materializations/cron";
 import { PackageSection } from "../PackageSection";
 import { draftKey } from "../DocumentCreate/documentPath";
 import {
@@ -211,11 +210,15 @@ export default function Package({
          ),
    });
 
-   // The package's agents, from their own route.
-   const agentsQuery = useQueryWithApiError({
-      queryKey: ["package-agents", environmentName, packageName, versionId],
+   // The package's workflows, from their own route.
+   const workflowsQuery = useQueryWithApiError({
+      queryKey: ["package-workflows", environmentName, packageName, versionId],
       queryFn: () =>
-         apiClients.agents.listAgents(environmentName, packageName, versionId),
+         apiClients.workflows.listWorkflows(
+            environmentName,
+            packageName,
+            versionId,
+         ),
    });
 
    // One listing for both layouts, by path, shared with every other reader.
@@ -358,7 +361,7 @@ export default function Package({
    ]);
 
    const description = pkgQuery.data?.data?.description ?? "";
-   const agents = agentsQuery.data?.data ?? [];
+   const workflows = workflowsQuery.data?.data ?? [];
    const readmePath = (
       reports.find((r) => r.path === README_NOTEBOOK) ??
       reports.find((r) => isRootReadme(r.path))
@@ -715,14 +718,17 @@ export default function Package({
                   {models.length === 0 && <EmptyRow label="No models" />}
                </PackageSection>
 
-               {agents.length > 0 && (
+               {workflows.length > 0 && (
                   <PackageSection
-                     title="Agents"
-                     count={agents.length}
-                     description="Declared in publisher.json. Name one in an agent session to work as it. Schedules are listed only; nothing runs them yet."
+                     title="Workflows"
+                     count={workflows.length}
+                     description="Declared in publisher.json. Name one in an agent session to run it."
                   >
-                     {agents.map((agent) => (
-                        <PackageAgentRow key={agent.name} agent={agent} />
+                     {workflows.map((workflow) => (
+                        <PackageWorkflowRow
+                           key={workflow.name}
+                           workflow={workflow}
+                        />
                      ))}
                   </PackageSection>
                )}
@@ -808,31 +814,29 @@ function PackageItemRow({
    );
 }
 
-function PackageAgentRow({ agent }: { agent: AgentSummary }) {
+function PackageWorkflowRow({ workflow }: { workflow: WorkflowSummary }) {
    return (
       <>
          <PackageItemRow
-            type="agent"
-            label={agent.name ?? ""}
-            {...(agent.description ? { description: agent.description } : {})}
-            {...(agent.model && agent.model !== "inherit"
-               ? { rightLabel: agent.model }
+            type="workflow"
+            label={workflow.name}
+            {...(workflow.description
+               ? { description: workflow.description }
                : {})}
+            {...(workflow.has_instructions
+               ? {}
+               : { rightLabel: "No instructions" })}
          />
-         {(agent.schedules ?? []).map((schedule) => {
-            const cron = describeCron(schedule.cron ?? "");
-            return (
-               <Typography
-                  key={`${schedule.cron}|${schedule.task}`}
-                  variant="caption"
-                  color="text.secondary"
-                  sx={{ display: "block", ml: 6, mb: 0.5 }}
-               >
-                  {cron.valid ? cron.description : schedule.cron} (UTC), task{" "}
-                  {schedule.task}. Not run yet.
-               </Typography>
-            );
-         })}
+         {workflow.skill_sets.length > 0 && (
+            <Typography
+               variant="caption"
+               color="text.secondary"
+               sx={{ display: "block", ml: 6, mb: 0.5 }}
+            >
+               Skill sets:{" "}
+               {workflow.skill_sets.map((set) => set.name).join(", ")}
+            </Typography>
+         )}
       </>
    );
 }

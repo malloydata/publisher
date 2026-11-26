@@ -11,7 +11,7 @@ export type ContentType =
    | "materialization"
    | "dataApp"
    | "dashboard"
-   | "agent";
+   | "workflow";
 
 /**
  * The backplate color behind each icon. One per content type and no repeats: on
@@ -33,7 +33,7 @@ export const CONTENT_TINT: Record<ContentType, string> = {
    dataApp: PALETTE.pink,
    data: PALETTE.lime,
    materialization: PALETTE.amber,
-   agent: PALETTE.red,
+   workflow: PALETTE.red,
 };
 
 interface ContentTypeIconProps extends Omit<SvgIconProps, "fontSize"> {
@@ -92,7 +92,7 @@ const CONTENT_GLYPH: Record<ContentType, () => React.ReactElement> = {
    materialization: StackPath,
    dataApp: BrowserWindowPath,
    dashboard: DashboardGridPath,
-   agent: PersonPath,
+   workflow: StepsPath,
 };
 
 /** File outline with a folded top-right corner and three chart bars inside. */
@@ -165,12 +165,15 @@ function DashboardGridPath() {
    );
 }
 
-/** A head and shoulders: someone who works with the package. */
-function PersonPath() {
+/** Three steps joined by a line: a workflow's ordered work. */
+function StepsPath() {
    return (
       <>
-         <circle cx="12" cy="8" r="3.5" />
-         <path d="M5 20 a7 7 0 0 1 14 0" />
+         <circle cx="6" cy="6" r="2.5" />
+         <circle cx="18" cy="12" r="2.5" />
+         <circle cx="6" cy="18" r="2.5" />
+         <path d="M8.2 7.1 L15.8 10.9" />
+         <path d="M15.8 13.1 L8.2 16.9" />
       </>
    );
 }
