@@ -20,16 +20,18 @@ import {
    SKILL,
    SKILLIGNORE,
    SKILLS_ROOT,
-   writeAgent,
    writeSkill,
+   writeWorkflow,
 } from "./__fixtures__/skill-directory/fixture";
 import {
-   PACKAGE_AGENT_SKILLS_MAX_BYTES,
-   readAgentAsset,
-   readPackageAgents,
-   readSkillsDir,
+   PACKAGE_SKILL_FILE_MAX_BYTES,
+   SKILL_SET_MARKDOWN_MAX_BYTES,
+   readPackageWorkflows,
+   readWorkflowFile,
    skillFileList,
-   type PackageAgent,
+   workflowSkillSet,
+   type PackageWorkflow,
+   type PackageWorkflows,
 } from "./package_skills";
 import { REFERENCE_MAX_EXAMINED, skillFiles } from "./skill_files";
 
@@ -38,9 +40,8 @@ const EXPECTED = path.join(
    "__fixtures__/skill-directory/expected-definition.json",
 );
 const isWindows = process.platform === "win32";
-/** A second skills root, holding one skill of its own. */
-const SKILLS_ROOT_B_PARENT = "agents/analyst/more";
-const SKILLS_ROOT_B = `${SKILLS_ROOT_B_PARENT}/second`;
+/** A second skill set, holding one skill of its own. */
+const SKILLS_ROOT_B = "workflows/analyst/skill_sets/second";
 
 const hasControlChar = (text: string) =>
    [...text].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
@@ -48,27 +49,46 @@ const hasControlChar = (text: string) =>
 const sha = (data: string | Buffer) =>
    createHash("sha256").update(data).digest("hex");
 
-/** The agent as the wire carries it, less what names the load it came from. */
-const wireOf = ({
-   definitionSha,
-   skillMeta: _skillMeta,
-   catalog: _catalog,
-   ...definition
-}: PackageAgent) => ({ ...definition, source: { definitionSha } });
+/** The first set of a workflow as the wire carries it, with what the workflow and its set warn of. */
+const viewOf = (workflow: PackageWorkflow) => {
+   const entry = workflow.sets[0]!;
+   const { skills, assets } = workflowSkillSet(entry, "full");
+   return {
+      skills,
+      assets: assets ?? [],
+      warnings: [...workflow.warnings, ...entry.set.findings],
+      definitionSha: workflow.definitionSha,
+      catalog: entry.skills.map((s) => s.catalog),
+   };
+};
+
+/** The definition as the wire carries it, less what names the load it came from. */
+const wireOf = (workflow: PackageWorkflow) => ({
+   name: workflow.name,
+   description: workflow.description,
+   instructions: workflow.instructions?.text,
+   skill_sets: workflow.sets.map((entry) => workflowSkillSet(entry, "full")),
+   warnings: [
+      ...workflow.warnings,
+      ...workflow.sets.flatMap(({ set }) => set.findings),
+   ],
+   source: { definitionSha: workflow.definitionSha },
+});
 
 describe("a skill is its whole directory", () => {
    let pkg: string;
-   let agents: ReturnType<typeof writeAgent>;
+   let workflows: ReturnType<typeof writeWorkflow>;
    const skillDir = () => path.join(pkg, SKILL);
    const write = (relative: string, contents: string | Buffer) => {
       const file = path.join(skillDir(), relative);
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, contents);
    };
-   const read = (manifest: unknown = agents) =>
-      readPackageAgents(pkg, manifest);
-   const agentOf = (result = read()) => result.agents.get("analyst")!;
-   const definitionSha = () => agentOf().definitionSha;
+   const read = (manifest: unknown = workflows) =>
+      readPackageWorkflows(pkg, manifest);
+   const workflowOf = (result: PackageWorkflows = read()) =>
+      result.workflows.get("analyst")!;
+   const definitionSha = () => workflowOf().definitionSha;
    const contentSha = () => {
       const result = read();
       return computeSourceContentSha(
@@ -81,7 +101,7 @@ describe("a skill is its whole directory", () => {
 
    beforeEach(() => {
       pkg = fs.mkdtempSync(path.join(os.tmpdir(), "skill-directory-"));
-      agents = writeAgent(pkg);
+      workflows = writeWorkflow(pkg);
    });
 
    afterEach(() => {
@@ -89,36 +109,41 @@ describe("a skill is its whole directory", () => {
    });
 
    it("inlines Markdown outside assets/, lists every other file, and skips each file a skill may not hold, with a warning that names it", () => {
-      const agent = agentOf();
-      expect(agent.skills.map((f) => f.relative_filepath)).toEqual([
+      const view = viewOf(workflowOf());
+      expect(view.skills.map((f) => f.relative_filepath)).toEqual([
          "pricing/NOTES.md",
          "pricing/SKILL.md",
-         "pricing/reference/50%-rule.md",
+         "pricing/reference/rule-of-50.md",
          "pricing/references/a.md",
       ]);
-      expect(agent.assets!.map((a) => a.relative_filepath)).toEqual([
+      expect(view.assets.map((a) => a.relative_filepath)).toEqual([
          "pricing/assets/logo.png",
          "pricing/docs/Guide.MD",
          "pricing/fixtures/keep.csv",
          "pricing/scripts/run.py",
          "pricing/templates/t.html",
       ]);
-      expect(agent.asset_roots).toEqual({ pricing: SKILL });
 
       // Not Markdown by the case-sensitive rule the agent computer reads, so listed.
-      expect(
-         agent.assets!.some((a) => a.relative_filepath.endsWith(".MD")),
-      ).toBe(true);
-      expect(agent.warnings).toEqual([
-         `skill finding: Package skill '${SKILL}': .skillignore matches SKILL.md, which a skill always keeps`,
-         `skill finding: Package skill reference '${SKILL}/templates/CLAUDE.md' is named like a file the agent computer reads with authority, so it is not served`,
-         `asset '${SKILL}/${LINK}' is not served: it is a link`,
+      expect(view.assets.some((a) => a.relative_filepath.endsWith(".MD"))).toBe(
+         true,
+      );
+      const finding = (text: string) =>
+         `Skill set '${SKILLS_ROOT}' skill finding: ${text}.`;
+      expect(view.warnings).toEqual([
+         finding(
+            `Package skill '${SKILL}': .skillignore matches SKILL.md, which a skill always keeps`,
+         ),
+         finding(
+            `Package skill reference '${SKILL}/templates/CLAUDE.md' is named like a file the agent computer reads with authority, so it is not served`,
+         ),
+         finding(`asset '${SKILL}/${LINK}' is not served: it is a link`),
       ]);
    });
 
    it("hashes every listed file by its raw bytes, and holds the digest of every served file in the catalog", () => {
-      const agent = agentOf();
-      for (const asset of agent.assets!) {
+      const view = viewOf(workflowOf());
+      for (const asset of view.assets) {
          const relative = asset.relative_filepath.slice("pricing/".length);
          const bytes = fs.readFileSync(path.join(skillDir(), relative));
          expect(asset.sha256).toBe(sha(bytes));
@@ -128,17 +153,17 @@ describe("a skill is its whole directory", () => {
          );
       }
       expect(
-         agent.assets!.find((a) => a.relative_filepath.endsWith(".png")),
+         view.assets.find((a) => a.relative_filepath.endsWith(".png")),
       ).toMatchObject({ bytes: PNG.length, sha256: sha(PNG) });
 
-      const [entry] = agent.catalog;
+      const [entry] = view.catalog;
       expect(Object.keys(entry!.files)).toEqual([
          "NOTES.md",
          "SKILL.md",
          "assets/logo.png",
          "docs/Guide.MD",
          "fixtures/keep.csv",
-         "reference/50%-rule.md",
+         "reference/rule-of-50.md",
          "references/a.md",
          "scripts/run.py",
          "templates/t.html",
@@ -151,11 +176,11 @@ describe("a skill is its whole directory", () => {
    });
 
    it("keeps Candidates, Served and Ignored apart", () => {
-      const agent = agentOf();
+      const view = viewOf(workflowOf());
       const candidates = skillFiles(skillDir()).files;
       const served = [
-         ...agent.skills.map((f) => f.relative_filepath),
-         ...agent.assets!.map((a) => a.relative_filepath),
+         ...view.skills.map((f) => f.relative_filepath),
+         ...view.assets.map((a) => a.relative_filepath),
       ].map((p) => p.slice("pricing/".length));
       const warned = read().warnings.join("\n");
 
@@ -192,7 +217,7 @@ describe("a skill is its whole directory", () => {
    });
 
    it("resolves to the definition the service's golden test pins", () => {
-      const json = `${JSON.stringify(wireOf(agentOf()), null, 3)}\n`;
+      const json = `${JSON.stringify(wireOf(workflowOf()), null, 3)}\n`;
       if (process.env.UPDATE_SKILL_DIRECTORY_GOLDEN) {
          fs.writeFileSync(EXPECTED, json);
       }
@@ -218,8 +243,8 @@ describe("a skill is its whole directory", () => {
 
       // A comment leaves the same files, so only the hashed text can have moved.
       const files = () => [
-         ...agentOf().skills.map((f) => f.relative_filepath),
-         ...agentOf().assets!.map((a) => a.relative_filepath),
+         ...viewOf(workflowOf()).skills.map((f) => f.relative_filepath),
+         ...viewOf(workflowOf()).assets.map((a) => a.relative_filepath),
       ];
       const before = files();
       write(".skillignore", `${SKILLIGNORE}# a note\n`);
@@ -228,7 +253,7 @@ describe("a skill is its whole directory", () => {
       expect(contentSha()).not.toBe(afterScript.content);
    });
 
-   it("hashes an agent's content without reading an inline Markdown file again, and still moves with an edit to one", () => {
+   it("hashes a workflow's content without reading an inline Markdown file again, and still moves with an edit to one", () => {
       const before = contentSha();
       const result = read();
       const reads = spyOn(fs, "readFileSync");
@@ -240,7 +265,9 @@ describe("a skill is its whole directory", () => {
             result.contentShas,
          );
          const hashed = reads.mock.calls.map((c) => String(c[0]));
-         const inline = agentOf(result).skills.map((f) => f.relative_filepath);
+         const inline = viewOf(workflowOf(result)).skills.map(
+            (f) => f.relative_filepath,
+         );
          expect(inline.length).toBeGreaterThan(0);
          for (const file of inline) {
             expect(hashed.some((p) => p.endsWith(`/${file}`))).toBe(false);
@@ -258,16 +285,16 @@ describe("a skill is its whole directory", () => {
       write("reference/glossary.md", "# Glossary\n");
       write("assets/index.html", "<h1>hi</h1>");
       write("assets/css/app.css", "body{}");
-      const agent = agentOf();
-      expect(agent.skills.map((f) => f.relative_filepath)).toEqual([
+      const view = viewOf(workflowOf());
+      expect(view.skills.map((f) => f.relative_filepath)).toEqual([
          "pricing/SKILL.md",
          "pricing/reference/glossary.md",
       ]);
-      expect(agent.assets!.map((a) => a.relative_filepath)).toEqual([
+      expect(view.assets.map((a) => a.relative_filepath)).toEqual([
          "pricing/assets/css/app.css",
          "pricing/assets/index.html",
       ]);
-      expect(agent.warnings).toEqual([]);
+      expect(view.warnings).toEqual([]);
    });
 
    it("moves definitionSha for a change to an inline file that is not SKILL.md", () => {
@@ -277,40 +304,43 @@ describe("a skill is its whole directory", () => {
    });
 
    it("serves a listed text file, and refuses a binary one with a message naming its size and not its bytes", () => {
-      const agent = agentOf();
-      expect(readAgentAsset(pkg, agent, "pricing/scripts/run.py")).toEqual({
+      const skill = workflowOf().sets[0]!.skills[0]!;
+      expect(readWorkflowFile(pkg, skill, "pricing/scripts/run.py")).toEqual({
          text: FILES["scripts/run.py"] as string,
       });
-      const refused = readAgentAsset(pkg, agent, "pricing/assets/logo.png");
+      const refused = readWorkflowFile(pkg, skill, "pricing/assets/logo.png");
       expect(refused).toEqual({
          message: expect.stringContaining(`${PNG.length} bytes`),
       });
       expect(JSON.stringify(refused)).not.toContain(PNG.toString("base64"));
       // Listed, and still a 404 for what is not.
       expect(
-         readAgentAsset(pkg, agent, "pricing/fixtures/data.csv"),
+         readWorkflowFile(pkg, skill, "pricing/fixtures/data.csv"),
       ).toBeUndefined();
    });
 
    it("keeps a file whose name only ends in .MD out of the inline Markdown", () => {
       write("docs/other.Md", "# Other\n");
-      const agent = agentOf();
-      expect(agent.skills.map((f) => f.relative_filepath)).not.toContain(
+      const view = viewOf(workflowOf());
+      expect(view.skills.map((f) => f.relative_filepath)).not.toContain(
          "pricing/docs/other.Md",
       );
-      expect(agent.assets!.map((a) => a.relative_filepath)).toContain(
+      expect(view.assets.map((a) => a.relative_filepath)).toContain(
          "pricing/docs/other.Md",
       );
    });
 
    it("reads the block scalar description to its true length, and the frontmatter as JSON", () => {
-      const agent = agentOf();
-      expect(agent.skillMeta.get("pricing/SKILL.md")).toEqual({
+      const view = viewOf(workflowOf());
+      const summary = workflowSkillSet(workflowOf().sets[0]!, "summary");
+      expect(
+         summary.skills.find((f) => f.relative_filepath === "pricing/SKILL.md"),
+      ).toMatchObject({
          name: "pricing",
          description:
             "How we price deals: start from list, then apply the discount rules.",
       });
-      expect(agent.catalog[0]).toMatchObject({
+      expect(view.catalog[0]).toMatchObject({
          name: "pricing",
          frontmatter: {
             name: "pricing",
@@ -329,22 +359,15 @@ describe("a skill is its whole directory", () => {
       write("SKILL.md/inside.py", "print()\n");
 
       const dropped = read();
-      expect(dropped.agents.has("analyst")).toBe(false);
+      expect(workflowOf(dropped).sets[0]!.skills).toEqual([]);
       expect(dropped.warnings.join("\n")).toContain("not a regular file");
-
-      fs.mkdirSync(path.join(pkg, "skills"));
-      fs.cpSync(skillDir(), path.join(pkg, "skills/pricing"), {
-         recursive: true,
-      });
-      const { skills, files, paths, blocking } = readSkillsDir(pkg);
-      expect(skills).toEqual([]);
-      expect(files).toEqual([]);
-      expect(paths).toEqual([]);
-      expect(blocking.join("\n")).toContain("not a regular file");
+      expect(dropped.warnings.join("\n")).toContain("holds no skills");
+      expect(dropped.paths).toEqual(["workflows/analyst/instructions.md"]);
+      expect(dropped.contentShas.size).toBe(0);
    });
 
-   describe("what is refused outright, whatever .skillignore says", () => {
-      it("refuses an agent whose ignored assets/ is a link out of the package", () => {
+   describe("what sets a skill aside, or refuses the workflow, whatever .skillignore says", () => {
+      it("sets aside a skill whose ignored assets/ is a link out of the package, and serves the workflow", () => {
          const outside = fs.mkdtempSync(path.join(os.tmpdir(), "outside-"));
          try {
             fs.writeFileSync(path.join(outside, "x.txt"), "x");
@@ -352,43 +375,46 @@ describe("a skill is its whole directory", () => {
             fs.symlinkSync(outside, path.join(skillDir(), "assets"));
             write(".skillignore", "assets/\n");
             const result = read();
-            expect(result.agents.has("analyst")).toBe(false);
-            expect(result.warnings[0]).toContain(`${SKILL}/assets`);
+            expect(workflowOf(result).sets[0]!.skills).toEqual([]);
+            expect(result.warnings.join("\n")).toContain(
+               `Skill set '${SKILLS_ROOT}' skill finding: Package skill '${SKILL}' is not served: '${SKILL}/assets' is a link`,
+            );
+            expect(result.warnings.join("\n")).not.toContain("x.txt");
          } finally {
             fs.rmSync(outside, { recursive: true, force: true });
          }
       });
 
-      it("refuses an agent with a publisher.json inside an assets/ folder .skillignore ignores", () => {
+      it("refuses the workflow for a publisher.json inside an assets/ folder .skillignore ignores", () => {
          write("assets/hidden/Publisher.JSON", "{}");
          write(".skillignore", "assets/hidden/\n");
          const result = read();
-         expect(result.agents.has("analyst")).toBe(false);
+         expect(result.workflows.has("analyst")).toBe(false);
          expect(result.warnings[0]).toContain("assets/hidden/Publisher.JSON");
       });
 
-      it("refuses an agent with a publisher.json in a reference/ that .skillignore ignores", () => {
+      it("refuses the workflow for a publisher.json in a reference/ that .skillignore ignores", () => {
          write("reference/publisher.json", "{}");
          write(".skillignore", "reference/\n");
          const result = read();
-         expect(result.agents.has("analyst")).toBe(false);
+         expect(result.workflows.has("analyst")).toBe(false);
          expect(result.warnings[0]).toContain("reference/publisher.json");
       });
 
       it("cannot bring a dotfile back with a negation", () => {
          write(".skillignore", "!.env\n!.DS_Store\n");
-         const agent = agentOf();
-         expect(agent.assets!.map((a) => a.relative_filepath)).not.toContain(
+         const view = viewOf(workflowOf());
+         expect(view.assets.map((a) => a.relative_filepath)).not.toContain(
             "pricing/.env",
          );
          expect(
-            agent.assets!.every((a) => !a.relative_filepath.includes("/.")),
+            view.assets.every((a) => !a.relative_filepath.includes("/.")),
          ).toBe(true);
       });
    });
 
    describe("a publisher.json", () => {
-      it("refuses the agent in the skills root, in a skill directory, in reference/ and anywhere below assets/", () => {
+      it("refuses the workflow for a publisher.json in the skill set root, in a skill directory, in reference/ and anywhere below assets/", () => {
          for (const where of [
             path.join(pkg, SKILLS_ROOT, "publisher.json"),
             path.join(skillDir(), "publisher.json"),
@@ -398,28 +424,28 @@ describe("a skill is its whole directory", () => {
             fs.mkdirSync(path.dirname(where), { recursive: true });
             fs.writeFileSync(where, "{}");
             const result = read();
-            expect(result.agents.has("analyst")).toBe(false);
+            expect(result.workflows.has("analyst")).toBe(false);
             expect(result.warnings[0]).toContain("nested publisher.json");
             fs.rmSync(where);
          }
-         expect(agentOf()).toBeDefined();
+         expect(viewOf(workflowOf())).toBeDefined();
       });
 
-      it("is skipped with a warning anywhere else below a skill, and the agent is served", () => {
+      it("is skipped with a warning anywhere else below a skill, and the workflow is served", () => {
          const nested = [
             "templates/publisher.json",
             "reference/sub/publisher.json",
             "scripts/deep/er/Publisher.JSON",
          ];
          for (const file of nested) write(file, "{}");
-         const agent = agentOf();
+         const view = viewOf(workflowOf());
          const served = [
-            ...agent.skills.map((f) => f.relative_filepath),
-            ...agent.assets!.map((a) => a.relative_filepath),
+            ...view.skills.map((f) => f.relative_filepath),
+            ...view.assets.map((a) => a.relative_filepath),
          ];
          for (const file of nested) {
             expect(served).not.toContain(`pricing/${file}`);
-            expect(agent.warnings.join("\n")).toContain(`${SKILL}/${file}`);
+            expect(view.warnings.join("\n")).toContain(`${SKILL}/${file}`);
          }
          expect(served).toContain("pricing/scripts/run.py");
       });
@@ -427,7 +453,7 @@ describe("a skill is its whole directory", () => {
       it("is neither refused nor named when it sits in a folder .skillignore ignores", () => {
          write("fixtures/deep/Publisher.JSON", "{}");
          const result = read();
-         expect(agentOf(result)).toBeDefined();
+         expect(viewOf(workflowOf(result))).toBeDefined();
          expect(result.warnings.join("\n")).not.toContain("Publisher.JSON");
       });
    });
@@ -443,10 +469,10 @@ describe("a skill is its whole directory", () => {
          write("scripts/Publisher.json.bak", "kept: not reserved\n");
          write("assets/CLAUDE.md", "# In assets\n");
          const result = read();
-         const agent = agentOf(result);
+         const view = viewOf(workflowOf(result));
          const served = [
-            ...agent.skills.map((f) => f.relative_filepath),
-            ...agent.assets!.map((a) => a.relative_filepath),
+            ...view.skills.map((f) => f.relative_filepath),
+            ...view.assets.map((a) => a.relative_filepath),
          ];
          for (const refused of [
             "deep/SKILL.md",
@@ -456,109 +482,131 @@ describe("a skill is its whole directory", () => {
             "assets/CLAUDE.md",
          ]) {
             expect(served).not.toContain(`pricing/${refused}`);
-            expect(agent.warnings.join("\n")).toContain(`${SKILL}/${refused}`);
+            expect(view.warnings.join("\n")).toContain(`${SKILL}/${refused}`);
          }
          expect(served).toContain("pricing/scripts/Publisher.json.bak");
          expect(served).toContain("pricing/SKILL.md");
       });
 
       it.skipIf(isWindows)(
-         "skips a file with a control character in its path, escaped in the warning, and keeps the agent",
+         "skips a file with a control character in its path, escaped in the warning, and keeps the workflow",
          () => {
             write("scripts/bad\nname.py", "print()\n");
             write("references/bad\u0001name.md", "# Bad\n");
             write("bad\u007fdir/x.py", "print()\n");
             const result = read();
-            const agent = agentOf(result);
+            const view = viewOf(workflowOf(result));
             const served = [
-               ...agent.skills.map((f) => f.relative_filepath),
-               ...agent.assets!.map((a) => a.relative_filepath),
+               ...view.skills.map((f) => f.relative_filepath),
+               ...view.assets.map((a) => a.relative_filepath),
             ];
             expect(served.some(hasControlChar)).toBe(false);
-            expect(agent.warnings.join("\n")).toContain(
+            expect(view.warnings.join("\n")).toContain(
                `${SKILL}/scripts/bad\\u000aname.py`,
             );
-            expect(agent.warnings.join("\n")).toContain(
+            expect(view.warnings.join("\n")).toContain(
                "has a control character",
             );
-            expect(agent.warnings.some(hasControlChar)).toBe(false);
+            expect(view.warnings.some(hasControlChar)).toBe(false);
          },
       );
    });
 
    describe("the inline budget", () => {
-      it("lists Markdown that does not fit, first fit in path order, and never drops the agent or a SKILL.md", () => {
+      const writeSecondSkill = (root: string, filler: number) => {
+         fs.mkdirSync(path.join(pkg, root, "second"), { recursive: true });
+         fs.writeFileSync(
+            path.join(pkg, root, "second/SKILL.md"),
+            `---\nname: second\ndescription: d\n---\n\n${"y".repeat(filler)}\n`,
+         );
+      };
+
+      it("lists Markdown that does not fit, first fit in path order, and never drops the workflow or a SKILL.md", () => {
          const big = (n: number) => `# Big\n\n${"x".repeat(n)}\n`;
          // 100 KB of SKILL.md in a second skill is charged before any reference.
-         fs.mkdirSync(path.join(pkg, SKILLS_ROOT_B), { recursive: true });
-         fs.writeFileSync(
-            path.join(pkg, SKILLS_ROOT_B, "SKILL.md"),
-            `---\nname: second\ndescription: d\n---\n\n${"y".repeat(100_000)}\n`,
-         );
+         writeSecondSkill(SKILLS_ROOT, 100_000);
          write("references/big.md", big(200_000));
          write("references/small.md", "# Small\n");
-         const result = read({
-            analyst: {
-               ...agents.analyst,
-               skills: [...agents.analyst.skills, SKILLS_ROOT_B_PARENT],
-            },
-         });
-         const agent = agentOf(result);
+         const result = read();
+         const view = viewOf(workflowOf(result));
 
-         expect(agent.skills.map((f) => f.relative_filepath)).toEqual(
+         expect(view.skills.map((f) => f.relative_filepath)).toEqual(
             expect.arrayContaining([
                "second/SKILL.md",
                "pricing/SKILL.md",
                "pricing/references/small.md",
             ]),
          );
-         expect(agent.skills.map((f) => f.relative_filepath)).not.toContain(
+         expect(view.skills.map((f) => f.relative_filepath)).not.toContain(
             "pricing/references/big.md",
          );
-         expect(agent.assets!.map((a) => a.relative_filepath)).toContain(
+         expect(view.assets.map((a) => a.relative_filepath)).toContain(
             "pricing/references/big.md",
          );
-         expect(agent.warnings.join("\n")).toContain(
-            `Package skill file '${SKILL}/references/big.md' would take the skill Markdown over the ${PACKAGE_AGENT_SKILLS_MAX_BYTES} byte cap`,
+         expect(view.warnings.join("\n")).toContain(
+            `Package skill file '${SKILL}/references/big.md' would take the skill set's Markdown over the ${SKILL_SET_MARKDOWN_MAX_BYTES} byte cap`,
          );
          // SKILL.md is re-emitted, so its bytes are a little off the raw ones the cap counts.
-         const inlineBytes = agent.skills.reduce(
+         const inlineBytes = view.skills.reduce(
             (n, f) => n + Buffer.byteLength(f.file_contents),
             0,
          );
          expect(inlineBytes).toBeLessThanOrEqual(
-            PACKAGE_AGENT_SKILLS_MAX_BYTES + 1024,
+            SKILL_SET_MARKDOWN_MAX_BYTES + 1024,
          );
       });
 
-      it("still drops an agent whose SKILL.md files alone pass the cap", () => {
+      it("sets aside, in path order, a skill whose SKILL.md would pass the cap, and still serves the workflow", () => {
          write(
             "SKILL.md",
-            `---\nname: pricing\ndescription: d\n---\n\n${"x".repeat(PACKAGE_AGENT_SKILLS_MAX_BYTES - 100)}\n`,
+            `---\nname: pricing\ndescription: d\n---\n\n${"x".repeat(SKILL_SET_MARKDOWN_MAX_BYTES - 100)}\n`,
          );
-         fs.mkdirSync(path.join(pkg, SKILLS_ROOT_B), { recursive: true });
-         fs.writeFileSync(
-            path.join(pkg, SKILLS_ROOT_B, "SKILL.md"),
-            `---\nname: second\ndescription: d\n---\n\n${"y".repeat(1000)}\n`,
+         writeSecondSkill(SKILLS_ROOT, 1000);
+         const result = read();
+         expect(
+            workflowOf(result).sets[0]!.skills.map((s) => s.dirName),
+         ).toEqual(["pricing"]);
+         expect(result.warnings.join("\n")).toContain(
+            `Package skill '${SKILLS_ROOT}/second/SKILL.md' would take the skill set's Markdown over the ${SKILL_SET_MARKDOWN_MAX_BYTES} byte cap, so it is not served`,
          );
+      });
+
+      it("gives each skill set a budget of its own", () => {
+         write(
+            "SKILL.md",
+            `---\nname: pricing\ndescription: d\n---\n\n${"x".repeat(SKILL_SET_MARKDOWN_MAX_BYTES - 1000)}\n`,
+         );
+         writeSecondSkill(SKILLS_ROOT_B, 100_000);
          const result = read({
             analyst: {
-               ...agents.analyst,
-               skills: [...agents.analyst.skills, SKILLS_ROOT_B_PARENT],
+               ...workflows.analyst,
+               skill_sets: [SKILLS_ROOT, SKILLS_ROOT_B],
             },
          });
-         expect(result.agents.has("analyst")).toBe(false);
-         expect(result.warnings[0]).toContain("byte cap");
+         expect(
+            workflowOf(result).sets.map(({ skills }) =>
+               skills.map((s) => s.dirName),
+            ),
+         ).toEqual([["pricing"], ["second"]]);
+         expect(result.warnings.join("\n")).not.toContain("byte cap");
       });
    });
 });
 
-describe("a package's own skills", () => {
+describe("a skill set's own skills", () => {
    let pkg: string;
-   const skillsDir = () => path.join(pkg, "skills");
+   const setDir = () => path.join(pkg, "skills");
    const writeSkillMd = (dir: string, contents: string) => {
-      fs.mkdirSync(path.join(skillsDir(), dir), { recursive: true });
-      fs.writeFileSync(path.join(skillsDir(), dir, "SKILL.md"), contents);
+      fs.mkdirSync(path.join(setDir(), dir), { recursive: true });
+      fs.writeFileSync(path.join(setDir(), dir, "SKILL.md"), contents);
+   };
+   /** The skill set at `skills/`, read as the default workflow lists it. */
+   const readSet = () => {
+      const result = readPackageWorkflows(pkg, {
+         default: { skill_sets: ["skills"] },
+      });
+      const set = result.sets.get("skills")!;
+      return { result, set, skills: set.skills, warnings: set.findings };
    };
 
    beforeEach(() => {
@@ -571,9 +619,8 @@ describe("a package's own skills", () => {
 
    it("builds a catalog entry per skill: its frontmatter as JSON and every served file's digest and size", () => {
       writeSkill(pkg, "skills");
-      const { skills, warnings, blocking } = readSkillsDir(pkg);
+      const { skills, warnings } = readSet();
       const catalog = skills.map((s) => s.catalog);
-      expect(blocking).toEqual([]);
       expect(catalog).toHaveLength(1);
       const [entry] = catalog;
       expect(entry!.name).toBe("pricing");
@@ -587,7 +634,7 @@ describe("a package's own skills", () => {
          "assets/logo.png",
          "docs/Guide.MD",
          "fixtures/keep.csv",
-         "reference/50%-rule.md",
+         "reference/rule-of-50.md",
          "references/a.md",
          "scripts/run.py",
          "templates/t.html",
@@ -601,19 +648,23 @@ describe("a package's own skills", () => {
 
    it("is one skill, with its inline Markdown named in the content hash", () => {
       writeSkill(pkg, "skills");
-      const { skills, files } = readSkillsDir(pkg);
-      expect(skills.map((s) => s.name)).toEqual(["pricing"]);
-      expect(files.map((f) => f.path)).toEqual([
+      const { result, skills } = readSet();
+      expect(skills.map((s) => s.served.name)).toEqual(["pricing"]);
+      const inline = skills.flatMap((s) =>
+         s.inline.map((f) => `${s.rel}/${f.relative}`),
+      );
+      expect(inline).toEqual([
          "skills/pricing/SKILL.md",
          "skills/pricing/NOTES.md",
-         "skills/pricing/reference/50%-rule.md",
+         "skills/pricing/reference/rule-of-50.md",
          "skills/pricing/references/a.md",
       ]);
+      for (const file of inline) expect(result.paths).toContain(file);
    });
 
-   it("hashes a package's skills without reading an inline Markdown file again", () => {
+   it("hashes a set's skills without reading an inline Markdown file again", () => {
       writeSkill(pkg, "skills");
-      const result = readSkillsDir(pkg);
+      const { result, skills } = readSet();
       const read = spyOn(fs, "readFileSync");
       try {
          computeSourceContentSha(
@@ -623,10 +674,13 @@ describe("a package's own skills", () => {
             result.contentShas,
          );
          const hashed = read.mock.calls.map((c) => String(c[0]));
-         for (const f of result.files) {
-            expect(hashed.some((p) => p.endsWith(f.path))).toBe(false);
+         const inline = skills.flatMap((s) =>
+            s.inline.map((f) => `${s.rel}/${f.relative}`),
+         );
+         for (const file of inline) {
+            expect(hashed.some((p) => p.endsWith(file))).toBe(false);
          }
-         expect(result.files.length).toBeGreaterThan(0);
+         expect(inline.length).toBeGreaterThan(0);
       } finally {
          read.mockRestore();
       }
@@ -634,48 +688,49 @@ describe("a package's own skills", () => {
 
    it("reads every file it lists by its path: Markdown verbatim, a script as text, a binary as a message", () => {
       writeSkill(pkg, "skills");
-      const [skill] = readSkillsDir(pkg).skills;
-      expect(skill!.read("SKILL.md")).toEqual({
+      const [skill] = readSet().skills;
+      const { read } = skill!.served;
+      expect(read("SKILL.md")).toEqual({
          text: String(FILES["SKILL.md"]),
       });
-      expect(skill!.read("reference/50%-rule.md")).toEqual({
-         text: String(FILES["reference/50%-rule.md"]),
+      expect(read("reference/rule-of-50.md")).toEqual({
+         text: String(FILES["reference/rule-of-50.md"]),
       });
-      expect(skill!.read("scripts/run.py")).toEqual({
+      expect(read("scripts/run.py")).toEqual({
          text: String(FILES["scripts/run.py"]),
       });
-      expect(skill!.read("docs/Guide.MD")).toEqual({
+      expect(read("docs/Guide.MD")).toEqual({
          text: String(FILES["docs/Guide.MD"]),
       });
-      expect(skill!.read("assets/logo.png")).toEqual({ binary: true });
+      expect(read("assets/logo.png")).toEqual({ binary: true });
    });
 
    it("answers a listed file that changed on disk since the load as changed, never its new bytes", () => {
       writeSkill(pkg, "skills");
-      const [skill] = readSkillsDir(pkg).skills;
-      fs.writeFileSync(path.join(skillsDir(), "pricing/scripts/run.py"), "x");
-      expect(skill!.read("scripts/run.py")).toEqual({ changed: true });
+      const [skill] = readSet().skills;
+      fs.writeFileSync(path.join(setDir(), "pricing/scripts/run.py"), "x");
+      expect(skill!.served.read("scripts/run.py")).toEqual({ changed: true });
    });
 
    it("lists and serves a root file named __proto__", () => {
       writeSkillMd("odd", "---\nname: odd\ndescription: d\n---\n\nbody\n");
-      fs.writeFileSync(path.join(skillsDir(), "odd/__proto__"), "hi\n");
-      const [skill] = readSkillsDir(pkg).skills;
+      fs.writeFileSync(path.join(setDir(), "odd/__proto__"), "hi\n");
+      const [skill] = readSet().skills;
       expect(Object.hasOwn(skill!.catalog.files, "__proto__")).toBe(true);
-      expect(skillFileList(skill!).map((f) => f.path)).toEqual([
+      expect(skillFileList(skill!.served).map((f) => f.path)).toEqual([
          "SKILL.md",
          "__proto__",
       ]);
-      expect(skill!.read("__proto__")).toEqual({ text: "hi\n" });
+      expect(skill!.served.read("__proto__")).toEqual({ text: "hi\n" });
    });
 
    it("lists a Markdown file that is not UTF-8 text as a binary file, never as lossy text", () => {
       writeSkillMd("odd", "---\nname: odd\ndescription: d\n---\n\nbody\n");
-      const dir = path.join(skillsDir(), "odd/reference");
+      const dir = path.join(setDir(), "odd/reference");
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, "nul.md"), Buffer.from("a\0b"));
       fs.writeFileSync(path.join(dir, "latin.md"), Buffer.from([0x63, 0xe9]));
-      const { skills, warnings } = readSkillsDir(pkg);
+      const { skills, warnings } = readSet();
       const skill = skills[0]!;
       expect(Object.keys(skill.catalog.files)).toEqual([
          "SKILL.md",
@@ -683,8 +738,8 @@ describe("a package's own skills", () => {
          "reference/nul.md",
       ]);
       expect(skill.catalog.files["reference/latin.md"]!.size).toBe(2);
-      expect(skill.read("reference/nul.md")).toEqual({ binary: true });
-      expect(skill.read("reference/latin.md")).toEqual({ binary: true });
+      expect(skill.served.read("reference/nul.md")).toEqual({ binary: true });
+      expect(skill.served.read("reference/latin.md")).toEqual({ binary: true });
       expect(warnings.join("\n")).toContain("not UTF-8 text");
    });
 
@@ -692,20 +747,22 @@ describe("a package's own skills", () => {
       "does not read a listed file that became a link out of the skill",
       () => {
          writeSkill(pkg, "skills");
-         const [skill] = readSkillsDir(pkg).skills;
+         const [skill] = readSet().skills;
          // The target holds run.py's own bytes, so its digest still matches and only the link refusal can stop the read.
          const secret = path.join(pkg, "secret.txt");
          fs.writeFileSync(secret, String(FILES["scripts/run.py"]));
-         const file = path.join(skillsDir(), "pricing/scripts/run.py");
+         const file = path.join(setDir(), "pricing/scripts/run.py");
          fs.rmSync(file);
          fs.symlinkSync(secret, file);
-         expect(skill!.read("scripts/run.py")).toEqual({ changed: true });
+         expect(skill!.served.read("scripts/run.py")).toEqual({
+            changed: true,
+         });
       },
    );
 
    it("lists exactly the files it serves: a skipped, ignored or built-in-excluded file is not in the catalog", () => {
       writeSkill(pkg, "skills");
-      const [skill] = readSkillsDir(pkg).skills;
+      const [skill] = readSet().skills;
       for (const left of [
          "scripts/run_test.py",
          "fixtures/data.csv",
@@ -721,44 +778,46 @@ describe("a package's own skills", () => {
    it("lists and hashes against budgets of its own: 200 files", () => {
       writeSkillMd("many", "---\nname: many\ndescription: d\n---\n\nbody\n");
       for (let i = 0; i < 201; i++) {
-         fs.mkdirSync(path.join(skillsDir(), "many/scripts"), {
+         fs.mkdirSync(path.join(setDir(), "many/scripts"), {
             recursive: true,
          });
-         fs.writeFileSync(path.join(skillsDir(), `many/scripts/f${i}.py`), "x");
+         fs.writeFileSync(path.join(setDir(), `many/scripts/f${i}.py`), "x");
       }
-      const { skills, warnings, contentShas } = readSkillsDir(pkg);
+      const { result, skills, warnings } = readSet();
       const catalog = skills.map((s) => s.catalog);
       expect(Object.keys(catalog[0]!.files)).toHaveLength(1 + 200);
-      expect(contentShas.size).toBe(1 + 200);
+      expect(result.contentShas.size).toBe(1 + 200);
       expect(warnings.join("\n")).toContain(
-         "the package's skills already have 200 assets",
+         "the skill set already has 200 assets, the per-set file cap",
       );
    });
 
    it("lists and hashes against budgets of its own: 4 MiB", () => {
       writeSkillMd("fat", "---\nname: fat\ndescription: d\n---\n\nbody\n");
-      fs.mkdirSync(path.join(skillsDir(), "fat/data"), { recursive: true });
+      fs.mkdirSync(path.join(setDir(), "fat/data"), { recursive: true });
       for (let i = 0; i < 5; i++) {
          fs.writeFileSync(
-            path.join(skillsDir(), `fat/data/f${i}.bin`),
+            path.join(setDir(), `fat/data/f${i}.bin`),
             Buffer.alloc(900_000, 1),
          );
       }
-      const { skills, warnings } = readSkillsDir(pkg);
+      const { skills, warnings } = readSet();
       const catalog = skills.map((s) => s.catalog);
       expect(Object.keys(catalog[0]!.files)).toHaveLength(1 + 4);
       expect(warnings.join("\n")).toContain("f4.bin");
-      expect(warnings.join("\n")).toContain("per-package skills cap");
+      expect(warnings.join("\n")).toContain(
+         "it would take the skill set's assets over the 4194304 byte per-set cap",
+      );
    });
 
    it("leaves out what a *-and-!SKILL.md allowlist leaves out, and says nothing", () => {
       writeSkillMd("only", "---\nname: only\ndescription: d\n---\n\nbody\n");
-      fs.writeFileSync(path.join(skillsDir(), "only/extra.py"), "x");
+      fs.writeFileSync(path.join(setDir(), "only/extra.py"), "x");
       fs.writeFileSync(
-         path.join(skillsDir(), "only/.skillignore"),
+         path.join(setDir(), "only/.skillignore"),
          "*\n!SKILL.md\n",
       );
-      const { skills, warnings } = readSkillsDir(pkg);
+      const { skills, warnings } = readSet();
       const catalog = skills.map((s) => s.catalog);
       expect(Object.keys(catalog[0]!.files)).toEqual(["SKILL.md"]);
       expect(warnings).toEqual([]);
@@ -768,17 +827,17 @@ describe("a package's own skills", () => {
       const outside = fs.mkdtempSync(path.join(os.tmpdir(), "outside-md-"));
       try {
          fs.writeFileSync(path.join(outside, "secret.md"), "SECRET");
-         fs.mkdirSync(path.join(skillsDir(), "bad"), { recursive: true });
+         fs.mkdirSync(path.join(setDir(), "bad"), { recursive: true });
          fs.symlinkSync(
             path.join(outside, "secret.md"),
-            path.join(skillsDir(), "bad/SKILL.md"),
+            path.join(setDir(), "bad/SKILL.md"),
          );
-         fs.writeFileSync(path.join(skillsDir(), "bad/run.py"), "x");
-         const { skills, files, paths, contentShas, blocking } =
-            readSkillsDir(pkg);
-         expect([skills, files, paths]).toEqual([[], [], []]);
-         expect(contentShas.size).toBe(0);
-         expect(blocking.join("\n")).toContain("outside the package");
+         fs.writeFileSync(path.join(setDir(), "bad/run.py"), "x");
+         const { result, skills, warnings } = readSet();
+         expect(skills).toEqual([]);
+         expect(result.paths).toEqual([]);
+         expect(result.contentShas.size).toBe(0);
+         expect(warnings.join("\n")).toContain("outside the package");
       } finally {
          fs.rmSync(outside, { recursive: true, force: true });
       }
@@ -790,8 +849,8 @@ describe("a package's own skills", () => {
             "folded",
             "---\nname: folded\ndescription: >-\n  one\n  two\n---\n\nbody\n",
          );
-         const { skills, warnings } = readSkillsDir(pkg);
-         expect(skills[0]!.description).toBe("one two");
+         const { skills, warnings } = readSet();
+         expect(skills[0]!.served.description).toBe("one two");
          expect(warnings).toEqual([]);
       });
 
@@ -800,10 +859,11 @@ describe("a package's own skills", () => {
             "loose",
             "---\nname: loose\ndescription: Use when: a thing happens.\n---\n\nbody\n",
          );
-         const { skills, warnings, blocking } = readSkillsDir(pkg);
-         expect(skills[0]!.description).toBe("Use when: a thing happens.");
+         const { skills, warnings } = readSet();
+         expect(skills[0]!.served.description).toBe(
+            "Use when: a thing happens.",
+         );
          expect(skills[0]!.catalog.frontmatter).toEqual({});
-         expect(blocking).toEqual([]);
          expect(warnings).toHaveLength(1);
          expect(warnings[0]).toContain("skills/loose/SKILL.md");
          expect(warnings[0]).toContain("not valid YAML");
@@ -814,9 +874,8 @@ describe("a package's own skills", () => {
             "My_Skill",
             "---\nname: My_Skill\ndescription: d\n---\n\nbody\n",
          );
-         const { skills, warnings, blocking } = readSkillsDir(pkg);
-         expect(skills.map((s) => s.name)).toEqual(["My_Skill"]);
-         expect(blocking).toEqual([]);
+         const { skills, warnings } = readSet();
+         expect(skills.map((s) => s.served.name)).toEqual(["My_Skill"]);
          expect(warnings).toHaveLength(1);
          expect(warnings[0]).toContain("skills/My_Skill/SKILL.md");
          expect(warnings[0]).toContain('"My_Skill"');
@@ -841,17 +900,20 @@ describe("a skill read whole still serves what it served before", () => {
    const manifest = (roots: string[] = [ROOT]) => ({
       analyst: {
          description: "d",
-         instructions: "agents/analyst/instructions.md",
-         skills: roots,
+         instructions: "workflows/analyst/instructions.md",
+         skill_sets: roots,
       },
    });
-   const read = (agents: unknown = manifest()) =>
-      readPackageAgents(pkg, agents);
-   const agentOf = (result = read()) => result.agents.get("analyst")!;
-   const inline = (agent: PackageAgent) =>
-      agent.skills.map((f) => f.relative_filepath);
-   const listed = (agent: PackageAgent) =>
-      (agent.assets ?? []).map((a) => a.relative_filepath);
+   const read = (workflows: unknown = manifest()) =>
+      readPackageWorkflows(pkg, workflows);
+   /** The analyst workflow's first skill set, as the wire carries it. */
+   const viewOf = (result = read()) =>
+      workflowSkillSet(result.workflows.get("analyst")!.sets[0]!, "full");
+   type SetView = ReturnType<typeof viewOf>;
+   const inline = (view: SetView) =>
+      view.skills.map((f) => f.relative_filepath);
+   const listed = (view: SetView) =>
+      (view.assets ?? []).map((a) => a.relative_filepath);
    /** Twice REFERENCE_MAX_EXAMINED files in `shared-big`, for a link to point at. */
    const fillBig = () => {
       fs.mkdirSync(path.join(pkg, "shared-big"));
@@ -892,7 +954,7 @@ describe("a skill read whole still serves what it served before", () => {
 
    beforeEach(() => {
       pkg = fs.mkdtempSync(path.join(os.tmpdir(), "skill-compat-"));
-      write("agents/analyst/instructions.md", "Be careful.");
+      write("workflows/analyst/instructions.md", "Be careful.");
    });
 
    afterEach(() => {
@@ -904,7 +966,7 @@ describe("a skill read whole still serves what it served before", () => {
       write(`${ROOT}/s/reference/keep.md`, "# keep\n");
       for (let i = 0; i < 1000; i++) write(`${ROOT}/s/examples/e${i}.txt`);
       const result = read();
-      expect(inline(agentOf(result))).toContain("s/reference/keep.md");
+      expect(inline(viewOf(result))).toContain("s/reference/keep.md");
       expect(result.warnings.join("\n")).toContain("more than 1000 entries");
    });
 
@@ -913,16 +975,16 @@ describe("a skill read whole still serves what it served before", () => {
       skill("bb");
       for (let i = 0; i < 200; i++) write(`${ROOT}/aa/scripts/f${pad(i)}.py`);
       write(`${ROOT}/bb/assets/keep.txt`, "keep");
-      const agent = agentOf();
-      expect(listed(agent)).toContain("bb/assets/keep.txt");
-      expect(listed(agent)).toHaveLength(200);
+      const view = viewOf();
+      expect(listed(view)).toContain("bb/assets/keep.txt");
+      expect(listed(view)).toHaveLength(200);
    });
 
    it("keeps assets/ when a folder that sorts before it fills the file cap", () => {
       skill("s");
       for (let i = 0; i < 200; i++) write(`${ROOT}/s/Examples/f${pad(i)}.txt`);
       write(`${ROOT}/s/assets/keep.txt`, "keep");
-      expect(listed(agentOf())).toContain("s/assets/keep.txt");
+      expect(listed(viewOf())).toContain("s/assets/keep.txt");
    });
 
    it("keeps a text asset when binaries beside it fill the file cap", () => {
@@ -931,9 +993,9 @@ describe("a skill read whole still serves what it served before", () => {
          write(`${ROOT}/s/assets/a${pad(i)}.png`, Buffer.from([0x89, 0, 1, 2]));
       }
       write(`${ROOT}/s/assets/z.txt`, "keep");
-      const agent = agentOf();
-      expect(listed(agent)).toContain("s/assets/z.txt");
-      expect(listed(agent)).toHaveLength(200);
+      const view = viewOf();
+      expect(listed(view)).toContain("s/assets/z.txt");
+      expect(listed(view)).toHaveLength(200);
    });
 
    it("keeps reference/*.md inline when a larger Markdown file beside SKILL.md would take its bytes", () => {
@@ -941,10 +1003,10 @@ describe("a skill read whole still serves what it served before", () => {
       write(`${ROOT}/s/README.md`, `#\n${"r".repeat(230_000)}`);
       write(`${ROOT}/s/reference/keep.md`, `#\n${"k".repeat(50_000)}`);
       const result = read();
-      const agent = agentOf(result);
-      expect(inline(agent)).toContain("s/reference/keep.md");
-      expect(inline(agent)).not.toContain("s/README.md");
-      expect(listed(agent)).toContain("s/README.md");
+      const view = viewOf(result);
+      expect(inline(view)).toContain("s/reference/keep.md");
+      expect(inline(view)).not.toContain("s/README.md");
+      expect(listed(view)).toContain("s/README.md");
       expect(result.warnings.join("\n")).toContain("s/README.md");
    });
 
@@ -952,15 +1014,15 @@ describe("a skill read whole still serves what it served before", () => {
       skill("s");
       write(`${ROOT}/s/references/big.md`, `#\n${"x".repeat(300 * 1024)}`);
       const result = read();
-      const agent = agentOf(result);
-      expect(inline(agent)).not.toContain("s/references/big.md");
-      expect(listed(agent)).toContain("s/references/big.md");
+      const view = viewOf(result);
+      expect(inline(view)).not.toContain("s/references/big.md");
+      expect(listed(view)).toContain("s/references/big.md");
       expect(result.warnings.join("\n")).toContain(
-         "s/references/big.md' would take the skill Markdown over",
+         `s/references/big.md' is ${Buffer.byteLength(`#\n${"x".repeat(300 * 1024)}`)} bytes, over the ${PACKAGE_SKILL_FILE_MAX_BYTES} byte per-file cap, so it is listed instead of inlined`,
       );
    });
 
-   it("takes the newly covered entries of all an agent's skills from one budget of 1,000, and still serves each skill's own folders", () => {
+   it("takes the newly covered entries of all a skill set's skills from one budget of 1,000, and still serves each skill's own folders", () => {
       for (const name of ["a", "b", "c"]) {
          skill(name);
          write(`${ROOT}/${name}/reference/keep.md`, "# keep\n");
@@ -970,10 +1032,10 @@ describe("a skill read whole still serves what it served before", () => {
          }
       }
       const result = read();
-      const agent = agentOf(result);
+      const view = viewOf(result);
       for (const name of ["a", "b", "c"]) {
-         expect(inline(agent)).toContain(`${name}/reference/keep.md`);
-         expect(listed(agent)).toContain(`${name}/assets/keep.txt`);
+         expect(inline(view)).toContain(`${name}/reference/keep.md`);
+         expect(listed(view)).toContain(`${name}/assets/keep.txt`);
       }
       const stopped = result.warnings.filter((w) =>
          w.includes("skill walk stopped"),
@@ -983,7 +1045,7 @@ describe("a skill read whole still serves what it served before", () => {
       expect(stopped[0]).toContain("more than 1000 entries were walked");
       expect(stopped[1]).toContain(`${ROOT}/c'`);
       expect(stopped[1]).toContain(
-         "the agent's walk budget of 1000 entries was already spent on earlier skills",
+         "the skill set's walk budget of 1000 entries was already spent on earlier skills",
       );
    });
 
@@ -997,11 +1059,14 @@ describe("a skill read whole still serves what it served before", () => {
             path.join(pkg, "shared-ref"),
             path.join(pkg, ROOT, "s/reference"),
          );
-         const agent = agentOf();
-         expect(inline(agent)).toEqual(["s/SKILL.md", "s/reference/a.md"]);
-         expect(listed(agent)).toEqual([]);
+         const view = viewOf();
+         expect(inline(view)).toEqual(["s/SKILL.md", "s/reference/a.md"]);
+         expect(listed(view)).toEqual([]);
          expect(
-            Object.keys(readSkillsDir(pkg, ROOT).skills[0]!.catalog.files),
+            Object.keys(
+               readPackageWorkflows(pkg, manifest()).sets.get(ROOT)!.skills[0]!
+                  .catalog.files,
+            ),
          ).toEqual(["SKILL.md", "reference/a.md"]);
       });
 
@@ -1012,7 +1077,7 @@ describe("a skill read whole still serves what it served before", () => {
             skill("s");
             fs.symlinkSync(outside, path.join(pkg, ROOT, "s/reference"));
             const result = read();
-            expect(inline(agentOf(result))).toEqual(["s/SKILL.md"]);
+            expect(inline(viewOf(result))).toEqual(["s/SKILL.md"]);
             expect(result.warnings.join("\n")).toContain("s/reference");
             // What lies beyond the link is not looked at, so it is not named either.
             expect(result.warnings.join("\n")).not.toContain("a.md");
@@ -1021,14 +1086,14 @@ describe("a skill read whole still serves what it served before", () => {
          }
       });
 
-      it("is skipped with a warning, and the agent is served, when it leads nowhere", () => {
+      it("is skipped with a warning, and the workflow is served, when it leads nowhere", () => {
          skill("s");
          fs.symlinkSync(
             path.join(pkg, "gone"),
             path.join(pkg, ROOT, "s/reference"),
          );
          const result = read();
-         expect(inline(agentOf(result))).toEqual(["s/SKILL.md"]);
+         expect(inline(viewOf(result))).toEqual(["s/SKILL.md"]);
          expect(result.warnings.join("\n")).toContain("s/reference");
       });
 
@@ -1040,14 +1105,14 @@ describe("a skill read whole still serves what it served before", () => {
             path.join(pkg, ROOT, "s/scripts"),
          );
          const result = read();
-         expect(listed(agentOf(result))).toEqual([]);
+         expect(listed(viewOf(result))).toEqual([]);
          expect(result.warnings.join("\n")).toContain(
             "s/scripts' is not served: it is a link",
          );
       });
    });
 
-   it("walks a root that eight agents share once, not once per agent", () => {
+   it("walks a skill set that eight workflows share once, not once per workflow", () => {
       for (let k = 0; k < 16; k++) {
          skill(`k${k}`);
          for (let i = 0; i < 990; i++) write(`${ROOT}/k${k}/data/f${i}.txt`);
@@ -1063,7 +1128,8 @@ describe("a skill read whole still serves what it served before", () => {
          listings.mockClear();
          const result = read(eight);
          const calls8 = listings.mock.calls.length;
-         expect(result.agents.size).toBe(8);
+         expect(result.workflows.size).toBe(8);
+         expect(result.sets.size).toBe(1);
          // The spy must see the walk, or the comparison below is vacuous.
          expect(calls1).toBeGreaterThanOrEqual(32);
          expect(calls8).toBeLessThan(2 * calls1);
@@ -1072,31 +1138,39 @@ describe("a skill read whole still serves what it served before", () => {
       }
    });
 
-   it("keeps a later agent's own files when an earlier agent's newly covered files fill the package's 8 MiB", () => {
+   it("charges the package's 8 MiB to the skill sets in sorted path order, whatever order a workflow lists them", () => {
       const nearCap = Buffer.alloc(1024 * 1024 - 1, "a");
-      const agents: Record<string, unknown> = {};
+      const roots = ["skills-a", "skills-b", "skills-c"];
       for (const name of ["a", "b", "c"]) {
          const root = `skills-${name}`;
          skill(`s${name}`, root);
          if (name === "c")
             write(`${root}/sc/assets/keep.txt`, "k".repeat(10_000));
          else {
-            for (let i = 0; i < 5; i++)
+            for (let i = 0; i < 4; i++)
                write(`${root}/s${name}/data/f${i}.txt`, nearCap);
          }
-         agents[name] = { ...manifest([root]).analyst };
       }
-      const result = read(agents);
-      const data = (name: string) =>
-         listed(result.agents.get(name)!).filter((f) => f.includes("/data/"));
-      expect(listed(result.agents.get("c")!)).toContain("sc/assets/keep.txt");
-      expect(data("a")).toHaveLength(4);
-      expect(data("b")).toHaveLength(3);
-      expect(result.warnings.join("\n")).toContain("per-package cap");
+      const forward = read(manifest(roots));
+      const backward = read(manifest([...roots].reverse()));
+      for (const result of [forward, backward]) {
+         const files = (root: string) =>
+            result.sets
+               .get(root)!
+               .skills.flatMap((s) => s.listed)
+               .map((f) => f.relative_filepath);
+         expect(files("skills-a")).toHaveLength(4);
+         expect(files("skills-b")).toHaveLength(4);
+         expect(files("skills-c")).toEqual([]);
+         expect(result.warnings.join("\n")).toContain("per-package cap");
+      }
+      expect(backward.sets.get("skills-c")!.digest).toBe(
+         forward.sets.get("skills-c")!.digest,
+      );
    });
 
    describe("a binary file under assets/", () => {
-      // What the agent reads of a file in this call, by its file descriptor or whole.
+      // What a read takes of a file in this call, by its file descriptor or whole.
       const bytesRead = (run: () => void) => {
          const whole = spyOn(fs, "readFileSync");
          const part = spyOn(fs, "readSync");
@@ -1121,9 +1195,9 @@ describe("a skill read whole still serves what it served before", () => {
             write(`${ROOT}/s/assets/b${pad(i)}.bin`, blob);
          }
          const total = bytesRead(() => {
-            expect(listed(agentOf()).length).toBeGreaterThan(0);
+            expect(listed(viewOf()).length).toBeGreaterThan(0);
          });
-         // The agent's 4 MiB holds thirteen of them; every other is looked at for 8 KiB and skipped.
+         // The set's 4 MiB holds thirteen of them; every other is looked at for 8 KiB and skipped.
          expect(total).toBeGreaterThan(300_000);
          expect(total).toBeLessThan(6_000_000);
       });
@@ -1135,10 +1209,10 @@ describe("a skill read whole still serves what it served before", () => {
             write(`${ROOT}/s/assets/a${pad(i)}.bin`, late);
          }
          write(`${ROOT}/s/assets/z.txt`, "keep");
-         const agent = agentOf();
-         expect(listed(agent)).toContain("s/assets/z.txt");
-         expect(listed(agent)).toHaveLength(200);
-         expect(listed(agent)).not.toContain("s/assets/a199.bin");
+         const view = viewOf();
+         expect(listed(view)).toContain("s/assets/z.txt");
+         expect(listed(view)).toHaveLength(200);
+         expect(listed(view)).not.toContain("s/assets/a199.bin");
       });
    });
 
@@ -1155,7 +1229,7 @@ describe("a skill read whole still serves what it served before", () => {
             path.join(pkg, ROOT, "s/reference"),
          );
          const result = read();
-         const references = inline(agentOf(result)).filter((f) =>
+         const references = inline(viewOf(result)).filter((f) =>
             f.startsWith("s/reference/"),
          );
          expect(references).toHaveLength(1000);
@@ -1173,7 +1247,7 @@ describe("a skill read whole still serves what it served before", () => {
          fill(`${ROOT}/s/reference`, 1200);
          const result = read();
          expect(
-            inline(agentOf(result)).filter((f) => f.startsWith("s/reference/")),
+            inline(viewOf(result)).filter((f) => f.startsWith("s/reference/")),
          ).toHaveLength(1000);
          expect(result.warnings.join("\n")).toContain(
             "reference/ holds more than 1000 Markdown files",
@@ -1189,7 +1263,7 @@ describe("a skill read whole still serves what it served before", () => {
             );
          }
          write(`${ROOT}/s/reference/overview.md`, "# Overview\n");
-         expect(inline(agentOf())).toContain("s/reference/overview.md");
+         expect(inline(viewOf())).toContain("s/reference/overview.md");
       });
 
       describe("that is a link to a directory in the package", () => {
@@ -1203,20 +1277,20 @@ describe("a skill read whole still serves what it served before", () => {
             fillBig();
             linkReference("shared-big");
             const largest = largestListing(() => {
-               expect(read().agents.has("analyst")).toBe(true);
+               expect(read().workflows.has("analyst")).toBe(true);
             });
             // The spies must see the listing, or the bound below is vacuous.
             expect(largest).toBeGreaterThanOrEqual(REFERENCE_MAX_EXAMINED);
             expect(largest).toBeLessThanOrEqual(REFERENCE_MAX_EXAMINED + 1);
          });
 
-         it("still refuses the agent when it holds a publisher.json", () => {
+         it("still refuses the workflow when it holds a publisher.json", () => {
             skill("s");
             write("shared-ref/a.md", "# A\n");
             write("shared-ref/publisher.json", "{}");
             linkReference("shared-ref");
             const result = read();
-            expect(result.agents.has("analyst")).toBe(false);
+            expect(result.workflows.has("analyst")).toBe(false);
             expect(result.warnings.join("\n")).toContain(
                "nested publisher.json at 's/reference/publisher.json'",
             );
@@ -1231,7 +1305,7 @@ describe("a skill read whole still serves what it served before", () => {
             path.join(pkg, ROOT, skillName, "assets"),
          );
 
-      it("is listed for no more than 10,001 entries, and still refuses the agent", () => {
+      it("is listed for no more than 10,001 entries, and still sets the skill aside", () => {
          skill("s");
          fillBig();
          linkAssets("s", "shared-big");
@@ -1239,7 +1313,7 @@ describe("a skill read whole still serves what it served before", () => {
          const largest = largestListing(() => {
             result = read();
          });
-         expect(result!.agents.has("analyst")).toBe(false);
+         expect(result!.workflows.get("analyst")!.sets[0]!.skills).toEqual([]);
          expect(result!.warnings.join("\n")).toContain(
             `'${ROOT}/s/assets' is a link`,
          );
@@ -1249,13 +1323,13 @@ describe("a skill read whole still serves what it served before", () => {
       });
 
       // A dot-named skill directory is never scanned, so its linked assets/ is refused only by the publisher.json check.
-      it("still refuses the agent for a publisher.json behind it in a dot-named skill directory", () => {
+      it("still refuses the workflow for a publisher.json behind it in a dot-named skill directory", () => {
          skill("s");
          write(`${ROOT}/.old/SKILL.md`, "x");
          write("shared-assets/publisher.json", "{}");
          linkAssets(".old", "shared-assets");
          const result = read();
-         expect(result.agents.has("analyst")).toBe(false);
+         expect(result.workflows.has("analyst")).toBe(false);
          expect(result.warnings.join("\n")).toContain(
             "nested publisher.json at '.old/assets/publisher.json'",
          );

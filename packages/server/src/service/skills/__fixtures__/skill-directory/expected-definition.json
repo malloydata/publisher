@@ -1,63 +1,65 @@
 {
    "name": "analyst",
    "description": "Prices deals",
-   "model": "inherit",
    "instructions": "Price carefully.\n",
-   "skills": [
+   "skill_sets": [
       {
-         "relative_filepath": "pricing/NOTES.md",
-         "file_contents": "# Notes\n\nKept at the root.\n"
-      },
-      {
-         "relative_filepath": "pricing/SKILL.md",
-         "file_contents": "---\nname: \"pricing\"\ndescription: \"How we price deals: start from list, then apply the discount rules.\"\n---\n\n# Pricing\n\nRun `python3 scripts/run.py`. See references/a.md, reference/50%-rule.md and NOTES.md.\n"
-      },
-      {
-         "relative_filepath": "pricing/reference/50%-rule.md",
-         "file_contents": "# The 50% rule\n\nHalf.\n"
-      },
-      {
-         "relative_filepath": "pricing/references/a.md",
-         "file_contents": "# A\n\nDetail.\n"
-      }
-   ],
-   "schedules": [],
-   "asset_roots": {
-      "pricing": "agents/analyst/skills/pricing"
-   },
-   "assets": [
-      {
-         "relative_filepath": "pricing/assets/logo.png",
-         "bytes": 70,
-         "sha256": "497790947d4666760ce38f3c00e852c71fdb66cae849bae8e9ede352719e1581"
-      },
-      {
-         "relative_filepath": "pricing/docs/Guide.MD",
-         "bytes": 31,
-         "sha256": "530955761d458b429108e24e942a137538c0d9122a078ff758690263fbd7cb2a"
-      },
-      {
-         "relative_filepath": "pricing/fixtures/keep.csv",
-         "bytes": 8,
-         "sha256": "57f6579a0b708406e70a305ed12e45b74c383b82abb6ac2f23556d65d5d0b807"
-      },
-      {
-         "relative_filepath": "pricing/scripts/run.py",
-         "bytes": 17,
-         "sha256": "aa5b720dfe5cd7d5fe5aa8f783c7750d587f749c086ca039299b78764e3d8a3f"
-      },
-      {
-         "relative_filepath": "pricing/templates/t.html",
-         "bytes": 21,
-         "sha256": "f0541608ede7bebe233f03495c55e1fdf21e11254fb3e0e3638808a20104848a"
+         "name": "main",
+         "path": "workflows/analyst/skill_sets/main",
+         "digest": "4a5c17c97ff93d962d4dfb5730e4dae500275cf9ca40b6f877609ce312a863a2",
+         "skills": [
+            {
+               "relative_filepath": "pricing/NOTES.md",
+               "file_contents": "# Notes\n\nKept at the root.\n"
+            },
+            {
+               "relative_filepath": "pricing/SKILL.md",
+               "file_contents": "---\nname: \"pricing\"\ndescription: \"How we price deals: start from list, then apply the discount rules.\"\n---\n\n# Pricing\n\nRun `python3 scripts/run.py`. See references/a.md, reference/rule-of-50.md and NOTES.md.\n"
+            },
+            {
+               "relative_filepath": "pricing/reference/rule-of-50.md",
+               "file_contents": "# The 50% rule\n\nHalf.\n"
+            },
+            {
+               "relative_filepath": "pricing/references/a.md",
+               "file_contents": "# A\n\nDetail.\n"
+            }
+         ],
+         "assets": [
+            {
+               "relative_filepath": "pricing/assets/logo.png",
+               "bytes": 70,
+               "sha256": "497790947d4666760ce38f3c00e852c71fdb66cae849bae8e9ede352719e1581"
+            },
+            {
+               "relative_filepath": "pricing/docs/Guide.MD",
+               "bytes": 31,
+               "sha256": "530955761d458b429108e24e942a137538c0d9122a078ff758690263fbd7cb2a"
+            },
+            {
+               "relative_filepath": "pricing/fixtures/keep.csv",
+               "bytes": 8,
+               "sha256": "57f6579a0b708406e70a305ed12e45b74c383b82abb6ac2f23556d65d5d0b807"
+            },
+            {
+               "relative_filepath": "pricing/scripts/run.py",
+               "bytes": 17,
+               "sha256": "aa5b720dfe5cd7d5fe5aa8f783c7750d587f749c086ca039299b78764e3d8a3f"
+            },
+            {
+               "relative_filepath": "pricing/templates/t.html",
+               "bytes": 21,
+               "sha256": "f0541608ede7bebe233f03495c55e1fdf21e11254fb3e0e3638808a20104848a"
+            }
+         ]
       }
    ],
    "warnings": [
-      "skill finding: Package skill 'agents/analyst/skills/pricing': .skillignore matches SKILL.md, which a skill always keeps",
-      "skill finding: Package skill reference 'agents/analyst/skills/pricing/templates/CLAUDE.md' is named like a file the agent computer reads with authority, so it is not served",
-      "asset 'agents/analyst/skills/pricing/scripts/run-link.sh' is not served: it is a link"
+      "Skill set 'workflows/analyst/skill_sets/main' skill finding: Package skill 'workflows/analyst/skill_sets/main/pricing': .skillignore matches SKILL.md, which a skill always keeps.",
+      "Skill set 'workflows/analyst/skill_sets/main' skill finding: Package skill reference 'workflows/analyst/skill_sets/main/pricing/templates/CLAUDE.md' is named like a file the agent computer reads with authority, so it is not served.",
+      "Skill set 'workflows/analyst/skill_sets/main' skill finding: asset 'workflows/analyst/skill_sets/main/pricing/scripts/run-link.sh' is not served: it is a link."
    ],
    "source": {
-      "definitionSha": "21360749e6c5b5c3112da92387de38f0aba339d047ba888128fecfe5409ab0c3"
+      "definitionSha": "49ac06b31b2e5f0a1099c6c2c631cf05f4693a9c74c76fcc939926135fc0d1f9"
    }
 }

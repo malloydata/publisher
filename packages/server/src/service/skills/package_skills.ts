@@ -861,7 +861,9 @@ function listFile(
 
    // Nothing more fits once the file cap is reached; only a file below assets/ is still looked at, for the findings that set a skill aside.
    if (!strict && walk.files >= walk.maxFiles) {
-      skip(`${SET_SCOPE.holds} ${walk.maxFiles} assets, the ${SET_SCOPE.cap} file cap`);
+      skip(
+         `${SET_SCOPE.holds} ${walk.maxFiles} assets, the ${SET_SCOPE.cap} file cap`,
+      );
       return undefined;
    }
 
@@ -910,7 +912,9 @@ function listFile(
          `it is ${size} bytes, at or over the ${PACKAGE_ASSET_FILE_MAX_BYTES} byte file cap`,
       );
    } else if (walk.files >= walk.maxFiles) {
-      skip(`${SET_SCOPE.holds} ${walk.maxFiles} assets, the ${SET_SCOPE.cap} file cap`);
+      skip(
+         `${SET_SCOPE.holds} ${walk.maxFiles} assets, the ${SET_SCOPE.cap} file cap`,
+      );
    } else if (walk.bytes + size > walk.maxBytes) {
       skip(
          `it would take ${SET_SCOPE.owns} over the ${walk.maxBytes} byte ${SET_SCOPE.cap} cap`,
@@ -1493,7 +1497,12 @@ function readSkillSet(
    }
    const skills = drafts
       .map((d) => readRest(d, ctx))
-      .map((read): SetSkill => ({ ...read, served: packageSkill(packagePath, read) }));
+      .map(
+         (read): SetSkill => ({
+            ...read,
+            served: packageSkill(packagePath, read),
+         }),
+      );
    for (const skill of skills) {
       if (!fitsReply(skill.inline[0]!.text)) {
          ctx.warnings.push(unreturnableWarning(`${skill.rel}/${SKILL_MD}`));
@@ -1582,7 +1591,9 @@ function declareSkillSets(
             throw new Error("not a directory");
          }
       } catch {
-         throw new WorkflowProblem(`skill set directory '${root}' does not exist`);
+         throw new WorkflowProblem(
+            `skill set directory '${root}' does not exist`,
+         );
       }
       if (!budget.manifests.has(root)) {
          budget.manifests.set(
@@ -1687,7 +1698,9 @@ const underSkillsDir = (value: string) => {
 /** A root `skills/` directory that no workflow lists, as or under a skill set path, so nothing reads it. */
 function skillsDirNotRead(packagePath: string, raw: unknown): boolean {
    try {
-      if (!fs.statSync(path.join(packagePath, PACKAGE_SKILLS_DIR)).isDirectory()) {
+      if (
+         !fs.statSync(path.join(packagePath, PACKAGE_SKILLS_DIR)).isDirectory()
+      ) {
          return false;
       }
    } catch {
