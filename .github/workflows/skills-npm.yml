@@ -29,11 +29,15 @@ on:
     paths:
       - "skills/**"
       - "packages/skills/**"
+      - "packages/server/src/service/skills/skill_files.ts"
+      - "packages/server/src/compare_text.ts"
       - ".github/workflows/skills-npm.yml"
   pull_request:
     paths:
       - "skills/**"
       - "packages/skills/**"
+      - "packages/server/src/service/skills/skill_files.ts"
+      - "packages/server/src/compare_text.ts"
       - ".github/workflows/skills-npm.yml"
   workflow_dispatch:
     inputs:
