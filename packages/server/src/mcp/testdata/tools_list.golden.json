@@ -847,8 +847,8 @@
       "description": "Propose scope, a source plan and field definitions for a Malloy model. Which tables and questions, which sources at what grain, then renames, dimensions and measures, each backed by querying data."
     },
     {
-      "name": "malloy-define-agent",
-      "description": "Define a package agent - a named brief, with its own skills, optional schedules and a run budget, declared in a package's publisher.json. Use when the user asks to create, add, change or fix an agent in a package, or wants a recurring or unattended job. Not for adopting an agent that already exists (that is malloy-run-agent), and not for a one-off question, which you just answer."
+      "name": "malloy-define-workflow",
+      "description": "Define a package workflow - a named job with instructions and skill sets (folders of skills), or the package's default skills - declared in a package's publisher.json. Use when the user asks to create, add, change, fix or migrate a workflow in a package, to give a package its own skills, or to turn an old package agent into workflows. Not for running a workflow that already exists (that is malloy-run-workflow), and not for a one-off question, which you just answer."
     },
     {
       "name": "malloy-discover",
@@ -923,8 +923,8 @@
       "description": "Malloy semantic-model code review. Invoke when the user asks to review, audit, or critique a `.malloy` file, a folder of Malloy models, or a GitHub PR that touches Malloy. Enforces project modeling standards and emits a navigable review file."
     },
     {
-      "name": "malloy-run-agent",
-      "description": "Adopt an agent a Malloy package declares, by name. Use only when the user names a package agent, for example \"run the analyst agent on storefront\" or \"work as the agent in this package\". Fetches the agent's definition with get_agent, works from its instructions, installs its skills, and runs one of its tasks when asked."
+      "name": "malloy-run-workflow",
+      "description": "Use a workflow a Malloy package declares, by name. Use only when the user names a package workflow, for example \"run the weekly-report workflow on storefront\" or \"use the analyst skill set in this package\". Fetches the definition with get_workflow, installs one skill set or every set, and runs the workflow's instructions when asked to run it."
     },
     {
       "name": "malloy-source-unreachable",
