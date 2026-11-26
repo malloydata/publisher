@@ -49,8 +49,7 @@ info:
     - Paths are kebab-case; parameters and fields are camelCase. `{xName}` is a named resource, `{versionId}` and
     `{runId}` are ids, and `{path}` is a file's version-relative path (relative to the version's root, `/`-separated;
     every path in a body is version-relative too, but a data app's `path`, relative to `public/`, and a skill file's,
-    relative to its skill's directory, except on a workflow's skill-file route, where it is `<skill>/<file>`, relative to the
-    skill set's folder). `{path}` spans segments: send its `/` literally (the server also decodes `%2F`
+    relative to its skill's directory). `{path}` spans segments: send its `/` literally (the server also decodes `%2F`
     within it as `/`, for generated clients that encode it), and a `:verb` follows its last segment. A path has no
     empty, `.` or `..` segment, no leading `/`, and no `\`, `:` or control
     character.
@@ -2241,8 +2240,7 @@ paths:
       description: Loads the version when it is not loaded (a hydrate when the compiled-model store has an entry). Publisher
         serves the definition and runs nothing; the caller's own harness executes it. A skill name that two of the
         workflow's sets both hold is served from the first-listed set only, and `warnings` says so. Without
-        `include=files` a skill carries its `SKILL.md` text and each file's path and size; read one file with
-        `GET …/workflows/{workflowName}/skills/{path}`.
+        `include=files` a skill carries its `SKILL.md` text and each file's path and size.
       parameters:
         - name: include
           in: query
@@ -2272,73 +2270,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Workflow"
-          headers:
-            X-Request-Id:
-              $ref: "#/components/headers/RequestId"
-            ETag:
-              $ref: "#/components/headers/ETag"
-            Cache-Control:
-              $ref: "#/components/headers/CacheControl"
-        "304":
-          $ref: "#/components/responses/NotModified"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-          description: "The request is malformed, or the Malloy or SQL in it was refused. `reason`: `INVALID_REQUEST`."
-        "404":
-          $ref: "#/components/responses/NotFound"
-          description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `VERSION_NOT_FOUND`."
-        "410":
-          $ref: "#/components/responses/Gone"
-        "424":
-          $ref: "#/components/responses/DependencyFailed"
-          description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
-        "429":
-          $ref: "#/components/responses/RateLimited"
-        "500":
-          $ref: "#/components/responses/Internal"
-        "502":
-          $ref: "#/components/responses/DatabaseUnreachable"
-        "503":
-          $ref: "#/components/responses/Unavailable"
-        "504":
-          $ref: "#/components/responses/GatewayTimeout"
-
-
-  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/workflows/{workflowName}/skills/{path}:
-    parameters:
-      - $ref: "#/components/parameters/environmentName"
-      - $ref: "#/components/parameters/packageName"
-      - $ref: "#/components/parameters/versionId"
-      - $ref: "#/components/parameters/workflowName"
-      - name: path
-        in: path
-        required: true
-        schema:
-          $ref: "#/components/schemas/PathPattern"
-        x-multi-segment: true
-        description: "A `<skill>/<file>` path, relative to the skill set's folder, as the workflow's skills list it. It spans the
-          remaining segments: send each `/` literally. A skill name is unique within a served workflow, so the path names
-          one file whichever set holds it."
-    get:
-      operationId: get-workflow-skill-file
-      tags:
-        - workflows
-      summary: Read one file of a workflow's skills
-      description: Loads the version when it is not loaded (a hydrate when the compiled-model store has an entry). An inline
-        Markdown file is served as the workflow serves it. A listed file is read from disk and served only while it still
-        hashes to its listed digest; one that changed, or became a link, since the load is a 404. A text file answers with
-        its `content`; a binary file answers with its size and a `message`, never its bytes.
-      parameters:
-        - $ref: "#/components/parameters/requestId"
-        - $ref: "#/components/parameters/ifNoneMatch"
-      responses:
-        "200":
-          description: The file.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SkillFile"
           headers:
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
@@ -6784,8 +6715,8 @@ components:
 
     Problem:
       type: object
-      description: "One diagnostic: a compile problem, a load warning on a version, a render log message, or a finding on an
-        agent. `severity` and `message` are always present; the rest locate it."
+      description: "One diagnostic: a compile problem, a load warning on a version, a render log message, or a finding on a
+        workflow. `severity` and `message` are always present; the rest locate it."
       required:
         - severity
         - message
@@ -8035,12 +7966,8 @@ components:
           description: The file's path relative to the skill's directory (for example `reference/joins.md`, `assets/app.html`).
         content:
           type: string
-          description: "The file's text. Present only when the skill is read with its files: `?include=files`, on a skill or on an
-            agent."
-        message:
-          type: string
-          description: "Set instead of `content` when the file is binary; it names the file's size and says only text is
-            served. Only on `GET …/workflows/{workflowName}/skills/{path}`."
+          description: "The file's text. Present only when the skill is read with its files: `?include=files`, on a skill or on a
+            workflow."
         sizeBytes:
           type: integer
           description: Size of the file's text in UTF-8 bytes.
@@ -9087,7 +9014,7 @@ components:
       description: A skill set as a workflow serves it, with its skills. A skill name an earlier set of the same workflow also
         holds is left out here and served from that set.
       allOf:
-        - $ref: "#/components/schemas/WorkflowSkillSetSummary"
+        - $ref: "#/components/schemas/WorkflowSkillSetRef"
         - type: object
           required:
             - skills
@@ -9100,10 +9027,10 @@ components:
                 $ref: "#/components/schemas/Skill"
       readOnly: true
 
-    WorkflowSkillSetSummary:
+    WorkflowSkillSetRef:
       type: object
       readOnly: true
-      description: A skill set a workflow lists, without its skills.
+      description: A skill set a workflow lists, by name, path and digest, without its skills.
       properties:
         name:
           type: string
@@ -9145,7 +9072,7 @@ components:
           type: array
           description: The workflow's skill sets in the order `publisher.json` lists them.
           items:
-            $ref: "#/components/schemas/WorkflowSkillSetSummary"
+            $ref: "#/components/schemas/WorkflowSkillSetRef"
         versionId:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
