@@ -306,6 +306,11 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
             return "error", "kind=rows but value is not a list", rows
         if len(rows) < len(want):
             return "diff", f"golden has {len(want)} rows, query returned {len(rows)}", rows
+        if not want and rows:
+            # The loop below compares the golden's rows, so an empty golden
+            # compared nothing and passed whatever the query returned: a key
+            # with no value verified, and `--refresh` never filled it.
+            return "diff", f"golden has 0 rows, query returned {len(rows)}", rows
         for i, wrow in enumerate(want):
             for k, v in wrow.items():
                 if k not in rows[i]:

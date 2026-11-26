@@ -1485,6 +1485,16 @@ class RowsGoldenInAFile(unittest.TestCase):
         status, detail, _ = self.check([{"enabled": True}])
         self.assertEqual((status, detail), ("ok", "1 rows"))
 
+    def test_an_empty_rows_golden_is_drift_when_the_query_returns_rows(self):
+        c = {"qid": "q", "golden": {"kind": "rows", "value": [],
+                                    "canonicalQuery": "run: t -> { ... }"}}
+        with unittest.mock.patch("verify_goldens.try_query",
+                                 return_value=([{"total": 12}], None)):
+            self.assertEqual(check_value(c, self.a)[:2],
+                             ("diff", "golden has 0 rows, query returned 1"))
+        with unittest.mock.patch("verify_goldens.try_query", return_value=([], None)):
+            self.assertEqual(check_value(c, self.a)[:2], ("ok", "0 rows"))
+
     def test_an_unreadable_file_is_an_error_naming_the_path(self):
         c = {"qid": "q", "golden": {"kind": "rows", "path": "gold/none.csv",
                                     "canonicalQuery": "run: t -> { ... }"}}
