@@ -595,25 +595,73 @@ export function assertInstructedDestinationWritable(
    // sources too.
    const declared = declaredStorage(persistSource);
    if (declared && !instruction.destination) {
-      // A rollup's source name and `#@ persist storage=` line are
-      // synthesized, so it is named by its base and grain, which the author
-      // wrote. The grain renders as a set: the wire plan sorts and dedupes
-      // dimensions, so quoting it would misrepresent the author's order.
-      const rollup = compiled.tables[persistSource.sourceID]?.rollup;
       throw new BadRequestError(
-         (rollup
-            ? `Measures of \`${rollup.baseSourceName}\` ` +
-              `pre-aggregated at grain ` +
-              `(${rollup.grainDimensions.join(", ")}) declare ` +
-              `\`storage=${declared}\``
-            : `Source '${persistSource.name}' declares ` +
-              `\`#@ persist storage=${declared}\``) +
+         `${declaredStorageSubject(persistSource, compiled, declared)}` +
             `, but the build was instructed with no storage ` +
             `destination, so there is nowhere it may be written. ` +
             `Refusing rather than building the table into the source ` +
             `warehouse, which the annotation asked it not to be ` +
             `written to.`,
       );
+   }
+}
+
+/**
+ * What declared a source's `storage=`, in the words its author wrote: the
+ * planned table's `origin` decides it, never the `#@ persist storage=` line
+ * the planner reads, which a `#(materialize)` source's build source and a
+ * rollup carry synthesized. A rollup is named by its base and grain, as
+ * `#(rollup)` (or v1's `#@ preaggregate`), whose grain renders as a set: the
+ * wire plan sorts and dedupes dimensions, so quoting it would misrepresent the
+ * author's order. A `#(materialize)` source by its own name, not its build
+ * source's.
+ */
+function declaredStorageSubject(
+   persistSource: PersistSource,
+   compiled: RunPlan,
+   declared: string,
+): string {
+   const table = compiled.tables[persistSource.sourceID];
+   const origin = table
+      ? originOfTable(table.kind, persistSource.sourceID)
+      : "persist";
+   switch (origin) {
+      case "rollup": {
+         const rollup = table?.rollup;
+         const at = rollup
+            ? `Measures of \`${rollup.baseSourceName}\` pre-aggregated at ` +
+              `grain (${rollup.grainDimensions.join(", ")})`
+            : `Rollup '${persistSource.name}'`;
+         return (
+            `${at} declare \`storage=${declared}\` on ` +
+            `\`#(rollup)\` (or v1's \`#@ preaggregate\`)`
+         );
+      }
+      case "materialize":
+         return (
+            `Source '${table?.materialize?.sourceName ?? persistSource.name}' ` +
+            `declares \`#(materialize) storage=${declared}\``
+         );
+      case "view": {
+         // A persisted view's build source is `<source>__<view>__view`.
+         const [, source, view] =
+            /^(.+)__(.+)__view$/.exec(persistSource.name) ?? [];
+         return view
+            ? `\`#@ persist storage=${declared}\` on view '${view}' of ` +
+                 `source '${source}'`
+            : `View source '${persistSource.name}' declares ` +
+                 `\`#@ persist storage=${declared}\``;
+      }
+      case "query": {
+         // A persisted named query's build source is `<query>__query`.
+         const [, query] = /^(.+)__query$/.exec(persistSource.name) ?? [];
+         return `\`#@ persist storage=${declared}\` on query '${query ?? persistSource.name}'`;
+      }
+      default:
+         return (
+            `Source '${persistSource.name}' declares ` +
+            `\`#@ persist storage=${declared}\``
+         );
    }
 }
 
