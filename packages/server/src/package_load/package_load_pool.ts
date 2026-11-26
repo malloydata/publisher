@@ -54,10 +54,8 @@ import type {
    PackageScope,
 } from "../service/package_manifest";
 import type { PackageRetrievalSettings } from "../service/package_retrieval_settings";
-import type {
-   CodedFinding,
-   DeprecatedManifestKey,
-} from "../service/deprecated/manifest_keys";
+import type { ApiPackageWarning } from "../service/classification";
+import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys";
 import type {
    CompileServedCopyRequest,
    CompileServedCopyResult,
@@ -318,7 +316,7 @@ export interface LoadPackageOutcome {
       /** See {@link LoadPackageResult.packageMetadata.retrieval}. */
       retrieval?: PackageRetrievalSettings;
       /** See {@link LoadPackageResult.packageMetadata.manifestFindings}. */
-      manifestFindings?: CodedFinding[];
+      manifestFindings?: ApiPackageWarning[];
       /** See {@link LoadPackageResult.packageMetadata.workflows}. */
       workflows?: unknown;
    };

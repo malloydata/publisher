@@ -47,10 +47,8 @@ import type {
    PackageScope,
 } from "../service/package_manifest";
 import type { PackageRetrievalSettings } from "../service/package_retrieval_settings";
-import type {
-   CodedFinding,
-   DeprecatedManifestKey,
-} from "../service/deprecated/manifest_keys";
+import type { ApiPackageWarning } from "../service/classification";
+import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys";
 import type { ModelEntitiesPlan } from "../service/entities/plan";
 import type {
    UpstreamSchemaReadings,
@@ -286,7 +284,7 @@ export interface LoadPackageResult {
       /** The manifest's `retrieval` block, validated, with prompt files read. */
       retrieval?: PackageRetrievalSettings;
       /** Findings with a code the manifest raised (a key an earlier release read). */
-      manifestFindings?: CodedFinding[];
+      manifestFindings?: ApiPackageWarning[];
       /** The manifest's `workflows` value, unvalidated: the main thread validates it and warns instead of throwing. */
       workflows?: unknown;
    };

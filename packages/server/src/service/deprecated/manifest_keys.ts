@@ -16,6 +16,7 @@
  */
 
 import { recordDeprecatedUsage } from "../../deprecated_usage_metrics";
+import type { ApiPackageWarning } from "../classification";
 
 export type DeprecatedManifestKey = "explores" | "queryableSources" | "agents";
 
@@ -41,31 +42,27 @@ export function recordDeprecatedManifestKeys(
    for (const key of keys ?? []) recordDeprecatedUsage(FEATURE[key]);
 }
 
-/** A package warning with a stable `code`. */
-export interface CodedFinding {
-   code: string;
-   message: string;
-}
-
 export const PACKAGE_AGENTS_NOT_READ = "PACKAGE_AGENTS_NOT_READ";
 export const PACKAGE_SKILLS_DIR_NOT_READ = "PACKAGE_SKILLS_DIR_NOT_READ";
 
 /** The finding for a manifest that declares `agents` at any value; none when it does not. */
 export function agentsNotReadFindings(parsed: {
    agents?: unknown;
-}): CodedFinding[] {
+}): ApiPackageWarning[] {
    return parsed.agents === undefined
       ? []
       : [
            {
               code: PACKAGE_AGENTS_NOT_READ,
               message: '"agents" is no longer read; declare "workflows"',
+              severity: "warn",
            },
         ];
 }
 
-export const SKILLS_DIR_NOT_READ: CodedFinding = {
+export const SKILLS_DIR_NOT_READ: ApiPackageWarning = {
    code: PACKAGE_SKILLS_DIR_NOT_READ,
+   severity: "warn",
    message:
       'skills/ is no longer read; move each skill into a skill set and list it under "workflows.default"',
 };

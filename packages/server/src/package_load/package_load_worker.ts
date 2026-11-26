@@ -35,9 +35,9 @@ import { parseMalloynb } from "../service/deprecated/malloynb";
 import {
    agentsNotReadFindings,
    declaredDeprecatedManifestKeys,
-   type CodedFinding,
    type DeprecatedManifestKey,
 } from "../service/deprecated/manifest_keys";
+import type { ApiPackageWarning } from "../service/classification";
 import * as fs from "fs";
 import * as path from "path";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -793,7 +793,7 @@ async function readPackageMetadata(
    manifestWarnings?: string[];
    deprecatedManifestKeys?: DeprecatedManifestKey[];
    retrieval?: PackageRetrievalSettings;
-   manifestFindings?: CodedFinding[];
+   manifestFindings?: ApiPackageWarning[];
    workflows?: unknown;
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);

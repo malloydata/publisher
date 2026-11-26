@@ -192,7 +192,6 @@ import {
    recordDeprecatedManifestKeys,
    recordSkillsDirNotRead,
    SKILLS_DIR_NOT_READ,
-   type CodedFinding,
 } from "./deprecated/manifest_keys";
 import {
    isMalloynbPath,
@@ -553,7 +552,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     */
    private rawWorkflows: unknown;
    /** What the load worker found in the manifest that an earlier release read and this one does not. */
-   private manifestFindings: CodedFinding[] = [];
+   private manifestFindings: ApiPackageWarning[] = [];
    /** The manifest's `retrieval` block (prompt files included), re-read on reload. */
    private retrievalSettings: PackageRetrievalSettings =
       DEFAULT_PACKAGE_RETRIEVAL;
@@ -2257,14 +2256,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.entitiesWarnings,
          ...this.readerWarnings,
          ...this.reportWarnings,
-         ...this.manifestFindings.map(({ code, message }) => ({
-            code,
-            message,
-            severity: "warn" as const,
-         })),
-         ...(this.workflows.skillsDirNotRead
-            ? [{ ...SKILLS_DIR_NOT_READ, severity: "warn" as const }]
-            : []),
+         ...this.manifestFindings,
+         ...(this.workflows.skillsDirNotRead ? [SKILLS_DIR_NOT_READ] : []),
          ...this.workflows.warnings.map((message) => ({
             message,
             severity: "warn" as const,
