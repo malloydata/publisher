@@ -87,6 +87,7 @@ import {
    storedTypeServesAs,
 } from "../stored_column_types";
 import {
+   preparedQueryView,
    queryTimezones,
    readPreparedQuery,
    resolveStructRefSource,
@@ -303,6 +304,13 @@ interface ServedCopyHost {
       queryString: string,
       givens?: Record<string, unknown>,
    ): Promise<string | undefined>;
+   /**
+    * `queryString`'s prepared query compiled against the author's model
+    * (`getPreparedQuery()`), reading no table: which source it runs against,
+    * so a decline names only the columns that source and its joins leave
+    * out. Absent, or a compile that fails, names every source's.
+    */
+   authorPreparedQuery?(queryString: string): Promise<unknown>;
    /**
     * Build the compiled copy's QueryModel once, so every query compiled
     * against it reuses it rather than building its own (the host's
@@ -753,6 +761,32 @@ export class ServedCopyServe {
    }
 
    /**
+    * The sources a query reads, by `sourceID`, each with the join path it is
+    * reached through ("" for the queried source and what it derives from):
+    * read from the author's compile, since the copy's failed. Undefined when
+    * that compile is unavailable or fails.
+    */
+   private async queriedSourceIDs(
+      compiled: Compiled,
+      queryString: string,
+   ): Promise<ReadonlyMap<string, string> | undefined> {
+      if (!compiled.leftOutColumns?.size) return undefined;
+      try {
+         const prepared = await this.host.authorPreparedQuery?.(queryString);
+         if (prepared === undefined) return undefined;
+         const view = preparedQueryView(prepared);
+         const modelDef = view.modelDef ?? this.host.modelDef();
+         const struct = resolveStructRefSource(
+            view.structRef,
+            modelDef as never,
+         );
+         return struct ? sourceIDsReadThrough(struct, modelDef) : undefined;
+      } catch {
+         return undefined;
+      }
+   }
+
+   /**
     * The attempt every check reads: the caller's text loaded on the copy,
     * its virtual map, and the memoized decline. Declines at once when the
     * copy re-roots nothing, or already declined this text.
@@ -824,59 +858,18 @@ export class ServedCopyServe {
             // A stored column the re-root leaves out of its table's type (no
             // cast reads what the table holds as the source declares it: the
             // table altered outside a build, or the source retyped since).
-            const storedLeftOut = new Set(
-               [...(compiled.leftOutColumns?.values() ?? [])].flatMap((n) => [
-                  ...n,
-               ]),
+            const leftOut = columnLeftOutDecline(
+               compiled,
+               error,
+               queryString,
+               await this.queriedSourceIDs(compiled, queryString),
             );
-            if (
-               storedLeftOut.size > 0 &&
-               readsMissingName(storedLeftOut, error, queryString)
-            ) {
-               // The names the compile could not find, where it says.
-               const missing = new Set(
-                  [
-                     ...String(
-                        error instanceof Error ? error.message : error,
-                     ).matchAll(/'([^']+)' is not defined/g),
-                  ].map((m) => m[1]),
-               );
-               const read = [...storedLeftOut].filter((n) => missing.has(n));
-               const named = read.length > 0 ? read : [...storedLeftOut];
-               // The tables whose re-root leaves one of those columns out.
-               const sourceIDs = new Set(
-                  [...(compiled.leftOutColumns ?? [])]
-                     .filter(([, names]) =>
-                        names.some((n) => named.includes(n)),
-                     )
-                     .map(([sourceID]) => sourceID),
-               );
-               const tableIds = compiled.aliased
-                  .filter((b) => b.sourceIDs?.some((id) => sourceIDs.has(id)))
-                  .map((b) => b.virtualHandle);
-               // Each column named with why a table leaves it out (its
-               // declared and stored types, or that the table lacks it):
-               // each distinct reason of the tables that leave it out.
-               const why = [
-                  ...new Set(
-                     named.flatMap((c) => {
-                        const reasons = [...sourceIDs]
-                           .map((id) => compiled.leftOutWhy?.get(id)?.get(c))
-                           .filter((w): w is string => w !== undefined);
-                        // Every re-root records why for each column it
-                        // leaves out; one that did not is never named, as
-                        // it may be hidden.
-                        return reasons.length > 0
-                           ? reasons
-                           : [noCastPhrase("a stored column")];
-                     }),
-                  ),
-               ];
+            if (leftOut) {
                decline(
                   "the query reads a stored column the served copy leaves out of its table's type",
                   "served_copy_column_left_out",
-                  `the stored table cannot answer with live's columns: ${why.join("; ")}`,
-                  tableIds,
+                  leftOut.detail,
+                  leftOut.tableIds,
                );
             }
             throw error;
@@ -3303,6 +3296,120 @@ function leftOutPhraseOf(subject: RerootSubject, c: ServedColumn): string {
       subject.fieldsByName.get(c.name),
       c.type,
    );
+}
+
+/** How deep {@link sourceIDsReadThrough} follows joins of joins. */
+const JOIN_DEPTH_LIMIT = 8;
+
+/**
+ * The `sourceID`s a query on `struct` can read, each with the join path it is
+ * reached through: "" for `struct` and every source it derives from
+ * ({@link SourceMap.chainOf}), `a` or `a.b` for a join's (and what it derives
+ * from). The first path found for an id is kept.
+ */
+export function sourceIDsReadThrough(
+   struct: unknown,
+   modelDef: unknown,
+): Map<string, string> {
+   const map = SourceMap.of(modelDef);
+   const out = new Map<string, string>();
+   const walk = (def: unknown, path: string, depth: number) => {
+      for (const id of map.chainOf(def)) {
+         if (!out.has(id)) out.set(id, path);
+      }
+      if (depth >= JOIN_DEPTH_LIMIT) return;
+      const fields = (def as { fields?: unknown } | undefined)?.fields;
+      if (!Array.isArray(fields)) return;
+      for (const f of fields as {
+         join?: unknown;
+         as?: string;
+         name?: string;
+      }[]) {
+         if (f?.join === undefined) continue;
+         const name = f.as ?? f.name;
+         if (!name) continue;
+         walk(f, path ? `${path}.${name}` : name, depth + 1);
+      }
+   };
+   walk(struct, "", 0);
+   return out;
+}
+
+/**
+ * The caller's detail and the tables of a query whose compile on the copy
+ * failed for a stored column a re-root leaves out of its table's type;
+ * undefined when the failure is not that. With `readIDs` (the sources the
+ * query reads, by {@link sourceIDsReadThrough}), only those sources' tables
+ * are named, a joined one's column by its join path; another source in the
+ * same model that leaves out a column of the same name is not. When none of
+ * them leaves the column out, or `readIDs` is unknown, every table that does
+ * is named.
+ */
+export function columnLeftOutDecline(
+   compiled: Pick<Compiled, "leftOutColumns" | "leftOutWhy" | "aliased">,
+   error: unknown,
+   queryString: string,
+   readIDs?: ReadonlyMap<string, string>,
+): { detail: string; tableIds: string[] } | undefined {
+   const storedLeftOut = new Set(
+      [...(compiled.leftOutColumns?.values() ?? [])].flatMap((n) => [...n]),
+   );
+   if (
+      storedLeftOut.size === 0 ||
+      !readsMissingName(storedLeftOut, error, queryString)
+   ) {
+      return undefined;
+   }
+   // The names the compile could not find, where it says.
+   const missing = new Set(
+      [
+         ...String(error instanceof Error ? error.message : error).matchAll(
+            /'([^']+)' is not defined/g,
+         ),
+      ].map((m) => m[1]),
+   );
+   const read = [...storedLeftOut].filter((n) => missing.has(n));
+   const named = read.length > 0 ? read : [...storedLeftOut];
+   // The tables whose re-root leaves one of those columns out: those the
+   // query reads, when it is known which, and any of them leaves one out.
+   const leaving = [...(compiled.leftOutColumns ?? [])]
+      .filter(([, names]) => names.some((n) => named.includes(n)))
+      .map(([sourceID]) => sourceID);
+   const scoped = readIDs ? leaving.filter((id) => readIDs.has(id)) : [];
+   const sourceIDs = new Set(scoped.length > 0 ? scoped : leaving);
+   const pathOf = (id: string) => (scoped.length > 0 ? readIDs?.get(id) : "");
+   const tableIds = compiled.aliased
+      .filter((b) => b.sourceIDs?.some((id) => sourceIDs.has(id)))
+      .map((b) => b.virtualHandle);
+   // Each column named with why a table leaves it out (its declared and
+   // stored types, or that the table lacks it): each distinct reason of the
+   // tables that leave it out, a joined source's column by its join path.
+   const why = [
+      ...new Set(
+         named.flatMap((c) => {
+            const reasons = [...sourceIDs].flatMap((id) => {
+               const phrase = compiled.leftOutWhy?.get(id)?.get(c);
+               if (phrase === undefined) return [];
+               const path = pathOf(id);
+               const own = `column \`${c}\``;
+               return [
+                  path && phrase.startsWith(own)
+                     ? `column \`${path}.${c}\`${phrase.slice(own.length)}`
+                     : phrase,
+               ];
+            });
+            // Every re-root records why for each column it leaves out; one
+            // that did not is never named, as it may be hidden.
+            return reasons.length > 0
+               ? reasons
+               : [noCastPhrase("a stored column")];
+         }),
+      ),
+   ];
+   return {
+      detail: `the stored table cannot answer with live's columns: ${why.join("; ")}`,
+      tableIds,
+   };
 }
 
 /** The phrase for a column no cast reads as declared, as a decline has said it. */
