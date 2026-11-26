@@ -28,6 +28,10 @@ THREE RULES
   out. A package name is unique only within an environment, so with
   `[optimization] production_environment` set, rows from any other
   environment are left out too.
+- **Never a draft's traffic.** A row whose `origin` is `draft` ran against an
+  unpublished edit, so it says nothing about any published version. The
+  host skill sets it: a host may log a draft query under the published
+  package's name.
 - **Never the loop's own traffic.** Eval runs and replays query the served
   package too. A row from an environment in `[optimization] exclude_environments`,
   or whose `origin` is `eval` or `replay`, is left out and counted. Without
@@ -61,6 +65,8 @@ ALIASES = {"query": "query_text", "timestamp": "at", "request_id": "turn_id",
            "trace_id": "execution_id", "durationMs": "duration_ms", "packageVersion": "model_version",
            "version_id": "model_version"}
 LOOP_ORIGINS = ("eval", "replay")
+# Traffic against an unpublished edit: not any published version's.
+DRAFT_ORIGIN = "draft"
 WATERMARKS = "watermarks.json"
 
 
@@ -99,6 +105,8 @@ def why_left_out(row: dict[str, Any], table: str, package: str,
         return "another environment"
     if row.get("origin") in LOOP_ORIGINS:
         return f"origin {row['origin']}"
+    if row.get("origin") == DRAFT_ORIGIN:
+        return "a draft, not a published version"
     return None
 
 

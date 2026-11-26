@@ -26,6 +26,7 @@
   python3 eval.py import-run --set <set-dir> --from <dir>         # a run rebuilt from those tables
   python3 eval.py ingest   --set <set-dir> --turns t.jsonl --queries q.jsonl   # production logs into the history tables
   python3 eval.py judge-sample pick --set <set-dir> --label prod-01   # draw production turns to judge; `collect` keeps the verdicts
+  python3 eval.py build-set --set <set-dir> --label prod-01   # production questions and queries into the set
   python3 eval.py predict  --set <set-dir> --quality-run fix-01 --commit <sha>   # what a change should do in production
   python3 eval.py outcomes --set <set-dir>         # what it did, once published and due
 
@@ -53,7 +54,7 @@ import config  # noqa: E402
 
 VERBS = ("check", "serve", "publish", "experiment", "verify", "run", "replay",
          "query-replay", "accept", "diagnose", "improve", "package", "history", "push", "pull",
-         "routine", "runs", "versions", "export", "import-run", "simulate", "ingest", "judge-sample", "predict", "outcomes")
+         "routine", "runs", "versions", "export", "import-run", "simulate", "ingest", "judge-sample", "build-set", "predict", "outcomes")
 
 
 def flag_value(args: list[str], flag: str) -> str | None:
@@ -240,6 +241,9 @@ def dispatch(argv: list[str]) -> int:
     if verb == "judge-sample":
         import judge_sample
         return judge_sample.main(rest)
+    if verb == "build-set":
+        import build_set
+        return build_set.main(rest)
     if verb in ("run", "replay", "query-replay"):
         rest = with_experiment(verb, rest)
     if verb == "verify":

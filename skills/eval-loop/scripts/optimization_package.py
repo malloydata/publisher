@@ -37,7 +37,7 @@ APPENDED: dict[str, tuple[tuple[str, ...], str, tuple[str, ...]]] = {
     # Model 1, written by ingest_logs.py.
     "prod_turns": (("turn_id",), "at", (
         "turn_id", "session_id", "at", "environment", "package", "model_version", "client",
-        "question", "n_get_context", "n_execute", "n_errors", "tokens", "cost_usd")),
+        "question", "n_get_context", "n_execute", "n_errors", "tokens", "cost_usd", "kind")),
     "prod_transcripts": (("turn_id",), "", ("turn_id", "transcript")),
     "prod_queries": (("execution_id",), "at", (
         "execution_id", "at", "environment", "package", "model_version", "model_path", "source",

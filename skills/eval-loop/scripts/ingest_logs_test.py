@@ -43,6 +43,12 @@ class Ingest(unittest.TestCase):
         self.assertEqual(got["left_out"], {"the loop's own environment": 1, "origin replay": 1,
                                            "another package": 1, "no turn_id": 1})
 
+    def test_a_drafts_traffic_is_left_out_and_counted(self):
+        got = il.ingest(self.data, "prod_turns", [turn("t1"), turn("t2", origin="draft")],
+                        "storefront", set())
+        self.assertEqual((got["added"], got["left_out"]),
+                         (1, {"a draft, not a published version": 1}))
+
     def test_a_package_of_the_same_name_in_another_environment_is_left_out(self):
         got = il.ingest(self.data, "prod_turns", [turn("t1"), turn("t2", environment="staging")],
                         "storefront", set(), "prod")
