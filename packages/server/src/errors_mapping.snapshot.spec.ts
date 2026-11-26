@@ -268,7 +268,10 @@ const CASES: Array<[string, () => unknown]> = [
       () => new DashboardNotFoundError("Report not found"),
    ],
    ["SkillNotFoundError", () => new SkillNotFoundError("Skill not found")],
-   ["WorkflowNotFoundError", () => new WorkflowNotFoundError("Workflow not found")],
+   [
+      "WorkflowNotFoundError",
+      () => new WorkflowNotFoundError("Workflow not found"),
+   ],
    ["ConflictError", () => new ConflictError("already exists")],
    [
       "ConnectionNotFoundError",

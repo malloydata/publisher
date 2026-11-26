@@ -30,8 +30,6 @@ import { truncateDoc } from "../model/package_entities";
 import { type ResolvedRequest } from "../model/types";
 import { type SourceCard } from "./response";
 
-/** A page's character budget for its cards. */
-export const FCJ_MAX_CHARS = 35_000;
 /** Room kept for the rest of the payload (clusters, warnings) beside the cards. */
 export const FCJ_RESERVE_CHARS = 1_000;
 /** A description is never shortened below this many characters. */

@@ -111,6 +111,8 @@ export const DEFAULT_POSTGRES_POOL_MAX = 5;
  * Override at startup via `PUBLISHER_CALLER_HEADER`.
  */
 export const DEFAULT_CALLER_HEADER = "x-publisher-caller";
+/** The most characters a tool result carries: a search page's card budget, and what `get_skill` answers within. */
+export const FCJ_MAX_CHARS = 35_000;
 export const TEMP_DIR_PATH = os.tmpdir();
 export const PUBLISHER_DATA_DIR = "publisher_data";
 

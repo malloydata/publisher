@@ -27,7 +27,7 @@ import {
 } from "./skill_files";
 import skillsBundle from "./skills_bundle.json";
 import { compareText } from "../../compare_text";
-import { FCJ_MAX_CHARS } from "../../retrieval/search/pages";
+import { FCJ_MAX_CHARS } from "../../constants";
 import { MODEL_FILE_SUFFIX, NOTEBOOK_FILE_SUFFIX } from "../../constants";
 import { canonicalSha } from "../package_revision";
 import {

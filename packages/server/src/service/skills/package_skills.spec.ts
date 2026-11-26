@@ -263,7 +263,9 @@ describe("a skill set read through a workflow", () => {
       expect(warnings).toEqual([]);
       expect(skills).toHaveLength(1);
       expect(skills[0]!.served.name).toBe("revenue-rules");
-      expect(skills[0]!.served.description).toBe("How revenue is defined here.");
+      expect(skills[0]!.served.description).toBe(
+         "How revenue is defined here.",
+      );
       expect(skills[0]!.catalog.frontmatter).toEqual({
          name: "revenue-rules",
          description: "How revenue is defined here.",

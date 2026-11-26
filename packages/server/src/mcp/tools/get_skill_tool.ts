@@ -7,7 +7,7 @@ import type { PackageLookup } from "../../service/environment_ports";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
 import type { RequestExtra } from "../request_extra";
-import { FCJ_MAX_CHARS } from "../../retrieval/search/pages";
+import { FCJ_MAX_CHARS } from "../../constants";
 import { type BundledSkill } from "../../service/skills/build_skills_bundle";
 import {
    fileChangedMessage,

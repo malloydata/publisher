@@ -7,7 +7,7 @@ import fs from "fs";
 import os from "os";
 import { createHash } from "crypto";
 import path from "path";
-import { FCJ_MAX_CHARS } from "../../retrieval/search/pages";
+import { FCJ_MAX_CHARS } from "../../constants";
 import {
    advertisedSkills,
    emptyWorkflows,

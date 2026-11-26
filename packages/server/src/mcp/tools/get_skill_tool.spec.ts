@@ -8,7 +8,7 @@ import {
    type ServedSkill,
    type SkillFileRead,
 } from "../../service/skills/package_skills";
-import { FCJ_MAX_CHARS } from "../../retrieval/search/pages";
+import { FCJ_MAX_CHARS } from "../../constants";
 import { registerGetSkillTool } from "./get_skill_tool";
 import { fakeOf } from "../../test_helpers/store_fakes";
 import type { PackageLookup } from "../../service/environment_ports";
