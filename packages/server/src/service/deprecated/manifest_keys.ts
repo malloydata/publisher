@@ -11,8 +11,9 @@
  * once per load or reload. Dropping a key is deleting its entry here.
  *
  * Two findings say a package's content is no longer read, each with a stable
- * `code` so affected packages can be counted before a deploy: the `agents`
- * key, and a root `skills/` directory no workflow lists as a skill set.
+ * `code` that names the package after the upgrade: the `agents` key, and a
+ * root `skills/` directory no workflow lists as a skill set. The usage metric
+ * counts loads, not packages.
  */
 
 import { recordDeprecatedUsage } from "../../deprecated_usage_metrics";
