@@ -56,6 +56,7 @@ import {
 import { sourcesInBuildOrder } from "../domain/compiled_build_plan";
 import {
    classifySourceFailure,
+   strictMissReason,
    failedUpstreamsOf,
    type FailedUpstream,
 } from "./build_failure_class";
@@ -654,16 +655,28 @@ export function recordInstructedBuildFailure(
    // Classified against the upstreams that already failed in this run: a
    // dependent refused because its upstream failed fails for the upstream's
    // reason, which it names, and inherits the upstream's classification.
+   const failedUpstreams = failedUpstreamsOf(
+      persistSource.sourceID,
+      buildErr,
+      run.upstreamsBySourceID,
+      run.failedBySourceID,
+   );
    const { retryable, upstreamDetail } = classifySourceFailure(
       buildErr,
-      failedUpstreamsOf(
-         persistSource.sourceID,
-         buildErr,
-         run.upstreamsBySourceID,
-         run.failedBySourceID,
-      ),
+      failedUpstreams,
    );
-   if (upstreamDetail) reason = `${reason}; ${upstreamDetail}`;
+   // Malloy's strict manifest miss is the compiler's wording (a source id, a
+   // build id): said instead as the upstream by name and file, and why it has
+   // no table, with what Malloy adds after it read from the redacted
+   // message. The upstreams' reasons were redacted when recorded.
+   const missReason = strictMissReason(
+      persistSource.name,
+      buildErr,
+      failedUpstreams,
+      { message: reason, packagePath: run.environment.getPackagePath?.() },
+   );
+   if (missReason !== undefined) reason = missReason;
+   else if (upstreamDetail) reason = `${reason}; ${upstreamDetail}`;
    run.failedBySourceID.set(persistSource.sourceID, {
       name: persistSource.name,
       reason,
