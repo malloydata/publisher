@@ -218,6 +218,22 @@ export interface Capabilities {
     * a 4-byte float live and not on the copy. Undefined: none.
     */
    binary64Types: readonly string[] | undefined;
+   /**
+    * Where a database table's container (the dataset or schema a `name=`
+    * places it in) is read, to refuse a table whose container does not exist
+    * (`container_not_found`, run/target_container_read.ts): `dataset`, a
+    * BigQuery dataset's metadata, in a project and location; `pg_namespace`,
+    * Postgres's schemas in the connection's database; `schemata`, an
+    * `information_schema.schemata` a database qualifies (Snowflake);
+    * `duckdb_schemas`, DuckDB's schemas and attached databases. Undefined:
+    * not checked, and the build finds out.
+    */
+   containerCatalog:
+      | "dataset"
+      | "pg_namespace"
+      | "schemata"
+      | "duckdb_schemas"
+      | undefined;
 }
 
 const NONE: Capabilities = Object.freeze({
@@ -246,6 +262,7 @@ const NONE: Capabilities = Object.freeze({
    stringCollation: undefined,
    ungroupableTypes: undefined,
    binary64Types: undefined,
+   containerCatalog: undefined,
 });
 
 /** Each dialect's capabilities. */
@@ -267,9 +284,11 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       leafBudget: 120,
       stringCollation: "instance",
       binary64Types: ["DOUBLE", "FLOAT8"],
+      containerCatalog: "duckdb_schemas",
    }),
    postgres: Object.freeze({
       ...NONE,
+      containerCatalog: "pg_namespace",
       stringCollation: "column",
       passthroughNumericAsDouble: true,
       incrementalSourceRange: true,
@@ -318,6 +337,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       onlyBigIntegerType: "INT64",
       leafBudget: 120,
       stringCollation: "dataset",
+      containerCatalog: "dataset",
       ungroupableTypes: {
          malloy: ["json", "array", "record"],
          native: ["geography"],
@@ -325,6 +345,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
    }),
    snowflake: Object.freeze({
       ...NONE,
+      containerCatalog: "schemata",
       decodedTablePath: true,
       catalogHidesTables: true,
       incrementalSourceRange: true,

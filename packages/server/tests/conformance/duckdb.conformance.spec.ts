@@ -36,6 +36,8 @@ import {
    transactionalSwapSql,
 } from "../../src/service/materialization/run/warehouse_sql";
 
+import { readTargetContainer } from "../../src/service/materialization/run/target_container_read";
+
 const CAN = CAPABILITIES.duckdb;
 
 describe("DuckDB conformance", () => {
@@ -291,6 +293,23 @@ describe("DuckDB conformance", () => {
          bare: { columns: ["v"], types: new Map([["v", "INTEGER"]]) },
       });
       expect(found).toBe(CAN.decodedTablePath);
+   });
+
+   it("containerCatalog: duckdb_schemas() finds a schema, case-blind, and an attached database, and not a missing one", async () => {
+      await duck.runSQL(`CREATE SCHEMA IF NOT EXISTS "Reports"`);
+      const read = (c: string) => readTargetContainer(duck, c);
+      expect({
+         schema: await read("reports"),
+         database: await read("conformance"),
+         qualified: await read("conformance.Reports"),
+         missing: await read("no_such_schema"),
+      }).toEqual({
+         schema: { found: true },
+         database: { found: true },
+         qualified: { found: true },
+         missing: { notFound: true },
+      });
+      expect(CAN.containerCatalog).toBe("duckdb_schemas");
    });
 
    it("utcSessions: the session's TimeZone is UTC", async () => {

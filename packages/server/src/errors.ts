@@ -924,6 +924,25 @@ export class DestinationNotFoundError extends Error {
    }
 }
 
+/**
+ * A database build's table is placed, by its `name=`, in a container (a
+ * BigQuery dataset, a schema) its warehouse does not hold, or holds in
+ * another location than the connection declares. No build creates one, so
+ * the build stops before it writes anything: deterministic, 422. The plan
+ * refuses such a table as `container_not_found`; this is the build's own
+ * check, for a plan whose read failed or a container dropped since.
+ */
+export class ContainerNotFoundError extends Error {
+   get kind(): "container_not_found" {
+      return "container_not_found";
+   }
+
+   constructor(message: string) {
+      super(message);
+      this.name = "ContainerNotFoundError";
+   }
+}
+
 /** The storage destination a request's path addresses is not configured: 404. */
 export class StorageDestinationNotFoundError extends Error {
    get kind(): "storage_destination_not_found" {
@@ -1756,6 +1775,7 @@ interface ErrorByKind {
    result_truncated: ResultTruncatedError;
    result_shape: ResultShapeError;
    destination_not_found: DestinationNotFoundError;
+   container_not_found: ContainerNotFoundError;
    storage_destination_not_found: StorageDestinationNotFoundError;
    storage_catalog_not_found: StorageCatalogNotFoundError;
    connection_auth: ConnectionAuthError;
@@ -1847,6 +1867,7 @@ const ERROR_CLASSES: {
    result_truncated: ResultTruncatedError,
    result_shape: ResultShapeError,
    destination_not_found: DestinationNotFoundError,
+   container_not_found: ContainerNotFoundError,
    storage_destination_not_found: StorageDestinationNotFoundError,
    storage_catalog_not_found: StorageCatalogNotFoundError,
    connection_auth: ConnectionAuthError,
@@ -2195,6 +2216,7 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    },
    storage_catalog_not_found: { status: 404, mcp: { advice: "internal" } },
    destination_not_found: { status: 422, mcp: { advice: "internal" } },
+   container_not_found: { status: 422, mcp: { advice: "internal" } },
    connection_auth: {
       // The driver's text can name the user, the account or the host, so it
       // is logged and the answer says only what to fix. warn: a

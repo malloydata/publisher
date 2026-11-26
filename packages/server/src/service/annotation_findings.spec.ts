@@ -487,7 +487,7 @@ describe("annotation findings on a loaded package", () => {
                   [{ materialization: { scope: "version" } }, ""],
                ] as const) {
                   for (const [name, written] of [
-                     [' name="analytics.orders_t"', "analytics.orders_t"],
+                     [' name="main.orders_t"', "main.orders_t"],
                      ["", "orders"],
                   ] as const) {
                      await fs.rm(path.join(envPath, "pkg"), {
