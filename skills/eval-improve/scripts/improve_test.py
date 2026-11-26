@@ -545,5 +545,60 @@ class WhatTheImproverIsToldAndWhatItsDiffIsCheckedFor(unittest.TestCase):
         self.assertIn("(none recorded for this set)", self.prompt)
 
 
+class PreExisting(unittest.TestCase):
+    """An edit is blocked by what it broke, not by what the set already had."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.set_dir = self.tmp / "set"
+        self.set_dir.mkdir()
+        # Names an id the model text never mentions: the verifier's own name
+        # check fails it, on the edited and the unedited model alike.
+        (self.set_dir / "cases.jsonl").write_text(json.dumps({
+            "qid": "q1", "question": "?", "golden": {"kind": "criteria", "rubric": "r"},
+            "expectedEntities": {"required": ["dimension:orders:never_named"]}}) + "\n")
+        model = self.tmp / "model"
+        model.mkdir()
+        (model / "shop.malloy").write_text("source: orders is x\n")
+        g = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        subprocess.run(["git", "init", "-q"], cwd=model, check=True)
+        subprocess.run(g + ["add", "-A"], cwd=model, check=True)
+        subprocess.run(g + ["commit", "-q", "-m", "m"], cwd=model, check=True)
+        self.model = model
+        self.art = self.tmp / "art"
+        self.art.mkdir()
+        self.a = argparse.Namespace(set_dir=self.set_dir, server_root=None, model_dir=model,
+                                    environment="truth", package="shop", truth_publisher=None)
+
+    def test_a_finding_the_unedited_model_also_has_does_not_block(self):
+        (self.model / "shop.malloy").write_text("source: orders is x\n// an edit\n")
+        r = improve.verify_goldens(self.a, self.art, "a diff")
+        self.assertTrue(r.get("ran"), r)
+        self.assertTrue(r["clean"], r)
+        self.assertTrue(any("never_named" in f for f in r["preExisting"]))
+        self.assertIn("not caused by this edit", (self.art / "verify_goldens.txt").read_text())
+
+    def test_a_finding_the_edit_introduced_still_blocks(self):
+        (self.set_dir / "cases.jsonl").write_text(json.dumps({
+            "qid": "q1", "question": "?", "golden": {"kind": "criteria", "rubric": "r"},
+            "expectedEntities": {"required": ["dimension:orders:total"]}}) + "\n")
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                        "commit", "-q", "--allow-empty", "-m", "x"], cwd=self.model, check=True)
+        (self.model / "shop.malloy").write_text("source: orders is x extend { dimension: total is 1 }\n")
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                        "commit", "-q", "-am", "names total"], cwd=self.model, check=True)
+        (self.model / "shop.malloy").write_text("source: orders is x\n")  # the edit drops it
+        r = improve.verify_goldens(self.a, self.art, "a diff")
+        self.assertFalse(r["clean"], r)
+
+    def test_hard_failures_reads_drift_and_findings_but_not_review_items(self):
+        text = ("  OK      a  1 rows\n  DIFF    b   golden 1, query 2\n\n"
+                "1 finding(s) besides value drift:\n  b: required entity x does not appear\n\n"
+                "2 rubric figure(s) to review (not failures):\n  b: rubric asserts 3\n")
+        self.assertEqual(improve.hard_failures(text),
+                         {"DIFF b golden 1, query 2", "b: required entity x does not appear"})
+
+
 if __name__ == "__main__":
     unittest.main()

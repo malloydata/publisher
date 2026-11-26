@@ -65,8 +65,10 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from typing import Any
@@ -376,9 +378,74 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
                        f"see artifacts/clusters/*/verify_goldens.txt",
                 "model": str(model),
                 "tail": (p.stderr or p.stdout or "").strip().splitlines()[-25:]}
-    return {"ran": True, "clean": p.returncode == 0,
-            "model": str(model),
-            "tail": (p.stdout or p.stderr or "").strip().splitlines()[-25:]}
+    out = {"ran": True, "clean": p.returncode == 0,
+           "model": str(model),
+           "tail": (p.stdout or p.stderr or "").strip().splitlines()[-25:]}
+    if p.returncode == 1:
+        # The question is whether THIS edit broke a golden. A finding the set
+        # already had before the edit (a set name the model text never
+        # mentions, say) is not that, and blocking on it blocked every edit on
+        # such a set: the shipped storefront tour could never accept one.
+        before = unedited_failures(a, cmd, model)
+        if before is not None:
+            new_ones = sorted(hard_failures(p.stdout) - before)
+            out["preExisting"] = sorted(hard_failures(p.stdout) & before)
+            out["clean"] = not new_ones
+            if out["preExisting"]:
+                (d / "verify_goldens.txt").write_text(
+                    p.stdout + p.stderr + "\n\nAlso failing on the unedited model, so not "
+                    "caused by this edit:\n" + "\n".join(f"  {f}" for f in out["preExisting"]) + "\n")
+    return out
+
+
+def hard_failures(text: str) -> set[str]:
+    """The verifier's failing lines: each drifted or erroring golden, and each
+    finding it lists under "finding(s) besides value drift"."""
+    out: set[str] = set()
+    in_findings = False
+    for line in text.splitlines():
+        if line.startswith(("  DIFF", "  ERROR")):
+            out.add(" ".join(line.split()))
+        if line.rstrip().endswith("finding(s) besides value drift:"):
+            in_findings = True
+            continue
+        if in_findings:
+            if not line.startswith("  "):
+                in_findings = False
+            else:
+                out.add(line.strip())
+    return out
+
+
+def unedited_failures(a: argparse.Namespace, cmd: list[str],
+                      model: pathlib.Path) -> set[str] | None:
+    """The verifier's failures on the model as committed, before the edit, or
+    None when that cannot be read (not a git checkout): then the edited
+    result stands on its own, as before."""
+    if not a.model_dir:
+        return None
+    root = pathlib.Path(a.model_dir)
+    try:
+        prefix = subprocess.run(["git", "rev-parse", "--show-prefix"], cwd=root,
+                                capture_output=True, text=True, check=True).stdout.strip()
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix="unedited-"))
+        tar = subprocess.run(["git", "archive", f"HEAD:{prefix}" if prefix else "HEAD"],
+                             cwd=root, capture_output=True, check=True).stdout
+        subprocess.run(["tar", "-x", "-C", str(tmp)], input=tar, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    try:
+        same = tmp / model.name if model.is_file() else tmp
+        if not same.exists():
+            return None
+        i = cmd.index("--model")
+        p = subprocess.run(cmd[:i + 1] + [str(same)] + cmd[i + 2:],
+                           capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return hard_failures(p.stdout) if p.returncode in (0, 1) else None
 
 
 def golden_keys(cases: dict[str, Any], set_dir: pathlib.Path | None
