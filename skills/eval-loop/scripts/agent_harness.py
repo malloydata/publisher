@@ -43,6 +43,7 @@ omitting it reproduces the exact failure this module exists to remove.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
@@ -53,7 +54,7 @@ import tempfile
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
@@ -342,12 +343,63 @@ def resolve_closure(names: Iterable[str],
     return sorted(seen), sorted(missing)
 
 
+def package_skill_dirs(sets: Iterable[pathlib.Path]) -> dict[str, pathlib.Path]:
+    """The package skills a run installs, by name: each skill set's skill folders.
+
+    `sets` are the skill-set folders of the package's `default` workflow, in
+    manifest order; a name two sets hold is taken from the first, as the server
+    serves it. Only a skill folder (a real directory holding a real SKILL.md) is
+    taken, never the package: an eval set lives at `<package>/evals/`, so a copy
+    that reached one directory too wide would hand the answerer the goldens.
+    """
+    found: dict[str, pathlib.Path] = {}
+    for root in sets:
+        if not root.is_dir():
+            raise FileNotFoundError(
+                f"--package-skills=install was asked for but {root} is not a "
+                f"directory. Installing nothing would silently measure the "
+                f"'off' arm under the 'install' label, so this is fatal.")
+        # A link can point anywhere, `evals/` included, and still look right.
+        if root.is_symlink() or (root / "publisher.json").exists():
+            raise ValueError(
+                f"refusing to install {root}: expected a real skill-set "
+                f"directory, not a link or a package root. Anything wider "
+                f"risks copying the eval set into the answerer's workspace.")
+        for child in sorted(root.iterdir()):
+            skill_md = child / "SKILL.md"
+            if (child.is_dir() and not child.is_symlink()
+                    and not child.name.startswith(".")
+                    and skill_md.is_file() and not skill_md.is_symlink()):
+                found.setdefault(child.name, child)
+    return found
+
+
+def package_skills_sha(skills: dict[str, pathlib.Path]) -> str:
+    """A content hash of the files `build_workspace` installs for `skills`."""
+    files: list[tuple[str, pathlib.Path]] = []
+    for name, src in skills.items():
+        # os.walk does not enter a linked directory, and a linked file is not
+        # installed, so neither is hashed.
+        for here, _dirs, names in os.walk(src):
+            for n in names:
+                f = pathlib.Path(here) / n
+                if not f.is_symlink():
+                    files.append((f"{name}/{f.relative_to(src)}", f))
+    h = hashlib.sha256()
+    for rel, f in sorted(files):
+        h.update(rel.encode())
+        h.update(b"\0")
+        h.update(f.read_bytes())
+        h.update(b"\0")
+    return h.hexdigest()
+
+
 def build_workspace(skills: Iterable[str],
                     skills_root: pathlib.Path | Iterable[pathlib.Path],
                     mcp_url: str | None, prefix: str = "agent-",
                     depth: int = 1,
                     mcp_server: str = "publisher",
-                    package_skills_dir: pathlib.Path | None = None
+                    package_skills_dirs: Sequence[pathlib.Path] = ()
                     ) -> pathlib.Path:
     """A scratch cwd holding `.claude/skills/` and an MCP config.
 
@@ -383,37 +435,15 @@ def build_workspace(skills: Iterable[str],
     # manifest skill REPLACES it -- the same shadowing the server does when it
     # serves them, so the installed path and the tool path agree about which
     # guide is in force.
-    #
-    # Only the package's `skills/` subtree is copied, never the package. An
-    # eval set lives at `<package>/evals/`, so copying the package would hand
-    # the answerer the goldens.
-    if package_skills_dir is not None:
-        if not package_skills_dir.is_dir():
-            raise FileNotFoundError(
-                f"--package-skills=install was asked for but "
-                f"{package_skills_dir} is not a directory. Installing nothing "
-                f"would silently measure the 'off' arm under the 'install' "
-                f"label, so this is fatal.")
-        # A skills/ that is a link can point anywhere, `evals/` included, and
-        # still pass a name check on the unresolved path.
-        if (package_skills_dir.is_symlink()
-                or package_skills_dir.resolve().name != "skills"):
-            raise ValueError(
-                f"refusing to install {package_skills_dir}: expected a real "
-                f"directory named 'skills', not a link. Anything wider risks "
-                f"copying the eval set into the answerer's workspace.")
-        for child in sorted(package_skills_dir.iterdir()):
-            if (not child.is_dir() or child.is_symlink()
-                    or child.name.startswith(".")):
-                continue
-            target = dest / child.name
-            if target.exists():
-                shutil.rmtree(target)
-            # A link inside a skill could point at the eval set; copy none.
-            shutil.copytree(child, target, symlinks=True,
-                            ignore=lambda src, names: [
-                                n for n in names
-                                if (pathlib.Path(src) / n).is_symlink()])
+    for name, src in package_skill_dirs(package_skills_dirs).items():
+        target = dest / name
+        if target.exists():
+            shutil.rmtree(target)
+        # A link inside a skill could point at the eval set; copy none.
+        shutil.copytree(src, target, symlinks=True,
+                        ignore=lambda d, names: [
+                            n for n in names
+                            if (pathlib.Path(d) / n).is_symlink()])
     if mcp_url:
         (work / "mcp.json").write_text(json.dumps(
             {"mcpServers": {mcp_server: {"type": "http", "url": mcp_url}}}))

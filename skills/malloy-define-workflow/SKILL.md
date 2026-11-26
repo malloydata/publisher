@@ -70,7 +70,7 @@ A **skill set** is a folder whose subfolders are skills (`<set>/<skill>/SKILL.md
 
 `workflows.default` holds what used to be the package's root `skills/`. Its skills, beside the bundled ones, are what `get_skill` and `get_context` advertise to every session on the package, with no one naming a workflow. So put there only guidance that applies to every use of the package (what a measure counts, vocabulary, house rules). Anything for one job goes in that job's own workflow.
 
-A package's root `skills/` directory and its `agents` key are **no longer read**. A package that still has either loads with a warning (`PACKAGE_SKILLS_DIR_NOT_READ`, `PACKAGE_AGENTS_NOT_READ`) naming the move below.
+A package's `agents` key is **no longer read**, and neither is a root `skills/` directory on its own: it is read only when a workflow lists it as a skill set (`"skill_sets": ["skills"]` migrates with no file moved, if the folder holds `<skill>/SKILL.md`). A package with either left unlisted loads with a warning (`PACKAGE_AGENTS_NOT_READ`, `PACKAGE_SKILLS_DIR_NOT_READ`) naming the move below.
 
 ## Instructions or skills
 
@@ -84,27 +84,27 @@ A package's root `skills/` directory and its `agents` key are **no longer read**
 Each skill set is measured on its own:
 
 - Inline Markdown (every `SKILL.md` and other Markdown outside `assets/`): 256 KiB per set. Every `SKILL.md` is counted first; a skill whose `SKILL.md` does not fit is skipped, and other Markdown past the budget is listed instead of inlined, each with a warning.
-- Listed files (everything else): each under 1 MiB, at most 4 MiB and 200 files per set, path segments of letters, digits, `.`, `_` and `-`. A binary file is listed with its size and never served as text; prefer SVG for images.
+- Listed files (everything else): each under 1 MiB, at most 4 MiB and 200 files per set, path segments of letters, digits, `.`, `_` and `-`, none starting with `.` or `-`. A binary file is listed with its size and never served as text; prefer SVG for images.
 - 8 MiB of listed files across the whole package.
-- A file that breaks a limit, a `.malloy` file, or one named `CLAUDE.md`, `AGENTS.md` or `publisher.json` is skipped with a warning.
+- A file that breaks a limit, a `.malloy` file, or one named `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `publisher.json` or (below the skill's root) `SKILL.md`, in any letter case, is skipped with a warning.
 - A single skill file over the 35,000-character reply budget of `get_skill` cannot be returned whole; keep each under it.
 
-Every set has a `digest` (SHA-256 over its path and what it serves: each inline file's text, each listed file's SHA-256, each skill's applied `.skillignore`), and every workflow a `definitionSha` over its name, description, instructions and its sets' paths and digests. Editing another set or another workflow moves neither, so a caller can prove which bytes ran.
+Every set has a `digest` (SHA-256 over its path and what it serves: each inline file's text, each listed file's SHA-256, each skill's applied `.skillignore`), and every workflow a `definitionSha` over its name, description, instructions and its sets' paths and digests. Editing another set or another workflow moves neither, so a caller can prove which bytes ran. One exception: sets are charged to the 8 MiB package cap in sorted path order, so a package that crosses it can couple sets.
 
 ## Refusal versus skip
 
 The manifest is an allowlist, and Publisher never takes the package offline for a workflow mistake. What breaks decides how much is lost; every finding is in the package's load warnings.
 
 - **The whole workflow is refused** (not served; `Workflow '<name>' is not served: <why>`): a bad name, a key Publisher does not know, a non-object entry, an empty `description`, an `instructions` file that is missing, not `.md`, over 16 KiB or under a nested `publisher.json`, a bad `skill_sets` list (not a list, over 8, a folder that is missing, outside the package, badly named or listed twice), a set folder that cannot be read, or nothing to serve. Use an `x-` prefix (`"x-owner": "finance"`) for notes you want ignored. `tools`, `hooks`, `permission-mode` and similar are not keys: a definition adds words to a session and never widens what the session may do.
-- **One skill is skipped** (the workflow still serves, with a set finding): an unreadable `SKILL.md`, a `name` that is not its directory name, an `assets/` that is a link or leaves the skill, a symlink, `..` or case-colliding names under `assets/`, a `SKILL.md` that does not fit the set's budget, or a `publisher.json` inside the skill (it would make the directory a second package root).
-- **A `publisher.json` at or above a set's folder refuses the workflow** for the same reason (below the package root, never the root itself); one inside a skill only sets that skill aside; one in a dot-named directory is not read at all.
+- **One skill is skipped** (the workflow still serves, with a set finding): an unreadable `SKILL.md`, a `name` that is not its directory name, an `assets/` that is a link or leaves the skill, a symlink, `..` or case-colliding names under `assets/`, a `SKILL.md` under `assets/`, a `SKILL.md` that does not fit the set's budget, or a `publisher.json` at the skill's root, in its `reference/` or `references/`, or anywhere under `assets/` (it would make the directory a second package root). A `publisher.json` elsewhere in a skill (say `scripts/`) only skips that file.
+- **A `publisher.json` at or above a set's folder refuses the workflow** for the same reason (below the package root, never the root itself); one inside a skill (the places above) only sets that skill aside; one in a dot-named directory is not read at all.
 - A set that holds no skills is a warning, not a refusal.
 
 ## Migrating a package from agents
 
 1. **Each old agent task becomes its own workflow**, with the task file as that workflow's `instructions`. A task's name is the workflow's name (`weekly-report.md` becomes `workflows.weekly-report`). Move the file to `workflows/<name>/instructions.md`.
 2. **An old agent's standing guidance (its `instructions`) moves into a skill**, in a set of its own (`workflows/<name>/skill_sets/<set>/<skill>/SKILL.md`), with a one-sentence `description` saying when to read it; its old `skills/<x>/` folders move into that set too. List the set in each workflow that needs it.
-3. **Root `skills/<x>/` move to `workflows/default/skill_sets/<set>/<x>/`**, and `default` is declared with that set.
+3. **Root `skills/<x>/` move to `workflows/default/skill_sets/<set>/<x>/`**, and `default` is declared with that set. (Declaring `"default": { "skill_sets": ["skills"] }` instead keeps the folder where it is; the move is only for tidiness.)
 4. `schedules`, `budget`, `model` and tasks are gone: nothing runs a workflow on a schedule, and nothing here sets a model or a budget. Drop them, and tell the user a recurring job now needs a scheduler of their own that fetches the workflow.
 5. Delete `agents/` and the old root `skills/` in the same change; leaving them behind keeps the load warnings.
 
@@ -114,7 +114,7 @@ The reader of `instructions` has no one to ask. Write for a run nobody is watchi
 
 - **State the goal and the done-condition.** "Done when the summary file exists and every number in it came from a query you ran" beats "write a good report".
 - **Write it to run with no saved state.** Say what to do with no prior run or earlier output (start from the full period rather than "since the last check"), and checkpoint progress in a file so a run that stops can resume.
-- **Start with a `# Title` heading** and keep the file name a short label (`weekly-report.md`).
+- **Start with a `# Title` heading.**
 - **No shell preprocessing**: no exclamation mark directly before a backtick, and no code fence whose opening backticks are followed by an exclamation mark. Some hosts run such text as a shell command.
 - **Prefer drafts and pull requests to publishing.** The run proposes; a person publishes, unless the user said otherwise.
 - **Say what to do when blocked** (a source that will not compile, a missing permission, an empty result): usually "write down what you tried and stop", not "keep retrying" or "guess".

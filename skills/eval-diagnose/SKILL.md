@@ -72,10 +72,10 @@ never "C1" / "C2" / "C3":
 before diagnosis (see the boundary above), so no issue can carry it.
 
 `package-skill` and `agent-skill` are both "the guidance was wrong", split by
-who can fix it here. A package can ship its own guides under `skills/`, and one
-whose name matches a built-in REPLACES it for that package, so a fix scoped to
-this package is a file in the model repo and lands in the same commit as a model
-edit. `agent-skill` is the shared skill, outside this repo and outside this
+who can fix it here. A package can ship its own guides in the skill sets of its
+`default` workflow, and one whose name matches a built-in REPLACES it for that
+package, so a fix scoped to this package is a file in the model repo and lands
+in the same commit as a model edit. `agent-skill` is the shared skill, outside this repo and outside this
 loop. Choose `package-skill` only when the fix is genuinely specific to this
 package: this customer's vocabulary, this model's conventions, a trap only these
 sources have. A gap every package would hit is `agent-skill`, and widening a

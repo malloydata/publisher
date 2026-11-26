@@ -38,7 +38,7 @@ A package can declare workflows in its `publisher.json`: a named job its author 
 
 ## Installing skill sets
 
-Each set in `skill_sets` is `{name, path, digest, skills, assets}`. `skills` is a list of `{relative_filepath, file_contents}`: `SKILL.md` and the skill's other Markdown (`references/`, or `reference/`). The first path segment of `relative_filepath` is the skill's directory name, and the path is relative to the set's folder. Every other file of the skill (scripts, templates, data, images) is in `assets`, covered below. Install both: a skill is its whole directory, and its `SKILL.md` can point at `scripts/check.py` or a template.
+Each set in `skill_sets` is `{name, path, digest, skills, assets}`. `skills` is a list of `{relative_filepath, file_contents}`: every `SKILL.md` and all the skill's other Markdown outside `assets/`, at any depth (up to the set's inline budget; the rest is listed). The first path segment of `relative_filepath` is the skill's directory name, and the path is relative to the set's folder. Every other file of the skill (scripts, templates, data, images) is in `assets`, covered below. Install both: a skill is its whole directory, and its `SKILL.md` can point at `scripts/check.py` or a template.
 
 A skill name two sets of the workflow both hold is already resolved by the server (the first-listed set serves it), so install what the reply gives you. **Install one set** when you fetched with `skill_set`, **every set** when you fetched the workflow whole; both land in the same skills directory, one folder per skill.
 

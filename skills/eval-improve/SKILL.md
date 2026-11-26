@@ -1,6 +1,6 @@
 ---
 name: eval-improve
-description: 'Make the smallest safe edit that closes a diagnosed gap the model repo owns: a Malloy model edit, or a package skill under skills/. Every factual claim carries a probe receipt. Use after eval-diagnose, or when asked to fix a model so an agent can discover the right answer. Never accepts its own edit; the acceptance check belongs to eval-loop. Does not decide whether an answer was wrong (eval-answer) or why (eval-diagnose).'
+description: 'Make the smallest safe edit that closes a diagnosed gap the model repo owns: a Malloy model edit, or a package skill in a skill set of the default workflow. Every factual claim carries a probe receipt. Use after eval-diagnose, or when asked to fix a model so an agent can discover the right answer. Never accepts its own edit; the acceptance check belongs to eval-loop. Does not decide whether an answer was wrong (eval-answer) or why (eval-diagnose).'
 ---
 
 # Improve the Model
@@ -14,10 +14,12 @@ The two owners license different edits and are never interchangeable:
 - **`model`** changes what the data means or how it is described:
   a `.malloy` file.
 - **`package-skill`** changes what the agent is told about using this package:
-  a file under the package's `skills/`. Use it for a rule that spans entities or
-  is not a property of any one of them. A fact about a single field belongs in
-  that field's `#(doc)`, which reaches every agent whether or not it loaded a
-  guide.
+  a skill in one of the skill sets the package's `default` workflow lists
+  (`workflows.default.skill_sets` in `publisher.json`). A root `skills/` folder
+  is served only if a workflow lists it as a set. Use it for a rule that spans
+  entities or is not a property of any one of them. A fact about a single field
+  belongs in that field's `#(doc)`, which reaches every agent whether or not it
+  loaded a guide.
 
 Both live in the model repo, so one git commit checkpoints and rolls back
 either.
