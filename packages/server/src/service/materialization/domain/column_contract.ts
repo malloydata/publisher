@@ -31,6 +31,7 @@ import {
    collationOf,
    type TableCollations,
 } from "./collation";
+import { STORAGE_DIALECT } from "./dialect";
 import { gateColumnTypeExact } from "./gate_policy";
 import type { Tier } from "./vocabulary";
 
@@ -343,9 +344,44 @@ function columnNamed<C extends { name: string }>(
    return folded.length === 1 ? folded[0] : undefined;
 }
 
-/** A native type spelled one way whatever its case and spacing. */
-function spelledType(nativeType: string): string {
-   return nativeType
+/** A DuckDB GEOMETRY's CRS parameter: `GEOMETRY('OGC:CRS84')`, any case and spacing. */
+const DUCKDB_GEOMETRY_CRS = /\bGEOMETRY\s*\(\s*'(?:[^']|'')*'\s*\)/gi;
+
+/**
+ * A native type as the engine holding it keeps it once its table is
+ * committed. On DuckDB (every `storage=` destination), a GEOMETRY with a
+ * coordinate reference system reads `GEOMETRY('OGC:CRS84')` inside the
+ * transaction that wrote it (where a build's capture reads it), but
+ * DuckLake's catalog stores `geometry` with no CRS, so every `DESCRIBE` after
+ * the commit, a bind's included, reads `GEOMETRY`: the CRS is dropped here.
+ *
+ * Folding it never lets a table serve another answer: the values are the
+ * same (the CRS is type metadata only, not part of the stored WKB), and no
+ * stored query reads a GEOMETRY column at all, since Malloy types it as
+ * `sql native`, which no stored table's declaration carries
+ * (`storedMalloyType`), so a query reading one answers live. Only `ST_CRS`
+ * and a cast between two CRSs would tell them apart. Any other type, and
+ * every type on any other dialect, is itself.
+ */
+function committedNativeType(
+   nativeType: string,
+   dialect: string | undefined,
+): string {
+   return dialect === STORAGE_DIALECT
+      ? nativeType.replace(DUCKDB_GEOMETRY_CRS, "GEOMETRY")
+      : nativeType;
+}
+
+/**
+ * A native type spelled one way whatever its case and spacing, as committed
+ * on `dialect` ({@link committedNativeType}): what every comparison of a
+ * recorded type with one read now compares.
+ */
+export function spelledType(
+   nativeType: string,
+   dialect: string | undefined,
+): string {
+   return committedNativeType(nativeType, dialect)
       .replace(/\s+/g, " ")
       .replace(/\s*([(),])\s*/g, "$1")
       .trim()
@@ -361,7 +397,7 @@ function spelledType(nativeType: string): string {
 export function contractDigest(contract: ColumnContract): string {
    const canonical = contract.columns.map((c) => [
       c.name,
-      spelledType(c.nativeType),
+      spelledType(c.nativeType, contract.dialect),
       c.collation,
    ]);
    return createHash("sha256")
@@ -510,7 +546,7 @@ export function deriveContract(args: {
             : null;
       return {
          name: c.name,
-         nativeType: c.nativeType,
+         nativeType: committedNativeType(c.nativeType, stored.dialect),
          collation,
          compare: columnCompare(args, c.isString, collation, c.name),
          gateExact:
@@ -644,7 +680,8 @@ export function compatible(
       const type = now.nativeType ?? now.type;
       if (
          type === undefined ||
-         spelledType(type) !== spelledType(c.nativeType)
+         spelledType(type, contract.dialect) !==
+            spelledType(c.nativeType, contract.dialect)
       ) {
          retyped.push(c.name);
          continue;

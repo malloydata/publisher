@@ -777,6 +777,59 @@ describe("buildQueryPath, reading the serve verdicts", () => {
       ]);
    });
 
+   it("reports a storage= table the bind left out against its contract as NOT_SERVED incompatible, not NOT_BUILT", () => {
+      // The bind dropped the storage table's binding, so the report names its
+      // unbuilt database twin, under the same tableId.
+      const report = buildQueryPath(
+         input({
+            catalog: {
+               ...catalog([planned("daily")]),
+               liveVerdicts: verdicts({
+                  "storage:id_daily": {
+                     reason: "incompatible",
+                     sourceName: "daily",
+                  },
+               }),
+            },
+         }),
+      );
+      expect(report.considered).toEqual([
+         {
+            tableId: "id_daily",
+            kind: "materialized",
+            outcome: "skipped",
+            reason: "NOT_SERVED",
+            code: "incompatible",
+         },
+      ]);
+      expect(report.warnings).toEqual([
+         {
+            code: "incompatible",
+            tableId: "id_daily",
+            sourceName: "daily",
+            message: expect.stringContaining(
+               "no longer matches the column contract",
+            ),
+         },
+      ]);
+      // Another storage verdict is the storage table's alone: the twin stays
+      // NOT_BUILT.
+      const other = buildQueryPath(
+         input({
+            catalog: {
+               ...catalog([planned("daily")]),
+               liveVerdicts: verdicts({
+                  "storage:id_daily": {
+                     reason: "storage_mode",
+                     sourceName: "daily",
+                  },
+               }),
+            },
+         }),
+      );
+      expect(other.considered[0]?.reason).toBe("NOT_BUILT");
+   });
+
    it("reports a rollup every entry point gates as NOT_SERVED row_level_gate, in place of ROW_LEVEL_GATE", () => {
       const daily = storageOf("daily");
       const report = buildQueryPath(

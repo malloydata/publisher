@@ -583,3 +583,90 @@ describe("the key checks a contract records", () => {
       });
    });
 });
+
+/**
+ * A DuckDB GEOMETRY with a CRS: a build reads `GEOMETRY('OGC:CRS84')` inside
+ * the transaction that wrote it, and DuckLake's catalog, which keeps no CRS,
+ * reads `GEOMETRY` after the commit. The two are one committed type.
+ */
+describe("a GEOMETRY's CRS, on the storage dialect", () => {
+   const geometryContract = (nativeType: string, dialect = "duckdb") =>
+      parseContract({
+         v: 1,
+         dialect,
+         columns: [
+            { name: "id", nativeType: "BIGINT", collation: null },
+            { name: "g", nativeType, collation: null },
+         ],
+      })!;
+   const read = (g: string) => ({
+      columns: [
+         { name: "id", nativeType: "BIGINT" },
+         { name: "g", nativeType: g },
+      ],
+      collations: { byColumn: new Map(), otherwise: "binary" },
+   });
+
+   it("holds a GEOMETRY('OGC:CRS84') contract compatible with a GEOMETRY read", () => {
+      expect(
+         compatible(
+            geometryContract("GEOMETRY('OGC:CRS84')"),
+            read("GEOMETRY"),
+         ),
+      ).toEqual({ ok: true });
+      // A legacy contract with another CRS, spelled with spacing, alike.
+      expect(
+         compatible(
+            geometryContract("geometry ( 'EPSG:4326' )"),
+            read("GEOMETRY"),
+         ),
+      ).toEqual({ ok: true });
+   });
+
+   it("still finds a GEOMETRY retyped to another type", () => {
+      expect(
+         compatible(geometryContract("GEOMETRY('OGC:CRS84')"), read("VARCHAR")),
+      ).toEqual({ ok: false, code: "column_retyped", columns: ["g"] });
+   });
+
+   it("folds nothing on another dialect", () => {
+      expect(
+         compatible(
+            geometryContract("GEOMETRY('OGC:CRS84')", "postgres"),
+            read("GEOMETRY"),
+         ),
+      ).toEqual({ ok: false, code: "column_retyped", columns: ["g"] });
+   });
+
+   it("records the committed type at capture, and digests a legacy contract as a new one", () => {
+      const captured = deriveContract({
+         tier: "storage",
+         stored: {
+            dialect: "duckdb",
+            columns: [
+               { name: "id", nativeType: "BIGINT", isString: false },
+               {
+                  name: "g",
+                  nativeType: "GEOMETRY('OGC:CRS84')",
+                  isString: false,
+               },
+               {
+                  name: "gs",
+                  nativeType: "STRUCT(g GEOMETRY('OGC:CRS84'))",
+                  isString: false,
+               },
+            ],
+            collations: { byColumn: new Map(), otherwise: "binary" },
+         },
+      });
+      expect(captured.columns.map((c) => c.nativeType)).toEqual([
+         "BIGINT",
+         "GEOMETRY",
+         "STRUCT(g GEOMETRY)",
+      ]);
+      const legacy = geometryContract("GEOMETRY('OGC:CRS84')");
+      expect(contractDigest(legacy)).toBe(
+         contractDigest(geometryContract("GEOMETRY")),
+      );
+   });
+});
