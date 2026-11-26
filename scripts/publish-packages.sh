@@ -85,7 +85,7 @@ fi
 # Defined once here rather than separately in skills_diff_status (the
 # release-time content diff) and publish_resolved (the "main moved"
 # guard), which used to carry their own copies and could drift.
-SKILLS_CONTENT_PATHS=(skills/ packages/skills/ bun.lock package.json)
+SKILLS_CONTENT_PATHS=(skills/ packages/skills/ packages/server/src/service/skills/skill_files.ts packages/server/src/compare_text.ts bun.lock package.json)
 # git pathspecs excluding files skills_diff_status's diff must NOT treat as
 # published content, because the packer never ships them. Mirrors
 # what `packedSkillFiles` (packages/skills/scripts/exclusions.ts) ships;

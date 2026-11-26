@@ -52,12 +52,17 @@ const GIT_ENV: Record<string, string> = {
       .trim(),
   ),
 };
-function gitOut(args: string[], stdin?: string): string {
+function gitOut(
+  args: string[],
+  stdin?: string,
+  extraEnv: Record<string, string> = {},
+): string {
   const proc = Bun.spawnSync(["git", ...args], {
     cwd: REPO_ROOT,
     env: {
       ...process.env,
       ...GIT_ENV,
+      ...extraEnv,
       GIT_AUTHOR_NAME: "test",
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "test",
@@ -71,6 +76,24 @@ function gitOut(args: string[], stdin?: string): string {
 }
 const OLD_SHA = gitOut(["commit-tree", gitOut(["mktree"], ""), "-m", "old"]);
 afterAll(() => rmSync(GIT_OBJECTS, { recursive: true, force: true }));
+
+/** A commit whose tree is this checkout's HEAD with `file` changed: a published gitHead that differs from HEAD in that file alone. */
+function headWithEdited(file: string): string {
+  const env = { GIT_INDEX_FILE: path.join(GIT_OBJECTS, "edited.index") };
+  gitOut(["read-tree", "HEAD"], undefined, env);
+  const blob = gitOut(["hash-object", "-w", "--stdin"], "// edited\n");
+  gitOut(
+    ["update-index", "--cacheinfo", `100644,${blob},${file}`],
+    undefined,
+    env,
+  );
+  return gitOut([
+    "commit-tree",
+    gitOut(["write-tree"], undefined, env),
+    "-m",
+    "edited",
+  ]);
+}
 
 // This checkout's own HEAD, used as a stand-in npm `gitHead` so the skills
 // content diff comes out "unchanged" (diffing HEAD against HEAD is always
@@ -463,6 +486,54 @@ describe("publish-packages.sh", () => {
     GIT_DIFF_TIMEOUT_MS,
   );
 
+  it.each([
+    "packages/server/src/service/skills/skill_files.ts",
+    "packages/server/src/compare_text.ts",
+  ])(
+    "a change to %s alone, which decides what the skills package ships, publishes it",
+    (file) => {
+      const result = runPublishScript(
+        baseConfig({
+          "@malloy-publisher/skills dist-tags.latest": { stdout: "0.1.28" },
+          "@malloy-publisher/skills@0.1.28 gitHead": {
+            stdout: headWithEdited(file),
+          },
+          "@malloy-publisher/skills versions": {
+            stdout: JSON.stringify(["0.1.26", "0.1.27", "0.1.28"]),
+          },
+          "@malloy-publisher/skills@0.1.29 version": [
+            { exit: 1, stdout: "npm ERR! code E404" },
+            { exit: 1, stdout: "npm ERR! code E404" },
+            { stdout: "0.1.29" },
+          ],
+          "@malloy-publisher/create-malloy-package dist-tags.latest": {
+            stdout: "0.0.22",
+          },
+          "@malloy-publisher/create-malloy-package@0.0.22 publisherServer": {
+            stdout: "",
+          },
+          "@malloy-publisher/create-malloy-package@0.0.22 gitHead": {
+            stdout: HEAD_SHA,
+          },
+          "@malloy-publisher/create-malloy-package versions": {
+            stdout: JSON.stringify(["0.0.20", "0.0.21", "0.0.22"]),
+          },
+          "@malloy-publisher/create-malloy-package@0.0.23 version": [
+            { exit: 1, stdout: "npm ERR! code E404" },
+            { exit: 1, stdout: "npm ERR! code E404" },
+            { stdout: "0.0.23" },
+          ],
+          "@malloy-publisher/server dist-tags.latest": { stdout: "0.9.0" },
+        }),
+      );
+
+      expect(dispatchedArgs(result.ghLog, "skills-npm.yml")).toEqual(
+        expect.arrayContaining(["-f", "version=0.1.29"]),
+      );
+    },
+    GIT_DIFF_TIMEOUT_MS,
+  );
+
   it(
     "scaffolder publisherServer already equals this release AND content unchanged: skips it, dispatches nothing for it",
     () => {
@@ -633,8 +704,8 @@ describe("publish-packages.sh", () => {
 
     it("a typo'd skills content path is rejected before any decision, not read as unchanged", () => {
       const scriptPath = scriptWithBadPath(
-        "SKILLS_CONTENT_PATHS=(skills/ packages/skills/ bun.lock package.json)",
-        "SKILLS_CONTENT_PATHS=(skills/ packages/skills/ bun.lock package.json nonexistent-file-xyz)",
+        "SKILLS_CONTENT_PATHS=(skills/ packages/skills/ packages/server/src/service/skills/skill_files.ts packages/server/src/compare_text.ts bun.lock package.json)",
+        "SKILLS_CONTENT_PATHS=(skills/ packages/skills/ packages/server/src/service/skills/skill_files.ts packages/server/src/compare_text.ts bun.lock package.json nonexistent-file-xyz)",
       );
       const result = runPublishScript({}, {}, scriptPath);
       expect(result.code).not.toBe(0);
