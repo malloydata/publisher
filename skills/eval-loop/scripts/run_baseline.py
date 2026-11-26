@@ -132,8 +132,8 @@ TOOL_ARM_TOOLS = ("mcp__publisher__get_skill",)
 #                           under measurement is not the one the run pinned.
 #
 #   compile_model           authoring surface.
-#   get_agent               adopting a package agent changes who is answering;
-#                           the run measures the model, not a persona.
+#   get_workflow            adopting a package workflow changes what the answerer
+#                           is told to do; the run measures the model, not a brief.
 #
 # `get_status` and `list_packages` reveal the other packages on the server and
 # are no use to an answerer given its scope in the prompt.
@@ -148,7 +148,7 @@ TOOL_ARM_TOOLS = ("mcp__publisher__get_skill",)
 # or `mcp__publisher__*`) removes ALL of its tools including the ones wanted,
 # verified 2026-09-08.
 ANSWER_DENIED = ("mcp__publisher__compile_model",
-                 "mcp__publisher__get_agent",
+                 "mcp__publisher__get_workflow",
                  "mcp__publisher__search_database_schema",
                  "mcp__publisher__reload_package",
                  "mcp__publisher__get_status",
@@ -165,8 +165,8 @@ ANSWER_DENIED = ("mcp__publisher__compile_model",
 # side it belongs on. Read from `get_status`/`tools/list` on a running server
 # when this needs re-checking; the authority is the server's registration, and
 # a mismatch here is a decision, not a lint.
-PUBLISHER_MCP_TOOLS = ("compile_model", "execute_query", "get_agent",
-                       "get_context", "get_skill", "get_status",
+PUBLISHER_MCP_TOOLS = ("compile_model", "execute_query", "get_context",
+                       "get_skill", "get_status", "get_workflow",
                        "list_packages", "list_reports", "reload_package",
                        "report_api", "search_database_schema",
                        "search_malloy_docs", "show_report")
