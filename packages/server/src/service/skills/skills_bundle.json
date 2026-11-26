@@ -523,8 +523,8 @@
          },
          "files": {
             "NOTICE": {
-               "digest": "sha256:06e123d7d207e889e09b82e1c590365358f7441a22f8c7f1423f14166bdd471d",
-               "size": 421
+               "digest": "sha256:cd4ab25cfca8fc28344bad5987b8df83d745ba2303b629b2ff3e540be457c8ef",
+               "size": 474
             },
             "SKILL.md": {
                "digest": "sha256:31a03fd4694f80f2bb89e371e9f56dc4000c7f786e86e84dc164f4fecce791d6",

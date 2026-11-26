@@ -36,7 +36,7 @@ const EMIT_SLACK = 10_000;
 /** YAML's parse time grows faster than its input (plain keys, anchors and errors alike), so the text it is given is capped; the largest bundled frontmatter is under 1 KiB. */
 const FRONTMATTER_MAX_BYTES = 4 * 1024;
 
-/** The frontmatter block as a JSON object, or why it is not one; `bound` marks YAML that parsed but is past an expansion limit. Never throws. */
+/** The frontmatter block as a JSON object, or why it is not one; `bound` marks YAML that parsed but cannot be read within the expansion limits. Never throws. */
 function parseYaml(
    front: string,
 ): { value: Record<string, unknown> } | { problem: string; bound?: true } {
