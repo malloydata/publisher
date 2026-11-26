@@ -179,6 +179,18 @@ describe("live reload of what a package's workflows serve", () => {
       expect(reloaded).toEqual(["pkg", "pkg"]);
    }, 10_000);
 
+   it("recompiles the package for its own publisher.json, which declares the workflows, and for one that appears at a set's root, which refuses them", async () => {
+      const { reloaded, announced, announcedFile } = await watchPackage();
+      const manifest = path.join(envDir, "pkg", "publisher.json");
+      const atSet = path.join(envDir, "pkg", SET, "publisher.json");
+      fs.writeFileSync(manifest, "{}");
+      await announcedFile(manifest);
+      fs.writeFileSync(atSet, "{}");
+      await announcedFile(atSet);
+      expect(announced).toEqual([manifest, atSet]);
+      expect(reloaded).toEqual(["pkg", "pkg"]);
+   }, 10_000);
+
    it("leaves a file the skill never serves alone, and recompiles for the .skillignore that decides it and for the instructions", async () => {
       const { reloaded, announced, announcedFile } = await watchPackage();
       const skill = path.join(envDir, "pkg", SET, "skill");

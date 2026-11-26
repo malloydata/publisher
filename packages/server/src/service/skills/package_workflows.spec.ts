@@ -1994,6 +1994,16 @@ describe("workflowFileServed", () => {
       expect(served(`${CONVENTIONS}/scripts/run.py`)).toBe(true);
    });
 
+   it("serves a manifest the package's own declares workflows in, and one at or above a set or an instructions file, which refuses its workflows", () => {
+      expect(served("publisher.json")).toBe(true);
+      expect(served(`${MAIN}/publisher.json`)).toBe(true);
+      expect(served("workflows/analyst/skill_sets/publisher.json")).toBe(true);
+      expect(served("workflows/analyst/publisher.json")).toBe(true);
+      // Beside, not at or above, any watched path.
+      expect(served("workflows/other/publisher.json")).toBe(false);
+      expect(served(`${MAIN}2/publisher.json`)).toBe(false);
+   });
+
    it("leaves out a file loose in a set's folder, a dot-named folder, a name no walk keeps, and a file outside every path", () => {
       expect(served(`${MAIN}/README.md`)).toBe(false);
       expect(served(`${MAIN}/.git/config`)).toBe(false);

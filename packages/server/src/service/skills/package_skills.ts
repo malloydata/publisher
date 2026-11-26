@@ -1785,7 +1785,8 @@ function declaredPaths(raw: Record<string, unknown>): string[] {
 
 /**
  * Whether an edit to `relative` (package-relative) can change what a workflow serves, given the `watched` paths of its
- * package: an instructions file always, and a file inside a skill of a set unless that skill never serves it. A file
+ * package: an instructions file always, a manifest (the package's own, which declares the workflows, or one at or above
+ * a watched path, which refuses it), and a file inside a skill of a set unless that skill never serves it. A file
  * loose in a set's folder is no skill's. `exact` reads the skill's `.skillignore`; a watcher's per-file filter leaves it off.
  */
 export function workflowFileServed(
@@ -1794,6 +1795,15 @@ export function workflowFileServed(
    relative: string,
    exact: boolean,
 ): boolean {
+   if (isManifest(path.posix.basename(relative))) {
+      const dir = path.posix.dirname(relative);
+      if (
+         dir === "." ||
+         watched.some((w) => w === dir || w.startsWith(`${dir}/`))
+      ) {
+         return true;
+      }
+   }
    return watched.some((watchedPath) => {
       if (relative === watchedPath) return true;
       if (!relative.startsWith(`${watchedPath}/`)) return false;
