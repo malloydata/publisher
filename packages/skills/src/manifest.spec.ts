@@ -34,6 +34,8 @@ const SKILL_REF = /skill:([a-z0-9][a-z0-9-]*)(\/[^\s`)\]]*)?/g;
 const ABSOLUTE_INSTALL_PATH = /\.(?:cursor|credible|claude)\/skills\//;
 /** A same-skill resource reference, which must resolve inside that skill. */
 const RELATIVE_REF = /(?<![\w/.`-])reference\/[\w./-]+\.md/g;
+/** A text that tells an agent to read a skill's file with `get_skill` and a `path`. */
+const GET_SKILL_PATH = /get_skill\([^)]*\bpath\b|by path through `get_skill`/;
 /** The routing skill an agent reads to find a sibling. */
 const INDEX_SKILL = "malloy-getting-started";
 
@@ -400,6 +402,24 @@ describe("cross-skill references", () => {
          }
       }
       expect(problems).toEqual([]);
+   });
+});
+
+describe("reading a skill's file with get_skill", () => {
+   it("comes with a check that the reply's skill.path is the path asked for", () => {
+      // A server older than `path` ignores it and answers with SKILL.md; the echoed path is the only sign the file was not read.
+      const texts = [
+         ...shipped.flatMap(markdownFiles),
+         path.join(sourceSkillsDir, "README.md"),
+         path.join(repoRoot, "packages", "skills", "README.md"),
+      ];
+      const unchecked = texts
+         .filter((file) => {
+            const body = fs.readFileSync(file, "utf8");
+            return GET_SKILL_PATH.test(body) && !body.includes("skill.path");
+         })
+         .map((file) => path.relative(repoRoot, file));
+      expect(unchecked).toEqual([]);
    });
 });
 
