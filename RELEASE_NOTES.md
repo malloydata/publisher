@@ -27,6 +27,10 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **[fix] The path report names a table its contract left out.** A query's `path.considered` reported a `storage=` table the bind left out against its column contract as `NOT_BUILT`. It now reads `NOT_SERVED` with `code` `incompatible` or `contract_missing`, with a warning that says so.
 
+## [Unreleased] — colocated BigQuery tables compare strings from their tables again
+
+**[fix] A colocated BigQuery table serves string comparisons again.** Since 0.18.0, every query that grouped, ordered, filtered or scoped by a string over a colocated BigQuery table (a `#@ persist`, `#(materialize)` or rollup table in the source's own BigQuery dataset) was answered live, refused as "unknown collation (a BigQuery table unmatched)". BigQuery's `INFORMATION_SCHEMA.COLUMNS` reports an uncollated column's `collation_name` as the string `'NULL'`, and a build recorded that in the table's column contract as a collation, `bigquery:NULL`, which matches no source's. A build now reads `'NULL'` (in any case, padded or not), the empty string and NULL as no collation (`binary`), by the same rule the serve side's catalog read uses, and a `bigquery:NULL` an earlier build recorded is read as `binary`. Existing tables serve again at their next bind, with no rebuild; none is found `collation_changed`. A host that records `builtFrom[].contractDigest` (Publisher's own runs do not) sees that digest change once for a table with an uncollated string column.
+
 ## [0.18.2] — a wide manifest bind no longer holds the main thread
 
 **[fix] Binding a manifest with many `storage=` tables no longer stalls the server.** Since 0.17.3 a bind recorded every named source's scope facts for every bound table in one main-thread task. On a package with many sources and dozens of bound tables that held the event loop for seconds or longer, long enough for a health check to time out. The bind now walks each source once, reuses that walk for every bound table the source's scope does not read, and yields to the event loop as it goes. What a query reads is unchanged.

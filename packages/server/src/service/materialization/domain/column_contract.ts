@@ -28,6 +28,7 @@ import { createHash } from "crypto";
 import {
    BINARY_COLLATION,
    type Collation,
+   canonicalCollation,
    collationOf,
    type TableCollations,
 } from "./collation";
@@ -268,7 +269,10 @@ export function parseContract(raw: unknown): ColumnContract | undefined {
       columns.push({
          name: c.name,
          nativeType: c.nativeType,
-         collation: typeof c.collation === "string" ? c.collation : null,
+         collation:
+            typeof c.collation === "string"
+               ? canonicalCollation(c.collation)
+               : null,
          compare:
             typeof c.compare === "string" && COMPARES.has(c.compare)
                ? (c.compare as ContractCompare)

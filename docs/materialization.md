@@ -1138,7 +1138,7 @@ read a rollup through a join_many, and a stored source's own primary key, each n
 a host's manifest as from this server's own run. A `storage=` column is gate-exact when its type
 holds what it was given exactly, or when it is a destination double that copies a warehouse 8-byte
 double unchanged, as the plan read that warehouse column's type. The contract is read back with the same catalog reads a bind makes, before the swap
-or commit, so a table straight out of a build always matches it. Each type is recorded, and compared, as the engine keeps it once committed: on DuckDB a `GEOMETRY` with a coordinate reference system reads `GEOMETRY('OGC:CRS84')` inside the build's transaction and `GEOMETRY` after it in DuckLake, whose catalog keeps no CRS, so it is recorded and compared as `GEOMETRY` (no query reads a stored geometry column, which Malloy types as `sql native`, so the CRS changes no stored answer). A build whose contract cannot be
+or commit, so a table straight out of a build always matches it. Each type is recorded, and compared, as the engine keeps it once committed: on DuckDB a `GEOMETRY` with a coordinate reference system reads `GEOMETRY('OGC:CRS84')` inside the build's transaction and `GEOMETRY` after it in DuckLake, whose catalog keeps no CRS, so it is recorded and compared as `GEOMETRY` (no query reads a stored geometry column, which Malloy types as `sql native`, so the CRS changes no stored answer). A BigQuery column whose catalog `collation_name` is the string `'NULL'` has no collation and is recorded `binary`, and a `bigquery:NULL` an earlier build recorded is read as `binary`. A build whose contract cannot be
 read back fails that source with `contract_capture_failed`, which is retryable, and leaves the
 previous table as it was.
 

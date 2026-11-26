@@ -670,3 +670,48 @@ describe("a GEOMETRY's CRS, on the storage dialect", () => {
       );
    });
 });
+
+/**
+ * BigQuery reports an uncollated column's `collation_name` as the string
+ * `'NULL'`; builds of 0.18.0 to 0.18.2 recorded it as `bigquery:NULL`. Read
+ * back, that is `binary`, what such a column compares as.
+ */
+describe("a recorded bigquery:NULL collation", () => {
+   const legacy = parseContract({
+      v: 1,
+      dialect: "standardsql",
+      columns: [
+         { name: "id", nativeType: "INT64", collation: null },
+         { name: "region", nativeType: "STRING", collation: "bigquery:NULL" },
+         { name: "ci", nativeType: "STRING", collation: "bigquery:und:ci" },
+      ],
+   })!;
+
+   it("reads as binary, and a real collation as itself", () => {
+      expect(legacy.columns.map((c) => c.collation)).toEqual([
+         null,
+         "binary",
+         "bigquery:und:ci",
+      ]);
+   });
+
+   it("stays compatible with the table as a bind reads it now", () => {
+      expect(
+         compatible(legacy, {
+            columns: [
+               { name: "id", nativeType: "INT64" },
+               { name: "region", nativeType: "STRING" },
+               { name: "ci", nativeType: "STRING" },
+            ],
+            collations: {
+               byColumn: new Map([
+                  ["id", "binary"],
+                  ["region", "binary"],
+                  ["ci", "bigquery:und:ci"],
+               ]),
+               otherwise: null,
+            },
+         }),
+      ).toEqual({ ok: true });
+   });
+});
