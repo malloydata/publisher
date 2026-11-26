@@ -16,9 +16,13 @@ import {
    ASSET_MAX_ENTRIES,
    ASSET_PATH_MAX_CHARS,
    decodeText,
+   isInlineMarkdown,
+   isReferenceDir,
    listBounded,
    newWalkBudget,
+   REFERENCE_DIRS,
    skillFiles,
+   underAssets,
    type WalkBudget,
 } from "./skill_files";
 import skillsBundle from "./skills_bundle.json";
@@ -398,15 +402,16 @@ function skippedWarnings(walk: AssetWalk): string[] {
    return named;
 }
 
-const underAssets = (relative: string) => relative.startsWith("assets/");
-
-/** Markdown outside `assets/` is inlined; everything else is listed. */
-const isInlineMarkdown = (relative: string) =>
-   relative.endsWith(".md") && !underAssets(relative);
-
-/** A Markdown file directly in `reference/`: the one place a skill's Markdown beside SKILL.md was always served. */
-const isReferenceMarkdown = (relative: string) =>
-   /^reference\/[^/]+\.md$/.test(relative);
+/** A Markdown file directly in `reference/` or `references/`: the places a skill's Markdown beside SKILL.md is always served. */
+const isReferenceMarkdown = (relative: string) => {
+   const [dir, name, ...deeper] = relative.split("/");
+   return (
+      deeper.length === 0 &&
+      isReferenceDir(dir!) &&
+      name !== undefined &&
+      name.endsWith(".md")
+   );
+};
 
 /** `p` resolved, when it leads to a directory inside the package; undefined for anything else. */
 function directoryInside(packageRoot: string, p: string): string | undefined {
@@ -1201,11 +1206,11 @@ const holdsManifest = (packageRoot: string, dir: string) =>
 /**
  * The path, relative to `root`, of the first publisher.json where one has always
  * refused an agent, or undefined: in the skills root, in a skill directory, in
- * its `reference/`, or anywhere below its `assets/`. A publisher.json anywhere
+ * its `reference/` or `references/`, or anywhere below its `assets/`. A publisher.json anywhere
  * else is skipped with the rest of the files a skill may not hold. It reads the
  * real tree, folders a `.skillignore` ignores included: that file decides what
  * a skill is made of, never what may sit in it. It follows a link only to a
- * directory inside the package, reads a `reference/` or a linked `assets/` for
+ * directory inside the package, reads a reference folder or a linked `assets/` for
  * at most `REFERENCE_MAX_EXAMINED` entries, and bounds what it walks under
  * `assets/` the way skillFiles does, so a link cannot make it scan the
  * filesystem, list a huge directory whole, or report on files outside the
@@ -1259,11 +1264,11 @@ function servedManifest(packageRoot: string, root: string): string | undefined {
       // A link to a directory is a skill dir that readSkillsDir follows.
       if (!skill.isDirectory() && !skill.isSymbolicLink()) continue;
       const dir = path.join(root, skill.name);
-      for (const place of ["", "reference"]) {
+      for (const place of ["", ...REFERENCE_DIRS]) {
          const found = manifestIn(
             packageRoot,
             path.join(dir, place),
-            place === "reference",
+            place !== "",
          );
          if (found !== undefined) {
             return path.posix.join(skill.name, place, found);

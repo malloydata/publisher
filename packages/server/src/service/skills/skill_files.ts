@@ -11,13 +11,16 @@ import { compareText } from "../../compare_text";
 export const ASSET_PATH_MAX_CHARS = 200;
 /** Directories nested deeper than this are not walked. */
 export const ASSET_MAX_DEPTH = 8;
-/** Entries one walk may see, kept or not; the files `WalkBudget` names as always walked are outside it, and a skill's `reference/` has its own count of Markdown files of this size. */
+/** Entries one walk may see, kept or not; the files `WalkBudget` names as always walked are outside it, and a skill's `reference/` or `references/` has its own count of Markdown files of this size. */
 export const ASSET_MAX_ENTRIES = 1000;
 /** Entries of any kind `listBounded` reads (a skill's `reference/`, or a linked `assets/`) before the listing stops. */
 export const REFERENCE_MAX_EXAMINED = 10_000;
 
 const SKILL_MD = "SKILL.md";
-const REFERENCE_DIR = "reference";
+/** A skill's Markdown folder goes by either name, and both are read the same way. */
+export const REFERENCE_DIRS = ["reference", "references"];
+export const isReferenceDir = (name: string): boolean =>
+   REFERENCE_DIRS.includes(name);
 const ASSETS_DIR = "assets";
 const SKILLIGNORE = ".skillignore";
 const SKILLIGNORE_MAX_BYTES = 16 * 1024;
@@ -45,8 +48,8 @@ export interface EntryBudget {
  * What the walks of one reader's skills may still take together. An entry below
  * `assets/` is charged to `assets` and any other to `other`, so a file outside
  * `assets/` can never cost one inside it. `SKILL.md` and a Markdown file
- * directly in `reference/` are charged to neither: they are always walked, and
- * bounded apart by `reference/`'s own count in each skill.
+ * directly in `reference/` or `references/` are charged to neither: they are
+ * always walked, and bounded apart by one count of their own in each skill.
  */
 export interface WalkBudget {
    assets: EntryBudget;
@@ -64,8 +67,43 @@ export const newWalkBudget = (owner: string): WalkBudget => ({
 export interface SkillFilesOptions {
    /** Shared by the walks of every skill a reader reads. Omitted, one fresh budget bounds this skill alone. */
    budget?: WalkBudget;
-   /** Given a root `reference/` that is a link, the directory to read its Markdown from, or undefined to leave the link a plain candidate. */
+   /** Given a root `reference/` or `references/` that is a link, the directory to read its Markdown from, or undefined to leave the link a plain candidate. */
    followReference?: (absolute: string) => string | undefined;
+}
+
+/** `assets/` holds what a skill copies or runs, never Markdown it serves inline. */
+export const underAssets = (relative: string): boolean =>
+   relative.startsWith(`${ASSETS_DIR}/`);
+
+/** Markdown outside `assets/` is inlined (in a bundle's `bodies`, in a package's served text); everything else is listed. */
+export const isInlineMarkdown = (relative: string): boolean =>
+   relative.endsWith(".md") && !underAssets(relative);
+
+const segmentsOf = (relative: string): string[] =>
+   relative.split(/[\\/]/).filter(Boolean);
+
+/**
+ * `credible-*` skills are Credible-platform-specific and must never be
+ * published (see skills/README.md). Case-insensitive and matched at every
+ * depth: an npm tarball cannot be unpublished, so this errs toward excluding a
+ * file it should not rather than shipping one it must not.
+ */
+export const isCredible = (relative: string): boolean =>
+   segmentsOf(relative).some((s) => s.toLowerCase().startsWith("credible-"));
+
+/**
+ * What no build ships from a skill, whether it embeds the file (the bundle) or
+ * copies it (the npm package): a Credible path, an editor backup (`*.orig`, file
+ * or directory) and `npm-debug.log`, which npm strips from every tarball
+ * whatever "files" says.
+ */
+export function isNeverShipped(relative: string): boolean {
+   const segments = segmentsOf(relative);
+   return (
+      isCredible(relative) ||
+      segments.some((s) => s.endsWith(".orig")) ||
+      segments.at(-1) === "npm-debug.log"
+   );
 }
 
 /** A file is text when its bytes are strict UTF-8 without a NUL; anything else is binary and is never served as a body. */
@@ -110,7 +148,7 @@ function collapseGlobstars(pattern: string): string {
    return (negated ? "!" : "") + segments.join("/");
 }
 
-/** The `*` runs and whole-segment `**` of a collapsed pattern; `ignore` reads a `**` inside a segment like `*`, and an escaped star is a literal. */
+/** The `*` runs and whole-segment `**` of a collapsed pattern; `ignore` reads a `**` inside a segment like `*`, and an escaped star or one in a bracket expression is a literal. */
 function stars(pattern: string): number {
    return pattern
       .replace(/^!/, "")
@@ -120,7 +158,10 @@ function stars(pattern: string): number {
             count +
             (segment === "**"
                ? 1
-               : (segment.replace(/\\./g, "").match(/\*+/g)?.length ?? 0)),
+               : (segment
+                    .replace(/\\./g, "x")
+                    .replace(/\[[^\]]*\]/g, "x")
+                    .match(/\*+/g)?.length ?? 0)),
          0,
       );
 }
@@ -254,7 +295,7 @@ type Zone = "root" | "reference" | "linked reference" | "assets" | "other";
 /**
  * The files of one skill directory: everything under it, minus the built-in
  * excludes and what its root `.skillignore` matches. A symlink is returned as a
- * candidate and never followed, but for a root `reference/` that
+ * candidate and never followed, but for a root `reference/` or `references/` that
  * `followReference` resolves, which is read for its Markdown alone. At the root
  * `SKILL.md` comes first, then `reference/`, then `assets/`, then the rest, so
  * a bound cuts the newest locations first. An ignored directory is not
@@ -307,7 +348,7 @@ export function skillFiles(
       if (!reference.warned) {
          reference.warned = true;
          warnings.push(
-            `skill walk stopped at '${relative}': ${REFERENCE_DIR}/ holds more than ${ASSET_MAX_ENTRIES} Markdown files, so the rest are not read`,
+            `skill walk stopped at '${relative}': ${relative.split("/")[0]}/ holds more than ${ASSET_MAX_ENTRIES} Markdown files, so the rest are not read`,
          );
       }
       return false;
@@ -326,14 +367,15 @@ export function skillFiles(
       );
       if (cut) {
          warnings.push(
-            `skill walk stopped in '${rel}': ${REFERENCE_DIR}/ holds more than ${REFERENCE_MAX_EXAMINED} entries, so the rest are not read`,
+            `skill walk stopped in '${rel}': ${rel}/ holds more than ${REFERENCE_MAX_EXAMINED} entries, so the rest are not read`,
          );
       }
       return entries;
    };
    const rank = (name: string) => {
-      const place = [SKILL_MD, REFERENCE_DIR, ASSETS_DIR].indexOf(name);
-      return place < 0 ? 3 : place;
+      if (name === SKILL_MD) return 0;
+      if (isReferenceDir(name)) return 1;
+      return name === ASSETS_DIR ? 2 : 3;
    };
 
    const files: string[] = [];
@@ -369,7 +411,7 @@ export function skillFiles(
          const relative = rel ? `${rel}/${entry.name}` : entry.name;
          const linked =
             zone === "root" &&
-            entry.name === REFERENCE_DIR &&
+            isReferenceDir(entry.name) &&
             entry.isSymbolicLink()
                ? options.followReference?.(path.join(absolute, entry.name))
                : undefined;
@@ -393,7 +435,7 @@ export function skillFiles(
             case "root":
                if (entry.name === SKILL_MD && !isDirectory) {
                   cost = undefined;
-               } else if (entry.name === REFERENCE_DIR && isDirectory) {
+               } else if (isReferenceDir(entry.name) && isDirectory) {
                   cost = undefined;
                   inside =
                      linked === undefined ? "reference" : "linked reference";
@@ -453,7 +495,8 @@ export function skillFiles(
 }
 
 /**
- * A skill's files for a build that copies or embeds them. `skillFiles` returns
+ * A skill's files for a build that copies or embeds them, less what
+ * `isNeverShipped` names. `skillFiles` returns
  * a link as a candidate, and a build would follow it to whatever it names, so
  * the root and every file must be a regular file; a walk finding throws too,
  * since it would leave the copy or the manifest quietly short.
@@ -464,10 +507,11 @@ export function buildTimeSkillFiles(dir: string): string[] {
    if (fs.lstatSync(dir).isSymbolicLink()) {
       throw new Error(`skill '${name}' is a link; ${only}`);
    }
-   const { files, warnings } = skillFiles(dir);
+   const { files: found, warnings } = skillFiles(dir);
    if (warnings.length > 0) {
       throw new Error(`skill '${name}': ${warnings.join("; ")}`);
    }
+   const files = found.filter((file) => !isNeverShipped(`${name}/${file}`));
    for (const file of files) {
       const stat = fs.lstatSync(path.join(dir, file));
       if (!stat.isFile()) {

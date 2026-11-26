@@ -24,7 +24,12 @@ import { createHash } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { parseFrontmatter } from "./frontmatter";
-import { buildTimeSkillFiles, decodeText } from "./skill_files";
+import {
+   buildTimeSkillFiles,
+   decodeText,
+   isCredible,
+   isInlineMarkdown,
+} from "./skill_files";
 import { compareText } from "../../compare_text";
 
 export interface SkillEntry {
@@ -65,16 +70,6 @@ export function parseSkill(md: string, dirName: string): SkillEntry {
 }
 
 /**
- * `credible-*` skills never ship (see skills/README.md) but can sit in skills/
- * as a gitignored local install, so the bundle must skip them or a regeneration
- * would bake them in. Duplicates packages/skills/scripts/exclusions.ts, because
- * the server does not depend on that package.
- */
-export function isCredible(dirName: string): boolean {
-   return dirName.toLowerCase().startsWith("credible-");
-}
-
-/**
  * The skills the deployment manifest ships, as a set. The manifest is the single
  * answer to "what ships", so a skill merely present in the tree does not reach
  * agents. Read rather than imported (see `isCredible`), and resolved relative to
@@ -98,19 +93,16 @@ function manifestSkillNames(skillsDir: string): Set<string> {
 
 /** One skill directory as the bundle holds it; a finding of the frontmatter fails the build, like one of the walk. */
 function bundleSkill(skillDir: string, dirName: string): BundledSkill {
-   const files: BundledSkill["files"] = {};
-   const bodies: BundledSkill["bodies"] = {};
+   // No prototype, so a root file named `__proto__` is an entry like any other.
+   const files: BundledSkill["files"] = Object.create(null);
+   const bodies: BundledSkill["bodies"] = Object.create(null);
    for (const relative of buildTimeSkillFiles(skillDir)) {
       const bytes = fs.readFileSync(path.join(skillDir, relative));
       files[relative] = {
          digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
          size: bytes.length,
       };
-      // Decision 1's inline rule: every Markdown file outside assets/.
-      const text =
-         relative.endsWith(".md") && !relative.startsWith("assets/")
-            ? decodeText(bytes)
-            : undefined;
+      const text = isInlineMarkdown(relative) ? decodeText(bytes) : undefined;
       if (text !== undefined) bodies[relative] = text;
    }
    const fm = parseFrontmatter(bodies["SKILL.md"] ?? "", dirName);
@@ -130,7 +122,7 @@ export function buildSkills(skillsDir: string): BundledSkill[] {
    const skills: BundledSkill[] = [];
    for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
       if (isCredible(entry.name) || !shipping.has(entry.name)) continue;
-      // A link is kept so that bundleSkill refuses it rather than the bundle quietly lacking the skill.
+      // A link is kept so that bundleSkill throws on it; a link to nothing has no SKILL.md and is skipped below.
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
       const skillDir = path.join(skillsDir, entry.name);
       if (!fs.existsSync(path.join(skillDir, "SKILL.md"))) continue;

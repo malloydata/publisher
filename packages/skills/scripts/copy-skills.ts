@@ -41,9 +41,13 @@ if (missing.length > 0) {
    process.exit(1);
 }
 
+// Every skill's files are listed, and so every refusal thrown, before the old copy is deleted.
+const planned = [...shipping].map(
+   (name) => [name, packedSkillFiles(source, name)] as const,
+);
 fs.rmSync(destination, { recursive: true, force: true });
-for (const name of shipping) {
-   for (const file of packedSkillFiles(source, name)) {
+for (const [name, files] of planned) {
+   for (const file of files) {
       const to = path.join(destination, name, file);
       fs.mkdirSync(path.dirname(to), { recursive: true });
       fs.copyFileSync(path.join(source, name, file), to);

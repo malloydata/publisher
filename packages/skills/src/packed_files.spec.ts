@@ -5,6 +5,7 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { buildSkills } from "../../server/src/service/skills/build_skills_bundle";
 import { packedSkillFiles } from "../scripts/exclusions";
 
 const SKILL_MD = "---\nname: pricing\ndescription: Price a thing.\n---\nbody\n";
@@ -94,4 +95,51 @@ describe("packedSkillFiles", () => {
          }
       });
    }
+});
+
+describe("the bundle and the pack choose a skill's files the same way", () => {
+   it("agree on a tree with backups, credible-* paths and npm debris", () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "packed-parity-"));
+      try {
+         fs.mkdirSync(path.join(root, "manifests"));
+         fs.writeFileSync(
+            path.join(root, "manifests/publisher-local.json"),
+            JSON.stringify({ auto_discovered: ["pricing"], supporting: [] }),
+         );
+         const skill = path.join(root, "skills/pricing");
+         for (const file of [
+            "SKILL.md",
+            "scripts/run.py",
+            "scripts/run.py.orig",
+            "backup.orig/old.md",
+            "credible-notes/n.md",
+            "npm-debug.log",
+            "reference/rules.md",
+            "references/more.md",
+            "assets/logo.png",
+         ]) {
+            fs.mkdirSync(path.dirname(path.join(skill, file)), {
+               recursive: true,
+            });
+            fs.writeFileSync(
+               path.join(skill, file),
+               file === "SKILL.md" ? SKILL_MD : "x\n",
+            );
+         }
+         const skills = path.join(root, "skills");
+         const [bundled] = buildSkills(skills);
+         expect(Object.keys(bundled!.files)).toEqual(
+            packedSkillFiles(skills, "pricing"),
+         );
+         expect(packedSkillFiles(skills, "pricing")).toEqual([
+            "SKILL.md",
+            "assets/logo.png",
+            "reference/rules.md",
+            "references/more.md",
+            "scripts/run.py",
+         ]);
+      } finally {
+         fs.rmSync(root, { recursive: true, force: true });
+      }
+   });
 });

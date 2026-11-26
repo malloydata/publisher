@@ -11,39 +11,13 @@
  */
 import * as path from "node:path";
 // By path: the published package cannot depend on the server, and `tsconfig.build.json` never builds scripts/.
-import { buildTimeSkillFiles } from "../../server/src/service/skills/skill_files";
+import {
+   buildTimeSkillFiles,
+   isCredible,
+   isNeverShipped,
+} from "../../server/src/service/skills/skill_files";
 
-/** Path segments of a forward-slash or platform-separated relative path. */
-function segments(relative: string): string[] {
-   return relative.split(/[\\/]/).filter(Boolean);
-}
-
-/**
- * `credible-*` skills are Credible-platform-specific and must never be
- * published (see skills/README.md).
- *
- * Case-insensitive, and matched at every depth: an npm tarball cannot be
- * unpublished, so this errs toward excluding a file it should not rather than
- * shipping one it must not.
- */
-export function isCredible(relative: string): boolean {
-   return segments(relative).some((segment) =>
-      segment.toLowerCase().startsWith("credible-"),
-   );
-}
-
-/**
- * Editor debris. It must not enter the copy or the audit's expectations: npm
- * strips `npm-debug.log` from every tarball whatever "files" says, so a stray
- * one would be reported as a missing skill file, which is what the audit says
- * when the copy has catastrophically broken.
- *
- * Dotfiles are not listed here: `skillFiles` never returns one.
- */
-export function isNeverPacked(relative: string): boolean {
-   const name = path.basename(relative);
-   return name.endsWith(".orig") || name === "npm-debug.log";
-}
+export { isCredible };
 
 /**
  * skills/README.md documents the internal upstream-sync process, which is not
@@ -55,16 +29,10 @@ export function isSourceReadme(relative: string): boolean {
 
 /** True if a path relative to skills/ must not reach the package. */
 export function isExcluded(relative: string): boolean {
-   return (
-      isCredible(relative) ||
-      isNeverPacked(relative) ||
-      isSourceReadme(relative)
-   );
+   return isNeverShipped(relative) || isSourceReadme(relative);
 }
 
-/** A skill's files that reach the package: no skip beyond `isExcluded`, because other clients (Claude Code, `npx skills`) read the folder whole. */
+/** A skill's files that reach the package: no skip beyond `isNeverShipped`, because other clients (Claude Code, `npx skills`) read the folder whole. */
 export function packedSkillFiles(skillsDir: string, name: string): string[] {
-   return buildTimeSkillFiles(path.join(skillsDir, name)).filter(
-      (file) => !isExcluded(`${name}/${file}`),
-   );
+   return buildTimeSkillFiles(path.join(skillsDir, name));
 }

@@ -96,6 +96,47 @@ describe("buildSkills", () => {
    });
 });
 
+describe("buildSkills ships what the npm pack ships", () => {
+   let root: string;
+   beforeAll(() => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-shipped-"));
+      fs.mkdirSync(path.join(root, "manifests"));
+      fs.writeFileSync(
+         path.join(root, "manifests", "publisher-local.json"),
+         JSON.stringify({ auto_discovered: ["pricing"], supporting: [] }),
+      );
+      const write = (file: string, data: string) => {
+         const full = path.join(root, "skills", "pricing", file);
+         fs.mkdirSync(path.dirname(full), { recursive: true });
+         fs.writeFileSync(full, data);
+      };
+      write("SKILL.md", SKILL_MD);
+      write("scripts/run.py", "print('hi')\n");
+      write("scripts/run.py.orig", "old\n");
+      write("backup.orig/old.md", "# Old\n");
+      write("credible-notes/n.md", "# Credible\n");
+      write("Credible-Extra.md", "# Credible\n");
+      write("npm-debug.log", "log\n");
+      write("__proto__", "plain\n");
+   });
+   afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
+
+   it("leaves out an editor backup file or directory, a credible-* path at any depth and npm debris", () => {
+      const [skill] = buildSkills(path.join(root, "skills"));
+      expect(Object.keys(skill!.files).sort()).toEqual([
+         "SKILL.md",
+         "__proto__",
+         "scripts/run.py",
+      ]);
+      expect(Object.keys(skill!.bodies)).toEqual(["SKILL.md"]);
+   });
+
+   it("keeps a root file named __proto__ as an own entry", () => {
+      const [skill] = buildSkills(path.join(root, "skills"));
+      expect(Object.hasOwn(skill!.files, "__proto__")).toBe(true);
+   });
+});
+
 describe("buildSkills refuses a link, which would be followed to whatever it names", () => {
    // Each case builds a skill `pricing` in `skills/` whose one odd entry is a link, beside a target outside it.
    const cases: Array<[string, (root: string) => void, RegExp]> = [

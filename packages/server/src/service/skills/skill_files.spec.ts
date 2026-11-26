@@ -687,6 +687,55 @@ describe("skillFiles", () => {
          expect(warnings).toHaveLength(2);
       });
 
+      describe("references/ is read as reference/ is", () => {
+         const inReferences = (files: string[]) =>
+            files.filter((f) => f.startsWith("references/"));
+
+         it("serves at most 1,000 Markdown files of its own, whatever the shared budget has left", () => {
+            for (let i = 0; i < ASSET_MAX_ENTRIES + 200; i++) {
+               write(`references/r${i}.md`);
+            }
+            const { files, warnings } = skillFiles(dir, {
+               budget: {
+                  assets: { left: 0 },
+                  other: { left: 0 },
+                  owner: "package",
+               },
+            });
+            expect(inReferences(files)).toHaveLength(ASSET_MAX_ENTRIES);
+            expect(warnings).toHaveLength(1);
+            expect(warnings[0]).toContain(
+               `references/ holds more than ${ASSET_MAX_ENTRIES} Markdown files`,
+            );
+         });
+
+         it("follows a link to a directory the caller resolves, for its Markdown alone", () => {
+            write("shared/a.md");
+            write("shared/data.csv");
+            fs.symlinkSync(
+               path.join(dir, "shared"),
+               path.join(dir, "references"),
+               "dir",
+            );
+            const { files } = skillFiles(dir, {
+               followReference: (target) => target,
+            });
+            expect(inReferences(files)).toEqual(["references/a.md"]);
+         });
+
+         it("does not count what it holds besides Markdown", () => {
+            for (let i = 0; i < ASSET_MAX_ENTRIES; i++) {
+               write(`references/fig${i}.png`);
+            }
+            write("references/overview.md");
+            const { files, warnings } = skillFiles(dir);
+            expect(files.filter((f) => f.endsWith(".md"))).toEqual([
+               "references/overview.md",
+            ]);
+            expect(warnings).toEqual([]);
+         });
+      });
+
       describe("reference/", () => {
          const fillReference = (folder: string, count: number) => {
             for (let i = 0; i < count; i++) write(`${folder}/r${i}.md`);
@@ -938,6 +987,24 @@ describe("skillFiles", () => {
    });
 
    describe("star cap boundary", () => {
+      it.skipIf(process.platform === "win32")(
+         "counts each star between escapes as its own run",
+         () => {
+            write("abcd.txt");
+            skillignore("*\\a*\\a*\\a*d.txt");
+            const { files, warnings } = skillFiles(dir);
+            expect(files).toEqual(["abcd.txt"]);
+            expect(warnings).toHaveLength(1);
+            expect(warnings[0]).toContain("more than 2 '*'");
+         },
+      );
+
+      it("does not count a star inside a bracket expression, which is a literal", () => {
+         write("abacad.txt");
+         skillignore("[a*]b[a*]c[a*]d.txt");
+         expect(skillFiles(dir)).toMatchObject({ files: [], warnings: [] });
+      });
+
       it("applies a pattern with two single stars, with no warning", () => {
          write("abc.txt");
          skillignore("a*b*c.txt");
