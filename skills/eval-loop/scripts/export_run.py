@@ -21,9 +21,11 @@ upload step that reads `manifest.json`.
   eval_query_timings  one row per query of a query replay (`query_replay.py`):
                     median and max time, where it was served from, the rows'
                     hash; empty for any other kind of run
-  eval_files        one row per other file of the run's record, as text:
-                    summary.json and results.jsonl of a replay, the diagnosis,
-                    the coverage report, the model snapshot
+  eval_files        one row per other file of the run's record, as text, by
+                    its path inside the run: summary.json and results.jsonl
+                    of a replay, the diagnosis and each case's write-up, the
+                    coverage report, the model snapshot, an improve
+                    cluster's patch
   eval_improve_attempts  one row per edit an improve routine tried after this
                     run: what it changed, the outcome and why, its effect on
                     the target cases, cost, branch and candidate runs. Read
@@ -79,10 +81,9 @@ from run_index import runs as index_runs  # noqa: E402
 
 TABLES = ("eval_runs", "eval_attempts", "eval_events", "eval_transcripts", "eval_cases",
           "eval_query_timings", "eval_files", "eval_improve_attempts")
-# The files of a run that are its record, beside run.json and events.jsonl,
-# which have columns of their own. Only what sits at the top of the run
-# directory: artifacts/ is in eval_transcripts, and rows/ (a replay's first 500
-# rows per query), export/ and voided/ are not carried.
+# run.json and events.jsonl have columns of their own, so eval_files leaves
+# them out. Every other text file of the run is carried by its path, except a
+# case's transcript files (eval_transcripts) and the folders below.
 NOT_A_RECORD_FILE = ("run.json", "events.jsonl")
 # A table name a loader accepts: a lowercase letter or _ first, then lowercase
 # letters, digits or _, at most 63 characters. The run id is appended to keep
@@ -197,13 +198,28 @@ def rows_events(run: pathlib.Path, events: list[dict]) -> list[dict]:
             for i, (e, line) in enumerate(zip(events, lines))]
 
 
+# Not carried: what export itself writes, a replay's rows/ (up to 500 result
+# rows per query) and voided/ (attempts the run set aside).
+EXPORT_DIRS = ("export", "export-summary", "rows", "voided")
+# A case's transcript, answer and judge write-up go in eval_transcripts instead.
+TRANSCRIPT_FILES = ("answerer.jsonl", "answer.md", "judge.md")
+
+
 def rows_files(run: pathlib.Path) -> list[dict]:
+    """Every text file of the record, at any depth, by its path inside the run:
+    a case's diagnosis and an improve cluster's patch live under artifacts/."""
     out = []
-    for f in sorted(run.iterdir()):
-        if f.is_file() and f.name not in NOT_A_RECORD_FILE and not f.name.startswith("."):
-            text = read_text(f)
-            if text is not None:
-                out.append({"run_id": run.name, "path": f.name, "text": text})
+    for f in sorted(run.rglob("*")):
+        rel = f.relative_to(run)
+        if not f.is_file() or any(part.startswith(".") for part in rel.parts):
+            continue
+        if rel.parts[0] in EXPORT_DIRS or (len(rel.parts) == 1 and f.name in NOT_A_RECORD_FILE):
+            continue
+        if len(rel.parts) == 3 and rel.parts[0] == "artifacts" and f.name in TRANSCRIPT_FILES:
+            continue
+        text = read_text(f)
+        if text is not None:
+            out.append({"run_id": run.name, "path": rel.as_posix(), "text": text})
     return out
 
 

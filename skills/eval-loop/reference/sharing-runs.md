@@ -107,7 +107,7 @@ row carries `run_id`.
 | `eval_transcripts` | attempt | the answerer transcript, the answer, and the judge's write-up, as text |
 | `eval_cases` | case | the set as it was run, keyed by `dataset_sha`: question, tags, split, golden |
 | `eval_query_timings` | query, in a query replay | median and max time, where it was served from, the rows' hash; empty for any other run |
-| `eval_files` | other file of the run's record | `path` and `text`: a replay's `summary.json` and `results.jsonl`, the diagnosis, the coverage report, the model snapshot |
+| `eval_files` | other text file of the run's record | `path` inside the run and `text`: a replay's `summary.json` and `results.jsonl`, the diagnosis and each case's write-up, the coverage report, the model snapshot, an improve cluster's patch |
 | `eval_improve_attempts` | edit an improve routine tried after the run | what the edit changed, accepted, rejected or skipped and why, its effect on the target cases, the lesson, cost, the branch, the candidate runs; the routine's record and the `attempts.jsonl` line as text. Empty when no improve routine followed the run |
 
 `manifest.json` names each file and the table name to load it under
@@ -126,12 +126,16 @@ as text, which unions with anything. The run itself stays JSON lines; CSV is
 only how it is loaded.
 
 A loader that cannot append loads each run as its own tables. Read them
-together by naming them. In DuckDB:
+together by naming them, matched by column name. In DuckDB:
 
 ```sql
-SELECT run_id, qid, verdict, TRY_CAST(passed AS BOOLEAN) AS passed
-FROM query_table(['eval_attempts__baseline_01', 'eval_attempts__baseline_02'], true)
+SELECT run_id, qid, verdict, TRY_CAST(passed AS BOOLEAN) AS passed FROM (
+  SELECT * FROM eval_attempts__baseline_01
+  UNION ALL BY NAME
+  SELECT * FROM eval_attempts__baseline_02)
 ```
+
+Not `query_table(...)`: Publisher refuses it in a model's SQL since 0.15.0.
 
 A host may ship a skill that does the upload for its own storage: look for one
 before writing the commands by hand.
@@ -181,9 +185,11 @@ judge write-up. When the files hold rows of several runs, name one with
 
 The run is written to `<workdir>/runs/<run id>`, where `accept`, `versions`,
 `history` and `--baseline record` read. `run.json` and `events.jsonl` come
-back byte for byte, measured through DuckDB 1.5.1 (export, load, select, write
-as JSON, import), so a store that already holds the run sees the same run. A
-replay's `rows/` and a case's other artifacts are not carried. A run already
+back byte for byte, and so does every other text file of the run, measured
+through a Credible database (export, `cred add table`, query through a model,
+write as JSON, import), so a store that already holds the run sees the same
+run. A replay's `rows/`, the attempts a run voided and any file that is not text
+are not carried. A run already
 here with the same record is left alone, and a different run under the same
 name is refused.
 

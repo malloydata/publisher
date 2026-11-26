@@ -93,6 +93,15 @@ def safe_name(name: Any, what: str) -> str:
     return s
 
 
+def safe_path(path: Any, what: str) -> str:
+    """A relative path, `/`-separated, whose every part is a plain name."""
+    s = str(path or "")
+    if s.startswith("/"):
+        raise SystemExit(f"Invalid {what} {path!r}: expected a path inside the run "
+                         f"directory. The tables are not as export wrote them")
+    return "/".join(safe_name(part, what) for part in s.split("/"))
+
+
 def build(src: pathlib.Path, dest: pathlib.Path, run_id: str | None) -> str:
     """Write the run under `dest` (a new, empty directory). Returns its run id."""
     found = {t: table_file(src, t) for t in (*NEEDED, "eval_files", "eval_transcripts")}
@@ -118,8 +127,9 @@ def build(src: pathlib.Path, dest: pathlib.Path, run_id: str | None) -> str:
     (dest / "events.jsonl").write_text("".join(r["event"] + "\n" for r in events))
     if found["eval_files"]:
         for r in one_run("eval_files", rows(found["eval_files"]), run_id):
-            name = safe_name(r.get("path"), "eval_files.path")
+            name = safe_path(r.get("path"), "eval_files.path")
             if name not in ("run.json", "events.jsonl"):
+                (dest / name).parent.mkdir(parents=True, exist_ok=True)
                 (dest / name).write_text(r.get("text") or "")
     if found["eval_transcripts"]:
         for r in one_run("eval_transcripts", rows(found["eval_transcripts"]), run_id):

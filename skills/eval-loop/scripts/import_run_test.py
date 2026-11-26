@@ -55,6 +55,9 @@ class RoundTrip(unittest.TestCase):
         (d / "artifacts" / "q1" / "judge.md").write_text('{"verdict": "match"}')
         (d / "clusters.jsonl").write_text('{"clusterId": "c1", "qids": ["q2"]}\n')
         (d / "model.malloy").write_text("source: x is duckdb.table('t')\n")
+        (d / "artifacts" / "q1" / "diagnosis.md").write_text("owner: documentation\n")
+        (d / "artifacts" / "clusters" / "c1").mkdir(parents=True)
+        (d / "artifacts" / "clusters" / "c1" / "edit.patch").write_text("--- a\n+++ b\n")
         return d
 
     def exported(self, run=None, out="out"):
@@ -73,7 +76,8 @@ class RoundTrip(unittest.TestCase):
         out, gone = self.exported(), self.away()
         self.assertIn("imported base-01", im.import_run(self.cfg, out))
         for f in ("run.json", "events.jsonl", "clusters.jsonl", "model.malloy",
-                  "artifacts/q1/answerer.jsonl", "artifacts/q1/answer.md", "artifacts/q1/judge.md"):
+                  "artifacts/q1/answerer.jsonl", "artifacts/q1/answer.md", "artifacts/q1/judge.md",
+                  "artifacts/q1/diagnosis.md", "artifacts/clusters/c1/edit.patch"):
             self.assertEqual((self.run / f).read_bytes(), (gone / f).read_bytes(), f)
         self.assertEqual(run_store.content_sha(self.run), run_store.content_sha(gone))
 
@@ -144,14 +148,25 @@ class RoundTrip(unittest.TestCase):
 
     def test_a_path_that_leaves_the_run_directory_is_refused(self):
         out = self.exported()
-        (out / "eval_files.csv").unlink()
-        (out / "eval_files.json").write_text(json.dumps(
-            [{"run_id": "base-01", "path": "../escaped", "text": "x"}]))
         self.away()
-        with self.assertRaises(SystemExit):
-            im.import_run(self.cfg, out)
-        self.assertFalse((self.root / "w" / "escaped").exists())
-        self.assertEqual(list((self.root / "w" / "runs").iterdir()), [])
+        for bad in ("../escaped", "artifacts/../../escaped", "/tmp/escaped", "a//b", "a\\b"):
+            (out / "eval_files.csv").unlink(missing_ok=True)
+            (out / "eval_files.json").write_text(json.dumps(
+                [{"run_id": "base-01", "path": bad, "text": "x"}]))
+            with self.assertRaises(SystemExit, msg=bad):
+                im.import_run(self.cfg, out)
+            self.assertFalse((self.root / "w" / "escaped").exists())
+            self.assertEqual(list((self.root / "w" / "runs").iterdir()), [])
+
+    def test_a_transcript_file_is_exported_once_in_eval_transcripts(self):
+        self.exported(out="unused")
+        (self.run / "export").mkdir()
+        (self.run / "export" / "eval_runs.csv").write_text("run_id\n")
+        paths = [r["path"] for r in ex.rows_files(self.run)]
+        self.assertFalse([p for p in paths if p.startswith("export")], paths)
+        self.assertIn("artifacts/q1/diagnosis.md", paths)
+        self.assertNotIn("artifacts/q1/answer.md", paths)
+        self.assertNotIn("run.json", paths)
 
     def test_rows_of_two_runs_need_a_run_id(self):
         out = self.exported()
