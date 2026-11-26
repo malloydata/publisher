@@ -1,6 +1,6 @@
 # Recipe fixture (CC0)
 
-`fixture.xlsx` and `fixture_1904.xlsx` are the workbooks the `malloy-excel-review` cookbook recipes run against; each recipe is labelled `executed` or `semantics-cited` in place. They are original, synthetic and dedicated to the public domain (CC0). The `_Config` password is a dummy.
+`fixture.xlsx` and `fixture_1904.xlsx` are the workbooks the `malloy-excel-review` cookbook recipes run against. They live in the repository only: the skill's `.skillignore` keeps both workbooks and `build_fixture.py` out of what ships, so an installed copy has this file and no fixture. Each recipe is labelled `executed` or `semantics-cited` in place. Both workbooks are original, synthetic and dedicated to the public domain (CC0). The `_Config` password is a dummy.
 
 ## Provenance
 

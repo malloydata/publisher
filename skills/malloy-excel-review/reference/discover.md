@@ -70,7 +70,7 @@ confirm it with the user before building on it. `--json` adds `class_reason`.
 | `scratch` | empty or almost empty (under 5 cells) | Ask why it is there; usually leave out. |
 | `config` | `veryHidden`, or named `config`, `configuration`, `settings`, `credentials`, `secrets` or `connections` | No values are shown. Ask what it holds; it often holds the keys to the rest. |
 
-On the bundled fixture the classes are: `Data` data, `Ledger` data, `Lookup` lookup,
+On the repository's fixture the classes are: `Data` data, `Ledger` data, `Lookup` lookup,
 `Report` report, `Assumptions` input, `Forecast` calc, `MonteCarlo` calc, `_Config` config
 (`veryHidden`). The script gets them right on a workbook built to be classified; on a real
 one, expect to correct some. Treat a `report` sheet that is mostly constants, or a `data`

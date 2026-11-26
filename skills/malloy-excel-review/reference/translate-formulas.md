@@ -62,7 +62,7 @@ paste it into a PR or a shared doc. Read the report in this order:
 | **Dependency graph** | Region-level, with cycles. `iterate=1 and a cycle was found` is a real circularity; `iterate=1` alone is only a setting. Regions in a cycle route C (`circular`). |
 | **Not read** | What the script did not look at. A route is not evidence about these. |
 
-On the bundled `fixture.xlsx`: 55 regions, **T 40 regions / 77 cells, C 13 / 23,
+On the repository's `fixture.xlsx`: 55 regions, **T 40 regions / 77 cells, C 13 / 23,
 X 2 / 1001, NR 0 / 0**. The route is a priority order, not a verdict: a T region can
 still be wrong, so parity-test every non-T region and spot-check the T ones.
 

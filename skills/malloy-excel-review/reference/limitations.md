@@ -153,7 +153,7 @@ The route is a priority order, not a verdict: it cannot prove a formula safe.
 ## What the cached values can and cannot tell you
 
 - The cache is only an oracle when Excel computed it (`parity.md` section 1). On a library-written
-  file it is a model of Excel, and the bundled fixture's committed binary is exactly that
+  file it is a model of Excel, and the repository's fixture binary is exactly that
   (`fixtures/README.md`). No quirk-route recipe in this skill is `executed (Excel)` until
   an Excel save is recorded.
 - A cell that reads through an external link, a feed or an add-in is a snapshot.

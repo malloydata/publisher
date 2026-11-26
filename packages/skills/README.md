@@ -34,10 +34,12 @@ The agent skills that ship with [Malloy Publisher](https://github.com/malloydata
 files you can install. They are task-specific guides for writing Malloy, building and reviewing
 models, exploring data, and authoring HTML data apps.
 
-Publisher already serves these skills over MCP: each `SKILL.md` as a prompt, and every file of a
-skill by path through `get_skill`. This package exists for the cases MCP does not cover: a host that reads skill files from disk
-(Claude Code and the Publisher plugin), a scaffolder that installs them into a new project, or any
-tool that wants the files themselves rather than prompt text.
+Publisher already serves these skills over MCP: each `SKILL.md` as a prompt, and each Markdown
+file of a skill by path through `get_skill`. The other files of a skill (scripts, templates, data)
+are not in the server's bundle: `get_skill` answers with the file's size and says to install this
+package. This package exists for the cases MCP does not cover: a host that reads skill files from
+disk (Claude Code and the Publisher plugin), a scaffolder that installs them into a new project, or
+any tool that wants the files themselves rather than prompt text.
 
 ## Use the files from code
 

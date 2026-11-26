@@ -38,7 +38,7 @@ formula, and the report says so in the Oracle section when both hold:
 in `--json`; the `calcId` is also printed on the `Cached values` line, or `none`). It is
 the absence of the untrusted tells above, not proof: a library can copy both.
 The `volatile` caveat names the functions it actually found, and its pin advice
-applies to `TODAY`/`NOW` only. The bundled fixture is untrusted on purpose (`full_calc_on_load`), so its parity
+applies to `TODAY`/`NOW` only. The repository's fixture is untrusted on purpose (`full_calc_on_load`), so its parity
 is against the generator's model of Excel, which is why most rows below are
 `semantics-cited`.
 

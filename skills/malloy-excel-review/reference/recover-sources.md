@@ -11,7 +11,7 @@ SPDX-License-Identifier: MIT
 
 Read `translate-formulas.md` for what happens to the formula cells this step leaves
 behind. Every `read_xlsx` behavior below was run on Publisher 0.9.0 with the DuckDB
-it bundles, **v1.5.5**, against the bundled `fixture.xlsx` and a small scratch
+it bundles, **v1.5.5**, against the repository's `fixture.xlsx` and a small scratch
 workbook of layout traps. The fixture's cached values come from the `python` build
 (see `fixtures/README.md`), so a number labelled `semantics-cited` matches that
 build's model of Excel, not an Excel save.
