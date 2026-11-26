@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { initializeMcpServer } from "./server";
+import { compareText } from "../compare_text";
 import { BUNDLED_CATALOG } from "../service/skills/package_skills";
 import {
    RELOAD_FAILURE_IS_SAFE,
@@ -431,5 +432,28 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       const res = await client.getPrompt({ name: "malloy-analysis" });
       const content = res.messages[0].content as { text?: string };
       expect((content.text ?? "").length).toBeGreaterThan(200);
+   });
+
+   it("a skill prompt names the skill's other files and how to read them, and one with none has no pointer", async () => {
+      const textOf = async (name: string) =>
+         (
+            (await client.getPrompt({ name })).messages[0]!.content as {
+               text?: string;
+            }
+         ).text ?? "";
+      const withFiles = BUNDLED_CATALOG.find(
+         (skill) => Object.keys(skill.bodies).length > 1,
+      )!;
+      const others = Object.keys(withFiles.bodies)
+         .filter((file) => file !== "SKILL.md")
+         .sort(compareText);
+      const text = await textOf(withFiles.name);
+      expect(text).toContain("## Other files over MCP");
+      expect(text).toContain(`skill_name \`${withFiles.name}\``);
+      expect(text).toContain(`Available: ${others.join(", ")}.`);
+      const alone = BUNDLED_CATALOG.find(
+         (skill) => Object.keys(skill.bodies).length === 1,
+      )!;
+      expect(await textOf(alone.name)).not.toContain("Other files over MCP");
    });
 });

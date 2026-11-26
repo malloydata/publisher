@@ -19,14 +19,27 @@ import { registerGetSkillTool } from "./tools/get_skill_tool";
 import { registerSearchDatabaseSchemaTool } from "./tools/search_database_schema_tool";
 import { registerGetStatusTool } from "./tools/get_status_tool";
 import { registerReportAppTools } from "./tools/report_app_tools";
-import { parseSkill } from "../service/skills/build_skills_bundle";
+import { compareText } from "../compare_text";
+import {
+   parseSkill,
+   type BundledSkill,
+} from "../service/skills/build_skills_bundle";
 import { BUNDLED_CATALOG, SKILL_MD } from "../service/skills/package_skills";
 import { SERVER_VERSION } from "../version";
 
+/** A bundled skill as a prompt: its body, then where to read its other files, since the relative paths in the text cannot be followed over MCP. */
+function promptOf({ name, bodies }: BundledSkill) {
+   const skill = parseSkill(bodies[SKILL_MD] ?? "", name);
+   const others = Object.keys(bodies)
+      .filter((file) => file !== SKILL_MD)
+      .sort(compareText);
+   if (others.length === 0) return skill;
+   const pointer = `## Other files over MCP\n\nThis skill's other files are not part of this prompt. Where the text above names a relative path, read that file with get_skill, passing skill_name \`${skill.name}\` and the path as \`path\`.\n\nAvailable: ${others.join(", ")}.`;
+   return { ...skill, body: `${skill.body}\n\n${pointer}` };
+}
+
 /** Parsed once at load: `initializeMcpServer` runs on every stateless MCP POST. */
-const BUNDLED_PROMPTS = BUNDLED_CATALOG.map(({ name, bodies }) =>
-   parseSkill(bodies[SKILL_MD] ?? "", name),
-);
+const BUNDLED_PROMPTS = BUNDLED_CATALOG.map(promptOf);
 
 const testServerInfo = {
    name: "malloy-publisher-mcp-server",
