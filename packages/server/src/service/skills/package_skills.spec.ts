@@ -9,13 +9,15 @@ import os from "os";
 import path from "path";
 import { type BundledSkill } from "./build_skills_bundle";
 import {
+   emptyWorkflows,
    namedSkillFiles,
    PACKAGE_SKILL_FILE_MAX_BYTES,
-   readSkillsDir,
+   readPackageWorkflows,
    resolveSkills,
    skillFileList,
    skillFilePath,
    type ServedSkill,
+   type SetSkill,
 } from "./package_skills";
 
 const digest = "sha256:0";
@@ -52,16 +54,11 @@ const packageSkill = (
    read: () => ({ text: body }),
 });
 
-const NOTHING = {
-   skills: [],
-   files: [],
-   paths: [],
-   contentShas: new Map(),
-   warnings: [],
-   blocking: [],
-};
+/** The package-relative path of each inline file the skills carry. */
+const inlinePaths = (skills: SetSkill[]) =>
+   skills.flatMap((s) => s.inline.map((f) => `${s.rel}/${f.relative}`));
 
-describe("readSkillsDir", () => {
+describe("a skill set read through a workflow", () => {
    let pkg: string;
 
    beforeEach(() => {
@@ -71,6 +68,18 @@ describe("readSkillsDir", () => {
    afterEach(() => {
       fs.rmSync(pkg, { recursive: true, force: true });
    });
+
+   /** The set at `skills/` as the default workflow lists it; `warnings` is everything the package publishes. */
+   const readSet = () => {
+      const result = readPackageWorkflows(pkg, {
+         default: { skill_sets: ["skills"] },
+      });
+      return {
+         result,
+         skills: result.sets.get("skills")?.skills ?? [],
+         warnings: result.warnings,
+      };
+   };
 
    const writeSkill = (dir: string, contents: string) => {
       fs.mkdirSync(path.join(pkg, "skills", dir), { recursive: true });
@@ -83,15 +92,27 @@ describe("readSkillsDir", () => {
       fs.writeFileSync(path.join(refDir, file), contents);
    };
 
-   it("returns nothing, and no warning, for a package with no skills/", () => {
-      expect(readSkillsDir(pkg)).toEqual(NOTHING);
+   it("serves nothing, and flags the skills/ directory nothing reads, when the manifest declares no workflows", () => {
+      writeSkill("real", "---\nname: real\ndescription: d\n---\n\nbody\n");
+      expect(readPackageWorkflows(pkg, undefined)).toEqual({
+         ...emptyWorkflows(),
+         skillsDirNotRead: true,
+      });
    });
 
-   it("answers the same for skills/ and for a skill directory that go out and back, whether or not the outside directory exists", () => {
+   it("answers the same for a skill directory and for a skill set that go out and back, whether or not the outside directory exists", () => {
       const outside = fs.mkdtempSync(path.join(os.tmpdir(), "pkg-skills-out-"));
+      const shown = () => {
+         const { result, skills, warnings } = readSet();
+         return JSON.stringify({
+            workflows: [...result.workflows.keys()],
+            skills: skills.map((s) => s.dirName),
+            warnings,
+         });
+      };
       try {
          fs.mkdirSync(path.join(outside, "present"));
-         writeSkill("real", "---\nname: real\n---\n\nbody\n");
+         writeSkill("real", "---\nname: real\ndescription: d\n---\n\nbody\n");
          const results: string[] = [];
          for (const which of ["present", "absent_"]) {
             const through = path.join(outside, which);
@@ -101,7 +122,7 @@ describe("readSkillsDir", () => {
                `${through}/${path.relative(through, path.join(pkg, "skills", "real"))}`,
                path.join(pkg, "skills", "via"),
             );
-            results.push(JSON.stringify(readSkillsDir(pkg)));
+            results.push(shown());
          }
          expect(results[0]).toBe(results[1]);
          // Kept text: refused as leading out. Normalized when made (Windows):
@@ -113,7 +134,7 @@ describe("readSkillsDir", () => {
          }
 
          // skills/ itself, out and back into a directory of the package.
-         const skills: string[] = [];
+         const sets: string[] = [];
          fs.renameSync(path.join(pkg, "skills"), path.join(pkg, "kept"));
          for (const which of ["present", "absent_"]) {
             const through = path.join(outside, which);
@@ -122,29 +143,31 @@ describe("readSkillsDir", () => {
                `${through}/${path.relative(through, path.join(pkg, "kept"))}`,
                path.join(pkg, "skills"),
             );
-            skills.push(JSON.stringify(readSkillsDir(pkg)));
+            sets.push(shown());
          }
-         expect(skills[0]).toBe(skills[1]);
+         expect(sets[0]).toBe(sets[1]);
          if (linkTextKeptVerbatim()) {
-            expect(skills[0]).toContain("resolves outside the package");
+            expect(sets[0]).toContain("resolves outside the package");
          } else {
-            expect(skills[0]).not.toContain("resolves outside the package");
+            expect(sets[0]).not.toContain("resolves outside the package");
          }
       } finally {
          fs.rmSync(outside, { recursive: true, force: true });
       }
    });
 
-   it("reports a skills/ that is a dangling link out of the package as leading outside it", () => {
+   it("refuses the workflow for a skill set that is a dangling link out of the package, saying it leads outside it", () => {
       fs.symlinkSync("/definitely-absent-skills-dir", path.join(pkg, "skills"));
-      const read = readSkillsDir(pkg);
-      expect(read.skills).toEqual([]);
-      expect(read.blocking.join(" ")).toContain("resolves outside the package");
+      const { result, warnings } = readSet();
+      expect(result.workflows.size).toBe(0);
+      expect(warnings.join(" ")).toContain("resolves outside the package");
    });
 
-   it("returns nothing, and no warning, when skills/ is a dangling link", () => {
+   it("refuses the workflow for a skill set that is a dangling link inside the package, saying it does not exist", () => {
       fs.symlinkSync(path.join(pkg, "gone"), path.join(pkg, "skills"));
-      expect(readSkillsDir(pkg)).toEqual(NOTHING);
+      const { result, warnings } = readSet();
+      expect(result.workflows.size).toBe(0);
+      expect(warnings.join(" ")).toContain("does not exist");
    });
 
    describe("files that leave the package", () => {
@@ -168,9 +191,8 @@ describe("readSkillsDir", () => {
             path.join(outside, "secret.md"),
             path.join(pkg, "skills", "bad", "SKILL.md"),
          );
-         const { skills, files, warnings } = readSkillsDir(pkg);
+         const { skills, warnings } = readSet();
          expect(skills).toEqual([]);
-         expect(files).toEqual([]);
          expect(warnings.join("\n")).toContain("outside the package");
       });
 
@@ -181,7 +203,7 @@ describe("readSkillsDir", () => {
             path.join(pkg, "publisher.json"),
             path.join(pkg, "skills", "bad", "SKILL.md"),
          );
-         const { skills, warnings } = readSkillsDir(pkg);
+         const { skills, warnings } = readSet();
          expect(skills).toEqual([]);
          expect(warnings.join("\n")).toContain("not Markdown");
       });
@@ -193,17 +215,18 @@ describe("readSkillsDir", () => {
             path.join(outside, "secret.md"),
             path.join(pkg, "skills", "ok", "reference", "leak.md"),
          );
-         const { skills, warnings } = readSkillsDir(pkg);
-         expect(skills.map((s) => s.name)).toEqual(["ok"]);
+         const { skills, warnings } = readSet();
+         expect(skills.map((s) => s.served.name)).toEqual(["ok"]);
          expect(Object.keys(skills[0]!.catalog.files)).toEqual(["SKILL.md"]);
          expect(warnings.join("\n")).toContain("outside the package");
       });
 
-      it("does not serve a skills directory that is a link out", () => {
+      it("refuses the workflow for a skill set that is a link out", () => {
          fs.mkdirSync(path.join(outside, "bad"));
          fs.writeFileSync(path.join(outside, "bad", "SKILL.md"), "SECRET");
          fs.symlinkSync(outside, path.join(pkg, "skills"));
-         const { skills, warnings } = readSkillsDir(pkg);
+         const { result, skills, warnings } = readSet();
+         expect(result.workflows.size).toBe(0);
          expect(skills).toEqual([]);
          expect(warnings.join("\n")).toContain("outside the package");
       });
@@ -216,7 +239,7 @@ describe("readSkillsDir", () => {
             path.join(outside, "linked"),
             path.join(pkg, "skills", "linked"),
          );
-         const { skills } = readSkillsDir(pkg);
+         const { skills } = readSet();
          expect(skills).toEqual([]);
       });
    });
@@ -227,8 +250,8 @@ describe("readSkillsDir", () => {
          `---\nname: big\ndescription: d\n---\n${"x".repeat(PACKAGE_SKILL_FILE_MAX_BYTES)}`,
       );
       writeSkill("small", "---\nname: small\ndescription: d\n---\nok");
-      const { skills, warnings } = readSkillsDir(pkg);
-      expect(skills.map((s) => s.name)).toEqual(["small"]);
+      const { skills, warnings } = readSet();
+      expect(skills.map((s) => s.served.name)).toEqual(["small"]);
       expect(warnings.join("\n")).toContain("byte cap");
    });
 
@@ -236,24 +259,22 @@ describe("readSkillsDir", () => {
       const text =
          "---\nname: revenue-rules\ndescription: How revenue is defined here.\n---\n\nUse net_revenue, never gross.\n";
       writeSkill("revenue-rules", text);
-      const { skills, files, warnings } = readSkillsDir(pkg);
+      const { skills, warnings } = readSet();
       expect(warnings).toEqual([]);
       expect(skills).toHaveLength(1);
-      expect(skills[0]!.name).toBe("revenue-rules");
-      expect(skills[0]!.description).toBe("How revenue is defined here.");
+      expect(skills[0]!.served.name).toBe("revenue-rules");
+      expect(skills[0]!.served.description).toBe("How revenue is defined here.");
       expect(skills[0]!.catalog.frontmatter).toEqual({
          name: "revenue-rules",
          description: "How revenue is defined here.",
       });
-      expect(skills[0]!.read("SKILL.md")).toEqual({ text });
-      expect(files.map((f) => f.path)).toEqual([
-         "skills/revenue-rules/SKILL.md",
-      ]);
+      expect(skills[0]!.served.read("SKILL.md")).toEqual({ text });
+      expect(inlinePaths(skills)).toEqual(["skills/revenue-rules/SKILL.md"]);
    });
 
    it("falls back to the directory name when frontmatter omits name", () => {
       writeSkill("house-style", "no frontmatter at all");
-      expect(readSkillsDir(pkg).skills[0]!.name).toBe("house-style");
+      expect(readSet().skills[0]!.served.name).toBe("house-style");
    });
 
    it("serves a reference file by its path, and the skill's own text with nothing added", () => {
@@ -261,17 +282,17 @@ describe("readSkillsDir", () => {
          "---\nname: revenue-rules\ndescription: d\n---\n\nSee reference/margin.md.\n";
       writeSkill("revenue-rules", text);
       writeReference("revenue-rules", "margin.md", "# Margin\n\nDetail.\n");
-      const { skills, files } = readSkillsDir(pkg);
-      expect(skills.map((s) => s.name)).toEqual(["revenue-rules"]);
+      const { skills } = readSet();
+      expect(skills.map((s) => s.served.name)).toEqual(["revenue-rules"]);
       expect(Object.keys(skills[0]!.catalog.files)).toEqual([
          "SKILL.md",
          "reference/margin.md",
       ]);
-      expect(skills[0]!.read("SKILL.md")).toEqual({ text });
-      expect(skills[0]!.read("reference/margin.md")).toEqual({
+      expect(skills[0]!.served.read("SKILL.md")).toEqual({ text });
+      expect(skills[0]!.served.read("reference/margin.md")).toEqual({
          text: "# Margin\n\nDetail.\n",
       });
-      expect(files.map((f) => f.path)).toEqual([
+      expect(inlinePaths(skills)).toEqual([
          "skills/revenue-rules/SKILL.md",
          "skills/revenue-rules/reference/margin.md",
       ]);
@@ -280,8 +301,8 @@ describe("readSkillsDir", () => {
    it("warns, and keeps loading, when a skill directory has no SKILL.md", () => {
       fs.mkdirSync(path.join(pkg, "skills", "empty"), { recursive: true });
       writeSkill("good", "---\nname: good\ndescription: d\n---\n\nbody\n");
-      const { skills, warnings } = readSkillsDir(pkg);
-      expect(skills.map((s) => s.name)).toEqual(["good"]);
+      const { skills, warnings } = readSet();
+      expect(skills.map((s) => s.served.name)).toEqual(["good"]);
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toContain("skills/empty");
    });
@@ -296,8 +317,8 @@ describe("readSkillsDir", () => {
             Buffer.from([0xe9]),
          ]),
       );
-      const { skills, warnings } = readSkillsDir(pkg);
-      expect(skills.map((s) => s.name)).toEqual(["good"]);
+      const { skills, warnings } = readSet();
+      expect(skills.map((s) => s.served.name)).toEqual(["good"]);
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toContain("skills/latin/SKILL.md");
       expect(warnings[0]).toContain("not UTF-8 text");
@@ -305,15 +326,15 @@ describe("readSkillsDir", () => {
 
    it("warns when a skill has no description, since a listing shows nothing else", () => {
       writeSkill("quiet", "---\nname: quiet\n---\n\nbody\n");
-      expect(readSkillsDir(pkg).warnings[0]).toContain("no description");
+      expect(readSet().warnings[0]).toContain("no description");
    });
 
    it("does not serve a skill whose frontmatter name is not its directory name", () => {
       writeSkill("a-dir", "---\nname: other\ndescription: d\n---\n\nA\n");
       writeSkill("b-dir", "---\nname: b-dir\ndescription: d\n---\n\nB\n");
-      const { skills, files, warnings } = readSkillsDir(pkg);
-      expect(skills.map((s) => s.name)).toEqual(["b-dir"]);
-      expect(files.map((f) => f.path)).toEqual(["skills/b-dir/SKILL.md"]);
+      const { skills, warnings } = readSet();
+      expect(skills.map((s) => s.served.name)).toEqual(["b-dir"]);
+      expect(inlinePaths(skills)).toEqual(["skills/b-dir/SKILL.md"]);
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toContain("'other'");
       expect(warnings[0]).toContain("Fix:");
@@ -322,14 +343,13 @@ describe("readSkillsDir", () => {
    it("lists a plain file named reference like any other file, with no warning", () => {
       writeSkill("odd", "---\nname: odd\ndescription: d\n---\n\nbody\n");
       fs.writeFileSync(path.join(pkg, "skills", "odd", "reference"), "x");
-      const { skills, warnings, blocking } = readSkillsDir(pkg);
-      expect(skills.map((s) => s.name)).toEqual(["odd"]);
+      const { skills, warnings } = readSet();
+      expect(skills.map((s) => s.served.name)).toEqual(["odd"]);
       expect(Object.keys(skills[0]!.catalog.files)).toEqual([
          "SKILL.md",
          "reference",
       ]);
       expect(warnings).toEqual([]);
-      expect(blocking).toEqual([]);
    });
 
    it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
@@ -340,23 +360,21 @@ describe("readSkillsDir", () => {
          fs.mkdirSync(ref);
          fs.chmodSync(ref, 0o000);
          try {
-            const { skills, warnings, blocking } = readSkillsDir(pkg);
-            expect(skills.map((s) => s.name)).toEqual(["odd"]);
+            const { skills, warnings } = readSet();
+            expect(skills.map((s) => s.served.name)).toEqual(["odd"]);
             expect(warnings.join("\n")).toContain("cannot be listed");
-            expect(blocking).toEqual([]);
          } finally {
             fs.chmodSync(ref, 0o755);
          }
       },
    );
 
-   it("marks as blocking only what leaves a skill unserved", () => {
+   it("serves a skill that only warns, and sets aside only the one that is wrong", () => {
       writeSkill("quiet", "---\nname: quiet\n---\n\nbody\n");
       writeSkill("a-dir", "---\nname: other\ndescription: d\n---\n\nA\n");
-      const { warnings, blocking } = readSkillsDir(pkg);
+      const { skills, warnings } = readSet();
+      expect(skills.map((s) => s.served.name)).toEqual(["quiet"]);
       expect(warnings).toHaveLength(2);
-      expect(blocking).toHaveLength(1);
-      expect(blocking[0]).toContain("'other'");
    });
 
    it("does not list a reference/ directory that is a link out of the package", () => {
@@ -367,9 +385,9 @@ describe("readSkillsDir", () => {
          outsideDir,
          path.join(pkg, "skills", "linked", "reference"),
       );
-      const { skills, files, warnings } = readSkillsDir(pkg);
-      expect(skills.map((s) => s.name)).toEqual(["linked"]);
-      expect(files).toHaveLength(1);
+      const { skills, warnings } = readSet();
+      expect(skills.map((s) => s.served.name)).toEqual(["linked"]);
+      expect(inlinePaths(skills)).toHaveLength(1);
       expect(warnings.join("\n")).toContain("outside the package");
       expect(warnings.join("\n")).not.toContain("secret-name");
       fs.rmSync(outsideDir, { recursive: true, force: true });
@@ -381,9 +399,9 @@ describe("readSkillsDir", () => {
       () => {
          fs.mkdirSync(path.join(pkg, "skills", "pipe"), { recursive: true });
          execFileSync("mkfifo", [path.join(pkg, "skills", "pipe", "SKILL.md")]);
-         const { skills, warnings } = readSkillsDir(pkg);
+         const { skills, warnings } = readSet();
          expect(skills).toEqual([]);
-         expect(warnings[0]).toContain("not a regular file");
+         expect(warnings.join("\n")).toContain("not a regular file");
       },
    );
 
@@ -395,7 +413,7 @@ describe("readSkillsDir", () => {
          "credible-house",
          "---\nname: credible-house\ndescription: d\n---\n\nbody\n",
       );
-      expect(readSkillsDir(pkg).skills.map((s) => s.name)).toEqual([
+      expect(readSet().skills.map((s) => s.served.name)).toEqual([
          "credible-house",
       ]);
    });
@@ -403,7 +421,7 @@ describe("readSkillsDir", () => {
    it("reads skills in a stable order regardless of directory order", () => {
       writeSkill("zebra", "---\nname: zebra\ndescription: d\n---\n\nz\n");
       writeSkill("alpha", "---\nname: alpha\ndescription: d\n---\n\na\n");
-      expect(readSkillsDir(pkg).skills.map((s) => s.name)).toEqual([
+      expect(readSet().skills.map((s) => s.served.name)).toEqual([
          "alpha",
          "zebra",
       ]);
