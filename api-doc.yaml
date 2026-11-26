@@ -11239,7 +11239,7 @@ components:
             `container_not_found` (a database table whose `name=` places it
             in a container its warehouse does not hold: a BigQuery dataset
             that does not exist in the project the `name=` names, else the
-            connection's, or one in another location than the connection
+            connection's billing project, or one in another location than the connection
             declares; a Postgres, Snowflake or DuckDB schema that does not
             exist. Read once per connection and container when the package
             is planned; `message` names the container, and the location for

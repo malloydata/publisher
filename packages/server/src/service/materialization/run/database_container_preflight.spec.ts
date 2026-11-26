@@ -96,4 +96,43 @@ describe("F-03: the database build checks its table's container first", () => {
          .catch(() => undefined);
       expect(statements[0]).toMatch(/^DROP TABLE IF EXISTS/);
    });
+
+   it("reads a BigQuery two-part name in the billing project, where the DDL lands, not the default project", async () => {
+      const statements: string[] = [];
+      const reads: (string | undefined)[] = [];
+      const connection = (held: string) =>
+         ({
+            dialectName: "standardsql",
+            projectId: "data",
+            billingProjectId: "billing",
+            runSQL: async (sql: string) => {
+               statements.push(sql);
+               throw new Error("stop: past the check");
+            },
+            bigQuery: {
+               projectId: "billing",
+               dataset: (id: string, options?: { projectId?: string }) => ({
+                  async getMetadata() {
+                     reads.push(options?.projectId);
+                     if (`${options?.projectId}.${id}` === held) return [{}];
+                     throw Object.assign(new Error("Not found"), { code: 404 });
+                  },
+               }),
+            },
+         }) as unknown as Connection;
+
+      const built = await new DatabaseTier()
+         .build(
+            request(connection("billing.analytics"), "analytics.by_station"),
+         )
+         .catch((e) => e);
+      expect(built.message).toBe("stop: past the check");
+
+      const refused = await new DatabaseTier()
+         .build(request(connection("data.analytics"), "analytics.by_station"))
+         .catch((e) => e);
+      expect(refused).toBeInstanceOf(ContainerNotFoundError);
+      expect(refused.message).toContain('(project "billing")');
+      expect(reads).toEqual(["billing", "billing"]);
+   });
 });

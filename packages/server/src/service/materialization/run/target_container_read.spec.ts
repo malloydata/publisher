@@ -20,26 +20,32 @@ import {
 /** A BigQuery connection over a fake client, recording each dataset read. */
 function bigQuery(opts: {
    datasets: Record<string, { location: string }>;
-   projectId?: string;
+   /** The billing project, the client's own (db-bigquery's billingProjectId). */
+   billingProjectId?: string;
+   /** The connection's configured default project; else billing. */
+   defaultProjectId?: string;
    location?: string;
    fail?: Error;
 }) {
    const reads: { id: string; projectId?: string }[] = [];
+   const billing = opts.billingProjectId ?? "home";
    const connection = {
       dialectName: "standardsql",
-      projectId: opts.projectId ?? "home",
+      projectId: opts.defaultProjectId ?? billing,
+      billingProjectId: billing,
       location: opts.location,
       runSQL: async () => {
          throw new Error("no SQL expected");
       },
       bigQuery: {
+         projectId: billing,
          dataset(id: string, options?: { projectId?: string }) {
             reads.push({ id, projectId: options?.projectId });
             return {
                async getMetadata() {
                   if (opts.fail) throw opts.fail;
                   const found =
-                     opts.datasets[`${options?.projectId ?? "home"}.${id}`];
+                     opts.datasets[`${options?.projectId ?? billing}.${id}`];
                   if (!found) {
                      throw Object.assign(new Error("Not found: Dataset"), {
                         code: 404,
@@ -92,6 +98,49 @@ describe("BigQuery: a dataset's metadata", () => {
       });
       expect(await readTargetContainer(connection, "p2.ds")).toEqual({
          notFound: true,
+      });
+   });
+
+   // db-bigquery runs DDL through createQueryJob with no projectId and no
+   // defaultDataset, so `CREATE TABLE ds.t` lands in the billing project,
+   // not the connection's default projectId.
+   describe("a default project other than the billing project", () => {
+      const projects = {
+         billingProjectId: "billing",
+         defaultProjectId: "data",
+      };
+
+      it("reads a two-part name's dataset in the billing project", async () => {
+         const { connection, reads } = bigQuery({
+            ...projects,
+            datasets: { "billing.analytics": { location: "US" } },
+         });
+         expect(await readTargetContainer(connection, "analytics")).toEqual({
+            found: true,
+         });
+         expect(reads).toEqual([{ id: "analytics", projectId: "billing" }]);
+      });
+
+      it("refuses a dataset only the default project holds, naming the billing project", async () => {
+         const { connection } = bigQuery({
+            ...projects,
+            datasets: { "data.analytics": { location: "US" } },
+         });
+         expect(await readTargetContainer(connection, "analytics")).toEqual({
+            notFound: true,
+            project: "billing",
+         });
+      });
+
+      it("reads a three-part name's dataset in the project it names", async () => {
+         const { connection, reads } = bigQuery({
+            ...projects,
+            datasets: { "data.analytics": { location: "US" } },
+         });
+         expect(
+            await readTargetContainer(connection, "data.analytics"),
+         ).toEqual({ found: true });
+         expect(reads).toEqual([{ id: "analytics", projectId: "data" }]);
       });
    });
 

@@ -43,7 +43,7 @@ export type TargetContainerReading =
    | { unread: true }
    | {
         notFound: true;
-        /** The BigQuery project read, when the container did not name one. */
+        /** The BigQuery project read (the billing project), when the container did not name one. */
         project?: string;
      }
    | { otherLocation: { location: string; expected: string } };

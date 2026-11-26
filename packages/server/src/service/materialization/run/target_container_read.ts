@@ -10,7 +10,8 @@
  * with the warehouse's own "not found".
  *
  * - BigQuery: the dataset's metadata (`dataset(id, {projectId}).getMetadata()`),
- *   in the project the container names, else the connection's. A dataset in
+ *   in the project the container names, else the billing project, where the
+ *   build's unqualified DDL lands (see {@link billingProject}). A dataset in
  *   another location than the connection declares reads `otherLocation`.
  * - Postgres: `pg_namespace` (every schema, not only those the user holds a
  *   privilege on), in the connection's database.
@@ -174,15 +175,36 @@ interface BigQueryInternals {
          id: string,
          options?: { projectId?: string },
       ): { getMetadata(): Promise<[{ location?: unknown }, ...unknown[]]> };
+      projectId?: unknown;
    };
-   projectId?: unknown;
+   billingProjectId?: unknown;
    location?: unknown;
 }
 
 /**
+ * The project an unqualified dataset resolves to in the build's DDL: the
+ * billing project. The connection's `projectId` (its configured default
+ * project, else billing) is not it: db-bigquery runs every statement through
+ * `createQueryJob` with no `projectId` and no `defaultDataset`, so the job
+ * runs in the client's own project, and `CREATE TABLE ds.t` lands there.
+ * The recorded `billingProjectId` first (the client's own field is swapped
+ * while db-bigquery reads a table's schema), then the client's; undefined
+ * while it is still the client library's unresolved placeholder.
+ */
+function billingProject(internals: BigQueryInternals): string | undefined {
+   for (const p of [
+      internals.billingProjectId,
+      internals.bigQuery?.projectId,
+   ]) {
+      if (typeof p === "string" && p !== "" && !p.includes("{{")) return p;
+   }
+   return undefined;
+}
+
+/**
  * A BigQuery dataset's existence and location. The container is a dataset,
- * or a project and dataset split on the last dot, so a `domain.com:proj`
- * project id survives.
+ * read in the billing project ({@link billingProject}), or a project and
+ * dataset split on the last dot, so a `domain.com:proj` project id survives.
  */
 async function readBigQueryDataset(
    connection: TargetContainerConnection,
@@ -196,12 +218,7 @@ async function readBigQueryDataset(
    const lastDot = container.lastIndexOf(".");
    const dataset = unquoted(container.slice(lastDot + 1));
    const named = lastDot > 0 ? unquoted(container.slice(0, lastDot)) : "";
-   const project =
-      named !== ""
-         ? named
-         : typeof internals.projectId === "string"
-           ? internals.projectId
-           : undefined;
+   const project = named !== "" ? named : billingProject(internals);
    let metadata: { location?: unknown };
    try {
       [metadata] = await client
@@ -209,9 +226,11 @@ async function readBigQueryDataset(
          .getMetadata();
    } catch (err) {
       if (isNotFound(err)) {
+         // Read again: the request resolves a placeholder billing project.
+         const read = project ?? billingProject(internals);
          return {
             notFound: true,
-            ...(named === "" && project !== undefined ? { project } : {}),
+            ...(named === "" && read !== undefined ? { project: read } : {}),
          };
       }
       throw err;
