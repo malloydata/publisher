@@ -79,9 +79,12 @@ class Experiment(unittest.TestCase):
             (src / "data" / "t.parquet").write_bytes(b"0" * (experiment.LINK_OVER_BYTES + 1))
             experiment.snapshot(src, dst)
             self.assertFalse((dst / "m.malloy").is_symlink())
-            self.assertTrue((dst / "data" / "t.parquet").is_symlink())
-            self.assertEqual(os.readlink(dst / "data" / "t.parquet"),
-                             str((src / "data" / "t.parquet").resolve()))
+            # A hard link, a real file inside the copy: Publisher refuses to
+            # read data through a symlink that leaves the package.
+            got = dst / "data" / "t.parquet"
+            self.assertFalse(got.is_symlink())
+            self.assertEqual(got.stat().st_ino, (src / "data" / "t.parquet").stat().st_ino)
+            self.assertNotEqual((dst / "m.malloy").stat().st_ino, (src / "m.malloy").stat().st_ino)
         finally:
             shutil.rmtree(src, ignore_errors=True)
             shutil.rmtree(dst.parent, ignore_errors=True)

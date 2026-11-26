@@ -86,6 +86,21 @@ def git(cwd: pathlib.Path, *args: str) -> str | None:
         return None
 
 
+def link(path: pathlib.Path, out: pathlib.Path) -> None:
+    """Put a large file in the copy without copying its bytes.
+
+    A hard link, not a symlink: Publisher refuses to read a data file through
+    a link that leaves the package directory ("file system operations are
+    disabled"), so an experiment whose data was symlinked failed to load. A
+    hard link is a real file in the copy. Only data is this large, and data is
+    never edited, so sharing the inode with the original is safe. Across
+    filesystems, where no hard link can be made, the file is copied."""
+    try:
+        os.link(path.resolve(), out)
+    except OSError:
+        shutil.copy2(path, out)
+
+
 def snapshot(src: pathlib.Path, dst: pathlib.Path) -> None:
     """Copy a package directory; link files over LINK_OVER_BYTES instead."""
     for path in src.rglob("*"):
@@ -95,7 +110,7 @@ def snapshot(src: pathlib.Path, dst: pathlib.Path) -> None:
         out = dst / rel
         out.parent.mkdir(parents=True, exist_ok=True)
         if path.stat().st_size > LINK_OVER_BYTES:
-            os.symlink(path.resolve(), out)
+            link(path, out)
         else:
             shutil.copy2(path, out)
 
@@ -114,7 +129,10 @@ def worktree(src: pathlib.Path, ref: str, dst: pathlib.Path) -> pathlib.Path:
         out = pkg / rel
         if not out.exists():
             out.parent.mkdir(parents=True, exist_ok=True)
-            os.symlink((src / rel).resolve(), out)
+            if (src / rel).is_dir():
+                os.symlink((src / rel).resolve(), out)
+            else:
+                link(src / rel, out)
     return pkg
 
 
