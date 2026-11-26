@@ -17,6 +17,7 @@ import {
    type ModelDef,
 } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { testFileURL } from "../../../test_helpers/test_file_url";
 import { makeSnapshot } from "../domain/binding";
 import {
    recordScopeFacts,
@@ -24,7 +25,7 @@ import {
    takeScopeFactWalksForTesting,
 } from "./scope_facts";
 
-const ROOT = "file:///scope-facts-main-thread/";
+const ROOT = testFileURL("scope-facts-main-thread/");
 const FACTS = 4;
 const ROLLUPS = 40;
 const VIEW_MODELS = 4;

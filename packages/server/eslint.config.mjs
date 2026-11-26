@@ -14,6 +14,10 @@ import {
    MATERIALIZATION_HISTORY_ALLOWLIST,
    MATERIALIZATION_IMPORT_ALLOWLIST,
 } from "./materialization_allowlists.mjs";
+import {
+   DRIVELESS_FILE_URL_BASELINE,
+   isDrivelessFileURL,
+} from "./driveless_file_url_baseline.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -488,11 +492,61 @@ const noHistoryCommentsRule = {
       };
    },
 };
+// ---------------------------------------------------------------------------
+// No drive-less file URL in a spec or test helper, at the start of a string
+// or inside one (a source ID, `m@file:///pkg/m.malloy`). On Windows
+// `file:///m.malloy` names no path: `fileURLToPath` throws and a cache keyed
+// by path misses, so a spec that turns one into a path fails there alone.
+// Build it with src/test_helpers/test_file_url.ts. The files that spelled one
+// when the rule was added are listed in driveless_file_url_baseline.mjs, and
+// src/driveless_file_urls.spec.ts keeps that list shrinking.
+// ---------------------------------------------------------------------------
+const REPO_DIR = path.resolve(__dirname, "../..");
+const DRIVELESS_FILE_URL_MESSAGE =
+   "A drive-less file:/// URL names no path on Windows: fileURLToPath throws and a path-keyed cache misses, so the spec fails there alone. Build the URL with testFileURL(...), or a source ID with testSourceID(name, ...), from src/test_helpers/test_file_url.ts.";
+const noDrivelessFileUrlRule = {
+   meta: {
+      type: "problem",
+      docs: { description: "No drive-less file:/// URL in a spec" },
+      schema: [
+         {
+            type: "object",
+            properties: { allow: { type: "array", items: { type: "string" } } },
+            additionalProperties: false,
+         },
+      ],
+   },
+   create(context) {
+      const filename = context.filename ?? context.getFilename();
+      const file = toPosix(path.relative(REPO_DIR, filename));
+      if ((context.options[0]?.allow ?? []).includes(file)) return {};
+      return {
+         Literal(node) {
+            if (
+               typeof node.value === "string" &&
+               isDrivelessFileURL(node.value, false)
+            )
+               context.report({ node, message: DRIVELESS_FILE_URL_MESSAGE });
+         },
+         TemplateLiteral(node) {
+            const last = node.quasis.length - 1;
+            if (
+               node.quasis.some((q, i) =>
+                  isDrivelessFileURL(q.value.cooked ?? q.value.raw, i < last),
+               )
+            )
+               context.report({ node, message: DRIVELESS_FILE_URL_MESSAGE });
+         },
+      };
+   },
+};
+
 const publisherPlugin = {
    rules: {
       "import-direction": importDirectionRule,
       "module-header": moduleHeaderRule,
       "no-history-comments": noHistoryCommentsRule,
+      "no-driveless-file-url": noDrivelessFileUrlRule,
    },
 };
 
@@ -668,6 +722,25 @@ export default [
                message:
                   'Read a setting with settings.get("<key>"), a variable Publisher does not own with externalEnv(), or a ${VAR} with referencedVariable(); see src/settings.',
             },
+         ],
+      },
+   },
+   {
+      // No drive-less file URL in a spec or test helper (see
+      // noDrivelessFileUrlRule): the server's, run from packages/server, and
+      // the SDK's, run from the repository root.
+      files: [
+         "src/**/*.spec.ts",
+         "src/test_helpers/**/*.ts",
+         "tests/**/*.ts",
+         "packages/sdk/src/**/*.spec.{ts,tsx}",
+         "packages/sdk/test/**/*.{ts,tsx}",
+      ],
+      plugins: { publisher: publisherPlugin },
+      rules: {
+         "publisher/no-driveless-file-url": [
+            "error",
+            { allow: DRIVELESS_FILE_URL_BASELINE },
          ],
       },
    },

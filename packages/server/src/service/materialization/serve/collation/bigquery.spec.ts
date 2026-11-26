@@ -28,6 +28,7 @@ import { resultReadsOfQuery } from "../result_reads";
 import { lookupSourceRefusal, lookupStoredRefusal } from "../admission_lookup";
 import { makeSnapshot } from "../../domain/binding";
 import { parseContract } from "../../domain/column_contract";
+import { captureDatabaseContract } from "../../run/column_contract_capture";
 import {
    readStringCapabilities,
    recordStringCapabilities,
@@ -609,6 +610,18 @@ describe("a BigQuery database table, looked up", () => {
       ).toBeUndefined();
    });
 
+   it("is kept, at a string grain, when its contract recorded bigquery:NULL (0.18.0 to 0.18.2) for an uncollated column", async () => {
+      // BigQuery's catalog reports an uncollated column's collation_name as
+      // the string 'NULL', which those builds recorded as a collation.
+      expect(
+         await stored(
+            { location: "US" },
+            "run: plain -> { group_by: region }",
+            "bigquery:NULL",
+         ),
+      ).toBeUndefined();
+   });
+
    it("answers live when its column recorded another collation", async () => {
       expect(
          await stored(
@@ -689,5 +702,60 @@ describe("a BigQuery storage= build's live string comparison, for its contract",
             )
          ).binary,
       ).toBe(false);
+   });
+});
+
+/**
+ * A BigQuery database build's contract capture, from the catalog as BigQuery
+ * answers it: an uncollated column's `collation_name` is the string `'NULL'`,
+ * which compares bytes, and is recorded `binary`, as the serve side's catalog
+ * read takes it.
+ */
+describe("a BigQuery build's contract capture", () => {
+   it("records binary for a column the catalog reports collated 'NULL', and a real collation as itself", async () => {
+      const sent: string[] = [];
+      const connection = {
+         dialectName: "standardsql",
+         runSQL: async (sql: string) => {
+            sent.push(sql);
+            const rows = sql.includes("collation_name")
+               ? [
+                    {
+                       table_name: "t",
+                       column_name: "id",
+                       collation_name: "NULL",
+                    },
+                    {
+                       table_name: "t",
+                       column_name: "region",
+                       collation_name: "NULL",
+                    },
+                    {
+                       table_name: "t",
+                       column_name: "ci",
+                       collation_name: "und:ci",
+                    },
+                 ]
+               : [
+                    { table_name: "t", column_name: "id", data_type: "INT64" },
+                    {
+                       table_name: "t",
+                       column_name: "region",
+                       data_type: "STRING",
+                    },
+                    { table_name: "t", column_name: "ci", data_type: "STRING" },
+                 ];
+            return { rows, totalRows: rows.length };
+         },
+      };
+      const contract = await captureDatabaseContract({
+         connection: connection as never,
+         tableName: "ds.t",
+         physicalTableName: "ds.t",
+      });
+      expect(sent.some((sql) => sql.includes("collation_name"))).toBe(true);
+      expect(
+         Object.fromEntries(contract.columns.map((c) => [c.name, c.collation])),
+      ).toEqual({ id: null, region: "binary", ci: "bigquery:und:ci" });
    });
 });

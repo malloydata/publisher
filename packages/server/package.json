@@ -19,7 +19,7 @@
       "snowflake"
    ],
    "homepage": "https://docs.malloydata.dev/documentation/user_guides/publishing/mcp_agents",
-   "version": "0.18.2",
+   "version": "0.18.3",
    "main": "dist/server.mjs",
    "bin": {
       "malloy-publisher": "dist/server.mjs"
@@ -59,7 +59,7 @@
       "start:dev": "NODE_ENV=development bun --watch src/server.ts",
       "start:dev:init": "NODE_ENV=development bun --watch src/server.ts --init",
       "start:instrumented": "bun --preload ./dist/instrumentation.mjs ./dist/server.mjs",
-      "lint": "bunx eslint \"./src/**/*.ts\"",
+      "lint": "bunx eslint \"./src/**/*.ts\" \"./tests/**/*.ts\"",
       "format": "bunx prettier --write '**/*.{ts,tsx}'",
       "build:app": "cd ../app && NODE_ENV=production bun run build:server",
       "generate-settings-reference": "bun scripts/generate-settings-reference.ts",
