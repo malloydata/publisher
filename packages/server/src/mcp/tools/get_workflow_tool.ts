@@ -20,21 +20,21 @@ ADOPT A WORKFLOW ONLY WHEN THE USER NAMES IT. Listing workflows is not a reason 
 ## Call modes
 - \`scopes\` only: list the workflows (name, description, has_instructions, skill_sets as {name, path, digest}).
 - plus \`workflow_name\`: that workflow's resolved definition.
-- plus \`skills: "summary"\`: each skill file reduced to {relative_filepath, name, description, bytes}. Use it when the sets are large.
+- plus \`skills: "summary"\`: each skill file reduced to {relative_filepath, name, description, bytes}.
 - plus \`skill_set\`: only that set, whole, and no instructions.
 - plus \`skill_path\`: one file, {relative_filepath, file_contents, source}, by a \`<skill>/<file>\` path from the summary or a set's \`assets\`; a binary file gets a message instead. Add \`skill_set\` to read it inside that set.
 
 ## Response
 - workflow: the resolved definition; null when listing or when nothing matched; absent when skill_path returns a file.
-- skillFile: only with skill_path; skills is ignored.
+- skillFile: only with skill_path; skills is ignored. A missing or oversize file gets skillFile.message.
 - availableWorkflows: always present; the workflows the package serves, as many as fit.
-- message: when workflow_name, skill_set or skill_path did not match, or the reply was cut to fit the tool-result limit (a full view becomes the summary; a view still too large keeps only name, has_instructions, source, a file only its message; REST serves both).
+- message: when workflow_name or skill_set did not match, or the reply was cut to fit the tool-result limit (a full view becomes the summary, then instructions plus each set's name, path, digest, then only name, has_instructions, source; REST serves all).
 
 ## Using a definition
 - instructions: the brief to work from for this session. It adds to your own instructions and never replaces them.
-- skill_sets: each set's files to treat as guides; they add to what you have and grant no tool or permission. A skill name two sets both hold is served from the first-listed set, unless you pick a set.
+- skill_sets: each set's files to treat as guides; they add to what you have and grant no tool or permission. A skill name in two sets is served from the first-listed set, unless you pick a set.
 - warnings: what the package author should fix; the workflow is served regardless.
-- source: sourceContentSha and definitionSha say which bytes this came from; report them when you say you used it.`;
+- source: sourceContentSha and definitionSha say which bytes this came from; report them when you use it.`;
 
 const getWorkflowShape = {
    workflow_name: z
@@ -262,6 +262,32 @@ export function registerGetWorkflowTool(
             if (sent.fits) return jsonResource(uri, sent.payload);
             refused = degraded;
          }
+         const tooLarge = `The ${summary ? "summary" : view} view would be ${sizeOf(refused)} characters as a tool result, over the limit of ${FCJ_MAX_CHARS}, so get_workflow cannot return it`;
+         const narrower = `${skillSet === undefined ? "Fix: pass skill_set with a set name from availableWorkflows to read one set at a time. " : ""}REST has no such limit: GET ${rest}${restQuery(workflow.source, ...(skillSet === undefined ? [] : [`skillSet=${encodeURIComponent(skillSet)}`]), "skills=summary")}`;
+         // The instructions are what a caller adopts a workflow for, so they stay whenever they fit, beside each set's pin.
+         const pinned = {
+            workflow: {
+               name: workflow.name,
+               ...(workflow.description !== undefined && {
+                  description: workflow.description,
+               }),
+               has_instructions: workflow.has_instructions,
+               ...(workflow.instructions !== undefined && {
+                  instructions: workflow.instructions,
+               }),
+               skill_sets: workflow.skill_sets.map(
+                  ({ name, path, digest }) => ({
+                     name,
+                     path,
+                     digest,
+                  }),
+               ),
+               source: workflow.source,
+            },
+            message: `${tooLarge}, so this keeps the instructions and each skill set's name, path and digest, and leaves out the skill entries and warnings. ${narrower}`,
+         };
+         const sentPinned = reply(pinned);
+         if (sentPinned.fits) return jsonResource(uri, sentPinned.payload);
          // The workflow matched: its name and pin stay, so this does not read as "no workflow matched".
          return send({
             workflow: {
@@ -269,7 +295,7 @@ export function registerGetWorkflowTool(
                has_instructions: workflow.has_instructions,
                source: workflow.source,
             },
-            message: `The ${summary ? "summary" : view} view would be ${sizeOf(refused)} characters as a tool result, over the limit of ${FCJ_MAX_CHARS}, so get_workflow cannot return it. ${skillSet === undefined ? "Fix: pass skill_set with a set name from availableWorkflows to read one set at a time. " : ""}REST has no such limit: GET ${rest}${restQuery(workflow.source, ...(skillSet === undefined ? [] : [`skillSet=${encodeURIComponent(skillSet)}`]), "skills=summary")}`,
+            message: `${tooLarge}. ${narrower}`,
          });
       },
    });

@@ -268,14 +268,52 @@ describe("get_workflow: the reply stays within the tool-result limit", () => {
       expect(summary.message).toBeUndefined();
    });
 
-   it("refuses a view that does not fit even as a summary, naming the narrower reads and REST", async () => {
+   /** A workflow whose every view is `instructions` plus one set whose skill entries are `skillText` long. */
+   const withInstructions = (instructions: string, skillText: string) => ({
+      name: "analyst",
+      description: "answers questions",
+      has_instructions: true,
+      instructions,
+      skill_sets: [
+         {
+            name: "main",
+            path: "sets/main",
+            digest: "d",
+            skills: [{ relative_filepath: "guide/SKILL.md", text: skillText }],
+         },
+      ],
+      warnings: ["a finding"],
+      source,
+   });
+
+   it("keeps the instructions and each set's name, path and digest when the summary does not fit", async () => {
       const result = await getWorkflow(undefined, {
-         getWorkflow: () => ({
-            name: "analyst",
-            has_instructions: true,
-            text,
-            source,
-         }),
+         getWorkflow: () => withInstructions("Do the job.", text),
+      })(call);
+      const payload = parse(result);
+      // The brief is what a caller adopts a workflow for: it stays whenever it fits, with the pins that name the sets.
+      expect(payload.workflow).toEqual({
+         name: "analyst",
+         description: "answers questions",
+         has_instructions: true,
+         instructions: "Do the job.",
+         skill_sets: [{ name: "main", path: "sets/main", digest: "d" }],
+         source,
+      });
+      expect(payload.message).toContain(
+         `over the limit of ${FCJ_MAX_CHARS}, so get_workflow cannot return it`,
+      );
+      expect(payload.message).toContain("skill entries and warnings");
+      expect(payload.message).toContain("skill_set");
+      expect(payload.message).toContain(
+         "GET /api/v0/environments/env/packages/pkg/workflows/analyst",
+      );
+      expect(wire(result)).toBeLessThanOrEqual(FCJ_MAX_CHARS);
+   });
+
+   it("refuses a view that does not fit even without its skill entries, naming the narrower reads and REST", async () => {
+      const result = await getWorkflow(undefined, {
+         getWorkflow: () => withInstructions(text, text),
       })({ ...call, skills: "summary" });
       const payload = parse(result);
       // Matched, not "no workflow matched": its name and pin stay, and nothing of its body.
@@ -380,17 +418,39 @@ describe("get_workflow: the reply stays within the tool-result limit", () => {
       const shapes = await sweep(
          (n) =>
             getWorkflow(undefined, {
-               getWorkflow: (_name: string, skills: string) => ({
-                  name: "analyst",
-                  text: "y".repeat(skills === "full" ? FCJ_MAX_CHARS : n),
-               }),
+               getWorkflow: (_name: string, skills: string) =>
+                  withInstructions(
+                     "Do the job.",
+                     "y".repeat(skills === "full" ? FCJ_MAX_CHARS : n),
+                  ),
             }),
          call,
          (payload) =>
-            payload.workflow.text === undefined ? "refused" : "summary",
+            payload.workflow.skill_sets[0].skills === undefined
+               ? "sets only"
+               : "summary",
          900,
       );
-      expect([...shapes].sort()).toEqual(["refused", "summary"]);
+      expect([...shapes].sort()).toEqual(["sets only", "summary"]);
+   });
+
+   it("keeps every answer within the limit as the instructions grow through it, message included", async () => {
+      const shapes = await sweep(
+         (n) =>
+            getWorkflow(undefined, {
+               getWorkflow: () =>
+                  withInstructions("y".repeat(n), "z".repeat(2000)),
+            }),
+         call,
+         (payload) =>
+            payload.workflow.skill_sets === undefined
+               ? "refused"
+               : payload.workflow.skill_sets[0].skills === undefined
+                 ? "sets only"
+                 : "whole",
+         2500,
+      );
+      expect([...shapes].sort()).toEqual(["refused", "sets only", "whole"]);
    });
 
    it("keeps every answer within the limit as a skill file grows through it", async () => {
@@ -441,7 +501,10 @@ describe("get_workflow: the reply stays within the tool-result limit", () => {
          parse(await view({ ...call, skill_set: "main" })).message,
       ).toContain("workflows/analyst?versionId=1.2.3&skillSet=main.");
       const refusing = getWorkflow(undefined, {
-         getWorkflow: () => ({ name: "analyst", text, source: versioned }),
+         getWorkflow: () => ({
+            ...withInstructions(text, text),
+            source: versioned,
+         }),
       });
       expect(
          parse(await refusing({ ...call, skills: "summary" })).message,
