@@ -267,5 +267,25 @@ describe.skipIf(!POSTGRES_URL)(
          expect(warnings[0].message).toContain("its sources (gone, kept)");
          expect(warnings[0].message).toContain("gone answer live");
       });
+
+      it("reports the package stale, as /status reads it, naming the file", () => {
+         const stale = env.getStaleCompileErrors().get(PKG);
+         expect(stale?.message).toContain("m.malloy did not recompile");
+         expect(stale?.failedAt).toBeString();
+      });
+
+      it("keeps gone withdrawn across a later plan derivation", async () => {
+         pkg.markBuildPlanStale();
+         await pkg.refreshBuildPlan();
+         // Never from its old table: it still answers live, and fails alone.
+         const gone = await ask(Q("gone"));
+         expect("error" in gone).toBe(true);
+         expect(await ask(Q("kept"))).toMatchObject({
+            rows: [
+               { cat: "c", n_text: "1" },
+               { cat: "d", n_text: "2" },
+            ],
+         });
+      });
    },
 );

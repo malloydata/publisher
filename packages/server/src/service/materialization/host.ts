@@ -192,7 +192,7 @@ export interface MaterializationEnvironment {
     * Whether the package serves a model older than its files, because its
     * last reload did not compile (a `stale: true` load error).
     */
-   getStaleCompileErrors(): ReadonlyMap<string, unknown>;
+   getRefusedReloads(): ReadonlyMap<string, unknown>;
    withPackageLock<T>(packageName: string, fn: () => Promise<T>): Promise<T>;
    /**
     * Whether a compiled copy of the package is in memory; never loads it

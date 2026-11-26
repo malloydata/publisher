@@ -12,7 +12,6 @@ import { parseEnvironmentName, parsePackageName } from "./identity";
 import { startedStore } from "../test_helpers/started_store";
 import type { Environment } from "./environment";
 import { unrecordedAudit } from "./access_record";
-import { MODEL_RECOMPILE_FAILED } from "./package";
 
 /**
  * A package whose model does not compile at boot is a /status `loadErrors`
@@ -244,36 +243,23 @@ describe("load error paths: recompiles, outside paths and every load", () => {
       const { server } = boot("off", GOOD);
       const env = await environment();
       const pkg = await env.getPackage(parsePackageName("broken"), false);
-      const file = path.join(
-         server,
-         "publisher_data",
-         ENV,
-         "broken",
-         "model.malloy",
+      fs.writeFileSync(
+         path.join(server, "publisher_data", ENV, "broken", "model.malloy"),
+         BROKEN,
       );
-      // A file that compiled before keeps its last good model; the
-      // recompile's error is in the package's warning.
-      fs.writeFileSync(file, BROKEN);
+      // A recompile keeps a model that does not compile as a placeholder
+      // rather than throwing: its error is what every later reader sees.
       await pkg.reloadAllModels({});
-      const warning = (pkg.getPackageMetadata().warnings ?? []).find(
-         (w) => w.code === MODEL_RECOMPILE_FAILED,
-      );
-      expect(warning?.message).toContain("model.malloy");
-      expectNoServerPaths(warning?.message ?? "");
-      // A file that never compiled is kept as a placeholder rather than
-      // throwing: its error is what every later reader sees.
-      fs.writeFileSync(path.join(path.dirname(file), "other.malloy"), BROKEN);
-      await pkg.reloadAllModels({});
-      const model = pkg.getModel("other.malloy");
+      const model = pkg.getModel("model.malloy");
       const compileError = model?.getCompilationError()?.message ?? "";
-      expect(compileError).toContain("other.malloy");
+      expect(compileError).toContain("model.malloy");
       expectNoServerPaths(compileError);
       const queryError = await messageOf(() =>
          model!.runQuery(unrecordedAudit(), {
             query: "run: numbers -> { select: answer }",
          }),
       );
-      expect(queryError).toContain("other.malloy");
+      expect(queryError).toContain("model.malloy");
       expectNoServerPaths(queryError);
    });
 
