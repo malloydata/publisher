@@ -41,7 +41,6 @@ let store: VersionStore;
 let log: string[];
 let failLoadFor: Set<string>;
 let watchMounted: boolean;
-let descriptions: (string | null | undefined)[];
 let packageLock: Mutex;
 /** Loads of these versions wait, inside their version's lock, until released. */
 let heldLoads: Map<string, Promise<void>>;
@@ -82,28 +81,6 @@ function host(): VersionHost<Loaded> {
       holdingUnversionedReads: (_packageName, fn) => fn(),
       retireUnversioned: (packageName) =>
          log.push(`retire unversioned ${packageName}`),
-      ensurePackageRecord: async (packageName, description) => {
-         descriptions.push(description);
-         const existing = await repo.getPackageByName(ENV_ID, packageName);
-         if (!existing) {
-            await repo.createPackage({
-               environmentId: ENV_ID,
-               name: packageName,
-               manifestPath: "",
-               description: description ?? undefined,
-            });
-            return true;
-         }
-         if (description !== undefined) {
-            await repo.updatePackage(existing.id, { description });
-         }
-         return false;
-      },
-      removePackageRecord: async (packageName) => {
-         log.push(`remove record ${packageName}`);
-         const row = await repo.getPackageByName(ENV_ID, packageName);
-         if (row) await repo.deletePackage(row.id);
-      },
    };
 }
 
@@ -185,7 +162,6 @@ beforeEach(async () => {
    log = [];
    failLoadFor = new Set();
    watchMounted = false;
-   descriptions = [];
    packageLock = new Mutex();
    heldLoads = new Map();
    loadsWaiting = [];
@@ -218,8 +194,8 @@ describe("VersionService.publish", () => {
          archiveStatus: "unarchive",
       });
       expect(await latest()).toBe("1.0.0");
-      // The row is made with no description, which is set once committed.
-      expect(descriptions).toEqual([undefined, "Sales package"]);
+      // The row is written with the version; the description is set on it
+      // once committed.
       expect((await repo.getPackageByName(ENV_ID, PKG))!.description).toBe(
          "Sales package",
       );
@@ -249,13 +225,35 @@ describe("VersionService.publish", () => {
       expect(error).toBeInstanceOf(BadRequestError);
       expect(fs.readdirSync(path.join(envPath, PKG))).toEqual(["old.malloy"]);
       expect(await repo.listVersions(ENV_ID, PKG)).toEqual([]);
-      // The package row this publish created goes with it.
+      // No package row: it is written only with a committed version.
       expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
-      expect(log).toEqual([
-         "load sales@1.0.0",
-         "release sales@1.0.0",
-         "remove record sales",
-      ]);
+      expect(log).toEqual(["load sales@1.0.0", "release sales@1.0.0"]);
+   });
+
+   it("a description never brings back a package a racing delete removed", async () => {
+      // A further version publishes without the package lock a package delete
+      // takes, so a delete can land right after its commit. The description
+      // written after the commit must not create the deleted row again.
+      const svc = service();
+      await publish(svc, source("v1", { version: "1.0.0" }));
+      const commit = repo.commitPublish.bind(repo);
+      repo.commitPublish = (async (...args: Parameters<typeof commit>) => {
+         const committed = await commit(...args);
+         if (args[0].versionId === "2.0.0") {
+            const row = await repo.getPackageByName(ENV_ID, PKG);
+            await repo.deletePackage(row!.id);
+         }
+         return committed;
+      }) as typeof commit;
+      try {
+         await publish(svc, source("v2", { version: "2.0.0" }), {
+            description: "Sales package",
+         });
+      } finally {
+         repo.commitPublish = commit;
+      }
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
+      expect(await repo.listVersions(ENV_ID, PKG)).toEqual([]);
    });
 
    it("refuses a version that does not compile, and the versions already published keep serving", async () => {
@@ -505,7 +503,7 @@ describe("VersionService.getLoaded", () => {
       fs.rmSync(path.join(envPath, PKG, "1.0.0"), { recursive: true });
       fs.writeFileSync(path.join(location, "model.malloy"), "edited");
       await expect(service().getLoaded(PKG, "1.0.0")).rejects.toThrow(
-         /missing and could not be fetched again/,
+         /no longer holds what was published/,
       );
    });
 

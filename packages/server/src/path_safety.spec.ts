@@ -30,6 +30,8 @@ describe("assertSafePackageName", () => {
       ["dot", "."],
       ["dot-dot", ".."],
       ["leading dot", ".staging"],
+      ["the server's retired dir", ".retired"],
+      ["the server's legacy dir", ".legacy"],
       ["forward slash", "foo/bar"],
       ["backslash", "foo\\bar"],
       ["null byte", "foo\0bar"],

@@ -771,11 +771,13 @@ export class PackageController {
       let recordsRemoved = false;
       const result = await environment.deletePackage(packageName, {
          removeRecords: async () => {
-            await this.environmentStore.deletePackageFromDatabase(
-               environmentName,
-               packageName,
-            );
+            const deleted =
+               await this.environmentStore.deletePackageFromDatabase(
+                  environmentName,
+                  packageName,
+               );
             recordsRemoved = true;
+            return deleted;
          },
       });
       if (!recordsRemoved) {

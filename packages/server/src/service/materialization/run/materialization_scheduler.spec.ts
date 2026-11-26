@@ -202,6 +202,38 @@ describe("MaterializationScheduler", () => {
       expect(service.calls.length).toBe(1);
    });
 
+   it("skips a tick while the one before it is still firing, so a due schedule fires once", async () => {
+      // The first tick's fire is held, as a slow compile holds it: the
+      // schedule stays due until that fire returns.
+      const service = fakeService({ lastFireAt: new Date(t0 - 10 * 60_000) });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let firing!: () => void;
+      const fired = new Promise<void>((resolve) => (firing = resolve));
+      const create = service.createMaterialization.bind(service);
+      service.createMaterialization = (async (
+         ...args: Parameters<typeof create>
+      ) => {
+         firing();
+         await gate;
+         return create(...args);
+      }) as typeof create;
+      const sched = makeScheduler(
+         [fakePackage("p", { schedule: "* * * * *" })],
+         service,
+      );
+      const first = sched.tick(t0);
+      await fired;
+      // The interval comes round while the first is still firing.
+      const second = sched.tick(t0 + 1);
+      release();
+      await Promise.all([first, second]);
+      expect(service.calls.length).toBe(1);
+      // The next tick runs as usual.
+      await sched.tick(t0 + 2);
+      expect(service.calls.length).toBe(1);
+   });
+
    it("does not catch up a never-fired schedule on first arm", async () => {
       // No prior SCHEDULER fire on record -> anchor is now -> strictly future,
       // so a freshly-scheduled (never-fired) package does not fire on arm.
@@ -486,5 +518,79 @@ describe("MaterializationScheduler: published versions", () => {
       expect(service.calls.map((c) => [c.pkg, c.opts.versionId])).toEqual([
          ["p", undefined],
       ]);
+   });
+
+   it("a fire that never returns stalls only its own schedule; the others keep firing", async () => {
+      // `b`'s fire hangs, as a fire waiting on a lock or a warehouse with no
+      // bound would. Every later tick still fires `a`, and never `b` again.
+      const service = fakeService({ lastFireAt: new Date(t0 - 10 * 60_000) });
+      const fire = service.createMaterialization;
+      service.createMaterialization = ((...args: Parameters<typeof fire>) => {
+         const result = fire(...args);
+         return args[1] === "b" ? new Promise(() => {}) : result;
+      }) as typeof fire;
+      const sched = makeScheduler(
+         [
+            fakePackage("a", { schedule: "* * * * *" }),
+            fakePackage("b", { schedule: "* * * * *" }),
+         ],
+         service,
+      );
+      // Not awaited: it is the sweep that reached `b`, and stays there.
+      void sched.tick(t0);
+      await Bun.sleep(0);
+      for (let i = 1; i <= 3; i++) await sched.tick(t0 + i * 61_000);
+      expect(service.calls.map((c) => c.pkg)).toEqual([
+         "a",
+         "b",
+         "a",
+         "a",
+         "a",
+      ]);
+   });
+
+   it("warns once when a schedule is skipped behind its own fire that has not returned, and once more when it does", async () => {
+      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      try {
+         const service = fakeService();
+         let release: () => void = () => {};
+         const held = new Promise<void>((resolve) => (release = resolve));
+         const fire = service.createMaterialization;
+         service.createMaterialization = ((
+            ...args: Parameters<typeof fire>
+         ) => {
+            fire(...args);
+            return held.then(() => ({}));
+         }) as typeof fire;
+         const sched = makeScheduler(
+            [fakePackage("p", { schedule: "* * * * *" })],
+            service,
+         );
+         const skipWarns = () =>
+            (warn.mock.calls as unknown as unknown[][]).filter(([message]) =>
+               String(message).includes("skipped a due schedule"),
+            );
+         const settledWarns = () =>
+            (warn.mock.calls as unknown as unknown[][]).filter(([message]) =>
+               String(message).includes("has finished"),
+            );
+         await sched.tick(t0);
+         const stuck = sched.tick(dueLater);
+         await sched.tick(dueLater + 1);
+         await sched.tick(dueLater + 2);
+         expect(service.calls).toHaveLength(1);
+         expect(skipWarns()).toHaveLength(1);
+         expect(skipWarns()[0][1]).toHaveProperty("runningForMs");
+         expect(settledWarns()).toHaveLength(0);
+
+         release();
+         await stuck;
+         expect(settledWarns()).toHaveLength(1);
+         expect(settledWarns()[0][1]).toMatchObject({ skippedFires: 2 });
+         await sched.tick(dueLater + 3);
+         expect(settledWarns()).toHaveLength(1);
+      } finally {
+         warn.mockRestore();
+      }
    });
 });

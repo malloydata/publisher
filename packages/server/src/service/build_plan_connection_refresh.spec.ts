@@ -99,20 +99,6 @@ async function newEnvironment(
       downloaderFor: (_packageName, location) => async (stagingPath) => {
          await fs.promises.cp(location, stagingPath, { recursive: true });
       },
-      ensurePackageRecord: async (packageName, description) => {
-         if (await repo.getPackageByName(ENV_ID, packageName)) return false;
-         await repo.createPackage({
-            environmentId: ENV_ID,
-            name: packageName,
-            description,
-            manifestPath: "",
-         });
-         return true;
-      },
-      removePackageRecord: async (packageName) => {
-         const row = await repo.getPackageByName(ENV_ID, packageName);
-         if (row) await repo.deletePackage(row.id);
-      },
    });
    return env;
 }

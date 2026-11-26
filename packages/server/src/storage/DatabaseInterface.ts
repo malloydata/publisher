@@ -56,14 +56,22 @@ export interface ResourceRepository {
       id: string,
       updates: Partial<PackageRecord>,
    ): Promise<PackageRecord>;
-   /** Deletes the package's row and everything keyed by it, versions included. */
-   deletePackage(id: string): Promise<void>;
    /**
-    * Remove only the package's own row, keeping what is keyed by its name
-    * (its runs, its incremental ledger, its versions): for undoing a row this
-    * server just created, which owns none of them.
+    * Deletes the package's row and everything keyed by it, versions included,
+    * in one transaction. Returns the ids of the versions it deleted (none when
+    * the package has no row), which their reclaim needs.
     */
-   deletePackageRecord(id: string): Promise<void>;
+   deletePackage(id: string): Promise<string[]>;
+   /**
+    * Set a package's own description (null clears it) on its existing row,
+    * in one statement. Never creates the row: false when there is none (the
+    * package was deleted), so a write that raced a delete changes nothing.
+    */
+   setPackageDescription(
+      environmentId: string,
+      packageName: string,
+      description: string | null,
+   ): Promise<boolean>;
 
    // Versions
    listVersions(environmentId: string, packageName: string): Promise<Version[]>;
@@ -78,11 +86,16 @@ export interface ResourceRepository {
     * Record a newly published version and, when `promote` says so, make it the
     * package's `latest`, in one transaction. `promote` is handed the current
     * `latest` read inside that transaction. Throws PackageVersionError
-    * VERSION_CONFLICT when the version already has a row.
+    * VERSION_CONFLICT when the version already has a row. A package with no
+    * row throws, writing nothing, unless `createPackage` is set: then the
+    * package's row is written in the same transaction, so a package's first
+    * version and its row commit together and a crash cannot leave one
+    * without the other.
     */
    commitPublish(
       version: NewVersion,
       promote: PromoteRule,
+      options?: { createPackage?: boolean },
    ): Promise<{ version: Version; promoted: boolean }>;
    /**
     * Make an existing, unarchived version the package's `latest`, stamping its
@@ -127,6 +140,13 @@ export interface ResourceRepository {
       environmentId: string,
       packageName: string,
       versionId: string,
+   ): Promise<void>;
+   /** Record, or clear with null, why a version's folder is not fetched again. */
+   setVersionRestoreStatus(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+      status: VersionRestoreStatus | null,
    ): Promise<void>;
    /**
     * Delete a version's row. While other versions remain it refuses the
@@ -278,6 +298,9 @@ export type VersionArchiveStatus = "archive" | "unarchive";
  * One published, immutable version of a package. Its files never change after
  * publish; its lifecycle state, `latest` stamps and manifest binding do.
  */
+/** Why a missing version's folder is not fetched again (Version.restoreStatus). */
+export type VersionRestoreStatus = "hash_mismatch";
+
 export interface Version {
    /** The semantic version, exactly as the version's publisher.json declared it. */
    versionId: string;
@@ -298,6 +321,13 @@ export interface Version {
     * cleared.
     */
    hostOwned: boolean;
+   /**
+    * `hash_mismatch`: the version's folder went missing and its location no
+    * longer hashes to what was published, so it is not fetched again until
+    * the version is placed again (a publish of the same content). Absent or
+    * null otherwise.
+    */
+   restoreStatus?: VersionRestoreStatus | null;
    archiveStatus: VersionArchiveStatus;
    archivedAt: Date | null;
    /** When it last became the package's `latest`. */

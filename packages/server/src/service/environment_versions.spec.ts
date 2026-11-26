@@ -75,20 +75,6 @@ async function newEnvironment(): Promise<Environment> {
          restoreDownloads += 1;
          await fs.promises.cp(location, stagingPath, { recursive: true });
       },
-      ensurePackageRecord: async (packageName, description) => {
-         if (await repo.getPackageByName(ENV_ID, packageName)) return false;
-         await repo.createPackage({
-            environmentId: ENV_ID,
-            name: packageName,
-            description,
-            manifestPath: "",
-         });
-         return true;
-      },
-      removePackageRecord: async (packageName) => {
-         const row = await repo.getPackageByName(ENV_ID, packageName);
-         if (row) await repo.deletePackage(row.id);
-      },
    });
    return env;
 }
@@ -240,7 +226,7 @@ describe("Environment loading of published versions", () => {
 
       const restarted = await newEnvironment();
       await expect(restarted.getPackage(parsePackageName(PKG))).rejects.toThrow(
-         /missing and could not be fetched again/,
+         /no longer holds what was published/,
       );
       expect(fs.existsSync(path.join(envPath, PKG, "1.0.0"))).toBe(false);
    });
@@ -350,6 +336,39 @@ describe("Environment loading of published versions", () => {
       await expect(env.getPackage(parsePackageName(PKG))).rejects.toThrow();
       expect(fs.existsSync(path.join(envPath, PKG))).toBe(false);
       expect(await env.listPackages()).toEqual([]);
+   });
+
+   it("reclaims every version a package delete removed, one that committed while it ran included", async () => {
+      const env = await newEnvironment();
+      await publish(env, source("1.0.0", 1));
+      const reclaimed: string[] = [];
+      env.setVersionDeletedHook(
+         (_pkg, versionId) => void reclaimed.push(versionId),
+      );
+      await env.deletePackage(PKG, {
+         removeRecords: async () => {
+            // A further version committing between the delete's read of the
+            // versions and the transaction that removes the rows: it does not
+            // take the package lock the delete holds.
+            await repo.commitPublish(
+               {
+                  versionId: "2.0.0",
+                  environmentId: ENV_ID,
+                  packageName: PKG,
+                  dirName: "2.0.0",
+                  contentHash: "hash-2",
+                  sourceLocation: "/src/2.0.0",
+                  manifestPath: null,
+                  description: null,
+               },
+               () => false,
+            );
+            const row = await repo.getPackageByName(ENV_ID, PKG);
+            return repo.deletePackage(row!.id);
+         },
+      });
+      expect(reclaimed.sort()).toEqual(["1.0.0", "2.0.0"]);
+      expect(await repo.listVersions(ENV_ID, PKG)).toEqual([]);
    });
 
    it("keeps the folder of a package that is not versioned and failed to load", async () => {
@@ -488,6 +507,72 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       return { release, reached, restore: () => spy.mockRestore() };
    }
 
+   it("a crash during a new package's first publish leaves no package row for the restart to load", async () => {
+      const env = await newEnvironment();
+      const held = holdCompile(true);
+      try {
+         const publishing = publish(env, source("1.0.0", 1)).then(
+            () => "published",
+            () => "failed",
+         );
+         // Inside the compile, before the commit: what a crash here leaves
+         // is what the store holds now.
+         await held.reached;
+         expect(await repo.listPackages(ENV_ID)).toEqual([]);
+         expect(await repo.listVersions(ENV_ID, PKG)).toEqual([]);
+
+         // A restart registers a package for each row, as the store does.
+         const restarted = await newEnvironment();
+         for (const row of await repo.listPackages(ENV_ID)) {
+            restarted.registerConfiguredPackage(row.name);
+         }
+         expect(await restarted.listPackages()).toEqual([]);
+         expect(restarted.getFailedPackages().size).toBe(0);
+
+         held.release();
+         expect(await publishing).toBe("failed");
+      } finally {
+         held.release();
+         held.restore();
+      }
+      expect(await repo.listPackages(ENV_ID)).toEqual([]);
+   });
+
+   it("a package an earlier release left with a row and no version is cleared by publishing it again", async () => {
+      // What an earlier release left after a crash during a first publish.
+      await repo.createPackage({
+         environmentId: ENV_ID,
+         name: PKG,
+         description: "",
+         manifestPath: "",
+      });
+      const restarted = await newEnvironment();
+      for (const row of await repo.listPackages(ENV_ID)) {
+         restarted.registerConfiguredPackage(row.name);
+      }
+      await restarted.listPackages();
+
+      await publish(restarted, source("1.0.0", 7));
+      expect(
+         await answerOf(await restarted.getPackage(parsePackageName(PKG))),
+      ).toBe(7);
+      expect(restarted.getFailedPackages().has(PKG)).toBe(false);
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toMatchObject({
+         latestVersion: "1.0.0",
+      });
+      expect((await repo.listPackages(ENV_ID)).length).toBe(1);
+   });
+
+   it("writes a new package's row with its first version", async () => {
+      const env = await newEnvironment();
+      await publish(env, source("1.0.0", 1));
+      const row = await repo.getPackageByName(ENV_ID, PKG);
+      expect(row).toMatchObject({ name: PKG, latestVersion: "1.0.0" });
+      expect(
+         (await repo.listVersions(ENV_ID, PKG)).map((v) => v.versionId),
+      ).toEqual(["1.0.0"]);
+   });
+
    it("a read of an unversioned package during its first publish waits, then serves the version", async () => {
       unversionedOverAFile(0);
       const env = await newEnvironment();
@@ -596,9 +681,51 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       for (let i = 0; i < 3; i++) {
          await expect(
             restarted.getPackage(parsePackageName(PKG)),
-         ).rejects.toThrow(/missing and could not be fetched again/);
+         ).rejects.toThrow(/no longer holds what was published/);
       }
       expect(restoreDownloads).toBe(1);
+   });
+
+   it("a version whose location no longer hashes to it is not fetched again, past the retry window or a restart, until it is published again", async () => {
+      const location = source("1.0.0", 1);
+      await publish(await newEnvironment(), location);
+      fs.rmSync(path.join(envPath, PKG, "1.0.0"), { recursive: true });
+      // The location now holds other content under the same version.
+      const original = fs.mkdtempSync(path.join(root, "original-"));
+      fs.cpSync(location, original, { recursive: true });
+      writePackage(location, { version: "1.0.0" }, 99);
+      const restarted = await newEnvironment();
+      restoreDownloads = 0;
+      await expect(restarted.getPackage(parsePackageName(PKG))).rejects.toThrow(
+         /no longer holds what was published/,
+      );
+      expect(restoreDownloads).toBe(1);
+      // Recorded on the version: not fetched again an hour later, nor after
+      // another restart.
+      const now = Date.now();
+      const later = spyOn(Date, "now").mockReturnValue(now + 60 * 60_000);
+      try {
+         await expect(
+            restarted.getPackage(parsePackageName(PKG)),
+         ).rejects.toThrow(/no longer holds what was published/);
+         await expect(
+            (await newEnvironment()).getPackage(parsePackageName(PKG)),
+         ).rejects.toThrow(/no longer holds what was published/);
+      } finally {
+         later.mockRestore();
+      }
+      expect(restoreDownloads).toBe(1);
+      // Publishing the same content again puts the folder back, and serves.
+      fs.rmSync(location, { recursive: true });
+      fs.cpSync(original, location, { recursive: true });
+      const env = await newEnvironment();
+      await publish(env, location);
+      expect(await answerOf(await env.getPackage(parsePackageName(PKG)))).toBe(
+         1,
+      );
+      expect(
+         (await repo.getVersion(ENV_ID, PKG, "1.0.0"))!.restoreStatus ?? null,
+      ).toBeNull();
    });
 
    it("closing the environment releases every loaded version's connections", async () => {

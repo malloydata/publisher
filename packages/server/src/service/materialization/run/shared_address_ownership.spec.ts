@@ -337,20 +337,6 @@ describe('a "scope: package" version: a refused name= refuses its own source, an
          downloaderFor: (_packageName, location) => async (stagingPath) => {
             await fs.promises.cp(location, stagingPath, { recursive: true });
          },
-         ensurePackageRecord: async (packageName, description) => {
-            if (await repo.getPackageByName(ENV_ID, packageName)) return false;
-            await repo.createPackage({
-               environmentId: ENV_ID,
-               name: packageName,
-               description,
-               manifestPath: "",
-            });
-            return true;
-         },
-         removePackageRecord: async (packageName) => {
-            const row = await repo.getPackageByName(ENV_ID, packageName);
-            if (row) await repo.deletePackage(row.id);
-         },
       });
       env.setStorageBindingResolver(storageBindingResolverFor(repo, ENV_ID));
       const location = path.join(root, "sources", "1.0.0");

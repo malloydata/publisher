@@ -49,19 +49,6 @@ function host(): VersionHost<Loaded> {
       isWatchMounted: async () => false,
       holdingUnversionedReads: (_packageName, fn) => fn(),
       retireUnversioned: () => {},
-      ensurePackageRecord: async (packageName) => {
-         if (await repo.getPackageByName(ENV_ID, packageName)) return false;
-         await repo.createPackage({
-            environmentId: ENV_ID,
-            name: packageName,
-            manifestPath: "",
-         });
-         return true;
-      },
-      removePackageRecord: async (packageName) => {
-         const row = await repo.getPackageByName(ENV_ID, packageName);
-         if (row) await repo.deletePackage(row.id);
-      },
    };
 }
 

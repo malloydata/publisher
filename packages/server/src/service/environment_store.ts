@@ -1112,38 +1112,6 @@ export class EnvironmentStore
                location,
                stagingPath,
             ),
-         ensurePackageRecord: async (packageName, description) => {
-            const existing = await repository.getPackageByName(
-               environmentId,
-               packageName,
-            );
-            if (!existing) {
-               await repository.createPackage({
-                  environmentId,
-                  name: packageName,
-                  description: description ?? undefined,
-                  manifestPath: "",
-                  metadata: {},
-               });
-               return true;
-            }
-            if (
-               description !== undefined &&
-               description !== (existing.description ?? null)
-            ) {
-               await repository.updatePackage(existing.id, { description });
-            }
-            return false;
-         },
-         removePackageRecord: async (packageName) => {
-            const existing = await repository.getPackageByName(
-               environmentId,
-               packageName,
-            );
-            // The row only: what is keyed by the package's name (an
-            // unversioned package's runs and ledger) predates this publish.
-            if (existing) await repository.deletePackageRecord(existing.id);
-         },
          packageRemoved: (packageName) =>
             this.cleanupPackageEmbeddings(environmentName, packageName),
       });
@@ -1165,8 +1133,20 @@ export class EnvironmentStore
             dirs.add(version.dirName);
             owned.set(version.packageName, dirs);
          }
+         // Every package with a row, unversioned ones included, so a folder
+         // only a crashed first publish left (no row at all) can go. Not for
+         // an environment whose row is new: its folders may predate a store
+         // that was reset, and no row says what they were.
+         const packagesWithRows = newRow
+            ? undefined
+            : new Set(
+                 (await repository.listPackages(environmentId)).map(
+                    (row) => row.name,
+                 ),
+              );
          await new VersionStore(environment.getEnvironmentPath()).cleanup(
             owned,
+            packagesWithRows,
          );
       } catch (error) {
          logger.warn("Could not clean up package version folders", {
@@ -1696,7 +1676,7 @@ export class EnvironmentStore
    public async deletePackageFromDatabase(
       environmentName: string,
       packageName: string,
-   ): Promise<void> {
+   ): Promise<string[]> {
       // Before the metadata lookups: embeddings are written off the
       // in-memory environment, which can outlive a lost metadata row,
       // so the cleanup must not sit behind the missing-row early return.
@@ -1709,7 +1689,7 @@ export class EnvironmentStore
 
       if (!dbEnvironment) {
          logger.error(`Environment "${environmentName}" not found in database`);
-         return;
+         return [];
       }
 
       const existingPackage = await repository.getPackageByName(
@@ -1717,10 +1697,10 @@ export class EnvironmentStore
          packageName,
       );
 
-      if (existingPackage) {
-         await repository.deletePackage(existingPackage.id);
-         logger.info(`Deleted package "${packageName}" from database`);
-      }
+      if (!existingPackage) return [];
+      const deleted = await repository.deletePackage(existingPackage.id);
+      logger.info(`Deleted package "${packageName}" from database`);
+      return deleted;
    }
 
    /**

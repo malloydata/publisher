@@ -6,6 +6,7 @@ import * as path from "path";
 import type { VersionPromotionMode } from "../../config";
 import {
    BadRequestError,
+   PackageNotFoundError,
    PackageVersionError,
    refuseVersionDelete,
    VersionFilesMissingError,
@@ -27,6 +28,7 @@ import { readPackageURL } from "../../utils";
 export type VersionRegistry = Pick<
    ResourceRepository,
    | "getPackageByName"
+   | "setPackageDescription"
    | "listVersions"
    | "hasVersions"
    | "listVersionsByEnvironment"
@@ -36,6 +38,7 @@ export type VersionRegistry = Pick<
    | "setVersionArchiveStatus"
    | "setVersionManifestPath"
    | "markVersionHostOwned"
+   | "setVersionRestoreStatus"
    | "deleteVersion"
    | "deletePackageIfNoVersions"
 >;
@@ -111,17 +114,6 @@ export interface VersionHost<P> {
     * copy, if one is loaded. Called holding the package lock.
     */
    retireUnversioned(packageName: string): void;
-   /**
-    * Make sure the package has its registry row, with this description when
-    * one is given (null clears it; undefined leaves it). Returns whether this
-    * call created the row.
-    */
-   ensurePackageRecord(
-      packageName: string,
-      description: string | null | undefined,
-   ): Promise<boolean>;
-   /** Remove a package row this service created for a publish that failed. */
-   removePackageRecord(packageName: string): Promise<void>;
    /**
     * The build manifest a loaded version is bound to now, or null: never
     * one whose bind failed, so naming it again binds it again.
@@ -674,19 +666,10 @@ export class VersionService<P = unknown> {
          // under that lock are final: a concurrent first publish of another
          // version committed before this one got it.
          const first = holdingPackageLock && versions.length === 0;
-         let createdRecord = false;
          let held: Awaited<ReturnType<VersionStore["holdLegacy"]>> = null;
          let loaded: P | undefined;
          let committed: { version: Version; promoted: boolean };
          try {
-            // The package's row, which the version's commit needs; created
-            // here only for a package new to this server, and removed again
-            // if this publish fails. The request's description is applied
-            // only once the version is committed.
-            createdRecord = await host.ensurePackageRecord(
-               packageName,
-               undefined,
-            );
             held = first ? await store.holdLegacy(packageName) : null;
             await this.withFilesLock(packageName, dirName, async () => {
                // A folder with no row is a placement whose publish never
@@ -713,6 +696,16 @@ export class VersionService<P = unknown> {
             );
             const refusal = options.validate?.(loaded);
             if (refusal) throw new BadRequestError(refusal);
+            // A package new to this server gets its row in the same
+            // transaction as its first version, so a crash before the commit
+            // leaves no package without a version. Only under the package
+            // lock, which a delete of the package takes: a further version
+            // whose package was deleted meanwhile is refused, not recreated.
+            // Keyed on the lock rather than on `first`: under it, a row a
+            // concurrent first publish committed stays as it is (the insert
+            // is a no-op), and a package deleted before the lock was taken is
+            // a first version of an empty name again.
+            // The request's description is applied once it is committed.
             committed = await this.registry.commitPublish(
                {
                   versionId,
@@ -728,6 +721,7 @@ export class VersionService<P = unknown> {
                   hostOwned: host.hostMarked?.(loaded) ?? false,
                },
                promoteOnPublish(versionId, options.promotion),
+               { createPackage: holdingPackageLock },
             );
          } catch (err) {
             if (loaded !== undefined) {
@@ -741,16 +735,6 @@ export class VersionService<P = unknown> {
                      logger.error(
                         "Could not put back an unversioned package tree after a failed first versioned publish; it is restored at the next startup",
                         { packageName, error: restoreErr },
-                     ),
-                  );
-            }
-            if (createdRecord) {
-               await host
-                  .removePackageRecord(packageName)
-                  .catch((error) =>
-                     logger.warn(
-                        "Could not remove the package row a failed publish created",
-                        { packageName, error },
                      ),
                   );
             }
@@ -768,7 +752,10 @@ export class VersionService<P = unknown> {
          // publisher.json: its first version clears it, so the package reads
          // as its latest version's until a request sets one.
          if (first || options.description !== undefined) {
-            await host.ensurePackageRecord(
+            // On the row the commit wrote, never creating one: a whole-package
+            // delete that landed after the commit leaves no row to bring back.
+            await this.registry.setPackageDescription(
+               this.environmentId,
                packageName,
                options.description ?? null,
             );
@@ -851,7 +838,12 @@ export class VersionService<P = unknown> {
          return loaded;
       });
       if (options.description !== undefined) {
-         await host.ensurePackageRecord(packageName, options.description);
+         // Never creates the row, as after a commit.
+         await this.registry.setPackageDescription(
+            this.environmentId,
+            packageName,
+            options.description,
+         );
       }
       if (options.promotion === "on-publish") {
          const moved = await this.registry.setLatestVersion(
@@ -919,7 +911,17 @@ export class VersionService<P = unknown> {
       description: string,
    ): Promise<void> {
       try {
-         await this.requireHost().ensurePackageRecord(packageName, description);
+         if (
+            !(await this.registry.setPackageDescription(
+               this.environmentId,
+               packageName,
+               description,
+            ))
+         ) {
+            throw new PackageNotFoundError(
+               `Package ${packageName} was deleted while its description was being set.`,
+            );
+         }
       } finally {
          this.forgetRecords(packageName);
       }
@@ -1478,15 +1480,34 @@ export class VersionService<P = unknown> {
 
    /**
     * Put a registered version's missing folder back from where it was
-    * published, kept only when it hashes to the published hash. A failure is
-    * remembered for a while, so reads that keep touching the version do not
-    * fetch the location again each time. Called holding the folder's lock.
+    * published, kept only when it hashes to the published hash. A fetch that
+    * failed is remembered for a while, so reads that keep touching the version
+    * do not fetch the location again each time. A location that answered with
+    * other content is recorded on the version (`restore_status`), and never
+    * fetched again until the version is placed again: fetching it would only
+    * find the same content. Called holding the folder's lock.
     */
    private async restoreIfMissing(row: Version): Promise<void> {
       const store = this.requireStore();
       const host = this.requireHost();
       const { packageName, versionId, dirName } = row;
-      if (await store.isPlaced(packageName, dirName)) return;
+      if (await store.isPlaced(packageName, dirName)) {
+         // Placed again (a publish of the same content): it can serve, and a
+         // later loss may be fetched again.
+         if (row.restoreStatus) {
+            await this.registry.setVersionRestoreStatus(
+               this.environmentId,
+               packageName,
+               versionId,
+               null,
+            );
+         }
+         return;
+      }
+      const mismatch = new VersionFilesMissingError(
+         `The files of version ${versionId} of package ${packageName} are missing, and the location it was published from no longer holds what was published, so it is not fetched again. Publish the version again from its original content to serve it.`,
+      );
+      if (row.restoreStatus === "hash_mismatch") throw mismatch;
       const failureKey = `${packageName}@${versionId}@${row.contentHash}`;
       const failedAt = this.restoreFailedAt.get(failureKey);
       const missing = new VersionFilesMissingError(
@@ -1499,13 +1520,23 @@ export class VersionService<P = unknown> {
          throw missing;
       }
       const restored =
-         row.sourceLocation !== null &&
-         (await store.restore(
+         row.sourceLocation === null
+            ? "failed"
+            : await store.restore(
+                 packageName,
+                 row,
+                 host.downloaderFor(packageName, row.sourceLocation),
+              );
+      if (restored === "mismatch") {
+         await this.registry.setVersionRestoreStatus(
+            this.environmentId,
             packageName,
-            row,
-            host.downloaderFor(packageName, row.sourceLocation),
-         ));
-      if (!restored) {
+            versionId,
+            "hash_mismatch",
+         );
+         throw mismatch;
+      }
+      if (restored !== "placed") {
          this.restoreFailedAt.set(failureKey, Date.now());
          throw missing;
       }

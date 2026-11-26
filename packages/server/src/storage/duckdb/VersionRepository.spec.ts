@@ -3,6 +3,7 @@
 
 import { afterEach, describe, expect, it } from "bun:test";
 import {
+   PackageNotFoundError,
    PackageVersionError,
    type PackageVersionErrorReason,
 } from "../../errors";
@@ -241,8 +242,35 @@ describe("VersionRepository", () => {
             { ...newVersion("1.0.0"), packageName: "ghost" },
             always,
          ),
-      ).rejects.toThrow(/no registry row/);
+      ).rejects.toBeInstanceOf(PackageNotFoundError);
       expect(await repo.listVersions(ENV_ID, "ghost")).toEqual([]);
+   });
+
+   it("writes a package's row with its first version when asked, and neither when the commit fails", async () => {
+      const { repo } = await freshRepo();
+      const ghost = { ...newVersion("1.0.0"), packageName: "ghost" };
+      await expect(
+         repo.commitPublish(
+            ghost,
+            () => {
+               throw new Error("rule failed");
+            },
+            { createPackage: true },
+         ),
+      ).rejects.toThrow("rule failed");
+      expect(await repo.getPackageByName(ENV_ID, "ghost")).toBeNull();
+
+      await repo.commitPublish(ghost, always, { createPackage: true });
+      expect(await repo.getPackageByName(ENV_ID, "ghost")).toMatchObject({
+         name: "ghost",
+         latestVersion: "1.0.0",
+      });
+      // An existing row is kept as it is.
+      const before = await repo.getPackageByName(ENV_ID, PKG);
+      await repo.commitPublish(newVersion("1.0.0"), always, {
+         createPackage: true,
+      });
+      expect((await repo.getPackageByName(ENV_ID, PKG))!.id).toBe(before!.id);
    });
 
    it("writes nothing when the promote rule throws", async () => {
@@ -642,6 +670,66 @@ describe("VersionRepository", () => {
       expect(await repo.listVersionsByEnvironment(ENV_ID)).toEqual([]);
    });
 
+   it("sets a package's description only on a row that exists, never creating one", async () => {
+      const { repo, packageId } = await freshRepo();
+      expect(await repo.setPackageDescription(ENV_ID, PKG, "Sales")).toBe(true);
+      expect((await repo.getPackageByName(ENV_ID, PKG))!.description).toBe(
+         "Sales",
+      );
+      expect(await repo.setPackageDescription(ENV_ID, PKG, null)).toBe(true);
+      expect(
+         (await repo.getPackageByName(ENV_ID, PKG))!.description ?? null,
+      ).toBeNull();
+      await repo.deletePackage(packageId);
+      expect(await repo.setPackageDescription(ENV_ID, PKG, "Sales")).toBe(
+         false,
+      );
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
+   });
+
+   it("lets no publish commit between a package delete's statements", async () => {
+      // A further version publishes without the package lock a package
+      // delete holds, so only the database keeps its commit out of the
+      // middle of the delete. The commit is started the moment the delete
+      // has removed the versions: queued behind that statement on the
+      // connection, it runs before the delete's next one unless the delete
+      // is one transaction.
+      const { db, repo, packageId } = await freshRepo();
+      await repo.commitPublish(newVersion("1.0.0"), always);
+      // Either statement path: the delete reads back what it removed.
+      const conn = db as unknown as {
+         runUnlocked(c: unknown, q: string, p?: unknown[]): Promise<void>;
+         allUnlocked(c: unknown, q: string, p?: unknown[]): Promise<unknown[]>;
+      };
+      let racing: Promise<unknown> | undefined;
+      const raceAfter = (q: string) => {
+         if (!racing && /^DELETE FROM versions WHERE/.test(q.trim())) {
+            racing = repo
+               .commitPublish(newVersion("2.0.0"), always)
+               .catch((err: unknown) => err);
+         }
+      };
+      const runUnlocked = conn.runUnlocked.bind(db);
+      conn.runUnlocked = async (c, q, p) => {
+         await runUnlocked(c, q, p);
+         raceAfter(q);
+      };
+      const allUnlocked = conn.allUnlocked.bind(db);
+      conn.allUnlocked = async (c, q, p) => {
+         const rows = await allUnlocked(c, q, p);
+         raceAfter(q);
+         return rows;
+      };
+      await repo.deletePackage(packageId);
+      expect(racing).toBeDefined();
+      // Refused as not found (a 404, not a 500): its package went, entirely,
+      // before it could commit.
+      const refused = await racing;
+      expect(await repo.listVersions(ENV_ID, PKG)).toEqual([]);
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
+      expect(refused).toBeInstanceOf(PackageNotFoundError);
+   });
+
    it("says whether a package has any version", async () => {
       const { repo } = await freshRepo();
       expect(await repo.hasVersions(ENV_ID, PKG)).toBe(false);
@@ -770,6 +858,7 @@ describe("versions schema upgrade", () => {
          "created_at",
          "updated_at",
          "host_owned",
+         "restore_status",
       ]);
 
       const repo = createDuckDBRepository(db);

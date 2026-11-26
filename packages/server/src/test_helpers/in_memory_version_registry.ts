@@ -13,7 +13,8 @@
  * name (a duplicate create throws a UNIQUE error, as the store expects), the
  * package's `latest` on that row and moved only by the version calls, a
  * duplicate version is VERSION_CONFLICT, and a version recorded against a
- * package with no row throws. Spread the result into a stub repository,
+ * package with no row throws unless its commit creates the row
+ * (`createPackage`). Spread the result into a stub repository,
  * after its own package methods, so these win. Build one per test: it is the
  * database, so two stores in one test share it.
  */
@@ -116,20 +117,29 @@ export function inMemoryVersionRegistry(): Record<string, unknown> {
          Object.assign(row, rest, { updatedAt: new Date() });
          return { ...row };
       },
+      setPackageDescription: async (
+         environmentId: string,
+         name: string,
+         description: string | null,
+      ) => {
+         const row = packages.get(packageKey(environmentId, name));
+         if (!row) return false;
+         Object.assign(row, { description, updatedAt: new Date() });
+         return true;
+      },
       deletePackage: async (id: string) => {
          const found = findPackageById(id);
-         if (!found) return;
+         if (!found) return [];
          const [key, row] = found;
          packages.delete(key);
+         const deleted: string[] = [];
          for (const v of versionsOf(row.environmentId, row.name)) {
             versions.delete(
                versionKey(v.environmentId, v.packageName, v.versionId),
             );
+            deleted.push(v.versionId);
          }
-      },
-      deletePackageRecord: async (id: string) => {
-         const found = findPackageById(id);
-         if (found) packages.delete(found[0]);
+         return deleted;
       },
 
       listVersions: async (environmentId: string, packageName: string) =>
@@ -150,9 +160,12 @@ export function inMemoryVersionRegistry(): Record<string, unknown> {
          );
          return row ? { ...row } : null;
       },
-      commitPublish: async (version: NewVersion, promote: PromoteRule) => {
+      commitPublish: async (
+         version: NewVersion,
+         promote: PromoteRule,
+         options: { createPackage?: boolean } = {},
+      ) => {
          const { environmentId, packageName, versionId } = version;
-         const current = readLatest(environmentId, packageName);
          const key = versionKey(environmentId, packageName, versionId);
          if (versions.has(key)) {
             throw new PackageVersionError(
@@ -160,6 +173,21 @@ export function inMemoryVersionRegistry(): Record<string, unknown> {
                `Version ${versionId} of package ${packageName} is already published.`,
             );
          }
+         const pkgKey = packageKey(environmentId, packageName);
+         if (options.createPackage && !packages.has(pkgKey)) {
+            const now = new Date();
+            packages.set(pkgKey, {
+               id: `pkg-${++nextId}`,
+               environmentId,
+               name: packageName,
+               manifestPath: "",
+               metadata: {},
+               latestVersion: null,
+               createdAt: now,
+               updatedAt: now,
+            });
+         }
+         const current = readLatest(environmentId, packageName);
          const promoted = current !== versionId && promote(current);
          const now = new Date();
          versions.set(key, {
@@ -248,6 +276,17 @@ export function inMemoryVersionRegistry(): Record<string, unknown> {
          target.manifestPath = manifestPath;
          target.updatedAt = new Date();
          return { ...target };
+      },
+      setVersionRestoreStatus: async (
+         environmentId: string,
+         packageName: string,
+         versionId: string,
+         status: "hash_mismatch" | null,
+      ) => {
+         const row = versions.get(
+            versionKey(environmentId, packageName, versionId),
+         );
+         if (row) row.restoreStatus = status;
       },
       markVersionHostOwned: async (
          environmentId: string,

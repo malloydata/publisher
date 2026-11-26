@@ -107,10 +107,11 @@ export interface PackageAdmin extends PackageLookup, ConfigFreezeReader {
       environmentName: string,
       packageName: string,
    ): Promise<void>;
+   /** Returns the ids of the versions it deleted (see deletePackage). */
    deletePackageFromDatabase(
       environmentName: string,
       packageName: string,
-   ): Promise<void>;
+   ): Promise<string[]>;
    downloadPackageInto(
       environmentName: string,
       packageName: string,

@@ -10,7 +10,7 @@ import {
    type PackageVersionErrorReason,
 } from "../../errors";
 import { hashPackageTree } from "./package_content_hash";
-import { VersionStore } from "./version_store";
+import { uuidV7, VersionStore } from "./version_store";
 
 let root: string;
 let envPath: string;
@@ -182,7 +182,7 @@ describe("VersionStore.restore", () => {
 
       expect(
          await store.restore("sales", published, writes({ version: "1.0.0" })),
-      ).toBe(true);
+      ).toBe("placed");
       expect(await store.isPlaced("sales", "1.0.0")).toBe(true);
    });
 
@@ -198,15 +198,15 @@ describe("VersionStore.restore", () => {
             published,
             writes({ version: "1.0.0" }, { "model.malloy": "edited since" }),
          ),
-      ).toBe(false);
+      ).toBe("mismatch");
       expect(
          await store.restore("sales", published, writes({ version: "1.0.1" })),
-      ).toBe(false);
+      ).toBe("mismatch");
       expect(
          await store.restore("sales", published, async () => {
             throw new Error("gone");
          }),
-      ).toBe(false);
+      ).toBe("failed");
       expect(await store.isPlaced("sales", "1.0.0")).toBe(false);
       expect(stagingEntries()).toEqual([]);
    });
@@ -219,7 +219,7 @@ describe("VersionStore.restore", () => {
          await store.restore("sales", staged, async () => {
             fetched = true;
          }),
-      ).toBe(true);
+      ).toBe("placed");
       expect(fetched).toBe(false);
    });
 });
@@ -255,6 +255,116 @@ describe("VersionStore legacy trees", () => {
 
    it("holds nothing for a package with no tree", async () => {
       expect(await store.holdLegacy("sales")).toBeNull();
+   });
+
+   it("holds nothing for an empty package folder, and removes the folder", async () => {
+      fs.mkdirSync(path.join(envPath, "sales"));
+      expect(await store.holdLegacy("sales")).toBeNull();
+      expect(fs.existsSync(path.join(envPath, "sales"))).toBe(false);
+   });
+
+   it("fails, leaving the path alone, when the package's path cannot be read as a folder", async () => {
+      fs.writeFileSync(path.join(envPath, "sales"), "not a folder");
+      await expect(store.holdLegacy("sales")).rejects.toThrow();
+      expect(fs.readFileSync(path.join(envPath, "sales"), "utf8")).toBe(
+         "not a folder",
+      );
+   });
+
+   it("names a held tree by when it was held", async () => {
+      await writes({ name: "a" })(path.join(envPath, "a"));
+      const held = await store.holdLegacy("a");
+      // `<pkg>-<uuid>`, as before, with a v7 UUID.
+      expect(path.basename(held!.heldPath)).toMatch(
+         /^a-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+      // Which sorts in the order the trees were held.
+      const ids = [1, 2, 1_000, 1_700_000_000_000, 2 ** 47].map((ms) =>
+         uuidV7(ms),
+      );
+      expect([...ids].sort()).toEqual(ids);
+   });
+
+   it("holds a tree a failed put-back left held again, rather than the empty folder beside it", async () => {
+      await writes(
+         { name: "sales" },
+         { "old.malloy": "old" },
+      )(path.join(envPath, "sales"));
+      const held = await store.holdLegacy("sales");
+      // What a failed first publish whose put-back also failed leaves.
+      fs.mkdirSync(path.join(envPath, "sales"));
+
+      const again = await store.holdLegacy("sales");
+      expect(again).toEqual(held);
+      expect(fs.readdirSync(path.join(envPath, ".legacy"))).toHaveLength(1);
+      expect(fs.existsSync(path.join(envPath, "sales"))).toBe(false);
+      await store.restoreLegacy(again!);
+      expect(fs.readdirSync(path.join(envPath, "sales")).sort()).toEqual([
+         "old.malloy",
+         "publisher.json",
+      ]);
+   });
+
+   it("holds a tree installed since an earlier hold, dropping the older one", async () => {
+      await writes(
+         { name: "sales" },
+         { "old.malloy": "old" },
+      )(path.join(envPath, "sales"));
+      const older = await store.holdLegacy("sales");
+      await writes(
+         { name: "sales" },
+         { "new.malloy": "new" },
+      )(path.join(envPath, "sales"));
+      const newer = await store.holdLegacy("sales");
+      expect(newer!.heldPath).not.toBe(older!.heldPath);
+      expect(fs.existsSync(older!.heldPath)).toBe(false);
+      expect(fs.readdirSync(newer!.heldPath).sort()).toEqual([
+         "new.malloy",
+         "publisher.json",
+      ]);
+   });
+
+   it("removes the version folders a failed publish left beside a held tree, and holds the held tree again", async () => {
+      await writes(
+         { name: "sales" },
+         { "old.malloy": "old" },
+      )(path.join(envPath, "sales"));
+      const held = await store.holdLegacy("sales");
+      // A failed first publish whose folder removal and put-back both failed:
+      // its placed version folder is left where the unversioned tree was.
+      await store.place(
+         await store.stage("sales", writes({ version: "1.0.0" })),
+      );
+
+      const again = await store.holdLegacy("sales");
+      expect(again).toEqual(held);
+      expect(fs.existsSync(path.join(envPath, "sales"))).toBe(false);
+      expect(fs.readdirSync(path.join(envPath, ".legacy"))).toHaveLength(1);
+   });
+
+   it("refuses to hold files of no package beside a held tree, moving nothing", async () => {
+      await writes({ name: "sales" })(path.join(envPath, "sales"));
+      const held = await store.holdLegacy("sales");
+      fs.mkdirSync(path.join(envPath, "sales"));
+      fs.writeFileSync(path.join(envPath, "sales", "stray.txt"), "?");
+      await expect(store.holdLegacy("sales")).rejects.toThrow(/still held/);
+      expect(fs.existsSync(held!.heldPath)).toBe(true);
+      expect(fs.readdirSync(path.join(envPath, "sales"))).toEqual([
+         "stray.txt",
+      ]);
+   });
+
+   it("leaves no empty package folder when a put-back fails", async () => {
+      // The failed publish's leftover is an empty folder; the held tree is
+      // gone, so the put-back fails.
+      fs.mkdirSync(path.join(envPath, "sales"));
+      await expect(
+         store.restoreLegacy({
+            packageName: "sales",
+            heldPath: path.join(envPath, ".legacy", `sales-${"0".repeat(36)}`),
+         }),
+      ).rejects.toThrow();
+      expect(fs.existsSync(path.join(envPath, "sales"))).toBe(false);
    });
 });
 
@@ -300,19 +410,37 @@ describe("VersionStore.cleanup", () => {
       ]);
    });
 
-   it("puts back only the newest of several trees held for one package", async () => {
-      await writes(
-         { name: "c" },
-         { "old.malloy": "older" },
-      )(path.join(envPath, "c"));
-      const older = await store.holdLegacy("c");
-      await writes(
-         { name: "c" },
-         { "new.malloy": "newer" },
-      )(path.join(envPath, "c"));
-      const newer = await store.holdLegacy("c");
-      const past = new Date(Date.now() - 60_000);
-      fs.utimesSync(older!.heldPath, past, past);
+   /** A tree held as `.legacy/<name>`, as a release may have left it. */
+   async function heldOnDisk(
+      name: string,
+      files: Record<string, string>,
+      mtime: Date,
+   ): Promise<void> {
+      const heldPath = path.join(envPath, ".legacy", name);
+      await writes({ name: "c" }, files)(heldPath);
+      fs.utimesSync(heldPath, mtime, mtime);
+   }
+
+   it("puts back the tree held last by its name, not the newest by mtime", async () => {
+      // A rename keeps a folder's mtime, so the tree held last can look
+      // older than one held before it (an empty folder held on a retry).
+      const earlier = new Date(Date.now() - 60_000);
+      await heldOnDisk(
+         "c-0190a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b",
+         { "old.malloy": "first held" },
+         new Date(),
+      );
+      await heldOnDisk(
+         "c-0190a1b2-c3d5-7e5f-8a6b-7c8d9e0f1a2b",
+         { "new.malloy": "held last" },
+         earlier,
+      );
+      // A v4 name, which a release before this one wrote: below any v7 name.
+      await heldOnDisk(
+         "c-ffffffff-ffff-4fff-bfff-ffffffffffff",
+         { "v4.malloy": "older release" },
+         new Date(),
+      );
 
       await store.cleanup(new Map());
 
@@ -321,7 +449,96 @@ describe("VersionStore.cleanup", () => {
          "publisher.json",
       ]);
       expect(fs.readdirSync(path.join(envPath, ".legacy"))).toEqual([]);
-      expect(fs.existsSync(newer!.heldPath)).toBe(false);
+   });
+
+   it("puts back the newest by mtime among trees an older release held", async () => {
+      await heldOnDisk(
+         "c-ffffffff-ffff-4fff-bfff-ffffffffffff",
+         { "old.malloy": "older" },
+         new Date(Date.now() - 60_000),
+      );
+      await heldOnDisk(
+         "c-00000000-0000-4000-8000-000000000000",
+         { "new.malloy": "newer" },
+         new Date(),
+      );
+      await store.cleanup(new Map());
+      expect(fs.readdirSync(path.join(envPath, "c")).sort()).toEqual([
+         "new.malloy",
+         "publisher.json",
+      ]);
+   });
+
+   it("never puts a held tree back over a package installed since", async () => {
+      await writes(
+         { name: "c" },
+         { "old.malloy": "held" },
+      )(path.join(envPath, "c"));
+      await store.holdLegacy("c");
+      // Installed again, unversioned, before the next start.
+      await writes(
+         { name: "c" },
+         { "new.malloy": "installed" },
+      )(path.join(envPath, "c"));
+
+      await store.cleanup(new Map());
+
+      expect(fs.readdirSync(path.join(envPath, "c")).sort()).toEqual([
+         "new.malloy",
+         "publisher.json",
+      ]);
+      expect(fs.readdirSync(path.join(envPath, ".legacy"))).toEqual([]);
+   });
+});
+
+describe("VersionStore.cleanup: a package folder no row owns", () => {
+   it("removes a new package's version folders a crashed first publish left with no row", async () => {
+      // Placed, then the server died before the commit wrote the rows.
+      await store.place(
+         await store.stage("ghost", writes({ version: "1.0.0" })),
+      );
+      await store.cleanup(new Map(), new Set());
+      expect(fs.existsSync(path.join(envPath, "ghost"))).toBe(false);
+   });
+
+   it("keeps anything that is not only version folders, or that a row owns", async () => {
+      // An unversioned package's tree: its own publisher.json.
+      await writes({ name: "plain" })(path.join(envPath, "plain"));
+      fs.mkdirSync(path.join(envPath, "plain", "1.0.0"));
+      // Version-shaped, beside a file that is not.
+      await store.place(
+         await store.stage("mixed", writes({ version: "1.0.0" })),
+      );
+      fs.writeFileSync(path.join(envPath, "mixed", "notes.txt"), "keep me");
+      // Version-shaped, but with no publisher.json inside: not a placement.
+      fs.mkdirSync(path.join(envPath, "bare", "1.0.0"), { recursive: true });
+      // A placement whose package has a row (an unversioned package's row).
+      await store.place(
+         await store.stage("owned", writes({ version: "1.0.0" })),
+      );
+      // A watch mount.
+      const outside = path.join(root, "src-pkg");
+      await store.place(
+         await store.stage("linked-src", writes({ version: "1.0.0" })),
+      );
+      fs.renameSync(path.join(envPath, "linked-src"), outside);
+      fs.symlinkSync(outside, path.join(envPath, "linked"));
+
+      await store.cleanup(new Map(), new Set(["owned"]));
+      for (const name of ["plain", "mixed", "bare", "owned", "linked"]) {
+         expect([name, fs.existsSync(path.join(envPath, name))]).toEqual([
+            name,
+            true,
+         ]);
+      }
+   });
+
+   it("removes nothing when the caller does not say which packages have rows", async () => {
+      await store.place(
+         await store.stage("ghost", writes({ version: "1.0.0" })),
+      );
+      await store.cleanup(new Map());
+      expect(fs.existsSync(path.join(envPath, "ghost", "1.0.0"))).toBe(true);
    });
 });
 

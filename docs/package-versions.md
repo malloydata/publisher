@@ -68,7 +68,7 @@ Every route that reaches into a package takes `versionId`: the package itself, m
 | An archived version                                           | 410 `VERSION_ARCHIVED`.                                                                  |
 | A versioned package with no `latest` yet, naming nothing      | 404 `VERSION_NOT_FOUND`.                                                                 |
 | Any version, of a package with no versions                    | 404 `VERSION_NOT_FOUND`. Its one tree never answers as if it were the version asked for. |
-| A version whose files are missing and cannot be fetched again | 424.                                                                                     |
+| A version whose files are missing and cannot be fetched again | 424. When its location now holds other content, 424 until it is published again.          |
 
 A query takes `versionId` in its body; one in the URL's query string is read too, and when both name a version they must agree (400 `VERSION_ID_INVALID` otherwise). Build metadata must be percent-encoded in a URL: `1.2.0+build.5` is sent as `1.2.0%2Bbuild.5`, since a bare `+` decodes to a space. The SDK does this for you.
 
@@ -218,7 +218,7 @@ Size the volume under `publisher_data/` for the retention you need, and keep lar
 
 ## Restart
 
-Versions, `latest`, archive state, manifest bindings and the package's own description are recorded in the publisher's database, and read back before anything loads. At startup the publisher removes a version folder no row owns (a publish that never committed, or a delete whose folder removal failed) and restores an unversioned tree a first versioned publish had moved aside. A version whose tree has gone missing is fetched again from the location it was published from, and served only if it hashes to what was published; if it cannot be, the version answers 424, and the fetch is not retried on every request.
+Versions, `latest`, archive state, manifest bindings and the package's own description are recorded in the publisher's database, and read back before anything loads. At startup the publisher removes a version folder no row owns (a publish that never committed, or a delete whose folder removal failed), removes a package folder a new package's first publish placed and never committed (only version folders, with no package row and no `publisher.json` of its own), and restores an unversioned tree a first versioned publish had moved aside. A version whose tree has gone missing is fetched again from the location it was published from, and served only if it hashes to what was published. If the fetch fails, the version answers 424 and the fetch is retried at most once a minute. If the location answers with other content, that is recorded on the version and it answers 424 without fetching again, across restarts, until the same content is published again under that version.
 
 ## What this does not do yet
 

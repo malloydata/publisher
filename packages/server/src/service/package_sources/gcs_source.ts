@@ -12,7 +12,7 @@ import {
 } from "../../path_safety";
 import { assertGoogleCredentialsIsNotADirectory } from "../google_credentials";
 import type { PackageFetchOptions, PackageSource } from "./types";
-import { unzipEnvironment } from "./zip";
+import { downloadAndUnzip } from "./zip";
 
 /** A `gs://bucket/prefix` location (a `.zip` key is one archive). */
 export function isGCSURL(location: string): boolean {
@@ -43,15 +43,31 @@ export class GcsPackageSource implements PackageSource {
             `Environment ${environmentName} not found in ${gcsPath}`,
          );
       }
-      if (!isCompressedFile) {
-         await fs.promises.rm(absoluteDirPath, {
-            recursive: true,
-            force: true,
+      if (isCompressedFile) {
+         // One archive, extracted beside itself into the target, then removed.
+         const archivePath = `${absoluteDirPath}.zip`;
+         await downloadAndUnzip(archivePath, async () => {
+            await fs.promises.mkdir(path.dirname(archivePath), {
+               recursive: true,
+            });
+            await Promise.all(
+               files
+                  .filter((file) => !file.name.endsWith("/"))
+                  .map(async (file) =>
+                     fs.promises.writeFile(archivePath, await file.download()),
+                  ),
+            );
          });
-         await fs.promises.mkdir(absoluteDirPath, { recursive: true });
-      } else {
-         absoluteDirPath = `${absoluteDirPath}.zip`;
+         logger.info(
+            `Downloaded GCS zip file ${gcsPath} to ${absoluteDirPath}`,
+         );
+         return;
       }
+      await fs.promises.rm(absoluteDirPath, {
+         recursive: true,
+         force: true,
+      });
+      await fs.promises.mkdir(absoluteDirPath, { recursive: true });
       await Promise.all(
          files.map(async (file) => {
             // Strip a leading `/` (prefix without trailing slash), which
@@ -59,9 +75,10 @@ export class GcsPackageSource implements PackageSource {
             const relativeFilePath = file.name
                .replace(prefix, "")
                .replace(/^\/+/, "");
-            const absoluteFilePath = isCompressedFile
-               ? absoluteDirPath
-               : safeJoinUnderRoot(absoluteDirPath, relativeFilePath);
+            const absoluteFilePath = safeJoinUnderRoot(
+               absoluteDirPath,
+               relativeFilePath,
+            );
             if (file.name.endsWith("/")) {
                return;
             }
@@ -74,9 +91,6 @@ export class GcsPackageSource implements PackageSource {
             );
          }),
       );
-      if (isCompressedFile) {
-         await unzipEnvironment(absoluteDirPath);
-      }
       logger.info(`Downloaded GCS directory ${gcsPath} to ${absoluteDirPath}`);
    }
 }

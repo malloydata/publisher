@@ -92,6 +92,18 @@ export class PackageRepository {
       await this.db.run("DELETE FROM packages WHERE id = ?", [id]);
    }
 
+   async setPackageDescription(
+      environmentId: string,
+      name: string,
+      description: string | null,
+   ): Promise<boolean> {
+      const row = await this.db.get<{ id: string }>(
+         "UPDATE packages SET description = ?, updated_at = ? WHERE environment_id = ? AND name = ? RETURNING id",
+         [description, new Date().toISOString(), environmentId, name],
+      );
+      return row !== null;
+   }
+
    async deletePackagesByEnvironmentId(id: string): Promise<void> {
       await this.db.run("DELETE FROM packages WHERE environment_id = ?", [id]);
    }

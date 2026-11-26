@@ -16,7 +16,10 @@ import { errorCodeOf } from "../../../error_code";
 import type { MaterializationSchedulerConfig } from "../../../config";
 import { MaterializationConflictError } from "../../../errors";
 import { logger } from "../../../logger";
-import { recordScheduledFire } from "../../../materialization_metrics";
+import {
+   recordScheduledFire,
+   recordSchedulerFireSkipped,
+} from "../../../materialization_metrics";
 import { CronEvaluator } from "./cron_evaluator";
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
 import type { MaterializationService } from "./materialization_service";
@@ -70,6 +73,15 @@ export class MaterializationScheduler {
    private readonly state = new Map<string, ScheduleState>();
    /** Versions whose unreadable publisher.json was already warned about. */
    private readonly unreadableVersions = new Set<string>();
+   /**
+    * Fires running now, by schedule key, with when each began and how many
+    * times its schedule came due again meanwhile: a schedule whose fire has
+    * not returned is skipped, not fired again (see sweepOne).
+    */
+   private readonly firing = new Map<
+      string,
+      { startedAtMs: number; skipped: number }
+   >();
 
    constructor(
       private readonly host: Pick<MaterializationHost, "getLoadedEnvironments">,
@@ -106,8 +118,19 @@ export class MaterializationScheduler {
     * One sweep: arm newly-seen schedules, fire due ones (capped per tick), and
     * prune state for packages no longer loaded/scheduled. Exposed so tests can
     * drive it synchronously. Never throws — per-package errors are isolated.
+    *
+    * A sweep can outlast the interval (a version due to fire compiles first,
+    * and up to `maxFiresPerTick` fire in turn), so the next tick can start
+    * beside it. A schedule's next fire time moves only once its fire returns,
+    * so each schedule is guarded on its own: one still firing is skipped and
+    * counted (sweepOne), never fired twice, and a fire that never returns
+    * stalls only its own schedule.
     */
    public async tick(nowMs: number = Date.now()): Promise<void> {
+      await this.sweep(nowMs);
+   }
+
+   private async sweep(nowMs: number): Promise<void> {
       const seen = new Set<string>();
       const sweep = { fired: 0 };
 
@@ -199,7 +222,49 @@ export class MaterializationScheduler {
             // Stampede guard: leave it due; it fires on a later tick.
             return;
          }
-         await this.fire(environmentName, packageName, versionId);
+         // Checked and set with no await between, so two sweeps never both
+         // fire one schedule.
+         const running = this.firing.get(key);
+         if (running) {
+            recordSchedulerFireSkipped();
+            running.skipped += 1;
+            const runningForMs = Date.now() - running.startedAtMs;
+            if (running.skipped === 1) {
+               // Never cleared by a timeout: the fire may still be running,
+               // and a second beside it would build the same thing twice. A
+               // fire that never returns therefore stops its own schedule
+               // (only), so the first skip says so at warn.
+               logger.warn(
+                  "MaterializationScheduler: skipped a due schedule; its previous fire is still running. If this repeats, that fire is stuck and this schedule does not fire again until it returns or the server restarts; other schedules are not affected",
+                  { environmentName, packageName, versionId, runningForMs },
+               );
+            } else {
+               logger.debug(
+                  "MaterializationScheduler: skipped a due schedule; its previous fire is still running",
+                  { environmentName, packageName, versionId, runningForMs },
+               );
+            }
+            return;
+         }
+         const entry = { startedAtMs: Date.now(), skipped: 0 };
+         this.firing.set(key, entry);
+         try {
+            await this.fire(environmentName, packageName, versionId);
+         } finally {
+            this.firing.delete(key);
+            if (entry.skipped > 0) {
+               logger.warn(
+                  "MaterializationScheduler: the fire that caused skipped schedules has finished; it fires again on its cron",
+                  {
+                     environmentName,
+                     packageName,
+                     versionId,
+                     skippedFires: entry.skipped,
+                     ranForMs: Date.now() - entry.startedAtMs,
+                  },
+               );
+            }
+         }
          sweep.fired++;
          // Advance regardless of outcome so a persistent failure retries on
          // the next cron occurrence (cron cadence), never every tick.

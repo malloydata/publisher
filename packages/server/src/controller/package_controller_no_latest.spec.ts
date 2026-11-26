@@ -91,26 +91,6 @@ beforeEach(async () => {
       downloaderFor: (_packageName, location) => async (stagingPath) => {
          await fs.promises.cp(location, stagingPath, { recursive: true });
       },
-      ensurePackageRecord: async (packageName, description) => {
-         const existing = await repo.getPackageByName(ENV_ID, packageName);
-         if (!existing) {
-            await repo.createPackage({
-               environmentId: ENV_ID,
-               name: packageName,
-               description: description ?? undefined,
-               manifestPath: "",
-            });
-            return true;
-         }
-         if (description !== undefined) {
-            await repo.updatePackage(existing.id, { description });
-         }
-         return false;
-      },
-      removePackageRecord: async (packageName) => {
-         const row = await repo.getPackageByName(ENV_ID, packageName);
-         if (row) await repo.deletePackage(row.id);
-      },
    });
    controller = new PackageController(
       fakeOf<PackageAdmin>({

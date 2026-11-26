@@ -172,6 +172,11 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
       created_at TIMESTAMP NOT NULL,
       updated_at TIMESTAMP NOT NULL,
       host_owned BOOLEAN,
+      -- NULL, or 'hash_mismatch': the version's folder was missing and its
+      -- location no longer hashes to it. Terminal until it is placed again.
+      -- Declared last and nullable, so the column reconcile adds it to a
+      -- store that predates it.
+      restore_status VARCHAR,
       PRIMARY KEY (environment_id, package_name, version_id)
     )
   `);
