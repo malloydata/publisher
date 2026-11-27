@@ -2780,9 +2780,11 @@ paths:
         at `GET .../workflows/default/skills/{skill}/{file}`; a bundled skill's
         other files are read through the `get_skill` MCP tool.
 
-        409 `WORKFLOWS_UNAVAILABLE` when the load could not read the package's
-        skill sets, which is where its own skills come from: the message
-        carries the reason and it lasts until the package reloads.
+        409 `WORKFLOWS_UNAVAILABLE` when the package declares a `default`
+        workflow and the load could not read its skill sets, which is where its
+        own skills come from: the message carries the reason and it lasts until
+        the package reloads. A package with no `default` has no skills of its
+        own, so it lists the bundled ones as usual.
 
         The REST half of the `get_skill` MCP tool, for callers running
         unattended.
@@ -2847,8 +2849,8 @@ paths:
         other files are read through the `get_skill` MCP tool.
 
         404 when no skill of that name is in force. 409 `WORKFLOWS_UNAVAILABLE`
-        when the load could not read the package's skill sets, as for the
-        listing.
+        when the package declares a `default` workflow whose skill sets could
+        not be read at load, as for the listing.
       parameters:
         - name: environmentName
           in: path

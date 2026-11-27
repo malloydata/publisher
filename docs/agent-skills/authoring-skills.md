@@ -196,7 +196,7 @@ file, which Publisher lists by path, size and sha256 and reads on request.
 | A skill set's inline Markdown | 256 KiB per set; every `SKILL.md` is counted first | A `SKILL.md` that does not fit is skipped with its skill; other Markdown that does not fit is listed instead, with a warning |
 | One skill Markdown file | 256 KiB per file | The file is listed instead of inlined |
 | Skills in a skill set | 64 skill directories, counted in name order as the walk reaches them. Each skill has its own `reference/` and `references/` allowance | The first 64 by name are served and the rest are not read, with one finding on the set |
-| Skill findings named per set | 20, then one line counting the rest. Skipped assets are capped the same way | The remaining findings are counted, not named, so a reply that carries the set stays small |
+| Skill findings named per set | 20 per set, then one line counting the rest. Skipped assets are capped the same way | The remaining findings are counted, not named, so a reply that carries the set stays small |
 | One listed file | Under 1 MiB (1,048,576 bytes is out) | The file is skipped |
 | Listed files per skill set | 4 MiB and 200 files | Later files are skipped |
 | Listed files per package, across sets | 8 MiB, each path counted once, sets charged in sorted set-path order | Later files are skipped |
@@ -241,9 +241,10 @@ microseconds, so file count moves the time most. Keep a skill to the files an ag
 thread's share is the structured-clone receive of the walk and one hash over the shipped shas,
 which grow with the number of files and inline Markdown bytes, not with their content.
 
-If the walk cannot finish (it throws, or a listed set exists but cannot be read), the package's
-models still load and the workflow routes, `get_workflow` and the skills routes answer 409
-`WORKFLOWS_UNAVAILABLE` with the reason, until the package reloads.
+If the walk cannot finish (it throws, or a listed set or an instructions file exists but cannot be
+read), the package's models still load and the workflow routes and `get_workflow` answer 409
+`WORKFLOWS_UNAVAILABLE` with the reason, until the package reloads. So do the skills routes when the
+package declares a `default` workflow; without one the bundled skills serve as usual.
 
 ## Authoring a new skill
 
