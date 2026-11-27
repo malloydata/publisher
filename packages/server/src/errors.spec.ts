@@ -13,6 +13,7 @@ import {
    ConnectionError,
    ConnectionFailedError,
    ConnectionPoolExhaustedError,
+   databaseBusyMarker,
    InvalidArgumentError,
    MaterializationEligibilityError,
    TableOwnershipError,
@@ -912,6 +913,34 @@ describe("statementRejection", () => {
          "a thrown string",
       ]) {
          expect(statementRejection(error)).toBeUndefined();
+      }
+   });
+});
+
+describe("databaseBusyMarker", () => {
+   it("names a database that had no room for a read, in each form a driver reports it", () => {
+      for (const message of [
+         "Connection 'pg' has no free database session: this server opens at most 10 at a time for it, and none came free within 30 s. Retry once fewer queries are running on this connection.",
+         "out of shared memory",
+         "canceling statement due to statement timeout",
+         "sorry, too many clients already",
+         "remaining connection slots are reserved for non-replication superuser connections",
+         "Too many connections",
+      ]) {
+         expect(databaseBusyMarker(message)).toBeDefined();
+      }
+   });
+
+   it("leaves a fault the package or the connection must fix to fail the load as before", () => {
+      for (const message of [
+         'relation "etl.persons" does not exist',
+         'password authentication failed for user "reader"',
+         'syntax error at or near "selec"',
+         "Not found: Table proj:dataset.table was not found in location US",
+         undefined,
+         "",
+      ]) {
+         expect(databaseBusyMarker(message)).toBeUndefined();
       }
    });
 });

@@ -41,7 +41,7 @@ import {
 import { PACKAGE_LOAD_PROTOCOL_VERSION } from "./protocol";
 import { PackageLoadProtocolError } from "./protocol_decode";
 import { failsFirstStartMarker } from "./test_fixtures/fails_first_start_marker";
-import { internalErrorToHttpError } from "../errors";
+import { DatabaseBusyError, internalErrorToHttpError } from "../errors";
 import { loadOutcomeOrThrow } from "../service/package_load_gates";
 import { memoryDuckdbConfig } from "../test_helpers/memory_duckdb";
 import { installSettings, withSettings } from "../test_helpers/settings_env";
@@ -838,6 +838,86 @@ source: orders is duckdb.table('shared_t') extend {
       } finally {
          await tearDown();
          cacheOff.restore();
+      }
+   });
+
+   it("stops a load at its database's first busy read with a 503, not a compile error, and frees the worker", async () => {
+      // Each model reads its own table, and the connection answers every read
+      // the way a database with no free session does. Before, the compile went
+      // on table by table (each a session wait in production) and the load
+      // ended, minutes later, as a compile error that parks the version.
+      for (let i = 0; i < 4; i++) {
+         fs.writeFileSync(
+            path.join(tempDir, `m${i}.malloy`),
+            `source: s${i} is duckdb.table('busy_t${i}')\n`,
+         );
+      }
+      const busy =
+         "Connection 'duckdb' has no free database session: this server opens at most 10 at a time for it, and none came free within 30 s. Retry once fewer queries are running on this connection.";
+      const { duckdb, load, tearDown } = await setUp(() => Promise.resolve(), {
+         jobTimeoutMs: 60_000,
+      });
+      const realFetch = duckdb.fetchSchemaForTables;
+      let busyReads = 0;
+      duckdb.fetchSchemaForTables = async (tables) => {
+         busyReads += 1;
+         return {
+            schemas: {},
+            errors: Object.fromEntries(
+               Object.keys(tables).map((key) => [key, busy]),
+            ),
+         };
+      };
+      try {
+         const started = performance.now();
+         const error = await loadOutcomeOrThrow(load(false)).then(
+            () => undefined,
+            (err: unknown) => err,
+         );
+         expect(error).toBeInstanceOf(DatabaseBusyError);
+         expect((error as Error).message).toContain("Connection 'duckdb'");
+         expect((error as Error).message).toContain(
+            "has no free database session",
+         );
+         expect(
+            internalErrorToHttpError(error as Error, { log: false }).status,
+         ).toBe(503);
+         expect(busyReads).toBeGreaterThan(0);
+         // Well inside the job's limit: the load did not wait out the compile.
+         expect(performance.now() - started).toBeLessThan(10_000);
+
+         // The database has room again: the same single worker takes the next
+         // load, once the stopped compile has ended, and serves it.
+         duckdb.fetchSchemaForTables = realFetch;
+         for (let i = 0; i < 4; i++) {
+            await duckdb.runSQL(
+               `create or replace table busy_t${i} as select ${i} as a`,
+            );
+         }
+         const outcome = await load(false);
+         expect(outcome.models).toHaveLength(4);
+         for (const model of outcome.models) {
+            expect(model.compilationError).toBeUndefined();
+         }
+      } finally {
+         duckdb.fetchSchemaForTables = realFetch;
+         await tearDown();
+      }
+   }, 30_000);
+
+   it("still fails a load whose table is missing as a compile error, not as a busy database", async () => {
+      fs.writeFileSync(
+         path.join(tempDir, "gone.malloy"),
+         `source: gone is duckdb.table('no_such_table_here')\n`,
+      );
+      const { load, tearDown } = await setUp(() => Promise.resolve());
+      try {
+         const outcome = await loadOutcomeOrThrow(load(false));
+         expect(outcome.models[0].compilationError?.message).toContain(
+            "no_such_table_here",
+         );
+      } finally {
+         await tearDown();
       }
    });
 

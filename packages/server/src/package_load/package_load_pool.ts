@@ -46,6 +46,7 @@ import { Worker } from "node:worker_threads";
 import { dirname, join } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 
+import { DatabaseBusyError, databaseBusyMarker } from "../errors";
 import { logger } from "../logger";
 import { recordUnhandledRejection } from "../process_safety";
 import { ImportOutsidePackageError } from "../utils";
@@ -146,6 +147,17 @@ interface JobContext {
    /** Settles the job with its result message, checked by kind. */
    resolve: (result: LoadPackageResult | CompileServedCopyResult) => void;
    reject: (err: Error) => void;
+   /**
+    * Rejects the caller and leaves the job running, its timeout armed, so
+    * its worker stays taken until the compile it is in ends.
+    */
+   rejectEarly: (err: Error) => void;
+   /**
+    * Set once a schema read found the job's database busy: the caller has its
+    * 503, and every later read for the job is answered with this at once, so
+    * the worker's compile ends in moments instead of waiting on each table.
+    */
+   databaseBusy?: DatabaseBusyError;
    timeout: ReturnType<typeof setTimeout>;
    /**
     * When a refreshing load was requested, on `performance.now()`: a refetch
@@ -589,6 +601,7 @@ export class PackageLoadPool {
                clearTimeout(timeout);
                qj.reject(err);
             },
+            rejectEarly: (err) => qj.reject(err),
             timeout,
          });
          const message: CompileServedCopyRequest = {
@@ -624,6 +637,7 @@ export class PackageLoadPool {
             clearTimeout(timeout);
             qj.reject(err);
          },
+         rejectEarly: (err) => qj.reject(err),
          timeout,
          ...(qj.refreshRequestedAt !== undefined
             ? { refreshRequestedAt: qj.refreshRequestedAt }
@@ -941,6 +955,48 @@ export class PackageLoadPool {
       ctx.reject(error);
    }
 
+   /**
+    * When one of `messages`, a schema read's errors for the job, says its
+    * database is busy: reject the caller now with a 503, and mark the job so
+    * every later read for it is answered at once. Without this the compile
+    * waits on each of the package's tables in turn (each up to a session
+    * wait, then a compile error), holding the worker for many minutes, and the
+    * load ends as a compile error that reads as a broken package. Returns
+    * whether the job is (now) marked.
+    */
+   private noteDatabaseBusy(
+      ctx: JobContext,
+      connectionName: string,
+      messages: readonly (string | undefined)[],
+   ): boolean {
+      if (ctx.databaseBusy) return true;
+      const detail = messages.find((m) => databaseBusyMarker(m) !== undefined);
+      if (detail === undefined) return false;
+      const error = new DatabaseBusyError(connectionName, detail);
+      ctx.databaseBusy = error;
+      logger.warn(
+         "PackageLoadPool: stopping a load early, its database is busy",
+         {
+            jobId: ctx.jobId,
+            workerId: ctx.pw.id,
+            connection: connectionName,
+            marker: databaseBusyMarker(detail),
+         },
+      );
+      ctx.rejectEarly(error);
+      return true;
+   }
+
+   /** The answer to a read for a job already marked by {@link noteDatabaseBusy}. */
+   private busyReply(ctx: JobContext, requestId: string): RpcErrorResponse {
+      return {
+         type: "rpc-error",
+         requestId,
+         ok: false,
+         error: serializeError(ctx.databaseBusy),
+      };
+   }
+
    private async handleConnectionMetadata(
       pw: PoolWorker,
       msg: ConnectionMetadataRequest,
@@ -1014,6 +1070,10 @@ export class PackageLoadPool {
          });
          return;
       }
+      if (ctx.databaseBusy) {
+         reply(this.busyReply(ctx, msg.requestId));
+         return;
+      }
       try {
          const readings = ctx.targetContainers
             ? await ctx.targetContainers({
@@ -1061,6 +1121,10 @@ export class PackageLoadPool {
             ok: false,
             error: { name: "Error", message: `Unknown jobId ${msg.jobId}` },
          });
+         return;
+      }
+      if (ctx.databaseBusy) {
+         reply(this.busyReply(ctx, msg.requestId));
          return;
       }
       try {
@@ -1118,6 +1182,10 @@ export class PackageLoadPool {
          });
          return;
       }
+      if (ctx.databaseBusy) {
+         reply(this.busyReply(ctx, msg.requestId));
+         return;
+      }
       try {
          const conn = await ctx.connections.lookupConnection(
             msg.connectionName,
@@ -1133,6 +1201,11 @@ export class PackageLoadPool {
                     ctx.refreshRequestedAt,
                  )
                : await conn.fetchSchemaForTables(msg.tables, options);
+         this.noteDatabaseBusy(
+            ctx,
+            msg.connectionName,
+            Object.values(result.errors),
+         );
          reply({
             type: "schema-for-tables-response",
             requestId: msg.requestId,
@@ -1141,6 +1214,7 @@ export class PackageLoadPool {
             errors: result.errors,
          });
       } catch (error) {
+         this.noteDatabaseBusy(ctx, msg.connectionName, [errorText(error)]);
          reply({
             type: "rpc-error",
             requestId: msg.requestId,
@@ -1220,6 +1294,10 @@ export class PackageLoadPool {
          });
          return;
       }
+      if (ctx.databaseBusy) {
+         reply(this.busyReply(ctx, msg.requestId));
+         return;
+      }
       try {
          const conn = await ctx.connections.lookupConnection(
             msg.connectionName,
@@ -1259,6 +1337,7 @@ export class PackageLoadPool {
          } else {
             result = await conn.fetchSchemaForSQLStruct(sentence, options);
          }
+         this.noteDatabaseBusy(ctx, msg.connectionName, [result.error]);
          if (result.error !== undefined) {
             reply({
                type: "schema-for-sql-response",
@@ -1275,6 +1354,7 @@ export class PackageLoadPool {
             });
          }
       } catch (error) {
+         this.noteDatabaseBusy(ctx, msg.connectionName, [errorText(error)]);
          reply({
             type: "rpc-error",
             requestId: msg.requestId,
@@ -1333,6 +1413,10 @@ let lastRefreshTimestamp = 0;
 function nextRefreshTimestamp(): number {
    lastRefreshTimestamp = Math.max(Date.now() + 1, lastRefreshTimestamp + 1);
    return lastRefreshTimestamp;
+}
+
+function errorText(error: unknown): string {
+   return error instanceof Error ? error.message : String(error);
 }
 
 function buildFetchOptions(options: {

@@ -1636,6 +1636,57 @@ export class ServiceUnavailableError extends Error {
 }
 
 /**
+ * A package load read a table or SQL schema while its database was reachable
+ * but had no room for the read (every session this server may open was busy,
+ * or the database refused for lack of memory, connections or time), so the
+ * load stopped there: a 503 to retry later, never a compile error, since the
+ * package itself may be fine.
+ */
+export class DatabaseBusyError extends ServiceUnavailableError {
+   override get kind(): "database_busy" {
+      return "database_busy";
+   }
+
+   readonly connectionName: string;
+
+   constructor(connectionName: string, detail: string) {
+      super(
+         `Connection '${connectionName}' could not serve a schema read while this package loaded, so the load stopped instead of compiling without it: ${detail}`,
+      );
+      this.name = "DatabaseBusyError";
+      this.connectionName = connectionName;
+   }
+}
+
+/**
+ * Text a connection reports when its database is reachable but has no
+ * capacity for a read right now, each a condition a later attempt can clear.
+ * A missing table, a refused credential or bad SQL is not here: those are the
+ * package's or the connection's to fix, and still fail the load as before.
+ */
+const DATABASE_BUSY_MARKERS = [
+   // This server's own per-connection session cap (ConnectionPoolExhaustedError).
+   "has no free database session",
+   // Postgres: the lock table filled up under concurrent reads.
+   "out of shared memory",
+   // Postgres: the connection's statement_timeout cancelled the read.
+   "canceling statement due to statement timeout",
+   // Postgres: max_connections reached.
+   "sorry, too many clients already",
+   "remaining connection slots are reserved",
+   // MySQL: max_connections reached.
+   "Too many connections",
+] as const;
+
+/** The marker `message` carries when its database was busy, or undefined. */
+export function databaseBusyMarker(
+   message: string | undefined,
+): string | undefined {
+   if (!message) return undefined;
+   return DATABASE_BUSY_MARKERS.find((marker) => message.includes(marker));
+}
+
+/**
  * The memory governor refused to admit a new compiled copy of a package: a
  * 503 the caller answers by placing the package elsewhere, not a fault.
  */
@@ -1741,7 +1792,10 @@ type ConnectionKind =
    | "result_shape";
 type NotQueryableKind = "not_queryable" | "off_surface";
 type PackageAdmissionKind = "package_admission_refused" | "dry_run_capacity";
-type ServiceUnavailableKind = "service_unavailable" | PackageAdmissionKind;
+type ServiceUnavailableKind =
+   | "service_unavailable"
+   | "database_busy"
+   | PackageAdmissionKind;
 type PayloadTooLargeKind = "payload_too_large" | "response_unserializable";
 
 /** Each kind's error type: a class of this module, or a foreign error the mappers recognize. */
@@ -1808,6 +1862,7 @@ interface ErrorByKind {
    write_verify: WriteVerifyError;
    invalid_state_transition: InvalidStateTransitionError;
    service_unavailable: ServiceUnavailableError;
+   database_busy: DatabaseBusyError;
    package_admission_refused: PackageAdmissionRefusedError;
    dry_run_capacity: DryRunCapacityError;
    payload_too_large: PayloadTooLargeError;
@@ -1900,6 +1955,7 @@ const ERROR_CLASSES: {
    write_verify: WriteVerifyError,
    invalid_state_transition: InvalidStateTransitionError,
    service_unavailable: ServiceUnavailableError,
+   database_busy: DatabaseBusyError,
    package_admission_refused: PackageAdmissionRefusedError,
    dry_run_capacity: DryRunCapacityError,
    payload_too_large: PayloadTooLargeError,
@@ -2397,6 +2453,20 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       mcp: { advice: "internal" },
    },
    service_unavailable: BACK_PRESSURE,
+   // A 503 like the others, but the room that ran out is the database's, not
+   // this server's, so the hints point there. Its message names the
+   // connection and the database's own words.
+   database_busy: {
+      status: 503,
+      mcp: {
+         advice: "fixed",
+         suggestions: [
+            "Retry in a minute or two: the package's database was busy, and the package itself may be fine.",
+            "If this persists, reduce the load on that database, or raise PUBLISHER_POSTGRES_POOL_MAX when the message says this server opened all the sessions it may.",
+         ],
+      },
+      mcpSetup: "resource",
+   },
    package_admission_refused: BACK_PRESSURE,
    dry_run_capacity: BACK_PRESSURE,
    payload_too_large: TOO_LARGE,

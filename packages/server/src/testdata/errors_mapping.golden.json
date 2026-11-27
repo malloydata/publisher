@@ -3380,6 +3380,39 @@
       ]
     }
   },
+  "DatabaseBusyError": {
+    "class": "DatabaseBusyError",
+    "http": {
+      "status": 503,
+      "json": {
+        "code": 503,
+        "message": "Connection 'pg' could not serve a schema read while this package loaded, so the load stopped instead of compiling without it: Connection 'pg' has no free database session: this server opens at most 10 at a time for it, and none came free within 30 s. Retry once fewer queries are running on this connection."
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Connection 'pg' could not serve a schema read while this package loaded, so the load stopped instead of compiling without it: Connection 'pg' has no free database session: this server opens at most 10 at a time for it, and none came free within 30 s. Retry once fewer queries are running on this connection.",
+      "suggestions": [
+        "Retry in a minute or two: the package's database was busy, and the package itself may be fine.",
+        "If this persists, reduce the load on that database, or raise PUBLISHER_POSTGRES_POOL_MAX when the message says this server opened all the sessions it may."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "Connection 'pg' could not serve a schema read while this package loaded, so the load stopped instead of compiling without it: Connection 'pg' has no free database session: this server opens at most 10 at a time for it, and none came free within 30 s. Retry once fewer queries are running on this connection.",
+      "suggestions": [
+        "Retry in a minute or two: the package's database was busy, and the package itself may be fine.",
+        "If this persists, reduce the load on that database, or raise PUBLISHER_POSTGRES_POOL_MAX when the message says this server opened all the sessions it may."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
   "DryRunCapacityError": {
     "class": "DryRunCapacityError",
     "http": {
