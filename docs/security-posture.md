@@ -124,8 +124,12 @@ Concretely:
   curates what is served and hides nothing from someone with the package, so keep a secret out of
   a skill directory. The per-set caps bound it (256 KiB of inline Markdown, and 4 MiB and 200
   listed files per set, under 1 MiB each, with 8 MiB across the package), as do the realpath rule
-  (nothing that resolves outside the package is served) and a re-check of each listed file against
-  its recorded sha256 on every read.
+  at load (nothing that resolves outside the package is listed) and a re-check of each listed file
+  on every read. A read opens the file once without following a link, refuses anything that is not
+  a regular file within the cap, reads at most its size plus one byte through that descriptor, and
+  serves it only if it still hashes to its recorded sha256. That hash is also the guard against a
+  parent directory swapped for a link after the load, which a path check on the read would not
+  catch, so a swapped directory serves nothing.
 - **A package's Malloy reads only its own package's files.** The same realpath rule bounds every
   file the compiler reads for a package's models (an `import`, a `.malloynb`, a data-styles
   file) on every compile: the load and its worker, a reload, `/compile` and MCP `compile_model`
