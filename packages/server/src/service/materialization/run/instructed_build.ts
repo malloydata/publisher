@@ -47,6 +47,7 @@ import { movedSinceBuild, storedUpstreamMove } from "./database_column_read";
 import { readStoredEntries } from "./stored_table_read";
 import type {
    StoredInDestination,
+   GrainJoinKeyCheck,
    ParentKeyCheck,
    RollupKeyCheck,
 } from "../domain/table_plans";
@@ -2018,7 +2019,8 @@ async function storedJoinOf(
  * The key checks of a rollup just built, recorded against the table written:
  * its own (a join_one keyed on its grain) and its base's
  * primary key, both over the base's rows on the source's own connection, the
- * rows a build from the author's definition groups; and the primary key of
+ * rows a build from the author's definition groups; the key of each join_one
+ * its grain reads, over the joined source's rows there; and the primary key of
  * each query source that reads a database rollup through a join_many on it.
  *
  * A build that stacked on a stored upstream (`upstreamReuse: "reused"`)
@@ -2067,6 +2069,32 @@ async function checkRollupKeys(
          };
       }
    }
+   for (const check of groupsBaseRows
+      ? rollupGrainJoinKeyChecksOf(compiled, sourceID)
+      : []) {
+      if (check.connectionName !== connectionName) continue;
+      const record = await checkKeyAndWarn(
+         "grain_join",
+         () => DATABASE.checkKey({ connection }, check),
+         {
+            notRun:
+               "A #(rollup) rollup's grain join key check did not run; queries that read nothing through the join are answered live",
+            notUnique:
+               "A source joined by a #(rollup) rollup's grain holds the join's key more than once; queries that read nothing through the join are answered live",
+         },
+         {
+            rollup: persistSource.name,
+            join: check.join,
+            keyColumn: check.keyColumn,
+         },
+      );
+      if (record) {
+         keys[contractKeyName("grain_join", check.join, check.keyColumn)] = {
+            unique: record.unique,
+            level: "grain_join",
+         };
+      }
+   }
    const parents = await checkParentKeys(
       rollupParentKeyChecksOf(compiled, sourceID).filter(
          (check) => groupsBaseRows || check.sourceID !== baseSourceID,
@@ -2096,6 +2124,20 @@ function rollupKeyCheckOf(
          | { keyCheck?: RollupKeyCheck }
          | undefined
    )?.keyCheck;
+}
+
+/** The grain join key checks a run builds for the rollup `sourceID`. */
+function rollupGrainJoinKeyChecksOf(
+   compiled: RunPlan,
+   sourceID: string,
+): GrainJoinKeyCheck[] {
+   return (
+      (
+         compiled.tables[sourceID]?.rollup as
+            | { grainJoinKeyChecks?: GrainJoinKeyCheck[] }
+            | undefined
+      )?.grainJoinKeyChecks ?? []
+   );
 }
 
 /** The query source key checks a run builds for the rollup `sourceID`. */

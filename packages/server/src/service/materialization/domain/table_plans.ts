@@ -697,6 +697,33 @@ export interface RollupVariantPlan extends RollupPlan {
     * and never NULL.
     */
    parentKeyChecks?: ParentKeyCheck[];
+   /**
+    * The key checks of the join_ones the grain reads ({@link joinOneGrain}),
+    * one per join keyed on one column of a declared source: set on a run's
+    * plan and run by the rollup's build. A query that reads none of a join's
+    * fields is served only when its check found the key unique for the
+    * table it reads; otherwise it answers live, as `joinOneGrain` says.
+    */
+   grainJoinKeyChecks?: GrainJoinKeyCheck[];
+}
+
+/**
+ * The key check of a join_one a rollup's grain reads: whether the joined
+ * source, as a query of it by name reads it (its own `where:` included),
+ * holds a non-NULL value of the join's key column on more than one row. The
+ * SQL is compiled from the author's model and returns one row when a value
+ * repeats. A NULL key meets no base row, so its repeats do not count.
+ */
+export interface GrainJoinKeyCheck {
+   /** The join's name on the rollup's base. */
+   join: string;
+   /** The joined source. */
+   sourceID: string;
+   /** The joined source's column the join is keyed on. */
+   keyColumn: string;
+   /** The connection the joined source reads; the check runs only on it. */
+   connectionName: string | undefined;
+   sql: string;
 }
 
 /**

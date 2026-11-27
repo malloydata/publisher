@@ -922,11 +922,15 @@ export class RollupVariantServe {
       const measures = new Set(plan.rollupMeasures.map((m) => m.name));
       const coarse =
          joinGrainDecline(name, q.shape, grain, measures) ??
-         joinOneDecline(plan, {
-            groupedBy: readThroughJoin(name, q.shape.groupedBy),
-            filteredBy: readThroughJoin(name, q.shape.filteredBy),
-            measures: readThroughJoin(name, q.shape.measures),
-         });
+         joinOneDecline(
+            plan,
+            {
+               groupedBy: readThroughJoin(name, q.shape.groupedBy),
+               filteredBy: readThroughJoin(name, q.shape.filteredBy),
+               measures: readThroughJoin(name, q.shape.measures),
+            },
+            (join) => this.grainJoinKeyUniqueness(plan, join, q.args.pinned),
+         );
       if (coarse) throw coarse;
       const missing = joinCoverageDecline(name, q.shape, grain, measures);
       if (missing) throw missing;
@@ -1485,7 +1489,9 @@ export class RollupVariantServe {
       const grain = queryGrainOf(plan, dimensions);
       // Cheap first, from the caller's own compile: what it groups and filters
       // by must be in the grain, what it aggregates must be stored.
-      const shapeSkip = baseShapeDecline(plan, shape, grain, measures);
+      const shapeSkip = baseShapeDecline(plan, shape, grain, measures, (join) =>
+         this.grainJoinKeyUniqueness(plan, join, args.pinned),
+      );
       if (shapeSkip) throw shapeSkip;
       if (query.zoned) {
          const zone = zoneDecline(
@@ -1668,6 +1674,32 @@ export class RollupVariantServe {
               ? undefined
               : pinned.snapshot.entries[id]?.keyUniqueness?.unique,
       );
+   }
+
+   /**
+    * What the build of `plan`'s table found of the key of `join`, a join_one
+    * its grain reads (`grainJoinKeyChecks`), over the joined source: checked
+    * under the key the join is on now, so a join re-keyed since reads as
+    * `unknown`, as does a table no run checked (a host's manifest's) or a
+    * check that did not run.
+    */
+   private grainJoinKeyUniqueness(
+      plan: RollupVariantPlan,
+      join: string,
+      pinned: Pinned,
+   ): KeyVerdict {
+      const keyColumn = SourceMap.of(this.host.modelDef())
+         .joinsOf(plan.baseSourceID)
+         .find((j) => j.name === join)?.keyColumn;
+      const table = this.tableOf(plan, pinned);
+      const id = table?.sourceEntityId;
+      if (keyColumn === undefined || table === undefined) return "unknown";
+      const checks = table.binding
+         ? table.binding.grainJoinKeys
+         : id === undefined
+           ? undefined
+           : pinned.snapshot.entries[id]?.keyUniqueness?.grainJoinKeys;
+      return verdictOf(checks?.[`${join}.${keyColumn}`]);
    }
 
    /**
@@ -4162,25 +4194,28 @@ function baseShapeDecline(
    >,
    grain: ReadonlySet<string>,
    measures: ReadonlySet<string>,
+   keyVerdict: (join: string) => KeyVerdict,
 ): LegDecline | undefined {
    return (
       grainDecline(shape, grain, measures) ??
       coverageDecline(shape, measures) ??
-      joinOneDecline(plan, shape)
+      joinOneDecline(plan, shape, keyVerdict)
    );
 }
 
 /**
  * `COUNT_SEMANTICS` when the rollup's grain reads through a join_one
- * (`RollupVariantPlan.joinOneGrain`) that the query does not read. The
- * build joined it, so a key the data repeats repeated the rows each
- * partial summed; live joins it only for a query that reads one of its
+ * (`RollupVariantPlan.joinOneGrain`) that the query does not read, and the
+ * build did not find the join's key unique (`keyVerdict`, the grain join key
+ * check). The build joined it, so a key the data repeats repeated the rows
+ * each partial summed; live joins it only for a query that reads one of its
  * fields, so a query that reads none (`group_by: period_month` over a grain
  * of `account.region` and `period_month`) would re-aggregate inflated
  * partials. The query reads the join when it groups, filters or aggregates
  * a field through it (`account.region`), a grain entry that reads it
  * (`region is account.region`), or a stored measure that does; it then joins
- * live as the build did, and the rows agree whatever the key holds.
+ * live as the build did, and the rows agree whatever the key holds. A key
+ * found unique repeated no row, so the partials are exact either way.
  */
 function joinOneDecline(
    plan: Pick<RollupVariantPlan, "joinOneGrain" | "rollupMeasures">,
@@ -4188,6 +4223,7 @@ function joinOneDecline(
       ReturnType<typeof queryShapeOf>,
       "groupedBy" | "filteredBy" | "measures"
    >,
+   keyVerdict: (join: string) => KeyVerdict,
 ): LegDecline | undefined {
    const reads = [...shape.groupedBy, ...shape.filteredBy, ...shape.measures];
    const measureReads = (name: string, join: string) =>
@@ -4200,20 +4236,30 @@ function joinOneDecline(
                   p.leaf.reads.some((r) => r[0] === join),
             ),
       );
-   const unread = (plan.joinOneGrain ?? []).find(
-      ({ join, grain }) =>
-         !reads.some(
+   let verdict = "unique" as KeyVerdict;
+   const unread = (plan.joinOneGrain ?? []).find(({ join, grain }) => {
+      if (
+         reads.some(
             (p) =>
                p.startsWith(`${join}.`) ||
                grain.includes(p) ||
                measureReads(p, join),
-         ),
-   );
+         )
+      ) {
+         return false;
+      }
+      verdict = keyVerdict(join);
+      return !requireUnique(verdict);
+   });
    if (unread === undefined) return undefined;
+   const why =
+      verdict === "repeated"
+         ? "the rollup's last build found its key held more than once in the joined source, so the partials it summed are inflated"
+         : "its key was not checked unique when the rollup was built, so a repeat would have inflated the partials it summed";
    return new LegDecline(
       "rollup_count_semantics",
       // malloy-text: a decline detail for a person, not Malloy
-      `the query reads nothing through \`${unread.join}\`, a join_one the rollup's grain reads (${unread.grain.map((g) => `\`${g}\``).join(", ")}); the rollup was built over that join, so a key it repeats would inflate a coarser answer that live, not joining it, does not`,
+      `the query reads nothing through \`${unread.join}\`, a join_one the rollup's grain reads (${unread.grain.map((g) => `\`${g}\``).join(", ")}): ${why}, where live, not joining it, counts each row once`,
       { shapeCheck: true },
    );
 }

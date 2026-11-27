@@ -170,6 +170,7 @@ import {
 } from "../domain/rollup_measures";
 import {
    splitSourceID,
+   type GrainJoinKeyCheck,
    type ParentKeyCheck,
    type RollupKeyCheck,
    type RollupMeasure,
@@ -182,7 +183,7 @@ import {
    rollupCompanionURLOf,
 } from "../text/read_text";
 
-export type { ParentKeyCheck, RollupKeyCheck };
+export type { GrainJoinKeyCheck, ParentKeyCheck, RollupKeyCheck };
 import type { SourceMap, SourceNode } from "../text/source_map";
 import { fieldNotes } from "../text/field_notes";
 import { grainColumnOf, grainPathOf } from "../domain/rollup_grain";
@@ -2280,6 +2281,20 @@ export function storedKeyChecksOf(
 export function parentKeyCheckQuery(name: string, keyColumn: string): string {
    // malloy-text: keyCheckPipeline writes its names through identifier
    return `run: ${keyCheckPipeline("parent_key", name, keyColumn)}`;
+}
+
+/**
+ * The Malloy text of the key check of a join_one a rollup's grain reads
+ * (`GrainJoinKeyCheck`), run against the author's model that names the
+ * joined source `name`: one row when a non-NULL value of `keyColumn` is held
+ * by more than one of its rows, as a query of it reads them.
+ */
+export function grainJoinKeyCheckQuery(
+   name: string,
+   keyColumn: string,
+): string {
+   // malloy-text: keyCheckPipeline writes its names through identifier
+   return `run: ${keyCheckPipeline("grain_join_key", name, keyColumn)}`;
 }
 
 /** The key {@link joinOneKeysOf} holds for a join_one on `keyColumn` of `sourceID`. */

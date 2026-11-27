@@ -100,15 +100,15 @@ const JOIN_ONE_CASES = [
       "a nest by the path",
       "run: subs -> { group_by: period_month; aggregate: mrr; nest: by_region is { group_by: account.region; aggregate: mrr } }",
    ],
-] as const;
-
-const JOIN_ONE_LIVE = [
    [
-      // B (#2048): it does not read `account`, which the build joined, so a
-      // repeated key would have inflated it.
+      // A (#2048): it does not read `account`, which the build joined; the
+      // build checked `accounts`' key unique, so no partial repeats a row.
       "a coarser query that reads nothing through the join",
       "run: subs -> { group_by: period_month; aggregate: mrr }",
    ],
+] as const;
+
+const JOIN_ONE_LIVE = [
    [
       "another field of the join",
       "run: subs -> { group_by: account.country; aggregate: mrr }",
@@ -343,65 +343,75 @@ for (const [label, placement] of PLACEMENTS)
  * A join_one whose key repeats in the data (account 1 twice) repeats the
  * build's rows, so a coarser query that does not read the join live would
  * re-aggregate inflated partials (340 against live's 220 for February,
- * 255 against 155 for January). The
- * rollup serves only a query that reads the join, which live joins too, so
- * every answer below equals live.
+ * 255 against 155 for January). The build checks the joined source's key
+ * (option A); when it finds the key repeated, or no check is on record
+ * (`rollupKeyChecks: false`, as for a table a host's manifest binds or a
+ * check that could not run), the rollup serves only a query that reads the
+ * join, which live joins too, so every answer below equals live.
  */
-for (const [label, body, byRegion] of [
+const KEY_CASES = [
    [
-      "path grain",
-      `  dimension: period_month is period.month
-  #(rollup) grain=["account.region", "period_month"]
-  measure: mrr is amount.sum()`,
-      "run: subs -> { group_by: account.region; aggregate: mrr }",
+      "a repeated join_one key",
+      { accountRows: "(1,'EU','SE'),(1,'EU','DE'),(3,'NA','US')" },
+      true,
    ],
-   [
-      "declared dimension",
-      `  dimension:
+   ["an unchecked join_one key", {}, false],
+] as const;
+
+for (const [placementLabel, placement] of PLACEMENTS)
+   for (const [label, body, byRegion] of [
+      [
+         "path grain",
+         `  dimension: period_month is period.month
+  #(rollup) grain=["account.region", "period_month"]${placement}
+  measure: mrr is amount.sum()`,
+         "run: subs -> { group_by: account.region; aggregate: mrr }",
+      ],
+      [
+         "declared dimension",
+         `  dimension:
     region is account.region
     period_month is period.month
-  #(rollup) grain=["region", "period_month"]
+  #(rollup) grain=["region", "period_month"]${placement}
   measure: mrr is amount.sum()`,
-      "run: subs -> { group_by: region; aggregate: mrr }",
-   ],
-] as const) {
-   describe(`R4 #2048: a repeated join_one key [${label}]`, () => {
-      let restore: () => void;
-      let fixture: R4Fixture;
-      beforeAll(async () => {
-         restore = installSettings(SETTINGS).restore;
-         fixture = await buildScenario({
-            files: {
-               "m.malloy": reproModel(body, {
-                  accountRows: "(1,'EU','SE'),(1,'EU','DE'),(3,'NA','US')",
-               }),
-            },
-            seedSql: [],
-            preaggregate: true,
-            rollupKeyChecks: true,
+         "run: subs -> { group_by: region; aggregate: mrr }",
+      ],
+   ] as const)
+      for (const [keyLabel, rows, checks] of KEY_CASES)
+         describe(`R4 #2048: ${keyLabel} [${label}, ${placementLabel}]`, () => {
+            let restore: () => void;
+            let fixture: R4Fixture;
+            beforeAll(async () => {
+               restore = installSettings(SETTINGS).restore;
+               fixture = await buildScenario({
+                  files: { "m.malloy": reproModel(body, rows) },
+                  seedSql: [],
+                  preaggregate: true,
+                  rollupKeyChecks: checks,
+               });
+            });
+            afterAll(async () => {
+               restore();
+               await disposeScenarios();
+            });
+            it("a coarser query that does not read the join answers live, with live's totals", async () => {
+               const run = await fixture.run({
+                  name: "coarser",
+                  malloy:
+                     "run: subs -> { group_by: period_month; aggregate: mrr }",
+               });
+               expectLive(run);
+               // Live's totals: January 100 + 50 + 5 (sub 15 meets no
+               // account), February 120 + 80 + 20; with account 1 twice the
+               // rollup's partials hold its rows twice.
+               expect(run.served.map((r) => r.mrr).sort()).toEqual([155, 220]);
+            });
+            it("a query grouped through the join is served, equal to live", async () => {
+               expectRollup(
+                  await fixture.run({ name: "by region", malloy: byRegion }),
+               );
+            });
          });
-      });
-      afterAll(async () => {
-         restore();
-         await disposeScenarios();
-      });
-      it("a coarser query that does not read the join answers live, with live's totals", async () => {
-         const run = await fixture.run({
-            name: "coarser",
-            malloy: "run: subs -> { group_by: period_month; aggregate: mrr }",
-         });
-         expectLive(run);
-         // Live's totals: January 100 + 50 + 5 (sub 15 meets no account), February
-         // 120 + 80 + 20; the rollup's partials hold account 1's rows twice.
-         expect(run.served.map((r) => r.mrr).sort()).toEqual([155, 220]);
-      });
-      it("a query grouped through the join is served, equal to live", async () => {
-         expectRollup(
-            await fixture.run({ name: "by region", malloy: byRegion }),
-         );
-      });
-   });
-}
 
 /**
  * A gate on the joined source, under each caller's givens. Read through a

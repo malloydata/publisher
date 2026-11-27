@@ -156,8 +156,11 @@ export function loadVerdictOfPlan(
  * One warning per bound `#(rollup)` rollup whose last build found its
  * join_one key repeated (the rollup key check, `keyUniqueness`
  * false): the data breaks a `join_one` declared on that key, so queries that
- * read it beside other aggregates are answered live. Recomputed from what is
- * bound, so it clears once a build finds the key unique, or forgets the check.
+ * read it beside other aggregates are answered live. One more, under the
+ * same code, per join_one its grain reads whose key the build found repeated
+ * in the joined source (`grainJoinKeys` false): queries that read nothing
+ * through that join are answered live. Recomputed from what is bound, so it
+ * clears once a build finds the key unique, or forgets the check.
  */
 export function repeatedJoinOneKeyWarnings(
    plan: BuildPlan | null,
@@ -181,6 +184,41 @@ export function repeatedJoinOneKeyWarnings(
    );
    for (const b of storageBindings) {
       if (b.rollupKey) checks.set(b.virtualHandle, b.rollupKey);
+   }
+   const grainJoins = new Map<string, Record<string, boolean>>(
+      Object.entries(databaseEntries ?? {}).flatMap(([id, entry]) =>
+         entry.keyUniqueness?.grainJoinKeys
+            ? [[id, entry.keyUniqueness.grainJoinKeys]]
+            : [],
+      ),
+   );
+   for (const b of storageBindings) {
+      if (b.grainJoinKeys) grainJoins.set(b.virtualHandle, b.grainJoinKeys);
+   }
+   for (const [sourceEntityId, keys] of grainJoins) {
+      const source = bySourceEntity.get(sourceEntityId);
+      const rollup = source?.preaggregate;
+      if (!rollup) continue;
+      for (const [joinKey, unique] of Object.entries(keys)) {
+         if (unique) continue;
+         const dot = joinKey.indexOf(".");
+         const join = joinKey.slice(0, dot);
+         const keyColumn = joinKey.slice(dot + 1);
+         warnings.push({
+            ...(source?.modelPath ? { model: source.modelPath } : {}),
+            subject: rollup.baseSourceName,
+            code: ROLLUP_JOIN_ONE_KEY_REPEATED_CODE,
+            severity: "warn",
+            message:
+               `joins \`${join}\` on \`${keyColumn}\`, which the joined ` +
+               `source holds more than once, found by its #(rollup) ` +
+               `rollup's last build (grain ` +
+               `${rollup.grainDimensions.join(", ")}): the rollup was built ` +
+               `over that join_one, so its partials repeat the rows each ` +
+               `key meets. Queries that read nothing through \`${join}\` are ` +
+               `answered live. Fix the data or declare the join as join_many.`,
+         });
+      }
    }
    for (const [sourceEntityId, check] of checks) {
       if (check?.unique !== false || check.keyColumn === undefined) continue;
