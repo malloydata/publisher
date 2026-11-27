@@ -12,11 +12,11 @@
  * tables that way, so each table they read must be:
  *
  * - a base table: a view's body is not held to the connection's scope;
- * - made only of files under the storage prefix of a schema the connection
- *   may read (`main` and its `readableSchemas`), as its storage secret's
- *   `SCOPE` is computed (`storageSecretScope`): a catalog writer can register
- *   any file into a table (`ducklake_add_data_files`), and the destination
- *   would read a file the connection's secret refuses.
+ * - made only of files under the prefixes the connection's storage secret was
+ *   built with when it attached (`managedScopeOf`): `main` and its
+ *   `readableSchemas` as they were then. A catalog writer can register any
+ *   file into a table (`ducklake_add_data_files`), and the destination would
+ *   read a file the connection's secret refuses.
  *
  * Both are read at one catalog snapshot. Loads DuckDB through its imports, so
  * a served copy reaches it through its host, never by import.
@@ -24,11 +24,7 @@
 
 import type { MalloyConfig } from "@malloydata/malloy";
 import { connectionConfigOf } from "./connection_type";
-import {
-   metadataCatalogRef,
-   type RecordedSchemaPath,
-   storageSecretScope,
-} from "./dialects/ducklake_catalog";
+import { managedScopeOf } from "./dialects/ducklake_catalog";
 import { runInternalSQL } from "./duckdb_lockdown";
 
 /** A `[catalog, schema, table]` read through a destination, plain names. */
@@ -62,83 +58,21 @@ export function fileInScope(
    );
 }
 
-/** Where a managed connection's catalog keeps its files, from its config. */
-export interface ManagedStorage {
-   /** The configured data path, when its config states one. */
-   configuredDataPath?: string;
-   /** The schema holding the catalog's `ducklake_*` tables. */
-   metadataSchema?: string;
-   /** The schemas it may read: `main` and its `readableSchemas`. */
-   schemas: ReadonlySet<string>;
-}
-
-/** {@link ManagedStorage} of the connection whose config is `config`. */
-export function managedStorageOf(
-   config: unknown,
-   schemas: ReadonlySet<string>,
-): ManagedStorage {
-   const ducklake = (
-      config as {
-         ducklakeConnection?: {
-            storage?: { bucketUrl?: string };
-            catalog?: { metadataSchema?: string };
-         };
-      }
-   )?.ducklakeConnection;
-   return {
-      configuredDataPath: ducklake?.storage?.bucketUrl,
-      metadataSchema: ducklake?.catalog?.metadataSchema,
-      schemas,
-   };
-}
-
 /**
  * Why a table among `tables` (`[schema, table]`, each a base table of
- * `catalog`) holds a file the managed connection's storage scope would not
- * reach, at catalog snapshot `snapshot`; undefined when none does. The scope
- * is computed as the connection's secret is, from the schema paths the catalog
- * records at that snapshot. Throws when anything cannot be read, or the
- * scope cannot be computed: the caller treats that as a refusal.
+ * `catalog`) holds a file outside `prefixes`, the scope the managed
+ * connection's storage secret was built with at attach (`managedScopeOf`),
+ * at catalog snapshot `snapshot`; undefined when none does. Throws when the
+ * files cannot be read: the caller treats that as a refusal.
  */
 export async function fileOutsideScope(
    run: Run,
    catalog: string,
    snapshot: string,
    tables: readonly (readonly [string, string])[],
-   storage: ManagedStorage,
+   prefixes: readonly string[],
 ): Promise<string | undefined> {
    if (!/^\d+$/.test(snapshot)) throw new Error("not a snapshot id");
-   const meta = metadataCatalogRef(catalog, storage.metadataSchema);
-   const recordedDataPath = storage.configuredDataPath
-      ? undefined
-      : (
-           await run(
-              `SELECT value FROM ${meta}.ducklake_metadata WHERE scope IS NULL AND key = 'data_path'`,
-           )
-        )[0]?.value;
-   const schemaPaths = new Map<string, RecordedSchemaPath>();
-   for (const row of await run(
-      `SELECT schema_name, path, path_is_relative FROM ${meta}.ducklake_schema ` +
-         `WHERE begin_snapshot <= ${snapshot} AND (end_snapshot IS NULL OR end_snapshot > ${snapshot})`,
-   )) {
-      if (typeof row.schema_name === "string" && typeof row.path === "string") {
-         schemaPaths.set(row.schema_name, {
-            path: row.path,
-            relative: row.path_is_relative !== false,
-         });
-      }
-   }
-   const prefixes = storageSecretScope({
-      catalog,
-      configuredDataPath: storage.configuredDataPath,
-      recordedDataPath:
-         typeof recordedDataPath === "string" ? recordedDataPath : undefined,
-      schemaPaths,
-      readableSchemas: [...storage.schemas].filter((s) => s !== "main"),
-      readOnly: true,
-      managed: true,
-   });
-   if (!prefixes) throw new Error("no storage scope");
    for (const [schema, table] of tables) {
       const files = await run(
          `SELECT data_file, delete_file FROM ducklake_list_files(${literal(catalog)}, ${literal(table)}, ` +
@@ -154,6 +88,29 @@ export async function fileOutsideScope(
       }
    }
    return undefined;
+}
+
+/**
+ * What a verdict depends on besides the tables: the managed connection's
+ * configured data path and metadata schema, and the scope its secret holds.
+ */
+export function scopeIdentity(
+   config: unknown,
+   prefixes: readonly string[],
+): string {
+   const ducklake = (
+      config as {
+         ducklakeConnection?: {
+            storage?: { bucketUrl?: string };
+            catalog?: { metadataSchema?: string };
+         };
+      }
+   )?.ducklakeConnection;
+   return JSON.stringify([
+      ducklake?.storage?.bucketUrl ?? null,
+      ducklake?.catalog?.metadataSchema ?? null,
+      [...prefixes].sort(),
+   ]);
 }
 
 /** The tables a copy reads through one destination for one managed connection. */
@@ -200,13 +157,16 @@ export async function sameCatalogTablesReadable(
       config.connections.lookupConnection(read.alias),
       config.connections.lookupConnection(read.connection),
    ]);
-   const storage = managedStorageOf(connectionConfigOf(managed), read.schemas);
+   // The scope the managed connection's secret was built with; none
+   // recorded (not attached here, or not managed) reads nothing.
+   const prefixes = managedScopeOf(managed, read.connection);
+   if (!prefixes) return false;
    const run: Run = async (sql) =>
       (await runInternalSQL(destination, sql)).rows as Record<
          string,
          unknown
       >[];
-   const scopeKey = [...read.schemas].sort().join(",");
+   const scopeKey = scopeIdentity(connectionConfigOf(managed), prefixes);
    const key = (schema: string, table: string) =>
       `${scopeKey}\u0000${schema.toLowerCase()}.${table.toLowerCase()}`;
    const byCatalog = new Map<string, DestinationTable[]>();
@@ -262,7 +222,7 @@ export async function sameCatalogTablesReadable(
                  catalog,
                  snapshot,
                  base.map(([, s, t]) => [s, t] as const),
-                 storage,
+                 prefixes,
               )
             : "not a base table";
       // One verdict for the whole set: a file outside the scope is not

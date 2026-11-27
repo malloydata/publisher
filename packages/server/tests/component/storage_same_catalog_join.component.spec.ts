@@ -222,6 +222,22 @@ source: file_orders is credible.table('orders') extend {
 source: file_names is credible.table('names_f')
 `;
 
+/**
+ * A served join over a table into which the host registers a file of a
+ * readable schema created after the connection attached.
+ */
+const LATE = `##! experimental.persistence
+source: late_customer is credible.table('customers_l') extend {
+  primary_key: customer_id
+}
+
+#(materialize) storage="credible"
+source: late_orders is credible.table('orders') extend {
+  where: status = 'kept'
+  join_one: late_customer with customer_id
+}
+`;
+
 type Answer = {
    rows: Record<string, unknown>[];
    servedFrom: string | null;
@@ -328,7 +344,7 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
             "CREATE VIEW credible.main.customers_v AS SELECT customer_id, name FROM credible.crm.customers",
          );
          // Tables held in data files, not inlined in the catalog.
-         for (const table of ["customers_f", "names_f"]) {
+         for (const table of ["customers_f", "names_f", "customers_l"]) {
             await w.run(
                `CREATE TABLE credible.main.${table} AS SELECT * FROM (VALUES (10, 'ann'), (20, 'bo')) AS t(customer_id, name)`,
             );
@@ -375,6 +391,7 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
             "swap.malloy": SWAP,
             "unmanaged.malloy": UNMANAGED,
             "files.malloy": FILES,
+            "late.malloy": LATE,
          },
          { manifest: { name: PKG, description: "fixture" } },
       );
@@ -423,6 +440,9 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
                ducklakeConnection: {
                   catalog,
                   storage: { bucketUrl: dataPath },
+                  // Listed, but created only after the connection attaches:
+                  // its storage scope leaves it out.
+                  readableSchemas: ["late"],
                },
             } as never,
             {
@@ -547,6 +567,8 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
          "run: swap_orders -> { group_by: swap_customer.customer_id, swap_customer.name; aggregate: n is count() }",
       "files.malloy":
          "run: file_orders -> { group_by: file_customer.customer_id, file_customer.name; aggregate: n is count() }",
+      "late.malloy":
+         "run: late_orders -> { group_by: late_customer.customer_id, late_customer.name; aggregate: n is count() }",
    } as const;
    const PLAIN = {
       "filtered.malloy": "run: active_orders -> { aggregate: n is count() }",
@@ -557,6 +579,7 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
       "sql_source.malloy": "run: sql_orders_x -> { aggregate: n is count() }",
       "swap.malloy": "run: swap_names -> { group_by: name }",
       "files.malloy": "run: file_names -> { group_by: name }",
+      "late.malloy": "run: late_orders -> { aggregate: n is count() }",
    } as const;
    type ModelPath = keyof typeof JOINED;
    const live = new Map<string, Answer["rows"]>();
@@ -761,6 +784,26 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
             `SELECT name FROM credible.materialized."${String(table_name)}" ORDER BY name`,
          ]);
          expect(rows).toEqual([{ name: "ann" }, { name: "bo" }]);
+      }
+   });
+
+   it("refuses a file of a readable schema created after the connection attached", async () => {
+      const before = await ask("late.malloy", JOINED["late.malloy"]);
+      expect(before.servedFrom).toBe("storage");
+      expect(before.rows).toEqual(live.get(JOINED["late.malloy"])!);
+      // The listed schema now exists, so a scope computed from the catalog
+      // would admit its files; the secret, built at attach, does not.
+      await asHost(["CREATE SCHEMA credible.late"]);
+      fs.mkdirSync(path.join(dataPath, "late"), { recursive: true });
+      await asHost([
+         `COPY (SELECT 30 AS customer_id, 'secret-late' AS name) TO '${path.join(dataPath, "late", "loose.parquet")}' (FORMAT parquet)`,
+      ]);
+      await registerFile("late", "customers_l");
+      const after = await ask("late.malloy", JOINED["late.malloy"]).catch(
+         (error: unknown) => error,
+      );
+      if (!(after instanceof Error)) {
+         expect((after as Answer).servedFrom).toBe(null);
       }
    });
 });

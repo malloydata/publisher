@@ -95,8 +95,7 @@ import {
 } from "../../connection";
 import { managedSearchPathSql } from "../../dialects/ducklake";
 import { serializeSQL } from "../../single_select";
-import { managedSchemas } from "../../connection_type";
-import { fileOutsideScope, managedStorageOf } from "../../same_catalog_tables";
+import { fileOutsideScope } from "../../same_catalog_tables";
 import type { PartitionKey } from "../../dialects/ducklake_catalog";
 import {
    connectionDialectOf,
@@ -920,6 +919,13 @@ export async function buildSourceIntoStorage(params: {
     * on a read-write session and must refuse author SQL; absent counts as true.
     */
    sourceCarriesAuthorSql?: boolean;
+   /**
+    * The scope a `managed` source connection's storage secret was built with
+    * when it attached (`managedScopeOf`), which a same-catalog build holds
+    * the files it reads to. Absent, or resolving undefined, a managed source
+    * is refused.
+    */
+   managedScope?: () => Promise<readonly string[] | undefined>;
    /** Logical, unquoted physical table path (may carry a container path). */
    physicalTableName: string;
    /**
@@ -1183,6 +1189,13 @@ async function buildSameCatalogIntoStorage(params: {
    sourceConnection: ApiConnection;
    buildSQL: string;
    sourceCarriesAuthorSql?: boolean;
+   /**
+    * The scope a `managed` source connection's storage secret was built with
+    * when it attached (`managedScopeOf`), which a same-catalog build holds
+    * the files it reads to. Absent, or resolving undefined, a managed source
+    * is refused.
+    */
+   managedScope?: () => Promise<readonly string[] | undefined>;
    physicalTableName: string;
    declaredColumns?: readonly DeclaredColumn[];
    castOptions?: BuildCastOptions;
@@ -1237,6 +1250,7 @@ async function buildSameCatalogIntoStorage(params: {
                              alias,
                              destinationName,
                              sourceConnection: params.sourceConnection,
+                             managedScope: params.managedScope,
                           }),
                     }
                   : {}),
@@ -1318,6 +1332,7 @@ async function refuseOutOfScopeReads(
       alias: string;
       destinationName: string;
       sourceConnection: ApiConnection;
+      managedScope?: () => Promise<readonly string[] | undefined>;
    },
 ): Promise<void> {
    const { alias, destinationName, sourceConnection } = params;
@@ -1352,17 +1367,18 @@ async function refuseOutOfScopeReads(
          `SELECT id FROM ${quoteIdentifier(alias, STORAGE_DIALECT)}.current_snapshot()`,
       );
       const distinct = [...new Map(read.map((r) => [r.join("."), r])).values()];
+      const prefixes = await params.managedScope?.();
+      if (!prefixes) {
+         throw refuse(
+            "reads tables while its storage scope is not known (the connection is not attached)",
+         );
+      }
       outside = await fileOutsideScope(
          run,
          alias,
          String(snapshot?.id),
          distinct,
-         managedStorageOf(
-            sourceConnection,
-            managedSchemas(
-               sourceConnection.ducklakeConnection?.readableSchemas,
-            ),
-         ),
+         prefixes,
       );
    } catch (error) {
       if (error instanceof BadRequestError) throw error;

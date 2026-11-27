@@ -3,6 +3,8 @@
 
 import type { MalloyConfig } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
+import { recordConnectionType } from "./connection_type";
+import { recordManagedScope } from "./dialects/ducklake_catalog";
 import { fileInScope, sameCatalogTablesReadable } from "./same_catalog_tables";
 
 const ROOT = "s3://bucket/lake/";
@@ -42,6 +44,8 @@ function destination(state: {
    types: Record<string, string>;
    files: Record<string, string[]>;
    fail?: boolean;
+   /** The scope the managed connection's secret was built with at attach. */
+   scope?: readonly string[];
 }) {
    const sql: string[] = [];
    const rowsFor = (text: string): Record<string, unknown>[] => {
@@ -55,14 +59,6 @@ function destination(state: {
                table_type: type,
             }));
          return rows.length ? rows : [{ snapshot_id: state.snapshot }];
-      }
-      if (text.includes(".ducklake_metadata ")) return [{ value: ROOT }];
-      if (text.includes("ducklake_schema")) {
-         return ["main", "sales", "hr"].map((schema_name) => ({
-            schema_name,
-            path: `${schema_name}/`,
-            path_is_relative: true,
-         }));
       }
       if (text.includes("ducklake_list_files")) {
          const table = Object.keys(state.files).find((t) =>
@@ -82,10 +78,16 @@ function destination(state: {
          return { rows: rowsFor(text) };
       },
    };
+   // The managed connection, attached with a secret scoped to `scope`.
+   const managed = {};
+   recordManagedScope(managed, "credible", state.scope ?? SCOPE);
    const config = {
-      connections: { lookupConnection: async () => connection },
+      connections: {
+         lookupConnection: async (name: string) =>
+            name === "credible" ? managed : connection,
+      },
    } as unknown as MalloyConfig;
-   return { config, sql };
+   return { config, sql, connection };
 }
 
 const READ = {
@@ -131,6 +133,65 @@ describe("sameCatalogTablesReadable", () => {
       expect(await sameCatalogTablesReadable(config, READ)).toBe(false);
    });
 
+   it("refuses a file of a readable schema created after the connection attached", async () => {
+      // `sales` is listed, but did not exist when the secret was scoped, so
+      // the secret reaches main's files alone.
+      const { config } = destination({
+         snapshot: 3,
+         types: { "main.customers": "BASE TABLE" },
+         files: { customers: [`${ROOT}sales/orders/b.parquet`] },
+         scope: [`${ROOT}main/`],
+      });
+      expect(
+         await sameCatalogTablesReadable(config, {
+            ...READ,
+            schemas: new Set(["main", "sales"]),
+         }),
+      ).toBe(false);
+   });
+
+   it("is false when no scope was recorded for the connection", async () => {
+      const { config, connection } = destination({
+         snapshot: 3,
+         types: { "main.customers": "BASE TABLE" },
+         files: { customers: [`${ROOT}main/customers/a.parquet`] },
+      });
+      const unscoped = {
+         connections: { lookupConnection: async () => connection },
+      } as unknown as MalloyConfig;
+      expect(await sameCatalogTablesReadable(config, READ)).toBe(true);
+      expect(await sameCatalogTablesReadable(unscoped, READ)).toBe(false);
+   });
+
+   it("does not share a verdict between managed connections with different data paths", async () => {
+      const { config, sql, connection } = destination({
+         snapshot: 3,
+         types: { "main.customers": "BASE TABLE" },
+         files: { customers: [`${ROOT}main/customers/a.parquet`] },
+      });
+      const probes = () =>
+         sql.filter((s) => s.includes("information_schema")).length;
+      const managed = (bucketUrl: string) => {
+         const m = {};
+         recordConnectionType(m, "ducklake", {
+            config: { ducklakeConnection: { storage: { bucketUrl } } },
+         } as never);
+         recordManagedScope(m, "credible", SCOPE);
+         return {
+            connections: {
+               lookupConnection: async (name: string) =>
+                  name === "credible" ? m : connection,
+            },
+         } as unknown as MalloyConfig;
+      };
+      expect(await sameCatalogTablesReadable(config, READ)).toBe(true);
+      expect(probes()).toBe(1);
+      expect(
+         await sameCatalogTablesReadable(managed("s3://other/lake/"), READ),
+      ).toBe(true);
+      expect(probes()).toBe(2);
+   });
+
    it("admits a file of a readable schema the connection lists", async () => {
       const { config } = destination({
          snapshot: 3,
@@ -143,7 +204,6 @@ describe("sameCatalogTablesReadable", () => {
             schemas: new Set(["main", "sales"]),
          }),
       ).toBe(true);
-      expect(await sameCatalogTablesReadable(config, READ)).toBe(false);
    });
 
    it("is false for a table it does not find", async () => {

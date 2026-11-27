@@ -486,8 +486,9 @@ the package loads (`persist-not-built`, reason `storage_source_unsupported`) and
 than failing its build. A build from a `managed` connection also reads only what that connection could
 read itself, since the destination's credential reaches the whole catalog: base tables, never a view
 (whose body is not held to the connection's scope), each made only of data and delete files under the
-storage prefix of `main` or a `readableSchemas` schema, as the connection's storage secret is scoped (a
-catalog writer can register any file into a table with `ducklake_add_data_files`). A file path is matched
+storage prefixes the connection's storage secret was built with when it attached (`main` and the
+`readableSchemas` that existed then; a catalog writer can register any file into a table with
+`ducklake_add_data_files`). A file path is matched
 byte for byte against prefixes that end in `/`, so `main_evil/` never passes for `main/`, and a path with a
 `.` or `..` segment, a backslash or a percent escape fails. An unmanaged connection reads the whole catalog
 itself, so its build may read a view. The check runs in the build's own transaction, so the build reads the
