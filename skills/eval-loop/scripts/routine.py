@@ -125,7 +125,43 @@ def quality_number(run: pathlib.Path, set_dir: pathlib.Path | None = None) -> di
             "recovered": meta.get("recovered") or [],
             "costUsd": {"answerer": meta.get("answererCostUsd"),
                         "judge": meta.get("judgeCostUsd"),
-                        "diagnose": meta.get("diagnoseCostUsd")}}
+                        "diagnose": meta.get("diagnoseCostUsd")},
+            **secondary(run, set_dir)}
+
+
+def median(xs: list[float]) -> float | None:
+    xs = sorted(x for x in xs if x is not None)
+    if not xs:
+        return None
+    m = len(xs) // 2
+    return xs[m] if len(xs) % 2 else (xs[m - 1] + xs[m]) / 2
+
+
+def secondary(run: pathlib.Path, set_dir: pathlib.Path | None) -> dict[str, Any]:
+    """The numbers beside the pass rate. Coverage: the share of decided cases
+    the model can answer at all (the key is not `unanswerable`). Refusals: of
+    the decided cases it cannot answer, how many the agent correctly refused.
+    Effort: what a right answer took, at the median: tool calls, failed
+    queries, turns and tokens. Fewer is better."""
+    from ledger import read_jsonl
+    events = read_jsonl(run / "events.jsonl") if (run / "events.jsonl").is_file() else []
+    cases = {c["qid"]: c for c in read_jsonl(set_dir / "cases.jsonl")} if (
+        set_dir and (set_dir / "cases.jsonl").is_file()) else {}
+    scores = {e["qid"]: e.get("verdict") for e in events if e.get("kind") == "score"
+              and e.get("verdict") in ("match", "no_match")}
+    unans = {q for q, c in cases.items() if (c.get("golden") or {}).get("kind") == "unanswerable"}
+    decided_unans = [q for q in scores if q in unans]
+    right = {q for q, v in scores.items() if v == "match"}
+    att = [e for e in events if e.get("kind") == "attempt" and e.get("qid") in right]
+    return {"coverage": round(1 - len(decided_unans) / len(scores), 4) if scores else None,
+            "refusals": {"right": sum(1 for q in decided_unans if q in right),
+                         "decided": len(decided_unans)},
+            "effortToRight": {
+                "toolCalls": median([(e.get("n_get_context") or 0) + (e.get("n_execute") or 0) for e in att]),
+                "failedQueries": median([e.get("n_execute_errors") or 0 for e in att]),
+                "turns": median([e.get("num_turns") for e in att]),
+                "tokens": median([(e.get("input_tokens") or 0) + (e.get("output_tokens") or 0)
+                                  if e.get("input_tokens") is not None else None for e in att])}}
 
 
 def improve_said(imp: dict[str, Any]) -> str:
@@ -308,6 +344,13 @@ class Routine:
         self.share()
         n = self.result["number"]
         said = f"{n['passed']} of {n['decided']} decided cases passed"
+        eff = n.get("effortToRight") or {}
+        if eff.get("toolCalls") is not None:
+            said += f" (a right answer took {eff['toolCalls']:g} tool calls at the median"
+            if n["refusals"]["decided"]:
+                said += (f"; {n['refusals']['right']} of {n['refusals']['decided']} unanswerable "
+                         f"questions correctly refused")
+            said += ")"
         if self.result.get("keysVerified") is False:
             said += (" (the answer keys were not re-derived: eval.toml has no [truth], "
                      "so a key that drifted with the data would not be caught)")
@@ -318,6 +361,12 @@ class Routine:
             import improve_mode
             self.result["improve"] = imp = improve_mode.improve_quality(self)
             said += ". " + improve_said(imp)
+            if imp.get("branch"):
+                body = self.cfg.workdir() / "routines" / f"{self.label}.pr.md"
+                body.parent.mkdir(parents=True, exist_ok=True)
+                body.write_text(improve_mode.pr_body(self, imp))
+                imp["prBody"] = str(body)
+                said += f". The pull request body is {body}"
         if capped:
             return NEEDS_A_LOOK, (f"{said}. The run and its judging cost ${spent:.2f}, at or "
                                   f"over --max-cost-usd {self.a.max_cost_usd:g}, so it was not "
@@ -429,6 +478,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="improve mode: how many diagnosed clusters to try an edit for, "
                          "largest first. Each costs an improving agent and two runs of "
                          "the cases it aimed at")
+    ap.add_argument("--max-rejected", type=int, default=3,
+                    help="improve mode: stop trying edits after this many in a row were "
+                         "not accepted, and say so. 0 means never stop for that")
     ap.add_argument("--label", default=None,
                     help="default: <kind>-<UTC date and time>")
     ap.add_argument("--serve", action="store_true",

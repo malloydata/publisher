@@ -67,19 +67,26 @@ def open_issues(run: pathlib.Path) -> list[dict[str, Any]]:
     return sorted(got, key=lambda i: (-len(i.get("qids") or []), i["issue_id"]))
 
 
+# Tags every production case carries, which say nothing about what an edit
+# might break: sharing one does not make a case a neighbour.
+BROAD_TAGS = {"production", "failure", "control", "mixed", "follow-up"}
+
+
 def candidate_cases(set_dir: pathlib.Path, targets: list[str]) -> list[str]:
-    """The cases an edit is re-asked on: its targets, every holdout case, and
-    every case that shares a tag with a target.
+    """The cases an edit is re-asked on: its targets, every holdout case, every
+    `control` case, and every case that shares a specific tag with a target.
 
     Not the whole set, which would double the night's cost per edit. The
     neighbours by tag are where a doc or a rename is most likely to break
-    something. Never a `test` case: no decision is made on those.
+    something, and the controls are the questions production gets right, which
+    an edit must not break. Never a `test` case: no decision is made on those.
     """
     cases = read_jsonl(set_dir / "cases.jsonl")
     want = set(targets)
-    tags = {t for c in cases if c.get("qid") in want for t in c.get("tags") or []}
+    tags = {t for c in cases if c.get("qid") in want for t in c.get("tags") or []} - BROAD_TAGS
     return [c["qid"] for c in cases if c.get("split") != "test" and (
-        c["qid"] in want or c.get("split") == "holdout" or tags & set(c.get("tags") or []))]
+        c["qid"] in want or c.get("split") == "holdout" or "control" in (c.get("tags") or [])
+        or tags & set(c.get("tags") or []))]
 
 
 def newest_acceptance(workdir: pathlib.Path) -> dict[str, Any]:
@@ -155,14 +162,19 @@ def keep_or_drop(R: Any, repo: pathlib.Path, out: dict[str, Any], accepted: bool
     import attempts
     line = attempts.path(R.cfg.set_dir)
     recorded = len(attempts.read(R.cfg.set_dir)) > before
-    kept = line.read_text() if line.exists() else None
+    # A set version keeps its attempts in the optimization package, outside
+    # the model's repository: nothing to commit, and nothing a reset can lose.
+    top = pathlib.Path(git(repo, "rev-parse", "--show-toplevel").stdout.strip() or repo)
+    in_repo = line.resolve().is_relative_to(top.resolve())
+    kept = line.read_text() if line.exists() and in_repo else None
     if accepted:
-        git(repo, "add", "-A", "--", str(line))
+        if in_repo:
+            git(repo, "add", "-A", "--", str(line))
         commit(repo, message, "--amend")
         return {**out, "outcome": "accepted",
                 "commit": git(repo, "rev-parse", "HEAD").stdout.strip()}
     git(repo, "reset", "-q", "--hard", "HEAD~1")
-    if kept is not None and recorded:
+    if in_repo and kept is not None and recorded:
         line.write_text(kept)
         git(repo, "add", "-A", "--", str(line))
         commit(repo, f"eval: record a rejected attempt at {out['issue']}\n\n{out['what']}")
@@ -201,6 +213,10 @@ def one_edit(R: Any, repo: pathlib.Path, issue: dict[str, Any], k: int) -> dict[
             failed = f"the acceptance check could not run (exit {code})"
     out["runs"] = runs
     r = newest_acceptance(cfg.workdir()) if failed is None else {}
+    if r:
+        out["acceptance"] = {k: r.get(k) for k in ("targetsFixed", "regressions", "noise",
+                                                    "unstable", "doubtedGoldens")}
+        out["acceptance"]["rules"] = {k: v.get("ok") for k, v in (r.get("rules") or {}).items()}
     why = failed or "; ".join(f"{k}: {v['detail']}" for k, v in (r.get("rules") or {}).items()
                               if not v["ok"])
     return keep_or_drop(R, repo, out, failed is None and bool(r.get("accepted")),
@@ -458,16 +474,23 @@ def on_a_branch(R: Any, found: list[dict[str, Any]], try_one: Any, nothing: str)
     cap = getattr(R.a, "max_cost_usd", None)
     spent = sum(v or 0 for v in ((R.result.get("number") or {}).get("costUsd") or {}).values())
     capped = None
+    stop_after = getattr(R.a, "max_rejected", None)
+    in_a_row = 0
     try:
         for k, issue in enumerate(issues, 1):
             if cap is not None and spent >= cap:
                 capped = (f"stopped before edit {k} of {len(issues)}: ${spent:.2f} spent, at or "
                           f"over --max-cost-usd {cap:g}")
                 break
+            if stop_after and in_a_row >= stop_after:
+                capped = (f"stopped before edit {k} of {len(issues)}: the last {in_a_row} "
+                          f"edits were not accepted (--max-rejected {stop_after})")
+                break
             e = try_one(R, repo, issue, k)
             e["costUsd"] = edit_cost(R, issue, e.get("runs") or [])
             spent += e["costUsd"]
             edits.append(e)
+            in_a_row = 0 if e["outcome"] == "accepted" else in_a_row + 1
     finally:
         moved = git(repo, "rev-parse", "HEAD").stdout.strip() != base
         git(repo, "checkout", "-q", start)
@@ -478,3 +501,91 @@ def on_a_branch(R: Any, found: list[dict[str, Any]], try_one: Any, nothing: str)
             "measured": sum(e["outcome"] in ("accepted", "rejected") for e in edits),
             "costUsd": round(sum(e["costUsd"] for e in edits), 4),
             **({"capped": capped} if capped else {})}
+
+
+# ------------------------------------------------------------------ the PR
+
+def for_a_person(run: pathlib.Path, set_dir: pathlib.Path,
+                 imp: dict[str, Any]) -> list[str]:
+    """What only a person can settle, one line each: keys nobody verified,
+    verdicts the judge would not decide, keys the judge or the improving agent
+    doubted, and failures diagnosed as the eval's own (dataset)."""
+    cases = {c["qid"]: c for c in read_jsonl(set_dir / "cases.jsonl")} if (
+        set_dir / "cases.jsonl").is_file() else {}
+    events = read_jsonl(run / "events.jsonl") if (run / "events.jsonl").is_file() else []
+    out = []
+    for q, c in cases.items():
+        st = (c.get("golden") or {}).get("status")
+        if st and st != "verified":
+            out.append(f"`{q}`: the key is `{st}`, not verified. \"{c['question']}\"")
+    for e in events:
+        if e.get("kind") == "score" and e.get("verdict") == "needs_human":
+            out.append(f"`{e['qid']}`: the judge would not decide: {(e.get('reason') or '')[:200]}")
+        elif e.get("kind") == "score" and e.get("gold_status") in ("suspect", "verified_wrong"):
+            out.append(f"`{e['qid']}`: the judge doubts the key ({e['gold_status']}): "
+                       f"{(e.get('gold_note') or '')[:200]}")
+        elif e.get("kind") == "issue" and e.get("owner") == "dataset" or (
+                e.get("kind") == "issue" and e.get("component") == "dataset"):
+            out.append(f"`{', '.join(e.get('qids') or [])}`: diagnosed as the eval's own problem "
+                       f"({e.get('primary_code')}): {(e.get('diagnosis') or '')[:200]}")
+    for e in imp.get("edits") or []:
+        for g in (e.get("acceptance") or {}).get("doubtedGoldens") or []:
+            out.append(f"`{g}`: the acceptance check set this key aside as doubted")
+        if e.get("outcome") == "skipped" and "answer key" in (e.get("why") or ""):
+            out.append(f"{e['issue']}: {e['why'][:200]}")
+    return list(dict.fromkeys(out))
+
+
+def pr_body(R: Any, imp: dict[str, Any]) -> str:
+    """The pull request body for the branch: why (production failures, with how
+    often they were asked), what changed, the evidence, and what a person must
+    settle. Plain Markdown, no answer values."""
+    set_dir = R.cfg.set_dir
+    meta = R.cfg.set_meta
+    cases = {c["qid"]: c for c in read_jsonl(set_dir / "cases.jsonl")} if (
+        set_dir / "cases.jsonl").is_file() else {}
+    n = R.result.get("number") or {}
+    lines = [f"Eval routine `{R.label}` on set `{R.cfg.set_name}`"
+             + (f", version `{meta['version']}`" if meta.get("version") else "")
+             + f" ({set_dir}).", ""]
+    accepted = [e for e in imp.get("edits") or [] if e["outcome"] == "accepted"]
+    lines += ["## What changed", ""]
+    for e in accepted:
+        lines.append(f"- {e['what']}")
+    if not accepted:
+        lines.append("- No edit was accepted.")
+    lines += ["", "## Why: production failures it closes", ""]
+    for e in accepted:
+        for q in e.get("targets") or []:
+            c = cases.get(q) or {}
+            sf = c.get("sourceFields") or {}
+            codes = [t.split(":", 1)[1] for t in c.get("tags") or [] if t.startswith("failure:")]
+            lines.append(f"- \"{c.get('question', q)}\": asked {sf.get('asked', '?')} time(s), "
+                         f"judged wrong {sf.get('judgedWrong', '?')}"
+                         + (f" ({', '.join(codes)})" if codes else "")
+                         + (f"; key from {sf['keyFrom']}" if sf.get("keyFrom") else ""))
+    lines += ["", "## Evidence", "",
+              f"- Baseline run `{R.label}`: {n.get('passed')} of {n.get('decided')} decided cases passed."]
+    controls = [q for q, c in cases.items() if "control" in (c.get("tags") or [])]
+    for e in imp.get("edits") or []:
+        acc = e.get("acceptance") or {}
+        rules = acc.get("rules") or {}
+        lines.append(f"- `{e['issue']}`: {e['outcome']}"
+                     + (f", runs {', '.join(f'`{r}`' for r in e.get('runs') or [])}" if e.get("runs") else "")
+                     + (f"; targets fixed: {len(acc.get('targetsFixed') or [])} of {len(e.get('targets') or [])}"
+                        if acc else "")
+                     + (f"; regressions: {len(acc.get('regressions') or [])}" if acc else "")
+                     + (f"; controls re-asked: {len(controls)}" if controls else "")
+                     + (f"; rules: {', '.join(k + (' ok' if v else ' FAILED') for k, v in rules.items())}"
+                        if rules else "")
+                     + (f". Why not: {e['why'][:300]}" if e.get("why") and e["outcome"] != "accepted" else ""))
+    if imp.get("capped"):
+        lines.append(f"- {imp['capped']}")
+    cost = (n.get("costUsd") or {})
+    lines.append(f"- Cost: run ${sum(v or 0 for v in cost.values()):.2f}, edits ${imp.get('costUsd') or 0:.2f}.")
+    people = for_a_person(R.run_dir, set_dir, imp)
+    lines += ["", "## For a person to settle", ""]
+    lines += [f"- {x}" for x in people] or ["- Nothing."]
+    lines += ["", "Every edit tried, accepted or not, is in the set's attempts file "
+              f"(`{__import__('attempts').path(set_dir)}`)."]
+    return "\n".join(lines) + "\n"

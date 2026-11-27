@@ -29,7 +29,8 @@ class FakeRoutine:
         self.cfg, self.label, self.on, self.ran = cfg, label, on, []
         self.s = ["--set", str(cfg.set_dir)]
         self.run_dir = cfg.workdir() / "runs" / label
-        self.a = argparse.Namespace(max_turns="40", parallel="4", max_edits=1, max_cost_usd=None)
+        self.a = argparse.Namespace(max_turns="40", parallel="4", max_edits=1, max_cost_usd=None,
+                                    max_rejected=None)
         self.result = {}
 
     def do(self, name, *args):
@@ -147,6 +148,53 @@ class Mode(unittest.TestCase):
                     {"id": "d", "qids": ["x", "y", "z"], "owner": "model", "component": "performance"},
                     {"id": "e", "qids": ["x", "y", "z"], "owner": "model", "status": "fixed"}])
         self.assertEqual([i["issue_id"] for i in im.open_issues(self.run)], ["b", "a"])
+
+    def test_controls_are_always_re_asked_and_a_tag_every_production_case_has_is_no_neighbour(self):
+        (self.repo / "evals" / "cases.jsonl").write_text("".join(json.dumps(c) + "\n" for c in (
+            {"qid": "fix", "split": "dev", "tags": ["production", "failure", "failure:MISSING"]},
+            {"qid": "same", "split": "dev", "tags": ["production", "failure", "failure:MISSING"]},
+            {"qid": "other", "split": "dev", "tags": ["production", "failure", "failure:GRAIN"]},
+            {"qid": "ok", "split": "dev", "tags": ["production", "control"]})))
+        self.assertEqual(im.candidate_cases(self.cfg.set_dir, ["fix"]), ["fix", "same", "ok"])
+
+    def test_after_k_edits_in_a_row_not_accepted_it_stops_and_says_so(self):
+        self.issue([{"id": f"night:c{i}", "qids": ["fix"], "owner": "model"} for i in range(5)])
+        R = FakeRoutine(self.cfg, "night", {})
+        R.a.max_edits, R.a.max_rejected = 5, 2
+        tried = []
+
+        def one(R, repo, issue, k):
+            tried.append(k)
+            return {"issue": issue["issue_id"], "outcome": "rejected", "targets": ["fix"]}
+        r = im.on_a_branch(R, im.open_issues(self.run), one, "nothing")
+        self.assertEqual(tried, [1, 2])
+        self.assertIn("the last 2 edits were not accepted (--max-rejected 2)", r["capped"])
+
+    def test_the_pr_body_names_the_set_version_the_failures_the_evidence_and_the_human_list(self):
+        (self.repo / "evals" / "set.json").write_text('{"name": "s", "version": "prod-20261126"}')
+        (self.repo / "evals" / "cases.jsonl").write_text("".join(json.dumps(c) + "\n" for c in (
+            {"qid": "fix", "question": "Net sales by month", "split": "dev",
+             "tags": ["production", "failure", "failure:RULE_UNWRITTEN"],
+             "golden": {"status": "verified"},
+             "sourceFields": {"asked": 45, "judgedWrong": 3, "keyFrom": "judging:prod-1:t9"}},
+            {"qid": "ok", "question": "Orders?", "split": "dev", "tags": ["production", "control"],
+             "golden": {"status": "provisional"}})))
+        (self.run / "events.jsonl").write_text(json.dumps(
+            {"kind": "score", "qid": "ok", "verdict": "needs_human", "reason": "two readings"}) + "\n")
+        R = FakeRoutine(config.load(self.repo / "evals"), "night", {})
+        R.result = {"number": {"passed": 1, "decided": 2, "costUsd": {"answerer": 1.0}}}
+        imp = {"edits": [{"issue": "night:c1", "outcome": "accepted", "what": "say what net sales excludes",
+                          "targets": ["fix"], "runs": ["night-c1-1", "night-c1-2"], "costUsd": 2.0,
+                          "acceptance": {"targetsFixed": ["fix"], "regressions": [],
+                                         "rules": {"twice": True, "no regression": True}}}],
+               "costUsd": 2.0}
+        body = im.pr_body(R, imp)
+        self.assertIn("version `prod-20261126`", body)
+        self.assertIn("- say what net sales excludes", body)
+        self.assertIn('"Net sales by month": asked 45 time(s), judged wrong 3 (RULE_UNWRITTEN); key from judging:prod-1:t9', body)
+        self.assertIn("targets fixed: 1 of 1; regressions: 0; controls re-asked: 1", body)
+        self.assertIn("`ok`: the key is `provisional`, not verified", body)
+        self.assertIn("`ok`: the judge would not decide: two readings", body)
 
     # ------------------------------------------------------------ the branch
 

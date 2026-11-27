@@ -290,5 +290,27 @@ class Kinds(unittest.TestCase):
             routine.main(["--set", str(self.set)])
 
 
+class Secondary(unittest.TestCase):
+    def test_coverage_refusals_and_effort_to_a_right_answer(self):
+        import routine
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        (root / "cases.jsonl").write_text("".join(json.dumps(c) + "\n" for c in (
+            {"qid": "a", "golden": {"kind": "scalar"}}, {"qid": "b", "golden": {"kind": "scalar"}},
+            {"qid": "u", "golden": {"kind": "unanswerable"}}, {"qid": "v", "golden": {"kind": "unanswerable"}})))
+        ev = [{"kind": "score", "qid": q, "verdict": v} for q, v in
+              (("a", "match"), ("b", "no_match"), ("u", "match"), ("v", "no_match"))]
+        ev += [{"kind": "attempt", "qid": "a", "n_get_context": 2, "n_execute": 3, "num_turns": 9,
+                "input_tokens": 100, "output_tokens": 20},
+               {"kind": "attempt", "qid": "u", "n_get_context": 1, "n_execute": 0, "num_turns": 3,
+                "input_tokens": 50, "output_tokens": 10}]
+        (root / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in ev))
+        got = routine.secondary(root, root)
+        self.assertEqual(got["coverage"], 0.5)
+        self.assertEqual(got["refusals"], {"right": 1, "decided": 2})
+        self.assertEqual(got["effortToRight"], {"toolCalls": 3.0, "failedQueries": 0.0,
+                                                "turns": 6.0, "tokens": 90.0})
+
+
 if __name__ == "__main__":
     unittest.main()
