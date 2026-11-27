@@ -1411,6 +1411,8 @@ export interface PackageWorkflows {
    watched: string[];
    /** A root `skills/` directory exists and no workflow lists it, so nothing reads it. */
    skillsDirNotRead: boolean;
+   /** Why the manifest's whole `workflows` value is refused, which refuses every name; the same text as its package warning, which has no code. Absent when the value was read. */
+   manifestRefusal?: string;
    /** Why the walk could not finish, and the workflow names the manifest declares: a declared name answers the reason, an undeclared one is still absent. */
    unavailable?: { reason: string; declared: string[] };
 }
@@ -2007,13 +2009,12 @@ function walkPackageWorkflows(
    };
    if (raw === undefined) return result;
    if (!isObject(raw)) {
-      result.warnings.push({
-         severity: "warn",
-         message:
-            raw === UNREADABLE_DECLARATION
-               ? `Package manifest 'workflows' is too deeply nested or over ${capText(MANIFEST_WORKFLOWS_MAX_BYTES)}, so no workflow is served. Fix: shorten it; a real declaration is a few KiB.`
-               : 'Package manifest \'workflows\' must be an object keyed by workflow name, so no workflow is served. Fix: write "workflows": { "<name>": { "description": ..., "instructions": ..., "skillSets": [...] } }.',
-      });
+      const message =
+         raw === UNREADABLE_DECLARATION
+            ? `Package manifest 'workflows' is too deeply nested or over ${capText(MANIFEST_WORKFLOWS_MAX_BYTES)}, so no workflow is served. Fix: shorten it; a real declaration is a few KiB.`
+            : 'Package manifest \'workflows\' must be an object keyed by workflow name, so no workflow is served. Fix: write "workflows": { "<name>": { "description": ..., "instructions": ..., "skillSets": [...] } }.';
+      result.warnings.push({ severity: "warn", message });
+      result.manifestRefusal = message;
       return result;
    }
    let packageRoot: string;

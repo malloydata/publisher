@@ -616,6 +616,17 @@ describe("package workflows", () => {
             expect(warning?.code).toBeUndefined();
          },
       );
+
+      it("is read from the walk's own field, never inferred from a warning that has no code", async () => {
+         manifest({ workflows: { analyst: analyst() } });
+         const pkg = await load();
+         (
+            pkg as unknown as { workflows: { warnings: object[] } }
+         ).workflows.warnings.push({ severity: "warn", message: "a note" });
+         expect(pkg.workflowNotServed("nope")?.reason).toBe(
+            "WORKFLOW_NOT_DECLARED",
+         );
+      });
    });
 
    describe("what is no longer read", () => {
