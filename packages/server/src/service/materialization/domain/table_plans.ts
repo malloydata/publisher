@@ -623,6 +623,15 @@ export interface RollupVariantPlan extends RollupPlan {
     */
    pathColumns?: RollupPathColumn[];
    /**
+    * Each join_one of the base the grain reads through, with the grain
+    * entries that read it: a path grain (`account.region`) or a dimension
+    * defined over the join, any expression (`upper(account.region)`). The
+    * build joined it, so a key the data repeats repeated the rows its
+    * partials summed; a query that reads none of the join's fields does not
+    * join it live, so it is served only when it reads the join. Absent: none.
+    */
+   joinOneGrain?: { join: string; grain: string[] }[];
+   /**
     * Whether the base declares a row-level gate (`#(access_filter)` or
     * `#(authorize)`): the join-to-rollup branch reads the rollup through a
     * join, where no gate is grafted, so it declines such a base.

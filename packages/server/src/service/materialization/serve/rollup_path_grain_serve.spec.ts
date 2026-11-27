@@ -91,7 +91,7 @@ describe("RollupVariantServe over a path grain (#2048)", () => {
       ],
       [
          "an aggregate through the join",
-         "run: subs -> { group_by: items.sku; aggregate: c is account.count() }",
+         "run: subs -> { group_by: items.sku, account.region; aggregate: c is account.count() }",
          "rollup_count_semantics",
          "`c` aggregates the rollup's rows, not a stored measure",
       ],
@@ -103,7 +103,7 @@ describe("RollupVariantServe over a path grain (#2048)", () => {
       ],
       [
          "a filter on the join_many path without grouping by it",
-         "run: subs -> { where: items.sku = 'A'; aggregate: mrr }",
+         "run: subs -> { where: items.sku = 'A'; group_by: account.region; aggregate: mrr }",
          "rollup_grain_too_coarse",
          "the query does not group by or fix `items.sku`, a fan-out dimension of the rollup's grain, so its measures would be counted once per value",
       ],
@@ -112,6 +112,12 @@ describe("RollupVariantServe over a path grain (#2048)", () => {
          "run: subs -> { group_by: items.sku, account.sales_region; aggregate: mrr }",
          "rollup_missing_field",
          "the query returns `account.sales_region`, whose annotations the rollup's record of stored columns cannot carry",
+      ],
+      [
+         "a query that reads nothing through the join_one the grain reads",
+         "run: subs -> { group_by: items.sku; aggregate: mrr }",
+         "rollup_count_semantics",
+         "the query reads nothing through `account`, a join_one the rollup's grain reads (`account.region`, `account.sales_region`); the rollup was built over that join, so a key it repeats would inflate a coarser answer that live, not joining it, does not",
       ],
    ] as const) {
       it(`declines ${label} with today's code`, async () => {

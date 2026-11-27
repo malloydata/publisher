@@ -83,8 +83,8 @@ const JOIN_ONE_CASES = [
       "run: subs -> { group_by: account.region, period_month; aggregate: mrr, n }",
    ],
    [
-      "a coarser query that drops the path",
-      "run: subs -> { group_by: period_month; aggregate: mrr }",
+      "a coarser query that filters through the join",
+      "run: subs -> { where: account.region != 'XX'; group_by: period_month; aggregate: mrr }",
    ],
    [
       "a query in its own time zone over the path",
@@ -97,6 +97,12 @@ const JOIN_ONE_CASES = [
 ] as const;
 
 const JOIN_ONE_LIVE = [
+   [
+      // B (#2048): it does not read `account`, which the build joined, so a
+      // repeated key would have inflated it.
+      "a coarser query that reads nothing through the join",
+      "run: subs -> { group_by: period_month; aggregate: mrr }",
+   ],
    [
       "another field of the join",
       "run: subs -> { group_by: account.country; aggregate: mrr }",
@@ -328,53 +334,65 @@ for (const [label, placement] of PLACEMENTS)
    });
 
 /**
- * A join_one whose key repeats in the data inflates the build's rows, so a
- * coarser query that does not read the join live re-aggregates inflated
- * partials (340 against live's 220 for February). Pinned failing until the
- * maintainer picks the fix (#2048 thread); the declared-dimension
- * workaround has the same defect on main.
+ * A join_one whose key repeats in the data (account 1 twice) repeats the
+ * build's rows, so a coarser query that does not read the join live would
+ * re-aggregate inflated partials (340 against live's 220 for February,
+ * 255 against 155 for January). The
+ * rollup serves only a query that reads the join, which live joins too, so
+ * every answer below equals live.
  */
-describe("R4 #2048: a repeated join_one key", () => {
-   for (const [label, body] of [
-      [
-         "path grain",
-         `  dimension: period_month is period.month
+for (const [label, body, byRegion] of [
+   [
+      "path grain",
+      `  dimension: period_month is period.month
   #(rollup) grain=["account.region", "period_month"]
   measure: mrr is amount.sum()`,
-      ],
-      [
-         "declared dimension",
-         `  dimension:
+      "run: subs -> { group_by: account.region; aggregate: mrr }",
+   ],
+   [
+      "declared dimension",
+      `  dimension:
     region is account.region
     period_month is period.month
   #(rollup) grain=["region", "period_month"]
   measure: mrr is amount.sum()`,
-      ],
-   ] as const) {
-      it.todo(`[${label}] a coarser query answers live`, async () => {
-         const restore = installSettings(SETTINGS).restore;
-         try {
-            const fixture = await buildScenario({
-               files: {
-                  "m.malloy": reproModel(body, {
-                     accountRows: "(1,'EU','SE'),(1,'EU','DE'),(3,'NA','US')",
-                  }),
-               },
-               seedSql: [],
-               preaggregate: true,
-               rollupKeyChecks: true,
-            });
-            expectLive(
-               await fixture.run({
-                  name: "coarser",
-                  malloy:
-                     "run: subs -> { group_by: period_month; aggregate: mrr }",
+      "run: subs -> { group_by: region; aggregate: mrr }",
+   ],
+] as const) {
+   describe(`R4 #2048: a repeated join_one key [${label}]`, () => {
+      let restore: () => void;
+      let fixture: R4Fixture;
+      beforeAll(async () => {
+         restore = installSettings(SETTINGS).restore;
+         fixture = await buildScenario({
+            files: {
+               "m.malloy": reproModel(body, {
+                  accountRows: "(1,'EU','SE'),(1,'EU','DE'),(3,'NA','US')",
                }),
-            );
-         } finally {
-            restore();
-            await disposeScenarios();
-         }
+            },
+            seedSql: [],
+            preaggregate: true,
+            rollupKeyChecks: true,
+         });
       });
-   }
-});
+      afterAll(async () => {
+         restore();
+         await disposeScenarios();
+      });
+      it("a coarser query that does not read the join answers live, with live's totals", async () => {
+         const run = await fixture.run({
+            name: "coarser",
+            malloy: "run: subs -> { group_by: period_month; aggregate: mrr }",
+         });
+         expectLive(run);
+         // Live's totals: January 100 + 50 + 5 (sub 15 meets no account), February
+         // 120 + 80 + 20; the rollup's partials hold account 1's rows twice.
+         expect(run.served.map((r) => r.mrr).sort()).toEqual([155, 220]);
+      });
+      it("a query grouped through the join is served, equal to live", async () => {
+         expectRollup(
+            await fixture.run({ name: "by region", malloy: byRegion }),
+         );
+      });
+   });
+}

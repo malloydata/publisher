@@ -1504,6 +1504,38 @@ function pathReadsCurrentTime(
    return currentTimeFields(joinField?.fields as never).has(path.field);
 }
 
+/**
+ * The join_ones the grain reads through, each with the entries that read it
+ * (`RollupVariantPlan.joinOneGrain`): a path entry's join, and each join_one
+ * a dimension's definition reads, whatever the expression.
+ */
+function joinOneGrainOf(
+   grain: readonly string[],
+   facts: Pick<RollupFacts, "joins" | "joinUsage">,
+): Pick<RollupVariantPlan, "joinOneGrain"> {
+   const byJoin = new Map<string, string[]>();
+   const add = (join: string, entry: string) => {
+      if (facts.joins.get(join)?.relationship !== "one") return;
+      const entries = byJoin.get(join) ?? [];
+      if (!entries.includes(entry)) entries.push(entry);
+      byJoin.set(join, entries);
+   };
+   for (const g of grain) {
+      const path = grainPathOf(g);
+      if (path) {
+         add(path.join, g);
+         continue;
+      }
+      for (const j of facts.joinUsage.get(g)?.joins ?? []) add(j, g);
+   }
+   if (byJoin.size === 0) return {};
+   return {
+      joinOneGrain: [...byJoin]
+         .sort(([a], [b]) => byCodepoint(a, b))
+         .map(([join, entries]) => ({ join, grain: entries })),
+   };
+}
+
 /** The two-part field path `e` is exactly a read of, or undefined. */
 function exactPathRead(e: unknown): [string, string] | undefined {
    const n = e as { node?: unknown; path?: unknown } | undefined;
@@ -1706,6 +1738,7 @@ function rollupPlanOf(
          ? { declaration: facts.declaration }
          : {}),
       ...(pathColumns.length > 0 ? { pathColumns } : {}),
+      ...joinOneGrainOf(decl.grain, facts),
       fanOutDimensions: decl.grain.filter((g) => {
          const path = grainPathOf(g);
          if (path) return joins.get(path.join)?.relationship !== "one";

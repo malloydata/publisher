@@ -920,7 +920,13 @@ export class RollupVariantServe {
          plan.grainDimensions.filter((g) => grainPathOf(g) === undefined),
       );
       const measures = new Set(plan.rollupMeasures.map((m) => m.name));
-      const coarse = joinGrainDecline(name, q.shape, grain, measures);
+      const coarse =
+         joinGrainDecline(name, q.shape, grain, measures) ??
+         joinOneDecline(plan, {
+            groupedBy: readThroughJoin(name, q.shape.groupedBy),
+            filteredBy: readThroughJoin(name, q.shape.filteredBy),
+            measures: readThroughJoin(name, q.shape.measures),
+         });
       if (coarse) throw coarse;
       const missing = joinCoverageDecline(name, q.shape, grain, measures);
       if (missing) throw missing;
@@ -1479,10 +1485,8 @@ export class RollupVariantServe {
       const grain = queryGrainOf(plan, dimensions);
       // Cheap first, from the caller's own compile: what it groups and filters
       // by must be in the grain, what it aggregates must be stored.
-      const coarse = grainDecline(shape, grain, measures);
-      if (coarse) throw coarse;
-      const missing = coverageDecline(shape, measures);
-      if (missing) throw missing;
+      const shapeSkip = baseShapeDecline(plan, shape, grain, measures);
+      if (shapeSkip) throw shapeSkip;
       if (query.zoned) {
          const zone = zoneDecline(
             plan,
@@ -4142,6 +4146,76 @@ export function grainDecline(
       );
    }
    return undefined;
+}
+
+/**
+ * The cheap checks of a base branch, from the caller's own compile, in
+ * order: the grain ({@link grainDecline}), the stored measures
+ * ({@link coverageDecline}), and the join_ones the grain reads
+ * ({@link joinOneDecline}).
+ */
+function baseShapeDecline(
+   plan: RollupVariantPlan,
+   shape: Pick<
+      ReturnType<typeof queryShapeOf>,
+      "groupedBy" | "filteredBy" | "measures"
+   >,
+   grain: ReadonlySet<string>,
+   measures: ReadonlySet<string>,
+): LegDecline | undefined {
+   return (
+      grainDecline(shape, grain, measures) ??
+      coverageDecline(shape, measures) ??
+      joinOneDecline(plan, shape)
+   );
+}
+
+/**
+ * `COUNT_SEMANTICS` when the rollup's grain reads through a join_one
+ * (`RollupVariantPlan.joinOneGrain`) that the query does not read. The
+ * build joined it, so a key the data repeats repeated the rows each
+ * partial summed; live joins it only for a query that reads one of its
+ * fields, so a query that reads none (`group_by: period_month` over a grain
+ * of `account.region` and `period_month`) would re-aggregate inflated
+ * partials. The query reads the join when it groups, filters or aggregates
+ * a field through it (`account.region`), a grain entry that reads it
+ * (`region is account.region`), or a stored measure that does; it then joins
+ * live as the build did, and the rows agree whatever the key holds.
+ */
+function joinOneDecline(
+   plan: Pick<RollupVariantPlan, "joinOneGrain" | "rollupMeasures">,
+   shape: Pick<
+      ReturnType<typeof queryShapeOf>,
+      "groupedBy" | "filteredBy" | "measures"
+   >,
+): LegDecline | undefined {
+   const reads = [...shape.groupedBy, ...shape.filteredBy, ...shape.measures];
+   const measureReads = (name: string, join: string) =>
+      plan.rollupMeasures.some(
+         (m) =>
+            m.name === name &&
+            m.partials.some(
+               (p) =>
+                  p.leaf.joinPath[0] === join ||
+                  p.leaf.reads.some((r) => r[0] === join),
+            ),
+      );
+   const unread = (plan.joinOneGrain ?? []).find(
+      ({ join, grain }) =>
+         !reads.some(
+            (p) =>
+               p.startsWith(`${join}.`) ||
+               grain.includes(p) ||
+               measureReads(p, join),
+         ),
+   );
+   if (unread === undefined) return undefined;
+   return new LegDecline(
+      "rollup_count_semantics",
+      // malloy-text: a decline detail for a person, not Malloy
+      `the query reads nothing through \`${unread.join}\`, a join_one the rollup's grain reads (${unread.grain.map((g) => `\`${g}\``).join(", ")}); the rollup was built over that join, so a key it repeats would inflate a coarser answer that live, not joining it, does not`,
+      { shapeCheck: true },
+   );
 }
 
 /**
