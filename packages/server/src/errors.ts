@@ -149,6 +149,9 @@ export type ErrorReason =
    // 409: the package's build plan could not be derived at load; a reload
    // derives it again, a retry does not.
    | "BUILD_PLAN_UNAVAILABLE"
+   // 409: the package's workflows could not be read at load; a reload reads
+   // them again, a retry does not.
+   | "WORKFLOWS_UNAVAILABLE"
    // 500: a version's build manifest was fetched or bound and failed; the
    // version keeps serving what it served before (ManifestBindFailedError).
    | "MANIFEST_BIND_FAILED"
@@ -540,7 +543,7 @@ export class BuildPlanUnavailableError extends Error {
 
 /**
  * A loaded package whose workflows could not be read at load (a listed skill
- * set that cannot be read, or a walk that threw): 503, because the models
+ * set that cannot be read, or a walk that threw): 409, because the models
  * still serve and the workflows are not absent. The message carries the
  * reason, and it lasts until the package reloads.
  */
@@ -2213,7 +2216,8 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       mcp: { advice: "internal" },
    },
    workflows_unavailable: {
-      status: 503,
+      status: 409,
+      reason: "WORKFLOWS_UNAVAILABLE",
       // No Retry-After: the walk's failure lasts until the package reloads.
       mcp: {
          advice: "fixed",

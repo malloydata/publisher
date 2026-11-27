@@ -1805,7 +1805,7 @@ describe("package workflows", () => {
          };
 
          it.skipIf(isRoot || isWindows)(
-            "still loads its models, and answers the workflow routes 503 with the reason, not 404",
+            "still loads its models, and answers the workflow routes 409 with the reason, not 404",
             unreadable(async () => {
                const pkg = await load();
                expect(pkg.getModelPaths()).toEqual(["model.malloy"]);

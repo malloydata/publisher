@@ -433,10 +433,11 @@
   "WorkflowsUnavailableError": {
     "class": "WorkflowsUnavailableError",
     "http": {
-      "status": 503,
+      "status": 409,
       "json": {
-        "code": 503,
-        "message": "Workflows are unavailable: skill set directory 'sets/a' cannot be read (EACCES)"
+        "code": 409,
+        "message": "Workflows are unavailable: skill set directory 'sets/a' cannot be read (EACCES)",
+        "reason": "WORKFLOWS_UNAVAILABLE"
       },
       "logged": false,
       "logs": []
@@ -446,6 +447,7 @@
       "suggestions": [
         "Fix the cause named above, then reload the package: its skill sets are read at load, so a retry before then fails the same way."
       ],
+      "reason": "WORKFLOWS_UNAVAILABLE",
       "logs": []
     },
     "mcpSetup": {

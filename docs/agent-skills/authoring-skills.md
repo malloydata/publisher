@@ -242,8 +242,8 @@ thread's share is the structured-clone receive of the walk and one hash over the
 which grow with the number of files and inline Markdown bytes, not with their content.
 
 If the walk cannot finish (it throws, or a listed set exists but cannot be read), the package's
-models still load and the workflow routes, `get_workflow` and the skills routes answer 503
-`workflows_unavailable` with the reason, until the package reloads.
+models still load and the workflow routes, `get_workflow` and the skills routes answer 409
+`WORKFLOWS_UNAVAILABLE` with the reason, until the package reloads.
 
 ## Authoring a new skill
 

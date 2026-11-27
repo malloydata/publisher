@@ -2780,7 +2780,7 @@ paths:
         at `GET .../workflows/default/skills/{skill}/{file}`; a bundled skill's
         other files are read through the `get_skill` MCP tool.
 
-        503 `workflows_unavailable` when the load could not read the package's
+        409 `WORKFLOWS_UNAVAILABLE` when the load could not read the package's
         skill sets, which is where its own skills come from: the message
         carries the reason and it lasts until the package reloads.
 
@@ -2815,6 +2815,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
         "500":
@@ -2844,7 +2846,7 @@ paths:
         `GET .../workflows/default/skills/{skill}/{file}`; a bundled skill's
         other files are read through the `get_skill` MCP tool.
 
-        404 when no skill of that name is in force. 503 `workflows_unavailable`
+        404 when no skill of that name is in force. 409 `WORKFLOWS_UNAVAILABLE`
         when the load could not read the package's skill sets, as for the
         listing.
       parameters:
@@ -2880,6 +2882,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
         "500":
@@ -3167,7 +3171,7 @@ paths:
         validation is not listed; the package's `warnings` say why. Empty when
         the manifest declares none.
 
-        503 `workflows_unavailable` when the load could not read the package's skill
+        409 `WORKFLOWS_UNAVAILABLE` when the load could not read the package's skill
         sets (the walk threw, or a listed set exists but cannot be read, such as
         `EACCES` or `EIO`): the models still serve, the message carries the
         reason, and it lasts until the package reloads, so there is no
@@ -3203,6 +3207,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
         "500":
@@ -3243,7 +3249,7 @@ paths:
         404 when no workflow of that name is served, or it has no set named
         `skillSet`. A repeated or empty `skillSet` is a 400.
 
-        503 `workflows_unavailable` when the load could not read the package's skill
+        409 `WORKFLOWS_UNAVAILABLE` when the load could not read the package's skill
         sets (the walk threw, or a listed set exists but cannot be read, such as
         `EACCES` or `EIO`): the models still serve, the message carries the
         reason, and it lasts until the package reloads, so there is no
@@ -3311,6 +3317,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
         "500":
@@ -3349,7 +3357,7 @@ paths:
         404 when the workflow, the set named by `skillSet` or the file is not
         served.
 
-        503 `workflows_unavailable` when the load could not read the package's skill
+        409 `WORKFLOWS_UNAVAILABLE` when the load could not read the package's skill
         sets (the walk threw, or a listed set exists but cannot be read, such as
         `EACCES` or `EIO`): the models still serve, the message carries the
         reason, and it lasts until the package reloads, so there is no
@@ -3412,6 +3420,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
         "500":
@@ -4252,6 +4262,9 @@ components:
           * BUILD_PLAN_UNAVAILABLE: the package's build plan could not be
             derived when it loaded. Reload the package; retrying the read does
             not help.
+          * WORKFLOWS_UNAVAILABLE: the package's skill sets could not be read
+            when it loaded, so its workflows and skills are not served. Reload
+            the package; retrying the read does not help.
       content:
         application/json:
           schema:
@@ -10506,6 +10519,9 @@ components:
                 package with no `latest` yet refuses none.
               * VERSION_NOT_FOUND (404): the package has no such version.
               * VERSION_ARCHIVED (410): the version is archived.
+              * WORKFLOWS_UNAVAILABLE (409): the package's skill sets could not
+                be read when it loaded, so its workflows and skills are not
+                served until it reloads.
 
             Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
             CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND, RESULT_TRUNCATED,
@@ -10516,7 +10532,8 @@ components:
             VERSION_CONFLICT, PACKAGE_IS_VERSIONED,
             PACKAGE_INSTALLED_FROM_LOCATION, FILE_EXISTS, VERSION_IS_LATEST,
             VERSION_IS_LAST_ACTIVE, VERSION_BUILDING, VERSION_ID_INVALID,
-            VERSION_NOT_LATEST, VERSION_NOT_FOUND, VERSION_ARCHIVED.
+            VERSION_NOT_LATEST, VERSION_NOT_FOUND, VERSION_ARCHIVED,
+            WORKFLOWS_UNAVAILABLE.
         problems:
           type: array
           description: |
