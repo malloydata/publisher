@@ -99,6 +99,41 @@ Keep a skill self-contained: do not reference the use case or manifest it belong
 not prescribe which skill loads next (Principle 1). An orchestrating skill may propose a
 sequence and point each step at a focused skill; a focused skill must not name a follow-up.
 
+### A skill in a package
+
+A package carries its own skills in a skill set: a folder of skills that a workflow lists in
+`publisher.json`. The shortest layout is one folder at the package root:
+
+```
+publisher.json
+analyst/
+  margin-rules/
+    SKILL.md
+```
+
+```json
+{ "name": "storefront", "workflows": { "analyst": { "skillSets": ["analyst"] } } }
+```
+
+`analyst/margin-rules/SKILL.md` is a complete skill:
+
+```markdown
+---
+name: margin-rules
+description: Use when a question involves margin, so net revenue is not mistaken for gross.
+---
+
+Margin is net revenue less cost, never gross revenue less cost. `margin_pct` in `orders.malloy` already does this; use it.
+```
+
+A package with several workflows keeps each one's sets at `workflows/<workflow>/skill_sets/<set>/<skill>/SKILL.md`
+instead. The `default` workflow's skills are the ones every session on the package sees; see
+[Packages](../packages.md#skill-sets) for sets, refusals and the codes a finding carries.
+
+A package skill whose `name` matches a bundled skill replaces it in Publisher, for that package.
+Credible's agent skips such a skill and keeps the bundled one, so give a package skill a name no
+bundled skill has if it must behave the same in both.
+
 ## Cross-skill references
 
 Refer to another skill with the `skill:` prefix, for example `skill:malloy-model` or
@@ -219,7 +254,7 @@ characters), and it refuses a workflow past it. A `description` written as a YAM
 
 The package-load worker walks and hashes a package's workflows and skill sets, on creation and on
 every reload, in the same job that compiles its models, so the server's event loop does not wait
-for it. The walk counts against that job's timeout (`packageLoad.jobTimeoutMs`, 120 s). The main thread pays only to
+for it. A load bound to a build manifest still walks twice, and both walks now run in the worker. The walk counts against that job's timeout (`packageLoad.jobTimeoutMs`, 120 s). The main thread pays only to
 receive the result and adopt it: rebuild each skill's reader and hash the shas the worker shipped,
 reading no file. `bun run perf:skills-reload` in `packages/server` builds a package with nine skill
 sets of one skill each, listed by two workflows, and times both sides. The second row is the

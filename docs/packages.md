@@ -81,6 +81,37 @@ away with the package `PATCH` that writes it: bind a version's build manifest wi
 
 A package can declare workflows: named jobs its author wrote for working with this package. A workflow is optional instructions (a Markdown brief) and skill sets (folders of skills to use). Publisher parses and serves the definition. It does not run the workflow. A client adopts one by fetching it (`get_workflow`, or `GET …/packages/{pkg}/workflows/{name}`) and following it in its own session, with its own tools and permissions; the bundled `malloy-run-workflow` skill is the recipe, and `malloy-define-workflow` covers writing a definition. Adopt a workflow only when the user names it: nothing advertises one in discovery. The exception is the `default` workflow, whose skills are the package's own skills ([below](#the-default-workflow)).
 
+The shortest declaration lists one folder of skills, with `analyst/<skill>/SKILL.md` inside it:
+
+```
+publisher.json
+analyst/
+  margin-rules/
+    SKILL.md
+```
+
+```json
+{
+  "name": "storefront",
+  "workflows": {
+    "analyst": { "skillSets": ["analyst"] }
+  }
+}
+```
+
+`analyst/margin-rules/SKILL.md` is a complete skill. `name` equals the directory's name, `description` is one sentence saying when to read it, and the body is what the agent reads:
+
+```markdown
+---
+name: margin-rules
+description: Use when a question involves margin, so net revenue is not mistaken for gross.
+---
+
+Margin is net revenue less cost, never gross revenue less cost. `margin_pct` in `orders.malloy` already does this; use it.
+```
+
+A package with several workflows gives each its own folders, by the convention under [Skill sets](#skill-sets):
+
 ```json
 {
   "name": "storefront",
@@ -121,39 +152,63 @@ A workflow named `default` holds the package's own skills. Its skill sets' skill
 
 ### Skill sets
 
-A skill set is a folder whose subfolders are skills (`<set>/<skill>/SKILL.md`). Its name is its folder's name, which is what a chat picks it by and what `skill_set` (MCP) or `skillSet` (REST) takes. By convention a set lives at `workflows/<workflow>/skill_sets/<set>/`, but any folder inside the package works, including a root `skills/` folder.
+A skill set is a folder whose subfolders are skills (`<set>/<skill>/SKILL.md`). Its name is its folder's name, which is what a chat picks it by and what `skill_set` (MCP) or `skillSet` (REST) takes. Any folder inside the package works, so `"skillSets": ["analyst"]` with `analyst/<skill>/SKILL.md` is the shortest layout, and a root `skills/` folder works the same way. By convention, a package with several workflows keeps each one's sets at `workflows/<workflow>/skill_sets/<set>/`.
 
 - The folder name meets the same rule as a workflow name, and two entries of one workflow may not share a name or a path.
 - Several workflows can list the same set. Publisher reads it once per load, and every workflow that lists it serves the same bytes.
 - A skill name that two sets of one workflow both hold is served from the first-listed set when the workflow is read whole, and the workflow's `warnings` say so. Read with `skill_set` (`skillSet` over REST), a set is served whole, every skill it holds included, and its `digest` pins exactly that.
 - A set that holds no skills is a warning, not a refusal.
+- A folder that holds a `SKILL.md` itself is a skill, not a set. Listing it loads nothing and gets the finding "this is a skill, not a skill set"; list its parent folder instead (a skill at the package root's top level has no parent to list: move it into a folder and list that folder).
 - A `publisher.json` at or above a set's root (the package's own at its root does not count) refuses the workflows that list it, because it would make the folder a second package root. One inside a skill (at the skill's root, in `reference/` or `references/`, or below `assets/`) sets that skill aside with a finding; one elsewhere in a skill only skips that file. One inside a dot-named directory is not read.
 
 Skills are read with the rules in [Skills](#skills). Each set is measured on its own, and the limits are in the [Budgets](agent-skills/authoring-skills.md#budgets) table: 256 KiB of inline Markdown, and 4 MiB and 200 listed files, per set. The 8 MiB cap on listed files for the whole package is charged once per distinct set, in sorted path order, so reordering workflows never moves a set's `digest`.
 
 ### A broken workflow never fails the package
 
-Publisher never takes a package offline for a workflow mistake. What breaks decides how much is lost, and each finding is in the package's load warnings with a `Fix:` line.
+Publisher never takes a package offline for a workflow mistake. What breaks decides how much is lost. Each finding is in the package's load warnings, and in the `warnings` of a workflow that reads it, with a `code` and a `subject`. The ones an author acts on end with a `Fix:` line: a refusal, a skill that is not served, a skill with no `description`, a skill name two sets hold, and frontmatter that is read line by line. A skipped file says why it was left out and names the file, and the line counting the files left out names no fix, because the fix is the file's own.
+
+| `code` | `subject` | What it says |
+| --- | --- | --- |
+| `workflow-not-served` | the workflow's name | The manifest declares it and Publisher refuses it; `message` is the refusal. |
+| `skill-shadowed` | the workflow's name | Two of its sets hold a skill of one name, and the first-listed set serves it. |
+| `skill-file-skipped` | the skill set's path | A served skill has a file of its directory left out: a reserved name, a link, a file over a limit, a file over the reply budget of `get_skill`. |
+| `skill-finding` | the skill set's path | Any other finding of a set: a skill that is not served, a skill served with a gap (no `description`, frontmatter read line by line), a folder that is a skill and not a set, a set with no skills or past its 64-skill cap, a Markdown file listed instead of inlined. |
+
+A set's findings are published once however many workflows list it. Each refused workflow is also logged once per load at `warn`, with the package name, the workflow name and the code.
 
 - **The workflow is refused** (not served; `Workflow '<name>' is not served: <why>`): a bad name, a key Publisher does not know, an entry that is not an object, an empty `description`, an `instructions` file that is missing, a link loop or a name too long, not `.md`, over 16 KiB, outside the package or under a nested `publisher.json`, a bad `skillSets` list (not a list, more than 8, a folder that is missing, a link loop, a name too long or a file, outside the package, badly named, listed twice, or holding or sitting under a nested `publisher.json`), or nothing to serve. Other workflows and the models keep serving.
-- **The walk cannot finish** (nothing is refused, and no workflow is served until the package reloads): a skill set folder or an `instructions` file that exists but cannot be read (`EACCES`, `EIO`), or a walk that throws. The models still load, the workflow routes and `get_workflow` answer 409 `WORKFLOWS_UNAVAILABLE` with the reason, and so do the skills routes and `get_context`'s skill note when the package declares a `default` workflow (without one the bundled skills serve as usual). A name the manifest never declares, or declares and Publisher refuses for what the author wrote, is still a 404. Fixing the cause and reloading serves the workflows again.
+- **The walk cannot finish** (nothing is refused, and no workflow is served until the package reloads): a skill set folder or an `instructions` file that exists but cannot be read (`EACCES`, `EIO`), or a walk that throws. The models still load, the workflow routes and `get_workflow` answer 409 `WORKFLOWS_UNAVAILABLE` with the reason, and so do the skills routes and `get_context`'s skill note when the package declares a `default` workflow (without one the bundled skills serve as usual). A name the manifest never declares, or declares and Publisher refuses for what the author wrote, is still a 404, with its `reason`. Fixing the cause and reloading serves the workflows again.
 - **One skill is skipped** (the workflow still serves, with a finding on its set): a `SKILL.md` that cannot be read or is not UTF-8, a frontmatter `name` that is not its directory name, a `SKILL.md` that would take the set's inline Markdown past 256 KiB, a `publisher.json` inside the skill, or a strict finding under `assets/` (a link, a link out of the skill, `..` or two names that differ only by case, a `SKILL.md`). A file that `.skillignore` or a walk budget hides is never looked at, so a `SKILL.md` below `assets/` that either one hides sets nothing aside; a `publisher.json` is the exception, found whether or not `.skillignore` matches it.
 - **One file is skipped** (the skill still serves): a file that breaks a limit, a reserved name, or a path or walk past its bound. See [Which files a skill holds](#which-files-a-skill-holds).
 - **A name repeated across a workflow's sets** is served from the first-listed set, with a finding on the workflow.
+
+A 404 from a workflow route says why. `GET …/workflows/{name}` and `GET …/workflows/{name}/skills/{path}` carry a `reason`, and so does `get_workflow`'s reply (with `workflow: null`), when the workflow is not found: `WORKFLOW_NOT_SERVED` when the manifest declares it and Publisher refuses it (the message is the refusal, the text of its `workflow-not-served` warning), and `WORKFLOW_NOT_DECLARED` when the manifest declares no workflow of that name. A served workflow with no skill set or file of the name asked for is a 404 with no `reason`.
 
 A skill with no `description` is served but flagged, since nothing tells a caller when to read it.
 
 ### Migrating from agents and a root `skills/`
 
-Package agents are gone: the `agents` key, its schedules, budget and model, tasks, `get_agent` and the `…/agents` routes. A manifest that declares `agents` loads with the warning `"agents" is no longer read; declare "workflows"`. A root `skills/` directory is no longer read on its own either. A package with one that no workflow lists as a skill set loads with the warning `skills/ is no longer read; move each skill into a skill set and list it under "workflows.default"`. Both warnings carry a code (`PACKAGE_AGENTS_NOT_READ`, `PACKAGE_SKILLS_DIR_NOT_READ`), and each load that hits one is counted in `publisher_deprecated_usage_total` (features `agents` and `skills_dir`). The count is of loads, not packages. Before you upgrade, find the affected packages by scanning stored packages for an `agents` key in `publisher.json` or a root `skills/` folder; after it, the two codes on a package's `warnings` name each one.
+Package agents are gone: the `agents` key, its schedules, budget and model, tasks, `get_agent` and the `…/agents` routes. A manifest that declares `agents` loads with a warning that points at this section. A root `skills/` directory is no longer read on its own either. A package with one that no workflow lists as a skill set loads with a warning that names the one-line fix below. Both warnings carry a code (`PACKAGE_AGENTS_NOT_READ`, `PACKAGE_SKILLS_DIR_NOT_READ`), and each load that hits one is counted in `publisher_deprecated_usage_total` (features `agents` and `skills_dir`). The count is of loads, not packages. Before you upgrade, find the affected packages by scanning stored packages for an `agents` key in `publisher.json` or a root `skills/` folder; after it, the two codes on a package's `warnings` name each one.
+
+The quickest migration of a root `skills/` moves no file: add `"workflows": { "default": { "skillSets": ["skills"] } }` to `publisher.json`, or `"skills"` to the `skillSets` of a `default` it already declares. The folder must hold `<skill>/SKILL.md`. The steps below also move files into the `workflows/<workflow>/skill_sets/<set>/` layout.
+
+**Always-on guidance becomes on-demand.** An agent's `instructions` reached every session on the package. A skill is read when its `description` matches the job, and a workflow's `instructions` only when a user names the workflow, so guidance moved into a skill is no longer always on. Guidance that must still reach every session goes in a skill of the `default` workflow, which every session on the package sees listed, with a `description` that says it always applies; guidance for one named job goes in that workflow's `instructions`.
 
 To migrate a package:
 
-1. Each old agent task becomes its own workflow, with the task file as `instructions`. A task's name is the workflow's name (`weekly-report.md` becomes `workflows.weekly-report`); move the file to `workflows/<name>/instructions.md`.
+1. Each old agent task becomes its own workflow, with the task file as `instructions`. A task's name is the workflow's name (`weekly-report.md` becomes `workflows.weekly-report`); move the file to `workflows/<name>/instructions.md`. An agent that had no tasks has no workflow to declare; see the walk-through below.
 2. An old agent's standing guidance (its `instructions`) moves into a skill, in a set of its own (`workflows/<name>/skill_sets/<set>/<skill>/SKILL.md`), with a one-sentence `description` saying when to read it. The agent's own `skills/<x>/` folders move into that set too. List the set in each workflow that needs it.
 3. Root `skills/<x>/` move to `workflows/default/skill_sets/<set>/<x>/`, and `default` is declared with that set. Declaring `"default": { "skillSets": ["skills"] }` instead keeps the folder where it is.
 4. Drop `schedules`, `budget` and `model`. Nothing runs a workflow on a schedule, and nothing sets a model or a budget. A recurring job needs a scheduler of your own that fetches the workflow.
 5. Delete `agents/` and the old root `skills/` in the same change, unless `default` lists `skills`.
+
+An agent that had no tasks, only standing `instructions` and perhaps `skills/<x>/` folders of its own, migrates to the `default` workflow:
+
+1. Its `instructions` file becomes `skills/analyst-guide/SKILL.md`: frontmatter with `name: analyst-guide` and a one-sentence `description` saying when to read it, then the old text as the body.
+2. Its own `skills/<x>/` folders move beside it, under `skills/`.
+3. Declare `"workflows": { "default": { "skillSets": ["skills"] } }`, and delete the `agents` key and `agents/`.
+
+What the agent used to get on every session it now gets when `analyst-guide`'s `description` matches the job.
 
 ### What a digest covers
 
@@ -169,9 +224,9 @@ A skill is a directory with a `SKILL.md` in the [agentskills.io](https://agentsk
 
 Rules for what is served:
 
-- A skill whose `name` matches a bundled skill replaces it for this package. Nothing is merged. Every entry carries an `origin` (`package` or `bundled`) saying which one you are reading.
+- A skill whose `name` matches a bundled skill replaces it for this package. Nothing is merged. Every entry carries an `origin` (`package` or `bundled`) saying which one you are reading. Credible's agent does not replace: it skips such a package skill and keeps the bundled one, so a package that must behave the same in both gives its skill a name no bundled skill has.
 - Every file is read through its real path, and one that resolves outside the package is not served, so a link cannot pull in a file from elsewhere on the machine. A link to a Markdown file inside the package is followed; any other link is skipped with a warning. A skill set folder that is itself a link out of the package refuses the workflows that list it.
-- A skill whose `SKILL.md` cannot be read or is not UTF-8 text, or whose frontmatter `name` differs from its directory name, is skipped with a finding on its set. One with no `description` is served but flagged. A file that breaks a limit is skipped alone, without dropping its skill. Each case is a load warning naming the fix, and the package still loads.
+- A skill whose `SKILL.md` cannot be read or is not UTF-8 text, or whose frontmatter `name` differs from its directory name, is skipped with a finding on its set. One with no `description` is served but flagged. A file that breaks a limit is skipped alone, without dropping its skill. Each case is a load warning, and the package still loads.
 - The frontmatter is read as YAML 1.2. One that does not parse, repeats a key, is over 4 KiB, or expands past 5 times its source plus 10,000 characters is served as an empty `frontmatter`, with `name` and `description` read line by line and a warning.
 
 ### Which files a skill holds

@@ -19,7 +19,31 @@ Create a workflow only when the user asks for one, asks for a job that other peo
 
 ## The layout
 
-Workflows live under the `workflows` object of the package's `publisher.json`, keyed by name:
+Workflows live under the `workflows` object of the package's `publisher.json`, keyed by name. The shortest layout lists one folder of skills:
+
+```
+publisher.json
+analyst/
+  margin-rules/
+    SKILL.md
+```
+
+```json
+{ "name": "storefront", "workflows": { "analyst": { "skillSets": ["analyst"] } } }
+```
+
+`analyst/margin-rules/SKILL.md` is a complete skill (`name` equals the directory's name; `description` is one sentence saying when to read it):
+
+```markdown
+---
+name: margin-rules
+description: Use when a question involves margin, so net revenue is not mistaken for gross.
+---
+
+Margin is net revenue less cost, never gross revenue less cost. `margin_pct` in `orders.malloy` already does this; use it.
+```
+
+A package with several workflows follows the convention `workflows/<workflow>/skill_sets/<set>/`:
 
 ```json
 {
@@ -59,7 +83,8 @@ A workflow with neither `instructions` nor `skillSets` has nothing to serve and 
 
 ### Skill sets
 
-A **skill set** is a folder whose subfolders are skills (`<set>/<skill>/SKILL.md`). Its name is its folder's name, which is what a chat picks it by and what `skill_set` (MCP) or `skillSet` (REST) takes. Convention: `workflows/<workflow>/skill_sets/<set>/`. A set can be listed by several workflows (list the path again); it is read once.
+A **skill set** is a folder whose subfolders are skills (`<set>/<skill>/SKILL.md`). Its name is its folder's name, which is what a chat picks it by and what `skill_set` (MCP) or `skillSet` (REST) takes. Any folder inside the package works (`analyst/` above); the convention for several workflows is `workflows/<workflow>/skill_sets/<set>/`. A set can be listed by several workflows (list the path again); it is read once.
+- A folder that holds a `SKILL.md` itself is a skill, not a set: list its parent folder (or move it into a folder and list that), or it loads nothing.
 
 - The folder name must meet the same regex as a workflow name, and two entries of one workflow may not share a name or a path.
 - A skill is its whole directory: `SKILL.md`, other Markdown (`references/` is the default folder for it; an existing `reference/` keeps working), `scripts/` the skill runs as commands, and `assets/` or any other folder of files it copies. Frontmatter `name` must equal the directory name.
@@ -70,7 +95,7 @@ A **skill set** is a folder whose subfolders are skills (`<set>/<skill>/SKILL.md
 
 `workflows.default` holds what used to be the package's root `skills/`. Its skills, beside the bundled ones, are what `get_skill` and `get_context` advertise to every session on the package, with no one naming a workflow. So put there only guidance that applies to every use of the package (what a measure counts, vocabulary, house rules). Anything for one job goes in that job's own workflow.
 
-A package's `agents` key is **no longer read**, and neither is a root `skills/` directory on its own: it is read only when a workflow lists it as a skill set (`"skillSets": ["skills"]` migrates with no file moved, if the folder holds `<skill>/SKILL.md`). A package with either left unlisted loads with a warning (`PACKAGE_AGENTS_NOT_READ`, `PACKAGE_SKILLS_DIR_NOT_READ`) naming the move below.
+A package's `agents` key is **no longer read**, and neither is a root `skills/` directory on its own: it is read only when a workflow lists it as a skill set. The one-line fix moves no file: `"workflows": { "default": { "skillSets": ["skills"] } }`, if the folder holds `<skill>/SKILL.md`. A package with either left unlisted loads with a warning (`PACKAGE_AGENTS_NOT_READ`, `PACKAGE_SKILLS_DIR_NOT_READ`) that names the fix.
 
 ## Instructions or skills
 
@@ -93,7 +118,7 @@ Every set has a `digest` (SHA-256 over its path and what it serves: each inline 
 
 ## Refusal versus skip
 
-The manifest is an allowlist, and Publisher never takes the package offline for a workflow mistake. What breaks decides how much is lost; every finding is in the package's load warnings.
+The manifest is an allowlist, and Publisher never takes the package offline for a workflow mistake. What breaks decides how much is lost; every finding is in the package's load warnings, with a `code` (`workflow-not-served`, `skill-shadowed`, `skill-file-skipped`, `skill-finding`) and a `subject` (the workflow's name, or the skill set's path). A refused workflow's `GET …/workflows/{name}` and `get_workflow` answer not-found with a `reason`: `WORKFLOW_NOT_SERVED` (the message is the refusal) or `WORKFLOW_NOT_DECLARED`.
 
 - **The whole workflow is refused** (not served; `Workflow '<name>' is not served: <why>`): a bad name, a key Publisher does not know, a non-object entry, an empty `description`, an `instructions` file that is missing, not `.md`, over 16 KiB or under a nested `publisher.json`, a bad `skillSets` list (not a list, over 8, a folder that is missing, outside the package, badly named or listed twice), a set folder that cannot be read, or nothing to serve. Use an `x-` prefix (`"x-owner": "finance"`) for notes you want ignored. `tools`, `hooks`, `permission-mode` and similar are not keys: a definition adds words to a session and never widens what the session may do.
 - **One skill is skipped** (the workflow still serves, with a set finding): an unreadable `SKILL.md`, a `name` that is not its directory name, an `assets/` that is a link or leaves the skill, a symlink, `..` or case-colliding names under `assets/`, a `SKILL.md` under `assets/`, a `SKILL.md` that does not fit the set's budget, or a `publisher.json` at the skill's root, in its `reference/` or `references/`, or anywhere under `assets/` (it would make the directory a second package root). A `publisher.json` elsewhere in a skill (say `scripts/`) only skips that file.
@@ -104,9 +129,13 @@ The manifest is an allowlist, and Publisher never takes the package offline for 
 
 1. **Each old agent task becomes its own workflow**, with the task file as that workflow's `instructions`. A task's name is the workflow's name (`weekly-report.md` becomes `workflows.weekly-report`). Move the file to `workflows/<name>/instructions.md`.
 2. **An old agent's standing guidance (its `instructions`) moves into a skill**, in a set of its own (`workflows/<name>/skill_sets/<set>/<skill>/SKILL.md`), with a one-sentence `description` saying when to read it; its old `skills/<x>/` folders move into that set too. List the set in each workflow that needs it.
-3. **Root `skills/<x>/` move to `workflows/default/skill_sets/<set>/<x>/`**, and `default` is declared with that set. (Declaring `"default": { "skillSets": ["skills"] }` instead keeps the folder where it is; the move is only for tidiness.)
+3. **Root `skills/<x>/` stay where they are** when `default` is declared with `"skillSets": ["skills"]`, the one-line fix. Moving them to `workflows/default/skill_sets/<set>/<x>/` is only for tidiness.
 4. `schedules`, `budget`, `model` and tasks are gone: nothing runs a workflow on a schedule, and nothing here sets a model or a budget. Drop them, and tell the user a recurring job now needs a scheduler of their own that fetches the workflow.
 5. Delete `agents/` and the old root `skills/` in the same change (unless `default` lists `skills`); leaving them behind keeps the load warnings.
+
+**Always-on guidance becomes on-demand.** An agent's `instructions` reached every session on the package. A skill is read when its `description` matches the job, and a workflow's `instructions` only when a user names the workflow. Tell the user which guidance now needs to be always on, put it in a skill of the `default` workflow with a `description` that says it always applies, and put guidance for one named job in that workflow's `instructions`.
+
+**An agent that had no tasks** has no workflow to declare. Its `instructions` file becomes `skills/analyst-guide/SKILL.md` (frontmatter `name` and a one-sentence `description`, then the old text), its own `skills/<x>/` folders move beside it, and `"workflows": { "default": { "skillSets": ["skills"] } }` declares the set.
 
 ## Writing instructions that work unattended
 
