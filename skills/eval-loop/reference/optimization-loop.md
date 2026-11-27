@@ -173,6 +173,23 @@ with how often each was asked, the edit, before and after on the targets and the
 controls, the run ids, and what a person must settle (unverified keys,
 undecided verdicts, doubted keys, failures diagnosed as the eval's own).
 
+**Checking the speed guesses.** `simulate` picks tables exactly (every
+combination of up to 16 candidates); what it can get wrong is its inputs. After
+the pick is built and replayed, check it:
+
+```bash
+python3 eval.py simulate --set <set> --check <sim> --against <replay of the built pick>
+python3 eval.py simulate --set <set> --from <replay> --candidate <next pick> \
+    --calibrate <workdir>/simulations/<sim>/check-<replay>.json
+```
+
+The check compares each query's time and each table's build time with what
+was measured, and ranks the three guesses (how long a table read takes, which
+queries a table answers, how long a build takes) by how far each moved the
+predicted warehouse time a day. `--calibrate` uses what it measured in place of
+the first and last. On a 10-million-row bench, a calibration from one build cut
+the total error on a different candidate from 1,115 to 347 ms a day.
+
 **Keeping the history in a database that takes no inserts.** The history
 tables only grow, and a managed database cannot add rows to a table. So each
 export is a batch:

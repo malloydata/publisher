@@ -554,8 +554,9 @@ def pr_body(R: Any, imp: dict[str, Any]) -> str:
         lines.append(f"- {e['what']}")
     if not accepted:
         lines.append("- No edit was accepted.")
-    lines += ["", "## Why: production failures it closes", ""]
-    for e in accepted:
+    lines += ["", "## Why: production failures it closes" if accepted
+              else "## The production failures the edits aimed at", ""]
+    for e in accepted or [e for e in imp.get("edits") or [] if e.get("targets")]:
         for q in e.get("targets") or []:
             c = cases.get(q) or {}
             sf = c.get("sourceFields") or {}

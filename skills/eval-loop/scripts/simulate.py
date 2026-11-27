@@ -251,11 +251,13 @@ def score(rows: list[dict[str, Any]], tables: list[dict[str, Any]],
             return p95(xs)
         return round(sum(ms * c for ms, c in xs), 1)
 
-    # The build: about one pass over the base, as the slowest live query on it.
+    # The build: about one pass over the base, as the slowest live query on it,
+    # scaled by what a check measured (`build_factor`, 1 until calibrated).
     build = 0.0
     for t in serving:
         on = [r["median_ms"] for r in rows if (r.get("shape") or {}).get("sourceName") == t["source"]]
         build += max(on) if on else 0.0
+    build *= obj.get("build_factor") or 1.0
     stale = obj["max_staleness_hours"]
     per_day = math.ceil(24 / stale) if stale else 24
     build_day = round(build * per_day, 1)
@@ -396,10 +398,16 @@ def options(rows: list[dict[str, Any]], tables: list[dict[str, Any]],
 
 # ------------------------------------------------------------------ check (learn)
 
-def check(sim: dict[str, Any], replay_rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Each prediction of the simulation's first non-baseline option against a
-    replay of the built candidate: did a table answer it, and how close was the
-    predicted time."""
+def check(sim: dict[str, Any], replay_rows: list[dict[str, Any]],
+          builds: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Each guess of the simulation's first non-baseline option against a
+    replay of the built candidate: which table answered each query and in how
+    long, and what each table took to build (`builds`, the replay's
+    `materialization.builds`).
+
+    `guesses` ranks the three estimates by how far each moved the predicted
+    warehouse time a day, so the one to improve first is on top. `calibration`
+    is what was measured, for the next `simulate --calibrate`."""
     opt = next((o for o in sim["options"] if o["option"] != "baseline"), None)
     if not opt:
         raise SystemExit("the simulation has no option to check")
@@ -410,16 +418,47 @@ def check(sim: dict[str, Any], replay_rows: list[dict[str, Any]]) -> dict[str, A
             continue
         m = measured[p["qid"]]
         kind = (m.get("served_by") or {}).get("kind")
-        out.append({"qid": p["qid"], "predicted_covered": p["covered"],
+        out.append({"qid": p["qid"], "count": p.get("count") or 1,
+                    "predicted_covered": p["covered"],
                     "answered_by_table": kind not in ("live", None),
                     "predicted_ms": p["predicted_ms"], "measured_ms": m["median_ms"],
                     "error_ms": round(m["median_ms"] - p["predicted_ms"], 1)})
     wrong = [c for c in out if c["predicted_covered"] != c["answered_by_table"]]
-    hits = [c for c in out if c["answered_by_table"]]
+    hits = [c for c in out if c["answered_by_table"] and c["predicted_covered"]]
     read = sorted(c["measured_ms"] for c in hits)
+    served = {t.get("name") for t in opt.get("tables") or [] if t.get("kind") != "refused"}
+    built = [b for b in builds or [] if b.get("source") in served and b.get("buildMs") is not None]
+    measured_build = sum(b["buildMs"] for b in built) if built else None
+    per_day = opt.get("refreshes_per_day") or 1
+    guesses = [
+        {"guess": "table_read_ms: how long a query a table answers takes",
+         "error_ms_per_day": round(sum((c["measured_ms"] - c["predicted_ms"]) * c["count"]
+                                       for c in hits), 1)},
+        {"guess": "which queries a table answers (the router's grain rule)",
+         "error_ms_per_day": round(sum((c["measured_ms"] - c["predicted_ms"]) * c["count"]
+                                       for c in wrong), 1)}]
+    if measured_build is not None:
+        guesses.append({"guess": "build time: about the slowest live query on the source",
+                        "error_ms_per_day": round((measured_build - opt["build_ms"]) * per_day, 1)})
+    guesses.sort(key=lambda g: -abs(g["error_ms_per_day"]))
+    calibration = {}
+    if read:
+        calibration["table_read_ms"] = read[len(read) // 2]
+    if measured_build is not None and opt.get("build_ms"):
+        calibration["build_factor"] = round(
+            measured_build / opt["build_ms"] * sim["objective"].get("build_factor", 1.0), 4)
     return {"option": opt["option"], "queries": len(out), "coverage_wrong": wrong,
-            "measured_table_read_ms": read[len(read) // 2] if read else None,
-            "assumed_table_read_ms": sim["objective"]["table_read_ms"], "per_query": out}
+            "measured_table_read_ms": calibration.get("table_read_ms"),
+            "assumed_table_read_ms": sim["objective"]["table_read_ms"],
+            "predicted_build_ms": opt.get("build_ms"), "measured_build_ms": measured_build,
+            "guesses": guesses, "calibration": calibration, "per_query": out}
+
+
+def calibrate(obj: dict[str, Any], path: pathlib.Path) -> dict[str, Any]:
+    """The objective with what a check measured in place of the guesses."""
+    cal = json.loads(path.read_text()).get("calibration") or {}
+    return {**obj, **{k: v for k, v in cal.items() if v is not None},
+            "calibratedFrom": str(path)}
 
 
 # ------------------------------------------------------------------ output
@@ -495,6 +534,9 @@ def assumptions(obj: dict[str, Any], tier: str) -> list[str]:
                                        "to meet max_staleness_hours" if obj["max_staleness_hours"]
                                        else "hour (no max_staleness_hours set)")),
            "storage is not priced: the server reports no table size here",
+           *([f"calibrated from {obj['calibratedFrom']}: table_read_ms and build_factor = "
+              f"{obj.get('build_factor', 1):g} are what that check measured"]
+             if obj.get("calibratedFrom") else []),
            ("live queries and builds are priced on the warehouse, table reads on Credible at "
             + (f"credible_usd_per_compute_hour = {obj['credible_usd_per_compute_hour']:g}"
                if obj.get("credible_usd_per_compute_hour")
@@ -514,6 +556,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="an edited package directory, dry-run published to read its tables")
     ap.add_argument("--check", help="a simulation's label, to compare with --against")
     ap.add_argument("--against", help="with --check: a replay of the built candidate")
+    ap.add_argument("--calibrate", type=pathlib.Path,
+                    help="a check file (simulations/<sim>/check-<replay>.json): use what it "
+                         "measured for table_read_ms and the build time")
     ap.add_argument("--label", default=None)
     ap.add_argument("--package", action="store_true",
                     help="also write the options app, a servable package, under the simulation")
@@ -524,11 +569,19 @@ def main(argv: list[str] | None = None) -> int:
         if not a.against:
             raise SystemExit("--check needs --against <replay label>")
         sim = json.loads((sims / a.check / "options.json").read_text())
-        got = check(sim, read_replay(runs / a.against))
-        (sims / a.check / f"check-{a.against}.json").write_text(json.dumps(got, indent=1))
+        meta = json.loads((runs / a.against / "run.json").read_text())
+        got = check(sim, read_replay(runs / a.against),
+                    (meta.get("materialization") or {}).get("builds"))
+        out = sims / a.check / f"check-{a.against}.json"
+        out.write_text(json.dumps(got, indent=1))
         print(f"{got['queries']} predictions checked against {a.against}: "
               f"{len(got['coverage_wrong'])} wrong about which table answers; a table answered in "
-              f"{got['measured_table_read_ms']} ms (assumed {got['assumed_table_read_ms']:g})")
+              f"{got['measured_table_read_ms']} ms (assumed {got['assumed_table_read_ms']:g}); "
+              f"the build took {got['measured_build_ms']} ms (assumed {got['predicted_build_ms']})")
+        print("which guess was furthest off, in warehouse ms a day:")
+        for g in got["guesses"]:
+            print(f"  {g['error_ms_per_day']:+g}  {g['guess']}")
+        print(f"next: simulate --from <replay> --calibrate {out}")
         for c in got["coverage_wrong"]:
             print(f"  {c['qid']}: predicted {'a table' if c['predicted_covered'] else 'live'}, "
                   f"measured {'a table' if c['answered_by_table'] else 'live'}")
@@ -536,6 +589,8 @@ def main(argv: list[str] | None = None) -> int:
     if not a.from_run:
         raise SystemExit("--from <replay label> is required")
     obj = objective(cfg)
+    if a.calibrate:
+        obj = calibrate(obj, a.calibrate)
     rows = read_replay(runs / a.from_run)
     errors: list[str] = []
     if a.candidate:

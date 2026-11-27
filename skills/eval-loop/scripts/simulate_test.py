@@ -231,5 +231,36 @@ class Main(unittest.TestCase):
         self.assertIn('Fix: objective = "weighted_ms"', str(e.exception))
 
 
+class Calibrate(unittest.TestCase):
+    def test_the_check_ranks_each_guess_and_a_calibration_replaces_them(self):
+        t = {"kind": "rollup", "source": "order_items", "grain": ["category", "region"],
+             "measures": ["total_sales"], "tier": "dry-run", "name": "tbl"}
+        opts, preds = sim.options(ROWS, [t], OBJ, candidate=True)
+        s = {"objective": OBJ, "options": opts, "predictions": preds}
+        replay = [{**r, "median_ms": 4 if r["qid"] in ("by_category", "by_cat_region") else r["median_ms"],
+                   "served_by": {"kind": "rollup" if r["qid"] in ("by_category", "by_cat_region") else "live"}}
+                  for r in ROWS]
+        got = sim.check(s, replay, [{"source": "tbl", "buildMs": 50}])
+        self.assertEqual((got["predicted_build_ms"], got["measured_build_ms"]), (200, 50))
+        self.assertEqual(got["calibration"], {"table_read_ms": 4, "build_factor": 0.25})
+        by = {g["guess"].split(":")[0]: g["error_ms_per_day"] for g in got["guesses"]}
+        self.assertEqual(by["build time"], (50 - 200) * 4)
+        covered = sum(r["count"] for r in ROWS if r["qid"] in ("by_category", "by_cat_region"))
+        self.assertEqual(by["table_read_ms"], (4 - 10) * covered)
+        # Largest first.
+        self.assertEqual([abs(g["error_ms_per_day"]) for g in got["guesses"]],
+                         sorted((abs(g["error_ms_per_day"]) for g in got["guesses"]), reverse=True))
+        cal = sim.calibrate(OBJ, self.write(got))
+        again, _ = sim.score(ROWS, [t], cal, "x")
+        self.assertEqual(again["build_ms"], 50)
+
+    def write(self, got):
+        import tempfile
+        f = pathlib.Path(tempfile.mkdtemp()) / "check.json"
+        f.write_text(json.dumps(got))
+        self.addCleanup(lambda: f.unlink())
+        return f
+
+
 if __name__ == "__main__":
     unittest.main()
