@@ -1,0 +1,187 @@
+/* Copyright (c) Credible Data Inc.
+   SPDX-License-Identifier: MIT */
+:root {
+  /* The bivariate key, --bi-<a third><b third>, mixed from the accent (measure a) and --c2 (measure b) rather than
+     written as hex, so an app that sets the accent moves one axis with it. Both low sits near the page; both high is
+     the darkest. */
+  --bi-00: color-mix(in oklab, var(--accent) 10%, var(--bg));
+  --bi-10: color-mix(in oklab, var(--accent) 30%, var(--bg));
+  --bi-20: color-mix(in oklab, var(--accent) 68%, var(--bg));
+  --bi-01: color-mix(in oklab, var(--c2) 30%, var(--bg));
+  --bi-02: color-mix(in oklab, var(--c2) 68%, var(--bg));
+  --bi-11: color-mix(in oklab, color-mix(in oklab, var(--accent), var(--c2)) 50%, var(--bg));
+  --bi-21: color-mix(in oklab, color-mix(in oklab, var(--accent) 70%, var(--c2)) 78%, var(--bg));
+  --bi-12: color-mix(in oklab, color-mix(in oklab, var(--accent) 30%, var(--c2)) 78%, var(--bg));
+  --bi-22: color-mix(in oklab, color-mix(in oklab, var(--accent), var(--c2)) 80%, var(--text-strong));
+}
+.fx { position: relative; }
+.fx svg { display: block; max-width: 100%; overflow: visible; }
+.fx text { font: 500 11px/1 var(--font-ui); fill: var(--text-muted); font-variant-numeric: tabular-nums; }
+.fx .fx-head { font-weight: 600; letter-spacing: var(--tr-caps); text-transform: uppercase; fill: var(--text-muted); }
+.fx .fx-strong { fill: var(--text-strong); font-weight: 650; }
+.fx .fx-note { fill: var(--text-strong); font-weight: 600; font-size: 11.5px; }
+.fx .fx-accent { fill: var(--accent); }
+.fx .fx-halo { paint-order: stroke; stroke: var(--bg); stroke-width: 3.5px; stroke-linejoin: round; }
+.fx .fx-good { fill: var(--down); font-weight: 650; }
+.fx .fx-bad { fill: var(--up); font-weight: 650; }
+.fx .fx-grid { stroke: var(--grid); }
+.fx .fx-base { stroke: var(--border-strong); }
+.fx .fx-leader { stroke: var(--text-soft); stroke-width: 1; }
+.fx .fx-tick { fill: var(--text-muted); }
+.fx .fx-axis-title { font-weight: 600; fill: var(--text-muted); letter-spacing: 0.02em; }
+.fx-axis { stroke: var(--border-strong); stroke-width: 1; }
+.fx-empty, .fx-left-out { margin: var(--sp-2) 0 0; font: italic 400 var(--fs-sm)/1.45 var(--font-serif); color: var(--text-muted); }
+.fx [data-pick] { cursor: pointer; }
+.fx [data-pick]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fx :is(rect, circle, path)[data-pick]:focus-visible,
+.fx [data-pick]:focus-visible > :is(rect, circle, path):first-of-type { stroke: var(--accent); stroke-width: 2.5px; }
+.fx-tile:hover rect { stroke: var(--text-strong); stroke-width: 1.5; }
+.fx-tile.is-selected rect { stroke: var(--text-strong); stroke-width: 2.5; }
+.fx .fx-tile__ab { font-weight: 700; font-size: 11px; }
+.fx .fx-tile__v { font-size: 10px; }
+.fx-tile__spark { fill: none; stroke-width: 1.2; opacity: 0.6; }
+.fx-tile__mark { fill: var(--bg); stroke: var(--text-strong); stroke-width: 1.5; }
+.map-legend i.fx-key-ring { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--text-strong); background: var(--bg); }
+.fx-slope__row line, .fx-bump__row path { stroke: var(--border-strong); stroke-width: 1.5; fill: none; }
+.fx-slope__row circle { fill: var(--border-strong); }
+.fx-slope__row.is-on line, .fx-bump__row.is-on path { stroke: var(--accent); stroke-width: 2.5; }
+.fx-slope__row.is-on circle { fill: var(--accent); }
+.fx-slope__row.is-on text, .fx-bump__row.is-on text.fx-halo { fill: var(--text-strong); font-weight: 650; }
+.fx-slope__row:hover line, .fx-bump__row:hover path { stroke: var(--text-strong); }
+.fx-bump__row circle { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 1.5; }
+.fx-bump__row.is-on circle { fill: var(--accent); stroke: var(--accent); }
+.fx .fx-bump__n { font-size: 10px; font-weight: 650; fill: var(--text-muted); }
+.fx .fx-bump__row.is-on .fx-bump__n { fill: var(--bg); }
+.fx-bump__row:hover circle { stroke: var(--text-strong); }
+.fx-dot { fill: var(--c-bar); opacity: 0.55; }
+.fx-dot.is-on { fill: var(--accent); opacity: 1; stroke: var(--bg); stroke-width: 1; }
+.fx-dot:hover { opacity: 1; }
+.fx-seg { stroke: var(--bg); stroke-width: 0.75; }
+.fx-seg.is-dim { opacity: 0.25; }
+.fx-seg:hover { opacity: 0.85; }
+.fx-net { stroke: var(--text-strong); stroke-width: 2; }
+.fx-key { margin-bottom: var(--sp-2); color: var(--text-muted); font-size: var(--fs-xs); }
+.fx-waffle { display: flex; flex-wrap: wrap; gap: var(--sp-5); align-items: flex-start; }
+.fx-waffle__grid { flex: 0 1 260px; min-width: 150px; display: grid; grid-template-columns: repeat(10, 1fr); gap: 3px; aspect-ratio: 1; }
+.fx-waffle__grid i { display: block; border-radius: 2px; }
+.fx-waffle i.is-rest { background: var(--nodata, var(--surface-2)); }
+.fx-waffle__grid i.is-dim, .fx-waffle__keys li.is-dim { opacity: 0.25; }
+.fx-waffle__keys { flex: 1 1 200px; list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-3); }
+.fx-waffle__keys li { display: grid; grid-template-columns: 12px 3.2em 1fr; gap: var(--sp-2); align-items: baseline; font-size: var(--fs-sm); color: var(--text-strong); }
+.fx-waffle__keys li[data-pick]:hover { color: var(--accent); }
+.fx-waffle__keys i { width: 12px; height: 12px; border-radius: 2px; align-self: center; }
+.fx-waffle__pct { font: 300 var(--fs-xl)/1 var(--font-display); }
+.fx-waffle__keys small { display: block; color: var(--text-muted); font-size: var(--fs-xs); }
+.fx-arrow__shaft { stroke: var(--accent); stroke-width: 2.5; }
+.fx-arrow__head { fill: var(--accent); }
+.fx-arrow__from { fill: var(--bg); stroke: var(--text-soft); stroke-width: 2; }
+.fx-arrow.is-dim { opacity: 0.3; }
+.fx .fx-cat { fill: var(--text-strong); font-size: 11.5px; font-weight: 600; }
+.fx-multiples { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--sp-5) var(--sp-4); }
+@media (max-width: 800px) { .fx-multiples { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.fx-mult { margin: 0; border-top: 1px solid var(--border); padding-top: var(--sp-2); min-width: 0; }
+.fx-mult figcaption { display: grid; gap: 2px; margin-bottom: var(--sp-2); overflow-wrap: anywhere; }
+.fx-mult figcaption b { font: 300 var(--fs-xl)/1.1 var(--font-display); color: var(--text-strong); }
+.fx-mult figcaption small { font: 400 var(--fs-xs)/1.3 var(--font-serif); color: var(--text-muted); }
+.fx-mult__area { fill: var(--c-bar); opacity: 0.14; }
+.fx-mult__line { fill: none; stroke: var(--c-bar); stroke-width: 1.6; }
+.fx-mult__dot { fill: var(--c-bar); }
+.fx-mult.is-accent { border-top: 2px solid var(--accent); }
+.fx-mult.is-accent b { color: var(--accent); font-weight: 400; }
+.fx-mult.is-accent .fx-mult__area { fill: var(--accent); opacity: 0.16; }
+.fx-mult.is-accent .fx-mult__line { stroke: var(--accent); stroke-width: 2.2; }
+.fx-mult.is-accent .fx-mult__dot { fill: var(--accent); }
+.fx-cmap { width: 100%; max-width: 920px; margin: 0 auto; }
+.fx-cmap__state { fill: var(--nodata, var(--surface-2)); stroke: var(--bg); stroke-width: 1; }
+.fx-cmap__state[data-pick] { fill: var(--surface-2); }
+.fx-cmap__state[data-pick]:hover { fill: var(--border); }
+.fx-cmap__state.is-selected { fill: var(--accent-soft); stroke: var(--text-strong); stroke-width: 1.5; }
+.fx-cmap__dot { fill: var(--c-bar); fill-opacity: 0.62; stroke: var(--bg); stroke-width: 1; }
+.fx-cmap__dot.is-on { stroke: var(--text-strong); stroke-width: 2; }
+.fx-cmap__dot.is-selected { fill-opacity: 0.95; stroke: var(--text-strong); stroke-width: 2.5; }
+.fx-cmap__key circle { fill: none; stroke: var(--text-soft); }
+.fx-cs__path { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; opacity: 0.9; }
+.fx-cs__dot { fill: var(--accent); stroke: transparent; stroke-width: 8px; }
+.fx-cs__start { fill: var(--bg); stroke: var(--accent); stroke-width: 2; }
+.fx .fx-label { font-size: 11px; fill: var(--text); }
+.fx .fx-label--strong { font-weight: 700; fill: var(--text-strong); }
+.bi-legend { display: flex; align-items: flex-start; gap: var(--sp-3); margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--text-muted); }
+.bi-grid { display: grid; grid-template-columns: repeat(3, 16px); gap: 2px; flex-shrink: 0; }
+.bi-grid i { width: 16px; height: 16px; display: block; }
+.bi-words { display: grid; gap: 3px; line-height: 1.35; }
+.bi-none { display: inline-flex; align-items: center; gap: 6px; }
+.bi-none i { display: inline-block; width: 16px; height: 10px; }
+.bi-key { display: grid; grid-template-columns: auto auto; grid-template-rows: auto auto; gap: 4px; align-items: center; flex-shrink: 0; }
+.bi-key__y { writing-mode: vertical-rl; transform: rotate(180deg); font: 600 10px/1 var(--font-ui); letter-spacing: var(--tr-caps); text-transform: uppercase; color: var(--text-muted); }
+.bi-key__x { grid-column: 2; font: 600 10px/1 var(--font-ui); letter-spacing: var(--tr-caps); text-transform: uppercase; color: var(--text-muted); }
+.fx-hatch-key { background: repeating-linear-gradient(45deg, var(--nodata, var(--surface-2)) 0 3px, var(--border-strong) 3px 4px); }
+.fx .fx-name { font-size: 12px; fill: var(--text); }
+.fx .fx-name--strong { font-weight: 700; fill: var(--text-strong); }
+.fx .fx-value { font-size: 11px; font-weight: 600; fill: var(--text-strong); }
+.fx .fx-cell { font-size: 10.5px; font-weight: 600; }
+.fx-zero { stroke: var(--text-strong); stroke-width: 1; }
+.fx-link { stroke: var(--text-soft); stroke-width: 1; }
+.fx-break { stroke: var(--bg); stroke-width: 2.5; fill: none; }
+.fx-rowbg { fill: transparent; }
+.fx-row:hover .fx-rowbg, .fx-row.is-selected .fx-rowbg { fill: var(--surface-2); }
+.fx-row.is-selected .fx-name { font-weight: 700; fill: var(--text-strong); }
+.fx-mk-col.is-selected .fx-name { font-weight: 700; fill: var(--text-strong); }
+.fx-mk-hit { fill: transparent; }
+.fx-mk-col rect[data-pick]:hover { opacity: 0.85; }
+.fx-mk-col rect.is-dim { opacity: 0.3; }
+.fx-legend { margin-bottom: var(--sp-2); }
+
+/* The core charts, the maps and the tooltip */
+.fx-ax text { fill: var(--text-muted); font: 400 11px var(--font-ui); }
+.fx-ax line { stroke: var(--grid); }
+.fx-ax--x line { display: none; }
+.fx .fx-lab { fill: var(--text); font-size: 12px; font-weight: 400; }
+.fx .fx-small { font-size: 11px; }
+.fx .fx-tiny { font-size: 9px; font-weight: 650; letter-spacing: 0.04em; }
+.fx .fx-caps { font-size: 10.5px; font-weight: 600; letter-spacing: var(--tr-caps); fill: var(--text-muted); }
+.fx .fx-num { fill: var(--text-strong); font-size: 12px; font-weight: 600; }
+.fx .fx-end { font-size: 12px; font-weight: 600; }
+.fx .fx-inside { font-size: 12px; font-weight: 600; }
+.fx .fx-corner { font: italic 400 12px var(--font-serif); fill: var(--text-muted); }
+.fx .fx-pin { fill: var(--text-strong); font-weight: 600; }
+.fx .fx-centre { fill: var(--text-strong); font-size: 15px; font-weight: 650; }
+.fx .fx-group { fill: var(--text-strong); font-size: 12.5px; font-weight: 650; }
+.fx .fx-node-name { fill: var(--text-strong); font-size: 12px; }
+.fx .fx-tm-name { font-size: 12px; font-weight: 650; }
+.fx-mark { transition: opacity .15s; }
+.fx-mark:hover, .fx-hc:hover, .fx-tmap:hover, .fx-node:hover { stroke: var(--text-strong); stroke-width: 1.5; }
+.fx-hc.is-on, .fx-tmap.is-on, .fx-node.is-on { stroke: var(--text-strong); stroke-width: 2.5; }
+.fx-pt { stroke: var(--bg); stroke-width: 1; }
+.fx-period { fill: var(--period); }
+.fx-ref line { stroke-dasharray: 4 3; }
+.fx-rule { stroke: var(--text-strong); stroke-opacity: 0.3; pointer-events: none; }
+.fx-diagonal { stroke: var(--text-soft); stroke-dasharray: 4 3; }
+.fx-join { stroke: var(--border-strong); stroke-width: 2; }
+.fx-row { fill: transparent; }
+.fx-row:hover, .fx-row.is-on { fill: var(--surface-2); }
+.fx-brush .selection { fill: var(--accent); fill-opacity: 0.08; stroke: var(--accent); }
+.fx-band { fill: none; stroke-opacity: 0.3; transition: stroke-opacity .15s; }
+.fx-band.is-lit { stroke-opacity: 0.65; }
+.fx-band.is-dim { stroke-opacity: 0.06; }
+.fx-scroll { overflow-x: auto; }
+.fx-hex-base { fill: var(--surface-2); }
+.fx-hex { stroke: var(--bg); stroke-width: 0.35; }
+.fx-hex:hover { stroke: var(--text-strong); stroke-width: 1.2; }
+.fx-hex-box { fill: none; stroke: var(--text-strong); stroke-width: 1.5; }
+.fx-map-wrap { position: relative; overflow: hidden; }
+/* A map zooms inside its own box: without this, a zoomed map spills over the cards and the scope bar around it. */
+.fx-map-wrap svg { overflow: hidden; }
+.fx-map-tools { position: absolute; right: var(--sp-2); top: var(--sp-2); display: flex; flex-direction: column; gap: var(--sp-1); }
+/* The map's own controls keep their shape whatever look the app's buttons take (a links look would make them glyphs). */
+.fx .fx-map-tools .btn { width: 32px; height: 32px; padding: 0; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); color: var(--text-strong); font: 600 16px/1 var(--font-ui); letter-spacing: 0; text-transform: none; box-shadow: 0 1px 2px rgb(0 0 0 / 0.08); }
+.fx-tip { position: absolute; z-index: 30; display: none; max-width: 280px; padding: var(--sp-2) var(--sp-3); pointer-events: none; background: var(--text-strong); color: var(--bg); border-radius: 6px; font: 400 var(--fs-sm)/1.4 var(--font-ui); box-shadow: 0 6px 20px rgb(0 0 0 / 0.18); }
+.fx-tip strong { display: block; color: inherit; font-weight: 650; }
+.fx-tip span { display: block; }
+.fx [data-link] { transition: opacity .18s ease, stroke-width .18s ease; }
+.has-hot [data-link]:not(.fx-hot) { opacity: .32 !important; }
+svg .fx-hot { stroke: var(--text-strong); stroke-width: 1.5px; paint-order: stroke; }
+.rt tr { transition: background-color .18s ease; }
+.rt tr.fx-hot { background: var(--accent-soft); }
+.rt__name a { color: inherit; text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; }
+.rt__name a:hover { color: var(--accent); text-decoration-color: currentColor; }
+@media (prefers-reduced-motion: reduce) { .fx [data-link], .rt tr { transition: none; } }

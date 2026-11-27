@@ -14,6 +14,7 @@
  */
 
 import { quoteIdentifier } from "../../../quoting";
+import { bigqueryCollatedSql } from "../../domain/collation";
 import type { CatalogIO } from "./catalog_io";
 
 /**
@@ -48,9 +49,10 @@ function bqName(io: CatalogIO, segment: string): string {
 /**
  * A BigQuery catalog predicate: `collation_name` names a collation. BigQuery
  * reports an uncollated column's as the string `'NULL'`, not as NULL, so
- * that (and NULL and `''`) reads as none.
+ * that (and NULL and `''`) reads as none: the same rule a build's contract
+ * capture records by (`bigqueryColumnCollation`).
  */
-const BQ_COLLATED = "NULLIF(NULLIF(collation_name, 'NULL'), '') IS NOT NULL";
+const BQ_COLLATED = bigqueryCollatedSql("collation_name");
 
 /** Most datasets one project-wide read lists before it proves nothing. */
 const MAX_PROJECT_DATASETS = 10000;

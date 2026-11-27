@@ -7886,8 +7886,8 @@ components:
         sourceName:
           type: string
           description: >-
-            The source the join reads, absent for a join read straight from a
-            table.
+            The source the join reads, absent for a table read or a record
+            column.
         sourcePath:
           type: string
           description: Package-relative path of the file declaring that source.
@@ -7895,7 +7895,17 @@ components:
           type: boolean
           description: >-
             Whether the joined source exists only inside this join (an inline
-            `extend` or a table read), so its fields are listed through it.
+            `extend`, a table read, or a record column), so its fields are
+            listed through it.
+        relationship:
+          type: string
+          enum: [one, many, cross]
+          description: >-
+            How many rows of the joined source each row of the parent meets,
+            from the compiled join: `one` for `join_one:` and a record column,
+            `many` for `join_many:` and a repeated-record or array column,
+            `cross` for `join_cross:`. Grouping by a field reached through a
+            `many` or `cross` join gives one group per joined row.
 
     IndexFingerprint:
       type: object
@@ -8812,9 +8822,13 @@ components:
             a destination the environment does not configure),
             `connection_cannot_hold_table` (its connection creates no tables),
             `materialization_off` (only the served copy reads it, and the
-            served copy is off) or `served_copy` (only the served copy reads
-            it, and the served copy does not re-root it). An open set: treat a
-            code you do not know as a warning like any other.
+            served copy is off), `served_copy` (only the served copy reads
+            it, and the served copy does not re-root it), `incompatible` (the
+            table no longer matches the column contract its build recorded) or
+            `contract_missing` (its build recorded no usable contract); a
+            `storage=` table with either of the last two is reported
+            `NOT_SERVED`, not `NOT_BUILT`. An open set: treat a code you do not
+            know as a warning like any other.
         tableId:
           type: string
           description: The table, as `considered` names it.

@@ -974,8 +974,20 @@
       "description": "Build or modify an in-package HTML data app for a Malloy Publisher package (a public/ directory the package serves): design it, write its Publisher.query code, embed it. Hand-authored, no build step."
     },
     {
+      "name": "malloy-html-data-apps/app-frame",
+      "description": "The data app kit. Reference detail for the malloy-html-data-apps skill."
+    },
+    {
       "name": "malloy-html-data-apps/archetypes",
       "description": "The five archetypes. Reference detail for the malloy-html-data-apps skill."
+    },
+    {
+      "name": "malloy-html-data-apps/charts",
+      "description": "The d3 Chart Module. Reference detail for the malloy-html-data-apps skill."
+    },
+    {
+      "name": "malloy-html-data-apps/data-app-design",
+      "description": "How a data app built on the kit looks and works, and why. Reference detail for the malloy-html-data-apps skill."
     },
     {
       "name": "malloy-html-data-apps/depth-patterns",
@@ -992,6 +1004,10 @@
     {
       "name": "malloy-html-data-apps/lazy-load",
       "description": "Lazy-Loading Tiles Below the Fold. Reference detail for the malloy-html-data-apps skill."
+    },
+    {
+      "name": "malloy-html-data-apps/maps",
+      "description": "Maps With the d3 Chart Module. Reference detail for the malloy-html-data-apps skill."
     },
     {
       "name": "malloy-html-data-apps/overlays",

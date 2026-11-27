@@ -86,9 +86,9 @@ Tables are where density pays. A stat table with generous row height wastes the 
 Every state change the user causes should be acknowledged, and nothing else should move.
 
 - **Hover states on everything interactive**, and they must be visible: a surface shift, not a 2% opacity change nobody perceives. A row that opens a drawer on click must look clickable before the click.
-- **Transitions belong on state, not on load.** Animating *content* in on first paint delays the thing the reader came for. Animating a drawer open, a filter chip appearing, a sort re-ordering: those are feedback, and they are still right when the state came from the URL on first load.
+- **Transitions belong on state, not on load.** Animating *content* in on first paint delays the thing the reader came for. Animating a drawer open, a filter chip appearing, a sort re-ordering: those are feedback, and they are still right when the state came from the URL on first load. The kit's chart module eases a chart in on its first draw, briefly, and not at all under reduced motion or `?motion=0`.
 - **Focus states are not optional and not the browser default.** A keyboard user needs a visible ring drawn from the accent.
-- Keep it fast. Anything over ~250ms on a UI transition feels sluggish; the contract's `--dur-fast` / `--dur-base` pair exists so these stay consistent.
+- Keep it fast. Anything over ~250ms on a UI transition feels sluggish (a mark moving between two answers is not a UI transition: the d3 module takes 380 ms so the eye can follow it, `reference/charts.md`); the contract's `--dur-fast` / `--dur-base` pair exists so these stay consistent.
 
 ## 6. Type carries personality
 
@@ -109,7 +109,7 @@ A data app is a wide layout full of the two things that refuse to shrink: tables
 
 The obvious next idea is to compare bounding rects instead, and **that lies too, in exactly the case the fix below creates**. Once you cap a table's container and let it scroll inside itself, the table's own rect is legitimately wider than its container while being visually clipped - so a naive rect comparison reports a collision on every scrollable table on the page. Measured on a real build: false positives at four widths, all of them fine. If you automate this at all, walk the ancestors and ignore overflow inside a **scrollable** box (`overflow-x: auto | scroll`), where the content is reachable. Do not extend that to a clipping box (`hidden`, `contain`): content lost inside one of those is a real bug, and suppressing it is how you stop seeing the thing you were looking for.
 
-**The only check that does not lie is rendering at several widths and looking at the screenshots.** Automate the capture, not the judgement.
+**The only check that does not lie is rendering at several widths and looking at the screenshots.** Automate the capture, not the judgement. Include a phone: one column under 640 px, readable at 390.
 
 Three rules carry most of it:
 

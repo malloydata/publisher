@@ -36,7 +36,11 @@ import type {
    ManifestEntry,
    ObservedColumns,
 } from "../domain/types";
-import { compatible, parseContract } from "../domain/column_contract";
+import {
+   compatible,
+   parseContract,
+   spelledType,
+} from "../domain/column_contract";
 import { NATIVE_SCHEMA_ROW_LIMIT } from "./database_native_types";
 import { redactConnectionSecrets } from "./connection_redaction";
 import type { TableCollations } from "../domain/collation";
@@ -389,7 +393,10 @@ function movedColumns(
       if (!now)
          return { kind: "moved", reason: `its column '${name}' is gone` };
       const nowType = now.nativeType ?? now.type ?? "";
-      if (now.storedAsDouble || spelled(nowType) !== spelled(type)) {
+      if (
+         now.storedAsDouble ||
+         spelledType(nowType, read.dialect) !== spelledType(type, read.dialect)
+      ) {
          return {
             kind: "moved",
             reason:
@@ -443,15 +450,6 @@ export function storedUpstreamMove(
 interface MovedTable {
    physicalTableName: string;
    nativeSchema?: readonly { name?: string; type?: string }[];
-}
-
-/** A native type spelled one way whatever its case and spacing. */
-function spelled(nativeType: string): string {
-   return nativeType
-      .replace(/\s+/g, " ")
-      .replace(/\s*([(),])\s*/g, "$1")
-      .trim()
-      .toUpperCase();
 }
 
 /** The column named `name`: exactly, else the one that matches it case-blind. */

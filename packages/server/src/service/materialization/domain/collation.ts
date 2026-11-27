@@ -140,13 +140,56 @@ function unquoted(name: string): string {
 }
 
 /**
- * A BigQuery column's `collation_name` as an identity: an empty or absent
- * one compares bytes (`binary`), any other reads `bigquery:<name>`.
+ * The `collation_name` values BigQuery's `INFORMATION_SCHEMA` gives a column
+ * with no collation, upper-cased and trimmed: the literal string `'NULL'`
+ * (what it reports for an uncollated column), and the empty string. A real
+ * NULL reads the same. One list, read by {@link bigqueryNamesNoCollation}
+ * and {@link bigqueryCollatedSql}, so a build's contract capture and the
+ * serve side's catalog reads agree on which columns are collated.
+ */
+const BQ_NO_COLLATION = ["", "NULL"] as const;
+
+/** Whether a BigQuery `collation_name` names no collation ({@link BQ_NO_COLLATION}). */
+export function bigqueryNamesNoCollation(name: unknown): boolean {
+   return (
+      typeof name !== "string" ||
+      (BQ_NO_COLLATION as readonly string[]).includes(name.trim().toUpperCase())
+   );
+}
+
+/**
+ * {@link bigqueryNamesNoCollation}'s negation as a BigQuery SQL predicate over
+ * `column`: true where it names a collation.
+ */
+export function bigqueryCollatedSql(column: string): string {
+   return `UPPER(TRIM(COALESCE(${column}, ''))) NOT IN (${BQ_NO_COLLATION.map((v) => `'${v}'`).join(", ")})`;
+}
+
+/**
+ * A BigQuery column's `collation_name` as an identity: one that names no
+ * collation ({@link bigqueryNamesNoCollation}) compares bytes (`binary`),
+ * any other reads `bigquery:<name>`.
  */
 export function bigqueryColumnCollation(name: unknown): string {
-   return typeof name === "string" && name.trim() !== ""
-      ? `bigquery:${name.trim()}`
-      : BINARY_COLLATION;
+   return bigqueryNamesNoCollation(name)
+      ? BINARY_COLLATION
+      : `bigquery:${(name as string).trim()}`;
+}
+
+/**
+ * A collation identity as a contract records it, read back canonically: a
+ * `bigquery:` identity that names no collation (`bigquery:NULL`, which builds
+ * of 0.18.0 to 0.18.2 recorded for every uncollated BigQuery string column
+ * from the catalog's literal `'NULL'`) is `binary`, which is what such a
+ * column compares as and what a capture records for it now. Any other
+ * identity is itself.
+ */
+export function canonicalCollation(identity: string): string {
+   const prefix = "bigquery:";
+   return identity.startsWith(prefix) &&
+      bigqueryNamesNoCollation(identity.slice(prefix.length))
+      ? BINARY_COLLATION
+      : identity;
 }
 
 /**
