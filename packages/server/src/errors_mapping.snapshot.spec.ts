@@ -28,6 +28,7 @@ import {
    ResultTruncatedError,
    DashboardNotFoundError,
    DestinationNotFoundError,
+   ContainerNotFoundError,
    DryRunCapacityError,
    EnvironmentNotFoundError,
    FrozenConfigError,
@@ -303,6 +304,10 @@ const CASES: Array<[string, () => unknown]> = [
    [
       "DestinationNotFoundError",
       () => new DestinationNotFoundError("No destination named warehouse"),
+   ],
+   [
+      "ContainerNotFoundError",
+      () => new ContainerNotFoundError("No dataset named analytics"),
    ],
    [
       "StorageDestinationNotFoundError",

@@ -21,13 +21,21 @@ import {
    managedSchemasOf,
    recordConnectionType,
 } from "./connection_type";
-import { readUpstreamSchemas, withNameProblems } from "./materialization";
+import {
+   readTargetContainers,
+   readUpstreamSchemas,
+   withNameProblems,
+} from "./materialization";
 import {
    type UpstreamSchemaReadings,
    type UpstreamTable,
    upstreamSchemaFold,
    upstreamTableKey,
 } from "./materialization/domain/upstream_schemas";
+import type {
+   TargetContainer,
+   TargetContainerReadings,
+} from "./materialization/domain/target_containers";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { pathToFileURL } from "url";
@@ -1542,6 +1550,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const workerOutcome = loadOutcomeOrThrow(
          pool.loadPackage({
             upstreamSchemas: readUpstreamSchemas,
+            targetContainers: readTargetContainers,
             packagePath,
             packageName,
             environmentName,
@@ -2412,6 +2421,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          const outcome = await loadOutcomeOrThrow(
             getPackageLoadPool().loadPackage({
                upstreamSchemas: readUpstreamSchemas,
+               targetContainers: readTargetContainers,
                packagePath: this.packagePath,
                packageName: this.packageName,
                environmentName: this.environmentName,
@@ -2932,6 +2942,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       ].sort();
       this.mz.plan.withdraw(withdrawn.map(([sourceID]) => sourceID));
       return { sources: names, tables: tableNames };
+   }
+
+   /** See {@link BuildPlanPackage.readTargetContainers}. */
+   public readTargetContainers(
+      containers: TargetContainer[],
+   ): Promise<TargetContainerReadings> {
+      return readTargetContainers({
+         containers,
+         connection: (name) => this.getMalloyConnection(name),
+      });
    }
 
    /** See {@link BuildPlanPackage.readUpstreamSchemas}. */

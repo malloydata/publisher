@@ -32,6 +32,7 @@ import {
    type BuildPlanPackage,
    type BuildPlanParts,
    type FinishedBuildPlan,
+   type TargetContainerPlanReader,
    type UpstreamSchemaReader,
 } from "./build_plan";
 import { loadGateText } from "./load_gate_text";
@@ -236,9 +237,16 @@ async function collectPackageParts(
 function upstreamReaderOf(
    pkg: BuildPlanPackage,
    use: "load" | "run",
-): { readUpstreamSchemas?: UpstreamSchemaReader } {
+): {
+   readUpstreamSchemas?: UpstreamSchemaReader;
+   readTargetContainers?: TargetContainerPlanReader;
+} {
    const read = pkg.readUpstreamSchemas?.bind(pkg);
-   return read ? { readUpstreamSchemas: (tables) => read(tables, use) } : {};
+   const containers = pkg.readTargetContainers?.bind(pkg);
+   return {
+      ...(read ? { readUpstreamSchemas: (tables) => read(tables, use) } : {}),
+      ...(containers ? { readTargetContainers: containers } : {}),
+   };
 }
 
 /**
