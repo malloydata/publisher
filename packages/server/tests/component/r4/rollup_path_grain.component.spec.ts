@@ -396,3 +396,97 @@ for (const [label, body, byRegion] of [
       });
    });
 }
+
+/**
+ * A gate on the joined source, under each caller's givens. Read through a
+ * join, a joined source's `#(access_filter)` or `#(authorize)` does not
+ * apply live (the `join-bypass` advisory), so a rollup of the ungated base
+ * is built and holds live's rows: served, equal to live, for every caller,
+ * as on main for the declared-dimension spelling. A given the joined
+ * source's `where:` reads would be read by the build, so that rollup is not
+ * built and every caller is answered live, each with its own rows.
+ */
+const ACCOUNTS_SQL = `duckdb.sql("""select * from (values (1,'EU','SE'),(2,'EU','DE'),(3,'NA','US')) t(account_id, region, country)""")`;
+for (const [gate, accounts, servedBy] of [
+   [
+      "#(access_filter) on a given",
+      `#(access_filter) region = $REGION
+source: accounts is ${ACCOUNTS_SQL} extend { primary_key: account_id }`,
+      "rollup",
+   ],
+   [
+      "#(authorize)",
+      `#(authorize) $ROLE = 'admin'
+source: accounts is ${ACCOUNTS_SQL} extend { primary_key: account_id }`,
+      "rollup",
+   ],
+   [
+      "a given in its where:",
+      `source: accounts is ${ACCOUNTS_SQL} extend {
+  primary_key: account_id
+  where: region = $REGION
+}`,
+      "live",
+   ],
+] as const) {
+   for (const [grainLabel, grain, query] of [
+      [
+         "declared dimension",
+         `  dimension: region is account.region
+  #(rollup) grain=["region", "period_month"]`,
+         "run: subs -> { group_by: region; aggregate: mrr }",
+      ],
+      [
+         "path grain",
+         `  #(rollup) grain=["account.region", "period_month"]`,
+         "run: subs -> { group_by: account.region; aggregate: mrr }",
+      ],
+   ] as const) {
+      describe(`R4 #2048: a joined source gated by ${gate} [${grainLabel}]`, () => {
+         let restore: () => void;
+         let fixture: R4Fixture;
+         beforeAll(async () => {
+            restore = installSettings(SETTINGS).restore;
+            fixture = await buildScenario({
+               files: {
+                  "m.malloy": `##! experimental { persistence givens }
+given: REGION :: string
+given: ROLE :: string
+${accounts}
+source: subs is duckdb.sql("""select * from (values (10,1,DATE '2026-01-01',100.0),(11,1,DATE '2026-02-01',120.0),(12,2,DATE '2026-01-01',50.0),(13,3,DATE '2026-02-01',80.0)) t(sub_id, account_id, period, amount)""") extend {
+  primary_key: sub_id
+  join_one: account is accounts with account_id
+  dimension: period_month is period.month
+${grain}
+  measure: mrr is amount.sum()
+}
+`,
+               },
+               seedSql: [],
+               preaggregate: true,
+            });
+         });
+         afterAll(async () => {
+            restore();
+            await disposeScenarios();
+         });
+         for (const givens of [
+            { REGION: "EU", ROLE: "admin" },
+            { REGION: "NA", ROLE: "guest" },
+         ]) {
+            it(`${JSON.stringify(givens)}: ${servedBy === "rollup" ? "served from the rollup" : "answered live"}, equal to live`, async () => {
+               const run = await fixture.run({
+                  name: gate,
+                  malloy: query,
+                  givens,
+               });
+               expect(rowDifference(run.live, run.served)).toBeUndefined();
+               expect(
+                  strictRowDifference(run.live, run.served),
+               ).toBeUndefined();
+               expect(run.servedBy?.kind).toBe(servedBy);
+            });
+         }
+      });
+   }
+}
