@@ -611,6 +611,7 @@ describe("the routing and bind label vocabularies", () => {
          "inline_join_kept",
          "reroot_not_compiled",
          "classification_not_kept",
+         "sql_embed_cross_connection",
       ]);
    });
 });

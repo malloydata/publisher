@@ -5203,7 +5203,10 @@ components:
             whole copy, the codes `publisher_served_copy_bind_total` counts,
             most actionable first (for example `cross_connection_join` before
             `fields_not_carried`): `cross_connection_join`,
-            `cross_connection_unbuilt`, `inline_join_kept`,
+            `cross_connection_unbuilt`, `sql_embed_cross_connection` (a
+            `.sql()` source reads it through `%{}` on another connection than
+            its table is read on: a storage destination, or a managed
+            catalog read through one), `inline_join_kept`,
             `read_terms_not_kept`, `fields_not_carried`, `column_types`,
             `classification_not_kept`, `pair_join_not_found`,
             `pair_not_compiled`, `definition_not_parsed`, `compile_failed`,
@@ -6080,8 +6083,9 @@ components:
                   `pair_join_not_found`, `pair_not_compiled`,
                   `fields_not_carried`, `read_terms_not_kept`,
                   `cross_connection_join`, `inline_join_kept`,
-                  `reroot_not_compiled`, `classification_not_kept`; an open
-                  set) (`subject` the source; `warn`).
+                  `reroot_not_compiled`, `classification_not_kept`,
+                  `sql_embed_cross_connection`; an open set) (`subject` the
+                  source; `warn`).
                   `model-recompile-failed`: a model file that compiled before
                   did not compile when the package bound new tables, although
                   neither its text nor that of any file it imports changed

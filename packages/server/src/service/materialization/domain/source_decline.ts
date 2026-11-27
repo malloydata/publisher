@@ -39,10 +39,23 @@ const SOURCE_DECLINES = {
    inline_join_kept: { stage: "served_copy", servesInPart: true },
    reroot_not_compiled: { stage: "served_copy" },
    classification_not_kept: { stage: "served_copy" },
+   // A `.sql()` source reads it through `%{}` on another connection than its
+   // table is read on (a storage destination, a managed catalog's).
+   sql_embed_cross_connection: { stage: "served_copy" },
 } as const satisfies Record<
    string,
    { stage: "bind" | "served_copy"; servesInPart?: true }
 >;
+
+/**
+ * How to serve what a `.sql()` source's `%{}` reads where the `%{}` cannot
+ * reach the table: said by the warning and the serve verdict alike.
+ */
+export const SQL_EMBED_FIX =
+   "To serve it, persist the `.sql()` source itself (`#@ persist` on it, or on a source " +
+   "`<name> -> { select: * }` over it), so its own table answers (not on a DuckLake or managed " +
+   "connection, which builds no author SQL), or build what it reads into a warehouse table and read " +
+   "that with `.table()`.";
 
 /** Why a source entry is not served. */
 type SourceDeclineReason = keyof typeof SOURCE_DECLINES;
@@ -67,6 +80,7 @@ export type ServedCopyProblemReason = DeclinedAt<"served_copy">;
 const ACTIONABLE_ORDER: readonly string[] = [
    "cross_connection_join",
    "cross_connection_unbuilt",
+   "sql_embed_cross_connection",
    "inline_join_kept",
    "read_terms_not_kept",
    "fields_not_carried",

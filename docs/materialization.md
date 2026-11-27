@@ -1225,7 +1225,12 @@ imports it) but does not read its table, with `reasons`:
   counts: for example `cross_connection_join` (a join the copy left out across connections, and the
   source with it) before `fields_not_carried`, or `cross_connection_unbuilt` (a join across
   connections that cannot be left out, so the model's whole copy is off until both sides are built
-  into one destination);
+  into one destination), or `sql_embed_cross_connection` (a `.sql()` source reads it through
+  `%{ x -> { … } }`, whose SQL runs on the `.sql()` source's own connection and cannot reach a table
+  in a storage destination, or in a managed catalog read through one; the source alone is left as
+  written, and the model's other stored sources still serve. In the source's own database the
+  `%{}` reads its table. To serve it elsewhere, persist the `.sql()` source itself, or build what
+  it reads into a warehouse table read with `.table()`);
 - `not_rerooted` alone when no warning names one.
 
 When a model's whole copy is off, every stored source it holds lists it, not only the one whose join

@@ -616,22 +616,41 @@ function storageTableDecisions(
       // its chain first), not whichever the served copy read first: a fact
       // read through a persisted join is not served from the join's table.
       const tablesRead = input.storageTablesRead ?? [];
-      const first =
-         input.chain
-            .map((id) => tablesRead.find((b) => b.sourceIDs?.includes(id)))
-            .find((b) => b !== undefined) ?? tablesRead[0];
+      const own = input.chain
+         .map((id) => tablesRead.find((b) => b.sourceIDs?.includes(id)))
+         .find((b) => b !== undefined);
+      // None of them on the chain (a `.sql()` source's `%{}` of several
+      // stored sources, a union): each one answered alike, so each is named.
+      const answering = own ? [own] : tablesRead;
       const placed =
          storageAnswered ||
          considered.some(
             (c) => c.outcome === "used" || c.reason === "READ_FAILED",
          );
-      if (storageDecision.outcome === "used" && first && !placed) {
-         const t = stateOfBinding(input, first, freshStorage);
-         if (input.runFailed) {
-            skip(t, "READ_FAILED");
-         } else {
-            markUsed(t);
-            storageAnswered = true;
+      if (storageDecision.outcome === "used" && !placed) {
+         const named = new Set<string>();
+         for (const b of answering) {
+            const t = stateOfBinding(input, b, freshStorage);
+            if (t.tableId !== undefined) {
+               if (named.has(t.tableId)) continue;
+               named.add(t.tableId);
+            }
+            if (input.runFailed) {
+               skip(t, "READ_FAILED");
+            } else if (storageAnswered) {
+               // The first named is `servedBy`; the rest are used beside it.
+               if (t.tableId) {
+                  considered.push({
+                     tableId: t.tableId,
+                     kind: t.kind,
+                     ...originField(t),
+                     outcome: "used",
+                  });
+               }
+            } else {
+               markUsed(t);
+               storageAnswered = true;
+            }
          }
       }
    } else {

@@ -172,6 +172,32 @@ source: sql_orders_x is sql_orders extend {
 }
 `;
 
+/**
+ * The field shape on a managed connection: two stored sources a `.sql()`
+ * source unions through `%{}`, beside an unrelated stored source. The
+ * `%{}`'s SQL runs on the connection, while the stored tables are read
+ * through the destination, which a `%{}` cannot reach: the two are left
+ * as written, with their own reason, and the unrelated one still serves.
+ */
+const SQL_EMBED = `##! experimental.persistence
+#@ persist name="emb_kept_rows" storage="credible"
+source: emb_kept is credible.table('orders') -> {
+  where: status = 'kept'
+  select: order_id, customer_id
+}
+
+#@ persist name="emb_returned_rows" storage="credible"
+source: emb_returned is credible.table('orders') -> {
+  where: status = 'returned'
+  select: order_id, customer_id
+}
+
+#@ persist name="emb_other_rows" storage="credible"
+source: emb_other is credible.table('customers') -> { select: customer_id, name }
+
+source: emb_union is credible.sql("""select * from %{ emb_kept -> { select: * } } union all by name select * from %{ emb_returned -> { select: * } }""")
+`;
+
 type Answer = {
    rows: Record<string, unknown>[];
    servedFrom: string | null;
@@ -255,6 +281,7 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
             "view.malloy": VIEW,
             "sql_expr.malloy": SQL_EXPR,
             "sql_source.malloy": SQL_SOURCE,
+            "sql_embed.malloy": SQL_EMBED,
          },
          { manifest: { name: PKG, description: "fixture" } },
       );
@@ -455,6 +482,18 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
       ]);
    });
 
+   const EMB_UNION = "run: emb_union -> { aggregate: n is count() }";
+   const EMB_OTHER = "run: emb_other -> { aggregate: n is count() }";
+
+   it("answers a .sql() source's %{} of stored sources live before anything is built", async () => {
+      for (const q of [EMB_UNION, EMB_OTHER]) {
+         const answer = await ask("sql_embed.malloy", q);
+         expect(answer.servedFrom).toBe(null);
+         live.set(q, answer.rows);
+      }
+      expect(live.get(EMB_UNION)).toEqual([{ n: 6 }]);
+   });
+
    it("builds every stored source", async () => {
       const run = await build();
       expect([run.status, run.error]).toEqual(["MANIFEST_FILE_READY", null]);
@@ -533,6 +572,45 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
          expect(JSON.stringify(answer.path)).toContain(
             `the join \`${join}\` of \`${source}\` (connection 'credible' into storage destination 'credible')`,
          );
+      }
+   });
+
+   it("answers a .sql() source's %{} of stored sources live, says why, and still serves the file's other stored source", async () => {
+      const union = await ask("sql_embed.malloy", EMB_UNION);
+      expect(union.servedFrom).toBe(null);
+      expect(union.rows).toEqual(live.get(EMB_UNION)!);
+      const other = await ask("sql_embed.malloy", EMB_OTHER);
+      expect(other.servedFrom).toBe("storage");
+      expect(other.rows).toEqual(live.get(EMB_OTHER)!);
+      const verdicts = pkg.materialization().serveVerdicts();
+      for (const name of ["emb_kept", "emb_returned"]) {
+         const v = verdicts.find((x) => x.sourceName === name);
+         expect(v).toMatchObject({
+            verdict: "live",
+            reason: "served_copy",
+            notServedIn: [
+               {
+                  model: "sql_embed.malloy",
+                  reasons: ["sql_embed_cross_connection"],
+               },
+            ],
+         });
+         expect(v?.message).toContain("`.sql()` source's `%{}`");
+      }
+      expect(verdicts.find((x) => x.sourceName === "emb_other")?.verdict).toBe(
+         "serves",
+      );
+      const warned = (pkg.getPackageMetadata().warnings ?? []).filter(
+         (w) =>
+            w.code === "served-copy-not-served" &&
+            (w as { reason?: string }).reason === "sql_embed_cross_connection",
+      );
+      expect(warned.map((w) => w.subject).sort()).toEqual([
+         "emb_kept",
+         "emb_returned",
+      ]);
+      for (const w of warned) {
+         expect(w.message).toContain("`emb_union` on `credible`");
       }
    });
 });
