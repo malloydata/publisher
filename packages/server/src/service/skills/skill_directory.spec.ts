@@ -24,15 +24,17 @@ import {
    writeWorkflow,
 } from "./__fixtures__/skill-directory/fixture";
 import {
-   PACKAGE_SKILL_FILE_MAX_BYTES,
-   SKILL_SET_MARKDOWN_MAX_BYTES,
-   readPackageWorkflows,
    readWorkflowFile,
    skillFileList,
    workflowSkillSet,
+} from "./package_skills";
+import {
+   PACKAGE_SKILL_FILE_MAX_BYTES,
+   SKILL_SET_MARKDOWN_MAX_BYTES,
+   readPackageWorkflows,
    type PackageWorkflow,
    type PackageWorkflows,
-} from "./package_skills";
+} from "./package_workflows";
 import { REFERENCE_MAX_EXAMINED, skillFiles } from "./skill_files";
 
 const EXPECTED = path.join(
@@ -95,12 +97,7 @@ describe("a skill is its whole directory", () => {
    const definitionSha = () => workflowOf().definitionSha;
    const contentSha = () => {
       const result = read();
-      return computeSourceContentSha(
-         pkg,
-         result.paths,
-         undefined,
-         result.contentShas,
-      );
+      return computeSourceContentSha(result.contentShas);
    };
 
    beforeEach(() => {
@@ -257,17 +254,12 @@ describe("a skill is its whole directory", () => {
       expect(contentSha()).not.toBe(afterScript.content);
    });
 
-   it("hashes a workflow's content without reading an inline Markdown file again, and still moves with an edit to one", () => {
+   it("hashes a workflow's content from the shas the walk took, reading no file, and still moves with an edit to one", () => {
       const before = contentSha();
       const result = read();
       const reads = spyOn(fs, "readFileSync");
       try {
-         computeSourceContentSha(
-            pkg,
-            result.paths,
-            undefined,
-            result.contentShas,
-         );
+         computeSourceContentSha(result.contentShas);
          const hashed = reads.mock.calls.map((c) => String(c[0]));
          const inline = viewOf(workflowOf(result)).skills.map(
             (f) => f.relative_filepath,
@@ -367,7 +359,7 @@ describe("a skill is its whole directory", () => {
       expect(dropped.warnings.join("\n")).toContain("not a regular file");
       expect(dropped.warnings.join("\n")).toContain("holds no skills");
       expect(dropped.paths).toEqual(["workflows/analyst/instructions.md"]);
-      expect(dropped.contentShas.size).toBe(0);
+      expect([...dropped.contentShas.keys()]).toEqual(dropped.paths);
    });
 
    describe("what sets a skill aside, or refuses the workflow, whatever .skillignore says", () => {
@@ -704,17 +696,12 @@ describe("a skill set's own skills", () => {
       for (const file of inline) expect(result.paths).toContain(file);
    });
 
-   it("hashes a set's skills without reading an inline Markdown file again", () => {
+   it("hashes a set's skills from the shas the walk took, reading no file", () => {
       writeSkill(pkg, "skills");
       const { result, skills } = readSet();
       const read = spyOn(fs, "readFileSync");
       try {
-         computeSourceContentSha(
-            pkg,
-            result.paths,
-            undefined,
-            result.contentShas,
-         );
+         computeSourceContentSha(result.contentShas);
          const hashed = read.mock.calls.map((c) => String(c[0]));
          const inline = skills.flatMap((s) =>
             s.inline.map((f) => `${s.rel}/${f.relative}`),

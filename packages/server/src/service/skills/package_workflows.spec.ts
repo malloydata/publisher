@@ -11,14 +11,20 @@ import { FCJ_MAX_CHARS } from "../../constants";
 import * as revision from "../package_revision";
 import {
    advertisedSkills,
+   resolveSkills,
+   workflowSkillSet,
+} from "./package_skills";
+import {
+   adoptWorkflows,
    emptyWorkflows,
    readPackageWorkflows,
-   resolveSkills,
+   SKILL_FINDINGS_MAX,
+   SKILLS_PER_SET_MAX,
    WORKFLOW_INSTRUCTIONS_MAX_BYTES,
    workflowFileServed,
-   workflowSkillSet,
+   workflowsToWire,
    type PackageWorkflows,
-} from "./package_skills";
+} from "./package_workflows";
 
 const isWindows = process.platform === "win32";
 const isRoot = process.getuid?.() === 0;
@@ -803,12 +809,22 @@ describe("readPackageWorkflows", () => {
       let boom: ReturnType<typeof spyOn> | undefined;
       afterEach(() => boom?.mockRestore());
 
+      /** Nothing is served and nothing is refused: the walk says it could not finish, naming why. */
+      const expectUnavailable = (result: PackageWorkflows, reason: string) => {
+         expect(result.unavailable?.reason).toContain(reason);
+         expect(result.workflows.size).toBe(0);
+         expect(result.sets.size).toBe(0);
+         expect(result.paths).toEqual([]);
+         expect(result.warnings).toEqual([]);
+         expect(result.skillsDirNotRead).toBe(false);
+      };
+
       for (const [label, mode] of [
          ["no access at all", 0o000],
          ["no right to list it", 0o311],
       ] as const) {
          it.skipIf(isWindows || isRoot)(
-            `refuses the workflows that list a set whose folder it cannot list, with ${label}`,
+            `is unavailable, not refused, when a set's folder cannot be listed, with ${label}`,
             () => {
                analyst();
                writeSkill(SECOND, "extra");
@@ -818,17 +834,9 @@ describe("readPackageWorkflows", () => {
                      fine: { skill_sets: [MAIN] },
                      broken: { skill_sets: [SECOND] },
                   });
-                  expect([...result.workflows.keys()]).toEqual(["fine"]);
-                  expect(result.warnings).toHaveLength(1);
-                  expect(
-                     result.warnings[0]!.startsWith(
-                        "Workflow 'broken' is not served: ",
-                     ),
-                  ).toBe(true);
-                  expect(result.warnings[0]).toContain("cannot be read");
-                  expect(result.warnings.join("\n")).not.toContain(
-                     "holds no skills",
-                  );
+                  expectUnavailable(result, "EACCES");
+                  // Still watched, so fixing the folder reloads the package.
+                  expect(result.watched).toEqual([MAIN, SECOND]);
                } finally {
                   fs.chmodSync(path.join(pkg, SECOND), 0o755);
                }
@@ -837,23 +845,23 @@ describe("readPackageWorkflows", () => {
       }
 
       it.skipIf(isWindows || isRoot)(
-         "refuses the workflows that list a set under a folder it can walk through but not list, since a publisher.json there cannot be ruled out",
+         "is unavailable when a set sits under a folder it can walk through but not list, since a publisher.json there cannot be ruled out",
          () => {
             writeSkill(MAIN, "one");
             const above = path.join(pkg, "workflows/analyst/skill_sets");
             fs.chmodSync(above, 0o311);
             try {
-               const result = read({ broken: { skill_sets: [MAIN] } });
-               expect(result.workflows.size).toBe(0);
-               expect(result.warnings).toHaveLength(1);
-               expect(result.warnings[0]).toContain("cannot be read");
+               expectUnavailable(
+                  read({ broken: { skill_sets: [MAIN] } }),
+                  "EACCES",
+               );
             } finally {
                fs.chmodSync(above, 0o755);
             }
          },
       );
 
-      it("refuses only the workflows that list it, with a warning, and never throws", () => {
+      it("is unavailable, naming the set, when reading it throws, and never throws itself", () => {
          analyst();
          writeSkill(SECOND, "extra");
          const real = revision.canonicalSha;
@@ -870,46 +878,56 @@ describe("readPackageWorkflows", () => {
             broken: { skill_sets: [SECOND] },
             both: { skill_sets: [MAIN, SECOND] },
          });
-         expect([...result.workflows.keys()]).toEqual(["fine"]);
-         expect([...result.sets.keys()]).toEqual([MAIN]);
-         expect(result.warnings).toEqual(
-            ["broken", "both"].map(
-               (name) =>
-                  `Workflow '${name}' is not served: skill set directory '${SECOND}' cannot be read (injected failure). Fix: correct the 'workflows.${name}' entry in publisher.json and the files it names.`,
-            ),
+         expectUnavailable(
+            result,
+            `skill set directory '${SECOND}' cannot be read (injected failure)`,
          );
+      });
+
+      it("is unavailable when the walk itself throws, whatever it was reading", () => {
+         const hostile = new Proxy(
+            {},
+            {
+               ownKeys() {
+                  throw new Error("injected walk failure");
+               },
+            },
+         );
+         const result = read(hostile);
+         expect(result.unavailable).toEqual({
+            reason: "injected walk failure",
+            declared: [],
+         });
+         expect(result.workflows.size).toBe(0);
+      });
+
+      it("is not unavailable for what the author wrote wrong: that refuses the workflow with a warning", () => {
+         analyst();
+         const result = read({ broken: { skill_sets: ["nowhere"] } });
+         expect(result.unavailable).toBeUndefined();
+         expect(result.warnings).toHaveLength(1);
+         expect(result.warnings[0]).toContain("does not exist");
       });
    });
 
    describe("a set only a refused workflow lists", () => {
       const THIRD = "workflows/analyst/skill_sets/third";
-      let boom: ReturnType<typeof spyOn> | undefined;
-      afterEach(() => boom?.mockRestore());
 
       it("is not read: it is not served, hashed, reported or charged to the package", () => {
          analyst();
-         writeSkill(SECOND, "extra");
          // An empty set has a finding of its own, which would be reported if it were read.
          fs.mkdirSync(path.join(pkg, THIRD), { recursive: true });
-         const real = revision.canonicalSha;
-         boom = spyOn(revision, "canonicalSha").mockImplementation(
-            (value: unknown) => {
-               if ((value as { path?: string }).path === SECOND) {
-                  throw new Error("injected failure");
-               }
-               return real(value);
-            },
-         );
          const result = read({
             fine: { skill_sets: [MAIN] },
-            broken: { skill_sets: [THIRD, SECOND] },
+            broken: { skill_sets: [THIRD], "not-a-key": 1 },
          });
          expect([...result.workflows.keys()]).toEqual(["fine"]);
          expect([...result.sets.keys()]).toEqual([MAIN]);
          expect(result.paths.some((p) => p.startsWith(THIRD))).toBe(false);
-         expect(result.warnings).toEqual([
-            `Workflow 'broken' is not served: skill set directory '${SECOND}' cannot be read (injected failure). Fix: correct the 'workflows.broken' entry in publisher.json and the files it names.`,
-         ]);
+         expect(result.warnings).toHaveLength(1);
+         expect(result.warnings[0]).toStartWith(
+            "Workflow 'broken' is not served: it sets 'not-a-key'",
+         );
       });
    });
 
@@ -1979,6 +1997,193 @@ describe("readPackageWorkflows", () => {
             expect(files("sets/b")).toHaveLength(4);
             expect(files("sets/c")).toHaveLength(4);
          });
+      });
+   });
+
+   describe("a set's bounds", () => {
+      const SET = "sets/many";
+
+      it("serves the first skills by name up to the cap, and names the rest once", () => {
+         for (let i = 0; i < SKILLS_PER_SET_MAX + 3; i++) {
+            writeSkill(SET, `s${String(i).padStart(3, "0")}`);
+         }
+         const result = read({ default: { skill_sets: [SET] } });
+         const set = result.sets.get(SET)!;
+         expect(set.skills.map((s) => s.dirName)).toEqual(
+            Array.from(
+               { length: SKILLS_PER_SET_MAX },
+               (_, i) => `s${String(i).padStart(3, "0")}`,
+            ),
+         );
+         expect(result.warnings).toEqual([
+            `Skill set '${SET}' skill finding: the skill set holds more than ${SKILLS_PER_SET_MAX} skill directories, so the first ${SKILLS_PER_SET_MAX} by name are served and the rest are not read. Fix: move some to another skill set.`,
+         ]);
+      });
+
+      it("serves a set of exactly the cap whole, with no finding", () => {
+         for (let i = 0; i < SKILLS_PER_SET_MAX; i++) {
+            writeSkill(SET, `s${String(i).padStart(3, "0")}`);
+         }
+         const result = read({ default: { skill_sets: [SET] } });
+         expect(result.sets.get(SET)!.skills).toHaveLength(SKILLS_PER_SET_MAX);
+         expect(result.warnings).toEqual([]);
+      });
+
+      it("names at most the findings cap of a set's skill findings, and counts the rest", () => {
+         const extra = 5;
+         for (let i = 0; i < SKILL_FINDINGS_MAX + extra; i++) {
+            write(
+               `${SET}/bad${String(i).padStart(2, "0")}/SKILL.md`,
+               "no frontmatter\n",
+            );
+         }
+         writeSkill(SET, "ok");
+         const result = read({ default: { skill_sets: [SET] } });
+         expect(result.warnings).toHaveLength(SKILL_FINDINGS_MAX + 1);
+         expect(result.warnings.at(-1)).toBe(
+            `Skill set '${SET}' skill finding: ${extra} further skill findings are not named, for the same kinds of reasons.`,
+         );
+         // A skill with a finding is still served.
+         expect(result.sets.get(SET)!.skills).toHaveLength(
+            SKILL_FINDINGS_MAX + extra + 1,
+         );
+      });
+
+      it("caps each set's findings on its own", () => {
+         for (const set of ["sets/a", "sets/b"]) {
+            for (let i = 0; i < SKILL_FINDINGS_MAX + 1; i++) {
+               write(
+                  `${set}/${set.slice(-1)}${String(i).padStart(2, "0")}/SKILL.md`,
+                  "no frontmatter\n",
+               );
+            }
+         }
+         const result = read({
+            default: { skill_sets: ["sets/a", "sets/b"] },
+         });
+         expect(result.warnings).toHaveLength(2 * (SKILL_FINDINGS_MAX + 1));
+      });
+   });
+
+   describe("the shas a walk ships", () => {
+      it("has one for every path it read, an instructions file and a .skillignore included", () => {
+         const declared = { analyst: analyst() };
+         write(`${CONVENTIONS}/.skillignore`, "notes.txt\n");
+         write(`${CONVENTIONS}/notes.txt`, "left out");
+         write(`${CONVENTIONS}/assets/logo.bin`, Buffer.from([0, 255, 1]));
+         const result = read(declared);
+         for (const p of result.paths) {
+            expect(result.contentShas.has(p)).toBe(true);
+         }
+         expect(result.contentShas.get(INSTRUCTIONS)).toBe(
+            sha("Be careful with revenue."),
+         );
+         expect(result.contentShas.get(`${CONVENTIONS}/.skillignore`)).toBe(
+            sha("notes.txt\n"),
+         );
+         expect(result.contentShas.get(`${CONVENTIONS}/assets/logo.bin`)).toBe(
+            sha(Buffer.from([0, 255, 1])),
+         );
+         expect(result.paths).not.toContain(`${CONVENTIONS}/notes.txt`);
+      });
+
+      it("moves with an edit to the .skillignore, since it changes what the set serves", () => {
+         const declared = { analyst: analyst() };
+         write(`${CONVENTIONS}/.skillignore`, "a.txt\n");
+         const before = read(declared).contentShas.get(
+            `${CONVENTIONS}/.skillignore`,
+         );
+         write(`${CONVENTIONS}/.skillignore`, "a.txt\nb.txt\n");
+         expect(
+            read(declared).contentShas.get(`${CONVENTIONS}/.skillignore`),
+         ).not.toBe(before);
+      });
+   });
+
+   describe("across the worker boundary", () => {
+      const declared = () => ({
+         one: analyst(),
+         two: { description: "Two", skill_sets: [MAIN] },
+      });
+
+      /** What a worker ships: the walk without its readers, cloned. */
+      const shipped = (walk: PackageWorkflows) =>
+         adoptWorkflows(pkg, structuredClone(workflowsToWire(walk)));
+
+      it("keeps the maps, the digests and the own keys named like Object.prototype members", () => {
+         for (const name of ["__proto__", "constructor", "toString"]) {
+            write(`${CONVENTIONS}/${name}`, `root ${name}\n`);
+         }
+         const walked = read(declared());
+         const adopted = shipped(walked);
+
+         expect([...adopted.workflows.keys()]).toEqual(["one", "two"]);
+         expect([...adopted.sets.keys()]).toEqual([MAIN]);
+         expect(adopted.contentShas).toEqual(walked.contentShas);
+         expect(adopted.paths).toEqual(walked.paths);
+         expect(adopted.watched).toEqual(walked.watched);
+         expect(adopted.warnings).toEqual(walked.warnings);
+         expect(adopted.sets.get(MAIN)!.digest).toBe(
+            walked.sets.get(MAIN)!.digest,
+         );
+         const files = adopted.sets.get(MAIN)!.skills[0]!.catalog.files;
+         for (const name of ["__proto__", "constructor", "toString"]) {
+            expect(Object.hasOwn(files, name)).toBe(true);
+         }
+         expect(Object.hasOwn(files, "valueOf")).toBe(false);
+         expect(files).toEqual(walked.sets.get(MAIN)!.skills[0]!.catalog.files);
+      });
+
+      it("keeps one skill shared by every set and workflow that holds it, with its reader rebuilt", () => {
+         const adopted = shipped(read(declared()));
+         const fromSet = adopted.sets.get(MAIN)!.skills[0]!;
+         for (const workflow of adopted.workflows.values()) {
+            expect(workflow.sets[0]!.skills[0]).toBe(fromSet);
+         }
+         expect(fromSet.served.read("SKILL.md")).toEqual(
+            read(declared()).sets.get(MAIN)!.skills[0]!.served.read("SKILL.md"),
+         );
+      });
+
+      it("answers a binary listed file from its listing, without reading the disk", () => {
+         write(`${CONVENTIONS}/assets/logo.bin`, Buffer.from([0, 255, 1]));
+         const adopted = shipped(read(declared()));
+         const skill = adopted.sets.get(MAIN)!.skills[0]!;
+         const reads = (
+            [
+               "readFileSync",
+               "openSync",
+               "statSync",
+               "lstatSync",
+               "realpathSync",
+            ] as const
+         ).map((fn) => spyOn(fs, fn));
+         try {
+            expect(skill.served.read("assets/logo.bin")).toEqual({
+               binary: true,
+            });
+            expect(reads.map((spy) => spy.mock.calls.length)).toEqual([
+               0, 0, 0, 0, 0,
+            ]);
+         } finally {
+            for (const spy of reads) spy.mockRestore();
+         }
+      });
+
+      it("carries a walk that could not finish, with the names the manifest declares", () => {
+         const walked = read({
+            ...declared(),
+            [`${"x"}`]: new Proxy(
+               {},
+               {
+                  ownKeys() {
+                     throw new Error("injected walk failure");
+                  },
+               },
+            ),
+         });
+         expect(walked.unavailable?.declared).toEqual(["one", "two", "x"]);
+         expect(shipped(walked).unavailable).toEqual(walked.unavailable);
       });
    });
 });

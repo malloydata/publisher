@@ -9,16 +9,18 @@ import os from "os";
 import path from "path";
 import { type BundledSkill } from "./build_skills_bundle";
 import {
-   emptyWorkflows,
    namedSkillFiles,
-   PACKAGE_SKILL_FILE_MAX_BYTES,
-   readPackageWorkflows,
    resolveSkills,
    skillFileList,
    skillFilePath,
    type ServedSkill,
-   type SetSkill,
 } from "./package_skills";
+import {
+   emptyWorkflows,
+   PACKAGE_SKILL_FILE_MAX_BYTES,
+   readPackageWorkflows,
+   type SetSkill,
+} from "./package_workflows";
 
 const digest = "sha256:0";
 

@@ -1,86 +1,89 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { createHash } from "crypto";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { servingIdentityOutcome } from "../test_helpers/serving_identity";
 import { Model } from "./model";
 import { Package } from "./package";
 import {
-   boundedManifestValue,
+   boundedDeclaration,
+   canonicalSha,
    computeSourceContentSha,
    mintServedRevision,
+   UNREADABLE_SHA,
 } from "./package_revision";
 
+const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+const shasOf = (files: Record<string, string>) =>
+   new Map(Object.entries(files).map(([file, text]) => [file, sha(text)]));
+
 describe("computeSourceContentSha", () => {
-   let dir: string;
-
-   beforeEach(() => {
-      dir = fs.mkdtempSync(path.join(os.tmpdir(), "pkg-revision-"));
-   });
-
-   afterEach(() => {
-      fs.rmSync(dir, { recursive: true, force: true });
-   });
-
-   const write = (relativePath: string, content: string) => {
-      const absolute = path.join(dir, relativePath);
-      fs.mkdirSync(path.dirname(absolute), { recursive: true });
-      fs.writeFileSync(absolute, content);
-   };
-
-   it("moves when a hashed file's content changes", () => {
-      write("a.malloy", "source: x is duckdb.table('t')");
-      const before = computeSourceContentSha(dir, ["a.malloy"]);
-      write("a.malloy", "source: x is duckdb.table('u')");
-      expect(computeSourceContentSha(dir, ["a.malloy"])).not.toBe(before);
-   });
-
-   it("does not move when a file outside the set changes", () => {
-      write("a.malloy", "source: x is duckdb.table('t')");
-      write("notes.md", "first");
-      const before = computeSourceContentSha(dir, ["a.malloy"]);
-      write("notes.md", "second");
-      expect(computeSourceContentSha(dir, ["a.malloy"])).toBe(before);
+   it("moves when a hashed file's sha changes", () => {
+      expect(
+         computeSourceContentSha(shasOf({ "a.malloy": "source: x is t" })),
+      ).not.toBe(
+         computeSourceContentSha(shasOf({ "a.malloy": "source: x is u" })),
+      );
    });
 
    it("moves when a path is added to the set", () => {
-      write("a.malloy", "source: x is duckdb.table('t')");
-      write("b.malloy", "source: y is duckdb.table('u')");
-      const one = computeSourceContentSha(dir, ["a.malloy"]);
-      const two = computeSourceContentSha(dir, ["a.malloy", "b.malloy"]);
+      const one = computeSourceContentSha(shasOf({ "a.malloy": "one" }));
+      const two = computeSourceContentSha(
+         shasOf({ "a.malloy": "one", "b.malloy": "two" }),
+      );
       expect(two).not.toBe(one);
    });
 
    it("is independent of the order paths are supplied in", () => {
-      write("a.malloy", "one");
-      write("b.malloy", "two");
-      expect(computeSourceContentSha(dir, ["a.malloy", "b.malloy"])).toBe(
-         computeSourceContentSha(dir, ["b.malloy", "a.malloy"]),
+      expect(
+         computeSourceContentSha(
+            shasOf({ "a.malloy": "one", "b.malloy": "two" }),
+         ),
+      ).toBe(
+         computeSourceContentSha(
+            shasOf({ "b.malloy": "two", "a.malloy": "one" }),
+         ),
       );
    });
 
    it("distinguishes a rename from unchanged bytes", () => {
-      write("a.malloy", "same bytes");
-      const asA = computeSourceContentSha(dir, ["a.malloy"]);
-      write("b.malloy", "same bytes");
-      expect(computeSourceContentSha(dir, ["b.malloy"])).not.toBe(asA);
+      expect(
+         computeSourceContentSha(shasOf({ "a.malloy": "same bytes" })),
+      ).not.toBe(computeSourceContentSha(shasOf({ "b.malloy": "same bytes" })));
    });
 
-   it("distinguishes a missing file from an empty one", () => {
-      // Both read as zero bytes of content. Without a distinct marker for the
-      // unreadable case they would hash identically, and a package that had
-      // started failing to read a model would look healthy.
-      const missing = computeSourceContentSha(dir, ["gone.malloy"]);
-      write("gone.malloy", "");
-      expect(computeSourceContentSha(dir, ["gone.malloy"])).not.toBe(missing);
-   });
-
-   it("hashes no paths to a stable digest", () => {
-      expect(computeSourceContentSha(dir, [])).toBe(
-         computeSourceContentSha(dir, []),
+   it("distinguishes a file the load could not read from an empty one", () => {
+      // Without a distinct marker a package that had started failing to read a
+      // model would look as healthy as one with an empty model.
+      const unreadable = computeSourceContentSha(
+         new Map([["gone.malloy", UNREADABLE_SHA]]),
       );
+      expect(unreadable).not.toBe(
+         computeSourceContentSha(shasOf({ "gone.malloy": "" })),
+      );
+   });
+
+   it("moves with the extra text, and hashes no paths to a stable digest", () => {
+      expect(computeSourceContentSha(new Map())).toBe(
+         computeSourceContentSha(new Map()),
+      );
+      expect(computeSourceContentSha(new Map(), "declared")).not.toBe(
+         computeSourceContentSha(new Map()),
+      );
+   });
+
+   it("reads no file: it hashes the shas it is given, whether or not a path exists", () => {
+      const reads = spyOn(fs, "readFileSync");
+      try {
+         computeSourceContentSha(shasOf({ "not/on/disk.malloy": "x" }));
+         expect(reads).not.toHaveBeenCalled();
+      } finally {
+         reads.mockRestore();
+      }
    });
 });
 
@@ -131,9 +134,14 @@ describe("Package serving identity", () => {
             ],
          ]),
       );
-      // What a load takes from publisher.json before it refreshes the identity.
-      (pkg as unknown as { rawWorkflows: unknown }).rawWorkflows = workflows;
-      pkg.refreshServingIdentity();
+      // What the load worker ships, adopted as a load adopts it.
+      (
+         pkg as unknown as {
+            adoptOutcomeMetadata(outcome: unknown): void;
+         }
+      ).adoptOutcomeMetadata(
+         servingIdentityOutcome(dir, workflows, ["m.malloy"]),
+      );
       return pkg;
    };
 
@@ -217,16 +225,27 @@ describe("Package serving identity", () => {
    });
 });
 
-describe("boundedManifestValue", () => {
-   it("passes an ordinary value through and replaces one too deep or too large", () => {
+describe("boundedDeclaration", () => {
+   it("passes an ordinary value through with its sha, and replaces one too deep or too large", () => {
       const ok = { a: { description: "d" } };
-      expect(boundedManifestValue(ok)).toBe(ok);
-      expect(boundedManifestValue(undefined)).toBeUndefined();
+      expect(boundedDeclaration(ok)).toEqual({
+         value: ok,
+         sha: canonicalSha(ok),
+      });
+      expect(boundedDeclaration(undefined)).toEqual({ value: undefined });
       let deep: unknown = [];
       for (let i = 0; i < 50_000; i++) deep = [deep];
-      expect(typeof boundedManifestValue(deep)).toBe("string");
-      expect(typeof boundedManifestValue("x".repeat(2 * 1024 * 1024))).toBe(
+      const tooDeep = boundedDeclaration(deep);
+      expect(typeof tooDeep.value).toBe("string");
+      expect(tooDeep.sha).toMatch(/^[0-9a-f]{64}$/);
+      expect(typeof boundedDeclaration("x".repeat(2 * 1024 * 1024)).value).toBe(
          "string",
+      );
+   });
+
+   it("gives a declaration the sha of its canonical form, whatever order its keys were written in", () => {
+      expect(boundedDeclaration({ b: 1, a: 2 }).sha).toBe(
+         boundedDeclaration({ a: 2, b: 1 }).sha,
       );
    });
 });

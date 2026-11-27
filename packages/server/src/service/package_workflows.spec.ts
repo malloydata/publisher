@@ -14,27 +14,42 @@ import {
    describe,
    expect,
    it,
+   spyOn,
 } from "bun:test";
 import { createHash } from "crypto";
 import * as fs from "fs";
+import fsSync from "fs";
 import * as os from "os";
 import * as path from "path";
 import { SkillController } from "../controller/skill.controller";
 import { resetDeprecatedUsageMetricsForTest } from "../deprecated_usage_metrics";
-import { PackageManifestError, WorkflowNotFoundError } from "../errors";
+import {
+   PackageManifestError,
+   WorkflowNotFoundError,
+   WorkflowsUnavailableError,
+} from "../errors";
 import { registerGetWorkflowTool } from "../mcp/tools/get_workflow_tool";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
+   type LoadPackageJob,
+   type LoadPackageOutcome,
 } from "../package_load/package_load_pool";
+import { PackageLoadProtocolError } from "../package_load/protocol_decode";
+import { servingIdentityOutcome } from "../test_helpers/serving_identity";
 import { fakeOf } from "../test_helpers/store_fakes";
 import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
+import { compileSource, type CompileSourceHost } from "./compile_source";
 import type { PackageLookup } from "./environment_ports";
 import { Package } from "./package";
-import { computeSourceContentSha } from "./package_revision";
+import { canonicalSha, computeSourceContentSha } from "./package_revision";
+import {
+   readPackageWorkflows,
+   SKILLS_PER_SET_MAX,
+} from "./skills/package_workflows";
 
 const MAIN = "workflows/analyst/skill_sets/main";
 const SECOND = "workflows/analyst/skill_sets/second";
@@ -122,6 +137,37 @@ describe("package workflows", () => {
       return read as Exclude<typeof read, { changed: true }>;
    };
 
+   const storeFor = (pkg: Package): PackageLookup =>
+      fakeOf<PackageLookup>({
+         getEnvironment: async () => ({
+            getPackage: async () => pkg,
+         }),
+      });
+
+   type Handler = (params: unknown) => Promise<{
+      isError?: boolean;
+      content: Array<{ resource?: { text: string } }>;
+   }>;
+
+   const toolFor = (pkg: Package): Handler => {
+      let handler: Handler | undefined;
+      let description = "";
+      registerGetWorkflowTool(
+         {
+            registerTool: (
+               _n: string,
+               { description: d }: { description: string },
+               h: Handler,
+            ) => {
+               description = d;
+               handler = h;
+            },
+         } as never,
+         storeFor(pkg),
+      );
+      expect(description).toContain("ONLY WHEN THE USER NAMES IT");
+      return handler!;
+   };
    const warningsOf = (pkg: Package) =>
       (pkg.getPackageMetadata().warnings ?? []).map((w) => w.message ?? "");
 
@@ -969,20 +1015,15 @@ describe("package workflows", () => {
          ).toBe(sha("two"));
       });
 
-      it("hashes a precomputed asset sha instead of reading the file again", () => {
+      it("hashes the sha the load took of an asset, not the file as it is now", () => {
          write("a.txt", "one");
-         const shas = new Map([["a.txt", sha("listed")]]);
-         const before = computeSourceContentSha(
-            dir,
-            ["a.txt"],
-            undefined,
-            shas,
-         );
+         const listed = new Map([["a.txt", sha("one")]]);
+         const before = computeSourceContentSha(listed);
          write("a.txt", "two");
-         expect(computeSourceContentSha(dir, ["a.txt"], undefined, shas)).toBe(
-            before,
-         );
-         expect(computeSourceContentSha(dir, ["a.txt"])).not.toBe(before);
+         expect(computeSourceContentSha(listed)).toBe(before);
+         expect(
+            computeSourceContentSha(new Map([["a.txt", sha("two")]])),
+         ).not.toBe(before);
       });
 
       it("skips a manifest-shaped file in a skill's assets with a warning, and still serves the skill and the workflow", async () => {
@@ -1113,19 +1154,12 @@ describe("package workflows", () => {
             "82232f8282d7b2d5b82fe7eb6e9f0e9b8b3531dac6eab27b8d70221a3373a4a6",
          );
          expect(pkg.getSourceContentSha()).toBe(
-            "8f00adde5bd6cee01894a3d90776a20624db003cdf21790c115603efc842e073",
+            "4a2a7b92fcec742e57427a5b1ecfb5d7c71653e3f12088a9712b6450ce462a47",
          );
       });
    });
 
    describe("REST and MCP surfaces", () => {
-      const storeFor = (pkg: Package): PackageLookup =>
-         fakeOf<PackageLookup>({
-            getEnvironment: async () => ({
-               getPackage: async () => pkg,
-            }),
-         });
-
       it("serves the listing and the resolved definition from the controller", async () => {
          manifest({ workflows: { analyst: analyst() } });
          const pkg = await load();
@@ -1159,30 +1193,6 @@ describe("package workflows", () => {
          ).rejects.toBeInstanceOf(WorkflowNotFoundError);
       });
 
-      type Handler = (params: unknown) => Promise<{
-         isError?: boolean;
-         content: Array<{ resource?: { text: string } }>;
-      }>;
-
-      const toolFor = (pkg: Package): Handler => {
-         let handler: Handler | undefined;
-         let description = "";
-         registerGetWorkflowTool(
-            {
-               registerTool: (
-                  _n: string,
-                  { description: d }: { description: string },
-                  h: Handler,
-               ) => {
-                  description = d;
-                  handler = h;
-               },
-            } as never,
-            storeFor(pkg),
-         );
-         expect(description).toContain("ONLY WHEN THE USER NAMES IT");
-         return handler!;
-      };
       const body = (r: { content: Array<{ resource?: { text: string } }> }) =>
          JSON.parse(r.content[0]!.resource!.text);
       const scopes = [{ environment: "env", package: "pkg" }];
@@ -1431,6 +1441,520 @@ describe("package workflows", () => {
             expect(noSet.workflow).toBeNull();
             expect(noSet.message).toContain("no skill set named");
          });
+      });
+   });
+
+   describe("walked in the load worker", () => {
+      const isRoot = process.getuid?.() === 0;
+      const FS_READS = [
+         "readFileSync",
+         "openSync",
+         "readdirSync",
+         "opendirSync",
+         "statSync",
+         "lstatSync",
+         "realpathSync",
+      ] as const;
+      const isWindows = process.platform === "win32";
+
+      /** Records what each job asks of the worker, then runs it. */
+      class RecordingPool extends PackageLoadPool {
+         readonly requests: LoadPackageJob[] = [];
+         override loadPackage(request: LoadPackageJob) {
+            this.requests.push(request);
+            return super.loadPackage(request);
+         }
+      }
+
+      /** Lets a test change what the worker answered, as a worker that left something out would. */
+      class TamperingPool extends PackageLoadPool {
+         tamper?: (outcome: LoadPackageOutcome) => void;
+         override async loadPackage(request: LoadPackageJob) {
+            const outcome = await super.loadPackage(request);
+            this.tamper?.(outcome);
+            return outcome;
+         }
+      }
+
+      const usePool = (pool: PackageLoadPool) =>
+         __setPackageLoadPoolForTests(pool);
+
+      afterAll(async () => {
+         await usePool(new PackageLoadPool(1));
+      });
+
+      describe("which jobs ask for the walk", () => {
+         let pool: RecordingPool;
+         beforeEach(async () => {
+            pool = new RecordingPool(1);
+            await usePool(pool);
+            manifest({ workflows: { analyst: analyst() } });
+         });
+
+         const readsWorkflows = () => pool.requests.map((j) => j.readWorkflows);
+
+         it("asks on a create and on a reload, and not for a build plan refresh", async () => {
+            const pkg = await load();
+            expect(readsWorkflows()).toEqual([true]);
+            await pkg.reloadAllModels({});
+            expect(readsWorkflows()).toEqual([true, true]);
+            pool.requests.length = 0;
+            pkg.markBuildPlanStale();
+            await pkg.refreshBuildPlan();
+            expect(pool.requests).toHaveLength(1);
+            expect(pool.requests[0]!.computeBuildPlan).toBe(true);
+            expect(readsWorkflows()).toEqual([undefined]);
+         });
+
+         it("does not ask for a compile, which serves nothing", async () => {
+            const pkg = await load();
+            pool.requests.length = 0;
+            const host: CompileSourceHost = {
+               environmentName: "env",
+               environmentPath: path.dirname(dir),
+               withPackageLock: (_name, fn) => fn(),
+               loadPackageLocked: async () => pkg,
+               versionedPackage: async () => pkg,
+            };
+            await compileSource(
+               host,
+               "pkg",
+               "model.malloy",
+               undefined,
+               false,
+               undefined,
+               "package",
+            );
+            expect(pool.requests).toHaveLength(1);
+            expect(readsWorkflows()).toEqual([undefined]);
+         });
+      });
+
+      describe("what the main thread adopts", () => {
+         const HOUSE = "sets/a/house";
+         const declared = () => ({
+            default: { description: "Default", skill_sets: ["sets/a"] },
+            one: {
+               description: "One",
+               instructions: "workflows/one.md",
+               skill_sets: ["sets/a", "sets/b"],
+            },
+            two: { description: "Two", skill_sets: ["sets/a"] },
+         });
+
+         function richPackage() {
+            write(
+               `${HOUSE}/SKILL.md`,
+               "---\nname: house\ndescription: House rules.\n---\n\nUse net revenue.\n",
+            );
+            // Root files named like Object.prototype members, which a catalog keyed by plain assignment would lose.
+            for (const name of ["__proto__", "constructor", "toString"]) {
+               write(`${HOUSE}/${name}`, `root file ${name}\n`);
+            }
+            write(`${HOUSE}/reference/x.md`, "# X\n");
+            write(`${HOUSE}/ignored.txt`, "left out");
+            write(`${HOUSE}/.skillignore`, "ignored.txt\n");
+            fs.mkdirSync(path.join(dir, HOUSE, "assets"), { recursive: true });
+            fs.writeFileSync(
+               path.join(dir, HOUSE, "assets/logo.bin"),
+               Buffer.from([0, 1, 2, 255, 254]),
+            );
+            write(
+               "sets/b/extra/SKILL.md",
+               "---\nname: extra\ndescription: Extra.\n---\n\nbody\n",
+            );
+            // A skill the strict assets/ rules set aside: its assets/ is a link out of the package.
+            write(
+               "sets/a/bad/SKILL.md",
+               "---\nname: bad\ndescription: Bad.\n---\n\nbody\n",
+            );
+            fs.symlinkSync(
+               os.tmpdir(),
+               path.join(dir, "sets/a/bad/assets"),
+               "dir",
+            );
+            write("workflows/one.md", "Be one.");
+            manifest({ workflows: declared() });
+         }
+
+         /** The package an in-process walk of the same files gives, adopted as a worker's result is. */
+         function inProcess(): Package {
+            const pkg = new Package(
+               "env",
+               "pkg",
+               dir,
+               { name: "pkg" } as never,
+               [],
+               new Map(),
+            );
+            (
+               pkg as unknown as {
+                  adoptOutcomeMetadata: (o: LoadPackageOutcome) => void;
+               }
+            ).adoptOutcomeMetadata(
+               servingIdentityOutcome(dir, declared(), ["model.malloy"]),
+            );
+            return pkg;
+         }
+
+         const sha256 = (bytes: Buffer | string) =>
+            createHash("sha256").update(bytes).digest("hex");
+
+         /** The pin as the files hash on disk: every file the walk read and the model, and the declaration. */
+         function expectedSourceContentSha(): string {
+            const { paths } = readPackageWorkflows(dir, declared());
+            const shas = new Map(
+               [...paths, "model.malloy"].map((p) => [
+                  p,
+                  sha256(fs.readFileSync(path.join(dir, p))),
+               ]),
+            );
+            return computeSourceContentSha(shas, canonicalSha(declared()));
+         }
+
+         const withoutRevision = <T extends { source?: object }>(w: T) => ({
+            ...w,
+            ...(w.source && {
+               source: { ...w.source, servedRevision: undefined },
+            }),
+         });
+
+         it("is what the same walk reads in the main thread: workflows, sets, files and every hash", async () => {
+            richPackage();
+            const viaWorker = await load();
+            const here = inProcess();
+
+            expect(viaWorker.listWorkflows()).toEqual(here.listWorkflows());
+            expect(viaWorker.listWorkflows().map((w) => w.name)).toEqual([
+               "default",
+               "one",
+               "two",
+            ]);
+            for (const name of ["default", "one", "two"]) {
+               const full = viaWorker.getWorkflow(name)!;
+               expect(withoutRevision(full)).toEqual(
+                  withoutRevision(here.getWorkflow(name)!),
+               );
+               for (const set of full.skill_sets) {
+                  expect(
+                     withoutRevision(
+                        viaWorker.getWorkflow(name, "full", set.name)!,
+                     ),
+                  ).toEqual(
+                     withoutRevision(here.getWorkflow(name, "full", set.name)!),
+                  );
+                  for (const file of set.skills ?? []) {
+                     const read = viaWorker.getWorkflowSkillFile(
+                        name,
+                        file.relative_filepath!,
+                        set.name,
+                     );
+                     expect(read).toBeDefined();
+                     expect(
+                        withoutRevision(read as { source: object }),
+                     ).toEqual(
+                        withoutRevision(
+                           here.getWorkflowSkillFile(
+                              name,
+                              file.relative_filepath!,
+                              set.name,
+                           ) as { source: object },
+                        ),
+                     );
+                  }
+               }
+            }
+            expect(viaWorker.listSkills().map((s) => s.name)).toEqual(
+               here.listSkills().map((s) => s.name),
+            );
+            expect(viaWorker.getSourceContentSha()).toBe(
+               here.getSourceContentSha(),
+            );
+            for (const name of ["default", "one", "two"]) {
+               expect(viaWorker.getWorkflow(name)!.source.definitionSha).toBe(
+                  here.getWorkflow(name)!.source.definitionSha,
+               );
+            }
+         });
+
+         it("keeps a skill's root files named like Object.prototype members, and the ones .skillignore and the assets/ rules leave out", async () => {
+            richPackage();
+            const pkg = await load();
+            const files = pkg
+               .getWorkflow("default")!
+               .skill_sets[0]!.skills!.map((f) => f.relative_filepath);
+            expect(files).toContain("house/reference/x.md");
+            expect(files).not.toContain("house/ignored.txt");
+            const skill = pkg.listSkills().find((s) => s.name === "house")!;
+            for (const name of ["__proto__", "constructor", "toString"]) {
+               expect(Object.hasOwn(skill.catalog.files, name)).toBe(true);
+               expect(skill.catalog.files[name]!.size).toBe(
+                  `root file ${name}\n`.length,
+               );
+            }
+            expect(Object.hasOwn(skill.catalog.files, "ignored.txt")).toBe(
+               false,
+            );
+            expect(pkg.listSkills().map((s) => s.name)).not.toContain("bad");
+         });
+
+         it("pins the package as the files hash on disk, the declaration and an instructions-only edit included", async () => {
+            richPackage();
+            const before = (await load()).getSourceContentSha();
+            expect(before).toBe(expectedSourceContentSha());
+            write("workflows/one.md", "Be one, differently.");
+            const after = (await load()).getSourceContentSha();
+            expect(after).not.toBe(before);
+            expect(after).toBe(expectedSourceContentSha());
+            write(`${HOUSE}/.skillignore`, "ignored.txt\n# edited\n");
+            const afterIgnore = (await load()).getSourceContentSha();
+            expect(afterIgnore).not.toBe(after);
+            expect(afterIgnore).toBe(expectedSourceContentSha());
+         });
+
+         it("hands nothing to the main thread's disk: adopting reads no file", async () => {
+            richPackage();
+            const outcome = servingIdentityOutcome(dir, declared(), [
+               "model.malloy",
+            ]);
+            const pkg = new Package(
+               "env",
+               "pkg",
+               dir,
+               { name: "pkg" } as never,
+               [],
+               new Map(),
+            );
+            const reads = FS_READS.map((fn) => spyOn(fsSync, fn));
+            try {
+               (
+                  pkg as unknown as {
+                     adoptOutcomeMetadata: (o: LoadPackageOutcome) => void;
+                  }
+               ).adoptOutcomeMetadata(outcome);
+               expect(reads.map((spy) => spy.mock.calls.length)).toEqual(
+                  FS_READS.map(() => 0),
+               );
+            } finally {
+               for (const spy of reads) spy.mockRestore();
+            }
+            expect(pkg.getSourceContentSha()).toMatch(/^[0-9a-f]{64}$/);
+         });
+
+         it("reports a dry run's workflow warnings and unread skills/ without counting them", async () => {
+            const harness = await startMetricsHarness();
+            resetDeprecatedUsageMetricsForTest();
+            try {
+               write(
+                  "skills/old/SKILL.md",
+                  "---\nname: old\ndescription: d\n---\n\nbody\n",
+               );
+               manifest({
+                  workflows: {
+                     analyst: analyst(),
+                     refused: { surprise: 1 },
+                  },
+               });
+               const pkg = await Package.create(
+                  "env",
+                  "pkg",
+                  dir,
+                  malloyConfig,
+                  false,
+                  { dryRun: true },
+               );
+               const warnings = pkg.getPackageMetadata().warnings ?? [];
+               expect(warnings.map((w) => w.code)).toContain(
+                  "PACKAGE_SKILLS_DIR_NOT_READ",
+               );
+               expect(warnings.map((w) => w.message).join("\n")).toContain(
+                  "Workflow 'refused' is not served",
+               );
+               expect(
+                  await harness.collectCounter(
+                     "publisher_deprecated_usage_total",
+                     { feature: "skills_dir" },
+                  ),
+               ).toBe(0);
+            } finally {
+               resetDeprecatedUsageMetricsForTest();
+               await harness.shutdown();
+            }
+         });
+      });
+
+      describe("a package whose skill sets cannot be read", () => {
+         // A dot directory, which the package's own file listing skips, so only the walk reads it.
+         const HIDDEN = ".sets/main";
+         const unreadable = (fn: () => Promise<void>) => async () => {
+            write(
+               `${HIDDEN}/conventions/SKILL.md`,
+               "---\nname: conventions\ndescription: d\n---\n\nbody\n",
+            );
+            manifest({
+               workflows: {
+                  analyst: { ...analyst(), skill_sets: [HIDDEN] },
+               },
+            });
+            fs.chmodSync(path.join(dir, HIDDEN), 0o000);
+            try {
+               await fn();
+            } finally {
+               fs.chmodSync(path.join(dir, HIDDEN), 0o755);
+            }
+         };
+
+         it.skipIf(isRoot || isWindows)(
+            "still loads its models, and answers the workflow routes 503 with the reason, not 404",
+            unreadable(async () => {
+               const pkg = await load();
+               expect(pkg.getModelPaths()).toEqual(["model.malloy"]);
+               const controller = new SkillController(storeFor(pkg));
+
+               await expect(
+                  controller.listWorkflows("env", "pkg"),
+               ).rejects.toThrow(WorkflowsUnavailableError);
+               await expect(
+                  controller.getWorkflow("env", "pkg", "analyst"),
+               ).rejects.toThrow(
+                  `EACCES: permission denied, scandir '${HIDDEN}'`,
+               );
+               await expect(
+                  controller.getWorkflowSkillFile(
+                     "env",
+                     "pkg",
+                     "analyst",
+                     "conventions/SKILL.md",
+                  ),
+               ).rejects.toBeInstanceOf(WorkflowsUnavailableError);
+               expect(() => pkg.listSkills()).toThrow(
+                  WorkflowsUnavailableError,
+               );
+               // A name the manifest never declared is still not found.
+               await expect(
+                  controller.getWorkflow("env", "pkg", "nope"),
+               ).rejects.toBeInstanceOf(WorkflowNotFoundError);
+            }),
+         );
+
+         it.skipIf(isRoot || isWindows)(
+            "answers get_workflow with the reason as a tool error, and a name never declared as not found",
+            unreadable(async () => {
+               const pkg = await load();
+               const tool = toolFor(pkg);
+               const scopes = [{ environment: "env", package: "pkg" }];
+
+               const listing = await tool({ scopes });
+               expect(listing.isError).toBe(true);
+               expect(listing.content[0]!.resource?.text).toContain(
+                  `scandir '${HIDDEN}'`,
+               );
+               const named = await tool({ scopes, workflow_name: "analyst" });
+               expect(named.isError).toBe(true);
+               expect(named.content[0]!.resource?.text).toContain("EACCES");
+            }),
+         );
+
+         it.skipIf(isRoot || isWindows)(
+            "serves its workflows again once the folder can be read and the package reloads",
+            unreadable(async () => {
+               const pkg = await load();
+               expect(() => pkg.listWorkflows()).toThrow(
+                  WorkflowsUnavailableError,
+               );
+               fs.chmodSync(path.join(dir, HIDDEN), 0o755);
+               await pkg.reloadAllModels({});
+               expect(pkg.listWorkflows().map((w) => w.name)).toEqual([
+                  "analyst",
+               ]);
+            }),
+         );
+      });
+
+      describe("a skill set past the skill cap", () => {
+         it("serves the first 64 skills by name and says so once", async () => {
+            for (let i = 0; i < SKILLS_PER_SET_MAX + 6; i++) {
+               const name = `s${String(i).padStart(3, "0")}`;
+               write(
+                  `${MAIN}/${name}/SKILL.md`,
+                  `---\nname: ${name}\ndescription: d\n---\n\nbody\n`,
+               );
+            }
+            manifest({ workflows: { analyst: analyst() } });
+            const pkg = await load();
+            const workflow = pkg.getWorkflow("analyst")!;
+            const served = new Set(
+               workflow.skill_sets[0]!.skills!.map(
+                  (f) => f.relative_filepath!.split("/")[0],
+               ),
+            );
+            // The fixture's own `conventions` skill sorts first and takes one of the 64.
+            expect(served.size).toBe(SKILLS_PER_SET_MAX);
+            expect(served.has("conventions")).toBe(true);
+            expect(served.has("s062")).toBe(true);
+            expect(served.has("s063")).toBe(false);
+            expect(workflow.warnings).toHaveLength(1);
+            expect(workflow.warnings[0]).toContain(
+               `more than ${SKILLS_PER_SET_MAX} skill directories`,
+            );
+         });
+      });
+
+      describe("a worker that leaves out what the serving identity hashes", () => {
+         let pool: TamperingPool;
+         beforeEach(async () => {
+            pool = new TamperingPool(1);
+            await usePool(pool);
+            manifest({ workflows: { analyst: analyst() } });
+         });
+
+         it("fails a create", async () => {
+            pool.tamper = (o) => {
+               (o.modelShas as Map<string, string>).delete("model.malloy");
+            };
+            await expect(load()).rejects.toBeInstanceOf(
+               PackageLoadProtocolError,
+            );
+         });
+
+         for (const [label, tamper] of [
+            [
+               "a model's sha",
+               (o: LoadPackageOutcome) => {
+                  (o.modelShas as Map<string, string>).delete("model.malloy");
+               },
+            ],
+            [
+               "a skill file's sha",
+               (o: LoadPackageOutcome) => {
+                  const shas = o.packageMetadata.workflowsRead!.walk
+                     .contentShas as Map<string, string>;
+                  shas.delete([...shas.keys()][0]!);
+               },
+            ],
+            [
+               "the whole walk",
+               (o: LoadPackageOutcome) => {
+                  delete o.packageMetadata.workflowsRead;
+               },
+            ],
+         ] as const) {
+            it(`fails a reload that lacks ${label}, and the package keeps serving what it had`, async () => {
+               const pkg = await load();
+               const served = {
+                  revision: pkg.getServedRevision(),
+                  sha: pkg.getSourceContentSha(),
+                  workflows: pkg.listWorkflows(),
+               };
+               pool.tamper = tamper;
+               await expect(pkg.reloadAllModels({})).rejects.toBeInstanceOf(
+                  PackageLoadProtocolError,
+               );
+               expect(pkg.getServedRevision()).toBe(served.revision);
+               expect(pkg.getSourceContentSha()).toBe(served.sha);
+               expect(pkg.listWorkflows()).toEqual(served.workflows);
+            });
+         }
       });
    });
 });

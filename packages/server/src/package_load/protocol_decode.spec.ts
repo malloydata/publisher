@@ -284,6 +284,50 @@ describe("checkLoadPackageResult", () => {
          ),
       ).toThrow(/serialized model "m\.malloy" has givens of kind number/);
    });
+
+   describe("the serving identity a load ships", () => {
+      const walk = () => ({
+         workflows: new Map(),
+         sets: new Map(),
+         contentShas: new Map([["a.md", "sha"]]),
+         paths: ["a.md"],
+      });
+      const withRead = (workflowsRead: unknown) =>
+         result({ packageMetadata: { workflowsRead } });
+
+      it("accepts a walk and the model shas the worker read", () => {
+         const msg = {
+            ...withRead({ declarationSha: "d", walk: walk() }),
+            modelShas: new Map([["m.malloy", "sha"]]),
+         };
+         expect(checkLoadPackageResult(msg)).toBe(msg as never);
+      });
+
+      it("rejects model shas that are not a map of strings", () => {
+         for (const modelShas of [
+            {},
+            [["m.malloy", "sha"]],
+            new Map([["m", 1]]),
+         ]) {
+            expect(() => checkLoadPackageResult(result({ modelShas }))).toThrow(
+               /modelShas that are not a map of strings/,
+            );
+         }
+      });
+
+      it("rejects a workflowsRead whose walk lost a map or its paths in transit", () => {
+         for (const lost of ["workflows", "sets", "contentShas", "paths"]) {
+            const broken: Record<string, unknown> = walk();
+            broken[lost] = {};
+            expect(() =>
+               checkLoadPackageResult(withRead({ walk: broken })),
+            ).toThrow(/workflowsRead that is not a walk/);
+         }
+         expect(() => checkLoadPackageResult(withRead({}))).toThrow(
+            /workflowsRead that is not a walk/,
+         );
+      });
+   });
 });
 
 describe("checkCompileServedCopyResult", () => {
