@@ -12,6 +12,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
@@ -21,28 +22,38 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ENV_NAME = "workflows-test-env";
 const PACKAGE_NAME = "workflows-test";
 const fixtureDir = path.resolve(__dirname, "../../fixtures/workflows-test");
+/** A package whose manifest writes `workflows` as a string, so no workflow of it is served. */
+const REFUSED_PACKAGE = "workflows-refused";
 
 describe("Package skills and workflows (E2E)", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
+   const refusedDir = fs.mkdtempSync(path.join(os.tmpdir(), REFUSED_PACKAGE));
 
-   const url = (sub: string) =>
-      `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}${sub}`;
-   const get = async (sub: string) => {
-      const res = await fetch(url(sub));
+   const url = (sub: string, packageName = PACKAGE_NAME) =>
+      `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${packageName}${sub}`;
+   const get = async (sub: string, packageName = PACKAGE_NAME) => {
+      const res = await fetch(url(sub, packageName));
       return { status: res.status, body: await res.json() };
    };
 
    beforeAll(async () => {
       env = await startRestE2E();
       baseUrl = env.baseUrl;
+      fs.writeFileSync(
+         path.join(refusedDir, "publisher.json"),
+         JSON.stringify({ name: REFUSED_PACKAGE, workflows: "nope" }),
+      );
 
       const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "Content-Type": "application/json" },
          body: JSON.stringify({
             name: ENV_NAME,
-            packages: [{ name: PACKAGE_NAME, location: fixtureDir }],
+            packages: [
+               { name: PACKAGE_NAME, location: fixtureDir },
+               { name: REFUSED_PACKAGE, location: refusedDir },
+            ],
             connections: [],
          }),
       });
@@ -53,16 +64,18 @@ describe("Package skills and workflows (E2E)", () => {
       }
 
       const deadline = Date.now() + 30_000;
-      for (;;) {
-         try {
-            if ((await fetch(url(""))).ok) break;
-         } catch {
-            // not ready yet
+      for (const packageName of [PACKAGE_NAME, REFUSED_PACKAGE]) {
+         for (;;) {
+            try {
+               if ((await fetch(url("", packageName))).ok) break;
+            } catch {
+               // not ready yet
+            }
+            if (Date.now() > deadline) {
+               throw new Error("Package did not become available in time");
+            }
+            await new Promise((r) => setTimeout(r, 500));
          }
-         if (Date.now() > deadline) {
-            throw new Error("Package did not become available in time");
-         }
-         await new Promise((r) => setTimeout(r, 500));
       }
    });
 
@@ -78,6 +91,7 @@ describe("Package skills and workflows (E2E)", () => {
       }
       await env?.stop();
       env = null;
+      fs.rmSync(refusedDir, { recursive: true, force: true });
    });
 
    describe("skills", () => {
@@ -460,6 +474,22 @@ describe("Package skills and workflows (E2E)", () => {
             404,
          );
          expect((await read("conventions/SKILL.md", "nope")).status).toBe(404);
+      });
+   });
+
+   describe("a manifest whose whole workflows value is refused", () => {
+      it("answers any name, on both routes, 404 WORKFLOW_NOT_SERVED with the manifest warning's text", async () => {
+         for (const sub of [
+            "/workflows/analyst",
+            "/workflows/default/skills/house-rules/SKILL.md",
+         ]) {
+            const { status, body } = await get(sub, REFUSED_PACKAGE);
+            expect(status).toBe(404);
+            expect(body.reason).toBe("WORKFLOW_NOT_SERVED");
+            expect(body.message).toContain(
+               "Package manifest 'workflows' must be an object",
+            );
+         }
       });
    });
 

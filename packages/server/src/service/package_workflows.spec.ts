@@ -48,7 +48,11 @@ import {
 import { compileSource, type CompileSourceHost } from "./compile_source";
 import type { PackageLookup } from "./environment_ports";
 import { Package } from "./package";
-import { canonicalSha, computeSourceContentSha } from "./package_revision";
+import {
+   canonicalSha,
+   computeSourceContentSha,
+   MANIFEST_WORKFLOWS_MAX_BYTES,
+} from "./package_revision";
 import { BUNDLED_CATALOG } from "./skills/package_skills";
 import {
    readPackageWorkflows,
@@ -561,6 +565,57 @@ describe("package workflows", () => {
          await pkg.reloadAllModels({});
          expect(skillsOf(pkg)).toEqual([]);
       });
+   });
+
+   describe("a manifest whose whole workflows value is refused", () => {
+      it.each([
+         ["is not an object", "nope", "'workflows' must be an object"],
+         [
+            "is over the size bound",
+            { big: "x".repeat(MANIFEST_WORKFLOWS_MAX_BYTES) },
+            "too deeply nested or over 1 MiB",
+         ],
+      ])(
+         "answers any name WORKFLOW_NOT_SERVED with the manifest warning's text when it %s",
+         async (_label, value, text) => {
+            manifest({ workflows: value });
+            const pkg = await load();
+            const controller = new SkillController(storeFor(pkg));
+            const refused = {
+               reason: "WORKFLOW_NOT_SERVED",
+               message: expect.stringContaining(text),
+            };
+            for (const name of ["analyst", "default"]) {
+               await expect(
+                  controller.getWorkflow("env", "pkg", name),
+               ).rejects.toMatchObject(refused);
+               await expect(
+                  controller.getWorkflowSkillFile(
+                     "env",
+                     "pkg",
+                     name,
+                     "conventions/SKILL.md",
+                  ),
+               ).rejects.toMatchObject(refused);
+            }
+            const answer = JSON.parse(
+               (
+                  await toolFor(pkg)({
+                     scopes: [{ environment: "env", package: "pkg" }],
+                     workflow_name: "analyst",
+                  })
+               ).content[0]!.resource!.text,
+            );
+            expect(answer.workflow).toBeNull();
+            expect(answer.reason).toBe("WORKFLOW_NOT_SERVED");
+            expect(answer.message).toContain(text);
+            // The warning is about no one workflow, so it has no code to read.
+            const warning = (pkg.getPackageMetadata().warnings ?? []).find(
+               (w) => w.message.includes(text),
+            );
+            expect(warning?.code).toBeUndefined();
+         },
+      );
    });
 
    describe("what is no longer read", () => {
@@ -2060,6 +2115,8 @@ describe("package workflows", () => {
                // An empty list would read as a package with no workflows.
                expect(answer).not.toHaveProperty("availableWorkflows");
                expect(answer.message).toContain("EACCES");
+               // Its Fix clause sends the reader to a list this reply says cannot be made.
+               expect(answer.message).not.toContain("Fix:");
             }),
          );
 

@@ -54,7 +54,7 @@ export const UNREADABLE_DECLARATION = "[unreadable: too deep or too large]";
  * hash and to post across the worker boundary, where a stack overflow is not
  * an author-facing error, with the sha256 of its canonical JSON (absent for no
  * declaration). The marker is not an object, so the workflows reader answers
- * it with its usual "must be an object" warning.
+ * it with a "too deeply nested or over 1 MiB" warning of its own.
  */
 export function boundedDeclaration(value: unknown): {
    value: unknown;

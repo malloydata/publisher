@@ -13,7 +13,10 @@ import type { PackageLookup } from "../service/environment_ports";
 import { EnvironmentStore } from "../service/environment_store";
 import type { Environment } from "../service/environment";
 import { parseEnvironmentName, parsePackageName } from "../service/identity";
-import { workflowFileServed } from "../service/skills/package_workflows";
+import {
+   workflowFileServed,
+   workflowFileServedExactly,
+} from "../service/skills/package_workflows";
 
 type WatchStatusRes = components["schemas"]["WatchStatus"];
 
@@ -110,28 +113,44 @@ export class WatchModeController {
       this.watchingEnvironmentName = watchName;
       this.watchingPath = watchPath;
       // A skill set holds scripts and data of any extension, and its listing
-      // is read at load, so a change to a file a skill serves is a reload.
-      // `exact` reads the skill's `.skillignore`, so the per-file filter,
-      // which runs for every file the watcher walks, leaves it off.
-      const servesWorkflowFile = (
-         filePath: string,
-         exact: boolean,
-      ): boolean => {
+      // is read at load, so a change to a file a skill serves is a reload. The
+      // exact answer reads the skill's `.skillignore`, so the per-file filter,
+      // which runs for every file the watcher walks and cannot wait, uses the
+      // answer by name alone.
+      const workflowFileAt = (filePath: string) => {
          const [pkgName, ...within] = path
             .relative(watchPath, filePath)
             .split(path.sep);
-         if (!pkgName || within.length === 0) return false;
+         if (!pkgName || within.length === 0) return undefined;
          const pkg = environment
             .getLoadedPackages()
             .find((p) => p.getPackageName() === pkgName);
+         return pkg === undefined
+            ? undefined
+            : {
+                 packagePath: path.join(watchPath, pkgName),
+                 watched: pkg.workflowPaths(),
+                 relative: within.join("/"),
+              };
+      };
+      const servesWorkflowFile = (filePath: string): boolean => {
+         const at = workflowFileAt(filePath);
          return (
-            pkg !== undefined &&
-            workflowFileServed(
-               path.join(watchPath, pkgName),
-               pkg.workflowPaths(),
-               within.join("/"),
-               exact,
-            )
+            at !== undefined &&
+            workflowFileServed(at.packagePath, at.watched, at.relative)
+         );
+      };
+      const servesWorkflowFileExactly = async (
+         filePath: string,
+      ): Promise<boolean> => {
+         const at = workflowFileAt(filePath);
+         return (
+            at !== undefined &&
+            (await workflowFileServedExactly(
+               at.packagePath,
+               at.watched,
+               at.relative,
+            ))
          );
       };
       this.watcher = chokidar.watch(this.watchingPath, {
@@ -141,7 +160,7 @@ export class WatchModeController {
             return (
                !MODEL_EXTS.has(ext) &&
                !ASSET_EXTS.has(ext) &&
-               !servesWorkflowFile(filePath, false)
+               !servesWorkflowFile(filePath)
             );
          },
          ignoreInitial: true,
@@ -190,7 +209,8 @@ export class WatchModeController {
             // bounce open pages into a compile error or 404.
             const ext = path.extname(filePath).toLowerCase();
             const recompile =
-               MODEL_EXTS.has(ext) || servesWorkflowFile(filePath, true);
+               MODEL_EXTS.has(ext) ||
+               (await servesWorkflowFileExactly(filePath));
             // The per-file filter does not read `.skillignore`, so a file it rules out can get here.
             if (!recompile && !ASSET_EXTS.has(ext)) return;
             if (recompile) {

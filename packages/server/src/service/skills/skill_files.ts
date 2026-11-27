@@ -146,27 +146,33 @@ function builtInExcluded(name: string, isDirectory: boolean): boolean {
 }
 
 /**
- * Whether an edit to `relative`, a path inside the skill at `skillDir`, can change what the skill serves. A name no walk
- * keeps rules a path out without reading anything; `exact` also reads `.skillignore` to rule out what it matches. An edit
- * to `.skillignore` itself always can, and so does `SKILL.md`, which a skill keeps whatever it matches, and anything that
- * cannot be matched.
+ * Whether an edit to `relative`, a path inside a skill, can change what the skill serves, judged by its name alone: a
+ * name no walk keeps rules a path out without reading anything. An edit to `.skillignore` itself always can, and so does
+ * `SKILL.md`, which a skill keeps whatever it matches, and anything that cannot be matched.
  */
-export function mayChangeSkill(
+export function mayChangeSkill(relative: string): boolean {
+   if (relative === SKILLIGNORE || relative === SKILL_MD) return true;
+   const segments = segmentsOf(relative);
+   return (
+      segments.length === 0 ||
+      !segments.some((name, i) =>
+         builtInExcluded(name, i < segments.length - 1),
+      )
+   );
+}
+
+/** {@link mayChangeSkill}, and then what the skill's own `.skillignore` rules out; it reads that file without blocking, which a watcher's per-file filter cannot wait for. */
+export async function mayChangeSkillExactly(
    skillDir: string,
    relative: string,
-   exact: boolean,
-): boolean {
+): Promise<boolean> {
+   if (!mayChangeSkill(relative)) return false;
    if (relative === SKILLIGNORE || relative === SKILL_MD) return true;
    const segments = segmentsOf(relative);
    if (segments.length === 0) return true;
-   if (
-      segments.some((name, i) => builtInExcluded(name, i < segments.length - 1))
-   ) {
-      return false;
-   }
-   if (!exact) return true;
    const matcher = ignore({ ignorecase: true });
-   readSkillignore(skillDir, matcher, []);
+   const text = await readSkillignoreText(skillDir, []);
+   if (text !== null) applySkillignore(text, matcher, []);
    try {
       return !matcher.ignores(segments.join("/"));
    } catch {
@@ -202,42 +208,61 @@ function stars(pattern: string): number {
       );
 }
 
-/** Adds the bounded patterns of `<dir>/.skillignore` to `matcher`; returns its text, or null when none was applied. */
-function readSkillignore(
-   dir: string,
-   matcher: Ignore,
-   warnings: string[],
-): string | null {
+/** Why a `.skillignore` that exists is not read, or undefined when it is a regular file within the cap. */
+function skillignoreRefusal(stat: fs.Stats): string | undefined {
+   if (!stat.isFile()) {
+      return `${SKILLIGNORE} is a link or not a regular file, so it is ignored`;
+   }
+   return stat.size > SKILLIGNORE_MAX_BYTES
+      ? `${SKILLIGNORE} is ${stat.size} bytes, over the ${capText(SKILLIGNORE_MAX_BYTES)} cap, so it is ignored`
+      : undefined;
+}
+
+/** The text of `<dir>/.skillignore` when it is a regular file within the cap; null otherwise, with the reason in `warnings` unless it is absent. */
+function readSkillignoreSync(dir: string, warnings: string[]): string | null {
    const file = path.join(dir, SKILLIGNORE);
-   let stat: fs.Stats;
    try {
-      stat = fs.lstatSync(file);
+      const refusal = skillignoreRefusal(fs.lstatSync(file));
+      if (refusal) {
+         warnings.push(refusal);
+         return null;
+      }
+      return fs.readFileSync(file, "utf8");
    } catch (error) {
       if (errorCode(error) !== "ENOENT") {
          warnings.push(`${SKILLIGNORE} cannot be read (${errorCode(error)})`);
       }
       return null;
    }
-   if (!stat.isFile()) {
-      warnings.push(
-         `${SKILLIGNORE} is a link or not a regular file, so it is ignored`,
-      );
-      return null;
-   }
-   if (stat.size > SKILLIGNORE_MAX_BYTES) {
-      warnings.push(
-         `${SKILLIGNORE} is ${stat.size} bytes, over the ${capText(SKILLIGNORE_MAX_BYTES)} cap, so it is ignored`,
-      );
-      return null;
-   }
-   let text: string;
-   try {
-      text = fs.readFileSync(file, "utf8");
-   } catch (error) {
-      warnings.push(`${SKILLIGNORE} cannot be read (${errorCode(error)})`);
-      return null;
-   }
+}
 
+/** {@link readSkillignoreSync} without blocking the event loop. */
+async function readSkillignoreText(
+   dir: string,
+   warnings: string[],
+): Promise<string | null> {
+   const file = path.join(dir, SKILLIGNORE);
+   try {
+      const refusal = skillignoreRefusal(await fs.promises.lstat(file));
+      if (refusal) {
+         warnings.push(refusal);
+         return null;
+      }
+      return await fs.promises.readFile(file, "utf8");
+   } catch (error) {
+      if (errorCode(error) !== "ENOENT") {
+         warnings.push(`${SKILLIGNORE} cannot be read (${errorCode(error)})`);
+      }
+      return null;
+   }
+}
+
+/** Adds the bounded patterns of a `.skillignore`'s text to `matcher`. */
+function applySkillignore(
+   text: string,
+   matcher: Ignore,
+   warnings: string[],
+): void {
    let patterns = 0;
    let excess = 0;
    let firstExcess = "";
@@ -289,7 +314,6 @@ function readSkillignore(
          `${SKILLIGNORE} patterns total more than ${SKILLIGNORE_MAX_TOTAL_CHARS} characters, so the last ${charsExcess} are skipped, from ${shown(firstCharsExcess)}`,
       );
    }
-   return text;
 }
 
 /**
@@ -348,7 +372,8 @@ export function skillFiles(
 ): SkillFilesResult {
    const warnings: string[] = [];
    const matcher = ignore({ ignorecase: true });
-   const skillignore = readSkillignore(dir, matcher, warnings);
+   const skillignore = readSkillignoreSync(dir, warnings);
+   if (skillignore !== null) applySkillignore(skillignore, matcher, warnings);
 
    const alone = { left: ASSET_MAX_ENTRIES };
    const budget = options.budget ?? {

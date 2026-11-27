@@ -20,6 +20,7 @@ import {
    isReferenceDir,
    listBounded,
    mayChangeSkill,
+   mayChangeSkillExactly,
    newWalkBudget,
    REFERENCE_DIRS,
    SKILL_MD,
@@ -417,15 +418,27 @@ function skippedWarnings(walk: AssetWalk): SetFinding[] {
    return named;
 }
 
-/** The findings a set names, at most SKILL_FINDINGS_MAX of them, and one line counting the rest. */
+/** The findings a set names, at most SKILL_FINDINGS_MAX of each code in discovery order, and one line per code counting the rest, so a count never elides what its code does not say. */
 function cappedFindings(findings: SetFinding[]): SetFinding[] {
-   if (findings.length <= SKILL_FINDINGS_MAX) return findings;
-   return [
-      ...findings.slice(0, SKILL_FINDINGS_MAX),
-      finding(
-         `${findings.length - SKILL_FINDINGS_MAX} further skill findings are not named, for the same kinds of reasons`,
-      ),
-   ];
+   const named: SetFinding[] = [];
+   const kept = new Map<SetFinding["code"], number>();
+   const elided = new Map<SetFinding["code"], number>();
+   for (const found of findings) {
+      const count = kept.get(found.code) ?? 0;
+      if (count < SKILL_FINDINGS_MAX) {
+         kept.set(found.code, count + 1);
+         named.push(found);
+      } else {
+         elided.set(found.code, (elided.get(found.code) ?? 0) + 1);
+      }
+   }
+   for (const [code, count] of elided) {
+      named.push({
+         code,
+         message: `${count} further ${code === SKILL_FILE_SKIPPED ? "skipped files" : "skill findings"} are not named, for the same kinds of reasons`,
+      });
+   }
+   return named;
 }
 
 /** A Markdown file directly in `reference/` or `references/`: the places a skill's Markdown beside SKILL.md is always served. */
@@ -560,7 +573,7 @@ function scanSkills(
       const parent = path.posix.dirname(dirRel);
       scan.isSkill = true;
       unserved(
-         `this is a skill, not a skill set (it holds a ${SKILL_MD}), so none of it is served. Fix: ${parent === "." ? "move it into a folder and list that folder" : `list its parent folder '${parent}'`}`,
+         `this is a skill, not a skill set (it holds a ${SKILL_MD}), so none of it is served. Fix: ${parent === "." ? "move it into a folder and list that folder" : `list its parent folder '${parent}'`}, or, if its subfolders are the skills, remove its ${SKILL_MD}`,
       );
       return scan;
    }
@@ -1860,17 +1873,17 @@ function declaredPaths(raw: Record<string, unknown>): string[] {
 }
 
 /**
- * Whether an edit to `relative` (package-relative) can change what a workflow serves, given the `watched` paths of its
- * package: an instructions file always, a manifest (the package's own, which declares the workflows, or one at or above
- * a watched path, which refuses it), and a file inside a skill of a set unless that skill never serves it. A file
- * loose in a set's folder is no skill's. `exact` reads the skill's `.skillignore`; a watcher's per-file filter leaves it off.
+ * Where an edit to `relative` (package-relative) lands among the `watched` paths of its package: `true` when it changes
+ * what a workflow serves whatever it holds (an instructions file, or a manifest: the package's own, which declares the
+ * workflows, or one at or above a watched path, which refuses it), else the skills it lies in, each with its directory
+ * and the path inside it. A file loose in a set's folder is no skill's, and a dot-named folder is none either, as the
+ * set's scan skips it.
  */
-export function workflowFileServed(
+function workflowFileSkills(
    packagePath: string,
    watched: readonly string[],
    relative: string,
-   exact: boolean,
-): boolean {
+): true | Array<{ dir: string; within: string }> {
    if (isManifest(path.posix.basename(relative))) {
       const dir = path.posix.dirname(relative);
       if (
@@ -1880,23 +1893,45 @@ export function workflowFileServed(
          return true;
       }
    }
-   return watched.some((watchedPath) => {
+   const skills: Array<{ dir: string; within: string }> = [];
+   for (const watchedPath of watched) {
       if (relative === watchedPath) return true;
-      if (!relative.startsWith(`${watchedPath}/`)) return false;
+      if (!relative.startsWith(`${watchedPath}/`)) continue;
       const [skill, ...within] = relative
          .slice(watchedPath.length + 1)
          .split("/");
-      // A dot-named folder is no skill's, as the set's scan skips it.
-      return (
-         within.length > 0 &&
-         !skill!.startsWith(".") &&
-         mayChangeSkill(
-            path.join(packagePath, watchedPath, skill!),
-            within.join("/"),
-            exact,
-         )
-      );
-   });
+      if (within.length > 0 && !skill!.startsWith(".")) {
+         skills.push({
+            dir: path.join(packagePath, watchedPath, skill!),
+            within: within.join("/"),
+         });
+      }
+   }
+   return skills;
+}
+
+/** Whether an edit to `relative` can change what a workflow serves, judged by names alone: a watcher's per-file filter, which cannot wait on a `.skillignore`. */
+export function workflowFileServed(
+   packagePath: string,
+   watched: readonly string[],
+   relative: string,
+): boolean {
+   const at = workflowFileSkills(packagePath, watched, relative);
+   return at === true || at.some(({ within }) => mayChangeSkill(within));
+}
+
+/** {@link workflowFileServed}, and then what the skill's own `.skillignore` rules out. */
+export async function workflowFileServedExactly(
+   packagePath: string,
+   watched: readonly string[],
+   relative: string,
+): Promise<boolean> {
+   const at = workflowFileSkills(packagePath, watched, relative);
+   if (at === true) return true;
+   for (const { dir, within } of at) {
+      if (await mayChangeSkillExactly(dir, within)) return true;
+   }
+   return false;
 }
 
 const refusal = (name: string, why: string) =>

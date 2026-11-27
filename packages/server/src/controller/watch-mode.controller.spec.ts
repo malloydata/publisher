@@ -230,11 +230,15 @@ describe("live reload of what a package's workflows serve", () => {
       fs.writeFileSync(manifest, "{}");
       await announcedFile(manifest);
 
+      // A file the set already held when it was declared was filtered out at discovery; its first save after the declaration must still recompile.
+      const early = path.join(skill, "early.py");
+      fs.writeFileSync(early, "print(2)");
+      await announcedFile(early);
       const late = path.join(skill, "late.py");
       fs.writeFileSync(late, "print(1)");
       await announcedFile(late);
-      expect(announced).toEqual([sentinel, manifest, late]);
-      expect(reloaded).toEqual(["pkg", "pkg", "pkg"]);
+      expect(announced).toEqual([sentinel, manifest, early, late]);
+      expect(reloaded).toEqual(["pkg", "pkg", "pkg", "pkg"]);
    }, 10_000);
 
    it("reads a skill's .skillignore when a file is saved, so one added after the watcher started stops the recompile for what it matches", async () => {
@@ -253,6 +257,33 @@ describe("live reload of what a package's workflows serve", () => {
       const sentinel = await sentinelSaved(announcedFile);
       expect(announced).toEqual([log, skillignore, sentinel]);
       expect(reloaded).toEqual(["pkg", "pkg", "pkg"]);
+   }, 10_000);
+
+   it("reads a skill's .skillignore without a synchronous fs call when a file is saved, and still applies it", async () => {
+      const { announced, announcedFile } = await watchPackage();
+      const skill = path.join(envDir, "pkg", SET, "skill");
+      const skillignore = path.join(skill, ".skillignore");
+      fs.writeFileSync(skillignore, "*.log\n");
+      await announcedFile(skillignore);
+
+      const spies = [spyOn(fs, "readFileSync"), spyOn(fs, "lstatSync")];
+      try {
+         fs.writeFileSync(path.join(skill, "debug.log"), "x");
+         const sentinel = await sentinelSaved(announcedFile);
+         const kept = path.join(skill, "kept.txt");
+         fs.writeFileSync(kept, "x");
+         await announcedFile(kept);
+         expect(announced).toEqual([skillignore, sentinel, kept]);
+         for (const spy of spies) {
+            expect(
+               spy.mock.calls.filter(([file]) =>
+                  String(file).endsWith(".skillignore"),
+               ),
+            ).toEqual([]);
+         }
+      } finally {
+         for (const spy of spies) spy.mockRestore();
+      }
    }, 10_000);
 
    it("leaves a file the skill never serves alone, and recompiles for the .skillignore that decides it and for the instructions", async () => {

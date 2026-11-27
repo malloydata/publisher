@@ -708,13 +708,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       }));
    }
 
-   /** Why `name` is not a served workflow: the walk's refusal when the manifest declares it, else that it declares none of that name. Undefined when it is served. */
+   /** Why `name` is not a served workflow: the walk's refusal when the manifest declares it or refuses its whole `workflows` value, else that it declares none of that name. Undefined when it is served. */
    public workflowNotServed(
       name: string,
    ): { reason: WorkflowNotFoundReason; message: string } | undefined {
       if (this.workflows.workflows.has(name)) return undefined;
+      // The one workflow warning with no code refuses the manifest's whole `workflows` value, so it refuses every name.
       const refusal = this.workflows.warnings.find(
-         (w) => w.code === WORKFLOW_NOT_SERVED && w.subject === name,
+         (w) =>
+            w.code === undefined ||
+            (w.code === WORKFLOW_NOT_SERVED && w.subject === name),
       );
       return refusal
          ? { reason: "WORKFLOW_NOT_SERVED", message: refusal.message }

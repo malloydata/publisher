@@ -10,6 +10,7 @@ import {
    ASSET_MAX_DEPTH,
    ASSET_MAX_ENTRIES,
    mayChangeSkill,
+   mayChangeSkillExactly,
    newWalkBudget,
    REFERENCE_MAX_EXAMINED,
    skillFiles,
@@ -1086,7 +1087,7 @@ describe("mayChangeSkill", () => {
       fs.writeFileSync(file, "x");
    };
 
-   it("rules a path out exactly when the walk does not keep it, so a reload follows what is served", () => {
+   it("rules a path out exactly when the walk does not keep it, so a reload follows what is served", async () => {
       const paths = [
          "SKILL.md",
          "reference/glossary.md",
@@ -1113,22 +1114,22 @@ describe("mayChangeSkill", () => {
       expect(served.has("scripts/run.py")).toBe(true);
       expect(served.has("data/raw.log")).toBe(false);
       for (const rel of paths) {
-         expect([rel, mayChangeSkill(dir, rel, true)]).toEqual([
+         expect([rel, await mayChangeSkillExactly(dir, rel)]).toEqual([
             rel,
             served.has(rel),
          ]);
       }
    });
 
-   it("without exact, rules out only the names no walk keeps, and reads no .skillignore", () => {
+   it("by name alone, rules out only the names no walk keeps, and reads no .skillignore", async () => {
       fs.writeFileSync(path.join(dir, ".skillignore"), "*.log\n");
-      expect(mayChangeSkill(dir, "data/raw.log", false)).toBe(true);
-      expect(mayChangeSkill(dir, "data/raw.log", true)).toBe(false);
-      expect(mayChangeSkill(dir, "a/__pycache__/b.txt", false)).toBe(false);
-      expect(mayChangeSkill(dir, ".env", false)).toBe(false);
+      expect(mayChangeSkill("data/raw.log")).toBe(true);
+      expect(await mayChangeSkillExactly(dir, "data/raw.log")).toBe(false);
+      expect(mayChangeSkill("a/__pycache__/b.txt")).toBe(false);
+      expect(mayChangeSkill(".env")).toBe(false);
    });
 
-   it("always allows SKILL.md, which the walk keeps whatever .skillignore matches", () => {
+   it("always allows SKILL.md, which the walk keeps whatever .skillignore matches", async () => {
       write("SKILL.md");
       write("reference/glossary.md");
       write("notes.md");
@@ -1139,14 +1140,31 @@ describe("mayChangeSkill", () => {
       const served = new Set(skillFiles(dir).files);
       expect(served.has("SKILL.md")).toBe(true);
       expect(served.has("notes.md")).toBe(false);
-      expect(mayChangeSkill(dir, "SKILL.md", true)).toBe(true);
-      expect(mayChangeSkill(dir, "notes.md", true)).toBe(false);
-      expect(mayChangeSkill(dir, "reference/glossary.md", true)).toBe(true);
+      expect(await mayChangeSkillExactly(dir, "SKILL.md")).toBe(true);
+      expect(await mayChangeSkillExactly(dir, "notes.md")).toBe(false);
+      expect(await mayChangeSkillExactly(dir, "reference/glossary.md")).toBe(
+         true,
+      );
    });
 
-   it("always allows an edit to the .skillignore itself, but not to one in a subfolder", () => {
+   it("always allows an edit to the .skillignore itself, but not to one in a subfolder", async () => {
       fs.writeFileSync(path.join(dir, ".skillignore"), "*\n");
-      expect(mayChangeSkill(dir, ".skillignore", true)).toBe(true);
-      expect(mayChangeSkill(dir, "sub/.skillignore", true)).toBe(false);
+      expect(await mayChangeSkillExactly(dir, ".skillignore")).toBe(true);
+      expect(await mayChangeSkillExactly(dir, "sub/.skillignore")).toBe(false);
+   });
+
+   it("applies no .skillignore over 16 KiB, and none that is a link, as a walk does not", async () => {
+      fs.writeFileSync(
+         path.join(dir, ".skillignore"),
+         `*.log\n${"# pad\n".repeat(3000)}`,
+      );
+      expect(await mayChangeSkillExactly(dir, "data/raw.log")).toBe(true);
+      fs.rmSync(path.join(dir, ".skillignore"));
+      fs.writeFileSync(path.join(dir, "real-ignore"), "*.log\n");
+      fs.symlinkSync(
+         path.join(dir, "real-ignore"),
+         path.join(dir, ".skillignore"),
+      );
+      expect(await mayChangeSkillExactly(dir, "data/raw.log")).toBe(true);
    });
 });

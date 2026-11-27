@@ -1874,7 +1874,7 @@ describe("readPackageWorkflows", () => {
                code: SKILL_FINDING,
                subject: SKILL_DIR,
                severity: "warn",
-               message: `Skill set '${SKILL_DIR}' skill finding: this is a skill, not a skill set (it holds a SKILL.md), so none of it is served. Fix: list its parent folder 'sets'.`,
+               message: `Skill set '${SKILL_DIR}' skill finding: this is a skill, not a skill set (it holds a SKILL.md), so none of it is served. Fix: list its parent folder 'sets', or, if its subfolders are the skills, remove its SKILL.md.`,
             },
          ]);
       });
@@ -1882,7 +1882,7 @@ describe("readPackageWorkflows", () => {
       it("asks for a folder of its own when the skill sits at the package root's top level", () => {
          const result = listedAsSet("margin");
          expect(result.sets.get("margin")!.findings[0]!.message).toContain(
-            "Fix: move it into a folder and list that folder.",
+            "Fix: move it into a folder and list that folder, or, if its subfolders are the skills, remove its SKILL.md.",
          );
       });
    });
@@ -2457,6 +2457,30 @@ describe("readPackageWorkflows", () => {
          );
       });
 
+      it("caps the skipped files and the other findings of a set separately, each count line carrying the code of what it elides", () => {
+         const extra = 3;
+         const pad = (i: number) => String(i).padStart(2, "0");
+         for (let i = 0; i < SKILL_FINDINGS_MAX + extra; i++) {
+            write(`${SET}/bad${pad(i)}/SKILL.md`, "no frontmatter\n");
+         }
+         writeSkill(SET, "ok");
+         for (let i = 0; i < SKILL_FINDINGS_MAX + extra; i++) {
+            write(`${SET}/ok/docs/d${pad(i)}/CLAUDE.md`, "x");
+         }
+         const findings = read({ default: { skillSets: [SET] } }).sets.get(
+            SET,
+         )!.findings;
+         const of = (code: string) => findings.filter((f) => f.code === code);
+         expect(of(SKILL_FINDING)).toHaveLength(SKILL_FINDINGS_MAX + 1);
+         expect(of(SKILL_FILE_SKIPPED)).toHaveLength(SKILL_FINDINGS_MAX + 1);
+         expect(of(SKILL_FINDING).at(-1)!.message).toContain(
+            `${extra} further skill findings are not named`,
+         );
+         expect(of(SKILL_FILE_SKIPPED).at(-1)!.message).toContain(
+            `${extra} further skipped files are not named`,
+         );
+      });
+
       it("caps each set's findings on its own", () => {
          for (const set of ["sets/a", "sets/b"]) {
             for (let i = 0; i < SKILL_FINDINGS_MAX + 1; i++) {
@@ -2606,7 +2630,7 @@ describe("readPackageWorkflows", () => {
 describe("workflowFileServed", () => {
    const watched = [INSTRUCTIONS, MAIN];
    const served = (relative: string) =>
-      workflowFileServed("/nowhere", watched, relative, false);
+      workflowFileServed("/nowhere", watched, relative);
 
    it("serves an instructions file and any file a skill of a set could serve", () => {
       expect(served(INSTRUCTIONS)).toBe(true);
