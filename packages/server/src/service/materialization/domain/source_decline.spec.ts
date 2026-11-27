@@ -35,7 +35,7 @@ describe("the decline reasons", () => {
          "reroot_not_compiled",
          "classification_not_kept",
          "sql_embed_cross_connection",
-         "sql_embed_whole_source",
+         "sql_embed_bare",
       ]);
    });
 

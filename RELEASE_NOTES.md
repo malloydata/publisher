@@ -30,7 +30,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 **[fix] Where a `%{}` cannot read a stored table, the verdict says why.** Such a source's verdict is `live` (`served_copy`) with a new `notServedIn` reason, and a `served-copy-not-served` warning names the `.sql()` source and its connection. `publisher_served_copy_bind_total` counts both new reasons.
 
 - `sql_embed_cross_connection`: the `%{}`'s SQL runs on another connection than the table. Fixes: persist the `.sql()` source itself with the same `storage=` as what it reads, or drop `storage=` from what it reads. On a DuckLake or managed connection, build what it reads into a warehouse table read with `.table()`.
-- `sql_embed_whole_source`: a bare `%{ x }`. Fix: write it as `%{ x -> { select: * } }`.
+- `sql_embed_bare`: a bare `%{ x }`. Fix: write it as `%{ x -> { select: * } }`.
 
 **[fix] A refused downstream's message no longer says it is answered "over" its upstream's table.** That was not true where the upstream's table is not served. The message now says only that it is answered live. 0.18 and earlier said this too.
 

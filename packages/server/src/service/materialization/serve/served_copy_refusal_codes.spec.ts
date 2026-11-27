@@ -75,8 +75,8 @@ const PROBLEMS = {
       sourceName: "s",
       detail: "`u` on `duckdb`",
    },
-   sql_embed_whole_source: {
-      reason: "sql_embed_whole_source",
+   sql_embed_bare: {
+      reason: "sql_embed_bare",
       sourceName: "s",
       detail: "`u` on `duckdb`",
    },
@@ -203,7 +203,7 @@ const WARNINGS: Record<
             "This source is read through a `.sql()` source's `%{}` (`u` on `duckdb`), whose SQL runs on its own connection, while its table is read on another (a storage destination, or a managed catalog read through one), which a `%{}` cannot reach. The served copy leaves this source as written, so its queries are answered live, and the model's other stored sources still serve. To serve it, persist the `.sql()` source itself with the same `storage=` as the sources its `%{}` reads: the copy then reads the `.sql()` source's own table, and theirs serve too. Or drop `storage=` from the sources it reads, so they are built in their own database, where its `%{}` reads their tables. On a DuckLake or managed connection, which builds no author SQL and places every table itself, build what it reads into a warehouse table and read that with `.table()`.",
       },
    ],
-   sql_embed_whole_source: [
+   sql_embed_bare: [
       {
          code: "served-copy-not-served",
          subject: "s",
@@ -241,7 +241,7 @@ describe("the served copy's refusal codes", () => {
          "reroot_not_compiled",
          "classification_not_kept",
          "sql_embed_cross_connection",
-         "sql_embed_whole_source",
+         "sql_embed_bare",
       ]);
    });
 

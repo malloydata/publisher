@@ -1227,7 +1227,7 @@ imports it) but does not read its table, with `reasons`:
   connections that cannot be left out, so the model's whole copy is off until both sides are built
   into one destination), `sql_embed_cross_connection` (a `.sql()` source reads it through
   `%{ x -> { … } }`, whose SQL runs on the `.sql()` source's own connection and cannot reach a table
-  in a storage destination, or in a managed catalog read through one), or `sql_embed_whole_source`
+  in a storage destination, or in a managed catalog read through one), or `sql_embed_bare`
   (a `.sql()` source embeds it bare, `%{ x }`, which Malloy allows only of a source it can compile
   to SQL, and a stored table read through `virtual()` is not one, on either tier). Either leaves
   the source alone as written; the model's other stored sources, in every file its copy compiles

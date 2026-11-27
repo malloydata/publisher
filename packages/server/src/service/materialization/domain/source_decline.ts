@@ -44,7 +44,7 @@ const SOURCE_DECLINES = {
    sql_embed_cross_connection: { stage: "served_copy" },
    // A `.sql()` source embeds it bare (`%{ x }`), which Malloy allows only of
    // a persistable source, and its re-root is not one.
-   sql_embed_whole_source: { stage: "served_copy" },
+   sql_embed_bare: { stage: "served_copy" },
 } as const satisfies Record<
    string,
    { stage: "bind" | "served_copy"; servesInPart?: true }
@@ -53,11 +53,11 @@ const SOURCE_DECLINES = {
 /**
  * How to serve a source a `.sql()` source's `%{}` reads where the `%{}`
  * cannot reach its table (`sql_embed_cross_connection`), and one it embeds
- * bare (`sql_embed_whole_source`): said by the warning and the serve verdict
+ * bare (`sql_embed_bare`): said by the warning and the serve verdict
  * alike. Each way is one the component spec serves.
  */
 export const SQL_EMBED_FIX: Readonly<
-   Record<"sql_embed_cross_connection" | "sql_embed_whole_source", string>
+   Record<"sql_embed_cross_connection" | "sql_embed_bare", string>
 > = {
    sql_embed_cross_connection:
       "To serve it, persist the `.sql()` source itself with the same `storage=` as the sources " +
@@ -66,7 +66,7 @@ export const SQL_EMBED_FIX: Readonly<
       "its `%{}` reads their tables. On a DuckLake or managed connection, which builds no author SQL " +
       "and places every table itself, build what it reads into a warehouse table and read that with " +
       "`.table()`.",
-   sql_embed_whole_source:
+   sql_embed_bare:
       "To serve it, embed it as a query, `%{ <source> -> { select: * } }` (whose columns are the " +
       "source's fields, not its SQL's): in the source's own database the copy then reads its table, " +
       "and in a storage destination the fix for `sql_embed_cross_connection` applies.",
@@ -96,7 +96,7 @@ const ACTIONABLE_ORDER: readonly string[] = [
    "cross_connection_join",
    "cross_connection_unbuilt",
    "sql_embed_cross_connection",
-   "sql_embed_whole_source",
+   "sql_embed_bare",
    "inline_join_kept",
    "read_terms_not_kept",
    "fields_not_carried",

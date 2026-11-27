@@ -5206,7 +5206,7 @@ components:
             `cross_connection_unbuilt`, `sql_embed_cross_connection` (a
             `.sql()` source reads it through `%{}` on another connection than
             its table is read on: a storage destination, or a managed
-            catalog read through one), `sql_embed_whole_source` (a `.sql()`
+            catalog read through one), `sql_embed_bare` (a `.sql()`
             source embeds it bare, `%{ x }`, which its stored table cannot be
             embedded as), `inline_join_kept`,
             `read_terms_not_kept`, `fields_not_carried`, `column_types`,
@@ -6086,7 +6086,7 @@ components:
                   `fields_not_carried`, `read_terms_not_kept`,
                   `cross_connection_join`, `inline_join_kept`,
                   `reroot_not_compiled`, `classification_not_kept`,
-                  `sql_embed_cross_connection`, `sql_embed_whole_source`; an
+                  `sql_embed_cross_connection`, `sql_embed_bare`; an
                   open set) (`subject` the
                   source; `warn`).
                   `model-recompile-failed`: a model file that compiled before

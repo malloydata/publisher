@@ -728,9 +728,7 @@ function boundVerdict(
       copy !== undefined &&
       copy.notServedIn.length > 0 &&
       [...sqlEmbedReasons].every(
-         (r) =>
-            r === "sql_embed_cross_connection" ||
-            r === "sql_embed_whole_source",
+         (r) => r === "sql_embed_cross_connection" || r === "sql_embed_bare",
       );
    const notServed = (): ServeVerdict =>
       onlySqlEmbed
@@ -739,7 +737,7 @@ function boundVerdict(
                  "served_copy",
                  `${subject}'s table is bound, but a \`.sql()\` source's ` +
                     "`%{}` reads it " +
-                    (sqlEmbedReasons.has("sql_embed_whole_source")
+                    (sqlEmbedReasons.has("sql_embed_bare")
                        ? "whole (`%{ <source> }`), which its stored table " +
                          "cannot be embedded as"
                        : "with SQL that runs on another connection than its " +

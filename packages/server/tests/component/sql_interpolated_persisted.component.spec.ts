@@ -356,7 +356,7 @@ for (const [tier, storage] of [
          expect(v).toMatchObject({ verdict: "live", reason: "served_copy" });
          expect(
             new Set(v.notServedIn?.flatMap((n) => n.reasons) ?? []),
-         ).toEqual(new Set(["sql_embed_whole_source"]));
+         ).toEqual(new Set(["sql_embed_bare"]));
          expect(v.message).toContain("whole (`%{ <source> }`)");
          expect(v.fixes?.join(" ")).toContain(
             "`%{ <source> -> { select: * } }`",

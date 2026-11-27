@@ -2091,9 +2091,7 @@ export class ServedCopyServe {
          problems.push({
             sourceName: c.reroot.sourceName,
             sourceID: c.reroot.sourceID,
-            reason: whole
-               ? "sql_embed_whole_source"
-               : "sql_embed_cross_connection",
+            reason: whole ? "sql_embed_bare" : "sql_embed_cross_connection",
             detail: [
                ...new Set(
                   conflicts
