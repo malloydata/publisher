@@ -17,10 +17,14 @@ Two outputs:
   until `--questions` are chosen. A turn whose `kind` is `build` (an edit
   request, not a data question) is never chosen. A question the set already
   holds is skipped. Each case goes to the `dev` split, tagged `production`
-  and with why it was chosen, and carries no golden: `skill:eval-import`
-  derives one, drops a question that only makes sense after an earlier turn,
-  then `import_cases.py --stamp` seals the set. Until then the case is
-  counted as having no key and never scored.
+  and with why it was chosen.
+  Its golden is the one production judging verified for one of its turns
+  (`<workdir>/judging/<label>/cases.jsonl`, written by `judge-sample`), so
+  the set is built from the judged history rather than keyed a second time;
+  `sourceFields.keyFrom` names the judging set it came from. A case none of
+  whose turns was keyed carries no golden: `skill:eval-import` derives one,
+  then `import_cases.py --stamp` seals the set. Until then it is counted as
+  having no key and never scored.
 - **A workload**, `<set>/workloads/<label>.jsonl`: every production query of
   the served package that succeeded, one line per distinct query with how
   often it ran, most frequent first, in the shape `query-replay --queries`
@@ -85,12 +89,32 @@ def choose(turns: list[dict[str, str]], judgments: list[dict[str, str]],
     return order[:n]
 
 
-def case(g: dict[str, Any], label: str) -> dict[str, Any]:
-    return {"qid": qid_for(g["question"]), "question": g["question"], "split": "dev",
-            "tags": ["production", g["why"].replace(", ", "-").replace(" ", "-")],
-            "source": f"production:{label}",
-            "sourceFields": {"asked": len(g["turns"]), "judgedWrong": g["wrong"],
-                             "lastAsked": g["last"], "turns": g["turns"][:5]}}
+def judged_keys(workdir: pathlib.Path) -> dict[str, tuple[str, dict[str, Any]]]:
+    """Turn id -> (judging set, verified golden), from every judging set."""
+    out: dict[str, tuple[str, dict[str, Any]]] = {}
+    for f in sorted((workdir / "judging").glob("*/cases.jsonl")):
+        for line in f.read_text(encoding="utf-8").splitlines():
+            c = json.loads(line) if line.strip() else {}
+            g = c.get("golden") or {}
+            if c.get("source") and g.get("status") == "verified":
+                out.setdefault(str(c["source"]), (f.parent.name, g))
+    return out
+
+
+def case(g: dict[str, Any], label: str,
+         keys: dict[str, tuple[str, dict[str, Any]]] | None = None) -> dict[str, Any]:
+    c: dict[str, Any] = {
+        "qid": qid_for(g["question"]), "question": g["question"], "split": "dev",
+        "tags": ["production", g["why"].replace(", ", "-").replace(" ", "-")],
+        "source": f"production:{label}",
+        "sourceFields": {"asked": len(g["turns"]), "judgedWrong": g["wrong"],
+                         "lastAsked": g["last"], "turns": g["turns"][:5]}}
+    keyed = next(((t, keys[t]) for t in g["turns"] if keys and t in keys), None)
+    if keyed:
+        turn, (judging, golden) = keyed
+        c["golden"] = golden
+        c["sourceFields"]["keyFrom"] = f"judging:{judging}:{turn}"
+    return c
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -111,7 +135,8 @@ def main(argv: list[str] | None = None) -> int:
     if not turns:
         raise SystemExit(f"No production turns in {data}. Fix: eval.py ingest --set {set_dir} --turns turns.jsonl")
     chosen = choose(turns, read(data / "prod_judgments.csv"), held, a.questions)
-    new = [case(g, a.label) for g in chosen]
+    keys = judged_keys(cfg.workdir())
+    new = [case(g, a.label, keys) for g in chosen]
     with cases_path.open("a", encoding="utf-8") as f:
         for c in new:
             f.write(json.dumps(c) + "\n")
@@ -130,8 +155,12 @@ def main(argv: list[str] | None = None) -> int:
     out.write_text("".join(json.dumps(w) + "\n" for w in lines))
     print(f"workload: {len(lines)} distinct queries from {len(rows)} that succeeded -> {out}"
           + (f"; left out {skipped}" if skipped else ""))
+    unkeyed = sum(1 for c in new if "golden" not in c)
     if new:
-        print("next: derive each new case's golden (skill:eval-import), then "
+        print(f"keys: {len(new) - unkeyed} of {len(new)} new cases carry the golden production "
+              "judging verified")
+    if unkeyed:
+        print(f"next: derive a golden for the {unkeyed} without one (skill:eval-import), then "
               f"python3 skills/eval-import/scripts/import_cases.py --set {set_dir} --stamp")
     return 0
 

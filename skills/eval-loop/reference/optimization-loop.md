@@ -110,14 +110,17 @@ thought to ask (step O1):
 
 ```bash
 python3 eval.py build-set --set <set> --label prod-20261125   # cases + workloads/prod-20261125.jsonl
-# key each new case (skill:eval-import, verify_goldens.py --refresh then --promote), then:
+# key any new case that judging did not (skill:eval-import, verify_goldens.py --refresh then --promote), then:
 python3 eval.py routine --kind quality --mode improve --set <set>
 python3 eval.py routine --kind speed --mode improve --set <set> --queries <set>/workloads/prod-20261125.jsonl
 ```
 
 `build-set` adds one case per distinct question, those judged wrong first, then
 the undecided, then the most asked, and never a build request (`kind: build`).
-The workload is every production query that succeeded, counted.
+Each case carries the key that judging verified for one of its turns, so the
+set is built from the judged history and not keyed twice; only a question
+judging left unkeyed needs a key. The workload is every production query that
+succeeded, counted.
 
 What the host's log skill must write, learned on real logs:
 

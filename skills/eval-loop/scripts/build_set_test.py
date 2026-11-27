@@ -69,6 +69,36 @@ class Main(unittest.TestCase):
         self.assertEqual(wl, [{"query": "run: a -> v", "modelPath": "m.malloy", "count": 2}])
         self.assertIn("skipped 1 build turns", out.getvalue())
 
+    def test_a_case_carries_the_golden_production_judging_verified_for_one_of_its_turns(self):
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        s = root / "set"
+        s.mkdir()
+        (s / "set.json").write_text('{"name": "s"}')
+        (s / "eval.toml").write_text(f'[paths]\nworkdir = "{root / "w"}"\n[model]\npackage = "p"\nenvironment = "e"\n')
+        data = op.install_for(__import__("config").load(s))
+        op.append(data / "prod_turns.csv", op.APPENDED["prod_turns"][2],
+                  [t("1", "Keyed"), t("2", "keyed"), t("3", "Unverified"), t("4", "Never judged")])
+        op.append(data / "prod_judgments.csv", op.APPENDED["prod_judgments"][2],
+                  [{"turn_id": "2", "right": "False"}])
+        judging = root / "w" / "judging" / "prod-j1"
+        judging.mkdir(parents=True)
+        gold = {"kind": "scalar", "value": 7, "status": "verified"}
+        (judging / "cases.jsonl").write_text(
+            json.dumps({"qid": "p-2", "question": "keyed", "source": "2", "golden": gold}) + "\n"
+            + json.dumps({"qid": "p-3", "question": "Unverified", "source": "3",
+                          "golden": {"kind": "scalar", "value": 1, "status": "proposed"}}) + "\n")
+        with unittest.mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            bs.main(["--set", str(s), "--label", "prod-1"])
+        cases = {c["question"].lower(): c for c in
+                 (json.loads(l) for l in (s / "cases.jsonl").read_text().splitlines())}
+        self.assertEqual(cases["keyed"]["golden"], gold)
+        self.assertEqual(cases["keyed"]["sourceFields"]["keyFrom"], "judging:prod-j1:2")
+        self.assertNotIn("golden", cases["unverified"])
+        self.assertNotIn("golden", cases["never judged"])
+        self.assertIn("keys: 1 of 3 new cases", out.getvalue())
+        self.assertIn("for the 2 without one", out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
