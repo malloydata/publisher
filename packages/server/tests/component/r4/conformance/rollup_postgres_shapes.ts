@@ -154,12 +154,13 @@ ${joinParent(storage)}
          expect: "rollup",
       },
       {
-         name: "by the joined field itself, not the grain dimension",
+         // #2048: `segment is c.segment` is exactly the path, so the path
+         // reads the rollup's `segment` column too.
+         name: "by the joined field itself, which the grain dimension is exactly",
          model: "joins.malloy",
          malloy:
             "run: j_orders -> { group_by: c.segment; aggregate: seg_total; order_by: segment }",
-         expect: "live",
-         reason: "GRAIN_TOO_COARSE",
+         expect: "rollup",
       },
       {
          name: "through a join_many, by a parent dimension",

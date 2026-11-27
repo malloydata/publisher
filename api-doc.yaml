@@ -7881,7 +7881,22 @@ components:
           description: The field's annotations, trimmed, empty ones left out.
         doc:
           type: string
-          description: The field's `#(doc)` text, when it has any.
+          description: >-
+            The field's `#(doc)` text, when it has any. A dimension defined as
+            exactly a one-hop join path (`region is account.region`) with no
+            `#(doc)` of its own reports the joined field's, and names that
+            path in `docInheritedFrom`.
+        docInheritedFrom:
+          type: string
+          description: >-
+            Present when `doc` is not the field's own: the one-hop join path
+            whose `#(doc)` it reports, because the field is a dimension
+            defined as exactly that path (or as exactly another such
+            undocumented dimension of the source, `a_chain is a_res`) and has
+            none of its own. Written in plain names, `join.field`, never
+            backquoted, even for a join named by a reserved word
+            (`source.region`). A `#(doc)` written on the dimension wins, and an
+            expression over the path inherits nothing.
         table:
           $ref: "#/components/schemas/EntityTable"
         join:

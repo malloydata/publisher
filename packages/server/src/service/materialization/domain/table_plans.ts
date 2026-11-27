@@ -578,6 +578,25 @@ export interface RollupMeasure {
  * A {@link RollupPlan} for the build plan's plumbing (its wire `preaggregate`
  * entry, eligibility and run instructions), with what the variant needs.
  */
+/** One stored column of a rollup that holds a one-hop join path's value. */
+export interface RollupPathColumn {
+   /** The grain entry it stores: the path as written, or the dimension's name. */
+   grain: string;
+   /** The stored column. */
+   column: string;
+   /** The join of the base the path reads through. */
+   join: string;
+   /** The joined source's dimension. */
+   field: string;
+   /** The timeframe the joined dimension truncates to, restored on the record. */
+   timeframe?: string;
+   /**
+    * The joined dimension carries annotations, which a record's field cannot:
+    * a query that returns it as a column is answered live.
+    */
+   annotated?: true;
+}
+
 export interface RollupVariantPlan extends RollupPlan {
    /**
     * Marks a rollup the rollup leg plans and serves: a `#(rollup)`
@@ -594,6 +613,24 @@ export interface RollupVariantPlan extends RollupPlan {
     * reads the rollup only when each is fixed at every aggregating level.
     */
    fanOutDimensions: string[];
+   /**
+    * The stored columns that hold a one-hop join path's value, so the
+    * variant declares the join's name as a record over them and a query that
+    * writes the path (`account.region`) reads the rollup: a path grain
+    * (`grain=["account.region"]`, stored as `account__region`), and a grain
+    * dimension whose compiled definition is exactly that path
+    * (`region is account.region`). Absent: none.
+    */
+   pathColumns?: RollupPathColumn[];
+   /**
+    * Each join_one of the base the grain reads through, with the grain
+    * entries that read it: a path grain (`account.region`) or a dimension
+    * defined over the join, any expression (`upper(account.region)`). The
+    * build joined it, so a key the data repeats repeated the rows its
+    * partials summed; a query that reads none of the join's fields does not
+    * join it live, so it is served only when it reads the join. Absent: none.
+    */
+   joinOneGrain?: { join: string; grain: string[] }[];
    /**
     * Whether the base declares a row-level gate (`#(access_filter)` or
     * `#(authorize)`): the join-to-rollup branch reads the rollup through a

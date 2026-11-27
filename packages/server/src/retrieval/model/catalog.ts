@@ -72,6 +72,8 @@ export interface CatalogNode {
    displayDoc: string;
    /** "dbmeta" when the doc is the database's description (see Entity.docSource). */
    docSource?: "dbmeta";
+   /** See Entity.docInheritedFrom. */
+   docInheritedFrom?: string;
    dataType?: string;
    /** The authored expression, when the field has one. */
    code?: string;
@@ -1237,6 +1239,9 @@ export function buildCatalog(input: CatalogInput): Catalog {
          doc: e.embedDoc,
          displayDoc: e.doc,
          ...(e.docSource ? { docSource: e.docSource } : {}),
+         ...(e.docInheritedFrom
+            ? { docInheritedFrom: e.docInheritedFrom }
+            : {}),
          ...(e.dataType ? { dataType: e.dataType } : {}),
          ...(e.code ? { code: e.code } : {}),
          ...(e.joinPath ? { joinPath: e.joinPath } : {}),
