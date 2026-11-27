@@ -3662,7 +3662,7 @@ function annotatedPathDecline(
       throw new LegDecline(
          "rollup_missing_field",
          out.output
-            ? `the query returns \`${out.output.path.join(".")}\`, whose annotations the rollup's record of stored columns cannot carry`
+            ? `the query returns \`${out.output.path.join(".")}\`, whose annotations the rollup's record of stored columns cannot carry; a field under a name of its own (\`group_by: r is ${out.output.path.join(".")}\`), which carries none live either, is served from the rollup`
             : "the query's output columns cannot be read",
       );
    }

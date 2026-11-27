@@ -170,3 +170,41 @@ describe("an inherited #(doc) in GET …/entities", () => {
       expect(f?.docInheritedFrom).toBeUndefined();
    });
 });
+
+describe("a classified joined field in the package index (#2048)", () => {
+   it("classes the joined field and a dimension that is exactly its path", async () => {
+      const { pkg } = await compileJoinFixture("m.malloy", {
+         modelText: `##! experimental.access_modifiers
+source: accounts is duckdb.sql("select 1 as account_id, 'EU' as region") include {
+  #(classification) "none"
+  public: account_id
+  #(classification) "pii"
+  public: region
+} extend { primary_key: account_id }
+
+#(carries) ["none", "pii"]
+source: subs is duckdb.sql("select 10 as sub_id, 1 as account_id") include {
+  #(classification) "none"
+  public: sub_id, account_id
+} extend {
+  primary_key: sub_id
+  join_one: account is accounts with account_id
+  dimension: region is account.region
+}
+`,
+      });
+      const index = await getPackageIndex(
+         new WeakMap(),
+         storeServing(pkg),
+         "env",
+         "pkg",
+      );
+      const find = (name: string) =>
+         [...index.byId.values()].find(
+            (e) =>
+               e.kind === "dimension" && e.source === "subs" && e.name === name,
+         );
+      expect(find("account.region")?.classifications).toEqual(["pii"]);
+      expect(find("region")?.classifications).toEqual(["pii"]);
+   });
+});

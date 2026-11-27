@@ -111,7 +111,7 @@ describe("RollupVariantServe over a path grain (#2048)", () => {
          "an annotated joined field returned as a column",
          "run: subs -> { group_by: items.sku, account.sales_region; aggregate: mrr }",
          "rollup_missing_field",
-         "the query returns `account.sales_region`, whose annotations the rollup's record of stored columns cannot carry",
+         "the query returns `account.sales_region`, whose annotations the rollup's record of stored columns cannot carry; a field under a name of its own (`group_by: r is account.sales_region`), which carries none live either, is served from the rollup",
       ],
       [
          "a query that reads nothing through the join_one the grain reads",

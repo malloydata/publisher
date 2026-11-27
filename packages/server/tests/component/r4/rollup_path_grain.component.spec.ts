@@ -20,8 +20,13 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { unrecordedAudit } from "../../../src/service/access_record";
+import { QueryPrivileges } from "../../../src/service/model_query_request";
 import { strictRowDifference } from "../../../src/test_helpers/conformance/answer_difference";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    DESTINATION,
@@ -29,6 +34,7 @@ import {
    rowDifference,
    type R4Fixture,
    type R4Run,
+   type Row,
 } from "./harness";
 
 const PLACEMENTS = [
@@ -486,6 +492,153 @@ ${grain}
                ).toBeUndefined();
                expect(run.servedBy?.kind).toBe(servedBy);
             });
+         }
+      });
+   }
+}
+
+/**
+ * A `#(classification)`-tagged joined field (`accounts.region`, classed
+ * `pii`) grouped through a path grain or a dimension that is exactly the
+ * path, under a source's `#(carries)`. Governance reads the compile of
+ * record, so a rollup answer's access record names live's classes, and the
+ * ceiling refuses a query past it with live's error, whichever route the
+ * rollup could take. `group_by: account.region` itself answers live: its
+ * result column would carry the class live's does, which the record's field
+ * cannot (`MISSING_FIELD`); an alias of the path, which carries none live, is
+ * served.
+ */
+const classedModel = (
+   carries: string,
+   grain: string,
+) => `##! experimental.access_modifiers
+source: accounts is duckdb.sql("""select * from (values (1,'EU'),(2,'EU'),(3,'NA')) t(account_id, region)""") include {
+  #(classification) "none"
+  public: account_id
+  #(classification) "pii"
+  public: region
+} extend { primary_key: account_id }
+#(carries) [${carries}]
+source: subs is duckdb.sql("""select * from (values (10,1,DATE '2026-01-01',100.0),(11,1,DATE '2026-02-01',120.0),(12,2,DATE '2026-01-01',50.0),(13,3,DATE '2026-02-01',80.0)) t(sub_id, account_id, period, amount)""") include {
+  #(classification) "none"
+  public: sub_id, account_id, period, amount
+} extend {
+  primary_key: sub_id
+  join_one: account is accounts with account_id
+  #(classification) "none"
+  dimension: period_month is period.month
+  dimension: region is account.region
+  #(classification) "none"
+  #(rollup) grain=[${grain}, "period_month"]
+  measure: mrr is amount.sum()
+}
+`;
+
+for (const [label, grain, cases] of [
+   [
+      "path grain",
+      `"account.region"`,
+      [
+         [
+            "the path",
+            "run: subs -> { group_by: account.region; aggregate: mrr }",
+            "live",
+         ],
+         [
+            "an alias of the path",
+            "run: subs -> { group_by: r is account.region; aggregate: mrr }",
+            "rollup",
+         ],
+         [
+            "a filter on the path",
+            "run: subs -> { where: account.region = 'EU'; group_by: period_month; aggregate: mrr }",
+            "rollup",
+         ],
+      ],
+   ],
+   [
+      "declared dimension",
+      `"region"`,
+      [
+         [
+            "the dimension",
+            "run: subs -> { group_by: region; aggregate: mrr }",
+            "rollup",
+         ],
+         [
+            "an alias of the path",
+            "run: subs -> { group_by: r is account.region; aggregate: mrr }",
+            "rollup",
+         ],
+      ],
+   ],
+] as const) {
+   for (const [carries, withinCeiling] of [
+      [`"none", "pii"`, true],
+      [`"none"`, false],
+   ] as const) {
+      describe(`R4 #2048: a classified joined field under #(carries) [${carries}] [${label}]`, () => {
+         let fixture: R4Fixture;
+         useMaterializationOn();
+         beforeAll(async () => {
+            fixture = await buildScenario({
+               files: { "m.malloy": classedModel(carries, grain) },
+               seedSql: [],
+               preaggregate: true,
+            });
+         });
+         afterAll(async () => {
+            await disposeScenarios();
+         });
+         const answer = async (malloy: string, served: boolean) => {
+            fixture.setBindings(served ? fixture.bindings : []);
+            const audit = unrecordedAudit();
+            try {
+               const r = await fixture.model.runQuery(
+                  audit,
+                  { query: malloy, filterParams: {} },
+                  QueryPrivileges.of({ bypassFilters: true }),
+               );
+               return {
+                  rows: r.compactResult as unknown as Row[],
+                  servedBy: r.path?.servedBy.kind,
+                  fieldsRead: audit.summary?.fieldsRead,
+                  error: undefined as string | undefined,
+               };
+            } catch (error) {
+               return {
+                  rows: [] as Row[],
+                  servedBy: undefined,
+                  fieldsRead: audit.summary?.fieldsRead,
+                  error: error instanceof Error ? error.message : String(error),
+               };
+            }
+         };
+         for (const [name, malloy, servedBy] of cases) {
+            it(
+               withinCeiling
+                  ? `${name}: ${servedBy === "rollup" ? "served from the rollup" : "answered live"}, with live's rows and access record`
+                  : `${name}: refused past the ceiling, as live`,
+               async () => {
+                  const live = await answer(malloy, false);
+                  const served = await answer(malloy, true);
+                  expect(served.fieldsRead).toEqual(live.fieldsRead);
+                  expect(JSON.stringify(live.fieldsRead)).toContain(
+                     '"classifications":["pii"]',
+                  );
+                  if (withinCeiling) {
+                     expect(live.error).toBeUndefined();
+                     expect(served.servedBy).toBe(servedBy);
+                     expect(
+                        rowDifference(live.rows, served.rows),
+                     ).toBeUndefined();
+                  } else {
+                     expect(live.error).toContain("carries [none]");
+                     expect(live.error).toContain("classified pii");
+                     expect(served.error).toBe(live.error);
+                  }
+               },
+            );
          }
       });
    }
