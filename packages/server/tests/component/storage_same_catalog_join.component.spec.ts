@@ -203,6 +203,25 @@ const UNMANAGED = `##! experimental.persistence
 source: open_view is openlake.table('main.customers_v')
 `;
 
+/**
+ * A served join and a stored source over tables held in files, into which
+ * the host later registers files of schemas the connection may not read.
+ */
+const FILES = `##! experimental.persistence
+source: file_customer is credible.table('customers_f') extend {
+  primary_key: customer_id
+}
+
+#(materialize) storage="credible"
+source: file_orders is credible.table('orders') extend {
+  where: status = 'kept'
+  join_one: file_customer with customer_id
+}
+
+#(materialize) storage="credible"
+source: file_names is credible.table('names_f')
+`;
+
 type Answer = {
    rows: Record<string, unknown>[];
    servedFrom: string | null;
@@ -308,6 +327,27 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
          await w.run(
             "CREATE VIEW credible.main.customers_v AS SELECT customer_id, name FROM credible.crm.customers",
          );
+         // Tables held in data files, not inlined in the catalog.
+         for (const table of ["customers_f", "names_f"]) {
+            await w.run(
+               `CREATE TABLE credible.main.${table} AS SELECT * FROM (VALUES (10, 'ann'), (20, 'bo')) AS t(customer_id, name)`,
+            );
+            await w.run(
+               `CALL ducklake_flush_inlined_data('credible', schema_name => 'main', table_name => '${table}')`,
+            );
+         }
+         // Files in crm's directory, and in that of a schema whose path only
+         // starts like main's, for a writer to register into main's tables.
+         await w.run("CREATE SCHEMA credible.main_evil");
+         for (const [dir, name] of [
+            ["crm", "secret-crm"],
+            ["main_evil", "secret-evil"],
+         ]) {
+            fs.mkdirSync(path.join(dataPath, dir), { recursive: true });
+            await w.run(
+               `COPY (SELECT 30 AS customer_id, '${name}' AS name) TO '${path.join(dataPath, dir, "loose.parquet")}' (FORMAT parquet)`,
+            );
+         }
       } finally {
          w.closeSync();
          instance.closeSync();
@@ -334,6 +374,7 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
             "sql_source.malloy": SQL_SOURCE,
             "swap.malloy": SWAP,
             "unmanaged.malloy": UNMANAGED,
+            "files.malloy": FILES,
          },
          { manifest: { name: PKG, description: "fixture" } },
       );
@@ -504,6 +545,8 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
          "run: sql_orders_x -> { group_by: sql_customer.customer_id, sql_customer.name; aggregate: n is count() }",
       "swap.malloy":
          "run: swap_orders -> { group_by: swap_customer.customer_id, swap_customer.name; aggregate: n is count() }",
+      "files.malloy":
+         "run: file_orders -> { group_by: file_customer.customer_id, file_customer.name; aggregate: n is count() }",
    } as const;
    const PLAIN = {
       "filtered.malloy": "run: active_orders -> { aggregate: n is count() }",
@@ -513,6 +556,7 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
       "sql_expr.malloy": "run: tagged_orders_x -> { aggregate: n is count() }",
       "sql_source.malloy": "run: sql_orders_x -> { aggregate: n is count() }",
       "swap.malloy": "run: swap_names -> { group_by: name }",
+      "files.malloy": "run: file_names -> { group_by: name }",
    } as const;
    type ModelPath = keyof typeof JOINED;
    const live = new Map<string, Answer["rows"]>();
@@ -668,6 +712,48 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
          "SELECT table_name FROM information_schema.tables " +
             "WHERE table_catalog = 'credible' AND table_schema = 'materialized' " +
             "AND table_name LIKE 'pkg__swap__swap_names%'",
+      ]);
+      expect(tables.length).toBeGreaterThan(0);
+      for (const { table_name } of tables) {
+         const rows = await asHost([
+            `SELECT name FROM credible.materialized."${String(table_name)}" ORDER BY name`,
+         ]);
+         expect(rows).toEqual([{ name: "ann" }, { name: "bo" }]);
+      }
+   });
+
+   /** Register the loose file in schema directory `dir` into main table `into`. */
+   async function registerFile(dir: string, into: string): Promise<void> {
+      await asHost([
+         `CALL ducklake_add_data_files('credible', '${into}', '${path.join(dataPath, dir, "loose.parquet")}', schema => 'main')`,
+      ]);
+   }
+
+   it("serves a join over in-scope files, and stops once a table holds another schema's file", async () => {
+      const before = await ask("files.malloy", JOINED["files.malloy"]);
+      expect(before.servedFrom).toBe("storage");
+      expect(before.rows).toEqual(live.get(JOINED["files.malloy"])!);
+      // Still a base table, now holding a file of crm, which the managed
+      // connection's storage scope does not reach.
+      await registerFile("crm", "customers_f");
+      const after = await ask("files.malloy", JOINED["files.malloy"]).catch(
+         (error: unknown) => error,
+      );
+      if (!(after instanceof Error)) {
+         expect((after as Answer).servedFrom).toBe(null);
+      }
+   });
+
+   it("refuses a same-catalog build over a table holding a file of a schema whose path only starts like main's", async () => {
+      await registerFile("main_evil", "names_f");
+      const run = await build(true);
+      expect(JSON.stringify(run)).toContain(
+         "holds a file outside the connection's storage scope",
+      );
+      const tables = await asHost([
+         "SELECT table_name FROM information_schema.tables " +
+            "WHERE table_catalog = 'credible' AND table_schema = 'materialized' " +
+            "AND table_name LIKE 'pkg__files__file_names%'",
       ]);
       expect(tables.length).toBeGreaterThan(0);
       for (const { table_name } of tables) {

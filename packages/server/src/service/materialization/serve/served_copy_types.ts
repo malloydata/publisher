@@ -141,10 +141,11 @@ export interface Compiled {
    rerooted: Binding[];
    /**
     * For a copy that reads a managed connection's tables through a storage
-    * destination (same_catalog_reads.ts): whether each is still a base table,
-    * read before every query the copy answers, since a writer on the catalog
-    * may swap one for a view under the compiled copy. False, or a throw,
-    * answers the query live.
+    * destination (same_catalog_reads.ts): whether each is still a base table
+    * made only of files the connection's storage scope reaches, read before
+    * every query the copy answers, since a writer on the catalog may swap one
+    * for a view, or register another schema's file into one, under the
+    * compiled copy. False, or a throw, answers the query live.
     */
    sameCatalogRecheck?: () => Promise<boolean>;
    /**

@@ -31,6 +31,10 @@
  *   the destination would read with the destination's credential. Checked
  *   when the copy compiles and again before each query it answers, since a
  *   writer on the catalog may swap a table for a view under a compiled copy;
+ * - is made only of files under the storage prefix of a schema the
+ *   connection may read: a catalog writer can register another schema's file
+ *   into a table, which the connection's scoped secret would refuse to read
+ *   and the destination's would not. Checked with the base-table check;
  * - is named in a plain `.table('<dotted path>')`, with no `.sql()` (or any
  *   other call) on the connection in the files, and no source on the
  *   connection the copy keeps as written carries author SQL (`authorSqlCause`:
@@ -51,9 +55,14 @@ import { authorModelReachContext } from "../text/author_model";
 import { refusedJoinPairs } from "../text/cross_connection_text";
 import { destinationOfAlias } from "./served_copy_config";
 
-/** The tables a copy reads through one destination, by its alias. */
+/** The tables a copy reads through one destination for one managed connection. */
 export interface SameCatalogTables {
+   /** The destination's served-copy alias. */
    alias: string;
+   /** The managed connection whose tables they are. */
+   connection: string;
+   /** The schemas it may read. */
+   schemas: ReadonlySet<string>;
    /** Each as `[catalog, schema, table]`, plain names. */
    tables: readonly (readonly [string, string, string])[];
 }
@@ -205,11 +214,12 @@ interface SameCatalogPorts {
       connection: string,
       schemas: ReadonlySet<string>,
    ): Promise<string | undefined>;
-   /** Whether each `[catalog, schema, table]` is a base table on the destination `alias` stands for. */
-   baseTables(
-      alias: string,
-      tables: readonly (readonly [string, string, string])[],
-   ): Promise<boolean>;
+   /**
+    * Whether each of `read.tables` is a base table on the destination
+    * `read.alias` stands for, made only of files the managed connection's
+    * storage scope reaches (same_catalog_tables.ts).
+    */
+   readable(read: SameCatalogTables): Promise<boolean>;
 }
 
 /**
@@ -389,10 +399,19 @@ export async function readSameCatalogThroughDestination(args: {
          )!.split(".");
          return [catalog, schema, table] as const;
       });
-      if (!(await args.ports.baseTables(move.alias, tables))) {
-         return { declined: "a table it reads is not a base table" };
+      const read = {
+         alias: move.alias,
+         connection: move.connection,
+         schemas: move.schemas,
+         tables,
+      };
+      if (!(await args.ports.readable(read))) {
+         return {
+            declined:
+               "a table it reads is not a base table, or holds a file outside the connection's storage scope",
+         };
       }
-      if (tables.length > 0) moved.push({ alias: move.alias, tables });
+      if (tables.length > 0) moved.push(read);
    }
    return {
       files: out,

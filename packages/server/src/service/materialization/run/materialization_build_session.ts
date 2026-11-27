@@ -95,6 +95,8 @@ import {
 } from "../../connection";
 import { managedSearchPathSql } from "../../dialects/ducklake";
 import { serializeSQL } from "../../single_select";
+import { managedSchemas } from "../../connection_type";
+import { fileOutsideScope, managedStorageOf } from "../../same_catalog_tables";
 import type { PartitionKey } from "../../dialects/ducklake_catalog";
 import {
    connectionDialectOf,
@@ -116,6 +118,7 @@ import {
    allowedForLockdown,
    hasUrlScheme,
    lockDownDuckDBSession,
+   runInternalSQL,
 } from "../../duckdb_lockdown";
 import {
    DEFAULT_DESTINATION_SCHEMA,
@@ -1225,16 +1228,16 @@ async function buildSameCatalogIntoStorage(params: {
                   : {}),
                // A managed connection reads only its scope; the destination's
                // credential reads the whole catalog. An unmanaged one reads the
-               // whole catalog itself, so its views have no scope to leave.
+               // whole catalog itself, so its views and files have no scope to
+               // leave.
                ...(params.sourceConnection.managed === true
                   ? {
                        beforeCreate: () =>
-                          refuseViewsRead(
-                             session,
+                          refuseOutOfScopeReads(session, params.buildSQL, {
                              alias,
-                             params.buildSQL,
                              destinationName,
-                          ),
+                             sourceConnection: params.sourceConnection,
+                          }),
                     }
                   : {}),
             },
@@ -1297,44 +1300,77 @@ async function namesReadIn(
 }
 
 /**
- * Refuse a same-catalog build from a `managed` connection whose SQL reads a
- * view of the catalog. The build's session reads with the destination's
- * credential, which reaches the whole catalog, and a DuckLake view's body is
- * not held to the managed connection's scope, so such a build reads only base
- * tables, as a served copy does (same_catalog_destination.ts). Run in the build's transaction
- * (`beforeCreate`), so the CREATE reads the snapshot this read: a view
- * swapped in after it is not read. SQL it cannot parse is refused.
+ * Refuse a same-catalog build from a `managed` connection whose SQL reads
+ * what that connection could not: a view of the catalog, or a base table
+ * holding a file outside the connection's storage scope
+ * (`fileOutsideScope`). The build's session reads with the destination's
+ * credential, which reaches the whole catalog; a view's body is not held to
+ * the managed connection's scope, and a catalog writer can register any file
+ * into a table. A served copy holds to the same rule (same_catalog_tables.ts).
+ * Run in the build's transaction (`beforeCreate`), so the CREATE reads the
+ * snapshot this read. SQL it cannot parse, or a catalog it cannot read, is
+ * refused.
  */
-async function refuseViewsRead(
+async function refuseOutOfScopeReads(
    session: DuckDBConnection,
-   alias: string,
    selectSQL: string,
-   destinationName: string,
+   params: {
+      alias: string;
+      destinationName: string;
+      sourceConnection: ApiConnection;
+   },
 ): Promise<void> {
+   const { alias, destinationName, sourceConnection } = params;
    const names = await namesReadIn(selectSQL, alias);
    const refuse = (why: string) =>
       new BadRequestError(
-         `Cannot materialize a source into storage destination '${destinationName}' ` +
-            `that ${why}: the build reads the destination's own catalog with its ` +
-            `credential, which a view's body is not held to, so it reads only ` +
-            `base tables there.`,
+         `Cannot materialize a source from managed connection '${sourceConnection.name}' ` +
+            `into storage destination '${destinationName}' that ${why}: the build ` +
+            `reads the catalog with the destination's credential, so it reads only ` +
+            `base tables whose files the connection's own storage scope reaches.`,
       );
    if (!names) throw refuse("reads SQL it cannot parse");
    if (names.length === 0) return;
-   const result = await session.runSQL(
-      "SELECT lower(table_schema) AS s, lower(table_name) AS t " +
-         "FROM information_schema.tables " +
-         `WHERE lower(table_catalog) = '${alias.toLowerCase().replace(/'/g, "''")}' ` +
-         "AND table_type <> 'BASE TABLE'",
-   );
-   const views = new Set(
-      (result.rows as { s?: unknown; t?: unknown }[]).map(
-         (r) => `${String(r.s)}.${String(r.t)}`,
-      ),
-   );
-   if (names.some(([s, t]) => views.has(`${s}.${t}`))) {
-      throw refuse("reads a view");
+   const run = async (sql: string) =>
+      (await runInternalSQL(session, sql)).rows as Record<string, unknown>[];
+   let outside: string | undefined;
+   try {
+      const types = await run(
+         "SELECT lower(table_schema) AS s, lower(table_name) AS t, table_type " +
+            "FROM information_schema.tables " +
+            `WHERE lower(table_catalog) = '${alias.toLowerCase().replace(/'/g, "''")}'`,
+      );
+      const typeOf = new Map(
+         types.map((r) => [`${String(r.s)}.${String(r.t)}`, r.table_type]),
+      );
+      const read = names.filter(([s, t]) => typeOf.has(`${s}.${t}`));
+      if (read.some(([s, t]) => typeOf.get(`${s}.${t}`) !== "BASE TABLE")) {
+         throw refuse("reads a view");
+      }
+      if (read.length === 0) return;
+      const [snapshot] = await run(
+         `SELECT id FROM ${quoteIdentifier(alias, STORAGE_DIALECT)}.current_snapshot()`,
+      );
+      const distinct = [...new Map(read.map((r) => [r.join("."), r])).values()];
+      outside = await fileOutsideScope(
+         run,
+         alias,
+         String(snapshot?.id),
+         distinct,
+         managedStorageOf(
+            sourceConnection,
+            managedSchemas(
+               sourceConnection.ducklakeConnection?.readableSchemas,
+            ),
+         ),
+      );
+   } catch (error) {
+      if (error instanceof BadRequestError) throw error;
+      throw refuse(
+         "reads tables whose files could not be checked against its storage scope",
+      );
    }
+   if (outside) throw refuse(`reads ${outside}`);
 }
 
 /**

@@ -204,10 +204,7 @@ import {
    readSameCatalogThroughDestination,
    type SameCatalogTables,
 } from "./same_catalog_reads";
-import {
-   allBaseTables,
-   sameCatalogScope,
-} from "../../same_catalog_destination";
+import { sameCatalogScope } from "../../same_catalog_destination";
 import type { ScopeLane } from "./scope_facts";
 
 export type { ServedCopyProblem } from "./served_copy_types";
@@ -363,6 +360,16 @@ interface ServedCopyHost {
       connection: string,
       schemas: ReadonlySet<string>,
    ): Promise<string | undefined>;
+   /**
+    * Whether tables a same-catalog read moves are, now, base tables made only
+    * of files the managed connection's storage scope reaches
+    * (`sameCatalogTablesReadable`), read over `config`, the copy's
+    * connections. Injected for the same reason. Absent, no table is moved.
+    */
+   sameCatalogTablesReadable?(
+      config: MalloyConfig,
+      read: SameCatalogTables,
+   ): Promise<boolean>;
    /**
     * The storage destinations, while the storage tier serves
     * (`PERSIST_STORAGE_MODE=on`); undefined otherwise, when only database
@@ -1368,12 +1375,12 @@ export class ServedCopyServe {
       const ok = await compiled.sameCatalogRecheck().catch(() => false);
       if (ok) return;
       logger.warn(
-         "A served copy's table read through its storage destination is no longer a base table, or could not be checked; answering live",
+         "A served copy's table read through its storage destination is no longer a base table, holds a file outside the managed connection's storage scope, or could not be checked; answering live",
          { modelPath: this.host.modelPath() },
       );
       throw new LegDecline("served_copy_not_served", undefined, {
          message:
-            "a table the served copy reads through its storage destination is no longer a base table, or could not be checked",
+            "a table the served copy reads through its storage destination is no longer a base table, holds a file outside the managed connection's storage scope, or could not be checked",
       });
    }
 
@@ -2759,7 +2766,10 @@ export class ServedCopyServe {
                this.host.managedTablePathRefusal
                   ? this.host.managedTablePathRefusal(path, connection, schemas)
                   : Promise.resolve("no managed scope check is available"),
-            baseTables: (alias, tables) => allBaseTables(config, alias, tables),
+            readable: (read) =>
+               this.host.sameCatalogTablesReadable
+                  ? this.host.sameCatalogTablesReadable(config, read)
+                  : Promise.resolve(false),
          },
       }).catch(() => ({ declined: "a read of its connections failed" }));
       if ("declined" in moved) {
@@ -3027,14 +3037,14 @@ export class ServedCopyServe {
          ...(throughBase.length > 0 ? { throughBase } : {}),
          ...(sameCatalogReads.length > 0
             ? {
-                 sameCatalogRecheck: async () =>
-                    (
-                       await Promise.all(
-                          sameCatalogReads.map((r) =>
-                             allBaseTables(config, r.alias, r.tables),
-                          ),
-                       )
-                    ).every(Boolean),
+                 sameCatalogRecheck: async () => {
+                    const readable = this.host.sameCatalogTablesReadable;
+                    if (!readable) return false;
+                    const each = await Promise.all(
+                       sameCatalogReads.map((r) => readable(config, r)),
+                    );
+                    return each.every(Boolean);
+                 },
               }
             : {}),
          aliased,
