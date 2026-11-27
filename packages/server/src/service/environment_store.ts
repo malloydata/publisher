@@ -1787,8 +1787,8 @@ export class EnvironmentStore
             this.serverRootPath,
             PUBLISHER_DATA_DIR,
          );
-         logger.info(
-            `Reinitialization mode: Cleaning up upload documents path ${uploadDocsPath}`,
+         logger.debug(
+            `--init: deleting the package copies in ${uploadDocsPath}`,
          );
          try {
             await fs.promises.rm(uploadDocsPath, {

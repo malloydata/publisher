@@ -74,6 +74,7 @@ import {
 } from "./package_retrieval_settings";
 import {
    API_PREFIX,
+   GIVENS_DOCS_URL,
    INDEX_MODEL_NAME,
    MODEL_FILE_SUFFIX,
    NOTEBOOK_FILE_SUFFIX,
@@ -4050,7 +4051,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                   `the source it runs declares a required #(filter), and the ` +
                   `Console sends no filter value for a notebook cell (400): ` +
                   `${problem}. Fix: move the filter to a given: declaration, ` +
-                  `as docs/givens.md#coming-from-filter describes.`;
+                  `as ${GIVENS_DOCS_URL}#coming-from-filter describes.`;
             } else if (refusal.reason === "restricted_mode") {
                why =
                   `the query route runs its run: statement in restricted ` +

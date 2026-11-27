@@ -11,9 +11,6 @@ export async function initializeSchema(
    const initialized = await db.isInitialized();
 
    if (force) {
-      logger.info(
-         "Reinitializing database schema: dropping and recreating every table but the retrieval caches",
-      );
       await dropAllTables(db);
    } else if (!initialized) {
       // A pre-rename `projects` schema would leave child tables on the old
@@ -1044,12 +1041,11 @@ async function dropAllTables(db: DuckDBConnection): Promise<void> {
       "entity_keyphrases",
    ];
 
-   logger.info("Dropping tables:", tables.join(", "));
+   logger.debug(`Dropping tables: ${tables.join(", ")}`);
 
    for (const table of tables) {
       try {
          await db.run(`DROP TABLE IF EXISTS ${table} `);
-         logger.info(`Dropped table: ${table}`);
       } catch (err) {
          logger.warn(` Warning: Could not drop table ${table}:`, err);
       }

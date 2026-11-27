@@ -30,6 +30,12 @@ export const NOTEBOOK_FILE_SUFFIX = ".malloynb";
 /** The guide to migrating from deprecated `#(filter)` annotations to `given:` parameters. */
 export const GIVENS_DOCS_URL =
    "https://github.com/malloydata/publisher/blob/main/docs/givens.md";
+/** The configuration reference: every setting's flag, variable and file key. */
+export const CONFIGURATION_DOCS_URL =
+   "https://github.com/malloydata/publisher/blob/main/docs/configuration.md";
+/** The reports guide, whose legacy `.malloynb` section gives each refusal's fix. */
+export const REPORTS_DOCS_URL =
+   "https://github.com/malloydata/publisher/blob/main/docs/reports.md";
 /** The recipe for moving v1 `#@ persist` / `#@ preaggregate` annotations to v2's. */
 export const MATERIALIZATION_MIGRATION_DOCS_URL =
    "https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md";

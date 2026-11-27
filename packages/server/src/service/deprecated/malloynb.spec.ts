@@ -42,7 +42,8 @@ describe("listMalloynbCellFindings: bounded, nothing lost", () => {
             "3 more cells of a.malloynb won't run for any reader in the " +
             "Console, not listed one by one: cells 7 and 9 (off_surface); " +
             "cell 8 (restricted_mode). The legacy .malloynb section of " +
-            "docs/reports.md gives the fix for each reason, and a reload " +
+            "https://github.com/malloydata/publisher/blob/main/docs/reports.md#legacy-malloynb-files " +
+            "gives the fix for each reason, and a reload " +
             "after fixing lists what remains.",
       });
    });
@@ -76,7 +77,8 @@ describe("listMalloynbCellFindings: bounded, nothing lost", () => {
             "the Console, not listed because the package lists at most 5 " +
             "one by one: 2 in c.malloynb and 3 in e.malloynb. By reason: 3 " +
             "restricted_mode and 2 off_surface. The legacy .malloynb section " +
-            "of docs/reports.md gives the fix for each reason, and a reload " +
+            "of https://github.com/malloydata/publisher/blob/main/docs/reports.md#legacy-malloynb-files " +
+            "gives the fix for each reason, and a reload " +
             "after fixing lists what remains.",
       });
       // Every refused cell is either listed or named in a summary.
