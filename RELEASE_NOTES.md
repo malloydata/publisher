@@ -29,8 +29,6 @@ A background refetch that failed used to replace a view the reader was already l
 
 The SDK's query client no longer refetches on reconnect (`refetchOnReconnect: false`), matching `refetchOnWindowFocus: false`. A laptop waking from sleep fires the browser's "online" event before the network is usable, so every query on the page refetched into a network error at once. A host that wants fresh data after a reconnect can still invalidate queries itself.
 
-## [Unreleased] — a framed data app can save files, copy, go full screen and open new tabs
-
 ## [Unreleased] — Package entities list a record column's members, and every join says how many rows it meets
 
 The package entities (`ModelEntities.fields`) walked a record or repeated-record column (a BigQuery RECORD, a DuckDB STRUCT or STRUCT[]) as if it were a join to a source of the same name. When the model also had a top-level source with that name, the column's members (`lines.sku`, `lines.qty`) were never listed, and the column's `join` named that unrelated source. A record column is now always `nested`, with no `sourceName`, and its members are always listed under dotted names.
