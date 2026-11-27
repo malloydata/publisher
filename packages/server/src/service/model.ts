@@ -217,6 +217,7 @@ import {
 } from "./model_policy";
 import { QueryPrivileges, type QueryRequest } from "./model_query_request";
 import { annotationNearMisses, authoredNotes } from "./annotation_near_miss";
+import { managedTablePathRefusal } from "./managed_catalog_scope";
 import {
    type ColumnContract,
    parseContract,
@@ -2936,6 +2937,7 @@ export class Model {
    /** The served copy reading this model's state. */
    private newServedCopy(): ServedCopyServe {
       return new ServedCopyServe({
+         managedTablePathRefusal,
          // The author's compile of a query, reading no table: what a query
          // over a table with a column left out is checked against.
          authorResultShape: async (queryString, givens) => {
@@ -3475,6 +3477,7 @@ export class Model {
       // Declared from the plan, never read, so no window applies.
       const pinned = pin(makeSnapshot(bindings), new Date(0));
       const copy = new ServedCopyServe({
+         managedTablePathRefusal,
          modelPath: () => this.modelPath,
          modelDef: () => this.modelDef,
          // Compile-only, as the view preview: a destination's catalog need
@@ -3521,6 +3524,7 @@ export class Model {
       // first build a DuckLake destination's catalog does not exist yet, and
       // the dialect must not depend on reaching it.
       const copy = new ServedCopyServe({
+         managedTablePathRefusal,
          modelPath: () => this.modelPath,
          modelDef: () => this.modelDef,
          quiet: true,

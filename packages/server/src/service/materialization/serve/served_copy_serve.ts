@@ -350,6 +350,17 @@ interface ServedCopyHost {
    modelPath(): string;
    modelDef(): unknown;
    /**
+    * The managed scope check of a `.table()` path (`managedTablePathRefusal`),
+    * which a same-catalog read holds every moved path to. Injected because it
+    * parses with DuckDB, which nothing this module imports may load (the
+    * package-load worker imports it). Absent, no path is moved.
+    */
+   managedTablePathRefusal?(
+      path: string,
+      connection: string,
+      schemas: ReadonlySet<string>,
+   ): Promise<string | undefined>;
+   /**
     * The storage destinations, while the storage tier serves
     * (`PERSIST_STORAGE_MODE=on`); undefined otherwise, when only database
     * tables are read.
@@ -2719,6 +2730,10 @@ export class ServedCopyServe {
          ports: {
             scope: (connection, alias) =>
                sameCatalogScope(config, connection, alias),
+            pathRefusal: (path, connection, schemas) =>
+               this.host.managedTablePathRefusal
+                  ? this.host.managedTablePathRefusal(path, connection, schemas)
+                  : Promise.resolve("no managed scope check is available"),
             baseTables: (alias, tables) => allBaseTables(config, alias, tables),
          },
       }).catch(() => ({ declined: "a read of its connections failed" }));

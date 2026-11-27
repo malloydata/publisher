@@ -44,7 +44,6 @@
 
 import { lexAll, type Token } from "../../malloy_lexer_core";
 import { identifier, stringLiteral } from "../../malloy_text";
-import { managedTablePathRefusal } from "../../managed_catalog_scope";
 import { authorSqlCause } from "../domain/same_catalog_build";
 import { authorModelReachContext } from "../text/author_model";
 import { refusedJoinPairs } from "../text/cross_connection_text";
@@ -113,7 +112,10 @@ function literalValue(token: Token | undefined): string | undefined {
 function namesConnection(token: Token, name: string): boolean {
    return (
       (token.kind === "word" && token.text === name) ||
-      token.text === `\`${name}\``
+      (token.text.length === name.length + 2 &&
+         token.text.startsWith("`") &&
+         token.text.endsWith("`") &&
+         token.text.slice(1, -1) === name)
    );
 }
 
@@ -183,6 +185,17 @@ interface SameCatalogPorts {
       connection: string,
       alias: string,
    ): Promise<ReadonlySet<string> | undefined>;
+   /**
+    * Why managed connection `connection`, limited to `schemas`, may not read
+    * `.table()` path `path` (`managedTablePathRefusal`), or undefined when it
+    * may. A port, not an import: the check parses with DuckDB, which the
+    * package-load worker, importing this module's graph, must never load.
+    */
+   pathRefusal(
+      path: string,
+      connection: string,
+      schemas: ReadonlySet<string>,
+   ): Promise<string | undefined>;
    /** Whether each `[catalog, schema, table]` is a base table on the destination `alias` stands for. */
    baseTables(
       alias: string,
@@ -339,7 +352,7 @@ export async function readSameCatalogThroughDestination(args: {
          out.set(url, read.text);
       }
       for (const path of paths) {
-         const refused = await managedTablePathRefusal(
+         const refused = await args.ports.pathRefusal(
             path,
             move.connection,
             move.schemas,
