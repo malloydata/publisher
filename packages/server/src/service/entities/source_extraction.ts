@@ -9,8 +9,10 @@ import {
 import { logger } from "../../logger";
 import {
    getAccessModifier,
+   getDescriptionFromTags,
    getDirectTaglines,
    getEntityFromMalloyField,
+   getTags,
    getRawTaglines,
    parseDocAnnotation,
 } from "./field_helpers";
@@ -386,6 +388,7 @@ function getEntitiesFromExplore(
          nameOverride,
          explore.sourceStructDef?.dialect ?? null,
       );
+      inheritJoinedDoc(codeEntity, field, explore);
       // An ``#(index)``-tagged dimension carries its definitional fingerprint
       // (the compiled-SQL hash and required-filter set), from which a host can
       // derive an id that stays stable across versions. A candidate whose
@@ -405,6 +408,56 @@ function getEntitiesFromExplore(
    }
 
    return entities;
+}
+
+/**
+ * A dimension defined as exactly a one-hop join path (`region is
+ * account.region`, read from its compiled definition, never its text) with
+ * no `#(doc)` of its own reports the joined field's, marked
+ * `doc_inherited_from`. A doc on the dimension wins; an expression over the
+ * path (`upper(account.region)`) is not the path, so inherits nothing; a
+ * hidden join or joined field gives nothing.
+ */
+function inheritJoinedDoc(
+   entity: Entity,
+   field: MalloyExplore["allFields"][number],
+   explore: MalloyExplore,
+): void {
+   if (entity.description !== undefined || field.isExploreField()) return;
+   const def = (
+      (explore.structDef as { fields?: unknown[] }).fields as
+         | { name?: unknown; as?: unknown; e?: unknown }[]
+         | undefined
+   )?.find((f) => (f.as ?? f.name) === field.name);
+   const e = def?.e as { node?: unknown; path?: unknown } | undefined;
+   if (
+      e?.node !== "field" ||
+      !Array.isArray(e.path) ||
+      e.path.length !== 2 ||
+      !e.path.every((p) => typeof p === "string")
+   ) {
+      return;
+   }
+   const [joinName, fieldName] = e.path as [string, string];
+   const join = explore.getFieldByNameIfExists(joinName);
+   if (
+      !join?.isExploreField() ||
+      getAccessModifier(join) !== AccessModifierEnum.Public
+   ) {
+      return;
+   }
+   const joined = join.getFieldByNameIfExists(fieldName);
+   if (
+      !joined ||
+      joined.isExploreField() ||
+      getAccessModifier(joined) !== AccessModifierEnum.Public
+   ) {
+      return;
+   }
+   const doc = getDescriptionFromTags(getTags(joined));
+   if (doc === undefined) return;
+   entity.description = doc;
+   entity.doc_inherited_from = `${joinName}.${fieldName}`;
 }
 
 /*

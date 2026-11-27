@@ -392,6 +392,35 @@ function readFieldProvenance(
    return provenance;
 }
 
+/**
+ * A field's docs ({@link entityDocs}), and for a dimension defined as exactly
+ * a one-hop join path (`region is account.region`, its compiled definition's
+ * `aliasOf`) with no doc of its own, the joined field's, marked
+ * `docInheritedFrom`. A doc on the dimension wins, and an expression over
+ * the path (`upper(account.region)`) has no `aliasOf`, so inherits nothing.
+ */
+function fieldDocs(
+   field: { kind?: string; annotations?: AnnotationLines },
+   aliasOf: string | undefined,
+   siblings: readonly JoinSchemaField[],
+): Pick<Entity, "doc" | "embedDoc" | "docSource" | "docInheritedFrom"> {
+   const own = entityDocs(field.annotations);
+   if (field.kind !== "dimension" || own.embedDoc || !aliasOf) return own;
+   const parts = aliasOf.split(".");
+   if (parts.length !== 2) return own;
+   const join = siblings.find(
+      (f) => f.kind === "join" && memberSegment(f.name) === parts[0],
+   );
+   const joined = join?.schema?.fields?.find(
+      (f) => f.kind !== "join" && memberSegment(f.name) === parts[1],
+   );
+   if (!joined) return own;
+   const inherited = entityDocs(joined.annotations);
+   return inherited.embedDoc
+      ? { ...inherited, docInheritedFrom: aliasOf }
+      : own;
+}
+
 /** The shape of a field inside a join's inlined schema. */
 interface JoinSchemaField {
    kind?: string;
@@ -1080,7 +1109,11 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                name: field.name,
                source: sourceName,
                modelPath,
-               ...entityDocs(field.annotations),
+               ...fieldDocs(
+                  field,
+                  fieldProvenance?.aliasOf,
+                  sourceInfo.schema.fields as JoinSchemaField[],
+               ),
                ...(field.kind === "view"
                   ? {}
                   : {
