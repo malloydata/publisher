@@ -134,6 +134,35 @@ describe("reachableSourceIDs", () => {
       }
       expect(ids.has(map.sourceIDOf("renamed")!)).toBe(false);
    });
+
+   it("reaches what a .sql() source reads through %{}, and what that reads", async () => {
+      const modelDef = await mz.compile(
+         {
+            "model.malloy": `${MODEL}
+#@ persist name="by_label"
+source: by_label is regions -> { group_by: label }
+source: unioned is duckdb.sql("""select region from %{ daily_ext -> { select: region } } union all select label from %{ by_label -> { select: label } }""")
+`,
+         },
+         { entry: "model.malloy" },
+      );
+      const map = SourceMap.of(modelDef);
+      const root = modelDef.contents["unioned"] as SourceDef;
+      const ids = reachableSourceIDs(
+         structsReachedFrom([root], modelDef),
+         modelDef,
+      );
+      for (const name of [
+         "daily_ext",
+         "daily",
+         "orders",
+         "regions",
+         "by_label",
+      ]) {
+         expect([name, ids.has(map.sourceIDOf(name)!)]).toEqual([name, true]);
+      }
+      expect(ids.has(map.sourceIDOf("renamed")!)).toBe(false);
+   });
 });
 
 describe("composites", () => {

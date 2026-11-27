@@ -237,7 +237,7 @@ import {
 } from "./report";
 import { sqlLiteral } from "./introspection_sql";
 import { quoteManifestTablePath, UnquotableIdentifierError } from "./quoting";
-import { Model } from "./model";
+import { Model, RENDER_TAG_CHECK_FAILED_CODE, RENDER_TAG_CODE } from "./model";
 import {
    callerVisibleText,
    rewriteErrorMessage,
@@ -1371,6 +1371,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                   `(${errMessage(hydrateErr)}), so its render-tag and dashboard findings ` +
                   `are unknown rather than clean.`,
                severity: "error",
+               code: RENDER_TAG_CHECK_FAILED_CODE,
             });
             models.set(
                sm.modelPath,
@@ -1417,6 +1418,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                      `The render-tag check did not finish for this model, so ` +
                      `its render-tag findings are unknown rather than clean.`,
                   severity: "warn",
+                  code: RENDER_TAG_CHECK_FAILED_CODE,
                });
             }
             models.set(sm.modelPath, placeholder(sm, err));
@@ -1432,6 +1434,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                subject: w.subject,
                message: w.message,
                severity: w.severity,
+               code: RENDER_TAG_CODE,
             });
          }
          const afterHydrateStart = performance.now();

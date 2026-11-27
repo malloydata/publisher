@@ -5203,7 +5203,12 @@ components:
             whole copy, the codes `publisher_served_copy_bind_total` counts,
             most actionable first (for example `cross_connection_join` before
             `fields_not_carried`): `cross_connection_join`,
-            `cross_connection_unbuilt`, `inline_join_kept`,
+            `cross_connection_unbuilt`, `sql_embed_cross_connection` (a
+            `.sql()` source reads it through `%{}` on another connection than
+            its table is read on: a storage destination, or a managed
+            catalog read through one), `sql_embed_bare` (a `.sql()`
+            source embeds it bare, `%{ x }`, which its stored table cannot be
+            embedded as), `inline_join_kept`,
             `read_terms_not_kept`, `fields_not_carried`, `column_types`,
             `classification_not_kept`, `pair_join_not_found`,
             `pair_not_compiled`, `definition_not_parsed`, `compile_failed`,
@@ -5905,7 +5910,15 @@ components:
                 description: >-
                   A stable identifier for the finding's family, for a client that
                   acts on it rather than only showing it; absent for a family that
-                  has none yet. `deprecated-malloynb-notebook`: a `.malloynb`
+                  has none yet. `render-tag`: a render annotation the
+                  renderer cannot apply as written, malformed for its field
+                  (`error`) or inert where it sits (`warn`); one per finding,
+                  `model` its file and `subject` the query or view it sits on.
+                  `render-tag-check-failed`: a model whose render-tag check did
+                  not finish (it could not be read, `error`, or the validator
+                  failed, `warn`), so its render-tag findings are unknown
+                  rather than clean; reported by a package-scope compile,
+                  one per model. `deprecated-malloynb-notebook`: a `.malloynb`
                   notebook, the deprecated cell format (one per file, `model`
                   naming it). `malloynb-cell-refused`: a `.malloynb` code cell
                   whose `run:` statement the query route refuses for every
@@ -6067,8 +6080,9 @@ components:
                   extension; `warn`).
                   `rollup-join-one-key-repeated`: a rollup's last build found
                   a `join_one` key repeated in the data, so queries that read
-                  that join beside other aggregates are answered live
-                  (`subject` the rollup's base; `warn`). Its former name,
+                  that join beside other aggregates, or, for a `join_one` the
+                  rollup's grain reads, queries that read nothing through it,
+                  are answered live (`subject` the rollup's base; `warn`). Its former name,
                   `preaggregate-join-one-key-repeated`, is retained, no longer
                   produced.
                   `served-copy-not-served`: the served copy (the author's own
@@ -6080,8 +6094,10 @@ components:
                   `pair_join_not_found`, `pair_not_compiled`,
                   `fields_not_carried`, `read_terms_not_kept`,
                   `cross_connection_join`, `inline_join_kept`,
-                  `reroot_not_compiled`, `classification_not_kept`; an open
-                  set) (`subject` the source; `warn`).
+                  `reroot_not_compiled`, `classification_not_kept`,
+                  `sql_embed_cross_connection`, `sql_embed_bare`; an
+                  open set) (`subject` the
+                  source; `warn`).
                   `model-recompile-failed`: a model file that compiled before
                   did not compile when the package bound new tables, although
                   neither its text nor that of any file it imports changed
@@ -6139,8 +6155,9 @@ components:
                   `rollup-join-one-key-repeated`: a bound rollup whose last
                   build found the key of a `join_one` it reads repeated, so a
                   query reading that join beside other aggregates is answered
-                  live; it clears once a build finds the key unique (one per
-                  rollup; `warn`). `preaggregate-join-one-key-repeated` is
+                  live, or, for a `join_one` its grain reads, a query reading
+                  nothing through it; it clears once a build finds the key
+                  unique (one per rollup and key; `warn`). `preaggregate-join-one-key-repeated` is
                   retained, no longer produced: it is
                   `rollup-join-one-key-repeated` now.
                   `join-bypass`: an author join from a published source to one
@@ -10462,7 +10479,8 @@ components:
             reload over every .malloy and .malloynb file, without swapping the
             result into the served package; with a source, importers compile
             against the replacement. It also reports the render-tag findings
-            (code "render-tag"), the dashboard, given and drill findings
+            (code "render-tag", or "render-tag-check-failed" for a model whose
+            check did not finish), the dashboard, given and drill findings
             (code "dashboard-lint") and each .malloynb code cell the query
             route would refuse (code "malloynb-cell-refused", at most 10 per
             notebook and 50 per package, with the rest named in

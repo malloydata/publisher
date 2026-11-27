@@ -60,12 +60,20 @@ describe("RollupVariantServe over a path grain (#2048)", () => {
       await f?.cleanup();
    });
 
-   function attempt(queryString: string) {
+   function attempt(
+      queryString: string,
+      grainJoinKeys?: Record<string, boolean>,
+   ) {
       return f.rollups.attempt({
          queryString,
          givens: undefined,
          authorRunnable: f.materializer.loadQuery(queryString),
-         pinned: pinnedOf([], { [tableId]: { tableName: TABLE } } as never),
+         pinned: pinnedOf([], {
+            [tableId]: {
+               tableName: TABLE,
+               ...(grainJoinKeys ? { keyUniqueness: { grainJoinKeys } } : {}),
+            },
+         } as never),
       });
    }
 
@@ -117,11 +125,42 @@ describe("RollupVariantServe over a path grain (#2048)", () => {
          "a query that reads nothing through the join_one the grain reads",
          "run: subs -> { group_by: items.sku; aggregate: mrr }",
          "rollup_count_semantics",
-         "the query reads nothing through `account`, a join_one the rollup's grain reads (`account.region`, `account.sales_region`); the rollup was built over that join, so a key it repeats would inflate a coarser answer that live, not joining it, does not",
+         "the query reads nothing through `account`, a join_one the rollup's grain reads (`account.region`, `account.sales_region`): its key was not checked unique when the rollup was built, so a repeat would have inflated the partials it summed, where live, not joining it, counts each row once",
       ],
    ] as const) {
       it(`declines ${label} with today's code`, async () => {
          expect(await declined(attempt(query))).toEqual({ code, detail });
       });
    }
+
+   describe("a query that reads nothing through the join_one, by its key check (option A)", () => {
+      const coarse = "run: subs -> { group_by: items.sku; aggregate: mrr }";
+
+      it("is served from the table when the build found the key unique", async () => {
+         const answer = await attempt(coarse, { "account.account_id": true });
+         const { sql } = await answer.runnable.getPreparedResult({
+            buildManifest: pinnedOf([], { [tableId]: { tableName: TABLE } })
+               .compilerManifest,
+         } as never);
+         expect(sql).toContain(TABLE);
+         expect(sql).not.toContain("JOIN");
+      });
+
+      it("declines, saying so, when the build found the key repeated", async () => {
+         expect(
+            await declined(attempt(coarse, { "account.account_id": false })),
+         ).toEqual({
+            code: "rollup_count_semantics",
+            detail:
+               "the query reads nothing through `account`, a join_one the rollup's grain reads (`account.region`, `account.sales_region`): the rollup's last build found its key held more than once in the joined source, so the partials it summed are inflated, where live, not joining it, counts each row once",
+         });
+      });
+
+      it("declines as unchecked when the check recorded is of another key", async () => {
+         expect(
+            (await declined(attempt(coarse, { "account.region": true })))
+               .detail,
+         ).toContain("its key was not checked unique");
+      });
+   });
 });

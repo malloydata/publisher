@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The text of every key check: one Malloy writer for the four checks that
+ * The text of every key check: one Malloy writer for the five checks that
  * compile through the model, and the SQL of a stored table's check, which
  * runs on a destination's own session. Each writes the predicate its kind's
  * NULL rule (`domain/key_check.ts`) says: a query returns a row exactly when
@@ -19,6 +19,11 @@ const SPELLING = {
    inline_join_one: { count: "matches", key: undefined, notNull: "is not" },
    pair_level: { count: "matches", key: undefined, isNull: "is" },
    rollup_key: { count: "key_rows__check", key: undefined, notNull: "!=" },
+   grain_join_key: {
+      count: "key_rows__check",
+      key: undefined,
+      notNull: "!=",
+   },
    parent_key: { count: "key_rows__check", key: "key__check", isNull: "=" },
 } as const;
 
@@ -35,7 +40,8 @@ export function keyCheckPipeline(
    const k = identifier(keyColumn);
    const s = identifier(source);
    if (KEY_RULES[kind].nullKey === "ignored") {
-      const spelled = SPELLING[kind as "inline_join_one" | "rollup_key"];
+      const spelled =
+         SPELLING[kind as "inline_join_one" | "rollup_key" | "grain_join_key"];
       // malloy-text: a count name from the fixed SPELLING table
       const count = spelled.count;
       // malloy-text: an operator from the fixed SPELLING table

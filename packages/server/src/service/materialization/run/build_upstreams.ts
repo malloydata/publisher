@@ -665,6 +665,15 @@ export interface BuildEnvironment {
    getApiConnection(connectionName: string): ApiConnection;
    getStorageDestination(destinationName: string): ApiConnection;
    getEnvironmentPath(): string;
+   /**
+    * The scope managed connection `connectionName`'s storage secret was built
+    * with when it attached (`managedScopeOf`), attaching it first; undefined
+    * when none is recorded. A same-catalog build holds the files it reads to
+    * it. Absent in test doubles: such a build is refused.
+    */
+   managedStorageScope?(
+      connectionName: string,
+   ): Promise<readonly string[] | undefined>;
    /** For the usage record a metered build emits. */
    getEnvironmentName(): string;
    /**

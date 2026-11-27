@@ -87,8 +87,11 @@ import type {
  * plan's `upstreamSchemas`.
  *
  * 9: the target-container read ({@link TargetContainersRequest}).
+ *
+ * 10: a served-copy compile's `virtualMap`
+ * ({@link CompileServedCopyRequest.virtualMap}).
  */
-export const PACKAGE_LOAD_PROTOCOL_VERSION = 9;
+export const PACKAGE_LOAD_PROTOCOL_VERSION = 10;
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -448,6 +451,11 @@ export interface CompileServedCopyRequest {
    defaultConnectionName: string | null;
    /** The re-rooted files, each keyed by its overlay key (`overlay_key.ts`). */
    files: [string, string][];
+   /**
+    * The copy's `virtualMap` (connection -> handle -> table path), which a
+    * `.sql()` source's `%{}` of a re-rooted source reads at compile time.
+    */
+   virtualMap?: [string, [string, string][]][];
 }
 
 /**

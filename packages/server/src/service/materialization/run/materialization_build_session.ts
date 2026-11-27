@@ -97,6 +97,8 @@ import {
 } from "../../connection";
 import { hardCloseWhenIdle } from "../../duckdb_hard_close";
 import { managedSearchPathSql } from "../../dialects/ducklake";
+import { serializeSQL } from "../../single_select";
+import { fileOutsideScope } from "../../same_catalog_tables";
 import type { PartitionKey } from "../../dialects/ducklake_catalog";
 import {
    connectionDialectOf,
@@ -118,6 +120,7 @@ import {
    allowedForLockdown,
    hasUrlScheme,
    lockDownDuckDBSession,
+   runInternalSQL,
 } from "../../duckdb_lockdown";
 import {
    DEFAULT_DESTINATION_SCHEMA,
@@ -1097,6 +1100,13 @@ export async function buildSourceIntoStorage(params: {
     * on a read-write session and must refuse author SQL; absent counts as true.
     */
    sourceCarriesAuthorSql?: boolean;
+   /**
+    * The scope a `managed` source connection's storage secret was built with
+    * when it attached (`managedScopeOf`), which a same-catalog build holds
+    * the files it reads to. Absent, or resolving undefined, a managed source
+    * is refused.
+    */
+   managedScope?: () => Promise<readonly string[] | undefined>;
    /** Logical, unquoted physical table path (may carry a container path). */
    physicalTableName: string;
    /**
@@ -1360,6 +1370,13 @@ async function buildSameCatalogIntoStorage(params: {
    sourceConnection: ApiConnection;
    buildSQL: string;
    sourceCarriesAuthorSql?: boolean;
+   /**
+    * The scope a `managed` source connection's storage secret was built with
+    * when it attached (`managedScopeOf`), which a same-catalog build holds
+    * the files it reads to. Absent, or resolving undefined, a managed source
+    * is refused.
+    */
+   managedScope?: () => Promise<readonly string[] | undefined>;
    physicalTableName: string;
    declaredColumns?: readonly DeclaredColumn[];
    castOptions?: BuildCastOptions;
@@ -1403,6 +1420,21 @@ async function buildSameCatalogIntoStorage(params: {
                ...(params.replacesView
                   ? { replacesView: params.replacesView }
                   : {}),
+               // A managed connection reads only its scope; the destination's
+               // credential reads the whole catalog. An unmanaged one reads the
+               // whole catalog itself, so its views and files have no scope to
+               // leave.
+               ...(params.sourceConnection.managed === true
+                  ? {
+                       beforeCreate: () =>
+                          refuseOutOfScopeReads(session, params.buildSQL, {
+                             alias,
+                             destinationName,
+                             sourceConnection: params.sourceConnection,
+                             managedScope: params.managedScope,
+                          }),
+                    }
+                  : {}),
             },
          );
          // Reads no warehouse, as a chained build does: nothing was charged.
@@ -1415,6 +1447,127 @@ async function buildSameCatalogIntoStorage(params: {
          };
       },
    );
+}
+
+/**
+ * Each `[schema, table]` (lower case) a reference in DuckDB's parse of
+ * `selectSQL` may resolve to in catalog `alias`, whose search path is its
+ * `main`: a bare name is `main`'s; `s.t` is schema `s`'s, or `main`'s when
+ * `s` is the catalog; `<alias>.s.t` is `s`'s. A name a CTE gives is listed
+ * too, which only widens the check. Undefined when DuckDB does not parse it
+ * as SELECT statements.
+ */
+async function namesReadIn(
+   selectSQL: string,
+   alias: string,
+): Promise<[string, string][] | undefined> {
+   const parsed = await serializeSQL(selectSQL);
+   if (parsed.error || !Array.isArray(parsed.statements)) return undefined;
+   const catalog = alias.toLowerCase();
+   const names: [string, string][] = [];
+   const str = (v: unknown) => (typeof v === "string" ? v.toLowerCase() : "");
+   const walk = (node: unknown): void => {
+      if (node === null || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+         node.forEach(walk);
+         return;
+      }
+      const record = node as Record<string, unknown>;
+      if (record.type === "BASE_TABLE") {
+         const [c, s, t] = [
+            str(record.catalog_name),
+            str(record.schema_name),
+            str(record.table_name),
+         ];
+         if (c) {
+            if (c === catalog) names.push([s || "main", t]);
+         } else if (s) {
+            names.push([s, t]);
+            if (s === catalog) names.push(["main", t]);
+         } else {
+            names.push(["main", t]);
+         }
+      }
+      Object.values(record).forEach(walk);
+   };
+   walk(parsed.statements);
+   return names;
+}
+
+/**
+ * Refuse a same-catalog build from a `managed` connection whose SQL reads
+ * what that connection could not: a view of the catalog, or a base table
+ * holding a file outside the connection's storage scope
+ * (`fileOutsideScope`). The build's session reads with the destination's
+ * credential, which reaches the whole catalog; a view's body is not held to
+ * the managed connection's scope, and a catalog writer can register any file
+ * into a table. A served copy holds to the same rule (same_catalog_tables.ts).
+ * Run in the build's transaction (`beforeCreate`), so the CREATE reads the
+ * snapshot this read. SQL it cannot parse, or a catalog it cannot read, is
+ * refused.
+ */
+async function refuseOutOfScopeReads(
+   session: DuckDBConnection,
+   selectSQL: string,
+   params: {
+      alias: string;
+      destinationName: string;
+      sourceConnection: ApiConnection;
+      managedScope?: () => Promise<readonly string[] | undefined>;
+   },
+): Promise<void> {
+   const { alias, destinationName, sourceConnection } = params;
+   const names = await namesReadIn(selectSQL, alias);
+   const refuse = (why: string) =>
+      new BadRequestError(
+         `Cannot materialize a source from managed connection '${sourceConnection.name}' ` +
+            `into storage destination '${destinationName}' that ${why}: the build ` +
+            `reads the catalog with the destination's credential, so it reads only ` +
+            `base tables whose files the connection's own storage scope reaches.`,
+      );
+   if (!names) throw refuse("reads SQL it cannot parse");
+   if (names.length === 0) return;
+   const run = async (sql: string) =>
+      (await runInternalSQL(session, sql)).rows as Record<string, unknown>[];
+   let outside: string | undefined;
+   try {
+      const types = await run(
+         "SELECT lower(table_schema) AS s, lower(table_name) AS t, table_type " +
+            "FROM information_schema.tables " +
+            `WHERE lower(table_catalog) = '${alias.toLowerCase().replace(/'/g, "''")}'`,
+      );
+      const typeOf = new Map(
+         types.map((r) => [`${String(r.s)}.${String(r.t)}`, r.table_type]),
+      );
+      const read = names.filter(([s, t]) => typeOf.has(`${s}.${t}`));
+      if (read.some(([s, t]) => typeOf.get(`${s}.${t}`) !== "BASE TABLE")) {
+         throw refuse("reads a view");
+      }
+      if (read.length === 0) return;
+      const [snapshot] = await run(
+         `SELECT id FROM ${quoteIdentifier(alias, STORAGE_DIALECT)}.current_snapshot()`,
+      );
+      const distinct = [...new Map(read.map((r) => [r.join("."), r])).values()];
+      const prefixes = await params.managedScope?.();
+      if (!prefixes) {
+         throw refuse(
+            "reads tables while its storage scope is not known (the connection is not attached)",
+         );
+      }
+      outside = await fileOutsideScope(
+         run,
+         alias,
+         String(snapshot?.id),
+         distinct,
+         prefixes,
+      );
+   } catch (error) {
+      if (error instanceof BadRequestError) throw error;
+      throw refuse(
+         "reads tables whose files could not be checked against its storage scope",
+      );
+   }
+   if (outside) throw refuse(`reads ${outside}`);
 }
 
 /**
@@ -2243,6 +2396,12 @@ export async function createTableAndDescribe(
        */
       replacesView?: string[];
       /**
+       * Run first in the same transaction, after `replacesView`: what it
+       * reads of the catalog is the snapshot the CREATE reads. It throws to
+       * refuse the build, which rolls back.
+       */
+      beforeCreate?: () => Promise<void>;
+      /**
        * The column names the build source declares: a stored column that
        * matches one only by a unique case fold is renamed to it, in the same
        * transaction ({@link canonicalRenames}).
@@ -2264,6 +2423,7 @@ export async function createTableAndDescribe(
       for (const sql of options.replacesView ?? []) {
          await session.runSQL(sql);
       }
+      await options.beforeCreate?.();
       await session.runSQL(
          `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
       );

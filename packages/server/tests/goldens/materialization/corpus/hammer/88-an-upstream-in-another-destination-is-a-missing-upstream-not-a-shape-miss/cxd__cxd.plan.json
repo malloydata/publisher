@@ -4,7 +4,7 @@
     "annotationFindings": [
       {
         "code": "persist-not-built",
-        "message": "#@ persist source \"rollup\" is not built, so it is answered live: its upstream 'daily' is stored in the storage= destination 'lake', and it is built into the storage= destination 'far', which cannot read that table; a downstream is never built by recomputing its upstream from raw, so it is answered live, over 'daily''s table.",
+        "message": "#@ persist source \"rollup\" is not built, so it is answered live: its upstream 'daily' is stored in the storage= destination 'lake', and it is built into the storage= destination 'far', which cannot read that table; a downstream is never built by recomputing its upstream from raw, so it is answered live.",
         "model": "cxd.malloy",
         "refused": {
           "name": "rollup",
@@ -63,7 +63,7 @@
     "omittedSources": [],
     "refusedSources": {
       "rollup@<hammer>/cxd/cxd.malloy": {
-        "message": "#@ persist source \"rollup\" is not built, so it is answered live: its upstream 'daily' is stored in the storage= destination 'lake', and it is built into the storage= destination 'far', which cannot read that table; a downstream is never built by recomputing its upstream from raw, so it is answered live, over 'daily''s table.",
+        "message": "#@ persist source \"rollup\" is not built, so it is answered live: its upstream 'daily' is stored in the storage= destination 'lake', and it is built into the storage= destination 'far', which cannot read that table; a downstream is never built by recomputing its upstream from raw, so it is answered live.",
         "modelPath": "cxd.malloy",
         "name": "rollup",
         "origin": "persist",
