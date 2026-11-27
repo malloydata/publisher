@@ -95,7 +95,7 @@ import type { PackageWorkflowsWire } from "../service/skills/package_workflows";
  *
  * 11: the skills walk ({@link LoadPackageRequest.readWorkflows}): the walk as
  * wire data, or why it could not finish (`unavailable`), the whole `workflows`
- * value's refusal (`manifestRefusal`) and each listed file's `binary` flag
+ * value's refusal (`workflowsRefusal`) and each listed file's `binary` flag
  * ({@link WorkflowsRead}, `workflowsRead`), and the content shas of the serving
  * identity (`modelShas`), which replace `packageMetadata.workflows`.
  */

@@ -771,7 +771,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    ): { reason: WorkflowNotFoundReason; message: string } | undefined {
       if (this.workflows.workflows.has(name)) return undefined;
       const message =
-         this.workflows.manifestRefusal ??
+         this.workflows.workflowsRefusal ??
          this.workflows.warnings.find(
             (w) => w.code === WORKFLOW_NOT_SERVED && w.subject === name,
          )?.message;

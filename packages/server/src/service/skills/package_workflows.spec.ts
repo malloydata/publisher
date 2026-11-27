@@ -270,14 +270,14 @@ describe("readPackageWorkflows", () => {
             expect(texts(result.warnings)).toHaveLength(1);
             expect(texts(result.warnings)[0]).toContain("must be an object");
             expect(texts(result.warnings)[0]).toContain("Fix:");
-            expect(result.manifestRefusal).toBe(texts(result.warnings)[0]!);
+            expect(result.workflowsRefusal).toBe(texts(result.warnings)[0]!);
          },
       );
 
       it("names no whole-value refusal for a workflow refused alone, or for a served one", () => {
-         expect(read({ bad: "nope" }).manifestRefusal).toBeUndefined();
-         expect(read({}).manifestRefusal).toBeUndefined();
-         expect(read(undefined).manifestRefusal).toBeUndefined();
+         expect(read({ bad: "nope" }).workflowsRefusal).toBeUndefined();
+         expect(read({}).workflowsRefusal).toBeUndefined();
+         expect(read(undefined).workflowsRefusal).toBeUndefined();
       });
 
       it.each([
@@ -1909,7 +1909,7 @@ describe("readPackageWorkflows", () => {
                   "Package manifest 'workflows' is too deeply nested or over 1 MiB, so no workflow is served. Fix: shorten it; a real declaration is a few KiB.",
             },
          ]);
-         expect(result.manifestRefusal).toBe(result.warnings[0]!.message);
+         expect(result.workflowsRefusal).toBe(result.warnings[0]!.message);
       });
    });
 
@@ -2578,8 +2578,8 @@ describe("readPackageWorkflows", () => {
 
       it("keeps the refusal of a whole workflows value", () => {
          const walked = read("nope");
-         expect(walked.manifestRefusal).toContain("must be an object");
-         expect(shipped(walked).manifestRefusal).toBe(walked.manifestRefusal);
+         expect(walked.workflowsRefusal).toContain("must be an object");
+         expect(shipped(walked).workflowsRefusal).toBe(walked.workflowsRefusal);
       });
 
       it("keeps one skill shared by every set and workflow that holds it, with its reader rebuilt", async () => {
