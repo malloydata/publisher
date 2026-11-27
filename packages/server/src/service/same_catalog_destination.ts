@@ -5,9 +5,10 @@
  * What a served copy reads of its connections to put a managed DuckLake
  * connection's tables on a storage destination over the same catalog
  * (materialization/serve/same_catalog_reads.ts decides from it): the
- * connection's scope, when it and the destination are one catalog, and
- * whether a table on the destination is a base table. Both read the
- * connections a copy compiles with, through `config`.
+ * connection's scope, when it and the destination are one catalog, read from
+ * the connections a copy compiles with, through `config`. Whether the tables
+ * it would read are readable is same_catalog_tables.ts's, which loads DuckDB
+ * and so reaches a served copy through its host.
  */
 
 import type { MalloyConfig } from "@malloydata/malloy";
@@ -41,31 +42,4 @@ export async function sameCatalogScope(
       )
       ? schemas
       : undefined;
-}
-
-/**
- * Whether each of `tables` (`[catalog, schema, table]`, plain names) is one
- * row of the destination `alias` names in `config`'s
- * `information_schema.tables`, of type `BASE TABLE`: a view's body would run
- * with the destination's credential.
- */
-export async function allBaseTables(
-   config: MalloyConfig,
-   alias: string,
-   tables: readonly (readonly [string, string, string])[],
-): Promise<boolean> {
-   const destination = await config.connections.lookupConnection(alias);
-   for (const [catalog, schema, table] of tables) {
-      const result = await destination.runSQL(
-         "SELECT table_type FROM information_schema.tables " +
-            `WHERE table_catalog = '${catalog}' ` +
-            `AND lower(table_schema) = lower('${schema}') ` +
-            `AND lower(table_name) = lower('${table}')`,
-      );
-      const rows = result.rows as { table_type?: unknown }[];
-      if (rows.length !== 1 || rows[0].table_type !== "BASE TABLE") {
-         return false;
-      }
-   }
-   return true;
 }

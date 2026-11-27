@@ -243,6 +243,13 @@ export interface KeyUniqueness {
     * no column recorded, or another, is unknown, and its joins answer live.
     */
    parentKeyColumns?: Record<string, string>;
+   /**
+    * The key check of each join_one the rollup's grain reads, over the joined
+    * source, by `<join>.<keyColumn>` (`account.account_id`): true when no
+    * non-NULL value repeats. A query that reads nothing through a join is
+    * served only when its key is known true here.
+    */
+   grainJoinKeys?: Record<string, boolean>;
 }
 
 /**

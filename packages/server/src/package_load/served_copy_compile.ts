@@ -61,6 +61,8 @@ export async function compileServedCopyOnWorker(
       modelPath: string;
       config: MalloyConfig;
       files: ReadonlyMap<string, string>;
+      /** The copy's `virtualMap`, which a `.sql()` source's `%{}` reads. */
+      virtualMap?: ReadonlyMap<string, ReadonlyMap<string, string>>;
    },
 ): Promise<
    | { materializer: ModelMaterializer; def: unknown; runtime: GraftRuntime }
@@ -75,6 +77,7 @@ export async function compileServedCopyOnWorker(
       malloyConfig: args.config,
       defaultConnectionName: DEFAULT_CONNECTION,
       files: args.files,
+      ...(args.virtualMap ? { virtualMap: args.virtualMap } : {}),
    });
    if (!pending) return undefined;
    let result: Awaited<typeof pending>;

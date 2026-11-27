@@ -15,6 +15,7 @@
  * | `pair_level`      | fails    | fail build  | a level's row flag marks one row per distinct key, where live counts each row: a NULL key breaks the flag as a repeat does |
  * | `rollup_key`      | ignored  | record      | a NULL never joins the rollup; a repeat only stops a join reading it as a join_one, which the branch declines             |
  * | `parent_key`      | fails    | record      | the join-to-rollup branch counts a parent once per key, which a NULL or repeated key would get wrong; it declines instead  |
+ * | `grain_join_key`  | ignored  | record      | a NULL never joins, so it cannot repeat the base rows a rollup's grain join_one meets; a repeat inflates its partials      |
  * | `stored_key`      | fails    | record      | the same parent check, over the source's stored table in a destination                                                   |
  *
  * A check is plain data (it crosses the load worker); the run compiles and
@@ -32,6 +33,7 @@ export type KeyCheckKind =
    | "pair_level"
    | "rollup_key"
    | "parent_key"
+   | "grain_join_key"
    | "stored_key";
 
 /** What a check of a kind proves, and what its failure does. */
@@ -48,6 +50,7 @@ export const KEY_RULES = {
    pair_level: { nullKey: "fails", onRepeat: "fail_build" },
    rollup_key: { nullKey: "ignored", onRepeat: "record" },
    parent_key: { nullKey: "fails", onRepeat: "record" },
+   grain_join_key: { nullKey: "ignored", onRepeat: "record" },
    stored_key: { nullKey: "fails", onRepeat: "record" },
 } as const satisfies Record<KeyCheckKind, KeyRule>;
 

@@ -9,7 +9,7 @@
 
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import { logger } from "../../logger";
-import { runInternalSQL } from "../duckdb_lockdown";
+import { duckDBInstanceOf, runInternalSQL } from "../duckdb_lockdown";
 import { managedSchemas } from "../connection_type";
 import { escapeSQL, runSQLRows } from "../duckdb_session_setup";
 import { quoteIdentifier } from "../quoting";
@@ -196,6 +196,43 @@ function readableSchemaScope(
       return undefined;
    }
    return `${rootSlash}${trimmed}/`;
+}
+
+/**
+ * The scope each managed connection's storage secret (or, on a local data
+ * path, its file allowlist) was built with, by native instance and catalog
+ * name, recorded where it is built ({@link recordManagedScope}). A check of
+ * what a destination reads on such a connection's behalf
+ * (same_catalog_tables.ts) holds files to exactly this, not to a scope
+ * recomputed later from a catalog that may since have changed.
+ */
+const managedScopes = new WeakMap<object, Map<string, readonly string[]>>();
+
+const scopeHolder = (connection: object): object =>
+   duckDBInstanceOf(connection) ?? connection;
+
+/** Record the scope managed connection `connection`'s catalog `dbName` was secured with. */
+export function recordManagedScope(
+   connection: object,
+   dbName: string,
+   prefixes: readonly string[],
+): void {
+   const holder = scopeHolder(connection);
+   let byName = managedScopes.get(holder);
+   if (!byName) {
+      byName = new Map();
+      managedScopes.set(holder, byName);
+   }
+   byName.set(dbName, [...prefixes]);
+}
+
+/** The scope recorded for `connection`'s catalog `dbName`, or undefined. */
+export function managedScopeOf(
+   connection: unknown,
+   dbName: string,
+): readonly string[] | undefined {
+   if (!connection || typeof connection !== "object") return undefined;
+   return managedScopes.get(scopeHolder(connection))?.get(dbName);
 }
 
 /** A listed schema's storage scope reaches an unlisted schema's files. */

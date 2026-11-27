@@ -56,6 +56,11 @@ import {
    liftProbeFilterCondition,
 } from "../../authorize";
 import { keyedOverlay } from "../../overlay_key";
+import {
+   conflictingSqlEmbeds,
+   ownSqlEmbedReach,
+   sqlEmbedReads,
+} from "./sql_embed_reads";
 import { createEventLoopYielder } from "../../event_loop_yield";
 import type { ModelConnectionInput } from "../../model_runtime";
 import { packageFiles } from "../text/package_files";
@@ -200,11 +205,11 @@ import {
    ZONED_TRUNCATION_REASON,
 } from "./served_copy_checks";
 import { reportQueryWalk } from "./query_walks";
-import { readSameCatalogThroughDestination } from "./same_catalog_reads";
 import {
-   allBaseTables,
-   sameCatalogScope,
-} from "../../same_catalog_destination";
+   readSameCatalogThroughDestination,
+   type SameCatalogTables,
+} from "./same_catalog_reads";
+import { sameCatalogScope } from "../../same_catalog_destination";
 import type { ScopeLane } from "./scope_facts";
 
 export type { ServedCopyProblem } from "./served_copy_types";
@@ -218,6 +223,21 @@ function servedConnectionOf(b: Binding): string {
    return isDatabase(b)
       ? b.destinationName
       : servedCopyAlias(b.destinationName);
+}
+
+/** Every file `modelDef` imports, directly or not, by URL. */
+function importedFileURLs(modelDef: unknown): string[] {
+   const urls = new Set<string>();
+   const walk = (tree: unknown, depth: number): void => {
+      if (depth > 64 || typeof tree !== "object" || tree === null) return;
+      for (const [url, below] of Object.entries(tree)) {
+         if (urls.has(url)) continue;
+         urls.add(url);
+         walk(below, depth + 1);
+      }
+   };
+   walk((modelDef as { dependencies?: unknown } | undefined)?.dependencies, 0);
+   return [...urls];
 }
 
 /** Nothing bound, pinned: what a copy reads with no host tables. */
@@ -350,6 +370,13 @@ interface ServedCopyHost {
    modelPath(): string;
    modelDef(): unknown;
    /**
+    * The package's own compile of the model file at `url` (a `file://` URL),
+    * when the package holds one: a file this model imports compiles whole in
+    * its copy, `.sql()` sources it does not import included. Absent, or
+    * undefined, only this model's own `.sql()` sources are read.
+    */
+   siblingModelDef?(url: string): unknown;
+   /**
     * The managed scope check of a `.table()` path (`managedTablePathRefusal`),
     * which a same-catalog read holds every moved path to. Injected because it
     * parses with DuckDB, which nothing this module imports may load (the
@@ -360,6 +387,16 @@ interface ServedCopyHost {
       connection: string,
       schemas: ReadonlySet<string>,
    ): Promise<string | undefined>;
+   /**
+    * Whether tables a same-catalog read moves are, now, base tables made only
+    * of files the managed connection's storage scope reaches
+    * (`sameCatalogTablesReadable`), read over `config`, the copy's
+    * connections. Injected for the same reason. Absent, no table is moved.
+    */
+   sameCatalogTablesReadable?(
+      config: MalloyConfig,
+      read: SameCatalogTables,
+   ): Promise<boolean>;
    /**
     * The storage destinations, while the storage tier serves
     * (`PERSIST_STORAGE_MODE=on`); undefined otherwise, when only database
@@ -420,6 +457,8 @@ interface ServedCopyHost {
       config: MalloyConfig;
       /** The pass's files, by overlay key. */
       files: ReadonlyMap<string, string>;
+      /** The pass's `virtualMap`, which a `.sql()` source's `%{}` reads. */
+      virtualMap: VirtualMap;
    }): Promise<Awaited<ReturnType<CopyLoad>> | undefined>;
 }
 
@@ -888,6 +927,7 @@ export class ServedCopyServe {
             },
          );
       }
+      await this.recheckSameCatalog(compiled);
       const declined = compiled.declined?.get(queryString);
       if (declined !== undefined) throw declined;
       const decline = (
@@ -1297,6 +1337,7 @@ export class ServedCopyServe {
          tablesRead: readonly Binding[];
       },
    ): Promise<void> {
+      await this.recheckSameCatalog(compiled);
       const decline = (
          reason: string,
          code: ServedCopyDeclineCode,
@@ -1349,6 +1390,26 @@ export class ServedCopyServe {
          modelDef: (await prepared()).modelDef ?? compiled.modelDef,
          queryString: args.queryString,
          decline,
+      });
+   }
+
+   /**
+    * Decline, so the query answers live, unless every table a same-catalog
+    * copy reads through its destination is still a base table
+    * ({@link Compiled.sameCatalogRecheck}); a check that fails declines too.
+    * Never memoized per query: the next one reads the catalog again.
+    */
+   private async recheckSameCatalog(compiled: Compiled): Promise<void> {
+      if (!compiled.sameCatalogRecheck) return;
+      const ok = await compiled.sameCatalogRecheck().catch(() => false);
+      if (ok) return;
+      logger.warn(
+         "A served copy's table read through its storage destination is no longer a base table, holds a file outside the managed connection's storage scope, or could not be checked; answering live",
+         { modelPath: this.host.modelPath() },
+      );
+      throw new LegDecline("served_copy_not_served", undefined, {
+         message:
+            "a table the served copy reads through its storage destination is no longer a base table, holds a file outside the managed connection's storage scope, or could not be checked",
       });
    }
 
@@ -2012,6 +2073,72 @@ export class ServedCopyServe {
     * ancestors' kept blocks. Shared by the served copy's compile and the
     * chained build's text, so both re-root one way.
     */
+   /**
+    * `candidates` without each one whose re-root a `.sql()` source's `%{}`
+    * cannot read (sql_embed_reads.ts): a bare `%{ x }` of it, or a
+    * `%{ x -> { … } }` on another connection than its re-root. Each is left
+    * as written, alone, with its reason, so the rest of the copy still
+    * compiles. Read over every file the copy compiles: the model and each
+    * file it imports, which compiles whole, whatever the import names. A
+    * storage table so left out falls back to its database twin, if it has
+    * one, which the next compile re-roots.
+    */
+   /**
+    * The `sourceID`s the queried source's own `%{}` embeds read, for the
+    * path report (sql_embed_reads.ts). Here so the query path reads it
+    * through the served copy it already holds, not by importing the module.
+    */
+   ownSqlEmbedReach(struct: unknown, modelDef: unknown): ReadonlySet<string> {
+      return ownSqlEmbedReach(struct, modelDef);
+   }
+
+   private withoutConflictingSqlEmbeds<
+      C extends { binding: Binding; reroot: AuthorReroot },
+   >(candidates: C[], map: SourceMap, problems: ServedCopyProblem[]): C[] {
+      const modelDef = this.host.modelDef();
+      const reads = sqlEmbedReads([
+         modelDef,
+         ...importedFileURLs(modelDef).map((url) =>
+            this.host.siblingModelDef?.(url),
+         ),
+      ]);
+      if (reads.length === 0) return candidates;
+      const rerootedIDs = new Set(candidates.map((c) => c.reroot.sourceID));
+      // A `.sql()` source re-rooted itself, or built on one that is, is
+      // replaced by a table in the copy: its text is not compiled.
+      const rerooted = (sqlSourceID: string): boolean => {
+         const node = map.node(sqlSourceID);
+         const chain = node ? map.chainOf(node.def) : [sqlSourceID];
+         return chain.some((id) => rerootedIDs.has(id));
+      };
+      return candidates.filter((c) => {
+         const conflicts = conflictingSqlEmbeds(
+            reads,
+            c.reroot.sourceID,
+            servedConnectionOf(c.binding),
+            rerooted,
+         );
+         if (conflicts.length === 0) return true;
+         const whole = conflicts.some((x) => x.conflict === "bare");
+         problems.push({
+            sourceName: c.reroot.sourceName,
+            sourceID: c.reroot.sourceID,
+            reason: whole ? "sql_embed_bare" : "sql_embed_cross_connection",
+            detail: [
+               ...new Set(
+                  conflicts
+                     .filter((x) => !whole || x.conflict === "bare")
+                     .map(
+                        ({ read }) =>
+                           `\`${read.via}\` on \`${read.connection}\``,
+                     ),
+               ),
+            ].join(", "),
+         });
+         return false;
+      });
+   }
+
    private rerootCandidates(
       bindings: readonly Binding[],
       map: SourceMap,
@@ -2078,6 +2205,7 @@ export class ServedCopyServe {
             .map((o) => o.binding.tier);
          return servedCopyReadsTier(c.binding.tier, tiers);
       });
+      candidates = this.withoutConflictingSqlEmbeds(candidates, map, problems);
       // An extension of a re-rooted source reads it by name already, and
       // re-rooting the extension too would replace the base it inherits its
       // parent's fields from. Leave it as written, unless it is an extension
@@ -2378,7 +2506,7 @@ export class ServedCopyServe {
                   .map((b) => b.destinationName),
             ),
          );
-         const load = this.passLoader(packagePath, config);
+         const load = this.passLoader(packagePath, config, aliased);
          const underAlias = this.underAliasLoader(
             packagePath,
             packageConfig,
@@ -2408,7 +2536,6 @@ export class ServedCopyServe {
          }
          const { materializer, servedDef, servedRuntime, leftOut, files } =
             loaded;
-         const compiledConfig = loaded.config ?? config;
          // Only a join of a source still re-rooted was kept for it.
          problems.push(
             ...state.inlinedKept.filter((p) =>
@@ -2434,10 +2561,11 @@ export class ServedCopyServe {
             materializer,
             leftOut,
             files,
-            config: compiledConfig,
+            config: loaded.config ?? config,
             rerooted,
             aliased,
             throughBase,
+            sameCatalogReads: loaded.sameCatalogReads,
          });
       }
       return {
@@ -2462,6 +2590,10 @@ export class ServedCopyServe {
       destinations: () => MalloyConfig,
       rerooted: readonly Binding[],
    ): SameCatalogLoad {
+      const aliased = rerooted.map((b) => ({
+         ...b,
+         destinationName: servedConnectionOf(b),
+      }));
       return (names) => {
          const config = servedCopyConfig(
             packageConfig,
@@ -2473,7 +2605,10 @@ export class ServedCopyServe {
             ),
             names,
          );
-         return { config, load: this.passLoader(packagePath, config) };
+         return {
+            config,
+            load: this.passLoader(packagePath, config, aliased),
+         };
       };
    }
 
@@ -2481,9 +2616,19 @@ export class ServedCopyServe {
     * How a pass's files are compiled into a model: on the host's other
     * thread when it takes them ({@link ServedCopyHost.compileElsewhere}),
     * else here, as `packagePath`'s model over them with `config`'s
-    * connections.
+    * connections and the copy's `virtualMap`, which a `.sql()` source's
+    * `%{}` of a re-rooted source reads when its schema is fetched.
     */
-   private passLoader(packagePath: string, config: MalloyConfig): CopyLoad {
+   private passLoader(
+      packagePath: string,
+      config: MalloyConfig,
+      /** The pass's re-roots, each under its served connection. */
+      aliased: Binding[],
+   ): CopyLoad {
+      // A `.sql()` source's `%{ x -> … }` is expanded when the copy compiles
+      // (its schema is fetched then), and a re-rooted `x` is a `virtual()`
+      // source: its handle must resolve at compile time too.
+      const virtualMap = buildVirtualMap(aliased);
       const modelPath = this.host.modelPath();
       const compiler = packageFiles(packagePath, modelPath, config);
       return async (files) => {
@@ -2492,9 +2637,12 @@ export class ServedCopyServe {
             modelPath,
             config,
             files: keyedOverlay(files),
+            virtualMap,
          });
          if (elsewhere) return elsewhere;
-         const { runtime, materializer } = await compiler.loadModel(files);
+         const { runtime, materializer } = await compiler.loadModel(files, {
+            virtualMap,
+         });
          const model = await materializer.getModel();
          return {
             materializer,
@@ -2734,7 +2882,10 @@ export class ServedCopyServe {
                this.host.managedTablePathRefusal
                   ? this.host.managedTablePathRefusal(path, connection, schemas)
                   : Promise.resolve("no managed scope check is available"),
-            baseTables: (alias, tables) => allBaseTables(config, alias, tables),
+            readable: (read) =>
+               this.host.sameCatalogTablesReadable
+                  ? this.host.sameCatalogTablesReadable(config, read)
+                  : Promise.resolve(false),
          },
       }).catch(() => ({ declined: "a read of its connections failed" }));
       if ("declined" in moved) {
@@ -2759,6 +2910,7 @@ export class ServedCopyServe {
             leftOut: [],
             files: keyed,
             config: aliased,
+            sameCatalogReads: moved.moved,
          };
       } catch (again) {
          logger.debug(
@@ -2856,6 +3008,7 @@ export class ServedCopyServe {
       const { key, generation, over, lane, modelDef, servedMap } = built;
       const { servedDef, servedRuntime, materializer, leftOut } = built;
       const { files, config, rerooted, aliased, throughBase } = built;
+      const sameCatalogReads = built.sameCatalogReads ?? [];
       // Every declaration the model reaches, imported ones included.
       const optOutIDs = new Set<string>();
       for (const node of servedMap.nodes()) {
@@ -2998,6 +3151,18 @@ export class ServedCopyServe {
          rerooted,
          rerootedSourceIDs: rerootedSourceIDsOf(candidates, throughBase),
          ...(throughBase.length > 0 ? { throughBase } : {}),
+         ...(sameCatalogReads.length > 0
+            ? {
+                 sameCatalogRecheck: async () => {
+                    const readable = this.host.sameCatalogTablesReadable;
+                    if (!readable) return false;
+                    const each = await Promise.all(
+                       sameCatalogReads.map((r) => readable(config, r)),
+                    );
+                    return each.every(Boolean);
+                 },
+              }
+            : {}),
          aliased,
          problems,
          pairs: candidates.flatMap((c) =>
@@ -3112,6 +3277,8 @@ interface LoadedCopy {
     * destination up under its alias (same_catalog_reads.ts).
     */
    config?: MalloyConfig;
+   /** The tables such a copy reads through each destination, checked again per query. */
+   sameCatalogReads?: readonly SameCatalogTables[];
 }
 
 /** The pass's loader over its destinations looked up under their aliases, for `names`. */
