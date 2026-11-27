@@ -748,6 +748,27 @@ function verdictExplains(reason: SkipReason | undefined, verdict: string) {
    );
 }
 
+/** The serve verdicts a bind's contract check gives a table it left out. */
+const CONTRACT_VERDICTS = new Set(["incompatible", "contract_missing"]);
+
+/**
+ * For an unbuilt database twin of a `storage=` table (`NOT_BUILT`), the
+ * storage table's verdict when the bind left it out against its column
+ * contract: that table has no binding, so the report names its unbuilt twin
+ * (the same `tableId`), and the reason this query could not use the table is
+ * the storage table's, not that nothing was built.
+ */
+function contractVerdictOfTwin(
+   candidate: ApiCandidate,
+   tier: TableState["tier"],
+   verdicts: ReadonlyMap<string, LiveTableVerdict>,
+): LiveTableVerdict | undefined {
+   if (tier !== "database" || candidate.reason !== "NOT_BUILT")
+      return undefined;
+   const twin = verdicts.get(liveVerdictKey("storage", candidate.tableId));
+   return twin && CONTRACT_VERDICTS.has(twin.reason) ? twin : undefined;
+}
+
 /**
  * Re-read each skipped table against its serve verdict: a table no query can
  * be answered from is reported `NOT_SERVED`, with the verdict's reason as `code`,
@@ -777,9 +798,9 @@ function applyServeVerdicts(
       if (candidate.outcome !== "skipped") continue;
       const tier = tierOf.get(candidate);
       if (!tier) continue;
-      const verdict: LiveTableVerdict | undefined = verdicts.get(
-         liveVerdictKey(tier, candidate.tableId),
-      );
+      const verdict: LiveTableVerdict | undefined =
+         verdicts.get(liveVerdictKey(tier, candidate.tableId)) ??
+         contractVerdictOfTwin(candidate, tier, verdicts);
       if (!verdict || !verdictExplains(candidate.reason, verdict.reason)) {
          // The table serves another source; the queried source's own verdict
          // may still explain why this query could not use it.
@@ -885,6 +906,10 @@ function verdictWarningMessage(reason: string): string {
          return "This table's storage destination is not configured on this server, so its queries are answered live.";
       case "connection_cannot_hold_table":
          return "This table's connection cannot hold a table, so its queries are answered live.";
+      case "incompatible":
+         return "This table no longer matches the column contract its build recorded, so its queries are answered live until a build rebuilds it.";
+      case "contract_missing":
+         return "This table carries no column contract, so its queries are answered live until a build rebuilds it in full.";
       case "types_unrecorded":
          return "This table's build recorded no column types, so a change since the build cannot be ruled out; its queries are answered live until it is rebuilt.";
       default:

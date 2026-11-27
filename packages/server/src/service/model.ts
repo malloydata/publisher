@@ -2950,6 +2950,12 @@ export class Model {
                   }),
             );
          },
+         // The author's compile of a query: which source it runs against,
+         // for a decline that names that source's left-out columns.
+         authorPreparedQuery: async (queryString) =>
+            this.modelMaterializer
+               ?.loadRestrictedQuery(queryString)
+               .getPreparedQuery(),
          ensureSharedQueryModel: (materializer) =>
             this.ensureSharedQueryModel(materializer),
          modelPath: () => this.modelPath,

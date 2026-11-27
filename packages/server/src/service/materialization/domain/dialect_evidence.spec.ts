@@ -35,8 +35,10 @@ const END = "<!-- dialect-evidence:end -->";
 const UNVERIFIED_COUNTS: Record<DialectName, number> = {
    duckdb: 0,
    postgres: 0,
-   standardsql: 12,
-   snowflake: 10,
+   // containerCatalog (F-03): a dataset's metadata, a schemata read; no
+   // BigQuery or Snowflake runs in CI.
+   standardsql: 13,
+   snowflake: 11,
    databricks: 5,
    trino: 0,
    presto: 3,

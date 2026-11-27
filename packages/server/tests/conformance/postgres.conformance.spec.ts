@@ -53,6 +53,8 @@ import {
 const url = process.env.PUBLISHER_TEST_POSTGRES_URL;
 setDefaultTimeout(120_000);
 
+import { readTargetContainer } from "../../src/service/materialization/run/target_container_read";
+
 const CAN = CAPABILITIES.postgres;
 
 describe.skipIf(!url)("Postgres conformance", () => {
@@ -426,6 +428,23 @@ describe.skipIf(!url)("Postgres conformance", () => {
          ),
       ).toBeUndefined();
       expect(CAN.ungroupableTypes?.malloy).toEqual([]);
+   });
+
+   it("containerCatalog: pg_namespace finds a schema exactly as quoted, and not a missing one", async () => {
+      const read = (c: string) => readTargetContainer(pg, c);
+      const [db] = await rows(`SELECT current_database() AS db`);
+      expect({
+         schema: await read(schema),
+         qualified: await read(`${String(db?.["db"])}.${schema}`),
+         otherCase: await read(schema.toUpperCase()),
+         missing: await read(`${schema}_missing`),
+      }).toEqual({
+         schema: { found: true },
+         qualified: { found: true },
+         otherCase: { notFound: true },
+         missing: { notFound: true },
+      });
+      expect(CAN.containerCatalog).toBe("pg_namespace");
    });
 
    it("stringCollation: pg_collation_for reads each column's collation", async () => {

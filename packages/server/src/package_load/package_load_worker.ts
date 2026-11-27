@@ -58,6 +58,7 @@ import { deserializeError, serializeError } from "./error_wire";
 import {
    compileOrder,
    dataStylesForModel,
+   fileTextDigests,
    jobFiles,
    ModelCacheView,
    modelFileTexts,
@@ -138,6 +139,8 @@ import type {
    SchemaForSqlResponse,
    UpstreamSchemasRequest,
    UpstreamSchemasResponse,
+   TargetContainersRequest,
+   TargetContainersResponse,
    SchemaForTablesRequest,
    SchemaForTablesResponse,
    SerializedModel,
@@ -203,6 +206,7 @@ function dispatchMainResponse(message: MainToWorkerMessage): void {
       message.type === "schema-for-tables-response" ||
       message.type === "schema-for-sql-response" ||
       message.type === "upstream-schemas-response" ||
+      message.type === "target-containers-response" ||
       message.type === "read-url-response" ||
       message.type === "connection-metadata-response"
    ) {
@@ -1599,6 +1603,7 @@ async function loadPackage(
       models,
       replacementMatchedExisting,
       ...(refresh ? { refreshedSchemaKeys: [...refresh.refetched] } : {}),
+      fileDigests: fileTextDigests(files),
       loadDurationMs: loadEnd - loadStart,
       timings: {
          // Clamped: rounding can nudge it slightly negative.
@@ -1659,6 +1664,19 @@ async function finishWorkerBuildPlan(
                      requestId,
                      jobId,
                      tables,
+                  };
+                  port.postMessage(req);
+               })
+            ).readings,
+         // Read on the main thread too, each container once.
+         readTargetContainers: async (containers) =>
+            (
+               await callMain<TargetContainersResponse>((requestId) => {
+                  const req: TargetContainersRequest = {
+                     type: "target-containers",
+                     requestId,
+                     jobId,
+                     containers,
                   };
                   port.postMessage(req);
                })

@@ -26,6 +26,7 @@ import {
    buildKindOf,
    buildKindsByAddress,
    failureClassOf,
+   reportSourceFailed,
    RUN_TRIGGERS,
    RunTelemetry,
    runTriggerOf,
@@ -632,6 +633,67 @@ describe("run events", () => {
          outcome: "cancelled",
          code: "Error",
       });
+   });
+});
+
+describe("a runtime timeout in a run's logs (N-09)", () => {
+   let captured: ReturnType<typeof captureLogs>;
+   beforeEach(() => {
+      captured = captureLogs();
+   });
+   afterEach(() => captured.restore());
+
+   /** What a cut BigQuery results poll throws: Bun's `TimeoutError`, code 23. */
+   const timedOut = () =>
+      new DOMException("The operation timed out.", "TimeoutError");
+
+   it("carries the runtime's text beside its bare code", () => {
+      expect(timedOut().code).toBe(23);
+      const run = new RunTelemetry("run-t", "auto", "pkg", Date.now());
+      run.finished("failed", new Error("wrapped", { cause: timedOut() }));
+      reportSourceFailed(
+         {
+            name: "orders",
+            sourceEntityId: "abc",
+            kind: "persist",
+            tier: "database",
+            method: "full",
+         } as never,
+         timedOut(),
+         "unknown" as never,
+         false,
+      );
+      const [finished, failed] = captured.logs;
+      expect(finished.meta).toMatchObject({
+         code: "23",
+         detail: "The operation timed out.",
+      });
+      expect(failed.message).toBe("materialization.build.failed");
+      expect(failed.meta).toMatchObject({
+         code: "23",
+         detail: "The operation timed out.",
+      });
+   });
+
+   it("carries no text for any other error", () => {
+      const run = new RunTelemetry("run-u", "auto", "pkg", Date.now());
+      run.finished(
+         "failed",
+         Object.assign(new Error("SELECT 'x' failed"), { code: "XX000" }),
+      );
+      // A numeric code whose error is not the runtime's own keeps its text out.
+      run.finished(
+         "failed",
+         Object.assign(new Error("SELECT 1"), {
+            name: "TimeoutError",
+            code: 7,
+         }),
+      );
+      expect(captured.logs.map((l) => l.meta.detail)).toEqual([
+         undefined,
+         undefined,
+      ]);
+      expect(JSON.stringify(captured.logs)).not.toContain("SELECT");
    });
 });
 

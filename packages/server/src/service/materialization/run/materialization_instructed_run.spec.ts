@@ -506,8 +506,9 @@ describe("executeInstructedBuild", () => {
             "retrying cannot help a source whose upstream fails the same way every time",
          ).toBe(false);
          expect(down.reason).toContain(
-            `upstream 'up' failed in this run: Parser Error: syntax error at or near "FORM"`,
+            `its persisted upstream 'up' failed to build in this run: Parser Error: syntax error at or near "FORM"`,
          );
+         expect(down.reason).not.toContain("not found in manifest");
       });
 
       it("keeps a dependent of a transiently failed upstream retryable", async () => {
@@ -1736,7 +1737,10 @@ describe("executeInstructedBuild", () => {
             },
          });
          expect(reason).not.toContain("the host supplied an upstream entry");
-         expect(reason).toContain("'up' not found in manifest");
+         expect(reason).toContain(
+            "its persisted upstream 'up' has no table this build can read",
+         );
+         expect(reason).not.toContain("not found in manifest");
       });
 
       it("still renders a database upstream's warehouse table", async () => {

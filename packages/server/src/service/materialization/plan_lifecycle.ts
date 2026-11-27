@@ -167,6 +167,8 @@ export class PlanLifecycle {
     * or crash), which a retry can clear, rather than in the plan compute.
     */
    private refreshFailedTransiently = false;
+   /** Addresses every derived record starts withdrawn (see {@link holdWithdrawn}). */
+   private heldWithdrawn: ReadonlySet<string> = new Set();
    /**
     * Set when a connection edit makes the plan stale, and resolved once a
     * re-derivation started after the latest edit has finished.
@@ -299,7 +301,7 @@ export class PlanLifecycle {
     * at) while this record keeps serving, so their queries answer live. For
     * a failed reload whose refetch found these sources' upstream columns
     * changed (`Package.withdrawChangedUpstreams`); the next derivation
-    * replaces the record. The bindings stay as they are, so the served copy
+    * replaces the record, unless {@link holdWithdrawn} carries them into it. The bindings stay as they are, so the served copy
     * is not recompiled (its files no longer compile against the refetched
     * schemas): each query's pin leaves the withdrawn tables out
     * (`domain/binding.ts`, `Snapshot.withdrawn`).
@@ -326,6 +328,19 @@ export class PlanLifecycle {
    /** The addresses {@link withdraw} took out of serving. */
    get withdrawn(): ReadonlySet<string> {
       return this.serving().withdrawn;
+   }
+
+   /**
+    * Carry the addresses withdrawn now into every record derived from here
+    * on (`hold` true), or stop carrying them (`hold` false). A package that
+    * serves a model kept over an upstream table that changed
+    * (`Package.keepLastGoodModels`) holds them, so a derivation in the
+    * meantime (a connection edit, a rebind's incompatibility) cannot hand
+    * the stored tables built from that upstream back to serving while it is
+    * still changed. Released by the reload that compiles the file again.
+    */
+   holdWithdrawn(hold: boolean): void {
+      this.heldWithdrawn = hold ? new Set(this.withdrawn) : new Set();
    }
 
    /** The plan bindings are matched against: the current one, else the last good one. */
@@ -425,7 +440,7 @@ export class PlanLifecycle {
          buildConnectionNames: new Set(outcome.buildConnectionNames),
          asOfBuild: outcome.asOfBuild ?? {},
          upstreamSchemas: outcome.upstreamSchemas ?? {},
-         withdrawn: new Set(),
+         withdrawn: new Set(this.heldWithdrawn),
          stringCapabilityReads: outcome.stringCapabilityReads ?? {},
       };
    }

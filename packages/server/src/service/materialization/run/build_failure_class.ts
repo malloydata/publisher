@@ -15,12 +15,15 @@
  */
 
 import { MalloyError } from "@malloydata/malloy";
+import * as path from "path";
+import { packageRelativeSourceID } from "../text/read_text";
 import {
    BadRequestError,
    ChainedShapeNotCarriedError,
    ChainedUpstreamMissingError,
    ConnectionAuthError,
    ConnectionError,
+   ContainerNotFoundError,
    DestinationNotFoundError,
    MaterializationEligibilityError,
    ModelCompilationError,
@@ -168,7 +171,9 @@ const BIGQUERY_DETERMINISTIC_REASONS: ReadonlySet<string> = new Set([
 
 /**
  * A BigQuery message for a missing table or column, which `invalidQuery` also
- * carries: left unclassified, as a Postgres or Snowflake one is.
+ * carries: left unclassified, as a Postgres or Snowflake one is. A missing
+ * dataset for the table a build writes never reaches here: the build checks
+ * its container first (`ContainerNotFoundError`, deterministic).
  */
 const BIGQUERY_MISSING_NAME = /unrecognized name|not found:/i;
 
@@ -255,7 +260,8 @@ export function classifyBuildError(err: unknown): BuildRetryable {
       err instanceof BadRequestError ||
       err instanceof ConnectionAuthError ||
       err instanceof UnconfiguredConnectionError ||
-      err instanceof DestinationNotFoundError
+      err instanceof DestinationNotFoundError ||
+      err instanceof ContainerNotFoundError
    ) {
       return false;
    }
@@ -314,6 +320,110 @@ export function classifySourceFailure(
       .join("; ");
    return { retryable, upstreamDetail };
 }
+
+/**
+ * The file a source id (`name@<model>`) names, as an author reads it: its
+ * path in the package, directories kept, never the server's path to it. A
+ * file URL inside `packagePath` reads relative to it; a relative id as it
+ * is; any other URL by its last path segment.
+ */
+function modelLabelOf(
+   sourceID: string,
+   packagePath: string | undefined,
+): string | undefined {
+   const at = sourceID.indexOf("@");
+   if (at < 0) return undefined;
+   const model = sourceID.slice(at + 1);
+   if (!model) return undefined;
+   if (!model.includes("://")) return model;
+   if (packagePath !== undefined) {
+      const relative = packageRelativeSourceID(packagePath, sourceID);
+      const file = relative.slice(relative.indexOf("@") + 1);
+      if (
+         relative !== sourceID &&
+         file &&
+         !file.startsWith("../") &&
+         !path.isAbsolute(file)
+      ) {
+         return file;
+      }
+   }
+   try {
+      const segments = new URL(model).pathname.split("/").filter(Boolean);
+      return segments.length > 0
+         ? decodeURIComponent(segments[segments.length - 1])
+         : undefined;
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * The reason a build refused by Malloy's strict manifest miss records, in the
+ * author's terms rather than the compiler's ("Persisted source 'x@m.malloy'
+ * not found in manifest (buildId: …)"): the upstream by name and file, and
+ * either the build error it failed with in this run or that it has no table
+ * the build can read. Undefined for any other error, which keeps its own message.
+ */
+export function strictMissReason(
+   sourceName: string,
+   err: unknown,
+   failedUpstreams: readonly FailedUpstream[],
+   options: {
+      /** Malloy's message, as redacted for the record; the error's own by default. */
+      message?: string;
+      /** The package root, which the upstream's file is named relative to. */
+      packagePath?: string;
+   } = {},
+): string | undefined {
+   const message =
+      options.message ?? String((err as { message?: unknown } | null)?.message);
+   const miss = strictMissSourceId(err);
+   if (miss === undefined) return undefined;
+   const prefix = `Failed to materialize source '${sourceName}': `;
+   const label = miss.sourceID
+      ? modelLabelOf(miss.sourceID, options.packagePath)
+      : undefined;
+   const named = (name: string) =>
+      `its persisted upstream '${name}'${label ? ` (${label})` : ""}`;
+   // What Malloy adds after its miss, kept: the per-value hint of a source
+   // split by givens, and the manifest's load error on the lines after.
+   const perValue = message.includes(GIVENS_MISS_HINT)
+      ? ` ${GIVENS_MISS_HINT}`
+      : "";
+   const newline = message.indexOf("\n");
+   const loadError =
+      newline >= 0 ? message.slice(newline + 1).trim() : undefined;
+   const tail =
+      perValue +
+      (loadError ? ` The build manifest failed to load: ${loadError}` : "");
+   if (failedUpstreams.length > 0) {
+      return (
+         prefix +
+         failedUpstreams
+            .map(
+               (u) =>
+                  `${named(u.name)} failed to build in this run: ${u.reason}`,
+            )
+            .join("; ") +
+         (tail ? `.${tail}` : "")
+      );
+   }
+   const upstream = miss.sourceID
+      ? named(miss.sourceID.split("@")[0])
+      : "a persisted upstream it reads";
+   const why = perValue
+      ? `${upstream} has no table this build can read.${tail}`
+      : `${upstream} has no table this build can read (it is not built ` +
+        `yet, or was supplied where this build cannot read it), and a build ` +
+        `never recomputes a persisted upstream from its definition` +
+        (tail ? `.${tail}` : "");
+   return prefix + why;
+}
+
+/** Malloy's strict miss hint for a source whose tables are split by givens. */
+const GIVENS_MISS_HINT =
+   "This source reads givens, and no table was built for the given values this query supplies.";
 
 /**
  * The upstream sources of `sourceID` that failed earlier in this run: the
