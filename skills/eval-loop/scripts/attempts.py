@@ -10,7 +10,10 @@ edit, accepted or rejected. `improve.py` shows the lines that bear on a cluster
 to the agent editing for it, so an edit that was already tried and rejected is
 not proposed again, and one that worked on a neighbouring cluster is seen.
 
-It lives with the set, in the model's repository, for three reasons. It is
+A set version built from production (`eval.py build-set`) names a shared file
+in its optimization package instead (`attemptsFile` in set.json), so every
+version sees what the others tried. A hand-authored set keeps it beside its
+cases. Either way it lives with the set, for three reasons. It is
 small and curated, unlike a run. It has to reach whoever improves the model
 next, on any machine, and the repository already does that. And the answerer
 cannot read it: the set directory is off limits to it, and a read is recorded
@@ -34,7 +37,14 @@ PATCH_KEPT = 20_000       # characters of the diff kept on the line
 
 
 def path(set_dir: pathlib.Path) -> pathlib.Path:
-    return set_dir / FILE
+    """The set's own file, or the one its set.json names in `attemptsFile`:
+    a version built by build-set shares its optimization package's file with
+    every other version."""
+    try:
+        named = json.loads((set_dir / "set.json").read_text()).get("attemptsFile")
+    except (OSError, ValueError, AttributeError):
+        named = None
+    return pathlib.Path(named) if named else set_dir / FILE
 
 
 def read(set_dir: pathlib.Path) -> list[dict[str, Any]]:

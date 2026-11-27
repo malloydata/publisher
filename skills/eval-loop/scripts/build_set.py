@@ -1,40 +1,46 @@
 #!/usr/bin/env python3
-"""Build eval cases and a query workload from production history. Stdlib only.
+"""Build a new version of the eval set from judged production history. Stdlib only.
 
-  python3 eval.py build-set --set <set-dir> --label prod-20261126 [--questions 20]
+  python3 eval.py build-set --set <set-dir> --label prod-20261126 [--questions 100]
 
-Step O1 of the optimization loop (reference/optimization-loop.md): the loop
-improves the model on what people actually asked and ran, read from the
-history model's tables (`eval.py ingest`, `eval.py judge-sample`).
+Step O1 of the optimization loop (reference/optimization-loop.md). Stage 1
+(`eval.py ingest`, `eval.py judge-sample`) judged a sample of production and
+kept each verdict, its key and its reason. This turns that record into the set
+the improve step climbs on.
 
-Two outputs:
+Each run builds a NEW version, never an edit of the last:
+`<optimization package>/sets/<label>/`, holding `cases.jsonl`, `gold/`,
+`workloads/<label>.jsonl`, `set.json` (with `version: <label>`) and an
+`eval.json` that points at the same servers, work directory and optimization
+package as `<set-dir>`. Run every later step with `--set` on that directory.
+The model's repository holds no eval files: the set holds the answer key, and
+the pull request names the version it was checked against.
 
-- **Cases**, appended to the set's `cases.jsonl`. One case per distinct
-  question (case and spacing ignored), chosen in this order:
-    1. asked in a turn production judged wrong,
-    2. asked in a turn judged but left undecided,
-    3. asked most often,
-  until `--questions` are chosen. A turn whose `kind` is `build` (an edit
-  request, not a data question) is never chosen, nor a question whose every
-  turn judging drew and left with no golden (a remark, a build request the
-  log did not mark). A question the set already
-  holds is skipped. Each case goes to the `dev` split, tagged `production`
-  and with why it was chosen.
-  Its golden is the one production judging verified for one of its turns
-  (`<workdir>/judging/<label>/cases.jsonl`, written by `judge-sample`), so
-  the set is built from the judged history rather than keyed a second time;
-  `sourceFields.keyFrom` names the judging set it came from. A case none of
-  whose turns was keyed carries no golden: `skill:eval-import` derives one,
-  then `import_cases.py --stamp` seals the set. Until then it is counted as
-  having no key and never scored.
-- **A workload**, `<set>/workloads/<label>.jsonl`: every production query of
-  the served package that succeeded, one line per distinct query with how
-  often it ran, most frequent first, in the shape `query-replay --queries`
-  and `simulate` read (workload_from_logs.py, the one place that shape is
-  built).
+WHICH QUESTIONS
 
-The question text is kept exactly as asked. Nothing is invented and nothing
-is rewritten.
+Only questions production judging keyed (a verified golden), one case per
+question group (judge-sample's grouping of identical questions):
+
+1. **Failures**, up to half of `--questions`: groups judged wrong, including
+   groups with mixed verdicts (right on one day, wrong on another). Taken
+   round-robin across failure codes, so one common failure does not crowd out
+   the rest. Tagged `failure` and `failure:<code>`, and `mixed` when mixed.
+2. **Controls**: groups judged right every time, as many as the failures and
+   at least `--min-controls`, round-robin across the source each answer
+   queried. Tagged `control`. An edit that breaks one is refused by
+   `accept`, like any case that passed before.
+
+A follow-up (judging recorded `depends_on`) carries its earlier questions as
+`context.priorQuestions`, and the run answers them first in the same session.
+A chain longer than three, or one through a build request, is left out and
+counted. Groups with no verified key are left out and counted: stage 1 keys
+them.
+
+Also writes the version's **workload**: every production query of the served
+package that succeeded, one line per distinct query with how often it ran, in
+the shape `query-replay --queries` and `simulate` read.
+
+The question text is kept exactly as asked. Nothing is invented.
 """
 from __future__ import annotations
 
@@ -52,55 +58,27 @@ sys.path.insert(0, str(HERE))
 import config  # noqa: E402
 from optimization_package import install_for, read  # noqa: E402
 from workload_from_logs import workload  # noqa: E402
+import attempts  # noqa: E402
 
-WHY = ("judged wrong", "judged, undecided", "asked often")
+MAX_CHAIN = 3
 
 
 def normal(q: str) -> str:
     return " ".join((q or "").lower().split())
 
 
-def qid_for(q: str) -> str:
-    return "prod-" + hashlib.sha256(normal(q).encode()).hexdigest()[:10]
+def qid_for(q: str, prior: list[str] | None = None) -> str:
+    key = "\n".join([normal(x) for x in prior or []] + [normal(q)])
+    return "prod-" + hashlib.sha256(key.encode()).hexdigest()[:10]
 
 
-def choose(turns: list[dict[str, str]], judgments: list[dict[str, str]],
-           held: set[str], n: int, unkeyable: set[str] = frozenset()) -> list[dict[str, Any]]:
-    """Distinct questions in the order the docstring gives, at most n. A
-    question all of whose turns judging drew and left with no golden is
-    dropped: judging already found nothing in it to answer."""
-    verdict: dict[str, str] = {}
-    for j in judgments:
-        # A wrong verdict is never hidden by a later undecided one.
-        if j.get("right") == "False" or j["turn_id"] not in verdict:
-            verdict[j["turn_id"]] = j.get("right") or ""
-    groups: dict[str, dict[str, Any]] = {}
-    for t in turns:
-        key = normal(t.get("question", ""))
-        if not key or (t.get("kind") or "") == "build" or key in held:
-            continue
-        g = groups.setdefault(key, {"question": t["question"].strip(), "turns": [], "wrong": 0,
-                                    "undecided": 0, "last": ""})
-        g["turns"].append(t["turn_id"])
-        g["last"] = max(g["last"], t.get("at") or "")
-        v = verdict.get(t["turn_id"])
-        g["wrong"] += v == "False"
-        g["undecided"] += v == ""
-    groups = {k: g for k, g in groups.items() if not set(g["turns"]) <= unkeyable}
-    for g in groups.values():
-        g["why"] = WHY[0] if g["wrong"] else WHY[1] if g["undecided"] else WHY[2]
-    order = sorted(groups.values(), key=lambda g: (WHY.index(g["why"]), -g["wrong"],
-                                                   -len(g["turns"]), g["last"]), reverse=False)
-    return order[:n]
-
-
-Key = tuple[str, dict[str, Any], pathlib.Path]
+Key = tuple[str, dict[str, Any], pathlib.Path, dict[str, Any]]
 
 
 def judged_keys(workdir: pathlib.Path) -> tuple[dict[str, Key], set[str]]:
     """From every judging set: turn id -> (judging set, verified golden, its
-    gold/<qid>.json), and the turns judging drew but gave no golden (a
-    remark, a build request)."""
+    gold/<qid>.json, the judging case), and the turns judging drew but gave
+    no golden (a remark, a build request)."""
     keys: dict[str, Key] = {}
     seen: set[str] = set()
     for f in sorted((workdir / "judging").glob("*/cases.jsonl")):
@@ -112,85 +90,211 @@ def judged_keys(workdir: pathlib.Path) -> tuple[dict[str, Key], set[str]]:
             g = c.get("golden") or {}
             if g.get("status") == "verified":
                 keys.setdefault(str(c["source"]),
-                                (f.parent.name, g, f.parent / "gold" / f"{c.get('qid')}.json"))
+                                (f.parent.name, g, f.parent / "gold" / f"{c.get('qid')}.json", c))
     return keys, seen - set(keys)
 
 
-def case(g: dict[str, Any], label: str, keys: dict[str, Key] | None = None,
+def groups(turns: list[dict[str, str]], judgments: list[dict[str, str]],
+           keys: dict[str, Key], sources: dict[str, str]) -> dict[str, dict[str, Any]]:
+    """Every judged question group: its verdicts, failure codes, the turn whose
+    key it uses, and the source that turn's answer queried."""
+    by_turn = {t["turn_id"]: t for t in turns}
+    out: dict[str, dict[str, Any]] = {}
+    for j in judgments:
+        t = by_turn.get(j["turn_id"])
+        if not t or (t.get("kind") or "") == "build":
+            continue
+        gid = j.get("question_group") or normal(t.get("question", ""))
+        g = out.setdefault(gid, {"group": gid, "question": t["question"].strip(), "turns": set(),
+                                 "right": 0, "wrong": 0, "codes": set(), "key": None,
+                                 "depends_on": [], "last": ""})
+        g["turns"].add(j["turn_id"])
+        g["last"] = max(g["last"], t.get("at") or "")
+        g["right"] += j.get("right") == "True"
+        g["wrong"] += j.get("right") == "False"
+        if j.get("right") == "False":
+            g["codes"].add(j.get("failure_code") or "undiagnosed")
+        judged = j.get("judged_turn") or j["turn_id"]
+        if g["key"] is None and judged in keys:
+            g["key"] = judged
+            g["depends_on"] = json.loads(j["depends_on"]) if j.get("depends_on") else []
+        g.setdefault("source", sources.get(judged))
+    return out
+
+
+def round_robin(buckets: dict[str, list[dict[str, Any]]], n: int) -> list[dict[str, Any]]:
+    """Up to n items, one from each bucket in turn, so no bucket crowds out the rest."""
+    order = {k: sorted(v, key=lambda g: (-len(g["turns"]), g["question"])) for k, v in sorted(buckets.items())}
+    out: list[dict[str, Any]] = []
+    while len(out) < n and any(order.values()):
+        for k in list(order):
+            if order[k] and len(out) < n:
+                out.append(order[k].pop(0))
+    return out
+
+
+def chain(g: dict[str, Any], keys: dict[str, Key]) -> tuple[list[str] | None, str | None]:
+    """The earlier questions a follow-up needs, or (None, why it is left out)."""
+    deps = g["depends_on"]
+    if not deps:
+        return [], None
+    if len(deps) > MAX_CHAIN:
+        return None, f"a follow-up of more than {MAX_CHAIN} earlier questions"
+    earlier = ((keys[g["key"]][3].get("context") or {}).get("earlierMessages") or [])
+    kinds = {normal(e.get("question", "")): e.get("kind") for e in earlier}
+    if any(kinds.get(normal(d)) == "build" for d in deps):
+        return None, "a follow-up of a build request"
+    return deps, None
+
+
+def choose(found: dict[str, dict[str, Any]], keys: dict[str, Key], n: int,
+           min_controls: int = 5) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Failures across codes, then controls across sources. Returns the chosen
+    groups (each with `role` and `prior`) and what was left out, by reason."""
+    left: dict[str, int] = {}
+    usable = []
+    for g in found.values():
+        if not g["key"]:
+            left["no verified key"] = left.get("no verified key", 0) + 1
+            continue
+        prior, why = chain(g, keys)
+        if why:
+            left[why] = left.get(why, 0) + 1
+            continue
+        g["prior"] = prior
+        usable.append(g)
+    failing: dict[str, list[dict[str, Any]]] = {}
+    passing: dict[str, list[dict[str, Any]]] = {}
+    for g in usable:
+        if g["wrong"]:
+            for code in sorted(g["codes"])[:1]:
+                failing.setdefault(code, []).append(g)
+        elif g["right"]:
+            passing.setdefault(g.get("source") or "unknown", []).append(g)
+    failures = round_robin(failing, n // 2 if n > 1 else n)
+    for g in failures:
+        g["role"] = "failure"
+    controls = round_robin(passing, min(n - len(failures), max(len(failures), min_controls)))
+    for g in controls:
+        g["role"] = "control"
+    undecided = sum(1 for g in usable if not g["wrong"] and not g["right"])
+    if undecided:
+        left["judged, undecided"] = undecided
+    return failures + controls, left
+
+
+def case(g: dict[str, Any], label: str, keys: dict[str, Key],
          set_dir: pathlib.Path | None = None) -> dict[str, Any]:
-    """The case, keyed from judging when it can be. Its derivation record
-    (gold/<qid>.json, what --refresh re-runs) is copied under the new qid."""
+    """The case, keyed from judging. Its derivation record (gold/<qid>.json,
+    what --refresh re-runs) is copied under the new qid."""
+    prior = g.get("prior") or []
+    tags = ["production", g["role"]]
+    if g["role"] == "failure":
+        tags += [f"failure:{code}" for code in sorted(g["codes"])]
+        if g["right"]:
+            tags.append("mixed")
+    if prior:
+        tags.append("follow-up")
     c: dict[str, Any] = {
-        "qid": qid_for(g["question"]), "question": g["question"], "split": "dev",
-        "tags": ["production", g["why"].replace(", ", "-").replace(" ", "-")],
-        "source": f"production:{label}",
+        "qid": qid_for(g["question"], prior), "question": g["question"], "split": "dev",
+        "tags": tags, "source": f"production:{label}",
         "sourceFields": {"asked": len(g["turns"]), "judgedWrong": g["wrong"],
-                         "lastAsked": g["last"], "turns": g["turns"][:5]}}
-    keyed = next(((t, keys[t]) for t in g["turns"] if keys and t in keys), None)
-    if keyed:
-        turn, (judging, golden, gold) = keyed
-        c["golden"] = golden
-        c["sourceFields"]["keyFrom"] = f"judging:{judging}:{turn}"
-        if set_dir is not None and gold.is_file():
-            rec = json.loads(gold.read_text(encoding="utf-8"))
-            rec["qid"] = c["qid"]
-            out = set_dir / "gold" / f"{c['qid']}.json"
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text(json.dumps(rec, indent=1) + "\n", encoding="utf-8")
+                         "judgedRight": g["right"], "lastAsked": g["last"],
+                         "turns": sorted(g["turns"])[:5]}}
+    if prior:
+        c["context"] = {"priorQuestions": prior}
+    judging, golden, gold, _ = keys[g["key"]]
+    c["golden"] = golden
+    c["sourceFields"]["keyFrom"] = f"judging:{judging}:{g['key']}"
+    if set_dir is not None and gold.is_file():
+        rec = json.loads(gold.read_text(encoding="utf-8"))
+        rec["qid"] = c["qid"]
+        out = set_dir / "gold" / f"{c['qid']}.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(rec, indent=1) + "\n", encoding="utf-8")
     return c
+
+
+def version_config(cfg: Any) -> dict[str, Any]:
+    """The parent set's config for a version: the same servers, work directory,
+    store and optimization package, every path absolute."""
+    out: dict[str, Any] = {}
+    for section, values in cfg.data.items():
+        out[section] = {k: str(v) if isinstance(v, pathlib.Path) else v for k, v in values.items()}
+    out.setdefault("paths", {})["workdir"] = str(cfg.workdir())
+    out.setdefault("optimization", {})["package_dir"] = str(cfg.optimization_dir())
+    return out
+
+
+def write_version(cfg: Any, label: str, cases: list[dict[str, Any]]) -> pathlib.Path:
+    """Write <optimization package>/sets/<label>/ and return it. Refuses to
+    overwrite a version: a run that used it would no longer match it."""
+    out = cfg.optimization_dir() / "sets" / label
+    if (out / "cases.jsonl").exists():
+        raise SystemExit(f"Set version {label} already exists at {out}. Fix: pass a new --label")
+    out.mkdir(parents=True, exist_ok=True)
+    meta = dict(cfg.set_meta)
+    meta.pop("datasetVersion", None)
+    # Every version shares one record of what was tried, so a later version's
+    # improve step still sees the edits an earlier one rejected.
+    tried = cfg.optimization_dir() / attempts.FILE
+    if not tried.exists() and attempts.path(cfg.set_dir).is_file():
+        tried.write_bytes(attempts.path(cfg.set_dir).read_bytes())
+    meta.update({"name": cfg.set_name, "version": label, "builtFrom": "production judging",
+                 "attemptsFile": str(tried),
+                 "description": "Built by eval.py build-set from judged production history: "
+                                "failures across failure codes, and controls judged right."})
+    (out / "set.json").write_text(json.dumps(meta, indent=1) + "\n")
+    (out / "eval.json").write_text(json.dumps(version_config(cfg), indent=1) + "\n")
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--set", dest="set_dir", required=True)
-    ap.add_argument("--label", required=True, help="names this pull in each case's source and the workload file")
-    ap.add_argument("--questions", type=int, default=20, help="distinct questions to add at most")
+    ap.add_argument("--label", required=True, help="the new version's name; also names the workload")
+    ap.add_argument("--questions", type=int, default=100, help="cases in the version, at most")
+    ap.add_argument("--min-controls", type=int, default=5, help="controls even when few failures")
     a = ap.parse_args(argv)
-    set_dir = pathlib.Path(a.set_dir)
-    cfg = config.load(set_dir)
+    cfg = config.load(pathlib.Path(a.set_dir))
     package = cfg.get("model", "package")
     data = install_for(cfg)
-    cases_path = set_dir / "cases.jsonl"
-    existing = [json.loads(l) for l in cases_path.read_text().splitlines() if l.strip()] \
-        if cases_path.is_file() else []
-    held = {normal(c.get("question", "")) for c in existing}
     turns = read(data / "prod_turns.csv")
     if not turns:
-        raise SystemExit(f"No production turns in {data}. Fix: eval.py ingest --set {set_dir} --turns turns.jsonl")
-    keys, unkeyable = judged_keys(cfg.workdir())
-    chosen = choose(turns, read(data / "prod_judgments.csv"), held, a.questions, unkeyable)
-    by_question: dict[str, set[str]] = {}
-    for t in turns:
-        if (t.get("kind") or "") != "build" and normal(t.get("question", "")) not in held:
-            by_question.setdefault(normal(t.get("question", "")), set()).add(t["turn_id"])
-    dropped = sum(1 for ids in by_question.values() if ids <= unkeyable)
-    new = [case(g, a.label, keys, set_dir) for g in chosen]
-    with cases_path.open("a", encoding="utf-8") as f:
-        for c in new:
-            f.write(json.dumps(c) + "\n")
-    builds = sum(1 for t in turns if (t.get("kind") or "") == "build")
-    print(f"cases: added {len(new)} to {cases_path}"
-          + (f" ({', '.join(f'{sum(c['tags'][1] == w.replace(', ', '-').replace(' ', '-') for c in new)} {w}' for w in WHY)})" if new else "")
-          + f"; skipped {builds} build turns, {len(held)} questions the set holds"
-          + f" and {dropped} judging found no question to key in")
+        raise SystemExit(f"No production turns in {data}. Fix: eval.py ingest --set {a.set_dir} --turns turns.jsonl")
+    judgments = read(data / "prod_judgments.csv")
+    if not judgments:
+        raise SystemExit(f"No judged production turns in {data}. Fix: eval.py judge-sample pick, "
+                         f"run, diagnose and collect first")
+    queries = read(data / "prod_queries.csv")
+    sources: dict[str, str] = {}
+    for q in queries:
+        if q.get("turn_id") and q.get("source"):
+            sources.setdefault(q["turn_id"], q["source"])
+    keys, _ = judged_keys(cfg.workdir())
+    chosen, left = choose(groups(turns, judgments, keys, sources), keys, a.questions, a.min_controls)
+    out = write_version(cfg, a.label, [])
+    new = [case(g, a.label, keys, out) for g in chosen]
+    (out / "cases.jsonl").write_text("".join(json.dumps(c) + "\n" for c in new))
+    nf = sum(1 for c in new if "failure" in c["tags"])
+    print(f"set version {a.label}: {len(new)} cases ({nf} failures across "
+          f"{len({t for c in new for t in c['tags'] if t.startswith('failure:')})} failure codes, "
+          f"{len(new) - nf} controls, {sum(1 for c in new if 'follow-up' in c['tags'])} follow-ups)")
+    if left:
+        print("  left out: " + ", ".join(f"{n} {why}" for why, n in sorted(left.items())))
 
     rows = [{"query": q["query_text"], "modelPath": q["model_path"], "package": q["package"]}
-            for q in read(data / "prod_queries.csv")
+            for q in queries
             if q.get("package") == package and q.get("status") in ("ok", "200", "")]
     items = ({"query": r["query"], "modelPath": r["modelPath"], "count": 1} for r in rows)
     lines, skipped = workload(items)
-    out = set_dir / "workloads" / f"{a.label}.jsonl"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("".join(json.dumps(w) + "\n" for w in lines))
-    print(f"workload: {len(lines)} distinct queries from {len(rows)} that succeeded -> {out}"
+    wl = out / "workloads" / f"{a.label}.jsonl"
+    wl.parent.mkdir(parents=True, exist_ok=True)
+    wl.write_text("".join(json.dumps(w) + "\n" for w in lines))
+    print(f"workload: {len(lines)} distinct queries from {len(rows)} that succeeded -> {wl}"
           + (f"; left out {skipped}" if skipped else ""))
-    unkeyed = sum(1 for c in new if "golden" not in c)
-    if new:
-        print(f"keys: {len(new) - unkeyed} of {len(new)} new cases carry the golden production "
-              "judging verified")
-    if unkeyed:
-        print(f"next: derive a golden for the {unkeyed} without one (skill:eval-import), then "
-              f"python3 skills/eval-import/scripts/import_cases.py --set {set_dir} --stamp")
+    print(f"next: python3 eval.py run --set {out} --label <run>")
+    print(out)
     return 0
 
 
