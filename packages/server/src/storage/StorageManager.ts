@@ -73,8 +73,10 @@ export class StorageManager {
 
    async initialize(reinit: boolean = false): Promise<void> {
       if (reinit) {
+         // The one line a forced reinit prints at info. It says what is reset
+         // and what is kept, so a routine `--init` does not read as data loss.
          logger.info(
-            "Reinitialization mode: Database will be dropped and recreated",
+            "--init: reloading environments, connections and packages from the config. Stored materialization builds and the workload log are cleared; the search index is kept.",
          );
       } else {
          logger.info("Normal mode: Loading from existing database");

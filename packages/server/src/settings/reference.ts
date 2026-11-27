@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { CONFIGURATION_DOCS_URL } from "../constants";
 import { describeSource } from "./errors";
 import { REGISTRY, type RegisteredSetting, type SettingKey } from "./registry";
 import { namesOf, type Settings } from "./settings";
@@ -160,7 +161,7 @@ export function helpText(): string {
       ...lines,
       `  ${"--help, -h".padEnd(width)}Show this help message`,
       "",
-      "Every setting can also be given as an environment variable or in publisher.config.json; see docs/configuration.md.",
+      `Every setting can also be given as an environment variable or in publisher.config.json; see ${CONFIGURATION_DOCS_URL}`,
    ].join("\n");
 }
 

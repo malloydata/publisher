@@ -8,7 +8,7 @@
  */
 
 import { MalloySQLParser } from "@malloydata/malloy-sql";
-import { NOTEBOOK_FILE_SUFFIX } from "../../constants";
+import { NOTEBOOK_FILE_SUFFIX, REPORTS_DOCS_URL } from "../../constants";
 
 /**
  * `PackageWarning.code` of a `.malloynb` code cell the query route refuses for
@@ -148,7 +148,7 @@ export function listMalloynbCellFindings<F extends CellFinding>(
 }
 
 const FIX_AND_RELOAD =
-   "The legacy .malloynb section of docs/reports.md gives the fix for each " +
+   `The legacy .malloynb section of ${REPORTS_DOCS_URL}#legacy-malloynb-files gives the fix for each ` +
    "reason, and a reload after fixing lists what remains.";
 
 /** `2`, `2 and 3`, `2, 3 and 4`. */

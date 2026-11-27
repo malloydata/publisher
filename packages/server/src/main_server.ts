@@ -15,6 +15,7 @@ import type express from "express";
 import * as http from "http";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { CONFIGURATION_DOCS_URL } from "./constants";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
 import { DatabaseController } from "./controller/database.controller";
@@ -218,7 +219,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
             "process sizes its memory_limit from the container independently, so " +
             "their combined budget exceeds it and the process can be OOM-killed " +
             "while each instance believes it is within budget. See " +
-            "https://github.com/malloydata/publisher/blob/main/docs/configuration.md#environment-variables--cli-flags",
+            `${CONFIGURATION_DOCS_URL}#environment-variables--cli-flags`,
       );
    } else {
       logger.info(
