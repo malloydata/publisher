@@ -190,6 +190,21 @@ predicted warehouse time a day. `--calibrate` uses what it measured in place of
 the first and last. On a 10-million-row bench, a calibration from one build cut
 the total error on a different candidate from 1,115 to 347 ms a day.
 
+**Speed on hosted data.** Build a candidate's tables in Credible's storage,
+never in the organization's warehouse: on a hosted environment every
+environment has a database named `credible` that is also a storage
+destination, so `#(rollup) grain=[...] storage="credible"` (or
+`#(materialize) storage="credible"`) builds there. Publish the candidate as its
+own package or version, wait for its build, and replay against the hosted
+Publisher with `--publisher`, `--environment` and `--package` (or
+`--target-version`). Set `EVAL_PUBLISHER_TOKEN` to a token for that
+environment first (`cred token`); it is sent as a bearer token and never
+printed. On dev, a status rollup made four of five queries about ten times
+faster with every answer unchanged. A query no table answers stays live, and a
+live hosted query moved up to 27% between two replays of an unchanged package,
+more than the default 20% band: measure the band with two replays of the
+baseline before reading "slower" on a live query.
+
 **Keeping the history in a database that takes no inserts.** The history
 tables only grow, and a managed database cannot add rows to a table. So each
 export is a batch:

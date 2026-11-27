@@ -535,7 +535,8 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
     missing = [q["qid"] for q in queries if not q.get("modelPath")]
     if missing:
         raise SystemExit(f"no model path for {', '.join(missing)}. Fix: --model-path <file>.malloy")
-    tags = {c.get("qid"): c.get("tags") or [] for c in ledger.read_jsonl(a.set_dir / "cases.jsonl")}
+    tags = {c.get("qid"): c.get("tags") or [] for c in (
+        ledger.read_jsonl(a.set_dir / "cases.jsonl") if (a.set_dir / "cases.jsonl").is_file() else [])}
     version = pin_version(a)
     vid = version["id"] if version else None
     mat = materialization_state(a.publisher, a.environment, a.package, vid)

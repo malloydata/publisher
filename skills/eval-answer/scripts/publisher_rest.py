@@ -46,6 +46,7 @@ swallow.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import time
 import urllib.error
@@ -58,6 +59,16 @@ from typing import Any
 # scalars while always naming the value key.
 SCALAR_KEYS = ("number_value", "string_value", "boolean_value", "date_value",
                "timestamp_value", "json_value")
+
+
+def auth_headers() -> dict[str, str]:
+    """A bearer token for a hosted Publisher, from EVAL_PUBLISHER_TOKEN.
+
+    A local Publisher takes none, so the variable is unset there. A hosted one
+    (a Credible environment's data plane) answers 401 without it. The token is
+    read from the environment and never printed or written."""
+    tok = os.environ.get("EVAL_PUBLISHER_TOKEN")
+    return {"Authorization": f"Bearer {tok}"} if tok else {}
 
 
 def _query_url(base: str, environment: str, package: str, model: str) -> str:
@@ -120,7 +131,7 @@ def query(base: str, environment: str, package: str, model: str, malloy: str,
     req = urllib.request.Request(
         _query_url(base, environment, package, model),
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"})
+        headers={"Content-Type": "application/json", **auth_headers()})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return rows_from_result(json.loads(r.read().decode()))
 
@@ -171,7 +182,7 @@ def timed_query(base: str, environment: str, package: str, model: str,
     req = urllib.request.Request(
         _query_url(base, environment, package, model),
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"})
+        headers={"Content-Type": "application/json", **auth_headers()})
     out: dict[str, Any] = {"rows": [], "error": None, "executionTimeMs": None,
                            "servedFrom": None, "queryCostBytes": None, "path": None,
                            "roundTripMs": None}
@@ -319,7 +330,8 @@ def build_costs(manifest: Any) -> list[dict[str, Any]]:
 
 
 def get_json(base: str, path: str, timeout: int = 30) -> Any:
-    with urllib.request.urlopen(f"{base.rstrip('/')}/{path.lstrip('/')}",
+    with urllib.request.urlopen(urllib.request.Request(
+            f"{base.rstrip('/')}/{path.lstrip('/')}", headers=auth_headers()),
                                 timeout=timeout) as resp:
         return json.loads(resp.read())
 

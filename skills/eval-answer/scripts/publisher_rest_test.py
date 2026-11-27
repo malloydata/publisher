@@ -299,6 +299,17 @@ class BuildCosts(unittest.TestCase):
             self.assertEqual(publisher_rest.build_costs(m), [])
 
 
+class Auth(unittest.TestCase):
+    def test_a_token_is_sent_only_when_one_is_given(self):
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("EVAL_PUBLISHER_TOKEN", None)
+            self.assertEqual(publisher_rest.auth_headers(), {})
+        with mock.patch.dict(os.environ, {"EVAL_PUBLISHER_TOKEN": "t0k"}):
+            self.assertEqual(publisher_rest.auth_headers(), {"Authorization": "Bearer t0k"})
+
+
 if __name__ == "__main__":
     os.chdir(os.path.dirname(__file__))
     unittest.main()
