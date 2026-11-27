@@ -673,7 +673,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
 
    /**
     * The walk of the package's workflows, or a {@link WorkflowsUnavailableError}
-    * (a 503 that says why) when the load could not read its skill sets: an
+    * (a 409 that says why) when the load could not read its skill sets: an
     * unread set is not an absent workflow, which a 404 would say. With `name`,
     * a workflow the manifest never declared is still absent, so it is returned
     * (empty) rather than thrown.

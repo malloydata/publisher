@@ -450,7 +450,7 @@ export function makeWarningsFor(ctx: Pick<ListingContext, "warnings">) {
 /** Most description characters `skillsFor` attaches to one response, across every skill. */
 const SKILLS_DESCRIPTION_BUDGET = 4000;
 
-/** The package's advertised skills, none when its load could not read them: the skills routes answer 503 with the reason, and this reply is still the models'. */
+/** The package's advertised skills, none when its load could not read them: the skills routes answer 409 with the reason, and this reply is still the models'. */
 function advertisedSkillsOf(pkg: Pick<Package, "listSkills">) {
    try {
       return pkg.listSkills();
