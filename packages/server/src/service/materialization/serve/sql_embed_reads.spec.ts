@@ -59,10 +59,7 @@ describe("sqlEmbedReads", () => {
          "cross_connection",
       ]);
       // A bare embed: on any connection.
-      expect(conflicts(id("b"), "duckdb")).toEqual([
-         "whole_source",
-         "whole_source",
-      ]);
+      expect(conflicts(id("b"), "duckdb")).toEqual(["bare", "bare"]);
       expect(conflicts(id("c"), "elsewhere")).toEqual([]);
       // A `.sql()` source the copy re-roots itself is replaced by its table.
       expect(conflicts(id("b"), "elsewhere", () => true)).toEqual([]);

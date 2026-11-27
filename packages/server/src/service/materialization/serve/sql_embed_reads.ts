@@ -45,7 +45,7 @@ interface SqlEmbedRead {
 }
 
 /** Why a re-root cannot be compiled under a `.sql()` that reads it. */
-type SqlEmbedConflict = "cross_connection" | "whole_source";
+type SqlEmbedConflict = "cross_connection" | "bare";
 
 /**
  * Every `.sql()` with a `%{}` in `modelDefs` (a model and the models of the
@@ -98,7 +98,7 @@ export function sqlEmbedReads(modelDefs: readonly unknown[]): SqlEmbedRead[] {
 /**
  * The `.sql()` sources whose text the copy cannot compile with `sourceID`
  * re-rooted on a connection `servedOn`, each with why: a bare `%{ x }` of
- * it (`whole_source`, on any connection), or a `%{ x -> { … } }` whose SQL
+ * it (`bare`, on any connection), or a `%{ x -> { … } }` whose SQL
  * runs on another connection than `servedOn` (`cross_connection`). Empty
  * when none. A `.sql()` source the copy re-roots itself (`rerooted`, by its
  * `sourceID`, or one it is built from) is replaced by its table, so its text
@@ -114,7 +114,7 @@ export function conflictingSqlEmbeds(
    for (const read of reads) {
       if (read.sourceID !== undefined && rerooted(read.sourceID)) continue;
       if (read.bareReaches.has(sourceID)) {
-         out.push({ read, conflict: "whole_source" });
+         out.push({ read, conflict: "bare" });
       } else if (read.connection !== servedOn && read.reaches.has(sourceID)) {
          out.push({ read, conflict: "cross_connection" });
       }

@@ -56,7 +56,11 @@ import {
    liftProbeFilterCondition,
 } from "../../authorize";
 import { keyedOverlay } from "../../overlay_key";
-import { conflictingSqlEmbeds, sqlEmbedReads } from "./sql_embed_reads";
+import {
+   conflictingSqlEmbeds,
+   ownSqlEmbedReach,
+   sqlEmbedReads,
+} from "./sql_embed_reads";
 import { createEventLoopYielder } from "../../event_loop_yield";
 import type { ModelConnectionInput } from "../../model_runtime";
 import { packageFiles } from "../text/package_files";
@@ -2047,6 +2051,15 @@ export class ServedCopyServe {
     * storage table so left out falls back to its database twin, if it has
     * one, which the next compile re-roots.
     */
+   /**
+    * The `sourceID`s the queried source's own `%{}` embeds read, for the
+    * path report (sql_embed_reads.ts). Here so the query path reads it
+    * through the served copy it already holds, not by importing the module.
+    */
+   ownSqlEmbedReach(struct: unknown, modelDef: unknown): ReadonlySet<string> {
+      return ownSqlEmbedReach(struct, modelDef);
+   }
+
    private withoutConflictingSqlEmbeds<
       C extends { binding: Binding; reroot: AuthorReroot },
    >(candidates: C[], map: SourceMap, problems: ServedCopyProblem[]): C[] {
@@ -2074,7 +2087,7 @@ export class ServedCopyServe {
             rerooted,
          );
          if (conflicts.length === 0) return true;
-         const whole = conflicts.some((x) => x.conflict === "whole_source");
+         const whole = conflicts.some((x) => x.conflict === "bare");
          problems.push({
             sourceName: c.reroot.sourceName,
             sourceID: c.reroot.sourceID,
@@ -2084,7 +2097,7 @@ export class ServedCopyServe {
             detail: [
                ...new Set(
                   conflicts
-                     .filter((x) => !whole || x.conflict === "whole_source")
+                     .filter((x) => !whole || x.conflict === "bare")
                      .map(
                         ({ read }) =>
                            `\`${read.via}\` on \`${read.connection}\``,
