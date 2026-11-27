@@ -57,6 +57,31 @@ class Pick(unittest.TestCase):
                          [("t5", "correction"), ("t7", "asked_again")])
 
 
+    def test_up_to_three_turns_of_a_group_are_judged_and_share_out_the_rest(self):
+        turns = [{**turn(f"t{i:02d}", q="Ray ban summer sales"), "session_id": f"s{i}"} for i in range(45)]
+        got = js.pick(turns, set(), 10, "l", per_group=3)
+        self.assertEqual(len(got), 3)
+        self.assertEqual(sorted(len(g["members"]) for g in got), [15, 15, 15])
+        self.assertEqual(sum(g["first"] for g in got), 1)
+        self.assertEqual(len({m["turn_id"] for g in got for m in g["members"]}), 45)
+
+    def test_share_keys_gives_a_groups_key_to_its_other_cases(self):
+        d = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        (d / "gold").mkdir()
+        g = {"status": "verified", "kind": "scalar", "value": 3}
+        (d / "gold" / "p-a.json").write_text('{"qid": "p-a", "truthQuery": "run: t"}')
+        cases = [{"qid": "p-a", "golden": g, "expectedEntities": {"required": ["m:x"]},
+                  "sourceFields": {"group": "G", "keyHere": True}},
+                 {"qid": "p-b", "sourceFields": {"group": "G", "keyHere": False}},
+                 {"qid": "p-c", "sourceFields": {"group": "H", "keyHere": False}}]
+        (d / "cases.jsonl").write_text("".join(json.dumps(c) + "\n" for c in cases))
+        self.assertEqual(js.share_keys(d), (1, 1))
+        got = [json.loads(l) for l in (d / "cases.jsonl").read_text().splitlines()]
+        self.assertEqual((got[1]["golden"], got[1]["expectedEntities"]), (g, {"required": ["m:x"]}))
+        self.assertEqual(json.loads((d / "gold" / "p-b.json").read_text())["qid"], "p-b")
+        self.assertNotIn("golden", got[2])
+
 class Collect(unittest.TestCase):
     def test_a_verdict_per_turn_with_the_reason_only_for_a_wrong_answer(self):
         run = pathlib.Path(tempfile.mkdtemp())
@@ -132,16 +157,17 @@ class Main(unittest.TestCase):
             js.main(["pick", "--set", str(root / "set"), "--label", "prod-01"])
         judging = root / "w" / "judging" / "prod-01"
         cases = [json.loads(l) for l in (judging / "cases.jsonl").read_text().splitlines()]
-        # Same question twice: one group, judged once, both turns its members.
-        self.assertEqual(len(cases), 1)
-        self.assertEqual(sorted(cases[0]["sourceFields"]["members"]), ["t1", "t2"])
+        # Same question twice: one group, both turns judged, the key derived on one.
+        self.assertEqual(len(cases), 2)
+        self.assertEqual({c["sourceFields"]["group"] for c in cases}, {cases[0]["sourceFields"]["group"]})
+        self.assertEqual(sorted(c["sourceFields"]["keyHere"] for c in cases), [False, True])
         self.assertNotIn("golden", cases[0])
         # Its own config and work directory: never one of this set's runs.
         import config
         jcfg = config.load(judging)
         self.assertEqual((jcfg.workdir(), jcfg.get("model", "package")), ((judging / "work").resolve(), "storefront"))
         self.assertFalse((root / "w" / "runs").exists())
-        self.assertIn("1 question groups drawn, covering 2 turns", out.getvalue())
+        self.assertIn("1 question groups drawn (2 turns to judge), covering 2 turns", out.getvalue())
 
     def test_collect_refuses_a_wrong_answer_with_no_diagnosis_unless_told(self):
         root = pathlib.Path(tempfile.mkdtemp())

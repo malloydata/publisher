@@ -102,7 +102,7 @@ def groups(turns: list[dict[str, str]], judgments: list[dict[str, str]],
     out: dict[str, dict[str, Any]] = {}
     for j in judgments:
         t = by_turn.get(j["turn_id"])
-        if not t or (t.get("kind") or "") == "build":
+        if not t or (t.get("kind") or "question") != "question":
             continue
         gid = j.get("question_group") or normal(t.get("question", ""))
         g = out.setdefault(gid, {"group": gid, "question": t["question"].strip(), "turns": set(),

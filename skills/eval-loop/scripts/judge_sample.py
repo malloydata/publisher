@@ -2,6 +2,7 @@
 """Judge a sample of production turns, and keep the verdicts. Stdlib only.
 
   python3 eval.py judge-sample pick    --set <set-dir> --label prod-20261125
+  python3 eval.py judge-sample share-keys --set <set-dir> --label prod-20261125
   python3 eval.py judge-sample collect --set <set-dir> --label prod-20261125
 
 Step H2 of the optimization loop (reference/optimization-loop.md): the
@@ -43,10 +44,13 @@ WHAT IS DRAWN
 
 - **Groups, not turns.** Turns asking the same question are one group
   (case and spacing ignored; a follow-up groups only with turns that asked it
-  after the same earlier question). A demo prompt asked 45 times is judged
-  once, and its verdict is written for all 45 turns: the judged one, and 44
-  rows with `sampled_because: carried` and `judged_turn` naming it. So the
-  quality rate weighs it 45 times and the key is derived once.
+  after the same earlier question). The key is derived once per group, and up
+  to `--per-group` of its turns (default 3) are judged against it, because
+  the same question can be answered right on one day and wrong on another.
+  The group's other turns are shared out among the judged ones in turn and
+  carry their verdict (`sampled_because: carried`, `judged_turn` naming the
+  one judged). A demo prompt asked 45 times costs one key and three judge
+  calls, and weighs 45 in the quality rate.
 - **Signals first.** A group where the person's next message corrected the
   answer, or asked the same question again, is drawn before the rest. The
   signal is `user_signal` on the row and `context.nextMessage` on the case,
@@ -56,7 +60,10 @@ WHAT IS DRAWN
   answer). The judge says which the question needs (`depends_on`), and
   `build-set` turns that into a follow-up case.
 - Up to N groups, uniform among the rest, seeded by the label, so the same
-  label draws the same groups. A turn whose `kind` is `build` is never drawn.
+  label draws the same groups. Only a turn whose `kind` is `question` (or
+  empty) is drawn: `build` edited the package, and `context` ran no query (a
+  reply to the agent's clarifying question, a remark), so it has no answer to
+  judge. Both still appear as earlier messages.
 """
 from __future__ import annotations
 
@@ -158,28 +165,38 @@ def annotate(turns: list[dict[str, str]],
 
 
 def pick(turns: list[dict[str, str]], judged: set[str], n: int, seed: str,
-         notes: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+         notes: dict[str, dict[str, Any]] | None = None,
+         per_group: int = 1) -> list[dict[str, Any]]:
     """Up to n groups of open turns (a question, not a build request, not yet
-    judged): groups with a signal first, then uniformly. Each group is
-    {"turn": the one judged, "members": every open turn in it, "signal"}.
-    Oldest first."""
+    judged): groups with a signal first, then uniformly. One entry per turn to
+    judge, up to `per_group` of a group (its signalled turns first):
+    {"turn", "members": the group's turns this one's verdict covers (itself
+    first), "signal", "group", "first": the group's first entry}. Oldest
+    first."""
     notes = notes or annotate(turns)
     groups: dict[str, list[dict[str, str]]] = {}
     for t in turns:
         if (t.get("question") and t["turn_id"] not in judged
-                and (t.get("kind") or "") != "build" and t["turn_id"] in notes):
+                and (t.get("kind") or "question") == "question" and t["turn_id"] in notes):
             groups.setdefault(notes[t["turn_id"]]["group"], []).append(t)
     rng = random.Random(seed)
     flagged, plain = [], []
     for key in sorted(groups):
         members = sorted(groups[key], key=lambda t: (t.get("at") or "", t["turn_id"]))
         sig = [t for t in members if notes[t["turn_id"]]["signal"]]
-        rep = sig[0] if sig else rng.choice(members)
-        (flagged if sig else plain).append({"turn": rep, "members": members,
-                                            "signal": notes[rep["turn_id"]]["signal"]})
+        rest = [t for t in members if t not in sig]
+        rng.shuffle(rest)
+        reps = (sig + rest)[:max(1, per_group)]
+        others = [t for t in members if t not in reps]
+        entries = []
+        for i, r in enumerate(reps):
+            mine = [r] + others[i::len(reps)]
+            entries.append({"turn": r, "members": mine, "group": key, "first": i == 0,
+                            "signal": notes[r["turn_id"]]["signal"]})
+        (flagged if sig else plain).append(entries)
     rng.shuffle(flagged)
     rng.shuffle(plain)
-    chosen = (flagged + plain)[:n]
+    chosen = [e for g in (flagged + plain)[:n] for e in g]
     return sorted(chosen, key=lambda g: (g["turn"].get("at") or "", g["turn"]["turn_id"]))
 
 
@@ -246,7 +263,8 @@ def write_set(dir_: pathlib.Path, label: str, chosen: list[dict[str, Any]],
             if ctx:
                 case["context"] = ctx
             case["sourceFields"] = {"group": note.get("group"), "signal": grp.get("signal") or None,
-                                    "members": [m["turn_id"] for m in grp["members"]]}
+                                    "members": [m["turn_id"] for m in grp["members"]],
+                                    "keyHere": grp.get("first", True)}
             # A held key fits only a question that stands alone.
             g = None if note.get("earlier") else keys.get(normal(t["question"]))
             if g:
@@ -254,6 +272,37 @@ def write_set(dir_: pathlib.Path, label: str, chosen: list[dict[str, Any]],
             f.write(json.dumps(case) + "\n")
     (dir_ / "set.json").write_text(json.dumps(meta, indent=1) + "\n")
     return n
+
+
+def share_keys(set_dir: pathlib.Path) -> tuple[int, int]:
+    """Give every case of a group the verified key derived on its first case
+    (`sourceFields.keyHere`), with its expected entities and derivation
+    record. Returns (cases given a key, groups whose first case has none)."""
+    cases = read_jsonl(set_dir / "cases.jsonl")
+    keyed = {(c.get("sourceFields") or {}).get("group"): c for c in cases
+             if (c.get("sourceFields") or {}).get("keyHere")
+             and (c.get("golden") or {}).get("status") == "verified"}
+    given, missing = 0, set()
+    for c in cases:
+        sf = c.get("sourceFields") or {}
+        if sf.get("keyHere") or c.get("golden"):
+            continue
+        src = keyed.get(sf.get("group"))
+        if not src:
+            missing.add(sf.get("group"))
+            continue
+        c["golden"] = src["golden"]
+        for k in ("expectedEntities", "expectedSearches"):
+            if k in src:
+                c[k] = src[k]
+        gold = set_dir / "gold" / f"{src['qid']}.json"
+        if gold.is_file():
+            rec = json.loads(gold.read_text())
+            rec["qid"] = c["qid"]
+            (set_dir / "gold" / f"{c['qid']}.json").write_text(json.dumps(rec, indent=1) + "\n")
+        given += 1
+    (set_dir / "cases.jsonl").write_text("".join(json.dumps(c) + "\n" for c in cases))
+    return given, len(missing)
 
 
 def write_transcripts(run: pathlib.Path, chosen: list[dict[str, Any]],
@@ -347,10 +396,13 @@ def judgments(run: pathlib.Path, cases: list[dict[str, Any]], now: str) -> list[
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("verb", choices=("pick", "collect"))
+    ap.add_argument("verb", choices=("pick", "share-keys", "collect"))
     ap.add_argument("--set", dest="set_dir", required=True)
     ap.add_argument("--label", required=True, help="names the sample, its set and its run")
-    ap.add_argument("--n", type=int, default=None, help="turns to draw ([optimization] judge_sample)")
+    ap.add_argument("--n", type=int, default=None,
+                    help="question groups to draw ([optimization] judge_sample)")
+    ap.add_argument("--per-group", type=int, default=3,
+                    help="turns of one group judged against its one key")
     ap.add_argument("--without-diagnosis", action="store_true",
                     help="collect: keep wrong answers the run has not diagnosed, with no reason")
     a = ap.parse_args(argv)
@@ -366,7 +418,7 @@ def main(argv: list[str] | None = None) -> int:
         n = a.n or cfg.get("optimization", "judge_sample")
         transcripts = {r["turn_id"]: r["transcript"] for r in read(data / "prod_transcripts.csv")}
         notes = annotate(turns, transcripts)
-        chosen = pick(turns, judged, n, a.label, notes)
+        chosen = pick(turns, judged, n, a.label, notes, a.per_group)
         if not chosen:
             print("every ingested turn is already judged")
             return 0
@@ -375,19 +427,26 @@ def main(argv: list[str] | None = None) -> int:
         have = write_transcripts(run, chosen, transcripts)
         weight = sum(len(g["members"]) for g in chosen)
         flagged = sum(1 for g in chosen if g["signal"])
-        print(f"{len(chosen)} question groups drawn, covering {weight} turns "
+        groups_n = sum(1 for g in chosen if g.get("first", True))
+        print(f"{groups_n} question groups drawn ({len(chosen)} turns to judge), covering {weight} turns "
               f"({len(turns) - len(judged)} not yet judged); {flagged} drawn for a user signal; "
               f"{have} transcripts written to {run / 'artifacts'}")
         if have < len(chosen):
             print(f"  {len(chosen) - have} need fetch_transcripts.py --set {set_dir} --out {run}")
         print(f"{keyed} of {len(chosen)} ask a question the set already keys and took its "
               f"verified key")
-        print(f"next: derive a golden for each of the other {len(chosen) - keyed} "
+        print(f"next: derive a golden for each case with sourceFields.keyHere and no golden "
               f"(skill:eval-import), then\n"
+              f"  python3 eval.py judge-sample share-keys --set {a.set_dir} --label {a.label}\n"
               f"  python3 eval.py run --set {set_dir} --label {a.label} --rejudge\n"
               f"  python3 eval.py diagnose --set {set_dir} --label {a.label}\n"
               f"  python3 eval.py judge-sample collect --set {a.set_dir} --label {a.label}")
         print(set_dir)
+        return 0
+    if a.verb == "share-keys":
+        given, missing = share_keys(set_dir)
+        print(f"{given} case(s) took their group's key"
+              + (f"; {missing} group(s) have no verified key on their first case yet" if missing else ""))
         return 0
     if not (run / "run.json").is_file():
         raise SystemExit(f"No judging run at {run}. Fix: eval.py run --set {set_dir} "

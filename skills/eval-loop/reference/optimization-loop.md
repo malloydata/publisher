@@ -94,7 +94,9 @@ production turn has no answer key:
 python3 eval.py ingest --set <set> --turns turns.jsonl --queries queries.jsonl --versions versions.jsonl
 python3 eval.py judge-sample pick --set <set> --label prod-20261125    # draw unjudged question groups as a set
 # a standalone question the set already keys takes that verified key;
-# derive the rest (skill:eval-import), then judge the logged answers:
+# derive the rest (skill:eval-import), copy each group's key to its other turns,
+# then judge the logged answers:
+python3 eval.py judge-sample share-keys --set <set> --label prod-20261125
 python3 eval.py run --set <workdir>/judging/prod-20261125 --label prod-20261125 --rejudge
 python3 eval.py diagnose --set <workdir>/judging/prod-20261125 --label prod-20261125
 python3 eval.py judge-sample collect --set <set> --label prod-20261125   # refuses an undiagnosed wrong answer
@@ -103,10 +105,14 @@ python3 eval.py judge-sample collect --set <set> --label prod-20261125   # refus
 What `pick` draws, and what `collect` records:
 
 - **Question groups, not turns.** Identical questions (case and spacing
-  ignored; a follow-up only after the same earlier question) are one group,
-  judged once. `collect` writes the verdict for every turn of the group, the
-  others with `sampled_because: carried` and `judged_turn` naming the one
-  judged. A demo prompt asked 45 times costs one key and weighs 45 in the rate.
+  ignored; a follow-up only after the same earlier question) are one group
+  with one key, derived on the case marked `sourceFields.keyHere` and copied
+  to the rest by `share-keys`. Up to `--per-group` turns (default 3) are
+  judged against it, because the same question can be answered right one day
+  and wrong the next. `collect` shares the group's other turns out among the
+  judged ones, each carrying that verdict (`sampled_because: carried`,
+  `judged_turn`). A demo prompt asked 45 times costs one key and three judge
+  calls, and weighs 45 in the rate.
 - **User signals first.** A group whose next message corrected the answer
   (`correction`) or asked it again (`asked_again`) is drawn before the rest.
   The judge sees that next message as evidence, never as the verdict.
