@@ -21,13 +21,21 @@ import {
    managedSchemasOf,
    recordConnectionType,
 } from "./connection_type";
-import { readUpstreamSchemas, withNameProblems } from "./materialization";
+import {
+   readTargetContainers,
+   readUpstreamSchemas,
+   withNameProblems,
+} from "./materialization";
 import {
    type UpstreamSchemaReadings,
    type UpstreamTable,
    upstreamSchemaFold,
    upstreamTableKey,
 } from "./materialization/domain/upstream_schemas";
+import type {
+   TargetContainer,
+   TargetContainerReadings,
+} from "./materialization/domain/target_containers";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { pathToFileURL } from "url";
@@ -65,6 +73,8 @@ import {
    type LoadPackageOutcome,
 } from "../package_load/package_load_pool";
 import type { LoadPackageRequest } from "../package_load/protocol";
+import { modelReadKeys } from "../package_load/job_files";
+import type { StaleCompileError } from "./package_lifecycle";
 import { queryBoundaryActive } from "./package_manifest";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
@@ -310,6 +320,48 @@ interface ReportDiscovery {
 export type ApiPackage = components["schemas"]["Package"];
 type ApiModelEntities = components["schemas"]["ModelEntities"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
+
+/** A file a reload could not recompile and kept serving from its last good model. */
+interface KeptModel {
+   modelPath: string;
+   /** The recompile's error, package-relative. */
+   error: string;
+   /** The sources the kept model declares, sorted. */
+   sources: string[];
+}
+
+/** The package's warning code for a {@link KeptModel}. */
+export const MODEL_RECOMPILE_FAILED = "model-recompile-failed";
+
+/**
+ * The `model-recompile-failed` warning for `kept`, naming its sources and
+ * which of them `withdrawn` took out of serving (they answer live).
+ */
+function recompileFailedWarning(
+   kept: KeptModel,
+   withdrawn: { sources: string[]; tables: string[] },
+): ApiPackageWarning {
+   const live = withdrawn.sources.filter((s) => kept.sources.includes(s));
+   const parts = [
+      `${kept.modelPath} did not recompile, so its sources ` +
+         `(${kept.sources.join(", ") || "none"}) are served from the model ` +
+         `it last compiled: ${kept.error}`,
+   ];
+   if (live.length > 0) {
+      parts.push(
+         `Upstream table ${withdrawn.tables.join(", ")} changed since the ` +
+            `last build, so ${live.join(", ")} answer live until a reload ` +
+            `compiles and a run rebuilds them.`,
+      );
+   }
+   return {
+      code: MODEL_RECOMPILE_FAILED,
+      model: kept.modelPath,
+      reason: "compile_failed",
+      message: parts.join(" "),
+      severity: "warn",
+   };
+}
 type ApiServeVerdict = components["schemas"]["ServeVerdict"];
 
 interface ClassificationMemo {
@@ -480,6 +532,24 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    // Non-fatal render-tag findings across the models; a bad tag does not fail
    // the load, so this is its signal.
    private renderTagWarnings: ApiPackageWarning[] = [];
+   /**
+    * `model-recompile-failed`: each file the last {@link reloadAllModels}
+    * could not recompile and kept serving from its last good model.
+    */
+   private recompileFailedWarnings: ApiPackageWarning[] = [];
+   /**
+    * Why this package serves a model kept from before a failed recompile
+    * ({@link keepLastGoodModels}), reported as a `stale: true` load error;
+    * undefined while every installed model is its files' latest compile.
+    */
+   private keptModelStaleness: StaleCompileError | undefined;
+   /**
+    * For each installed model that compiled, the digest of every file it read
+    * at that compile, by URL (see {@link compiledFromOf}): what tells a
+    * recompile that failed on an unchanged file (a table dropped under it)
+    * from one that failed on an author's edit.
+    */
+   private compiledFrom = new Map<string, ReadonlyMap<string, string>>();
    /**
     * What the models were last compiled against (by {@link reloadAllModels},
     * or by a load given its manifest), so a rebind can skip the compile.
@@ -1480,6 +1550,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const workerOutcome = loadOutcomeOrThrow(
          pool.loadPackage({
             upstreamSchemas: readUpstreamSchemas,
+            targetContainers: readTargetContainers,
             packagePath,
             packageName,
             environmentName,
@@ -1623,6 +1694,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          modelPolicy,
       );
       pkg.dryRun = dryRun;
+      pkg.compiledFrom = pkg.compiledFromOf(models, outcome.fileDigests);
       pkg.refreshesUpstreamSchemas = refreshSchemas;
       pkg.persistNameProblems = nameProblems;
       let reportTimings: Awaited<ReturnType<Package["discoverReports"]>>;
@@ -2241,6 +2313,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       // API because the load tolerates it, so otherwise only the log says so.
       const allWarnings = [
          ...this.renderTagWarnings,
+         ...this.recompileFailedWarnings,
          ...this.entitiesWarnings,
          ...this.readerWarnings,
          ...this.reportWarnings,
@@ -2348,6 +2421,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          const outcome = await loadOutcomeOrThrow(
             getPackageLoadPool().loadPackage({
                upstreamSchemas: readUpstreamSchemas,
+               targetContainers: readTargetContainers,
                packagePath: this.packagePath,
                packageName: this.packageName,
                environmentName: this.environmentName,
@@ -2870,6 +2944,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return { sources: names, tables: tableNames };
    }
 
+   /** See {@link BuildPlanPackage.readTargetContainers}. */
+   public readTargetContainers(
+      containers: TargetContainer[],
+   ): Promise<TargetContainerReadings> {
+      return readTargetContainers({
+         containers,
+         connection: (name) => this.getMalloyConnection(name),
+      });
+   }
+
    /** See {@link BuildPlanPackage.readUpstreamSchemas}. */
    public async readUpstreamSchemas(
       tables: UpstreamTable[],
@@ -3167,13 +3251,58 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             },
             "placeholder",
          );
+      // A file that compiled before and does not now (most often a table it
+      // reads directly was dropped) keeps its last good model, as a failed
+      // package reload keeps the package: one table must not take every
+      // source in the file to a 424. Its sources whose upstream changed stop
+      // serving their stored tables, so they answer live, as the warehouse
+      // now stands; the rest keep serving.
+      const kept = this.keepLastGoodModels(nextModels, outcome.fileDigests);
+      const withdrawn =
+         kept.length > 0
+            ? await this.withdrawChangedUpstreams().catch(
+                 (error): { sources: string[]; tables: string[] } => {
+                    logger.warn(
+                       "Could not read the upstream tables of a model kept from before a failed recompile",
+                       {
+                          packageName: this.packageName,
+                          error: errMessage(error),
+                       },
+                    );
+                    return { sources: [], tables: [] };
+                 },
+              )
+            : { sources: [], tables: [] };
       // Discover before installing, then install models and reports in one
       // synchronous step: a query must never see one without the other.
       const discoveryStarted = performance.now();
       const discovery = await this.discoverReportsIn(nextModels, "reload");
       const discoveryMs = performance.now() - discoveryStarted;
       this.models = nextModels;
+      // A kept model was hydrated under the policy being replaced.
+      this.modelPolicy.handOffTo(nextModelPolicy);
       this.modelPolicy = nextModelPolicy;
+      this.recompileFailedWarnings = kept.map((k) =>
+         recompileFailedWarning(k, withdrawn),
+      );
+      // While a kept model stands, no derivation serves what it withdrew.
+      this.mz.plan.holdWithdrawn(kept.length > 0);
+      // A kept model keeps the digests of the compile it came from.
+      const compiledFrom = this.compiledFromOf(nextModels, outcome.fileDigests);
+      for (const { modelPath } of kept) {
+         const prior = this.compiledFrom.get(modelPath);
+         if (prior) compiledFrom.set(modelPath, prior);
+      }
+      this.compiledFrom = compiledFrom;
+      this.keptModelStaleness =
+         kept.length > 0
+            ? {
+                 message: this.recompileFailedWarnings
+                    .map((w) => w.message)
+                    .join(" "),
+                 failedAt: new Date().toISOString(),
+              }
+            : undefined;
       this.adoptOutcomeMetadata(outcome);
       // Move the identity as soon as the new models are installed.
       this.refreshServingIdentity();
@@ -3224,6 +3353,89 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       warnInvalidExplores(this);
       this.logEmptyDiscoveryWarnings();
       return true;
+   }
+
+   /**
+    * Put back, in `nextModels`, the last good model of each file whose
+    * recompile failed although neither its text nor the text of any file it
+    * imports changed since that model compiled (`digests`, what this
+    * recompile read), so the failure came from outside the package, most
+    * often a table dropped under it. Returns those files, with the compile
+    * error and the sources the kept model declares.
+    *
+    * An author's edit that fails to compile is never kept: its error
+    * replaces the model exactly as it did before, so a removed source stops
+    * answering, a broken report is listed with its error, and a gate the
+    * edit tightened is never bypassed by the model compiled before it.
+    */
+   private keepLastGoodModels(
+      nextModels: Map<string, Model>,
+      digests: Readonly<Record<string, string>> | undefined,
+   ): KeptModel[] {
+      const kept: KeptModel[] = [];
+      for (const [modelPath, next] of nextModels) {
+         const error = next.getCompilationError();
+         const prior = this.models.get(modelPath);
+         if (!error || !prior || prior.getCompilationError()) continue;
+         const compiledFrom = this.compiledFrom.get(modelPath);
+         if (
+            !compiledFrom ||
+            !digests ||
+            [...compiledFrom].some(([url, digest]) => digests[url] !== digest)
+         ) {
+            continue;
+         }
+         nextModels.set(modelPath, prior);
+         const sources = (prior.getSources() ?? [])
+            .map((s) => s.name)
+            .filter((name): name is string => typeof name === "string")
+            .sort();
+         kept.push({ modelPath, error: error.message, sources });
+         logger.warn("A model did not recompile; serving its last good model", {
+            packageName: this.packageName,
+            modelPath,
+            error: error.message,
+         });
+      }
+      return kept;
+   }
+
+   /**
+    * For each model in `models` that compiled, the digest (from `digests`,
+    * what the compile read) of its own file and of every file it imports.
+    * A model with any of those unread is left out, so it is never kept.
+    */
+   private compiledFromOf(
+      models: ReadonlyMap<string, Model>,
+      digests: Readonly<Record<string, string>> | undefined,
+   ): Map<string, ReadonlyMap<string, string>> {
+      const compiledFrom = new Map<string, ReadonlyMap<string, string>>();
+      if (!digests) return compiledFrom;
+      for (const [modelPath, model] of models) {
+         const modelDef = model.getModelDef();
+         if (model.getCompilationError() || !modelDef) continue;
+         const urls = modelReadKeys(
+            pathToFileURL(path.join(this.packagePath, modelPath)).href,
+            modelDef.dependencies,
+         );
+         const read = new Map<string, string>();
+         for (const url of urls) {
+            const digest = digests[url];
+            if (digest === undefined) break;
+            read.set(url, digest);
+         }
+         if (read.size === urls.length) compiledFrom.set(modelPath, read);
+      }
+      return compiledFrom;
+   }
+
+   /**
+    * Why this package serves a model its last {@link reloadAllModels} kept
+    * from before a failed recompile (a `stale: true` load error on
+    * `/status`), or undefined when it serves none.
+    */
+   public getKeptModelStaleness(): StaleCompileError | undefined {
+      return this.keptModelStaleness;
    }
 
    /**

@@ -24,6 +24,7 @@ import {
    type URLReader,
 } from "@malloydata/malloy";
 import type { DataStyles } from "@malloydata/render";
+import { createHash } from "crypto";
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { MODEL_FILE_SUFFIX } from "../constants";
@@ -215,6 +216,34 @@ export function modelFileTexts(
       }
    }
    return byPath;
+}
+
+/**
+ * The sha256 of every `file:` text the load read, by {@link urlKey}: what each
+ * compile read, failed ones included (first read wins, so every model of one
+ * load reads the same text). See `LoadPackageResult.fileDigests`.
+ */
+export function fileTextDigests(
+   files: Pick<JobFiles, "texts">,
+): Record<string, string> {
+   const digests: Record<string, string> = {};
+   for (const [url, text] of files.texts) {
+      const key = urlKey(url);
+      if (!key.startsWith("file:")) continue;
+      digests[key] = createHash("sha256").update(text).digest("hex");
+   }
+   return digests;
+}
+
+/**
+ * The {@link urlKey} of every file a compiled model read: its own file and
+ * each file it imports, transitively (`modelDef.dependencies`).
+ */
+export function modelReadKeys(
+   modelUrl: string,
+   dependencies: unknown,
+): string[] {
+   return [modelUrl, ...importReadOrder(dependencies)].map(urlKey);
 }
 
 /**

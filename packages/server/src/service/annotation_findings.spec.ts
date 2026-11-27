@@ -285,6 +285,25 @@ source: daily is raw -> { where: category = $CAT; group_by: category; aggregate:
       },
       { timeout: 30000 },
    );
+
+   it(
+      "names #(materialize) as the fix with materialization v2 on, and not with it off",
+      async () => {
+         const model = `${RAW}#@ persist\nsource: passthrough is duckdb.table('rows.csv') extend { where: a > 0 }\n`;
+         const on = await withMaterialize(() => loadError(model));
+         expect(on).toContain(
+            "Mark a table-shaped source `#(materialize)` instead, which stores a table-shaped source as well as a query-shaped one",
+         );
+         expect(on).toContain("[persist-not-materializable]");
+         const off = await withMaterialize(() => loadError(model), {
+            PUBLISHER_MATERIALIZE: "false",
+         });
+         expect(off).not.toContain("#(materialize)");
+         expect(off).toContain("Persist a query source over it");
+         expect(off).toContain("[persist-not-materializable]");
+      },
+      { timeout: 60000 },
+   );
 });
 
 describe("a storage= source on a DuckLake catalog that carries author SQL", () => {
@@ -487,7 +506,7 @@ describe("annotation findings on a loaded package", () => {
                   [{ materialization: { scope: "version" } }, ""],
                ] as const) {
                   for (const [name, written] of [
-                     [' name="analytics.orders_t"', "analytics.orders_t"],
+                     [' name="main.orders_t"', "main.orders_t"],
                      ["", "orders"],
                   ] as const) {
                      await fs.rm(path.join(envPath, "pkg"), {

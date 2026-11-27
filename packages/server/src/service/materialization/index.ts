@@ -23,6 +23,7 @@ export { keptTablesResolverFor, Reclaimer } from "./run/reclaimer";
 export { isUsableTableName } from "./run/manifest_loader";
 export { MaterializationScheduler } from "./run/materialization_scheduler";
 export { readUpstreamSchemas } from "./run/upstream_schema_read";
+export { readTargetContainers } from "./run/target_container_read";
 export type * from "./host";
 export type { SynthesizedRuntimeFactory } from "./text/generated_files";
 export {

@@ -3,6 +3,9 @@
 
 import { MalloyError } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
+import * as os from "os";
+import * as path from "path";
+import { pathToFileURL } from "url";
 import {
    BadRequestError,
    ChainedShapeNotCarriedError,
@@ -10,6 +13,7 @@ import {
    ConnectionAuthError,
    ConnectionFailedError,
    ConnectionPoolExhaustedError,
+   ContainerNotFoundError,
    MaterializationEligibilityError,
 } from "../../../errors";
 import {
@@ -20,6 +24,7 @@ import {
    BuildRunFailedError,
    classifyRunFailure,
    combineRetryable,
+   strictMissReason,
 } from "./build_failure_class";
 
 function strictMiss(sourceID: string): Error {
@@ -123,6 +128,16 @@ describe("classifyBuildError", () => {
          false,
       );
       expect(classifyBuildError(new MalloyError("bad", []))).toBe(false);
+      // A table's container its warehouse does not hold (F-03): the build's
+      // own check, before any statement, is deterministic, unlike the
+      // warehouse's "Not found: Dataset" it replaces.
+      expect(
+         classifyBuildError(
+            new ContainerNotFoundError(
+               `Source 'by_station' cannot be built: its name= places its table in dataset "no_such_dataset"`,
+            ),
+         ),
+      ).toBe(false);
       expect(classifyBuildError(new ConnectionAuthError("bad creds"))).toBe(
          false,
       );
@@ -405,5 +420,108 @@ describe("the run-level answer", () => {
          undefined,
       );
       expect(classifyRunFailure(new Error("socket hang up"))).toBe(true);
+   });
+});
+
+describe("strictMissReason", () => {
+   const bad: FailedUpstream = {
+      name: "bad",
+      reason: "Invalid Input Error: boom",
+      retryable: false,
+   };
+
+   it("names the upstream, its file and its build error when it failed in this run", () => {
+      const reason = strictMissReason(
+         "bad_down",
+         strictMiss("bad@fail.malloy"),
+         [bad],
+      );
+      expect(reason).toBe(
+         "Failed to materialize source 'bad_down': its persisted upstream " +
+            "'bad' (fail.malloy) failed to build in this run: " +
+            "Invalid Input Error: boom",
+      );
+   });
+
+   it("says the upstream has no table when nothing in this run failed", () => {
+      const reason = strictMissReason(
+         "bad_down",
+         strictMiss("bad@models/fail.malloy"),
+         [],
+      );
+      expect(reason).toContain(
+         "its persisted upstream 'bad' (models/fail.malloy) has no table this build can read",
+      );
+      expect(reason).not.toContain("manifest");
+   });
+
+   it("never quotes a server path from a URL source id", () => {
+      const reason = strictMissReason(
+         "down",
+         strictMiss("up@file:///srv/data/pkg/m.malloy"),
+         [],
+      );
+      expect(reason).toContain("'up' (m.malloy)");
+      expect(reason).not.toContain("/srv/");
+   });
+
+   it("keeps Malloy's per-value hint for a source split by givens", () => {
+      const err = Object.assign(
+         new Error(
+            "Persisted source 'bad@sub/fail.malloy' not found in manifest (buildId: b1); " +
+               "strict manifest mode forbids fallback to live compilation. " +
+               "This source reads givens, and no table was built for the given values this query supplies.",
+         ),
+         { code: "runtime-manifest-strict-miss" },
+      );
+      const reason = strictMissReason("bad_down", err, []);
+      expect(reason).toBe(
+         "Failed to materialize source 'bad_down': its persisted upstream " +
+            "'bad' (sub/fail.malloy) has no table this build can read. " +
+            "This source reads givens, and no table was built for the given values this query supplies.",
+      );
+      expect(reason).not.toContain("not built yet");
+   });
+
+   it("keeps the build manifest's load error, from the redacted message", () => {
+      const err = Object.assign(
+         new Error(
+            "Persisted source 'bad@sub/fail.malloy' not found in manifest (buildId: b1); " +
+               "strict manifest mode forbids fallback to live compilation.\n  " +
+               "manifest read failed: password=hunter2",
+         ),
+         { code: "runtime-manifest-strict-miss" },
+      );
+      const redacted = err.message.replace("hunter2", "***");
+      const reason = strictMissReason("bad_down", err, [bad], {
+         message: redacted,
+      });
+      expect(reason).toBe(
+         "Failed to materialize source 'bad_down': its persisted upstream " +
+            "'bad' (sub/fail.malloy) failed to build in this run: " +
+            "Invalid Input Error: boom. The build manifest failed to load: " +
+            "manifest read failed: password=***",
+      );
+   });
+
+   it("names a file URL's upstream by its path in the package, directories kept", () => {
+      const root = path.join(os.tmpdir(), "pkg-root");
+      const url = pathToFileURL(path.join(root, "sub", "fail.malloy")).href;
+      const reason = strictMissReason(
+         "bad_down",
+         strictMiss(`bad@${url}`),
+         [],
+         {
+            packagePath: root,
+         },
+      );
+      expect(reason).toContain("'bad' (sub/fail.malloy)");
+      expect(reason).not.toContain(root);
+   });
+
+   it("leaves any other error to its own message", () => {
+      expect(
+         strictMissReason("down", new Error("boom"), [bad]),
+      ).toBeUndefined();
    });
 });

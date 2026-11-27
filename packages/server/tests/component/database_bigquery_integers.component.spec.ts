@@ -97,6 +97,12 @@ function standInBigQuery(name: string): Connection {
                   }
                 : { rows: [], totalRows: 0 },
    });
+   // The plan's container check reads the dataset's metadata through the
+   // client; answer it here (the dataset exists) rather than over the
+   // network, where a 404 for the stand-in project refuses every table.
+   Object.assign((connection as unknown as { bigQuery: object }).bigQuery, {
+      dataset: () => ({ getMetadata: async () => [{}] }),
+   });
    return connection;
 }
 
@@ -105,7 +111,12 @@ const modelOn = (
    sql: string,
 ) => `##! experimental { persistence }
 
-#@ persist name="scratch.by_k"
+#@ persist name="${
+   // A schema the package's DuckDB sandbox holds at load, which refuses a
+   // table whose container does not (container_not_found); BigQuery needs a
+   // dataset, which its stand-in answers.
+   connection === "duckdb" ? "main" : "scratch"
+}.by_k"
 source: by_k is ${connection}.sql("${sql}") -> {
   group_by: k
   aggregate: total is n.sum()

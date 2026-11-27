@@ -1208,7 +1208,7 @@ export class Environment {
                // a reload replaces can serve an older model than its files.
                isStale: () =>
                   next.getVersionId() === undefined &&
-                  this.getStaleCompileErrors().has(next.getPackageName()),
+                  this.getRefusedReloads().has(next.getPackageName()),
             })
             .then((derived) => {
                if (derived) {
@@ -5505,12 +5505,31 @@ export class Environment {
    }
 
    /**
-    * SERVING packages whose most recent reload failed to compile: the served
-    * model is stale relative to the files on disk. Disjoint from
+    * SERVING packages that answer from a model older than their latest
+    * compile: their most recent reload failed to compile, so the served model
+    * is stale relative to the files on disk; or a recompile kept a file's
+    * last good model because a table under that file changed
+    * (`Package.getKeptModelStaleness`). Disjoint from
     * {@link getFailedPackages} in practice (a successful load clears the
     * record; a failed first load records a load failure instead).
     */
    public getStaleCompileErrors(): ReadonlyMap<string, StaleCompileError> {
+      const stale = new Map(this.lifecycle.staleRecords());
+      for (const [packageName, pkg] of this.packages) {
+         const kept = pkg.getKeptModelStaleness();
+         if (kept && !stale.has(packageName)) stale.set(packageName, kept);
+      }
+      return stale;
+   }
+
+   /**
+    * The packages whose most recent reload refused their files, so they
+    * serve a model older than those files: a run would build what the reload
+    * refused. Unlike {@link getStaleCompileErrors}, a package that kept a
+    * file's model over a changed table is not here: its files are the ones
+    * that model compiled from.
+    */
+   public getRefusedReloads(): ReadonlyMap<string, StaleCompileError> {
       return this.lifecycle.staleRecords();
    }
 
