@@ -13,6 +13,7 @@ import {
    ConnectionAuthError,
    ConnectionFailedError,
    ConnectionPoolExhaustedError,
+   ContainerNotFoundError,
    MaterializationEligibilityError,
 } from "../../../errors";
 import {
@@ -127,6 +128,16 @@ describe("classifyBuildError", () => {
          false,
       );
       expect(classifyBuildError(new MalloyError("bad", []))).toBe(false);
+      // A table's container its warehouse does not hold (F-03): the build's
+      // own check, before any statement, is deterministic, unlike the
+      // warehouse's "Not found: Dataset" it replaces.
+      expect(
+         classifyBuildError(
+            new ContainerNotFoundError(
+               `Source 'by_station' cannot be built: its name= places its table in dataset "no_such_dataset"`,
+            ),
+         ),
+      ).toBe(false);
       expect(classifyBuildError(new ConnectionAuthError("bad creds"))).toBe(
          false,
       );

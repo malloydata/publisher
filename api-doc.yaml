@@ -11192,6 +11192,7 @@ components:
               unreadable_grain,
               upstream_unread,
               upstream_table_unusable,
+              container_not_found,
             ]
           description: >-
             The bounded refusal reason; `message` says the specifics.
@@ -11266,6 +11267,17 @@ components:
             or not planned, so it has none. `message` names the upstream and
             why. Terminal until the model changes; the declaration is
             answered live).
+            `container_not_found` (a database table whose `name=` places it
+            in a container its warehouse does not hold: a BigQuery dataset
+            that does not exist in the project the `name=` names, else the
+            connection's billing project, or one in another location than the connection
+            declares; a Postgres, Snowflake or DuckDB schema that does not
+            exist. Read once per connection and container when the package
+            is planned; `message` names the container, and the location for
+            a mismatch, and says to create it or change `name=`. A read that
+            fails refuses nothing, and a build checks again before it writes
+            anything. Planned again once a reload, or a plan refresh, finds
+            the container; `storage=` declarations are never checked).
 
 
             A persisted view or named query: `materialization_off` (persisted

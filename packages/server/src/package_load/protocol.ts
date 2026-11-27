@@ -53,6 +53,10 @@ import type {
    UpstreamSchemaReadings,
    UpstreamTable,
 } from "../service/materialization/domain/upstream_schemas";
+import type {
+   TargetContainer,
+   TargetContainerReadings,
+} from "../service/materialization/domain/target_containers";
 
 /**
  * Version of this wire protocol. The worker stamps it on every
@@ -81,8 +85,10 @@ import type {
  *
  * 8: the upstream-schema read ({@link UpstreamSchemasRequest}), and a build
  * plan's `upstreamSchemas`.
+ *
+ * 9: the target-container read ({@link TargetContainersRequest}).
  */
-export const PACKAGE_LOAD_PROTOCOL_VERSION = 8;
+export const PACKAGE_LOAD_PROTOCOL_VERSION = 9;
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -547,6 +553,24 @@ export interface UpstreamSchemasResponse {
    readings: UpstreamSchemaReadings;
 }
 
+/**
+ * Read whether the containers a build plan's database tables are placed in
+ * exist, through the main thread's connections (a worker runs no SQL).
+ */
+export interface TargetContainersRequest {
+   type: "target-containers";
+   requestId: string;
+   jobId: string;
+   containers: TargetContainer[];
+}
+
+export interface TargetContainersResponse {
+   type: "target-containers-response";
+   requestId: string;
+   ok: true;
+   readings: TargetContainerReadings;
+}
+
 export interface RpcErrorResponse {
    type: "rpc-error";
    requestId: string;
@@ -609,6 +633,7 @@ export type MainToWorkerMessage =
    | SchemaForTablesResponse
    | SchemaForSqlResponse
    | UpstreamSchemasResponse
+   | TargetContainersResponse
    | ReadUrlResponse
    | RpcErrorResponse
    | ShutdownRequest
@@ -622,6 +647,7 @@ export type WorkerToMainMessage =
    | SchemaForTablesRequest
    | SchemaForSqlRequest
    | UpstreamSchemasRequest
+   | TargetContainersRequest
    | ReadUrlRequest
    | WorkerLogMessage
    | WorkerUnhandledRejectionMessage

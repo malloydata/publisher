@@ -57,6 +57,7 @@ export const SAFE_VALUES: Readonly<Capabilities> = Object.freeze({
    stringCollation: undefined,
    ungroupableTypes: undefined,
    binary64Types: undefined,
+   containerCatalog: undefined,
 });
 
 const POSTGRES_SPEC = "tests/conformance/postgres.conformance.spec.ts";
@@ -124,6 +125,9 @@ export const EVIDENCE: Readonly<
       binary64Types: duck(
          "binary64Types: DOUBLE and FLOAT8 are binary64 with NaN equal to itself and above all",
       ),
+      containerCatalog: duck(
+         "containerCatalog: duckdb_schemas() finds a schema, case-blind, and an attached database, and not a missing one",
+      ),
    },
    postgres: {
       stringCollation: pg(
@@ -173,6 +177,9 @@ export const EVIDENCE: Readonly<
       ungroupableTypes: pg(
          "ungroupableTypes: each listed native type fails GROUP BY, and jsonb groups",
       ),
+      containerCatalog: pg(
+         "containerCatalog: pg_namespace finds a schema exactly as quoted, and not a missing one",
+      ),
    },
    standardsql: {
       decodedTablePath: NO_BIGQUERY,
@@ -187,6 +194,7 @@ export const EVIDENCE: Readonly<
       leafBudget: NO_BIGQUERY,
       stringCollation: NO_BIGQUERY,
       ungroupableTypes: NO_BIGQUERY,
+      containerCatalog: NO_BIGQUERY,
    },
    snowflake: {
       catalogHidesTables: NO_SNOWFLAKE,
@@ -199,6 +207,7 @@ export const EVIDENCE: Readonly<
       castsToIntegerType: NO_SNOWFLAKE,
       leafBudget: NO_SNOWFLAKE,
       binary64Types: NO_SNOWFLAKE,
+      containerCatalog: NO_SNOWFLAKE,
    },
    databricks: {
       relationProbe: NO_DATABRICKS,
