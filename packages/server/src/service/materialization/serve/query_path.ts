@@ -781,8 +781,15 @@ function verdictExplains(reason: SkipReason | undefined, verdict: string) {
    );
 }
 
-/** The serve verdicts a bind's contract check gives a table it left out. */
-const CONTRACT_VERDICTS = new Set(["incompatible", "contract_missing"]);
+/**
+ * The serve verdicts a bind's contract check gives a table it left out, and
+ * the one a table withdrawn while its upstream is unread carries.
+ */
+const CONTRACT_VERDICTS = new Set([
+   "incompatible",
+   "contract_missing",
+   "upstream_unread",
+]);
 
 /**
  * For an unbuilt database twin of a `storage=` table (`NOT_BUILT`), the
@@ -941,6 +948,8 @@ function verdictWarningMessage(reason: string): string {
          return "This table's connection cannot hold a table, so its queries are answered live.";
       case "incompatible":
          return "This table no longer matches the column contract its build recorded, so its queries are answered live until a build rebuilds it.";
+      case "upstream_unread":
+         return "A warehouse table this table was built from could not be read, so whether it changed is not known; its queries are answered live until a read of it succeeds.";
       case "contract_missing":
          return "This table carries no column contract, so its queries are answered live until a build rebuilds it in full.";
       case "types_unrecorded":

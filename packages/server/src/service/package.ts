@@ -334,26 +334,73 @@ interface KeptModel {
 export const MODEL_RECOMPILE_FAILED = "model-recompile-failed";
 
 /**
+ * What {@link Package.withdrawChangedUpstreams} took out of serving: the
+ * sources whose upstream changed, with the tables that changed, and the
+ * sources whose upstream could not be read, with the tables it could not
+ * read (`undefined` when the read failed before it could tell which).
+ */
+export interface UpstreamWithdrawal {
+   sources: string[];
+   tables: string[];
+   unread: { sources: string[]; tables: string[] | undefined };
+}
+
+const NOTHING_WITHDRAWN: UpstreamWithdrawal = {
+   sources: [],
+   tables: [],
+   unread: { sources: [], tables: [] },
+};
+
+/**
+ * The sentences that say what `withdrawn` took out of serving, of the
+ * sources `among` (every source when absent): those whose upstream changed,
+ * then those whose upstream could not be read. Empty when it took nothing.
+ */
+export function upstreamWithdrawalSentences(
+   withdrawn: UpstreamWithdrawal,
+   among?: readonly string[],
+): string[] {
+   const pick = (sources: string[]) =>
+      among ? sources.filter((s) => among.includes(s)) : sources;
+   const changed = pick(withdrawn.sources);
+   const unread = pick(withdrawn.unread.sources);
+   const out: string[] = [];
+   if (changed.length > 0) {
+      out.push(
+         `Upstream table ${withdrawn.tables.join(", ")} changed since the ` +
+            `last build, so ${changed.join(", ")} answer live until a reload ` +
+            `compiles and a run rebuilds them.`,
+      );
+   }
+   if (unread.length > 0) {
+      const tables = withdrawn.unread.tables;
+      out.push(
+         (tables && tables.length > 0
+            ? `Upstream table ${tables.join(", ")} could not be read`
+            : `The upstream tables of ${unread.join(", ")} could not be read`) +
+            `, so whether it changed since the last build is not known: ` +
+            `${unread.join(", ")} answer live until a read of it succeeds ` +
+            `and finds it unchanged (the package's next manifest bind or ` +
+            `rebind reads it again) or a reload plans it afresh.`,
+      );
+   }
+   return out;
+}
+
+/**
  * The `model-recompile-failed` warning for `kept`, naming its sources and
  * which of them `withdrawn` took out of serving (they answer live).
  */
 function recompileFailedWarning(
    kept: KeptModel,
-   withdrawn: { sources: string[]; tables: string[] },
+   withdrawn: UpstreamWithdrawal,
 ): ApiPackageWarning {
-   const live = withdrawn.sources.filter((s) => kept.sources.includes(s));
    const parts = [
       `${kept.modelPath} did not recompile, so its sources ` +
          `(${kept.sources.join(", ") || "none"}) are served from the model ` +
          `it last compiled: ${kept.error}`,
+      ...upstreamWithdrawalSentences(withdrawn, kept.sources),
    ];
-   if (live.length > 0) {
-      parts.push(
-         `Upstream table ${withdrawn.tables.join(", ")} changed since the ` +
-            `last build, so ${live.join(", ")} answer live until a reload ` +
-            `compiles and a run rebuilds them.`,
-      );
-   }
    return {
       code: MODEL_RECOMPILE_FAILED,
       model: kept.modelPath,
@@ -363,6 +410,7 @@ function recompileFailedWarning(
    };
 }
 type ApiServeVerdict = components["schemas"]["ServeVerdict"];
+type PersistSourcePlan = components["schemas"]["PersistSourcePlan"];
 
 interface ClassificationMemo {
    forModels: Map<string, Model>;
@@ -543,6 +591,15 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * undefined while every installed model is its files' latest compile.
     */
    private keptModelStaleness: StaleCompileError | undefined;
+   /**
+    * The files {@link reloadAllModels} kept, and what it withdrew for them
+    * ({@link withdrawChangedUpstreams}), so a rebind that does not recompile
+    * can read an unread upstream again and say what is still withdrawn.
+    */
+   private kept: { models: KeptModel[]; withdrawn: UpstreamWithdrawal } = {
+      models: [],
+      withdrawn: NOTHING_WITHDRAWN,
+   };
    /**
     * For each installed model that compiled, the digest of every file it read
     * at that compile, by URL (see {@link compiledFromOf}): what tells a
@@ -2902,49 +2959,166 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * copy keeps serving: read again the tables its plan's sources read, and
     * stop serving the stored tables of every source a column of whose
     * tables that its build SQL names changed or is gone (its address would
-    * move), so they answer live as the warehouse now stands. A source whose tables did not change, or whose
-    * tables cannot be known (no `reads`), keeps serving. A read that fails
-    * keeps the table's last reading, so it changes nothing. Returns the
-    * names of the sources it stopped serving, with the tables that changed.
+    * move), so they answer live as the warehouse now stands. A source whose
+    * tables did not change, or whose tables cannot be known (no `reads`),
+    * keeps serving.
+    *
+    * Fails closed: a table whose read fails is not known to be unchanged,
+    * so every source that reads it stops serving too, as unread
+    * (`upstream_unread`), until a later call reads it and finds it
+    * unchanged, which returns it to serving. A failure that leaves it unable
+    * to tell which tables (anything thrown) withdraws, as unread, every
+    * source of `modelPaths` (every source when absent) and keeps every
+    * source already withdrawn as unread. Never throws.
+    *
+    * `onlyUnread` reads again only the sources withdrawn as unread now: a
+    * rebind that did not recompile, or whose models all compiled again.
+    * `hold` holds what is withdrawn across a plan derivation
+    * (`PlanLifecycle.holdWithdrawn`), for a failed reload or publish that
+    * keeps this package serving, until a reload replaces it or a rebind
+    * compiles every file.
     */
-   public async withdrawChangedUpstreams(): Promise<{
-      sources: string[];
-      tables: string[];
+   public async withdrawChangedUpstreams(
+      options: {
+         modelPaths?: readonly string[];
+         onlyUnread?: boolean;
+         hold?: boolean;
+      } = {},
+   ): Promise<UpstreamWithdrawal> {
+      const plan = this.mz.plan;
+      const unreadBefore = plan.withdrawnUnread;
+      if (options.onlyUnread && unreadBefore.size === 0) {
+         return NOTHING_WITHDRAWN;
+      }
+      let inScope: [string, PersistSourcePlan][] = [];
+      let found: {
+         changed: [string, PersistSourcePlan][];
+         changedTables: string[];
+         unread: [string, PersistSourcePlan][];
+         unreadTables: string[] | undefined;
+      };
+      try {
+         inScope = Object.entries(plan.servingPlan()?.sources ?? {}).filter(
+            ([, source]) =>
+               !options.onlyUnread ||
+               (source.sourceEntityId !== undefined &&
+                  unreadBefore.has(source.sourceEntityId)),
+         );
+         found = await this.readChangedUpstreams(inScope);
+      } catch (error) {
+         logger.warn(
+            "Could not read the upstream tables of a model kept from before a failed recompile; its stored tables answer live until a read succeeds",
+            { packageName: this.packageName, error: errMessage(error) },
+         );
+         // Already withdrawn as changed: it stays so.
+         const changedBefore = (id: string | undefined) =>
+            id !== undefined && plan.withdrawn.has(id) && !unreadBefore.has(id);
+         const unread = inScope.filter(
+            ([, source]) =>
+               !changedBefore(source.sourceEntityId) &&
+               ((source.sourceEntityId !== undefined &&
+                  unreadBefore.has(source.sourceEntityId)) ||
+                  options.modelPaths === undefined ||
+                  (source.modelPath !== undefined &&
+                     options.modelPaths.includes(source.modelPath))),
+         );
+         found = {
+            changed: [],
+            changedTables: [],
+            unread,
+            unreadTables: undefined,
+         };
+         // Nothing in scope to name (the plan itself could not be read):
+         // what is withdrawn now stays withdrawn.
+         if (unread.length === 0) return NOTHING_WITHDRAWN;
+      }
+      plan.withdraw(
+         found.changed.map(([id]) => id),
+         found.unread.map(([id]) => id),
+      );
+      if (options.hold && plan.withdrawn.size > 0) plan.holdWithdrawn(true);
+      const names = (sources: [string, PersistSourcePlan][]) =>
+         [...new Set(sources.map(([, s]) => s.name))].sort();
+      return {
+         sources: names(found.changed),
+         tables: found.changedTables,
+         unread: { sources: names(found.unread), tables: found.unreadTables },
+      };
+   }
+
+   /**
+    * Of `sources`, those a column of whose tables changed or is gone since
+    * the plan read them, and those a table of whose could not be read now
+    * (and did not change otherwise), each with its tables. See
+    * {@link withdrawChangedUpstreams}.
+    */
+   private async readChangedUpstreams(
+      sources: [string, PersistSourcePlan][],
+   ): Promise<{
+      changed: [string, PersistSourcePlan][];
+      changedTables: string[];
+      unread: [string, PersistSourcePlan][];
+      unreadTables: string[];
    }> {
       const known = this.mz.plan.upstreamSchemas;
-      const tables = Object.keys(known).map((key) => {
+      const keys = new Set(
+         sources.flatMap(([, s]) =>
+            (s.reads ?? []).map(upstreamTableKey).filter((key) => key in known),
+         ),
+      );
+      const tables = [...keys].map((key) => {
          const [connectionName, table] = JSON.parse(key) as [string, string];
          return { connectionName, table };
       });
-      if (tables.length === 0) return { sources: [], tables: [] };
-      const now = await readUpstreamSchemas({
-         tables,
-         connection: (name) => this.getMalloyConnection(name),
-         refresh: true,
-      });
+      // A failed read reads as failed, never as the last reading: that
+      // would say an upstream nobody could read is unchanged.
+      const now =
+         tables.length === 0
+            ? {}
+            : await readUpstreamSchemas({
+                 tables,
+                 connection: (name) => this.getMalloyConnection(name),
+                 refresh: true,
+                 keepLastOnFailure: false,
+              });
+      const unreadNow = (t: UpstreamTable) => {
+         const key = upstreamTableKey(t);
+         if (!(key in known)) return false;
+         const reading = now[key];
+         return (
+            reading === undefined ||
+            ("unread" in reading && reading.unread === "read_failed")
+         );
+      };
       // A source moves when a column its build SQL names changed or is
       // gone, as its address would (upstreamSchemaFold).
       const moved = (reads: UpstreamTable[], sql: string) =>
          upstreamSchemaFold(reads, known, sql) !==
          upstreamSchemaFold(reads, now, sql);
-      const withdrawn = Object.entries(
-         this.mz.plan.servingPlan()?.sources ?? {},
-      ).filter(
-         ([, source]) =>
-            source.reads !== undefined && moved(source.reads, source.sql),
-      );
-      const names = [...new Set(withdrawn.map(([, s]) => s.name))].sort();
-      const tableNames = [
-         ...new Set(
-            withdrawn.flatMap(([, source]) =>
-               (source.reads ?? [])
-                  .filter((r) => moved([r], source.sql))
-                  .map((r) => r.table),
-            ),
-         ),
-      ].sort();
-      this.mz.plan.withdraw(withdrawn.map(([sourceID]) => sourceID));
-      return { sources: names, tables: tableNames };
+      const changed: [string, PersistSourcePlan][] = [];
+      const unread: [string, PersistSourcePlan][] = [];
+      const changedTables = new Set<string>();
+      const unreadTables = new Set<string>();
+      for (const entry of sources) {
+         const [, source] = entry;
+         if (source.reads === undefined) continue;
+         const failed = source.reads.filter(unreadNow);
+         const read = source.reads.filter((t) => !unreadNow(t));
+         const movedTables = read.filter((t) => moved([t], source.sql));
+         if (read.length > 0 && moved(read, source.sql)) {
+            changed.push(entry);
+            for (const t of movedTables) changedTables.add(t.table);
+         } else if (failed.length > 0) {
+            unread.push(entry);
+            for (const t of failed) unreadTables.add(t.table);
+         }
+      }
+      return {
+         changed,
+         changedTables: [...changedTables].sort(),
+         unread,
+         unreadTables: [...unreadTables].sort(),
+      };
    }
 
    /** See {@link BuildPlanPackage.readTargetContainers}. */
@@ -3173,8 +3347,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       if (options.ifChanged && this.isCompiledFor(compiledFor)) {
          const last = this.reloadedFor!;
          // Unchanged, but a table the last bind could not read answers live
-         // until one reads it: bind again, which reads it again.
-         if (last.bound === requested && !this.mz.hasUnreadDatabaseTables()) {
+         // until one reads it: bind again, which reads it again. So does a
+         // stored table withdrawn while its upstream is unread.
+         if (
+            last.bound === requested &&
+            !this.mz.hasUnreadDatabaseTables() &&
+            this.mz.plan.withdrawnUnread.size === 0
+         ) {
             logger.debug(
                "Skipped reloading models: the manifest is unchanged",
                {
@@ -3190,6 +3369,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             last.quotedFrom === requested
                ? last.quoted
                : await this.quoteBoundTableNames(entries);
+         await this.rereadWithdrawnUpstreams();
          await this.mz.bindCompiled({
             database: quoted,
             databaseAsGiven: true,
@@ -3260,22 +3440,21 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       // source in the file to a 424. Its sources whose upstream changed stop
       // serving their stored tables, so they answer live, as the warehouse
       // now stands; the rest keep serving.
+      // An upstream that could not be read is not known to be unchanged:
+      // its sources stop serving too, until a read finds it unchanged (this
+      // call on a later rebind, the files compiling again included).
+      // A withdrawal held for a failed reload or publish this package
+      // survived (it kept no file itself) is read again in full: it is
+      // released only once every file compiles and that read succeeds.
       const kept = this.keepLastGoodModels(nextModels, outcome.fileDigests);
       const withdrawn =
          kept.length > 0
-            ? await this.withdrawChangedUpstreams().catch(
-                 (error): { sources: string[]; tables: string[] } => {
-                    logger.warn(
-                       "Could not read the upstream tables of a model kept from before a failed recompile",
-                       {
-                          packageName: this.packageName,
-                          error: errMessage(error),
-                       },
-                    );
-                    return { sources: [], tables: [] };
-                 },
-              )
-            : { sources: [], tables: [] };
+            ? await this.withdrawChangedUpstreams({
+                 modelPaths: kept.map((k) => k.modelPath),
+              })
+            : await this.withdrawChangedUpstreams(
+                 this.mz.plan.holdingWithdrawn ? {} : { onlyUnread: true },
+              );
       // Discover before installing, then install models and reports in one
       // synchronous step: a query must never see one without the other.
       const discoveryStarted = performance.now();
@@ -3285,11 +3464,17 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       // A kept model was hydrated under the policy being replaced.
       this.modelPolicy.handOffTo(nextModelPolicy);
       this.modelPolicy = nextModelPolicy;
+      this.kept = { models: kept, withdrawn };
       this.recompileFailedWarnings = kept.map((k) =>
          recompileFailedWarning(k, withdrawn),
       );
-      // While a kept model stands, no derivation serves what it withdrew.
-      this.mz.plan.holdWithdrawn(kept.length > 0);
+      // While a kept model stands, or an upstream is unread, no derivation
+      // serves what was withdrawn. Released only once every file compiles
+      // and every upstream read succeeds, never because this package kept
+      // no file of its own.
+      this.mz.plan.holdWithdrawn(
+         kept.length > 0 || this.mz.plan.withdrawnUnread.size > 0,
+      );
       // A kept model keeps the digests of the compile it came from.
       const compiledFrom = this.compiledFromOf(nextModels, outcome.fileDigests);
       for (const { modelPath } of kept) {
@@ -3356,6 +3541,43 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       warnInvalidExplores(this);
       this.logEmptyDiscoveryWarnings();
       return true;
+   }
+
+   /**
+    * Read again the upstream tables of the stored tables withdrawn as unread
+    * ({@link withdrawChangedUpstreams}), for a bind that does not recompile
+    * (an unchanged manifest's, or one that binds only `storage=` tables):
+    * each found unchanged serves again, each found changed stays withdrawn
+    * as changed, and the `model-recompile-failed` warnings and the stale
+    * report say what is still withdrawn. Nothing compiled, so a hold in
+    * force stays (on what is still withdrawn).
+    */
+   public async rereadWithdrawnUpstreams(): Promise<void> {
+      if (this.mz.plan.withdrawnUnread.size === 0) return;
+      const holding = this.mz.plan.holdingWithdrawn;
+      const reread = await this.withdrawChangedUpstreams({ onlyUnread: true });
+      const before = this.kept.withdrawn;
+      const withdrawn: UpstreamWithdrawal = {
+         sources: [...new Set([...before.sources, ...reread.sources])].sort(),
+         tables: [...new Set([...before.tables, ...reread.tables])].sort(),
+         unread: reread.unread,
+      };
+      const models = this.kept.models;
+      this.kept = { models, withdrawn };
+      this.recompileFailedWarnings = models.map((k) =>
+         recompileFailedWarning(k, withdrawn),
+      );
+      this.mz.plan.holdWithdrawn(
+         (holding || models.length > 0) && this.mz.plan.withdrawn.size > 0,
+      );
+      if (this.keptModelStaleness) {
+         this.keptModelStaleness = {
+            ...this.keptModelStaleness,
+            message: this.recompileFailedWarnings
+               .map((w) => w.message)
+               .join(" "),
+         };
+      }
    }
 
    /**

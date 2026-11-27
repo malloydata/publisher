@@ -396,4 +396,53 @@ describe("PlanLifecycle.withdraw", () => {
       await derivedAgain(plan);
       expect([...plan.withdrawn]).toEqual([]);
    });
+
+   it("withdraws an unread upstream's sources as unread, apart from the changed", async () => {
+      const { plan } = lifecycle();
+      await plan.load(okWorkerPlan(richOutcome()));
+      plan.withdraw(["a@m.malloy"], ["b@m.malloy"]);
+      expect([...plan.withdrawn].sort()).toEqual(["addr-a", "addr-b"]);
+      expect([...plan.withdrawnUnread]).toEqual(["addr-b"]);
+   });
+
+   it("returns an unread source to serving once a later read confirms it, and keeps the changed", async () => {
+      const { plan } = lifecycle();
+      await plan.load(okWorkerPlan(richOutcome()));
+      plan.withdraw(["a@m.malloy"], ["b@m.malloy"]);
+      plan.withdraw([], []);
+      expect([...plan.withdrawn]).toEqual(["addr-a"]);
+      expect([...plan.withdrawnUnread]).toEqual([]);
+   });
+
+   it("never turns a source withdrawn as changed into an unread one", async () => {
+      const { plan } = lifecycle();
+      await plan.load(okWorkerPlan(richOutcome()));
+      plan.withdraw(["a@m.malloy"]);
+      plan.withdraw([], ["a@m.malloy", "b@m.malloy"]);
+      expect([...plan.withdrawn].sort()).toEqual(["addr-a", "addr-b"]);
+      expect([...plan.withdrawnUnread]).toEqual(["addr-b"]);
+   });
+
+   it("moves an unread source a later read finds changed to changed", async () => {
+      const { plan } = lifecycle();
+      await plan.load(okWorkerPlan(richOutcome()));
+      plan.withdraw([], ["b@m.malloy"]);
+      plan.withdraw(["b@m.malloy"], []);
+      expect([...plan.withdrawn]).toEqual(["addr-b"]);
+      expect([...plan.withdrawnUnread]).toEqual([]);
+   });
+
+   it("holds the unread withdrawals across a derivation, as unread, until released", async () => {
+      const { plan } = lifecycle();
+      await plan.load(okWorkerPlan(richOutcome()));
+      plan.withdraw(["a@m.malloy"], ["b@m.malloy"]);
+      plan.holdWithdrawn(true);
+      await derivedAgain(plan);
+      expect([...plan.withdrawn].sort()).toEqual(["addr-a", "addr-b"]);
+      expect([...plan.withdrawnUnread]).toEqual(["addr-b"]);
+      plan.holdWithdrawn(false);
+      await derivedAgain(plan);
+      expect([...plan.withdrawn]).toEqual([]);
+      expect([...plan.withdrawnUnread]).toEqual([]);
+   });
 });
