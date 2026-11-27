@@ -220,6 +220,12 @@ export interface QueryPathInput {
    /** For a storage answer: the bindings whose tables the routed query read. */
    storageTablesRead?: readonly StorageTable[];
    /**
+    * The `sourceID`s the queried source's own `%{}` embeds read, when it is
+    * a `.sql()` source (`ownSqlEmbedReach`): the tables of a union it reads
+    * in its own place, each named `used`.
+    */
+   sqlEmbedReach?: ReadonlySet<string>;
+   /**
     * For a rollup answer read through a join in a storage destination (known
     * limitation 26): the query source's stored tables it read beside the
     * rollup's, each named as used.
@@ -619,9 +625,17 @@ function storageTableDecisions(
       const own = input.chain
          .map((id) => tablesRead.find((b) => b.sourceIDs?.includes(id)))
          .find((b) => b !== undefined);
-      // None of them on the chain (a `.sql()` source's `%{}` of several
-      // stored sources, a union): each one answered alike, so each is named.
-      const answering = own ? [own] : tablesRead;
+      // None of them on the chain: a `.sql()` source's `%{}` of several
+      // stored sources (a union) read each one alike, so each is named; never
+      // a table read only through a join, as for any other source.
+      const embedded = tablesRead.filter((b) =>
+         b.sourceIDs?.some((id) => input.sqlEmbedReach?.has(id)),
+      );
+      const answering = own
+         ? [own]
+         : embedded.length > 0
+           ? embedded
+           : tablesRead.slice(0, 1);
       const placed =
          storageAnswered ||
          considered.some(

@@ -37,6 +37,7 @@ import {
    type Snapshot,
 } from "./materialization/domain/binding";
 import type { ServedCopyServe } from "./materialization/serve/served_copy_serve";
+import { ownSqlEmbedReach } from "./materialization";
 import {
    explanationOfDecline,
    isDeclineOf,
@@ -400,6 +401,7 @@ export async function queryPathFor(
          storageWarned: !storageServes(getPersistStorageMode()),
          considered: answer.considered,
          storageTablesRead: routed?.tablesRead?.map(toTable),
+         sqlEmbedReach: ownSqlEmbedReach(struct, modelDef),
          ...(answer.leg === "rollup"
             ? {
                  rollupTablesRead: answer.answer.shapeBindings

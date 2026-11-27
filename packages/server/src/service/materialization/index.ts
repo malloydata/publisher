@@ -31,3 +31,4 @@ export {
    planChainBuildText,
 } from "./serve/served_copy_serve";
 export { bigqueryBuildCompareBinary } from "./serve/collation/bigquery_build";
+export { ownSqlEmbedReach } from "./serve/sql_embed_reads";

@@ -430,6 +430,39 @@ describe("the fix: the .sql() source persisted with the same storage= as what it
    });
 });
 
+describe("a .sql() union with a join to another stored source, in their own database", () => {
+   const joined = `${outreach()}
+source: outreach_joined is outreach_daily extend {
+  join_one: c is carriers_copy on c.code = 'AA'
+}
+`;
+   const queries: Record<string, Query> = {
+      joined: {
+         model: "outreach.malloy",
+         query: "run: outreach_joined -> { aggregate: n is count(), regions is c.carrier_count }",
+      },
+      carriers: {
+         model: "outreach.malloy",
+         query: "run: carriers_copy -> { aggregate: carrier_count }",
+      },
+   };
+   const s = scenario({ "outreach.malloy": joined }, queries);
+
+   it("names only the tables its %{} reads used, never the join's", () => {
+      expect(answer(s.served.joined)).toEqual({
+         servedBy: "materialized",
+         rows: answer(s.live.joined).rows,
+      });
+      const carriersTable = s.paths.carriers?.servedBy.tableId;
+      expect(carriersTable).toBeDefined();
+      const used = (s.paths.joined?.considered ?? []).filter(
+         (c) => c.outcome === "used",
+      );
+      expect(used).toHaveLength(2);
+      expect(used.map((c) => c.tableId)).not.toContain(carriersTable);
+   });
+});
+
 describe("a .sql() source's %{} of a gated stored source", () => {
    it("refuses the load, as live does", async () => {
       const restore = installSettings({
