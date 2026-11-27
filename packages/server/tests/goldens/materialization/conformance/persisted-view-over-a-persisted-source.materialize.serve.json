@@ -14,7 +14,7 @@
     "warnings": [
       {
         "code": "persist-view-not-built",
-        "message": "#@ persist on view \"by_region\" of source \"pv_base\" is not built, so the view is served live: its upstream 'pv_base' is stored in the storage= destination 'lake', whose table a build in the warehouse cannot read, and a downstream is never built by recomputing its upstream from raw; it is answered live, over 'pv_base''s table.",
+        "message": "#@ persist on view \"by_region\" of source \"pv_base\" is not built, so the view is served live: its upstream 'pv_base' is stored in the storage= destination 'lake', whose table a build in the warehouse cannot read, and a downstream is never built by recomputing its upstream from raw; it is answered live.",
         "subject": "pv_base -> by_region"
       }
     ]

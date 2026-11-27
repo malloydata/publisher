@@ -1777,8 +1777,19 @@ async function compileServedCopy(
       });
       // Not a `file://` template, which parses host=`D:` on Windows.
       const modelURL = pathToFileURL(path.join(job.packagePath, job.modelPath));
+      const virtualMap = job.virtualMap
+         ? new Map(
+              job.virtualMap.map(
+                 ([connection, handles]) =>
+                    [connection, new Map(handles)] as const,
+              ),
+           )
+         : undefined;
       const model = await runtime
-         .loadModel(modelURL, { importBaseURL: new URL(".", modelURL) })
+         .loadModel(modelURL, {
+            importBaseURL: new URL(".", modelURL),
+            ...(virtualMap ? { virtualMap } : {}),
+         })
          .getModel();
       return done({ modelDef: model._modelDef });
    } catch (error) {

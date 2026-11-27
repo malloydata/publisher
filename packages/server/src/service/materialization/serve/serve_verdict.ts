@@ -19,6 +19,7 @@
 
 import type { components } from "../../../api";
 import { readTier, storageServes } from "../domain/placement";
+import { SQL_EMBED_FIX } from "../domain/source_decline";
 import type { StorageMode } from "../domain/switches";
 import type { Tier } from "../domain/vocabulary";
 import {
@@ -718,7 +719,43 @@ function boundVerdict(
          : {}),
    };
    const base = { ...s.base, ...where };
-   const notServed = (): ServeVerdict => ({
+   // Left out of every copy only because a `.sql()` source's `%{}` reads it
+   // on another connection than its table: said as that, with its fix.
+   const sqlEmbedReasons = new Set(
+      (copy?.notServedIn ?? []).flatMap((n) => n.reasons),
+   );
+   const onlySqlEmbed =
+      copy !== undefined &&
+      copy.notServedIn.length > 0 &&
+      [...sqlEmbedReasons].every(
+         (r) => r === "sql_embed_cross_connection" || r === "sql_embed_bare",
+      );
+   const notServed = (): ServeVerdict =>
+      onlySqlEmbed
+         ? {
+              ...live(
+                 "served_copy",
+                 `${subject}'s table is bound, but a \`.sql()\` source's ` +
+                    "`%{}` reads it " +
+                    (sqlEmbedReasons.has("sql_embed_bare")
+                       ? "whole (`%{ <source> }`), which its stored table " +
+                         "cannot be embedded as"
+                       : "with SQL that runs on another connection than its " +
+                         "table is read on (a storage destination, or a " +
+                         "managed catalog read through one), which a `%{}` " +
+                         "cannot reach") +
+                    ", so no query is answered from it (" +
+                    copy.notServedIn.map((n) => n.model).join(", ") +
+                    "). The served-copy-not-served warning names the " +
+                    "`.sql()` source.",
+                 [...sqlEmbedReasons].map(
+                    (r) => SQL_EMBED_FIX[r as keyof typeof SQL_EMBED_FIX],
+                 ),
+              ),
+              ...where,
+           }
+         : notServedAny();
+   const notServedAny = (): ServeVerdict => ({
       ...live(
          "served_copy",
          `${subject}'s table is bound, but no model's served copy reads ` +

@@ -2964,6 +2964,7 @@ export class Model {
             this.ensureSharedQueryModel(materializer),
          modelPath: () => this.modelPath,
          modelDef: () => this.modelDef,
+         siblingModelDef: (url) => this.siblingModelDefResolver?.(url),
          // Database tables (on the source's own connection) need no
          // destination.
          serveDestinationConfig: () => this.servingDestinationConfig(),

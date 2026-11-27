@@ -114,17 +114,22 @@ export class GeneratedFiles {
 
    /**
     * Load the package's own model (the `modelPath` of `packageFiles`)
-    * over `overlay`. Throws for a compiler over a host's factory, which
-    * names no model of its own.
+    * over `overlay`, with `virtualMap` resolving the `virtual()` sources a
+    * `.sql()` source's `%{}` reads when its schema is fetched. Throws for a
+    * compiler over a host's factory, which names no model of its own.
     */
    async loadModel(
       overlay: ReadonlyMap<string, string> = new Map(),
+      options: { virtualMap?: Map<string, Map<string, string>> } = {},
    ): Promise<LoadedFiles> {
       const { runtime, importBaseURL, modelURL } = await this.runtimeFor(
          keyedOverlay(overlay),
       );
       if (!modelURL) throw new Error("no package model to load");
-      const materializer = runtime.loadModel(modelURL, { importBaseURL });
+      const materializer = runtime.loadModel(modelURL, {
+         importBaseURL,
+         ...(options.virtualMap ? { virtualMap: options.virtualMap } : {}),
+      });
       return { runtime, importBaseURL, materializer };
    }
 

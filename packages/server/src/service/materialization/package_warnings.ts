@@ -15,6 +15,7 @@ import {
    type PackageAnnotationFinding,
 } from "../annotation_reader";
 import { rollupLabel } from "./domain/rollup_measures";
+import { SQL_EMBED_FIX } from "./domain/source_decline";
 import { components } from "../../api";
 import { PACKAGE_MANIFEST_NAME } from "../../constants";
 import { CLASSIFICATION_COVERAGE } from "../classification";
@@ -1203,6 +1204,25 @@ function servedCopyProblemReasonMessage(
             "classification checks flag on the served copy, so its queries are not answered from the " +
             "stored tables (a Publisher bug; please report it): " +
             [...(problem.leaks ?? []), ...(problem.coverage ?? [])].join(" ")
+         );
+      case "sql_embed_cross_connection":
+         return (
+            "This source is read through a `.sql()` source's `%{}`" +
+            (problem.detail ? ` (${problem.detail})` : "") +
+            ", whose SQL runs on its own connection, while its table is read on another (a storage " +
+            "destination, or a managed catalog read through one), which a `%{}` cannot reach. The served copy " +
+            "leaves this source as written, so its queries are answered live, and the model's other stored " +
+            "sources still serve. " +
+            SQL_EMBED_FIX.sql_embed_cross_connection
+         );
+      case "sql_embed_bare":
+         return (
+            "This source is embedded whole by a `.sql()` source's `%{}`" +
+            (problem.detail ? ` (${problem.detail})` : "") +
+            ", which Malloy allows only of a source it can compile to SQL, and its stored table is not " +
+            "one. The served copy leaves this source as written, so its queries are answered live, and " +
+            "the model's other stored sources still serve. " +
+            SQL_EMBED_FIX.sql_embed_bare
          );
    }
 }

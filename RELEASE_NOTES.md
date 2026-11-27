@@ -21,6 +21,21 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — stored sources read through a `.sql()` source's `%{}` serve, and no longer take their file down
+
+**[fix] A `.sql()` source that reads a stored source through `%{}` no longer turns off serving for its whole file.** Take two `#@ persist` sources unioned in SQL: `source: outreach_daily is conn.sql("""select * from %{ email_daily_rows -> { select: * } } union all by name select * from %{ linkedin_daily_rows -> { select: * } }""")`. The served copy of that file did not compile ("No virtual-map entry for virtual source …"). Every stored source in it, and in every file importing it, then answered live with `compile_failed`, including sources no `%{}` reads. A bare `%{ x }` of a stored source did the same on any tier ("Source is not persistable, cannot be used in SQL"). The served copy now compiles with the tables it re-roots, so in the sources' own database the union is served from both tables. A source a `%{}` cannot read from its table is left as written, alone. That covers a source embedded bare, and one whose table is in a storage destination or a managed (DuckLake) catalog, which the `%{}`'s connection cannot reach. The file's other sources serve, and so do those of every file that imports it, even one that imports only some of its names.
+
+**[fix] A stored source read only through a `.sql()` source's `%{}` no longer reads `unreachable`.** The reach walk follows each `%{}`, so such a source reads `serves`. The query's path report names each table the union's own `%{}` read as `used`, never a table read only through a join.
+
+**[fix] Where a `%{}` cannot read a stored table, the verdict says why.** Such a source's verdict is `live` (`served_copy`) with a new `notServedIn` reason, and a `served-copy-not-served` warning names the `.sql()` source and its connection. `publisher_served_copy_bind_total` counts both new reasons.
+
+- `sql_embed_cross_connection`: the `%{}`'s SQL runs on another connection than the table. Fixes: persist the `.sql()` source itself with the same `storage=` as what it reads, or drop `storage=` from what it reads. On a DuckLake or managed connection, build what it reads into a warehouse table read with `.table()`.
+- `sql_embed_bare`: a bare `%{ x }`. Fix: write it as `%{ x -> { select: * } }`.
+
+**[fix] A refused downstream's message no longer says it is answered "over" its upstream's table.** That was not true where the upstream's table is not served. The message now says only that it is answered live. 0.18 and earlier said this too.
+
+**Who is affected:** a package with a `.sql()` source whose `%{}` reads a stored source. **What to do:** nothing in a source's own database with `%{ x -> { … } }`; otherwise, read the verdict's fix.
+
 ## [Unreleased] — a rollup checks the key of a `join_one` its grain reads
 
 **[feature] A coarser query is served again once the joined key is proven unique.** A `#(rollup)` whose grain reads through a `join_one` (`grain=["account.region", "period_month"]`, or `region is account.region` in the grain) answered every query that read nothing through the join live, since a repeated `account_id` would have inflated the partials its build summed. Each build of such a rollup now also checks the join's key in the joined source, as a query of that source by name reads it (its own `where:` included), and records the verdict in the table's column contract. Unique, `run: subs -> { group_by: period_month; aggregate: mrr }` is served from the rollup again. Repeated or unchecked, it is still answered live (`COUNT_SEMANTICS`), and the detail says which; a repeated key also raises `rollup-join-one-key-repeated` on the rollup's source while that table is bound. A rebuild checks again. The `publisher_materialization_key_check_total` counter gains the kind `grain_join`. No API field is added.

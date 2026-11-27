@@ -220,6 +220,12 @@ export interface QueryPathInput {
    /** For a storage answer: the bindings whose tables the routed query read. */
    storageTablesRead?: readonly StorageTable[];
    /**
+    * The `sourceID`s the queried source's own `%{}` embeds read, when it is
+    * a `.sql()` source (`ownSqlEmbedReach`): the tables of a union it reads
+    * in its own place, each named `used`.
+    */
+   sqlEmbedReach?: ReadonlySet<string>;
+   /**
     * For a rollup answer read through a join in a storage destination (known
     * limitation 26): the query source's stored tables it read beside the
     * rollup's, each named as used.
@@ -616,22 +622,49 @@ function storageTableDecisions(
       // its chain first), not whichever the served copy read first: a fact
       // read through a persisted join is not served from the join's table.
       const tablesRead = input.storageTablesRead ?? [];
-      const first =
-         input.chain
-            .map((id) => tablesRead.find((b) => b.sourceIDs?.includes(id)))
-            .find((b) => b !== undefined) ?? tablesRead[0];
+      const own = input.chain
+         .map((id) => tablesRead.find((b) => b.sourceIDs?.includes(id)))
+         .find((b) => b !== undefined);
+      // None of them on the chain: a `.sql()` source's `%{}` of several
+      // stored sources (a union) read each one alike, so each is named; never
+      // a table read only through a join, as for any other source.
+      const embedded = tablesRead.filter((b) =>
+         b.sourceIDs?.some((id) => input.sqlEmbedReach?.has(id)),
+      );
+      const answering = own
+         ? [own]
+         : embedded.length > 0
+           ? embedded
+           : tablesRead.slice(0, 1);
       const placed =
          storageAnswered ||
          considered.some(
             (c) => c.outcome === "used" || c.reason === "READ_FAILED",
          );
-      if (storageDecision.outcome === "used" && first && !placed) {
-         const t = stateOfBinding(input, first, freshStorage);
-         if (input.runFailed) {
-            skip(t, "READ_FAILED");
-         } else {
-            markUsed(t);
-            storageAnswered = true;
+      if (storageDecision.outcome === "used" && !placed) {
+         const named = new Set<string>();
+         for (const b of answering) {
+            const t = stateOfBinding(input, b, freshStorage);
+            if (t.tableId !== undefined) {
+               if (named.has(t.tableId)) continue;
+               named.add(t.tableId);
+            }
+            if (input.runFailed) {
+               skip(t, "READ_FAILED");
+            } else if (storageAnswered) {
+               // The first named is `servedBy`; the rest are used beside it.
+               if (t.tableId) {
+                  considered.push({
+                     tableId: t.tableId,
+                     kind: t.kind,
+                     ...originField(t),
+                     outcome: "used",
+                  });
+               }
+            } else {
+               markUsed(t);
+               storageAnswered = true;
+            }
          }
       }
    } else {
