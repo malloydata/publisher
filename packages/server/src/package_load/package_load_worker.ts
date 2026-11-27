@@ -64,13 +64,21 @@ import {
    jobFiles,
    ModelCacheView,
    modelFileTexts,
+   urlKey,
    type JobFiles,
 } from "./job_files";
 import { translatorMalloyError } from "../service/translator_error";
 import { extractCheckedModel } from "../service/model_load_checks";
 import { modelInfoOf } from "../service/model_info";
 import { compileNotebookCells } from "../service/model_notebook_cell";
-import { boundedManifestValue } from "../service/package_revision";
+import {
+   boundedDeclaration,
+   UNREADABLE_SHA,
+} from "../service/package_revision";
+import {
+   readPackageWorkflows,
+   workflowsToWire,
+} from "../service/skills/package_workflows";
 import {
    PackageMaterializationConfig,
    PackageScope,
@@ -150,6 +158,7 @@ import type {
    WorkerBuildPlan,
    WorkerLogMessage,
    WorkerUnhandledRejectionMessage,
+   WorkflowsRead,
 } from "./protocol";
 import { PACKAGE_LOAD_PROTOCOL_VERSION } from "./protocol";
 
@@ -785,6 +794,7 @@ async function declaredReportPaths(
 async function readPackageMetadata(
    packagePath: string,
    modelPaths: readonly string[],
+   readWorkflows: boolean,
 ): Promise<{
    name?: string;
    description?: string;
@@ -798,7 +808,7 @@ async function readPackageMetadata(
    deprecatedManifestKeys?: DeprecatedManifestKey[];
    retrieval?: PackageRetrievalSettings;
    manifestFindings?: ApiPackageWarning[];
-   workflows?: unknown;
+   workflowsRead?: WorkflowsRead;
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    // Inside the package only, and one answer for any manifest that cannot be
@@ -849,6 +859,19 @@ async function readPackageMetadata(
             `Fix: { "name": "my-package" }.`,
       );
    }
+   // Read before the compile, which answers the main thread's schema fetches
+   // between awaits that a synchronous walk would stall.
+   const declaration = boundedDeclaration(parsed.workflows);
+   const workflowsRead: WorkflowsRead | undefined = readWorkflows
+      ? {
+           ...(declaration.sha !== undefined && {
+              declarationSha: declaration.sha,
+           }),
+           walk: workflowsToWire(
+              readPackageWorkflows(packagePath, declaration.value),
+           ),
+        }
+      : undefined;
    // Scope has two homes (canonical `materialization.scope`, deprecated root);
    // an invalid value or a conflict throws.
    const scope = resolvePackageScope(parsed.scope, parsed.materialization);
@@ -912,7 +935,7 @@ async function readPackageMetadata(
       retrieval: await readPackageRetrieval(packagePath, parsed.retrieval),
       // Findings with a code, which a manifestWarning has none of.
       manifestFindings: agentsNotReadFindings(parsed),
-      workflows: boundedManifestValue(parsed.workflows),
+      workflowsRead,
    };
 }
 
@@ -1387,6 +1410,7 @@ async function compileNotebookModel(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
    modelPath: string,
+   files: JobFiles,
 ): Promise<SerializedModel> {
    const compileStart = performance.now();
    const fullPath = path.join(job.packagePath, modelPath);
@@ -1395,6 +1419,8 @@ async function compileNotebookModel(
 
    const { runtime, urlReader } = buildRuntimeForModel(job, malloyConfig);
    const fileContents = await readPackageURL(job.packagePath, modelURL);
+   // Beside the texts the other models read, so the load hashes it too.
+   files.texts.set(modelURL.toString(), fileContents);
    const { materializer, cells } = await compileNotebookCells(
       runtime,
       importBaseURL,
@@ -1475,7 +1501,7 @@ async function compileOneModel(
          );
       }
       if (modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
-         return await compileNotebookModel(job, malloyConfig, modelPath);
+         return await compileNotebookModel(job, malloyConfig, modelPath, files);
       }
       return {
          modelPath,
@@ -1526,6 +1552,7 @@ async function loadPackage(
    const packageMetadata = await readPackageMetadata(
       job.packagePath,
       modelPaths,
+      job.readWorkflows === true,
    );
    const refresh: SchemaRefresh | undefined =
       job.refreshTimestamp !== undefined
@@ -1601,6 +1628,7 @@ async function loadPackage(
       job.requestId,
    );
    const loadEnd = performance.now();
+   const fileDigests = fileTextDigests(files);
    return {
       type: "load-package-result",
       requestId: job.requestId,
@@ -1609,7 +1637,10 @@ async function loadPackage(
       models,
       replacementMatchedExisting,
       ...(refresh ? { refreshedSchemaKeys: [...refresh.refetched] } : {}),
-      fileDigests: fileTextDigests(files),
+      fileDigests,
+      ...(job.readWorkflows
+         ? { modelShas: modelContentShas(job.packagePath, models, fileDigests) }
+         : {}),
       loadDurationMs: loadEnd - loadStart,
       timings: {
          // Clamped: rounding can nudge it slightly negative.
@@ -1625,6 +1656,22 @@ async function loadPackage(
       },
       buildPlan,
    };
+}
+
+/** The sha256 of the text each model's compile read, `UNREADABLE_SHA` for a model whose file was never read. */
+function modelContentShas(
+   packagePath: string,
+   models: readonly SerializedModel[],
+   fileDigests: Readonly<Record<string, string>>,
+): Map<string, string> {
+   return new Map(
+      models.map(({ modelPath }) => [
+         modelPath,
+         fileDigests[
+            urlKey(pathToFileURL(path.join(packagePath, modelPath)).href)
+         ] ?? UNREADABLE_SHA,
+      ]),
+   );
 }
 
 /**

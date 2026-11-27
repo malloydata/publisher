@@ -58,6 +58,7 @@ import type {
    TargetContainer,
    TargetContainerReadings,
 } from "../service/materialization/domain/target_containers";
+import type { PackageWorkflowsWire } from "../service/skills/package_workflows";
 
 /**
  * Version of this wire protocol. The worker stamps it on every
@@ -88,8 +89,12 @@ import type {
  * plan's `upstreamSchemas`.
  *
  * 9: the target-container read ({@link TargetContainersRequest}).
+ *
+ * 10: the skills walk and the content shas of the serving identity
+ * ({@link LoadPackageRequest.readWorkflows}, `workflowsRead`, `modelShas`),
+ * which replace `packageMetadata.workflows`.
  */
-export const PACKAGE_LOAD_PROTOCOL_VERSION = 9;
+export const PACKAGE_LOAD_PROTOCOL_VERSION = 10;
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -184,6 +189,13 @@ export interface LoadPackageRequest {
     * thread connection's. Absent, the load reads cached schemas.
     */
    refreshTimestamp?: number;
+   /**
+    * Walk the package's workflows and skill sets, and hash the files its
+    * serving identity covers, in this job (`workflowsRead`, `modelShas`): the
+    * main thread then only adopts them. Set by the loads that install a
+    * package; every other job skips the walk.
+    */
+   readWorkflows?: true;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -269,6 +281,13 @@ export interface SerializedModel {
 
 export type { SerializedNotebookCell } from "./notebook_cell_wire";
 
+/** The package's workflows as the worker walked them: what the serving identity installs and hashes, with no file left for the main thread to read. */
+export interface WorkflowsRead {
+   /** The sha256 of the manifest's canonical `workflows` declaration; absent when it declares none. */
+   declarationSha?: string;
+   walk: PackageWorkflowsWire;
+}
+
 export interface LoadPackageResult {
    type: "load-package-result";
    requestId: string;
@@ -291,8 +310,8 @@ export interface LoadPackageResult {
       retrieval?: PackageRetrievalSettings;
       /** Findings with a code the manifest raised (a key an earlier release read). */
       manifestFindings?: ApiPackageWarning[];
-      /** The manifest's `workflows` value, unvalidated: the main thread validates it and warns instead of throwing. */
-      workflows?: unknown;
+      /** The manifest's workflows, read; present only for a job with `readWorkflows`. */
+      workflowsRead?: WorkflowsRead;
    };
    models: SerializedModel[];
    /** Whether the replacement path exactly matched an enumerated package file. */
@@ -310,6 +329,12 @@ export interface LoadPackageResult {
     * author's edit is never mistaken for one that failed on a dropped table.
     */
    fileDigests?: Record<string, string>;
+   /**
+    * The sha256 of each model file's text this load's compile read, by model
+    * path, `UNREADABLE_SHA` for one it could not read; present only for a job
+    * with `readWorkflows`, and for every model it compiled.
+    */
+   modelShas?: Map<string, string>;
    /** Wall-clock ms inside the worker for the full package load. */
    loadDurationMs: number;
    /**

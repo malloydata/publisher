@@ -16,7 +16,7 @@ export const ASSET_MAX_ENTRIES = 1000;
 /** Entries of any kind `listBounded` reads (a skill's `reference/`, or a linked `assets/`) before the listing stops. */
 export const REFERENCE_MAX_EXAMINED = 10_000;
 
-const SKILL_MD = "SKILL.md";
+export const SKILL_MD = "SKILL.md";
 /** A skill's Markdown folder goes by either name, and both are read the same way. */
 export const REFERENCE_DIRS = ["reference", "references"];
 export const isReferenceDir = (name: string): boolean =>

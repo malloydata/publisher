@@ -80,6 +80,7 @@ import type {
    SchemaForTablesResponse,
    SerializedModel,
    WorkerLogMessage,
+   WorkflowsRead,
    WorkerToMainMessage,
 } from "./protocol";
 import {
@@ -273,6 +274,8 @@ export interface LoadPackageJob {
    publishedVersion?: boolean;
    /** See {@link LoadPackageRequest.withEntities}. */
    withEntities?: boolean;
+   /** See {@link LoadPackageRequest.readWorkflows}. */
+   readWorkflows?: true;
    /**
     * Background work (a connection edit's build-plan re-derivation): stays on
     * this thread's queue behind every foreground job, so a publish or reload
@@ -328,8 +331,8 @@ export interface LoadPackageOutcome {
       retrieval?: PackageRetrievalSettings;
       /** See {@link LoadPackageResult.packageMetadata.manifestFindings}. */
       manifestFindings?: ApiPackageWarning[];
-      /** See {@link LoadPackageResult.packageMetadata.workflows}. */
-      workflows?: unknown;
+      /** See {@link LoadPackageResult.packageMetadata.workflowsRead}. */
+      workflowsRead?: WorkflowsRead;
    };
    replacementMatchedExisting?: boolean;
    models: Array<
@@ -345,6 +348,8 @@ export interface LoadPackageOutcome {
    buildPlan?: LoadPackageResult["buildPlan"];
    /** See {@link LoadPackageResult.fileDigests}. */
    fileDigests?: Readonly<Record<string, string>>;
+   /** See {@link LoadPackageResult.modelShas}. */
+   modelShas?: ReadonlyMap<string, string>;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -647,6 +652,7 @@ export class PackageLoadPool {
          computeBuildPlan: qj.request.computeBuildPlan,
          ...(qj.request.publishedVersion ? { publishedVersion: true } : {}),
          withEntities: qj.request.withEntities,
+         ...(qj.request.readWorkflows ? { readWorkflows: true } : {}),
          mainThreadWorkBudgetMs: this.mainThreadWorkBudgetMs,
          ...(qj.request.refreshSchemas
             ? { refreshTimestamp: nextRefreshTimestamp() }
@@ -1392,6 +1398,7 @@ function adaptResult(result: LoadPackageResult): LoadPackageOutcome {
       timings: result.timings,
       buildPlan: result.buildPlan,
       ...(result.fileDigests ? { fileDigests: result.fileDigests } : {}),
+      ...(result.modelShas ? { modelShas: result.modelShas } : {}),
    };
 }
 

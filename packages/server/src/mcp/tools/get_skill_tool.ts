@@ -14,12 +14,12 @@ import {
    namedSkillFiles,
    readSkillFile,
    resolveSkills,
-   SKILL_MD,
    skillFileList,
    skillFilePath,
    skillFileView,
    type ResolvedSkill,
 } from "../../service/skills/package_skills";
+import { SKILL_MD } from "../../service/skills/skill_files";
 import { largest, wireChars } from "../reply_budget";
 import { jsonResource } from "../tool_response";
 import { parseEnvironmentName, parsePackageName } from "../../service/identity";

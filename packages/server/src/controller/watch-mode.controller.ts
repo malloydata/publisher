@@ -13,7 +13,7 @@ import type { PackageLookup } from "../service/environment_ports";
 import { EnvironmentStore } from "../service/environment_store";
 import type { Environment } from "../service/environment";
 import { parseEnvironmentName, parsePackageName } from "../service/identity";
-import { workflowFileServed } from "../service/skills/package_skills";
+import { workflowFileServed } from "../service/skills/package_workflows";
 
 type WatchStatusRes = components["schemas"]["WatchStatus"];
 

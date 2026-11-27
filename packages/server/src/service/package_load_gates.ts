@@ -87,6 +87,35 @@ export function assertOutcomeStagesAvailable(
 }
 
 /**
+ * A load that installs a package ships the workflows walk and a sha for every
+ * file its serving identity hashes. Checked before anything is installed, so
+ * adopting the outcome only assigns, and a worker that left something out
+ * fails the load instead of half of a reload.
+ */
+export function assertServingIdentityShipped(
+   outcome: LoadPackageOutcome,
+): void {
+   const read = outcome.packageMetadata.workflowsRead;
+   const { modelShas } = outcome;
+   if (!read || !modelShas) {
+      throw new PackageLoadProtocolError(
+         `a load-package-result for an installing load has no workflows walk or model shas`,
+      );
+   }
+   const unhashed = [
+      ...outcome.models
+         .map((m) => m.modelPath)
+         .filter((p) => !modelShas.has(p)),
+      ...read.walk.paths.filter((p) => !read.walk.contentShas.has(p)),
+   ];
+   if (unhashed.length > 0) {
+      throw new PackageLoadProtocolError(
+         `a load-package-result has no sha for ${unhashed.length} file(s) the serving identity hashes, starting with ${unhashed[0]}`,
+      );
+   }
+}
+
+/**
  * Fail-safe at load: a bad explores entry doesn't fail the package
  * (its models still load and listModels hides the unmatched entry — it
  * never falls back to listing everything). Warn so the misconfig is

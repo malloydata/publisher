@@ -7,10 +7,10 @@ import {
    BUNDLED_CATALOG,
    fileChangedMessage,
    resolveSkills,
-   SKILL_MD,
    skillFileView,
    type ResolvedSkill,
 } from "../service/skills/package_skills";
+import { SKILL_MD } from "../service/skills/skill_files";
 import type { PackageLookup } from "../service/environment_ports";
 import { VersionRef } from "../service/identity";
 import { loadedPackage } from "./loaded_package";

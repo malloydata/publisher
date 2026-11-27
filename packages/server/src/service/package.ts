@@ -93,6 +93,7 @@ import {
    PackageManifestError,
    PackageNotFoundError,
    ServiceUnavailableError,
+   WorkflowsUnavailableError,
 } from "../errors";
 import { applyExtensionSessionSettings } from "./duckdb_session_setup";
 import { authorSqlRefusals, sandboxedDuckDBOptions } from "./duckdb_lockdown";
@@ -117,17 +118,18 @@ import {
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
 import {
    advertisedSkills,
-   emptyWorkflows,
    pickedSets,
-   readPackageWorkflows,
    readWorkflowFile,
    workflowFilePath,
    workflowSkillSet,
-   type PackageWorkflows,
    type ServedSkill,
 } from "./skills/package_skills";
 import {
-   canonicalJson,
+   adoptWorkflows,
+   emptyWorkflows,
+   type PackageWorkflows,
+} from "./skills/package_workflows";
+import {
    computeSourceContentSha,
    mintServedRevision,
 } from "./package_revision";
@@ -262,6 +264,7 @@ import { persistNameProblems } from "./materialization/plan/persist_annotation_v
 import {
    applyLoadGates,
    assertOutcomeStagesAvailable,
+   assertServingIdentityShipped,
    loadOutcomeOrThrow,
    warnInvalidExplores,
    type LoadGatedPackage,
@@ -611,18 +614,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    private servedRevision: string = mintServedRevision();
    private sourceContentSha: string = "";
    /**
-    * The workflows the manifest declares and the skill sets they list, refreshed
-    * with the content sha so an edit to either is covered by the reload receipt
-    * by construction.
+    * The workflows the manifest declares and the skill sets they list, as the
+    * load worker walked them, installed with the content sha so an edit to
+    * either is covered by the reload receipt by construction.
     */
    private workflows: PackageWorkflows = emptyWorkflows();
    /** The skills the package advertises: its `default` workflow's, read from `workflows`. */
    private packageSkills: ServedSkill[] = [];
-   /**
-    * The manifest's raw `workflows` value, held apart from `packageMetadata` so
-    * a metadata PATCH cannot replace it.
-    */
-   private rawWorkflows: unknown;
    /** What the load worker found in the manifest that an earlier release read and this one does not. */
    private manifestFindings: ApiPackageWarning[] = [];
    /** The manifest's `retrieval` block (prompt files included), re-read on reload. */
@@ -673,14 +671,35 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.sourceContentSha;
    }
 
+   /**
+    * The walk of the package's workflows, or a {@link WorkflowsUnavailableError}
+    * (a 503 that says why) when the load could not read its skill sets: an
+    * unread set is not an absent workflow, which a 404 would say. With `name`,
+    * a workflow the manifest never declared is still absent, so it is returned
+    * (empty) rather than thrown.
+    */
+   private readableWorkflows(name?: string): PackageWorkflows {
+      const { unavailable } = this.workflows;
+      if (
+         unavailable !== undefined &&
+         (name === undefined || unavailable.declared.includes(name))
+      ) {
+         throw new WorkflowsUnavailableError(
+            `Workflows are unavailable for package '${this.packageName}': ${unavailable.reason}. They are read when the package loads, so this lasts until it reloads.`,
+         );
+      }
+      return this.workflows;
+   }
+
    /** The agent skills this package advertises: its `default` workflow's, none without one. */
    public listSkills(): ServedSkill[] {
+      this.readableWorkflows();
       return this.packageSkills;
    }
 
    /** The workflows the manifest declares that passed validation, without their text. */
    public listWorkflows(): ApiWorkflowSummary[] {
-      return [...this.workflows.workflows.values()].map((w) => ({
+      return [...this.readableWorkflows().workflows.values()].map((w) => ({
          name: w.name,
          ...(w.description !== undefined && { description: w.description }),
          has_instructions: w.instructions !== undefined,
@@ -724,7 +743,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       skills: "full" | "summary" = "full",
       skillSet?: string,
    ): ApiWorkflow | undefined {
-      const workflow = this.workflows.workflows.get(name);
+      const workflow = this.readableWorkflows(name).workflows.get(name);
       if (!workflow) return undefined;
       const sets = pickedSets(workflow, skillSet);
       if (!sets) return undefined;
@@ -754,7 +773,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       relativeFilepath: string,
       skillSet?: string,
    ): ApiWorkflowSkillRead | { changed: true } | undefined {
-      const workflow = this.workflows.workflows.get(name);
+      const workflow = this.readableWorkflows(name).workflows.get(name);
       if (!workflow) return undefined;
       const relative = workflowFilePath(relativeFilepath);
       const skillName = relative.split("/")[0]!;
@@ -771,42 +790,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             : { message: read.message }),
          source: this.workflowSource(workflow.definitionSha),
       };
-   }
-
-   /**
-    * Re-derive the serving identity and re-read the package's workflows and
-    * the skill sets they list, as one operation so the set that is served and
-    * the set that is hashed are the same (an edit must move the reload receipt).
-    *
-    * Not run by the constructor: {@link lintWorkerOutcome}'s throwaway Package
-    * has no use for it. Call after anything that changes the served files.
-    */
-   public refreshServingIdentity(): void {
-      this.servedRevision = mintServedRevision();
-      const workflows = readPackageWorkflows(
-         this.packagePath,
-         this.rawWorkflows,
-      );
-      this.workflows = workflows;
-      this.packageSkills = advertisedSkills(workflows);
-      if (workflows.skillsDirNotRead && !this.dryRun) recordSkillsDirNotRead();
-      let declaration: string | undefined;
-      try {
-         declaration =
-            this.rawWorkflows === undefined
-               ? undefined
-               : canonicalJson(this.rawWorkflows);
-      } catch {
-         // Reload must not stop between the model swap and the serve bindings.
-         declaration = "[unhashable]";
-      }
-      this.sourceContentSha = computeSourceContentSha(
-         this.packagePath,
-         [...this.models.keys(), ...workflows.paths],
-         // The declaration is hashed whole, so an edit to a refused workflow moves it too.
-         declaration,
-         workflows.contentShas,
-      );
    }
 
    /**
@@ -1575,6 +1558,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             defaultConnectionName: "duckdb",
             computeBuildPlan: true,
             withEntities: true,
+            readWorkflows: true,
             ...(versionId !== undefined ? { publishedVersion: true } : {}),
             ...(refreshSchemas ? { refreshSchemas: true } : {}),
          }),
@@ -1586,6 +1570,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          database?.catch(() => undefined),
       ]);
       assertOutcomeStagesAvailable(outcome);
+      assertServingIdentityShipped(outcome);
       const workerDoneTime = performance.now();
       // The worker compiled without them: a build manifest changes the SQL
       // a query generates (through the hydration runtime), never the IR a
@@ -1731,7 +1716,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          }
          // No manifest is bound yet, so this serves live until a bind.
          pkg.mz.wireServingResolvers();
-         pkg.refreshServingIdentity();
 
          buildPlanMs = await pkg.mz.applyLoadBuildPlan(outcome.buildPlan);
          // Before any bind, so a database rollup bound later is routed.
@@ -3243,11 +3227,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             malloyConfig: this.malloyConfig,
             defaultConnectionName: "duckdb",
             buildManifest,
+            readWorkflows: true,
          }),
       );
 
-      // Same check as create, before anything is swapped.
+      // Same checks as create, before anything is swapped.
       assertOutcomeStagesAvailable(outcome);
+      assertServingIdentityShipped(outcome);
 
       // The new models' own policy, undecided until they are installed below.
       const nextModelPolicy = new PackageModelPolicy();
@@ -3315,9 +3301,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                  failedAt: new Date().toISOString(),
               }
             : undefined;
+      // Moves the identity as soon as the new models are installed.
       this.adoptOutcomeMetadata(outcome);
-      // Move the identity as soon as the new models are installed.
-      this.refreshServingIdentity();
       // Pick up publisher.json edits to the surface and boundary mode.
       const previousSurface = this.packageMetadata.explores;
       this.packageMetadata.explores = outcome.packageMetadata.explores;
@@ -3710,17 +3695,44 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
-    * Take the publisher.json settings a load or reload read, and count the
-    * deprecated features the installed models use. Before
-    * `refreshServingIdentity`, which reads the workflows.
+    * Take what a load or reload read: the publisher.json settings, and the
+    * walk of the workflows with the shas of every file the serving identity
+    * hashes, which it installs under a new revision. It reads no file, and
+    * `assertServingIdentityShipped` has judged the outcome, so it only
+    * assigns. Also counts the deprecated features the installed models use.
     */
    private adoptOutcomeMetadata(outcome: LoadPackageOutcome): void {
       const metadata = outcome.packageMetadata;
-      this.rawWorkflows = metadata.workflows;
+      const { walk, declarationSha } = metadata.workflowsRead!;
+      const modelShas = outcome.modelShas!;
       this.manifestFindings = metadata.manifestFindings ?? [];
       this.manifestWarnings = metadata.manifestWarnings ?? [];
       this.retrievalSettings = metadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
+      this.servedRevision = mintServedRevision();
+      this.workflows = adoptWorkflows(this.packagePath, walk);
+      this.packageSkills = advertisedSkills(this.workflows);
+      this.sourceContentSha = computeSourceContentSha(
+         new Map([
+            ...outcome.models.map(({ modelPath }): [string, string] => [
+               modelPath,
+               modelShas.get(modelPath)!,
+            ]),
+            ...walk.paths.map((p): [string, string] => [
+               p,
+               walk.contentShas.get(p)!,
+            ]),
+         ]),
+         // The declaration is hashed whole, so an edit to a refused workflow moves it too.
+         declarationSha,
+      );
+      if (walk.unavailable !== undefined) {
+         logger[this.dryRun ? "warn" : "error"](
+            "Package workflows could not be read",
+            { packageName: this.packageName, reason: walk.unavailable.reason },
+         );
+      }
       if (this.dryRun) return;
+      if (walk.skillsDirNotRead) recordSkillsDirNotRead();
       recordDeprecatedFormatUsage(this.models);
       recordDeprecatedManifestKeys(metadata.deprecatedManifestKeys);
    }

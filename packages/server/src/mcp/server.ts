@@ -24,7 +24,8 @@ import {
    parseSkill,
    type BundledSkill,
 } from "../service/skills/build_skills_bundle";
-import { BUNDLED_CATALOG, SKILL_MD } from "../service/skills/package_skills";
+import { BUNDLED_CATALOG } from "../service/skills/package_skills";
+import { SKILL_MD } from "../service/skills/skill_files";
 import { SERVER_VERSION } from "../version";
 
 /** A bundled skill as a prompt: its body, then where to read its other files, since the relative paths in the text cannot be followed over MCP. */
