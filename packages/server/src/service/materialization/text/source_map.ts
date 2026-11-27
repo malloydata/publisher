@@ -314,6 +314,31 @@ export class SourceMap {
    }
 }
 
+/**
+ * A declaration another model compiled, read without that model, as a node:
+ * the hop its own definition records (a rename, an `extends`, a query's
+ * base), by sourceID. Never a base the map would infer for an extension of a
+ * table-backed source, which needs the declaring model's sources, so such a
+ * node has none. For a walk that reaches past this model's declarations
+ * (`declarationOf` across the package's models). Undefined for anything
+ * that is not a source definition.
+ */
+export function detachedNode(def: unknown): SourceNode | undefined {
+   const d = def as MappedSourceDef | undefined;
+   if (!d || typeof d !== "object" || typeof d.sourceID !== "string") {
+      return undefined;
+   }
+   const base = baseEdgeOf(d, undefined);
+   return {
+      sourceID: d.sourceID,
+      name: undefined,
+      kind: kindOf(d, base),
+      base,
+      members: compositeMemberIds(d),
+      def: d,
+   };
+}
+
 /** The `sourceID`s `struct` derives from, itself first (see {@link SourceMap.chainOf}). */
 export function sourceChain(struct: unknown, modelDef: unknown): string[] {
    return SourceMap.of(modelDef).chainOf(struct);

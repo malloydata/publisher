@@ -41,6 +41,7 @@ import {
    type CorpusModel,
    fixtureModels,
    hammerModels,
+   HAMMER_URL,
 } from "../../../test_helpers/persist_corpus";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { storageDestinationRoot } from "../../connection_config";
@@ -88,17 +89,17 @@ afterAll(async () => {
  */
 function onDisk(model: CorpusModel): { root: string; entry: string } {
    const entryPath = fileURLToPath(model.entry);
-   if (!model.entry.startsWith("file:///hammer/")) {
+   if (!model.entry.startsWith(HAMMER_URL)) {
       return { root: path.dirname(entryPath), entry: entryPath };
    }
    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chained-corpus-"));
    scratch.push(dir);
    for (const [url, text] of model.files) {
-      const rel = url.slice("file:///hammer/".length);
+      const rel = url.slice(HAMMER_URL.length);
       fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
       fs.writeFileSync(path.join(dir, rel), text);
    }
-   const rel = model.entry.slice("file:///hammer/".length);
+   const rel = model.entry.slice(HAMMER_URL.length);
    const entry = path.join(dir, rel);
    return { root: path.dirname(entry), entry };
 }

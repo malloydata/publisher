@@ -3,7 +3,10 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+   bigqueryCollatedSql,
    bigqueryColumnCollation,
+   bigqueryNamesNoCollation,
+   canonicalCollation,
    collationOf,
    duckdbTableCollations,
    postgresColumnCollation,
@@ -47,6 +50,33 @@ describe("the other engines' identities", () => {
       expect(postgresColumnCollation("coll|c|C", "binary")).toBe("binary");
       expect(postgresColumnCollation("db|c|en_US", "deterministic")).toBe(
          "postgres:db|c|en_US",
+      );
+   });
+});
+
+describe("BigQuery's uncollated collation_name", () => {
+   it("reads the catalog's literal 'NULL' binary, however it is spelled", () => {
+      expect(bigqueryColumnCollation("NULL")).toBe("binary");
+      for (const name of ["null", " Null ", "\tNULL\n", "", "  ", undefined]) {
+         expect(bigqueryColumnCollation(name)).toBe("binary");
+         expect(bigqueryNamesNoCollation(name)).toBe(true);
+      }
+      expect(bigqueryNamesNoCollation("und:ci")).toBe(false);
+      expect(bigqueryColumnCollation(" und:ci ")).toBe("bigquery:und:ci");
+   });
+
+   it("reads a recorded bigquery:NULL binary, and every other identity as itself", () => {
+      expect(canonicalCollation("bigquery:NULL")).toBe("binary");
+      expect(canonicalCollation("bigquery:null")).toBe("binary");
+      expect(canonicalCollation("bigquery:")).toBe("binary");
+      expect(canonicalCollation("bigquery:und:ci")).toBe("bigquery:und:ci");
+      expect(canonicalCollation("duckdb:nocase")).toBe("duckdb:nocase");
+      expect(canonicalCollation("binary")).toBe("binary");
+   });
+
+   it("is the same rule as the catalog's SQL predicate", () => {
+      expect(bigqueryCollatedSql("collation_name")).toBe(
+         "UPPER(TRIM(COALESCE(collation_name, ''))) NOT IN ('', 'NULL')",
       );
    });
 });

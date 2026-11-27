@@ -239,13 +239,16 @@ Publisher ([what a `storage=` table holds](materialization.md#where-a-table-is-b
 
 ### A base with measures, views or joins
 
-The v2 example above serves from its table only when `orders` declares no measure, view or join. If
-it does, `east_orders` inherits fields its stored table does not carry, so the served copy leaves it
-as written: the table is built, the serve verdict reads `live` with reason `served_copy`, the package
-warns `served-copy-not-served` ("This source inherits fields … that its stored table does not
-carry"), and every query is answered live. This is the trap a migration hits most, because a v1
-query-shaped source (`orders -> { select: * }`) never inherited its base's measures in the first
-place. Either of these serves it:
+When `orders` declares a measure, view or join, `east_orders` inherits fields its stored table does
+not carry. The served copy writes `orders`' `extend` block again over the table, so the source is
+still served from it, through its own file and every file that imports it, when `east_orders`
+names `orders` by its own name, declared in the same file or in a file it imports whole. It cannot
+when the base comes in under another name or by a selective import (`import { o is orders } from
+…`), or the base's block reads a name its own file imports (a join to an imported source). Then the
+served copy leaves the source as written: the table is built, the serve verdict reads `live` with
+reason `served_copy`, the package warns `served-copy-not-served` ("This source inherits fields …
+that its stored table does not carry"), and every query is answered live. Import the base's file
+whole, or use either of these:
 
 ```malloy
 // Keep the query shape: its output carries no measures,
@@ -612,7 +615,7 @@ source again (#1763). One case below can still differ from live when the data br
 
 | What you wrote | What happens | Plan |
 | --- | --- | --- |
-| `#(materialize)` over a base that declares a measure, view or join | Built, never read: `served-copy-not-served`, answered live. See [above](#a-base-with-measures-views-or-joins). | The served copy's call 2 |
+| `#(materialize)` over a base that declares a measure, view or join, imported under another name or selectively, or whose block reads a name its file imports | Built, never read: `served-copy-not-served`, answered live. See [above](#a-base-with-measures-views-or-joins). | The served copy's call 2 |
 | A database `#(materialize)` on BigQuery with no dataset-qualified `name=` | Not built: `materialize-not-built` (reason `needs_qualified_name`) | Not built either: `persist-not-built`, or `rollup-not-built` for a rollup, refused at plan with the same reason |
 | An extension table whose parent is in another file | Served, but built from the warehouse rather than over the parent's table, so its build scans the warehouse | P10 (same-file only) |
 | `inline=` on a path through a join_one | Not built: `materialize-not-built` | Row 9 |

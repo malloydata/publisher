@@ -116,10 +116,12 @@ source: s is b2 extend { except: mark }
       ).toBe(true);
    });
 
-   it("rejects a namesake on a different table with the same field names", async () => {
-      // The model's namespace holds the entry file's `ev_measured` (on `ev2`),
-      // not the one `mid.malloy` imports (on `ev`): not the source's table, so
-      // no base is taken and the source falls back as before.
+   it("never takes the model's namesake for the declaring file's name", async () => {
+      // The model's namespace holds the entry file's `ev_measured` (on
+      // `ev2`), but `mid.malloy` reads the one it imports, which this model
+      // (its contents alone) does not hold: no base is taken, and the source
+      // falls back as before. With the package's other models the walk finds
+      // the right one (below).
       const got = await walk({
          "e.malloy": `import "mid.malloy"
 ${measured("ev_measured", "ev2")}`,
@@ -156,5 +158,111 @@ source: s is ev_measured extend { except: mark }
          chain: [],
          confirmed: [],
       });
+   });
+});
+
+/**
+ * N-06: a model that imports a `#(materialize)` source's file does not hold
+ * the source's base when the base is declared in a file the declaring file
+ * imports (Malloy imports are not transitive), so the walk reads each
+ * declaration the model lacks from the package model that holds it
+ * (`elsewhere`), and each name in the scope of the file that wrote it.
+ */
+describe("keptAncestorChainOrDeclared, past the model's own declarations", () => {
+   const MID_RUN = `extend {
+  measure: top_amt is amt.max()
+}`;
+   const files = (entryExtra = "") => ({
+      "e.malloy": `import "m.malloy"
+${entryExtra}`,
+      "m.malloy": `import "mid.malloy"
+source: s is ev_mid extend { where: amt > 0 }
+`,
+      "mid.malloy": `import "base.malloy"
+source: ev_mid is ev_measured ${MID_RUN}
+`,
+      "base.malloy": measured("ev_measured"),
+   });
+
+   /** Every file compiled as its own model, as a package compiles each. */
+   async function walkFromEntry(all: Record<string, string>) {
+      const maps = await Promise.all(
+         Object.keys(all).map(async (entry) =>
+            SourceMap.of(await mz.compile(all, { entry })),
+         ),
+      );
+      const [map] = maps;
+      const s = (map.model() as ModelDef).contents["s"] as unknown as {
+         sourceID: string;
+         location: { url: string; range: never };
+      };
+      const text = (url: string) =>
+         all[url.slice(url.lastIndexOf("/") + 1)] as string | undefined;
+      const elsewhere = (id: string) =>
+         maps.map((m) => m.node(id)?.def).find((d) => d !== undefined);
+      const of = (lookup?: (id: string) => unknown) => {
+         const chain = keptAncestorChainOrDeclared(
+            map,
+            s.sourceID,
+            s.location.url,
+            text,
+            lookup,
+         );
+         return {
+            chain: chain.map((a) => a.sourceID),
+            confirmed: confirmedAncestors(
+               text,
+               s.location.url,
+               s.location.range,
+               chain,
+            ).map((a) => [a.sourceID, a.runText]),
+         };
+      };
+      return { s, of: () => of(elsewhere), alone: () => of() };
+   }
+
+   const idIn = (s: { sourceID: string }, name: string, file: string) =>
+      `${name}@${s.sourceID.slice(s.sourceID.indexOf("@") + 1).replace(/[^/]*$/, file)}`;
+
+   it("follows the base two files from the model, and its base in turn", async () => {
+      const { s, of, alone } = await walkFromEntry(files());
+      // The entry's model holds neither base: nothing to walk on its own.
+      expect(alone().chain).toEqual([]);
+      expect(of()).toEqual({
+         chain: [
+            idIn(s, "ev_mid", "mid.malloy"),
+            idIn(s, "ev_measured", "base.malloy"),
+         ],
+         confirmed: [
+            [idIn(s, "ev_mid", "mid.malloy"), MID_RUN],
+            [idIn(s, "ev_measured", "base.malloy"), RUN],
+         ],
+      });
+   });
+
+   it("takes the namesake the declaring file imports, not the model's own", async () => {
+      // The entry declares an `ev_measured` and an `ev_mid` of its own, on the
+      // same table with the same fields: only the declaring files' scopes
+      // tell them apart.
+      const { s, of } = await walkFromEntry(
+         files(`${measured("ev_measured")}
+source: ev_mid is ev_measured ${MID_RUN}
+`),
+      );
+      expect(of().chain).toEqual([
+         idIn(s, "ev_mid", "mid.malloy"),
+         idIn(s, "ev_measured", "base.malloy"),
+      ]);
+   });
+
+   it("confirms nothing for a base imported under another name", async () => {
+      const all = {
+         ...files(),
+         "m.malloy": `import { ev_mid is ev_measured } from "base.malloy"
+source: s is ev_mid extend { where: amt > 0 }
+`,
+      };
+      const { of } = await walkFromEntry(all);
+      expect(of().confirmed).toEqual([]);
    });
 });

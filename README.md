@@ -76,7 +76,7 @@ npx @malloy-publisher/server@latest --port 4000
 
 Open **http://localhost:4000**. Three example packages are bundled — [`storefront`](examples/storefront)
 (a complete ecommerce model), [`governed-analytics`](examples/governed-analytics) (access control), and
-[`html-data-app`](examples/html-data-app) (a no-build dashboard) — all DuckDB-backed, no credentials
+[`html-data-app`](examples/html-data-app) (a no-build HTML data app) — all DuckDB-backed, no credentials
 required. The first run fetches them from GitHub.
 
 ## Start from your own data

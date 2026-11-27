@@ -21,7 +21,7 @@ The apps that hold up against Looker or Sigma are not better-decorated versions 
 
 ## 1. Establish the job
 
-Answer these four before choosing anything. Ask the user what you cannot infer - this is a **decision**, not a rule: propose what you believe from the model and the request, and confirm the parts that change the build.
+Answer these four before choosing anything. Answer them yourself from the model and the request, and build: state what you decided at the top of `app.js` and in the hand-over, so the user corrects it in one reply rather than answering questions before seeing anything.
 
 | Question | Why it changes the app |
 |---|---|
@@ -113,6 +113,8 @@ Two traps worth naming, because they produce charts that are *readable and wrong
 - **Diverging bars on disjoint vocabularies.** If the positive and negative sides are drawn from different taxonomies (an NLP model whose praise labels and complaint labels do not overlap), a diverging chart keyed on a shared label renders nearly every row one-sided and implies a balance the data does not contain. Use two ranked lists side by side.
 - **A shared axis across different scales.** Mixing a 0-7 rating with a 0-10 rating on one radar, or two measures with different units on one y-axis, silently lets the larger scale dominate. Normalize, use a second axis explicitly labeled, or split the chart.
 
+Three more rules from apps built this way. Each finding gets its own form: never the same form for two questions next to each other. Pick the form a specialist in the field would draw, and give the app one form native to its field (an hour-by-weekday grid for calls, an epidemic curve, a calendar heatmap for seasons). A map earns its place only when the pattern in space is the finding. With the kit, `reference/charts.md` has a longer catalogue, each form with what the model must give it.
+
 Pie and donut are absent from that table on purpose. They answer "what is the composition" worse than a ranked bar or a waffle at almost every n. Use one only when parts-of-whole is the entire message and there are two or three parts.
 
 ## 4. Plan the depth
@@ -136,7 +138,7 @@ Also decide what the app does **not** do. An explorer that cannot export, or a m
 
 ## 5. Design for consistency without a shared kit
 
-There is no shipped component library. Consistency comes from a **token contract**: define the tokens in CSS, and have every chart read them at runtime rather than hardcoding color. That is what lets one app carry a client's identity while still looking like it was built on purpose.
+With the data app kit (`reference/app-frame.md`) the tokens below are already defined and checked; this section is for an app built without it. Consistency comes from a **token contract**: define the tokens in CSS, and have every chart read them at runtime rather than hardcoding color. That is what lets one app carry a client's identity while still looking like it was built on purpose.
 
 Three rules do the load-bearing work here:
 
@@ -159,4 +161,4 @@ Before building, you should be able to state, in a few lines:
 - the depth plan: what drills into what, what shares scope, what goes in the URL
 - the token contract the app will use
 
-Hand that brief over before scaffolding. It is short, the user can correct it in one message, and correcting it then is far cheaper than rebuilding a finished app that answered the wrong question.
+Write that brief at the top of `app.js` and in the hand-over. It is short, and the user can correct it in one message.

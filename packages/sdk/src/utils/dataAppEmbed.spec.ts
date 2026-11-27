@@ -3,8 +3,13 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+   isPublisherColorSchemeApplied,
+   isPublisherColorSchemeRequest,
    isPublisherResizeMessage,
    packageFileUrl,
+   PUBLISHER_COLOR_SCHEME_APPLIED_MESSAGE_TYPE,
+   PUBLISHER_COLOR_SCHEME_MESSAGE_TYPE,
+   PUBLISHER_COLOR_SCHEME_REQUEST_MESSAGE_TYPE,
    PUBLISHER_RESIZE_MESSAGE_TYPE,
    serverBaseUrl,
 } from "./dataAppEmbed";
@@ -86,5 +91,44 @@ describe("isPublisherResizeMessage", () => {
    it("rejects null / non-objects", () => {
       expect(isPublisherResizeMessage(null)).toBe(false);
       expect(isPublisherResizeMessage("publisher:resize")).toBe(false);
+   });
+});
+
+describe("color scheme messages", () => {
+   it("accepts a page's request and its light or dark answer", () => {
+      expect(
+         isPublisherColorSchemeRequest({
+            type: PUBLISHER_COLOR_SCHEME_REQUEST_MESSAGE_TYPE,
+         }),
+      ).toBe(true);
+      for (const mode of ["light", "dark"]) {
+         expect(
+            isPublisherColorSchemeApplied({
+               type: PUBLISHER_COLOR_SCHEME_APPLIED_MESSAGE_TYPE,
+               mode,
+            }),
+         ).toBe(true);
+      }
+   });
+   it("refuses another type, an unknown mode and a non-object", () => {
+      expect(
+         isPublisherColorSchemeApplied({
+            type: PUBLISHER_COLOR_SCHEME_APPLIED_MESSAGE_TYPE,
+            mode: "sepia",
+         }),
+      ).toBe(false);
+      expect(
+         isPublisherColorSchemeApplied({
+            type: PUBLISHER_COLOR_SCHEME_MESSAGE_TYPE,
+            mode: "dark",
+         }),
+      ).toBe(false);
+      expect(isPublisherColorSchemeRequest({ type: "publisher:resize" })).toBe(
+         false,
+      );
+      expect(
+         isPublisherColorSchemeRequest("publisher:color-scheme-request"),
+      ).toBe(false);
+      expect(isPublisherColorSchemeApplied(null)).toBe(false);
    });
 });
