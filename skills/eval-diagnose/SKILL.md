@@ -278,6 +278,21 @@ with both queries. Otherwise it is still `NOT-RETURNED` / `LOW-RANK`.
 | `UNDERSPECIFIED` | the QUESTION is unclear, not the model -- "adjusted sales" that never says what the adjustment is, or a business that has not decided whether revenue includes tax | the asker, or whoever owns the definition. Never scored against the model |
 | `SYNTAX` | could not express it; execute errors; never submitted | agent-skill |
 
+### Effort (a right answer that took far too many calls)
+
+`diagnose.py` also diagnoses a case that PASSED but took far more tool calls
+than the run's other passing cases (at least twice the median and at least 8),
+or hit 3 or more failed queries on the way. The answer was right; the cost of
+reaching it was not. Look for what sent the agent the wrong way first: a doc
+that names the wrong field, a skill instruction that says to try something that
+fails, a measure whose name invites the wrong use. Quote the text that misled
+it.
+
+| Code | When | Owner |
+|---|---|---|
+| `MISLED` | a right answer reached only after the agent followed a doc, a skill instruction or a name that pointed the wrong way, and you can quote it | wherever the misleading text lives: model (a doc or name), package-skill, or agent-skill |
+| `STUMBLED` | a right answer reached after many calls with nothing that misled it: the agent retried syntax, or searched in circles | agent-skill |
+
 ### model-definition
 
 Use when the entity was found and used, and the definition or the data behind it

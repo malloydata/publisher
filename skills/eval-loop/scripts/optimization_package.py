@@ -42,7 +42,7 @@ APPENDED: dict[str, tuple[tuple[str, ...], str, tuple[str, ...]]] = {
     "prod_queries": (("execution_id",), "at", (
         "execution_id", "at", "environment", "package", "model_version", "model_path", "source",
         "query_text", "origin", "turn_id", "served_by", "table_id", "duration_ms", "bytes",
-        "status")),
+        "status", "engine", "bytes_scanned")),
     "prod_table_builds": (("build_id",), "started_at", (
         "build_id", "package", "model_version", "table_id", "source", "kind", "grain",
         "started_at", "build_ms", "rows", "bytes", "status")),
@@ -51,7 +51,9 @@ APPENDED: dict[str, tuple[tuple[str, ...], str, tuple[str, ...]]] = {
     # Model 1, written by judge_sample.py collect.
     "prod_judgments": (("turn_id", "metric_version"), "judged_at", (
         "turn_id", "judged_at", "run_id", "judge_version", "metric_version", "sampled_because",
-        "verdict", "right", "failure_code", "component", "owner", "note", "basis")),
+        "verdict", "right", "failure_code", "component", "owner", "note", "basis",
+        "question_group", "judged_turn", "user_signal", "depends_on", "key_kind",
+        "retrieval_recall")),
     # Model 2, written by predictions.py.
     "predictions": (("prediction_id",), "made_at", (
         "prediction_id", "made_at", "loop", "made_from", "candidate_commit", "pr_url", "metric",
@@ -76,7 +78,8 @@ REBUILT: dict[str, tuple[str, ...]] = {
 # Written from eval.toml [performance] at every install, so the price the
 # models use is the one the config states: one row, overwritten.
 PRICE_COLUMNS = ("usd_per_compute_hour", "usd_per_gb_month", "usd_per_tb_scanned",
-                 "max_query_ms", "max_staleness_hours")
+                 "max_query_ms", "max_staleness_hours", "credible_usd_per_compute_hour",
+                 "credible_usd_per_gb_month")
 
 
 def metric_version(run_meta: dict[str, Any]) -> str | None:

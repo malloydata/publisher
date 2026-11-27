@@ -268,6 +268,7 @@ the analysis inside it is.
 def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
                  a: argparse.Namespace, art: pathlib.Path, *,
                  answered_correctly: bool = False,
+                 effort: dict[str, Any] | None = None,
                  passed_elsewhere: dict[str, Any] | None = None) -> dict[str, Any]:
     d = art / qid
     out = d / "diagnosis.json"
@@ -286,6 +287,14 @@ def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
                     "answer that is right without the model's own entity is "
                     "right for now, not right by design.\n"
                     if answered_correctly else "")
+    if effort:
+        correct_line = (f"\nTHIS ANSWER WAS CORRECT, but it took {effort['calls']} tool "
+                        f"calls (the run's passing cases took {effort['median']} at the "
+                        f"median) and {effort['errors']} failed queries. Diagnose the "
+                        f"EFFORT only: what sent the agent the wrong way before it found "
+                        f"the answer. Quote the doc, skill instruction or name that misled "
+                        f"it (code MISLED, owner where that text lives), or say nothing "
+                        f"misled it (code STUMBLED). Do NOT look for a wrong number.\n")
     platform = a.target == "platform"
     scope_line = ""
     if platform and a.scope:
@@ -587,6 +596,29 @@ def cluster(issues: list[dict[str, Any]], a: argparse.Namespace,
     return res
 
 
+EFFORT_MIN_CALLS = 8
+EFFORT_FACTOR = 2
+EFFORT_ERRORS = 3
+
+
+def effortful(events: list[dict[str, Any]], passed: list[str]) -> dict[str, dict[str, Any]]:
+    """Passing cases that took far more effort than the run's other passes:
+    at least EFFORT_FACTOR times the median tool calls and EFFORT_MIN_CALLS,
+    or EFFORT_ERRORS failed queries. qid -> {calls, median, errors}."""
+    att = {e["qid"]: e for e in events if e.get("kind") == "attempt" and e.get("qid") in passed}
+    calls = {q: (e.get("n_get_context") or 0) + (e.get("n_execute") or 0) for q, e in att.items()}
+    if not calls:
+        return {}
+    ordered = sorted(calls.values())
+    median = ordered[len(ordered) // 2]
+    out = {}
+    for q, n in calls.items():
+        errors = att[q].get("n_execute_errors") or 0
+        if (n >= EFFORT_MIN_CALLS and n >= EFFORT_FACTOR * max(median, 1)) or errors >= EFFORT_ERRORS:
+            out[q] = {"calls": n, "median": median, "errors": errors}
+    return out
+
+
 def select_cases(events: list[dict[str, Any]],
                  cases: dict[str, dict[str, Any]],
                  want_verdicts: set[str] | tuple[str, ...],
@@ -771,6 +803,11 @@ def main(argv: list[str] | None = None) -> int:
                          "findings -- the answer was right by another route -- "
                          "so this is an opt-out for a run that only wants "
                          "answer failures, not a default.")
+    ap.add_argument("--no-effort", action="store_true",
+                    help="do not diagnose a case that answered correctly but "
+                         "took far more tool calls or failed queries than the "
+                         "run's other passing cases. Those usually point at a "
+                         "doc or skill that misled the agent.")
     ap.add_argument("--include-holdout", action="store_true",
                     help="diagnose holdout cases too. Holdout is normally "
                          "withheld so the acceptance check keeps something "
@@ -909,7 +946,10 @@ def main(argv: list[str] | None = None) -> int:
     # why did the model not deliver what the answer needed. They are told
     # apart on the way in, so the prompt can say the answer was right, and on
     # the way out, so a reader never mistakes one for a wrong number.
-    to_diagnose = failed + retrieval_only
+    effort = {} if a.no_effort or a.limit is not None or a.only else effortful(events, passed)
+    effort = {q: v for q, v in effort.items() if q not in retrieval_only
+              and (cases.get(q) or {}).get("split") not in ("test", "holdout")}
+    to_diagnose = failed + retrieval_only + sorted(effort)
     if not to_diagnose:
         print("no diagnosable failures in this run")
         # An empty clusters.jsonl records "diagnosed, nothing to cluster", so
@@ -925,6 +965,8 @@ def main(argv: list[str] | None = None) -> int:
     art.mkdir(parents=True, exist_ok=True)
     extra = (f" + {len(retrieval_only)} that answered correctly without a "
              f"required entity" if retrieval_only else "")
+    if effort:
+        extra += f" + {len(effort)} right but far more effort than the rest"
     print(f"tier 1: {len(failed)} failed dev cases{extra}, {a.model}, "
           f"{a.parallel} at a time  ({len(codes)} codes in the skill)")
 
@@ -956,6 +998,7 @@ def main(argv: list[str] | None = None) -> int:
     with futures.ThreadPoolExecutor(max_workers=a.parallel) as ex:
         fut = {ex.submit(diagnose_one, q, cases[q], events, a, art,
                          answered_correctly=q in retrieval_only,
+                         effort=effort.get(q),
                          passed_elsewhere=other_arm.get(q)): q
                for q in to_diagnose}
         for i, f in enumerate(futures.as_completed(fut), 1):
@@ -971,7 +1014,8 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 obj["_invalid"] = validate(obj, codes)
                 tag = "=" if obj.get("_cached") else ("!" if obj["_invalid"] else ".")
-                mark = " (answered correctly)" if q in retrieval_only else ""
+                mark = (" (answered correctly)" if q in retrieval_only
+                        else " (right, far more effort)" if q in effort else "")
                 print(f"  [{i}/{len(to_diagnose)}] {tag} {q}{mark} "
                       f"{obj.get('component')}/{obj.get('primary_code')} "
                       f"-> {obj.get('owner')}"

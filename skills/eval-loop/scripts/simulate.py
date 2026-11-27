@@ -63,7 +63,8 @@ MAX_GRAIN = 6
 OPTION_COLUMNS = ["option", "kind", "source", "grain", "measures", "tier", "covered",
                   "objective_before", "objective_after", "saved_ms_per_day", "build_ms",
                   "refreshes_per_day", "build_ms_per_day", "net_ms_per_day", "staleness_hours",
-                  "usd_per_day", "warehouse_ms_per_day", "feasible", "why_not", "how_found"]
+                  "usd_per_day", "warehouse_usd_per_day", "credible_usd_per_day",
+                  "warehouse_ms_per_day", "feasible", "why_not", "how_found"]
 PREDICTION_COLUMNS = ["option", "qid", "source", "count", "before_ms", "predicted_ms", "covered",
                       "why_not"]
 
@@ -92,6 +93,7 @@ def objective(cfg: Any) -> dict[str, Any]:
             "max_usd_per_day": get("max_usd_per_day"),
             "usd_per_compute_hour": get("usd_per_compute_hour"),
             "usd_per_tb_scanned": get("usd_per_tb_scanned"),
+            "credible_usd_per_compute_hour": get("credible_usd_per_compute_hour"),
             "table_read_ms": get("table_read_ms"),
             "max_query_ms": get("max_query_ms")}
 
@@ -216,6 +218,7 @@ def score(rows: list[dict[str, Any]], tables: list[dict[str, Any]],
     """One option: these tables added. Its predicted metrics, and per query."""
     read_ms = obj["table_read_ms"]
     preds, before, after, saved = [], [], [], 0.0
+    table_ms = live_ms = 0.0
     serving = [t for t in tables if t.get("verdict") not in ("live", "refused")]
     for r in rows:
         count = r.get("count") or 1
@@ -233,6 +236,10 @@ def score(rows: list[dict[str, Any]], tables: list[dict[str, Any]],
         ms = r["median_ms"]
         new = min(ms, read_ms) if hit and not already else ms
         saved += (ms - new) * count
+        if hit or already:
+            table_ms += new * count
+        else:
+            live_ms += new * count
         before.append((ms, count))
         after.append((new, count))
         preds.append({"option": label, "qid": r["qid"], "source": r.get("source"), "count": count,
@@ -252,9 +259,16 @@ def score(rows: list[dict[str, Any]], tables: list[dict[str, Any]],
     stale = obj["max_staleness_hours"]
     per_day = math.ceil(24 / stale) if stale else 24
     build_day = round(build * per_day, 1)
-    usd = None
-    if obj["usd_per_compute_hour"]:
-        usd = round((build_day - saved) / 3_600_000 * obj["usd_per_compute_hour"], 4)
+    # Priced as the history model prices production: live queries and builds
+    # on the warehouse, table reads on Credible (at the warehouse's price when
+    # no Credible price is given). `usd` is what the option costs a day.
+    usd = warehouse_usd = credible_usd = None
+    wh = obj["usd_per_compute_hour"]
+    if wh:
+        cr = obj.get("credible_usd_per_compute_hour") or wh
+        warehouse_usd = round((live_ms + build_day) / 3_600_000 * wh, 4)
+        credible_usd = round(table_ms / 3_600_000 * cr, 4)
+        usd = round(warehouse_usd + credible_usd, 4)
     why_not = []
     if obj["max_build_ms_per_day"] and build_day > obj["max_build_ms_per_day"]:
         why_not.append(f"builds {build_day:g} ms a day, over max_build_ms_per_day")
@@ -288,6 +302,8 @@ def score(rows: list[dict[str, Any]], tables: list[dict[str, Any]],
         "warehouse_ms_per_day": round(sum(ms * c for ms, c in after) + build_day, 1),
         "staleness_hours": round(24 / per_day, 2),
         "usd_per_day": usd,
+        "warehouse_usd_per_day": warehouse_usd,
+        "credible_usd_per_day": credible_usd,
         "feasible": not why_not,
         "why_not": "; ".join(why_not) or None,
     }
@@ -478,7 +494,11 @@ def assumptions(obj: dict[str, Any], tier: str) -> list[str]:
            ("tables refresh every " + (f"{24 / math.ceil(24 / obj['max_staleness_hours']):g} h "
                                        "to meet max_staleness_hours" if obj["max_staleness_hours"]
                                        else "hour (no max_staleness_hours set)")),
-           "storage is not priced: the server reports no table size here"]
+           "storage is not priced: the server reports no table size here",
+           ("live queries and builds are priced on the warehouse, table reads on Credible at "
+            + (f"credible_usd_per_compute_hour = {obj['credible_usd_per_compute_hour']:g}"
+               if obj.get("credible_usd_per_compute_hour")
+               else "the warehouse's price (no credible_usd_per_compute_hour set)"))]
     if tier == "estimate":
         out.append("which queries a rollup answers follows the router's grain rule; a measure "
                    "the router cannot merge (a distinct count, an average) is refused only at "

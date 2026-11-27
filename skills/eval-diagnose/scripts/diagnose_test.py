@@ -704,5 +704,19 @@ class NothingToDiagnose(unittest.TestCase):
                          '{"clusterId": "c1"}\n')
 
 
+class Effort(unittest.TestCase):
+    def test_a_pass_that_took_far_more_calls_or_failed_queries_is_diagnosed_for_effort(self):
+        ev = [{"kind": "attempt", "qid": f"q{i}", "n_get_context": 2, "n_execute": 2} for i in range(5)]
+        ev += [{"kind": "attempt", "qid": "slow", "n_get_context": 5, "n_execute": 5},
+               {"kind": "attempt", "qid": "errs", "n_get_context": 1, "n_execute": 4, "n_execute_errors": 3},
+               {"kind": "attempt", "qid": "bit", "n_get_context": 3, "n_execute": 4},
+               {"kind": "attempt", "qid": "failed", "n_get_context": 9, "n_execute": 9}]
+        passed = [f"q{i}" for i in range(5)] + ["slow", "errs", "bit"]
+        got = diagnose.effortful(ev, passed)
+        self.assertEqual(sorted(got), ["errs", "slow"])
+        self.assertEqual(got["slow"], {"calls": 10, "median": 4, "errors": 0})
+        self.assertEqual(diagnose.effortful(ev, []), {})
+
+
 if __name__ == "__main__":
     unittest.main()

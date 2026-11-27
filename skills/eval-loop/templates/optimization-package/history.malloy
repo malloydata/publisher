@@ -44,27 +44,55 @@ source: turns is duckdb.sql("""
   }
 }
 
-#(doc) A judged production turn: right, wrong, or undecided, and its `basis`: `answer` when the verdict judged the prose the person saw, `final_query` when the log held no answer and it judged the last query that succeeded. Never compare a rate across the two bases. For a wrong one, the diagnosed reason and owner. Rows are only appended; a new judge or rubric starts a new metric_version, and every quality number is read within one.
+#(doc) A judged production turn: right, wrong, or undecided, and its `basis`: `answer` when the verdict judged the prose the person saw, `final_query` when the log held no answer and it judged the last query that succeeded. Never compare a rate across the two bases. For a wrong one, the diagnosed reason and owner. Identical questions are one `question_group`, judged once: the other turns of the group carry its verdict (`sampled_because` = `carried`, `judged_turn` names the one judged), so the rate weighs a question by how often it was asked. Rows are only appended; a new judge or rubric starts a new metric_version, and every quality number is read within one.
 source: judgments is duckdb.sql("""
   select * from read_csv('data/prod_judgments.csv', header = true, columns = {
     'turn_id': 'VARCHAR', 'judged_at': 'TIMESTAMP', 'run_id': 'VARCHAR',
     'judge_version': 'VARCHAR', 'metric_version': 'VARCHAR', 'sampled_because': 'VARCHAR',
     'verdict': 'VARCHAR', 'right': 'BOOLEAN', 'failure_code': 'VARCHAR', 'component': 'VARCHAR',
-    'owner': 'VARCHAR', 'note': 'VARCHAR', 'basis': 'VARCHAR'})
+    'owner': 'VARCHAR', 'note': 'VARCHAR', 'basis': 'VARCHAR', 'question_group': 'VARCHAR',
+    'judged_turn': 'VARCHAR', 'user_signal': 'VARCHAR', 'depends_on': 'VARCHAR',
+    'key_kind': 'VARCHAR', 'retrieval_recall': 'DOUBLE'})
 """) extend {
   join_one: turn is turns on turn_id = turn.turn_id
   dimension:
     on_day is turn.`at`.day
+    on_week is turn.`at`.week
     model_version is turn.model_version
+    question is turn.question
+    #(doc) Tool calls the agent made for this turn: get_context plus execute_query.
+    tool_calls is turn.n_get_context + turn.n_execute
+    #(doc) The key says the model cannot answer this question, so the right answer is a refusal.
+    unanswerable is key_kind = 'unanswerable'
   measure:
-    #(doc) Turns judged, decided or not.
+    #(doc) Turns judged, decided or not, carried verdicts included.
     judged is count()
+    #(doc) Distinct questions behind the judged turns.
+    questions is count(question_group)
     #(doc) Turns the judge could decide. The quality rate rests on these.
     decided is count() { where: `right` is not null }
     #(doc) Turns answered right.
     right_count is count() { where: `right` = true }
-    #(doc) Production quality: right answers over decided turns. Read within one metric_version and one basis.
+    #(doc) Turns answered wrong.
+    wrong_count is count() { where: `right` = false }
+    #(doc) Production quality: right answers over decided turns, each question weighed by how often it was asked. Read within one metric_version and one basis.
     quality_rate is right_count / nullif(decided, 0)
+    #(doc) Coverage: the share of decided turns the model can answer at all (the key is not a refusal).
+    coverage is count() { where: `right` is not null and not unanswerable } / nullif(decided, 0)
+    #(doc) Correct refusals: of the decided turns the model cannot answer, the share where the agent said so instead of guessing.
+    refusal_rate is count() { where: unanswerable and `right` = true } / nullif(count() { where: unanswerable and `right` is not null }, 0)
+    #(doc) Retrieval quality: mean recall of the entities the key's query used, among those get_context returned. Judged turns only, not carried ones.
+    retrieval_recall_mean is retrieval_recall.avg() { where: sampled_because != 'carried' }
+    #(doc) Judged turns with a retrieval score.
+    retrieval_scored is count() { where: retrieval_recall is not null and sampled_because != 'carried' }
+    #(doc) Effort: mean tool calls the agent made to reach a right answer. Fewer is better.
+    calls_to_right is tool_calls.avg() { where: `right` = true }
+    #(doc) Effort: mean failed queries on the way to a right answer.
+    errors_to_right is turn.n_errors.avg() { where: `right` = true }
+    #(doc) Effort: mean tokens spent on a right answer. Only the in-app agent logs tokens.
+    tokens_to_right is turn.tokens.avg() { where: `right` = true }
+    #(doc) Turns whose next message corrected the answer or asked again.
+    signalled is count() { where: user_signal is not null and user_signal != '' }
   #(doc) Quality per day, version and metric version: the production number the loop moves.
   view: by_day is {
     group_by: metric_version, basis, on_day, model_version
@@ -83,27 +111,75 @@ source: judgments is duckdb.sql("""
     aggregate: judged
     order_by: judged desc
   }
+  #(doc) Questions judged right on one day and wrong on another. Usually the agent cannot reliably find the answer, which the docs should settle.
+  view: mixed_verdicts is {
+    group_by: metric_version, question_group, question
+    aggregate: judged, right_count, wrong_count
+    having: right_count > 0 and wrong_count > 0
+    order_by: wrong_count desc
+  }
+  #(doc) Per week: quality, coverage, correct refusals, retrieval recall and effort to a right answer.
+  view: by_week is {
+    group_by: metric_version, basis, on_week
+    aggregate: judged, questions, decided, quality_rate, coverage, refusal_rate,
+      retrieval_recall_mean, retrieval_scored, calls_to_right, errors_to_right, tokens_to_right,
+      signalled
+    order_by: on_week desc
+  }
+  #(doc) Right answers that took the most tool calls. A right answer after many calls usually means a doc or skill gave bad advice.
+  view: effortful_right_answers is {
+    where: `right` = true and sampled_because != 'carried'
+    group_by: on_day, question, tool_calls, n_errors is turn.n_errors, tokens is turn.tokens
+    order_by: tool_calls desc
+    limit: 20
+  }
 }
 
 #(doc) The prices that turn time and bytes into money, written from eval.toml [performance] at each ingest. One row.
 source: prices is duckdb.sql("""
   select * from read_csv('data/price_card.csv', header = true, columns = {
     'usd_per_compute_hour': 'DOUBLE', 'usd_per_gb_month': 'DOUBLE', 'usd_per_tb_scanned': 'DOUBLE',
-    'max_query_ms': 'DOUBLE', 'max_staleness_hours': 'DOUBLE'})
+    'max_query_ms': 'DOUBLE', 'max_staleness_hours': 'DOUBLE',
+    'credible_usd_per_compute_hour': 'DOUBLE', 'credible_usd_per_gb_month': 'DOUBLE'})
 """)
 
-#(doc) One query run in production by an agent, a data app or the API, with its time and what served it, and what that time cost at the warehouse's price.
+#(doc) One query run in production by an agent, a data app or the API: its time, what served it, where it ran, and what it cost there. `engine` is where it ran: `warehouse` (live, or a table kept in the warehouse) or `credible` (a table in Credible's storage); when the log does not say, a live query ran on the warehouse and a table read on Credible. `live_usd` estimates what the same query would have cost run live on the warehouse: its own cost when it ran live, otherwise the median live time of the same query text (or of its source) at the warehouse price.
 source: queries is duckdb.sql("""
-  select q.*, q.duration_ms / 3600000.0 * p.usd_per_compute_hour as serve_usd,
-         q.duration_ms > p.max_query_ms as over_limit
-  from read_csv('data/prod_queries.csv', header = true, columns = {
+  with q as (
+    select *, coalesce(nullif(engine, ''),
+                       case when served_by is null or served_by in ('', 'live') then 'warehouse'
+                            else 'credible' end) as ran_on
+    from read_csv('data/prod_queries.csv', header = true, columns = {
     'execution_id': 'VARCHAR', 'at': 'TIMESTAMP', 'environment': 'VARCHAR', 'package': 'VARCHAR',
     'model_version': 'VARCHAR', 'model_path': 'VARCHAR', 'source': 'VARCHAR',
     'query_text': 'VARCHAR', 'origin': 'VARCHAR', 'turn_id': 'VARCHAR', 'served_by': 'VARCHAR',
-    'table_id': 'VARCHAR', 'duration_ms': 'DOUBLE', 'bytes': 'BIGINT', 'status': 'VARCHAR'}) q
+    'table_id': 'VARCHAR', 'duration_ms': 'DOUBLE', 'bytes': 'BIGINT', 'status': 'VARCHAR',
+    'engine': 'VARCHAR', 'bytes_scanned': 'BIGINT'})),
+  live_text as (
+    select query_text, median(duration_ms) as live_ms from q
+    where served_by is null or served_by in ('', 'live') group by all),
+  live_source as (
+    select source, median(duration_ms) as live_ms from q
+    where served_by is null or served_by in ('', 'live') group by all)
+  select q.*, p.max_query_ms,
+         case when q.ran_on = 'credible'
+              then q.duration_ms / 3600000.0 * coalesce(p.credible_usd_per_compute_hour, p.usd_per_compute_hour)
+              when p.usd_per_tb_scanned is not null and q.bytes_scanned is not null
+              then q.bytes_scanned / 1e12 * p.usd_per_tb_scanned
+              else q.duration_ms / 3600000.0 * p.usd_per_compute_hour end as serve_usd,
+         case when q.served_by is null or q.served_by in ('', 'live')
+              then (case when p.usd_per_tb_scanned is not null and q.bytes_scanned is not null
+                         then q.bytes_scanned / 1e12 * p.usd_per_tb_scanned
+                         else q.duration_ms / 3600000.0 * p.usd_per_compute_hour end)
+              else coalesce(lt.live_ms, ls.live_ms) / 3600000.0 * p.usd_per_compute_hour end as live_usd,
+         q.duration_ms > p.max_query_ms as over_limit
+  from q
+  left join live_text lt on lt.query_text = q.query_text
+  left join live_source ls on ls.source = q.source
   left join read_csv('data/price_card.csv', header = true, columns = {
     'usd_per_compute_hour': 'DOUBLE', 'usd_per_gb_month': 'DOUBLE', 'usd_per_tb_scanned': 'DOUBLE',
-    'max_query_ms': 'DOUBLE', 'max_staleness_hours': 'DOUBLE'}) p on true
+    'max_query_ms': 'DOUBLE', 'max_staleness_hours': 'DOUBLE',
+    'credible_usd_per_compute_hour': 'DOUBLE', 'credible_usd_per_gb_month': 'DOUBLE'}) p on true
 """) extend {
   primary_key: execution_id
   dimension: on_day is `at`.day
@@ -112,20 +188,33 @@ source: queries is duckdb.sql("""
     #(doc) Queries slower than max_query_ms: the latency limit.
     over_limit_count is count() { where: over_limit }
     #(doc) Share of queries a materialized table answered.
-    table_share is count() { where: served_by != 'live' and served_by is not null } / nullif(count(), 0)
-    #(doc) Warehouse time spent serving, in seconds.
+    table_share is count() { where: served_by != 'live' and served_by is not null and served_by != '' } / nullif(count(), 0)
+    #(doc) Time spent serving, in seconds, wherever it ran.
     serve_seconds is duration_ms.sum() / 1000
-    #(doc) What serving cost: query seconds at the warehouse's price.
+    #(doc) What serving cost where each query ran.
     serve_usd_total is serve_usd.sum()
+    #(doc) What serving cost on the warehouse.
+    warehouse_usd is serve_usd.sum() { where: ran_on = 'warehouse' }
+    #(doc) What serving cost on Credible.
+    credible_usd is serve_usd.sum() { where: ran_on = 'credible' }
+    #(doc) What the same queries would have cost run live on the warehouse (an estimate for the ones a table answered).
+    live_usd_total is live_usd.sum()
   #(doc) Serving cost and the latency limit per day and version.
   view: by_day is {
     group_by: on_day, model_version
-    aggregate: query_count, over_limit_count, table_share, serve_seconds, serve_usd_total
+    aggregate: query_count, over_limit_count, table_share, serve_seconds, serve_usd_total,
+      warehouse_usd, credible_usd, live_usd_total
     order_by: on_day desc
   }
-  #(doc) Where the time goes: sources by warehouse seconds.
+  #(doc) Per day, every version together: what the queries would have cost live on the warehouse against what they did cost. The history app subtracts builds and storage to show what Credible saved.
+  view: cost_by_day is {
+    group_by: on_day
+    aggregate: query_count, table_share, live_usd_total, serve_usd_total, warehouse_usd, credible_usd
+    order_by: on_day desc
+  }
+  #(doc) Where the time goes: sources by seconds served.
   view: by_source is {
-    group_by: `source`, served_by
+    group_by: `source`, served_by, ran_on
     aggregate: query_count, serve_seconds, serve_usd_total, over_limit_count
     order_by: serve_seconds desc
   }
@@ -140,7 +229,8 @@ source: latency is duckdb.sql("""
     'execution_id': 'VARCHAR', 'at': 'TIMESTAMP', 'environment': 'VARCHAR', 'package': 'VARCHAR',
     'model_version': 'VARCHAR', 'model_path': 'VARCHAR', 'source': 'VARCHAR',
     'query_text': 'VARCHAR', 'origin': 'VARCHAR', 'turn_id': 'VARCHAR', 'served_by': 'VARCHAR',
-    'table_id': 'VARCHAR', 'duration_ms': 'DOUBLE', 'bytes': 'BIGINT', 'status': 'VARCHAR'})
+    'table_id': 'VARCHAR', 'duration_ms': 'DOUBLE', 'bytes': 'BIGINT', 'status': 'VARCHAR',
+    'engine': 'VARCHAR', 'bytes_scanned': 'BIGINT'})
   group by all
 """) extend {
   #(doc) The slowest tails first.
@@ -161,7 +251,8 @@ source: builds is duckdb.sql("""
       'build_ms': 'DOUBLE', 'rows': 'BIGINT', 'bytes': 'BIGINT', 'status': 'VARCHAR'})) b
   left join read_csv('data/price_card.csv', header = true, columns = {
       'usd_per_compute_hour': 'DOUBLE', 'usd_per_gb_month': 'DOUBLE', 'usd_per_tb_scanned': 'DOUBLE',
-      'max_query_ms': 'DOUBLE', 'max_staleness_hours': 'DOUBLE'}) p on true
+      'max_query_ms': 'DOUBLE', 'max_staleness_hours': 'DOUBLE',
+      'credible_usd_per_compute_hour': 'DOUBLE', 'credible_usd_per_gb_month': 'DOUBLE'}) p on true
 """) extend {
   primary_key: build_id
   dimension: on_day is started_at.day
@@ -189,11 +280,12 @@ source: tables is duckdb.sql("""
   select b.table_id, any_value(b.source) as source, any_value(b.kind) as kind,
          max(b.started_at) as last_built,
          date_diff('minute', max(b.started_at), now()::timestamp) / 60.0 as data_age_hours,
-         arg_max(b.bytes, b.started_at) / 1e9 * any_value(p.usd_per_gb_month) / 30 as storage_usd_per_day,
+         arg_max(b.bytes, b.started_at) / 1e9 * coalesce(any_value(p.credible_usd_per_gb_month), any_value(p.usd_per_gb_month)) / 30 as storage_usd_per_day,
          any_value(p.max_staleness_hours) as max_staleness_hours
   from b left join read_csv('data/price_card.csv', header = true, columns = {
       'usd_per_compute_hour': 'DOUBLE', 'usd_per_gb_month': 'DOUBLE', 'usd_per_tb_scanned': 'DOUBLE',
-      'max_query_ms': 'DOUBLE', 'max_staleness_hours': 'DOUBLE'}) p on true
+      'max_query_ms': 'DOUBLE', 'max_staleness_hours': 'DOUBLE',
+      'credible_usd_per_compute_hour': 'DOUBLE', 'credible_usd_per_gb_month': 'DOUBLE'}) p on true
   group by b.table_id
 """) extend {
   primary_key: table_id

@@ -92,35 +92,90 @@ production turn has no answer key:
 
 ```bash
 python3 eval.py ingest --set <set> --turns turns.jsonl --queries queries.jsonl --versions versions.jsonl
-python3 eval.py judge-sample pick --set <set> --label prod-20261125    # draw unjudged turns as a set
-# a turn asking a question the set already keys takes that verified key;
+python3 eval.py judge-sample pick --set <set> --label prod-20261125    # draw unjudged question groups as a set
+# a standalone question the set already keys takes that verified key;
 # derive the rest (skill:eval-import), then judge the logged answers:
 python3 eval.py run --set <workdir>/judging/prod-20261125 --label prod-20261125 --rejudge
 python3 eval.py diagnose --set <workdir>/judging/prod-20261125 --label prod-20261125
 python3 eval.py judge-sample collect --set <set> --label prod-20261125   # refuses an undiagnosed wrong answer
 ```
 
+What `pick` draws, and what `collect` records:
+
+- **Question groups, not turns.** Identical questions (case and spacing
+  ignored; a follow-up only after the same earlier question) are one group,
+  judged once. `collect` writes the verdict for every turn of the group, the
+  others with `sampled_because: carried` and `judged_turn` naming the one
+  judged. A demo prompt asked 45 times costs one key and weighs 45 in the rate.
+- **User signals first.** A group whose next message corrected the answer
+  (`correction`) or asked it again (`asked_again`) is drawn before the rest.
+  The judge sees that next message as evidence, never as the verdict.
+- **Earlier messages.** Each case carries up to three earlier user messages
+  of its session, with a short excerpt of each answer, never their tool calls.
+  The judge records which the question needs (`depends_on`).
+- **Retrieval.** Where the key lists `expectedEntities`, `collect` records the
+  recall of what `get_context` returned (`retrieval_recall`).
+- **Key kind.** `key_kind` is the key's kind, so the history model can report
+  coverage (the share it can answer) and correct refusals (`unanswerable`).
+
 Each verdict records its `basis`. `answer`: the log held the prose the person
 saw. `final_query`: an MCP or API client logs only its calls, so the judge read
 the last query that succeeded and its re-run rows. The two are different
 numbers; model 1 groups every quality view by basis and never averages them.
 
+Model 1 also shows, per week: quality, coverage, correct refusals, retrieval
+recall, and the effort a right answer took (tool calls, failed queries, tokens);
+questions judged right one day and wrong another (`mixed_verdicts`); the right
+answers that took the most calls; and what Credible saved (below).
+
 The improve side then works from production rather than from questions someone
 thought to ask (step O1):
 
 ```bash
-python3 eval.py build-set --set <set> --label prod-20261125   # cases + workloads/prod-20261125.jsonl
-# key any new case that judging did not (skill:eval-import, verify_goldens.py --refresh then --promote), then:
-python3 eval.py routine --kind quality --mode improve --set <set>
-python3 eval.py routine --kind speed --mode improve --set <set> --queries <set>/workloads/prod-20261125.jsonl
+python3 eval.py build-set --set <set> --label prod-20261125   # a new set version
+V=<optimization package>/sets/prod-20261125                    # build-set prints it
+python3 eval.py routine --kind quality --mode improve --set $V
+python3 eval.py routine --kind speed --mode improve --set $V --queries $V/workloads/prod-20261125.jsonl
 ```
 
-`build-set` adds one case per distinct question, those judged wrong first, then
-the undecided, then the most asked, and never a build request (`kind: build`).
-Each case carries the key that judging verified for one of its turns, so the
-set is built from the judged history and not keyed twice; only a question
-judging left unkeyed needs a key. The workload is every production query that
-succeeded, counted.
+`build-set` writes a new set version each time, in the optimization package
+(`sets/<label>/`), never in the model's repository: the set holds the answer
+key, and it changes with production, not with each edit. The pull request names
+the version it was checked against. Every version shares one attempts file in
+the optimization package, so the improve step sees what earlier versions tried.
+
+A version holds only questions judging keyed, one per question group:
+
+- **Failures**, up to half of `--questions` (default 100): groups judged wrong,
+  including mixed ones, taken round-robin across failure codes. Tagged
+  `failure` and `failure:<code>`.
+- **Controls**: groups judged right every time, as many as the failures and at
+  least 5, round-robin across the source each answer queried. Tagged
+  `control`. Every edit is re-asked on every control, and breaking one blocks
+  acceptance.
+- **Follow-ups** carry their earlier questions as `context.priorQuestions`. The
+  run answers those first in the same session (`claude -p`, then `--resume`)
+  and judges only the last. A chain of more than three, or one through a build
+  request, is left out and counted.
+
+The workload is every production query that succeeded, counted.
+
+Improve mode stops after `--max-rejected` edits in a row are not accepted
+(default 3), and writes the pull request body beside the routine record
+(`<workdir>/routines/<label>.pr.md`): the production failures the edit closes
+with how often each was asked, the edit, before and after on the targets and the
+controls, the run ids, and what a person must settle (unverified keys,
+undecided verdicts, doubted keys, failures diagnosed as the eval's own).
+
+**What Credible saved.** `prod_queries.engine` says where a query ran
+(`warehouse` or `credible`; empty means live ran on the warehouse and a table
+read on Credible). The history model prices each where it ran
+(`usd_per_compute_hour` or `usd_per_tb_scanned` with `bytes_scanned` on the
+warehouse, `credible_usd_per_compute_hour` on Credible) and estimates what each
+table-served query would have cost live, from the same query's live runs or
+its source's. Saved is that live cost, less what serving cost, less the
+warehouse cost of the builds and the cost of storing the tables
+(`credible_usd_per_gb_month`). `simulate` prices an option the same way.
 
 What the host's log skill must write, learned on real logs:
 

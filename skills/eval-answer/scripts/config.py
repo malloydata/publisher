@@ -90,6 +90,11 @@ SCHEMA: dict[str, dict[str, Any]] = {
                     "max_build_ms_per_day": "positive", "max_usd_per_day": "positive",
                     "usd_per_compute_hour": "positive", "usd_per_tb_scanned": "positive",
                     "usd_per_gb_month": "positive", "table_read_ms": "positive",
+                    # What Credible charges to read a table it stores, and to
+                    # store it: a table read is priced here, a live query and
+                    # a build at the warehouse's price.
+                    "credible_usd_per_compute_hour": "positive",
+                    "credible_usd_per_gb_month": "positive",
                     "max_query_ms": "positive"},
     # The optimization package (eval-loop's optimization_package.py): where its
     # tables, both models and both apps live; the environments whose traffic is

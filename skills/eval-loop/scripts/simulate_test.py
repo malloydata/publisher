@@ -76,7 +76,13 @@ class Options(unittest.TestCase):
         self.assertEqual((opt["build_ms"], opt["refreshes_per_day"], opt["staleness_hours"]),
                          (200, 4, 6.0))
         self.assertEqual(opt["net_ms_per_day"], 4350 - 800)
-        self.assertLess(opt["usd_per_day"], 0)
+        base, _ = sim.score(ROWS, [], OBJ, "baseline")
+        self.assertLess(opt["usd_per_day"], base["usd_per_day"])
+        self.assertEqual(opt["usd_per_day"],
+                         round(opt["warehouse_usd_per_day"] + opt["credible_usd_per_day"], 4))
+        # Table reads are priced at Credible's rate when one is given.
+        cheap, _ = sim.score(ROWS, [t], {**OBJ, "credible_usd_per_compute_hour": 0.01}, "x")
+        self.assertLess(cheap["credible_usd_per_day"], opt["credible_usd_per_day"])
         self.assertEqual({p["qid"]: p["predicted_ms"] for p in preds}["by_category"], 10.0)
 
     def test_a_limit_makes_an_option_infeasible_and_says_why(self):
