@@ -179,12 +179,12 @@ A new install step should use the script too.
 
 ## Publishing
 
-There are three npm trains. sdk/app/server share one version; the other two each have their own.
+There are three npm trains. sdk/app/server/cli share one version; the other two each have their own.
 Nothing publishes to PyPI (see *PyPI: currently not published*).
 
 | Packages | Registry | Version | Published by | Missing bump caught by |
 |---|---|---|---|---|
-| `@malloy-publisher/sdk`, `app`, `server` | npm | Lockstep, set by `release.yml` | `npm-sdk.yml`, called from `release.yml` | n/a — the release sets it |
+| `@malloy-publisher/sdk`, `app`, `server`, `cli` | npm | Lockstep, set by `release.yml` | `npm-sdk.yml`, called from `release.yml` | n/a — the release sets it |
 | `@malloy-publisher/skills` | npm | Decided at release time by `scripts/independent-version.mjs`; `package.json` carries a fixed `0.0.0-dev` placeholder | `skills-npm.yml` | n/a — nothing to forget, the decision reads npm itself |
 | `@malloy-publisher/create-malloy-package` | npm | Decided at release time the same way; `package.json` also carries `0.0.0-dev` | `create-malloy-package-npm.yml` | n/a, same reason |
 
@@ -209,7 +209,7 @@ never the shape of the number; moving it is a hand dispatch with `-f version=` (
 scaffolder has no dependents.
 
 `bun.lock` is a fourth reader of these numbers and is deliberately left alone. It
-records an older version for the three workspace packages (`0.9.16` when 0.11.0
+records an older version for the lockstep workspace packages (`0.9.16` when 0.11.0
 shipped), so once a release PR merges
 `main` disagrees with the manifests it locked. That is benign — the entries
 are workspace links, not registry resolutions, and `bun install --frozen-lockfile`
@@ -329,7 +329,7 @@ they were outside `skills-npm.yml`'s `paths:` trigger and a lockfile-only PR nev
 check at all. A lockfile-only change now counts as "changed" and triggers a publish on its own.
 
 `release.yml` is `workflow_dispatch`-only and is the single place a release starts. Its `prepare` job
-bumps sdk/app/server, stamps the release notes, commits both to a fresh `release/v<version>`
+bumps sdk/app/server/cli, stamps the release notes, commits both to a fresh `release/v<version>`
 branch cut from `main`, and pushes it; `npm-sdk.yml` and `docker-image.yml` are then called with that
 ref. `publish-packages` triggers the two other npm trains (see below).
 `gh-release` cuts the tag, and
@@ -351,7 +351,7 @@ skipped, because a skipped job would also skip every job downstream of `prepare`
 
 **The release branch is also the post-release PR.** `prepare` rewrites every `## [Unreleased]`
 heading in `RELEASE_NOTES.md` as `## [<version>]` (`scripts/release-notes.mjs stamp`) in the same
-commit that sets the three `packages/{sdk,app,server}/package.json` versions
+commit that sets the four `packages/{sdk,app,server,cli}/package.json` versions
 (`scripts/set-version.mjs`). `gh-release` then puts the sections headed `[<version>]` on the release
 page (`release-notes.mjs extract <version>`) and prints a compare link. A person opens
 `release/v<version>` into `main` as a PR, titled `chore(release): <version>`, and merges it; that
@@ -435,7 +435,7 @@ the commit, `version_taken` checks the tag as well as the branch, and the releas
 exceeds its limit however small. The notes spec also smoke-runs `extract` against the real
 `RELEASE_NOTES.md`, so a heading it cannot read a title from fails the PR that wrote it rather than the
 release that would silently drop the narrative; the version spec does the equivalent, asserting the
-replace still finds the `"version"` field in all three real manifests at their real paths, so a
+replace still finds the `"version"` field in all four real manifests at their real paths, so a
 rename or a reformat that moved it out of reach fails a PR rather than a release. The release path
 itself is dispatch-only and cannot be exercised in CI, so the shell in the changed steps was verified
 out of band instead: each `run:` body extracted from the YAML and executed against a scratch repo with
@@ -445,7 +445,7 @@ is **not** in this repo — it is worth rebuilding rather than trusting, because
 those bodies has nothing automated behind it.
 
 Merging the release PR cannot collide with `publish-packages`: it changes only
-`packages/{sdk,app,server}/package.json` and `RELEASE_NOTES.md`, neither of which
+`packages/{sdk,app,server,cli}/package.json` and `RELEASE_NOTES.md`, neither of which
 `publish_indep_pkg`'s "main moved" guard watches for skills or create-malloy-package. The reason to
 wait for the run to finish before touching the PR is the release branch itself (above), not this
 guard.
@@ -505,8 +505,8 @@ everything in this file that follows from them changes with it.
   [trusted publishing docs](https://docs.npmjs.com/trusted-publishers) describe this as a mismatch
   hazard, and `malloydata/malloy`'s `CONTEXT.md` states the same rule verbatim ("Matching is on the
   top-level caller workflow filename, not a reusable workflow it calls"), independently arrived at.
-  This is why `@malloy-publisher/sdk`, `app`, and
-  `server` have entries naming `release.yml` even though the `npm publish` calls live in
+  This is why `@malloy-publisher/sdk`, `app`, `server` and
+  `cli` have entries naming `release.yml` even though the `npm publish` calls live in
   `npm-sdk.yml`.
 - **`release.yml` dispatches the two independently-versioned npm packages, it does not call them.**
   `publish-packages` triggers `skills-npm.yml` and `create-malloy-package-npm.yml` through the
@@ -532,7 +532,7 @@ everything in this file that follows from them changes with it.
 - **OIDC auto-enables provenance, which requires `repository.url`** in each published `package.json`.
   A package missing it fails to publish with a `422 ... provenance` error. This is the likely failure
   when adding a new package.
-- **`main` carries the released sdk/app/server version only once that release's PR merges.** Before
+- **`main` carries the released sdk/app/server/cli version only once that release's PR merges.** Before
   release branches were merged back, `main` sat 41 patches behind npm. `release-sync.yml`
   reports when it lags, but nothing stops a dispatch, so `prepare`'s floor is
   still `max(npm latest, main declared)` and fails closed when the registry will not answer. **Do
@@ -596,14 +596,31 @@ gh api repos/malloydata/publisher/environments/pypi/deployment-branch-policies \
 The removed jobs, with their guards, are in the history of `release.yml` and of
 `.github/workflows/python-sdk.yml` (`git log -- .github/workflows/python-sdk.yml`).
 
-### One package that looks publishable and is not
+### The CLI rides the lockstep train
 
-**`@malloydata/publisher-cli` at `0.0.1` is unpublished but not `private`.** It is in a different npm
-scope (`@malloydata`, not `@malloy-publisher`) and no workflow publishes it, so it looks shippable
-while nothing ships it. Decide separately whether to mark it `private: true` or bring it into
-`publish-packages` — and if the latter, it needs the whole *Adding a published package* dance below,
-plus a version-decision path like skills and create-malloy-package's, or a place in `prepare`'s
-lockstep stamp beside sdk/app/server.
+**`@malloy-publisher/cli` (the `malloy-pub` binary) is versioned and published with sdk/app/server.**
+It was `@malloydata/publisher-cli` at `0.0.1`, never published; decision D6 renamed it into the
+`@malloy-publisher` scope and put `packages/cli/package.json` in `prepare`'s `PKGS`, so a release sets
+it to the same number as the other three. `npm-sdk.yml` builds and publishes it last, after the
+server. Its `build` is a single bundle (dependencies inlined) whose `prebuild` regenerates the API
+client from `api-doc.yaml`, so the client in the tarball always matches the server released beside
+it, and the tarball needs Node only, no Bun. `prepublishOnly` refuses to publish without
+`dist/index.js`, since `files` is `dist` alone and a missing build would otherwise ship an empty
+package and exit 0.
+
+It is the last step of the same job, so a CLI publish that fails fails `publish-npm`, and with it
+`gh-release` and `publish-packages`, after sdk, app and server are already on npm. Re-running the job
+cannot help (sdk's publish would fail on a taken version) and re-running the release burns a version.
+Publish the missing CLI by hand from the release branch with an npm login that can publish to the
+scope (`cd packages/cli && bun run build && npm publish --access public`; OIDC works only inside
+Actions), then create the tag and release page by hand from that branch (`gh release create
+v<version> --target release/v<version>`, with the notes `release-notes.mjs extract <version>` prints),
+and dispatch `skills-npm.yml` then `create-malloy-package-npm.yml` on `main`.
+
+Its trusted-publisher entry names **`release.yml`**, like sdk/app/server, for the reason under *Rules
+that bite*. npm will not take an entry until the package exists, so the first version is published by hand
+and the entry registered **before** the change that wires it into `npm-sdk.yml` merges; otherwise the
+first release fails exactly as above (see *Adding a published package*).
 
 For completeness: `api-doc.yaml`'s `info.version: v0` is the REST API version behind the `/api/v0`
 path prefix, not a package version. It is unrelated to any of this and should not be bumped with a
@@ -624,7 +641,7 @@ already published" step `exit 1`s on a version npm already holds, so a hand-disp
 already published fails rather than no-opping.
 
 **If `publish-packages` is the only red job, do not re-run the release.** It sits outside
-`gh-release`'s `needs`, so it neither blocked nor undid the tag: the sdk/app/server release completed
+`gh-release`'s `needs`, so it neither blocked nor undid the tag: the sdk/app/server/cli release completed
 and only the two dispatches are outstanding. Use "Re-run failed jobs", which re-enters that job alone
 against a now-settled `main` and skips whatever already landed. Dispatching `skills-npm.yml` and then
 `create-malloy-package-npm.yml` on `main` by hand also works, in that order, but ask npm which of the
@@ -739,14 +756,14 @@ equals the version that file declares, and fails with `malloy-publisher: not fou
 0.5.1 and 0.7.0 scaffolder publishes. In 0.7.0 it was also the only thing that stopped a scaffolder
 pinned to the previous server from shipping.
 
-sdk/app/server are not re-runnable at the same version today. `prepare` walks the version forward
+sdk/app/server/cli are not re-runnable at the same version today. `prepare` walks the version forward
 whenever a release branch or tag exists, so a release that fails after `npm-sdk.yml` has published
-cannot be resumed and the retry burns three new versions. npm versions are immutable, so there is no
+cannot be resumed and the retry burns four new versions. npm versions are immutable, so there is no
 repair beyond moving forward.
 
 ### Hardening that is not in place yet
 
-There are **three** npm trusted-publisher entries, not two: `release.yml` (for sdk, app, and server),
+There are **three** npm trusted-publisher workflows, not two: `release.yml` (for sdk, app, server and cli),
 `skills-npm.yml`, and `create-malloy-package-npm.yml`. Any hardening has to cover all three.
 PyPI's one entry (`release.yml`, for `malloy-publisher-sdk`) is unused while nothing publishes
 there, and stays bound to the `pypi` environment, whose deployment branches are restricted to `main`
@@ -756,7 +773,7 @@ The `github.ref == 'refs/heads/main'` guards on the two child publish jobs are a
 boundary: npm matches repo plus filename and never a ref, so anyone who can dispatch can push a
 branch whose copy of the workflow drops the line. **`release.yml` carries no ref guard at all**, and
 its `prepare` job branches from whatever ref it was dispatched on and passes that branch to
-`npm-sdk.yml`, so a branch dispatch publishes that branch's sdk/app/server under the real names. That
+`npm-sdk.yml`, so a branch dispatch publishes that branch's sdk/app/server/cli under the real names. That
 is the largest of the three surfaces, so it matters most there.
 
 The control that survives all of it is binding each trusted-publisher entry to a GitHub Environment

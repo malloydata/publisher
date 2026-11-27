@@ -165,7 +165,7 @@ not a precaution.
 
 | Packages | Version | Decided by | Missing bump caught by |
 | --- | --- | --- | --- |
-| `sdk`, `app`, `server` | lockstep | `release.yml` itself, on a `release/v<v>` branch | n/a — the release sets it |
+| `sdk`, `app`, `server`, `cli` | lockstep | `release.yml` itself, on a `release/v<v>` branch | n/a — the release sets it |
 | `skills` | its own line, `package.json` carries a fixed `0.0.0-dev` placeholder | release time, from npm's own state (`scripts/independent-version.mjs`); you, for a minor | n/a — nothing is committed ahead of time to forget |
 | `create-malloy-package` | its own line, same placeholder | release time, the same way | n/a, same reason |
 
@@ -210,7 +210,7 @@ publisher (project `malloy-publisher-sdk`, workflow `release.yml`, environment
 `.github/workflows/CONTEXT.md` records it and what a new upload job must match.
 
 `main`'s `packages/sdk/package.json` used to lag npm permanently. It no longer
-does: merging the release PR (step 6) brings those three files to the version
+does: merging the release PR (step 6) brings those four files to the version
 that shipped, and CI's `Release sync` check fails while a shipped
 release's PR is unmerged. `prepare` still takes the max of npm and the file for
 its floor rather than trusting either. Ask npm when you want to know what is
@@ -357,6 +357,7 @@ independently-versioned package as published or skipped and why.
 
 ```bash
 npm view @malloy-publisher/server version
+npm view @malloy-publisher/cli version                 # same number as server
 npm view @malloy-publisher/skills version
 gh release view "v<version>" --repo malloydata/publisher
 ```
@@ -365,7 +366,7 @@ gh release view "v<version>" --repo malloydata/publisher
 
 This is the one step the release cannot finish itself, and as the agent running
 this skill **you open the PR**. The branch already exists and already holds
-everything: `prepare` committed the three `packages/{sdk,app,server}/package.json`
+everything: `prepare` committed the four `packages/{sdk,app,server,cli}/package.json`
 versions and the stamped `RELEASE_NOTES.md` headings to `release/v<version>` as one
 commit. Do not create another branch and do not stamp anything by hand.
 
@@ -386,7 +387,7 @@ git fetch origin
 git ls-remote --exit-code --heads origin "release/v$V"
 # 2. one commit ahead of main, titled chore(release): $V
 git log --oneline "origin/main..origin/release/v$V"
-# 3. only the three manifests and RELEASE_NOTES.md
+# 3. only the four manifests and RELEASE_NOTES.md
 git diff --stat "origin/main...origin/release/v$V"
 # 4. the [$V] sections it stamped, which should match the release page
 NOTES="$(mktemp)" && git show "origin/release/v$V:RELEASE_NOTES.md" > "$NOTES"
@@ -413,7 +414,7 @@ Then open it against `main`:
 ```bash
 gh pr create --repo malloydata/publisher --base main --head "release/v$V" \
   --title "chore(release): $V" \
-  --body "Merges the v$V release branch back into main: sets sdk, app and server to $V and stamps the RELEASE_NOTES.md sections v$V shipped.
+  --body "Merges the v$V release branch back into main: sets sdk, app, server and cli to $V and stamps the RELEASE_NOTES.md sections v$V shipped.
 
 Release: https://github.com/malloydata/publisher/releases/tag/v$V"
 ```
@@ -491,10 +492,15 @@ after the merge (the first command in step 3).
   anchor release (`packages/server/tests/perf/main-thread/anchor.json`), so
   main-thread growth above about 1.3x that is wanted still blocks the release.
   Move the anchor forward in a PR of its own, then dispatch again.
-- **Only `publish-packages` is red** → the sdk/app/server release completed and
+- **`publish-npm` is red at its last step, *Build & publish CLI package*** →
+  sdk, app and server are on npm, and `gh-release` and `publish-packages` did
+  not run. Do not re-run either the job or the release. Publish the CLI by hand
+  from the release branch, then the tag, page and children by hand, as
+  *The CLI rides the lockstep train* in `.github/workflows/CONTEXT.md` lays out.
+- **Only `publish-packages` is red** → the sdk/app/server/cli release completed and
   the tag exists; that job sits outside `gh-release`'s `needs`. Use *Re-run
   failed jobs*, which re-enters that job alone and skips whatever already landed.
-  **Do not re-run the release** — it walks the version forward and burns three
+  **Do not re-run the release** — it walks the version forward and burns four
   npm versions.
 
   Dispatching the children by hand also works, but it is *not* the same thing and

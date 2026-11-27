@@ -92,3 +92,17 @@ jobs:
           cd packages/server
           NODE_ENV=production bun run build
           npm publish --access public --tag ${{ steps.version_step.outputs.npm_tag }}
+
+      # The CLI (`malloy-pub`) is on the same lockstep version as sdk/app/server:
+      # `release.yml`'s `prepare` sets packages/cli/package.json with the other
+      # three. It goes last so a failure here leaves the server already
+      # published, as a failure in the server step leaves sdk and app. `build`'s
+      # `prebuild` generates the API client from api-doc.yaml first, and the
+      # bundle carries its dependencies, so the tarball needs Node only.
+      - name: Build & publish CLI package
+        env:
+          NODE_AUTH_TOKEN: ""
+        run: |
+          cd packages/cli
+          NODE_ENV=production bun run build
+          npm publish --access public --tag ${{ steps.version_step.outputs.npm_tag }}

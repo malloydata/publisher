@@ -1,20 +1,32 @@
 {
-  "name": "@malloydata/publisher-cli",
-  "version": "0.0.1",
-  "description": "CLI for Malloy Publisher - Manage projects, packages, and connections",
+  "name": "@malloy-publisher/cli",
+  "version": "0.18.5",
+  "description": "Command-line interface for Malloy Publisher: manage environments, packages, connections and materializations.",
+  "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "bin": {
     "malloy-pub": "./dist/index.js"
   },
+  "files": [
+    "dist"
+  ],
   "engines": {
     "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/malloydata/publisher.git",
+    "directory": "packages/cli"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "generate-api-types": "bunx openapi-generator-cli generate -i ../../api-doc.yaml -g typescript-axios -o src/api/generated --additional-properties=supportsES6=true,withSeparateModelsAndApi=true,apiPackage=api,modelPackage=models,stringEnums=true",
     "prebuild": "bun run generate-api-types",
     "build": "bun build src/index.ts --outdir dist --target node --format esm && chmod +x dist/index.js",
+    "prepublishOnly": "node -e \"require('fs').accessSync('dist/index.js')\" || (echo 'dist/index.js is missing: run bun run build before npm publish' >&2; exit 1)",
     "dev": "bun run src/index.ts --",
     "lint": "bunx eslint ./src --fix",
     "format": "bunx prettier --write --parser typescript 'src/**/*.{ts,tsx}'",
