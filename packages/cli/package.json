@@ -1,6 +1,6 @@
 {
   "name": "@malloy-publisher/cli",
-  "version": "0.18.5",
+  "version": "0.18.6",
   "description": "Command-line interface for Malloy Publisher: manage environments, packages, connections and materializations.",
   "license": "MIT",
   "type": "module",
