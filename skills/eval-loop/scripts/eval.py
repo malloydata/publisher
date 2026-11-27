@@ -54,7 +54,8 @@ import config  # noqa: E402
 
 VERBS = ("check", "serve", "publish", "experiment", "verify", "run", "replay",
          "query-replay", "accept", "diagnose", "improve", "package", "history", "push", "pull",
-         "routine", "runs", "versions", "export", "import-run", "simulate", "ingest", "judge-sample", "build-set", "predict", "outcomes")
+         "routine", "runs", "versions", "export", "import-run", "simulate", "ingest", "judge-sample", "build-set", "predict", "outcomes",
+         "history-export")
 
 
 def flag_value(args: list[str], flag: str) -> str | None:
@@ -244,6 +245,9 @@ def dispatch(argv: list[str]) -> int:
     if verb == "build-set":
         import build_set
         return build_set.main(rest)
+    if verb == "history-export":
+        import history_export
+        return history_export.main(rest)
     if verb in ("run", "replay", "query-replay"):
         rest = with_experiment(verb, rest)
     if verb == "verify":

@@ -173,6 +173,23 @@ with how often each was asked, the edit, before and after on the targets and the
 controls, the run ids, and what a person must settle (unverified keys,
 undecided verdicts, doubted keys, failures diagnosed as the eval's own).
 
+**Keeping the history in a database that takes no inserts.** The history
+tables only grow, and a managed database cannot add rows to a table. So each
+export is a batch:
+
+```bash
+python3 eval.py history-export --set <set> --label 20261127 --connection <database>
+```
+
+It writes the rows added since the last export as
+`<optimization package>/export-history/<label>/<table>.csv`, to load as
+`<table>__<label>` (`manifest.json` names each), and a package to publish beside
+them, `<optimization package>-hosted/`, whose `history.malloy` reads each table
+as the union of its loaded batches by name, cast to the local model's types.
+Exporting a label again rewrites exactly its rows. Load the tables and publish
+the package into an environment of its own: it holds verdicts and production
+answers.
+
 **What Credible saved.** `prod_queries.engine` says where a query ran
 (`warehouse` or `credible`; empty means live ran on the warehouse and a table
 read on Credible). The history model prices each where it ran
