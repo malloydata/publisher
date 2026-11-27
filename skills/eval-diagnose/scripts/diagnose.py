@@ -289,8 +289,8 @@ def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
                     if answered_correctly else "")
     if effort:
         correct_line = (f"\nTHIS ANSWER WAS CORRECT, but it took {effort['calls']} tool "
-                        f"calls (the run's passing cases took {effort['median']} at the "
-                        f"median) and {effort['errors']} failed queries. Diagnose the "
+                        f"calls (against {effort['median']} for the yardstick: the same "
+                        f"case in --compare-run, else this run's median) and {effort['errors']} failed queries. Diagnose the "
                         f"EFFORT only: what sent the agent the wrong way before it found "
                         f"the answer. Quote the doc, skill instruction or name that misled "
                         f"it (code MISLED, owner where that text lives), or say nothing "
@@ -601,21 +601,32 @@ EFFORT_FACTOR = 2
 EFFORT_ERRORS = 3
 
 
-def effortful(events: list[dict[str, Any]], passed: list[str]) -> dict[str, dict[str, Any]]:
-    """Passing cases that took far more effort than the run's other passes:
-    at least EFFORT_FACTOR times the median tool calls and EFFORT_MIN_CALLS,
-    or EFFORT_ERRORS failed queries. qid -> {calls, median, errors}."""
+def calls_of(events: list[dict[str, Any]]) -> dict[str, int]:
+    return {e["qid"]: (e.get("n_get_context") or 0) + (e.get("n_execute") or 0)
+            for e in events if e.get("kind") == "attempt" and e.get("qid")}
+
+
+def effortful(events: list[dict[str, Any]], passed: list[str],
+              before: list[dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
+    """Passing cases that took far more effort than they should have: at least
+    EFFORT_FACTOR times the yardstick and EFFORT_MIN_CALLS tool calls, or
+    EFFORT_ERRORS failed queries. The yardstick is the same case's calls in an
+    earlier run (`before`, the --compare-run), when it has one, because advice
+    that slows every case also raises the run's own median; otherwise the
+    median of this run's passes. qid -> {calls, median, errors}."""
     att = {e["qid"]: e for e in events if e.get("kind") == "attempt" and e.get("qid") in passed}
     calls = {q: (e.get("n_get_context") or 0) + (e.get("n_execute") or 0) for q, e in att.items()}
     if not calls:
         return {}
     ordered = sorted(calls.values())
     median = ordered[len(ordered) // 2]
+    earlier = calls_of(before or [])
     out = {}
     for q, n in calls.items():
         errors = att[q].get("n_execute_errors") or 0
-        if (n >= EFFORT_MIN_CALLS and n >= EFFORT_FACTOR * max(median, 1)) or errors >= EFFORT_ERRORS:
-            out[q] = {"calls": n, "median": median, "errors": errors}
+        yard = earlier.get(q, median)
+        if (n >= EFFORT_MIN_CALLS and n >= EFFORT_FACTOR * max(yard, 1)) or errors >= EFFORT_ERRORS:
+            out[q] = {"calls": n, "median": yard, "errors": errors}
     return out
 
 
@@ -946,7 +957,9 @@ def main(argv: list[str] | None = None) -> int:
     # why did the model not deliver what the answer needed. They are told
     # apart on the way in, so the prompt can say the answer was right, and on
     # the way out, so a reader never mistakes one for a wrong number.
-    effort = {} if a.no_effort or a.limit is not None or a.only else effortful(events, passed)
+    before = (read_jsonl(a.compare_run / "events.jsonl")
+              if a.compare_run and (a.compare_run / "events.jsonl").is_file() else None)
+    effort = {} if a.no_effort or a.limit is not None or a.only else effortful(events, passed, before)
     effort = {q: v for q, v in effort.items() if q not in retrieval_only
               and (cases.get(q) or {}).get("split") not in ("test", "holdout")}
     to_diagnose = failed + retrieval_only + sorted(effort)

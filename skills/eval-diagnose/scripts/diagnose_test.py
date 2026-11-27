@@ -716,6 +716,13 @@ class Effort(unittest.TestCase):
         self.assertEqual(sorted(got), ["errs", "slow"])
         self.assertEqual(got["slow"], {"calls": 10, "median": 4, "errors": 0})
         self.assertEqual(diagnose.effortful(ev, []), {})
+        # Advice that slows every case hides from the run's own median; the
+        # same cases in an earlier run show it.
+        slow_all = [{"kind": "attempt", "qid": f"q{i}", "n_get_context": 5, "n_execute": 5} for i in range(5)]
+        self.assertEqual(diagnose.effortful(slow_all, [f"q{i}" for i in range(5)]), {})
+        got = diagnose.effortful(slow_all, [f"q{i}" for i in range(5)], ev)
+        self.assertEqual(sorted(got), [f"q{i}" for i in range(5)])
+        self.assertEqual(got["q0"]["median"], 4)
 
 
 if __name__ == "__main__":
