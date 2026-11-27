@@ -380,8 +380,8 @@ export function upstreamWithdrawalSentences(
             : `The upstream tables of ${unread.join(", ")} could not be read`) +
             `, so whether it changed since the last build is not known: ` +
             `${unread.join(", ")} answer live until a read of it succeeds ` +
-            `and finds it unchanged (the package's next rebind reads it ` +
-            `again) or a reload compiles.`,
+            `and finds it unchanged (the package's next manifest bind or ` +
+            `rebind reads it again) or a reload plans it afresh.`,
       );
    }
    return out;
@@ -3369,7 +3369,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             last.quotedFrom === requested
                ? last.quoted
                : await this.quoteBoundTableNames(entries);
-         await this.rereadUnreadUpstreams();
+         await this.rereadWithdrawnUpstreams();
          await this.mz.bindCompiled({
             database: quoted,
             databaseAsGiven: true,
@@ -3443,13 +3443,18 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       // An upstream that could not be read is not known to be unchanged:
       // its sources stop serving too, until a read finds it unchanged (this
       // call on a later rebind, the files compiling again included).
+      // A withdrawal held for a failed reload or publish this package
+      // survived (it kept no file itself) is read again in full: it is
+      // released only once every file compiles and that read succeeds.
       const kept = this.keepLastGoodModels(nextModels, outcome.fileDigests);
       const withdrawn =
          kept.length > 0
             ? await this.withdrawChangedUpstreams({
                  modelPaths: kept.map((k) => k.modelPath),
               })
-            : await this.withdrawChangedUpstreams({ onlyUnread: true });
+            : await this.withdrawChangedUpstreams(
+                 this.mz.plan.holdingWithdrawn ? {} : { onlyUnread: true },
+              );
       // Discover before installing, then install models and reports in one
       // synchronous step: a query must never see one without the other.
       const discoveryStarted = performance.now();
@@ -3463,8 +3468,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.recompileFailedWarnings = kept.map((k) =>
          recompileFailedWarning(k, withdrawn),
       );
-      // While a kept model stands, no derivation serves what it withdrew.
-      this.mz.plan.holdWithdrawn(kept.length > 0);
+      // While a kept model stands, or an upstream is unread, no derivation
+      // serves what was withdrawn. Released only once every file compiles
+      // and every upstream read succeeds, never because this package kept
+      // no file of its own.
+      this.mz.plan.holdWithdrawn(
+         kept.length > 0 || this.mz.plan.withdrawnUnread.size > 0,
+      );
       // A kept model keeps the digests of the compile it came from.
       const compiledFrom = this.compiledFromOf(nextModels, outcome.fileDigests);
       for (const { modelPath } of kept) {
@@ -3535,13 +3545,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
 
    /**
     * Read again the upstream tables of the stored tables withdrawn as unread
-    * ({@link withdrawChangedUpstreams}), for a rebind that does not
-    * recompile: each found unchanged serves again, each found changed stays
-    * withdrawn as changed, and the `model-recompile-failed` warnings and the
-    * stale report say what is still withdrawn.
+    * ({@link withdrawChangedUpstreams}), for a bind that does not recompile
+    * (an unchanged manifest's, or one that binds only `storage=` tables):
+    * each found unchanged serves again, each found changed stays withdrawn
+    * as changed, and the `model-recompile-failed` warnings and the stale
+    * report say what is still withdrawn. Nothing compiled, so a hold in
+    * force stays (on what is still withdrawn).
     */
-   private async rereadUnreadUpstreams(): Promise<void> {
+   public async rereadWithdrawnUpstreams(): Promise<void> {
       if (this.mz.plan.withdrawnUnread.size === 0) return;
+      const holding = this.mz.plan.holdingWithdrawn;
       const reread = await this.withdrawChangedUpstreams({ onlyUnread: true });
       const before = this.kept.withdrawn;
       const withdrawn: UpstreamWithdrawal = {
@@ -3554,7 +3567,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.recompileFailedWarnings = models.map((k) =>
          recompileFailedWarning(k, withdrawn),
       );
-      this.mz.plan.holdWithdrawn(models.length > 0);
+      this.mz.plan.holdWithdrawn(
+         (holding || models.length > 0) && this.mz.plan.withdrawn.size > 0,
+      );
       if (this.keptModelStaleness) {
          this.keptModelStaleness = {
             ...this.keptModelStaleness,

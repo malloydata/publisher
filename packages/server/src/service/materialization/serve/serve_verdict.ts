@@ -120,8 +120,9 @@ type ServeVerdictReason =
     */
    | "incompatible"
    /**
-    * A bound table a model kept from before a failed recompile reads, whose
-    * upstream (a warehouse table it was built from) could not be read, so
+    * A bound table withdrawn after a failed recompile, reload or publish,
+    * whose upstream (a warehouse table it was built from) could not be read
+    * then, or at any read since, so
     * whether it changed is not known: answered live until a read of it
     * succeeds and finds it unchanged. Judges nothing about the table itself,
     * so it never counts as stale. The plan's `upstream_unread` refusal is
@@ -725,14 +726,13 @@ function contractLiveVerdict(s: VerdictSubject): ServeVerdict | undefined {
       return {
          ...live(
             "upstream_unread",
-            `${subject}'s table is bound, but its model did not recompile ` +
-               `and the read of a warehouse table it was built from failed, ` +
-               `so whether that table changed since the build is not known; ` +
-               `no query is answered from it until a read of it succeeds ` +
-               `and finds it unchanged.`,
+            `${subject}'s table is bound, but the read of a warehouse table ` +
+               `it was built from failed, so whether that table changed since ` +
+               `the build is not known; no query is answered from it until a ` +
+               `read of it succeeds and finds it unchanged.`,
             [
-               "Restore the warehouse connection, or the catalog read that failed: the package's next rebind reads it again.",
-               "Or reload the package once the model compiles.",
+               "Restore the warehouse connection, or the catalog read that failed: the package's next manifest bind or rebind reads it again.",
+               "Or reload the package.",
             ],
          ),
          table,

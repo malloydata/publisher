@@ -4794,6 +4794,10 @@ export class Environment {
             (await pkg.reloadAllModels(tableNameManifest, {
                ifChanged: recompile === "if-changed",
             }));
+         // No recompile, so read again here what a rebind reads again: the
+         // upstream of a stored table withdrawn while it was unread.
+         if (!(hasDatabase || hadDatabase))
+            await pkg.rereadWithdrawnUpstreams();
 
          if (hasStorage || hadStorage) {
             await pkg.materialization().bindCompiled({

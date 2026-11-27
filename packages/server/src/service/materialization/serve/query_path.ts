@@ -949,7 +949,7 @@ function verdictWarningMessage(reason: string): string {
       case "incompatible":
          return "This table no longer matches the column contract its build recorded, so its queries are answered live until a build rebuilds it.";
       case "upstream_unread":
-         return "A warehouse table this table was built from could not be read while its model did not recompile, so whether it changed is not known; its queries are answered live until a read of it succeeds.";
+         return "A warehouse table this table was built from could not be read, so whether it changed is not known; its queries are answered live until a read of it succeeds.";
       case "contract_missing":
          return "This table carries no column contract, so its queries are answered live until a build rebuilds it in full.";
       case "types_unrecorded":

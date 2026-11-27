@@ -372,6 +372,11 @@ export class PlanLifecycle {
       return this.serving().withdrawnUnread;
    }
 
+   /** Whether {@link holdWithdrawn} holds anything now. */
+   get holdingWithdrawn(): boolean {
+      return this.heldWithdrawn.size > 0;
+   }
+
    /**
     * Carry the addresses withdrawn now into every record derived from here
     * on (`hold` true), or stop carrying them (`hold` false). A package that
@@ -380,7 +385,9 @@ export class PlanLifecycle {
     * meantime (a connection edit, a rebind's incompatibility) cannot hand
     * the stored tables built from that upstream back to serving while it is
     * still changed (or, for one withdrawn as unread, still not known to be
-    * unchanged). Released by the reload that compiles the file again.
+    * unchanged). Released only once nothing it protects remains: every
+    * file compiles again and a read of the upstream succeeds
+    * (`Package.reloadAllModels`).
     */
    holdWithdrawn(hold: boolean): void {
       this.heldWithdrawn = hold ? new Set(this.withdrawn) : new Set();
