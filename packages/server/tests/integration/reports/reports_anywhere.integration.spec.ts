@@ -78,6 +78,8 @@ describe("Reports anywhere in a package (E2E)", () => {
          layout: "grid",
          title: "Q3",
          editable: true,
+         // It reads no given, so it lists none.
+         givenNames: [],
       } as Report);
    });
 

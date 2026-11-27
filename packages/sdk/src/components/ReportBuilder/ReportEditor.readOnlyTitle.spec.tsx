@@ -21,7 +21,7 @@ import { flights } from "../flights.malloy"
 
 # label="Flights by airline"
 # bar_chart
-query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`;
+query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count } -> { select: * }`;
 
 const served: Partial<DashboardManifest> = {
    tiles: [
@@ -80,13 +80,14 @@ describe("a read-only tile's title in the builder", () => {
          />,
          { wrapper: serverWrapper },
       );
-      const named = await screen.findByLabelText("Tile by_carrier");
+      // The tile is named as it is titled, aria label included.
+      const named = await screen.findByLabelText("Tile Flights by airline");
       expect(
          await within(named).findByText("Flights by airline"),
       ).toBeDefined();
       expect(within(named).queryByText("By carrier")).toBeNull();
-      // A view in the model is read-only too, and titled the same way.
-      const inherited = screen.getByLabelText("Tile by_month");
+      // A tile naming a view in the model is titled the same way.
+      const inherited = screen.getByLabelText("Tile Flights each month");
       expect(within(inherited).getByText("Flights each month")).toBeDefined();
    });
 });

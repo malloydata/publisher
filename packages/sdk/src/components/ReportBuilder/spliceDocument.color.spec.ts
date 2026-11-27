@@ -46,6 +46,23 @@ describe("a tile's chart colour", () => {
       expect(removed).toContain("  # bar_chart\n  view: x is vx");
    });
 
+   it("reads the colour the last line draws when two colour lines are written", async () => {
+      const builderLast = FILE(
+         '  # theme.palette.series=["#ff0080", "#ff6b00"]\n' +
+            '  # theme.palette.series=["#1f6aa8"]\n',
+      );
+      const drawn = queryTile(await openDocument(builderLast), 0);
+      expect(drawn.color).toBe("#1f6aa8");
+      expect(drawn.ownPalette).toBe(true);
+      const paletteLast = FILE(
+         '  # theme.palette.series=["#1f6aa8"]\n' +
+            '  # theme.palette.series=["#ff0080", "#ff6b00"]\n',
+      );
+      const palette = queryTile(await openDocument(paletteLast), 0);
+      expect(palette.color).toBeUndefined();
+      expect(palette.ownPalette).toBe(true);
+   });
+
    it("leaves an author's whole palette alone through an edit", async () => {
       const palette = '  # theme.palette.series=["#ff0080", "#ff6b00"]\n';
       expect(await colorOf(FILE(palette), 0)).toBeUndefined();

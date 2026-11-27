@@ -65,6 +65,9 @@ const mount = async (
 };
 
 const tile = (name: string) => screen.getByLabelText(`Tile ${name}`);
+/** A tile by its key, which a retitle leaves alone (its name follows the title). */
+const keyed = (key: string) =>
+   document.querySelector(`[data-tile-key="${key}"]`) as HTMLElement;
 const button = (name: string) =>
    screen.getByRole("button", { name, hidden: true });
 const undo = () => fireEvent.click(button("Undo"));
@@ -75,20 +78,16 @@ describe("click-to-edit text", () => {
    it("selects a tile when keyboard focus lands in it, as a press does", async () => {
       await mount();
       fireEvent.focus(screen.getByLabelText("Settings for By category"));
-      expect(
-         screen.getByLabelText("Tile by_cat").getAttribute("aria-current"),
-      ).toBe("true");
+      expect(keyed("a.by_cat").getAttribute("aria-current")).toBe("true");
    });
 
    it("keeps the selection when Escape cancels a title being typed", async () => {
       await mount();
-      fireEvent.pointerDown(screen.getByLabelText("Tile by_cat"));
+      fireEvent.pointerDown(keyed("a.by_cat"));
       fireEvent.click(screen.getByText("By category"));
       const field = screen.getByLabelText("Tile title");
       fireEvent.keyDown(field, { key: "Escape" });
-      expect(
-         screen.getByLabelText("Tile by_cat").getAttribute("aria-current"),
-      ).toBe("true");
+      expect(keyed("a.by_cat").getAttribute("aria-current")).toBe("true");
    });
 
    it("announces the save state for a screen reader", async () => {
@@ -101,30 +100,26 @@ describe("click-to-edit text", () => {
       const description = screen.getByLabelText("Description");
       fireEvent.pointerDown(description);
       expect(description.getAttribute("aria-current")).toBe("true");
-      fireEvent.pointerDown(screen.getByLabelText("Tile by_cat"));
+      fireEvent.pointerDown(keyed("a.by_cat"));
       expect(description.getAttribute("aria-current")).toBe("false");
-      expect(
-         screen.getByLabelText("Tile by_cat").getAttribute("aria-current"),
-      ).toBe("true");
+      expect(keyed("a.by_cat").getAttribute("aria-current")).toBe("true");
       fireEvent.pointerDown(description);
-      expect(
-         screen.getByLabelText("Tile by_cat").getAttribute("aria-current"),
-      ).toBe("false");
+      expect(keyed("a.by_cat").getAttribute("aria-current")).toBe("false");
    });
 
    it("opens on a click, commits on Enter, and is one undo step", async () => {
       await mount();
       editInline("By category", "Tile title", "Revenue");
-      expect(within(tile("by_cat")).getByText("Revenue")).toBeDefined();
+      expect(within(keyed("a.by_cat")).getByText("Revenue")).toBeDefined();
       undo();
-      expect(within(tile("by_cat")).getByText("By category")).toBeDefined();
+      expect(within(keyed("a.by_cat")).getByText("By category")).toBeDefined();
       expect(button("Undo")).toHaveProperty("disabled", true);
    });
 
    it("puts the old text back on Escape, with no history entry", async () => {
       await mount();
       editInline("By category", "Tile title", "Discarded", "Escape");
-      expect(within(tile("by_cat")).getByText("By category")).toBeDefined();
+      expect(within(keyed("a.by_cat")).getByText("By category")).toBeDefined();
       expect(screen.queryByLabelText("Tile title")).toBeNull();
       expect(button("Undo")).toHaveProperty("disabled", true);
    });
@@ -135,7 +130,7 @@ describe("click-to-edit text", () => {
       const field = screen.getByLabelText("Tile title");
       fireEvent.change(field, { target: { value: "Left behind" } });
       fireEvent.blur(field);
-      expect(within(tile("by_cat")).getByText("Left behind")).toBeDefined();
+      expect(within(keyed("a.by_cat")).getByText("Left behind")).toBeDefined();
    });
 
    it("adds no history entry for text that did not change", async () => {
@@ -160,11 +155,13 @@ describe("click-to-edit text", () => {
 
    it("shows a placeholder for a missing subtitle and an emptied title, and removes the tag when emptied", async () => {
       await mount();
-      expect(within(tile("by_cat")).getByText("Add a subtitle")).toBeDefined();
+      expect(
+         within(keyed("a.by_cat")).getByText("Add a subtitle"),
+      ).toBeDefined();
       // An unlabelled tile shows the name it falls back to.
-      expect(within(tile("by_brand")).getByText("By brand")).toBeDefined();
+      expect(within(tile("By brand")).getByText("By brand")).toBeDefined();
       editInline("By category", "Tile title", "");
-      expect(within(tile("by_cat")).getByText("By cat")).toBeDefined();
+      expect(within(keyed("a.by_cat")).getByText("By cat")).toBeDefined();
    });
 
    it("edits the page's title and description in place", async () => {
@@ -305,11 +302,11 @@ describe("undo and redo point at the tile they changed", () => {
       try {
          await mount();
          editInline("By category", "Tile title", "Revenue");
-         expect(tile("by_cat").hasAttribute("data-flash")).toBe(false);
+         expect(keyed("a.by_cat").hasAttribute("data-flash")).toBe(false);
          undo();
-         expect(tile("by_cat").getAttribute("data-flash")).toBe("true");
+         expect(keyed("a.by_cat").getAttribute("data-flash")).toBe("true");
          expect(scrolled).toHaveBeenCalledTimes(1);
-         expect(tile("by_brand").hasAttribute("data-flash")).toBe(false);
+         expect(tile("By brand").hasAttribute("data-flash")).toBe(false);
 
          fireEvent.click(button("Redo"));
          expect(scrolled).toHaveBeenCalledTimes(2);
@@ -320,7 +317,7 @@ describe("undo and redo point at the tile they changed", () => {
          });
          expect(scrolled).toHaveBeenCalledTimes(3);
          await waitFor(() =>
-            expect(tile("by_cat").hasAttribute("data-flash")).toBe(true),
+            expect(keyed("a.by_cat").hasAttribute("data-flash")).toBe(true),
          );
       } finally {
          HTMLElement.prototype.scrollIntoView = original;
@@ -331,7 +328,7 @@ describe("undo and redo point at the tile they changed", () => {
       await mount();
       editInline("By category", "Tile title", "Revenue");
       undo();
-      expect(tile("by_cat").getAttribute("data-flash")).toBe("true");
+      expect(keyed("a.by_cat").getAttribute("data-flash")).toBe("true");
    });
 });
 

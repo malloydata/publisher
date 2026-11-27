@@ -51,6 +51,8 @@ const form = async (
 };
 
 describe("useFilterForm: a new control", () => {
+   // A tile naming a served view takes a binding too: it becomes a query of
+   // the report's own when bound.
    it("starts on every tile that can take a binding, and names itself after its field", async () => {
       const { view } = await form(await openDocument(SOURCE));
       const { current } = view.result;
@@ -58,9 +60,9 @@ describe("useFilterForm: a new control", () => {
       expect(current.rows.map((row) => row.include)).toEqual([
          true,
          true,
-         false,
+         true,
       ]);
-      expect(current.bindableCount).toBe(2);
+      expect(current.bindableCount).toBe(3);
       expect(current.canApply).toBe(false);
 
       act(() => view.result.current.pickField("brand"));
@@ -139,7 +141,7 @@ describe("useFilterForm: a new control", () => {
       const [given, rows, declared] = onApply.mock.calls[0];
       expect(given).toBe("BRAND");
       expect(rows.filter((row) => row.include).map((row) => row.field)).toEqual(
-         ["brand", "brand"],
+         ["brand", "brand", "brand"],
       );
       expect(declared?.label).toBe("Brand name");
       expect(declared?.suggest?.source).toBe("orders");

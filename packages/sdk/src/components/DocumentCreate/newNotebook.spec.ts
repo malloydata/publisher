@@ -35,7 +35,7 @@ describe("newNotebookSource", () => {
       expect(lintNotebookText("notebooks/q3.malloy", text)).toEqual([]);
    });
 
-   it("reads back as a layout notebook: one labelled query tile, no text tile, and no run cell", async () => {
+   it("reads back as a layout notebook: one tile naming the served view, no text tile, no source and no run cell", async () => {
       const text = newNotebookSource(INPUT);
       const result = await readDashboardDocument(text);
       if (readFailed(result)) throw new Error(result.reason);
@@ -45,18 +45,16 @@ describe("newNotebookSource", () => {
          document.tiles.map((t) => (isTextTile(t) ? "text" : "query")),
       ).toEqual(["query"]);
       const query = document.tiles.find(isQueryTile);
-      expect(query?.name).toBe("by_category_tile");
-      // Titled for the view it shows, not the extension's `_tile` name.
-      expect(query?.label).toBe("By category");
-      expect(text).toContain(
-         "source: order_items_tiles is order_items extend {",
-      );
+      expect(query?.name).toBe("by_category");
+      expect(query?.declaration).toEqual({ kind: "inherited" });
+      expect(document.sources).toEqual([]);
+      expect(text).not.toContain("extend {");
       expect(text).not.toMatch(/^run:/m);
    });
 
    it("writes the artifact tag as a block with a tile on each line, named for its view", () => {
       expect(newNotebookSource(INPUT)).toContain(
-         '##| artifact { layout=linear title="Sales \\"West\\""\n  tiles=[\n    "order_items_tiles -> by_category_tile"\n  ]\n}\n|##\n',
+         '##| artifact { layout=linear title="Sales \\"West\\""\n  tiles=[\n    "order_items -> by_category"\n  ]\n}\n|##\n',
       );
    });
 
@@ -160,7 +158,7 @@ describe("newDocumentProblem", () => {
          view: "is",
       });
       expect(text).toContain("import { `source` }");
-      expect(text).toContain("view: is_tile is `is`");
+      expect(text).toContain('"`source` -> `is`"');
       expect(lintNotebookText("notebooks/sales.malloy", text)).toEqual([]);
       expect(newDocumentProblem({ ...INPUT, source: "date" })).toBeUndefined();
    });

@@ -3,15 +3,28 @@
 
 import { isPlaced } from "../Dashboard/DashboardGrid";
 import { holdChartRows, settle } from "./placement";
-import { useState, type ComponentProps, type ReactNode } from "react";
+import {
+   useEffect,
+   useRef,
+   useState,
+   type ComponentProps,
+   type ReactNode,
+} from "react";
 import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
 import { AddTileDialog, type ViewPreview } from "./AddTileDialog";
 import type { PackageCatalog } from "./catalog";
 import { duplicateBlocked } from "./addTileToDocument";
-import { isQueryTile } from "./document";
-import { DrillDialog } from "./DrillDialog";
+import {
+   isInlineStage,
+   isQueryTile,
+   tileKey,
+   type QueryTile,
+} from "./document";
+import { ClickActionsDialog } from "./ClickActionsDialog";
+import { viewOfResult, type LinkTarget } from "./clickActions";
 import { FilterDialog } from "./FilterDialog";
 import { TileMenu } from "./TileMenu";
+import { catalogViewOfTile } from "./tileCatalogView";
 import { tileDisplayTitle } from "./tileDisplayTitle";
 import type { useControlBindings } from "./useControlBindings";
 import type { ReportEditorHandle } from "./useReportEditor";
@@ -19,7 +32,7 @@ import type { useTileEditing } from "./useTileEditing";
 
 /**
  * Every window the builder opens, each driven by state its hooks hold: the
- * filter window, a tile's menu, the clickable-cells window, the
+ * filter window, a tile's menu, "What clicking a value does", the
  * unsaved-changes guard and the add-tile picker.
  */
 export function BuilderDialogs({
@@ -34,6 +47,9 @@ export function BuilderDialogs({
    exitDialog,
    renderViewPreview,
    takenGivenNames,
+   linkTargets,
+   tileResult,
+   titleOf = tileDisplayTitle,
 }: {
    editor: ReportEditorHandle;
    catalog: PackageCatalog | undefined;
@@ -41,16 +57,47 @@ export function BuilderDialogs({
    dashboards: string[] | undefined;
    bindings: ReturnType<typeof useControlBindings>;
    tiles: ReturnType<typeof useTileEditing>;
-   /** The source whose clickable cells are being edited, if any. */
+   /** The key of the tile whose click actions are being set, if any. */
    drillSource: string | undefined;
-   setDrillSource: (source: string | undefined) => void;
+   setDrillSource: (tile: string | undefined) => void;
    exitDialog: ComponentProps<typeof UnsavedChangesDialog>;
    renderViewPreview?: (view: ViewPreview) => ReactNode;
    takenGivenNames?: readonly string[];
+   /** The package's other reports, with the filters each shows. Absent, `dashboards` is offered with its filters unchecked. */
+   linkTargets?: readonly LinkTarget[];
+   /** A tile's title as the reader shows it; see `ReportBuilderProps.titleOf`. */
+   titleOf?: (tile: QueryTile) => string;
+   /** A tile's last result as the canvas ran it, by tile key. */
+   tileResult?: (tile: string) => string | undefined;
 }) {
    const { filterDialog, setFilterDialog } = bindings;
    const { menu, setMenu } = tiles;
-   // The tile Clickable cells was opened from, for its window to name.
+   // A chart or colour pick on a tile that names a served view makes it a
+   // query of the report's own, under a new name, so React mounts the tile
+   // afresh and the button its menu opened from is gone. The same tile's new
+   // button stands in: the menu stays by it, and focus goes back to it on
+   // close. Without that, focus stays on the closing menu, and the ⌘S that
+   // follows lands in an overlay and is ignored.
+   const settingsButton = (index: number): HTMLElement | null => {
+      const tile = editor.document.tiles[index];
+      if (!tile || typeof document === "undefined") return null;
+      return document.querySelector<HTMLElement>(
+         `[data-tile-key="${CSS.escape(tileKey(tile))}"] [aria-label^="Settings for "]`,
+      );
+   };
+   const menuAnchor =
+      menu === undefined
+         ? null
+         : menu.anchor.isConnected
+           ? menu.anchor
+           : (settingsButton(menu.index) ?? menu.anchor);
+   const refocus = useRef<number | undefined>(undefined);
+   useEffect(() => {
+      if (menu !== undefined || refocus.current === undefined) return;
+      settingsButton(refocus.current)?.focus();
+      refocus.current = undefined;
+   });
+   // The tile "What clicking a value does" was opened from, for its window to name.
    const [drillTile, setDrillTile] = useState<string | undefined>();
    // The catalog's view behind the tile whose menu is open, for the charts the
    // picker may offer: a reference tile's base view, else a view of the tile's own name.
@@ -58,34 +105,15 @@ export function BuilderDialogs({
       menu === undefined ? undefined : editor.document.tiles[menu.index];
    const menuTile = menuAt && isQueryTile(menuAt) ? menuAt : undefined;
    const menuView = (() => {
-      if (!menuTile || !catalog) return undefined;
-      // A view this file declares is read off the file's own compiled model:
-      // an inline body is in no other model the catalog has.
-      const declared = catalog.documentViews
-         ?.get(menuTile.source ?? "")
-         ?.get(menuTile.name);
+      // An inline stage is no view in any model: its shape is read off the
+      // result the canvas drew for it, as a model view's is off its schema.
       if (
-         declared &&
-         editor.document.sources.some((s) => s.name === menuTile.source)
+         menuTile?.declaration.kind === "named" &&
+         isInlineStage(menuTile.declaration.from)
       )
-         return declared;
-      // An inline or opaque body is not a view of the base source, so a base
-      // view that happens to share its name says nothing about its shape.
-      if (
-         menuTile.declaration.kind === "inline" ||
-         menuTile.declaration.kind === "opaque"
-      )
-         return undefined;
-      const base =
-         editor.document.sources.find((s) => s.name === menuTile.source)
-            ?.base ?? menuTile.source;
-      const viewName =
-         menuTile.declaration.kind === "reference"
-            ? menuTile.declaration.from
-            : menuTile.name;
-      return catalog.sources
-         .find((s) => s.name === base)
-         ?.views.find((v) => v.name === viewName);
+         return viewOfResult(tileResult?.(tileKey(menuTile)));
+      if (!menuTile) return undefined;
+      return catalogViewOfTile(menuTile, editor.document, catalog);
    })();
    return (
       <>
@@ -103,13 +131,17 @@ export function BuilderDialogs({
             onRemove={bindings.dropControl}
          />
          <TileMenu
-            anchor={menu?.anchor ?? null}
+            anchor={menuAnchor}
             tile={
                menu === undefined
                   ? undefined
                   : editor.document.tiles[menu.index]
             }
-            onClose={() => setMenu(undefined)}
+            onClose={() => {
+               if (menu && !menu.anchor.isConnected)
+                  refocus.current = menu.index;
+               setMenu(undefined);
+            }}
             onCommit={(next) => {
                const at = menu?.index;
                if (at === undefined) return;
@@ -132,35 +164,43 @@ export function BuilderDialogs({
             {...(menuTile && duplicateBlocked(menuTile) !== undefined
                ? { duplicateBlocked: duplicateBlocked(menuTile) }
                : {})}
-            {...((editor.document.sources.find(
-               (s) => s.name === menuTile?.source,
-            )?.dimensions?.length ?? 0) > 0
+            {...(menuTile
                ? {
                     onDrills: () => {
-                       setDrillTile(
-                          menuTile ? tileDisplayTitle(menuTile) : undefined,
-                       );
-                       setDrillSource(menuTile?.source);
+                       setDrillTile(titleOf(menuTile));
+                       setDrillSource(tileKey(menuTile));
                     },
                  }
                : {})}
          />
-         <DrillDialog
+         <ClickActionsDialog
             open={drillSource !== undefined}
-            document={editor.document}
-            source={editor.document.sources.find((s) => s.name === drillSource)}
-            givenNames={bindings.controlList.map((c) => c.name)}
-            dashboards={dashboards ?? []}
-            {...(drillTile ? { tileLabel: drillTile } : {})}
+            tileTitle={drillTile ?? ""}
+            result={drillSource ? tileResult?.(drillSource) : undefined}
+            drill={(() => {
+               const tile = editor.document.tiles.find(
+                  (t) => tileKey(t) === drillSource,
+               );
+               return tile && isQueryTile(tile) ? tile.drill : undefined;
+            })()}
+            controls={bindings.controlList.map((c) => ({
+               name: c.name,
+               ...(c.label !== undefined ? { label: c.label } : {}),
+               ...(c.type !== undefined ? { type: c.type } : {}),
+            }))}
+            reports={
+               linkTargets ??
+               (dashboards ?? []).map((path) => ({ path, title: path }))
+            }
             onClose={() => setDrillSource(undefined)}
-            onApply={(drills) =>
+            onApply={(drill) =>
                editor.update((draft) => {
-                  const kept = (draft.drills ?? []).filter(
-                     (d) => d.source !== drillSource,
+                  const tile = draft.tiles.find(
+                     (t) => tileKey(t) === drillSource,
                   );
-                  const next = [...kept, ...drills];
-                  if (next.length === 0) delete draft.drills;
-                  else draft.drills = next;
+                  if (!tile || !isQueryTile(tile)) return;
+                  if (drill) tile.drill = drill;
+                  else delete tile.drill;
                })
             }
          />

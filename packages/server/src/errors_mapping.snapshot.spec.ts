@@ -47,6 +47,7 @@ import {
    NotImplementedError,
    NotQueryableError,
    OffSurfaceError,
+   DeclaredElsewhereError,
    PackageAdmissionRefusedError,
    PackageManifestError,
    PackageNotFoundError,
@@ -451,6 +452,13 @@ const CASES: Array<[string, () => unknown]> = [
       () =>
          new OffSurfaceError(
             "Model staging.malloy is not published by this package.",
+         ),
+   ],
+   [
+      "DeclaredElsewhereError",
+      () =>
+         new DeclaredElsewhereError(
+            "'revenue' is not defined in index.malloy. It is a query in overview.malloy; run it with modelPath \"overview.malloy\".",
          ),
    ],
    [

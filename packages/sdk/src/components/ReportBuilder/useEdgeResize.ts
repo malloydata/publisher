@@ -136,6 +136,7 @@ export function useEdgeResize({
    columns,
    gridBox,
    onStart,
+   onPlaceAll,
    commit,
 }: {
    /** The tiles as drawn: one with no `colspan` carries the span it is drawn at. */
@@ -145,6 +146,8 @@ export function useEdgeResize({
    gridBox: RefObject<HTMLDivElement | null>;
    /** The tile a drag begins on, which the caller selects. */
    onStart: (index: number) => void;
+   /** A drag is about to place every tile of a report that had no places yet. */
+   onPlaceAll?: () => void;
    /** What to write when the drag ends. */
    commit: (result: EdgeResult) => void;
 }) {
@@ -224,6 +227,7 @@ export function useEdgeResize({
          (!isPlaced(tiles) ||
             tiles[index].row === undefined ||
             tiles[index].col === undefined);
+      if (needsPlace && !isPlaced(tiles)) onPlaceAll?.();
       const base = needsPlace
          ? (() => {
               const boxes = drawnBoxes(grid);

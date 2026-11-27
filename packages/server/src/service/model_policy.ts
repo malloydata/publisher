@@ -54,6 +54,16 @@ export interface QueryBoundaryPolicy {
    derivationText?: string;
 }
 
+/**
+ * The other files of a package that declare `name` themselves (not by import),
+ * excluding `askingPath`. Only ungated files the package lists or serves, so
+ * the answer never names a hidden file or a gated one.
+ */
+export type DeclaringFilesResolver = (
+   name: string,
+   askingPath: string,
+) => { modelPath: string; kind: "query" | "source" }[];
+
 /** The policy a {@link Model} reads. Every member is read per use, so an owner may change what it answers. */
 export interface ModelPolicy {
    /** Who built it; for diagnostics and specs, never for a decision. */
@@ -68,6 +78,12 @@ export interface ModelPolicy {
     * "unresolvable" as deny. See `SiblingModelDefResolver`.
     */
    siblingModelDefResolver(): SiblingModelDefResolver | undefined;
+   /**
+    * The package's other files that declare a name, read only to word a
+    * refusal that names the file to ask instead. `undefined` outside a
+    * Package.
+    */
+   declaringFilesResolver(): DeclaringFilesResolver | undefined;
    /**
     * Every table the package serves now, as one immutable snapshot, which a
     * query pins once (freshness included). Undefined serves nothing stored.
@@ -142,6 +158,7 @@ function fixedPolicy(
       discoveryCurationEnabled: () => discoveryCuration,
       queryBoundary: () => boundary,
       siblingModelDefResolver: () => sibling,
+      declaringFilesResolver: () => undefined,
       snapshot: () => fields.snapshot?.(),
       preaggregateEntityIds: () => fields.preaggregateEntityIds,
       materializedTables: () => tables,
@@ -183,6 +200,7 @@ export class PackageModelPolicy {
    private discoveryCuration = false;
    private boundaries: ReadonlyMap<string, QueryBoundaryPolicy> | undefined;
    private siblingResolver: SiblingModelDefResolver | undefined;
+   private declaringFiles: DeclaringFilesResolver | undefined;
    private serving:
       | {
            snapshot: () => Snapshot;
@@ -201,6 +219,7 @@ export class PackageModelPolicy {
          queryBoundary: () =>
             this.boundaries?.get(modelPath) ?? UNDECIDED_PACKAGE_BOUNDARY,
          siblingModelDefResolver: () => this.siblingResolver,
+         declaringFilesResolver: () => this.declaringFiles,
          snapshot: () => this.serving?.snapshot(),
          preaggregateEntityIds: () => this.serving?.preaggregateEntityIds(),
          materializedTables: () => this.serving?.materializedTables?.(),
@@ -224,6 +243,11 @@ export class PackageModelPolicy {
    /** Resolve a sibling file's `ModelDef` by `file://` URL. */
    public setSiblingModelDefResolver(resolver: SiblingModelDefResolver): void {
       this.siblingResolver = resolver;
+   }
+
+   /** Resolve which other files of the package declare a name. */
+   public setDeclaringFilesResolver(resolver: DeclaringFilesResolver): void {
+      this.declaringFiles = resolver;
    }
 
    /**

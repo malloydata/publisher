@@ -34,10 +34,10 @@ Text tiles own narrative; query tiles own a single Malloy query whose chart anno
 
 The file has four parts, in this order:
 
-1. **The tag**, `##| artifact { layout=linear title="..." tiles=[…] }`, listing every tile in reading order. A text tile is `name { kind=text }`; a query tile is the quoted string `"<extension> -> <view>"`.
+1. **The tag**, `##| artifact { layout=linear title="..." tiles=[…] }`, listing every tile in reading order. A text tile is `name { kind=text }`; a query tile is the quoted string `"<source> -> <view>"` for a view the model has, or the quoted name of a query below.
 2. **The `import`** of the model file, relative to the report's own location (`"order_analysis.malloy"` from the package root).
 3. **The text tiles**, each a `##|(markdown) name` block: the name on the opener line, the body on the lines below, `|##` closing it.
-4. **One extension of the source**, `source: <source>_tiles is <source> extend { … }`, holding a `view:` per query tile. The view's chart tag and `# label="…"` (the tile's heading) go directly above it.
+4. **One `query:` per tile that is not a model view as it stands**: `query: <name> is <source> -> <view or { … }>`, with its chart tag and `# label="…"` (the tile's heading) directly above it. A report declares no source; never write a `source: <source>_tiles is <source> extend { … }` to hold the tiles. Prefer a view the model already has (`<source> -> <view>`, refined with `+ { … }` if needed): the builder can then edit the tile, while a query with a body of its own (`<source> -> { … }`) is shown there but only edited in the file.
 
 Compile the file with `/compile` (`"scope": "file"`, at the path `<slug>.malloy`) before saving; a report compiles as a model, so its errors come back there. After saving and reloading, read the package warnings: a tile that names a missing view is reported there, not by the compile. A complete report:
 
@@ -45,11 +45,11 @@ Compile the file with `/compile` (`"scope": "file"`, at the path `<slug>.malloy`
 ##| artifact { layout=linear title="Sales report"
   tiles=[
     overview { kind=text },
-    "order_analysis_tiles -> headline",
+    "headline",
     trend { kind=text },
-    "order_analysis_tiles -> revenue_by_month",
+    "revenue_by_month",
     breakdown { kind=text },
-    "order_analysis_tiles -> top_categories",
+    "top_categories",
     takeaways { kind=text }
   ]
 }
@@ -76,36 +76,34 @@ Which categories account for the most revenue?
 What to look at next.
 |##
 
-source: order_analysis_tiles is order_analysis extend {
-  # big_value
-  # label="Headline"
-  view: headline is {
-    aggregate:
-      # label="Revenue"
-      # currency
-      total_revenue
+# big_value
+# label="Headline"
+query: headline is order_analysis -> {
+  aggregate:
+    # label="Revenue"
+    # currency
+    total_revenue
 
-      # label="Orders"
-      # number=auto
-      order_count
-  }
+    # label="Orders"
+    # number=auto
+    order_count
+}
 
-  # line_chart
-  # label="Revenue by month"
-  view: revenue_by_month is {
-    group_by: order_date.month
-    aggregate: total_revenue
-    order_by: 1
-  }
+# viz=line
+# label="Revenue by month"
+query: revenue_by_month is order_analysis -> {
+  group_by: order_date.month
+  aggregate: total_revenue
+  order_by: 1
+}
 
-  # bar_chart
-  # label="Top ten categories by revenue"
-  view: top_categories is {
-    group_by: category
-    aggregate: total_revenue
-    order_by: total_revenue desc
-    limit: 10
-  }
+# viz=bar
+# label="Top ten categories by revenue"
+query: top_categories is order_analysis -> {
+  group_by: category
+  aggregate: total_revenue
+  order_by: total_revenue desc
+  limit: 10
 }
 ```
 

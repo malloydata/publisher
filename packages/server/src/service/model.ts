@@ -40,6 +40,7 @@ import {
 } from "../constants";
 import {
    BadRequestError,
+   DeclaredElsewhereError,
    ModelCompilationError,
    ModelNotFoundError,
    NotQueryableError,
@@ -211,6 +212,7 @@ export type { RunnableNotebookCell } from "./model_notebook_cell";
 
 export type { ModelQueryMetadataInput } from "./query_metadata";
 import {
+   type DeclaringFilesResolver,
    ModelPolicy,
    type OffSurfaceContext,
    type QueryBoundaryPolicy,
@@ -270,7 +272,11 @@ const MALLOY_VERSION = (
    }
 ).version;
 
-export type { OffSurfaceContext, QueryBoundaryPolicy } from "./model_policy";
+export type {
+   DeclaringFilesResolver,
+   OffSurfaceContext,
+   QueryBoundaryPolicy,
+} from "./model_policy";
 export { ModelPolicy, PackageModelPolicy } from "./model_policy";
 
 /**
@@ -590,6 +596,12 @@ export class Model {
    /** The query boundary this file enforces; see {@link QueryBoundaryPolicy}. */
    private get queryBoundary(): QueryBoundaryPolicy {
       return this.policy.queryBoundary();
+   }
+   /** The other files of the owning Package that declare a name. Read only
+    *  to word a refusal ({@link pointToDeclaringFile}); `undefined` outside a
+    *  Package. */
+   private get declaringFilesResolver(): DeclaringFilesResolver | undefined {
+      return this.policy.declaringFilesResolver();
    }
    /** {@link buildDerivationBaseMap} over `queryBoundary.derivationText`,
     *  computed once per boundary rather than per query. */
@@ -1559,6 +1571,59 @@ export class Model {
    private sourceAdmission(name: string): "curated" | "report" | undefined {
       if (this.isCuratedSource(name)) return "curated";
       if (this.isReportSourceOnSurface(name)) return "report";
+      return undefined;
+   }
+
+   /** Whether any source this model reaches carries a gate. A gated model
+    *  answers a missing name and a hidden one alike, so a sibling file must
+    *  not point at it either. */
+   public carriesAnyGate(): boolean {
+      return this.governor.hasAnyAuthorizeNote();
+   }
+
+   /**
+    * The refusal for a name this file does not have but another file of the
+    * package declares, naming that file: `run: revenue_by_category` asked of
+    * index.malloy when overview.malloy declares it. Undefined (keep the
+    * original error) unless `error` is a plain not-queryable refusal, this
+    * file carries no gate, and the name is absent here. The lookup reads the
+    * package's already-compiled files; nothing is compiled.
+    */
+   private pointToDeclaringFile(
+      error: unknown,
+      sourceName: string | undefined,
+      queryName: string | undefined,
+      query: string | undefined,
+   ): DeclaredElsewhereError | undefined {
+      if (
+         !(error instanceof NotQueryableError) ||
+         error instanceof OffSurfaceError ||
+         !this.declaringFilesResolver ||
+         this.governor.hasAnyAuthorizeNote()
+      ) {
+         return undefined;
+      }
+      const contents = this.modelDef?.contents ?? {};
+      const candidates = query
+         ? extractRunTargetSourceNames(query)
+         : [sourceName ?? queryName];
+      for (const name of candidates) {
+         if (!name || contents[name]) continue;
+         const files = this.declaringFilesResolver(name, this.modelPath);
+         if (files.length === 0) continue;
+         if (files.length === 1) {
+            const [{ modelPath, kind }] = files;
+            return new DeclaredElsewhereError(
+               `'${name}' is not defined in ${this.modelPath}. It is a ${kind} in ${modelPath}; run it with modelPath "${modelPath}".`,
+            );
+         }
+         const listed = files
+            .map(({ modelPath, kind }) => `${modelPath} (${kind})`)
+            .join(", ");
+         return new DeclaredElsewhereError(
+            `'${name}' is not defined in ${this.modelPath}. It is declared in ${listed}; run it with modelPath set to the file you mean.`,
+         );
+      }
       return undefined;
    }
 
@@ -2660,6 +2725,7 @@ export class Model {
          const logs = filterPublisherOwnedRenderLogs(
             validateRenderTags(result),
             false,
+            result,
          );
          // Not logged here: the package logs what survives its tile filter,
          // so a tile's layout tag does not log a warning on every load.
@@ -3617,7 +3683,19 @@ export class Model {
             "malloy.model.path": this.modelPath,
          },
          async (span) => {
-            const result = await this.serving.run(audit, request, privileges);
+            let result: ModelQueryResults;
+            try {
+               result = await this.serving.run(audit, request, privileges);
+            } catch (error) {
+               throw (
+                  this.pointToDeclaringFile(
+                     error,
+                     request.sourceName,
+                     request.queryName,
+                     request.query,
+                  ) ?? error
+               );
+            }
             if (result.servedFrom)
                span.setAttribute("publisher.served_from", result.servedFrom);
             return result;
@@ -3900,9 +3978,10 @@ export class Model {
     * curates nothing (then every name is public).
     *
     * For an ordinary file, its export closure, the same set
-    * {@link curateForDiscovery} lists. For a dashboard, which admits nothing of
-    * its own (as does a linear report), only the exported names that trace
-    * to the package surface: a source it may read, or a query over one.
+    * {@link curateForDiscovery} lists. For a dashboard or a linear report,
+    * only the exported names that trace to the package surface: a source it
+    * may read, including one it builds on a surface source, or a query over
+    * one. A declaration that does not trace there is not shown.
     */
    /** {@link publishedNames}, for a reader that applies the same rule to its own view of the file. */
    public getPublishedNames(): Set<string> | undefined {

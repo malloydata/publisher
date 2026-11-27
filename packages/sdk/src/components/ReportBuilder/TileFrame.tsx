@@ -66,9 +66,16 @@ export function TileFrame({
    edges,
    heightEdge,
    fixed = false,
+   title,
    children,
 }: {
    tile: DashboardTile;
+   /**
+    * What the tile is called on screen, as its heading reads: the reader's own
+    * title, which the builder's names and labels use so they match it. Absent,
+    * the tile's own label, else its name.
+    */
+   title?: string;
    index: number;
    selected: boolean;
    /** Briefly lit: the tile an undo or redo just changed. */
@@ -134,6 +141,7 @@ export function TileFrame({
 }) {
    const { theme } = usePublisherTheme();
    const ui = theme.ui;
+   const name = title ?? tileLabel(tile);
    return (
       <TileSortable id={tileKey(tile)} index={index} disabled={fixed}>
          {({ ref, handleRef }) => (
@@ -150,7 +158,7 @@ export function TileFrame({
                // element is not.
                role="group"
                className={reportClasses.builderTile}
-               aria-label={`Tile ${tile.name}`}
+               aria-label={`Tile ${name}`}
                aria-current={selected}
                // Keyboard focus anywhere in the tile selects it, as a press
                // does, so the arrow-key nudge and the menu follow the keyboard.
@@ -244,7 +252,7 @@ export function TileFrame({
                 drags the whole card, and the open hand over it says so. */}
                <Box
                   ref={handleRef}
-                  aria-label={`Move ${tileLabel(tile)}`}
+                  aria-label={`Move ${name}`}
                   sx={{
                      position: "absolute",
                      width: "1px",
@@ -259,7 +267,7 @@ export function TileFrame({
                 control in the builder (a filter's is the same). On the
                 selection ring's corner for bare prose, the card's otherwise. */}
                <RemoveBadge
-                  label={`Remove ${tileLabel(tile)}`}
+                  label={`Remove ${name}`}
                   onRemove={onRemove}
                   {...(removeBlocked ? { disabledReason: removeBlocked } : {})}
                   inset={bare ? BARE_RING_OFFSET_PX : 0}
@@ -274,7 +282,7 @@ export function TileFrame({
                   <IconButton
                      className="builder-affordance"
                      size="small"
-                     aria-label={`Settings for ${tileLabel(tile)}`}
+                     aria-label={`Settings for ${name}`}
                      onClick={(event) => {
                         event.stopPropagation();
                         onOpenMenu(event.currentTarget);
@@ -317,7 +325,7 @@ export function TileFrame({
                      edges={edges}
                      width={width}
                      heightEdge={heightEdge}
-                     label={tileLabel(tile)}
+                     label={name}
                   />
                )}
 
@@ -325,7 +333,7 @@ export function TileFrame({
                   <IconButton
                      className="builder-affordance"
                      size="small"
-                     aria-label={`Insert tile after ${tileLabel(tile)}`}
+                     aria-label={`Insert tile after ${name}`}
                      onClick={(event) => {
                         event.stopPropagation();
                         onInsertAfter();

@@ -15,7 +15,7 @@ import {
 } from "../Report/telemetry";
 
 export const LEGACY_REFUSAL =
-   "a .malloynb notebook is read, not edited. Fix: rewrite it as a `.malloy` report to edit it here.";
+   "this is an older notebook. It can't be edited here. Fix: convert it to a `.malloy` report to edit it.";
 
 const WITHHELD_REFUSAL =
    "the server did not send this notebook's text, so there is nothing here to edit. Fix: edit the file in the package.";

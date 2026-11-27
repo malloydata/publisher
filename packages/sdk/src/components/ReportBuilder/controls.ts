@@ -317,13 +317,13 @@ export interface MappingRow {
  * Which tiles can take a binding, and why the others cannot.
  *
  * A binding is a `where:` the splice writer can locate and own: a `+ {
- * where: … }` refinement on a `reference` tile, or a `where:` statement in an
- * `inline` tile's own first stage — `TreeStage.wheres` in `malloyTree`, which
- * is the parse tree's answer rather than a depth count. Both forms are
- * declarations this file owns and the reader reads back. An `inherited` tile is declared on the
- * model's source, which the builder never writes, so it is excluded, as is a
- * named `query` tile, and so is an `opaque` one: its body has no single block a binding
- * belongs in, which the reader can see before a save is ever attempted.
+ * where: … }` refinement on the report's own query over a view (a tile that
+ * names a served view becomes one when it is bound), or on a `reference` view
+ * in an extension, or a `where:` statement in an `inline` tile's own first
+ * stage — `TreeStage.wheres` in `malloyTree`, which is the parse tree's
+ * answer rather than a depth count. A query the builder only reads is
+ * excluded, and so is an `opaque` tile: its body has no single block a
+ * binding belongs in, which the reader can see before a save is ever attempted.
  */
 export const canBind = (tile: DashboardTile): tile is QueryTile =>
    isQueryTile(tile) &&

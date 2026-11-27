@@ -108,13 +108,13 @@ describe("the artifact tag written as a ##| block", () => {
       const { out, document } = await writes(BLOCK, (d) => {
          d.tiles.push({ kind: "text", name: "outro", markdown: "Bye." });
          d.tiles.push({
-            name: "extra",
+            name: "by_x",
             source: "a_tiles",
-            declaration: { kind: "reference", from: "by_x" },
+            declaration: { kind: "inherited" },
          });
       });
       expect(out).toContain(
-         `    "a_tiles -> detail",\n    outro { kind=text },\n    "a_tiles -> extra"\n  ]\n}\n|##\n`,
+         `    "a_tiles -> detail",\n    outro { kind=text },\n    "a_tiles -> by_x"\n  ]\n}\n|##\n`,
       );
       expect(out).toContain("##|(markdown) outro\nBye.\n|##\n");
       expect(document.tiles.map((t) => t.name)).toEqual([
@@ -122,7 +122,7 @@ describe("the artifact tag written as a ##| block", () => {
          "overview",
          "detail",
          "outro",
-         "extra",
+         "by_x",
       ]);
    });
 

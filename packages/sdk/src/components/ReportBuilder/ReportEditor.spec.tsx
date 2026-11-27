@@ -155,7 +155,7 @@ describe("ReportEditor", () => {
    it("opens the package file in the builder, with the package's sources to pick from", async () => {
       mount();
       expect(await screen.findByText("Storefront")).toBeDefined();
-      expect(screen.getByLabelText("Tile by_cat")).toBeDefined();
+      expect(screen.getByLabelText("Tile By category")).toBeDefined();
       // The catalog came from the published models, and the file's import of
       // scoped_orders is what keeps it on offer.
       await waitFor(() =>
@@ -200,7 +200,7 @@ describe("ReportEditor", () => {
       expect(
          await screen.findByText(/could not be re-read from the server/),
       ).toBeDefined();
-      expect(screen.getByLabelText("Tile by_cat")).toBeDefined();
+      expect(screen.getByLabelText("Tile Categories")).toBeDefined();
       expect(button("Save")).toBeDefined();
    });
 

@@ -91,7 +91,7 @@ source: a is scoped_orders extend {
          ],
       };
       expect(await warnings()).toEqual({
-         "Tile by_brand": "Doesn't respond to Category",
+         "Tile By brand": "Doesn't respond to Category",
       });
    });
 
@@ -134,8 +134,8 @@ source: a is scoped_orders extend {
       // The served manifest predates BRAND.
       served = { givens: [CATEGORY] };
       expect(await warnings()).toEqual({
-         "Tile by_cat": "Doesn't respond to BRAND",
-         "Tile by_brand": "Doesn't respond to Category",
+         "Tile By cat": "Doesn't respond to BRAND",
+         "Tile By brand": "Doesn't respond to Category",
       });
    });
 
@@ -156,7 +156,7 @@ source: a is scoped_orders extend {
          ],
       };
       expect(await warnings()).toEqual({
-         "Tile totals": "Doesn't respond to Category",
+         "Tile Totals": "Doesn't respond to Category",
       });
    });
 });

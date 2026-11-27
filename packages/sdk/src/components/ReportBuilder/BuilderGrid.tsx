@@ -63,6 +63,7 @@ export function BuilderGrid({
    openAdd,
    editTile,
    renderTile,
+   titleOf = tileDisplayTitle,
 }: {
    editor: ReportEditorHandle;
    reorder: ReturnType<typeof useTileReorder>;
@@ -97,6 +98,8 @@ export function BuilderGrid({
    removeBlocked?: string;
    openAdd: (at?: number) => void;
    editTile: (key: string, change: (tile: DashboardTile) => void) => void;
+   /** A tile's title when it has none of its own; see `ReportBuilderProps.titleOf`. */
+   titleOf?: (tile: QueryTile) => string;
    renderTile?: (
       tile: QueryTile,
       heading?: TileHeadingSlots,
@@ -147,7 +150,7 @@ export function BuilderGrid({
    const entries =
       gesture && !placed ? withGaps(shown, columns) : shown.map(tileEntry);
    const heading = (tile: QueryTile) =>
-      headingOf(tile, tileDisplayTitle(tile), editTile);
+      headingOf(tile, titleOf(tile), editTile);
    return (
       <>
          <DragDropProvider
@@ -193,6 +196,9 @@ export function BuilderGrid({
                      return (
                         <TileFrame
                            tile={each}
+                           {...(isQueryTile(each)
+                              ? { title: titleOf(each) }
+                              : {})}
                            index={index}
                            selected={index === selected}
                            flash={tileKey(each) === flash}

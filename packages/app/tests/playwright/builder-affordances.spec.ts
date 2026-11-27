@@ -55,7 +55,7 @@ test.describe("builder affordances", () => {
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
-      const tile = page.getByLabel("Tile order_tile");
+      const tile = page.getByLabel("Tile Orders");
       await expect(tile).toBeVisible();
 
       // The × on the tile's corner, shown while it is hovered.
