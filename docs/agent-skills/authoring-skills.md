@@ -180,9 +180,8 @@ assuming it is always loaded.
 
 ## Budgets
 
-A skill's files are read, hashed and listed when Publisher loads a package. Most of that has a
-bound, set out below; the number of skills in a skill set has none. Each skill set is measured on
-its own.
+A skill's files are read, hashed and listed when Publisher loads a package. Each bound is set out
+below, and each skill set is measured on its own.
 Each crossing is a load warning on the package, and for a workflow also in `get_workflow`'s
 `warnings`; `cred publish --dry-run` shows the upload set. A crossing skips the one file it
 concerns, unless the row says it sets the skill aside or refuses the workflow. Inline files are a
@@ -196,7 +195,8 @@ file, which Publisher lists by path, size and sha256 and reads on request.
 | A `SKILL.md` | 256 KiB | The skill is not served |
 | A skill set's inline Markdown | 256 KiB per set; every `SKILL.md` is counted first | A `SKILL.md` that does not fit is skipped with its skill; other Markdown that does not fit is listed instead, with a warning |
 | One skill Markdown file | 256 KiB per file | The file is listed instead of inlined |
-| Skills in a skill set | No limit. Each skill has its own `reference/` and `references/` allowance | Nothing; the reload cost grows with them |
+| Skills in a skill set | 64 skill directories, counted in name order as the walk reaches them. Each skill has its own `reference/` and `references/` allowance | The first 64 by name are served and the rest are not read, with one finding on the set |
+| Skill findings named per set | 20, then one line counting the rest. Skipped assets are capped the same way | The remaining findings are counted, not named, so a reply that carries the set stays small |
 | One listed file | Under 1 MiB (1,048,576 bytes is out) | The file is skipped |
 | Listed files per skill set | 4 MiB and 200 files | Later files are skipped |
 | Listed files per package, across sets | 8 MiB, each path counted once, sets charged in sorted set-path order | Later files are skipped |
@@ -217,26 +217,33 @@ characters), and it refuses a workflow past it. A `description` written as a YAM
 
 ### What a reload costs
 
-`Package.refreshServingIdentity` walks and hashes a package's workflows and skill sets
-synchronously, on creation and on every reload, so the event loop does nothing else for as long as
-it takes. A host that reloads on every turn pays it every turn. `bun run perf:skills-reload` in
-`packages/server` builds a package with nine skill sets of one skill each, listed by two workflows,
-and times it. The first row is the largest each budget allows for those nine skills. A package with
-more skills costs more, since nothing bounds their number; the checks of a set's folder run once per
-path however many workflows list it. On a development machine with a warm
-page cache, the median of 5 reloads:
+The package-load worker walks and hashes a package's workflows and skill sets, on creation and on
+every reload, in the same job that compiles its models, so the server's event loop does not wait
+for it. The walk counts against that job's timeout (`packageLoad.jobTimeoutMs`, 120 s). The main thread pays only to
+receive the result and adopt it: rebuild each skill's reader and hash the shas the worker shipped,
+reading no file. `bun run perf:skills-reload` in `packages/server` builds a package with nine skill
+sets of one skill each, listed by two workflows, and times both sides. The second row is the
+largest each budget allows for those nine skills; a package with up to 64 skills in each set costs
+more, and the checks of a set's folder run once per path however many workflows list it. On a
+development machine with a warm page cache, the median of 5 reloads:
 
-| Package | Blocks the loop for |
-| --- | --- |
-| One set, `SKILL.md` only | 1 ms |
-| Every budget spent in nine skill sets: 8 MiB in 1,355 listed files, 1,000 entries under `assets/`, 999 files in `references/` and 907 in `reference/` each | 0.9 s |
-| The listed files alone (204 files, 8 MiB) | 117 ms |
-| The 1,000 `assets/` entries alone | 296 ms |
-| The 999 `references/` files alone | 634 ms |
-| The 907 `reference/` files alone | 579 ms |
+| Package | Worker: walk, hash and serialize | Main thread: receive, adopt and hash |
+| --- | --- | --- |
+| One set, `SKILL.md` only | 2 ms | under 1 ms |
+| Every budget spent in nine skill sets: 8 MiB in 1,355 listed files, 1,000 entries under `assets/`, 999 files in `references/` and 907 in `reference/` each | 837 ms | 33 ms |
+| The listed files alone (204 files, 8 MiB) | 120 ms | 2 ms |
+| The 1,000 `assets/` entries alone | 270 ms | 4 ms |
+| The 999 `references/` files alone | 760 ms | 30 ms |
+| The 907 `reference/` files alone | 711 ms | 27 ms |
 
-A Markdown file costs about 0.07 ms to read and digest and a walked entry about 10 microseconds, so
-file count moves the time most. Keep a skill to the files an agent uses.
+A Markdown file costs about 0.07 ms to read and digest in the worker and a walked entry about 10
+microseconds, so file count moves the time most. Keep a skill to the files an agent uses. The main
+thread's share is the structured-clone receive of the walk and one hash over the shipped shas,
+which grow with the number of files and inline Markdown bytes, not with their content.
+
+If the walk cannot finish (it throws, or a listed set exists but cannot be read), the package's
+models still load and the workflow routes, `get_workflow` and the skills routes answer 503
+`workflows_unavailable` with the reason, until the package reloads.
 
 ## Authoring a new skill
 
