@@ -95,6 +95,12 @@ export interface Entity {
    // "dbmeta" when the doc text is the database's description, not the
    // model's.
    docSource?: "dbmeta";
+   /**
+    * The one-hop join path (`account.region`) whose doc `doc` reports: the
+    * field is a dimension defined as exactly that path, with no doc of its
+    * own. Absent when the doc is the field's own, or there is none.
+    */
+   docInheritedFrom?: string;
    // Whether aggregating through this entity fans out. On a `kind: "join"`
    // entity, the join's cardinality; on a field reached through a join, the
    // widest relationship on its path; on a member of a repeated record
@@ -168,6 +174,12 @@ export interface ResultEntity {
     */
    embedDoc?: string;
    docSource?: "dbmeta";
+   /**
+    * The one-hop join path (`account.region`) whose doc `doc` reports: the
+    * field is a dimension defined as exactly that path, with no doc of its
+    * own. Absent when the doc is the field's own, or there is none.
+    */
+   docInheritedFrom?: string;
    relationship?: Relationship;
    /** Other spellings of this field in its own source, collapsed into it. */
    aliases?: string[];

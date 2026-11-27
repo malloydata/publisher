@@ -552,7 +552,7 @@ export function isMalloyDefined(field: Field, docString: string): boolean {
    return regex.test(newCode);
 }
 
-function getTags(field: Field): string[] {
+export function getTags(field: Field): string[] {
    const tags = field.getTaglines() || []; // Default to an empty array if null/undefined
    if (tags.length > 0) {
       return tags.map((tag) => tag.trim()).filter((tag) => tag !== "");
