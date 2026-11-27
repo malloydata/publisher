@@ -52,6 +52,13 @@ export interface LeftOutDefinition {
     * across connections inside it could not be left out alone: that join.
     */
    join?: string;
+   /**
+    * For a join Malloy refused across connections: the connection the joined
+    * source is on, and the one of the source it joins into, as the compiler
+    * named them (a served-copy alias among them, which only the server log
+    * may show).
+    */
+   connections?: { joined: string; into: string };
 }
 
 /** A half-open character range of a file to blank. */

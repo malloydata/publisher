@@ -73,6 +73,40 @@ const FOLLOWS_FROM_FAILED_IMPORT: ReadonlySet<string> = new Set([
    "export-name-not-defined",
 ]);
 
+/**
+ * The two connections Malloy's refusal of a join across connections names:
+ * `Cannot join 'x', which is on connection 'a', into a source on connection
+ * 'b'`. Undefined for a message in any other words.
+ */
+export function refusedJoinConnections(
+   message: string | undefined,
+): { joined: string; into: string } | undefined {
+   const named =
+      /which is on connection '([^']*)', into a source on connection '([^']*)'/.exec(
+         message ?? "",
+      );
+   return named ? { joined: named[1], into: named[2] } : undefined;
+}
+
+/**
+ * The two connections each join refusal in `error` names, when `error` is
+ * Malloy refusing joins across connections ({@link isCrossConnectionRefusal});
+ * undefined otherwise, or when a refusal's words name no two connections.
+ */
+export function refusedJoinPairs(
+   error: unknown,
+): { joined: string; into: string }[] | undefined {
+   if (!isCrossConnectionRefusal(error)) return undefined;
+   const pairs: { joined: string; into: string }[] = [];
+   for (const p of errorProblems(error) ?? []) {
+      if (p.code !== JOIN_CONNECTION_MISMATCH) continue;
+      const pair = refusedJoinConnections(p.message);
+      if (!pair) return undefined;
+      pairs.push(pair);
+   }
+   return pairs;
+}
+
 /** Whether a problem's code is Malloy refusing a join across connections. */
 export function isJoinConnectionMismatch(code: string | undefined): boolean {
    return code === JOIN_CONNECTION_MISMATCH;
@@ -113,6 +147,7 @@ function problemKey(p: ProblemLike): string {
 
 interface ProblemLike {
    code?: string;
+   message?: string;
    severity?: string;
    at?: {
       url?: string;
@@ -308,10 +343,14 @@ async function leaveOut(
                continue;
             }
             cuts.push(cut);
+            const connections = refused
+               ? refusedJoinConnections(p.message)
+               : undefined;
             leftOut.push({
                url,
                ...cut.left,
                crossConnection: refused,
+               ...(connections ? { connections } : {}),
                ...(cut !== own && own?.left.keyword.startsWith("join_")
                   ? { join: own.left.name }
                   : {}),
