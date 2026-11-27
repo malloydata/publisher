@@ -11,7 +11,8 @@
  * record, which holds the rest.
  *
  * Never on an event or a label: row values, given values, gate text, SQL, a
- * driver's message (it can quote SQL; reduced to {@link errorCodeOf}),
+ * driver's message (it can quote SQL; reduced to {@link errorCodeOf}, with
+ * only the runtime's own text for a timeout or abort beside it),
  * storage aliases or destination locations, credentials. A host-assigned table
  * name is left off too: only a name Publisher made is logged.
  *
@@ -25,7 +26,7 @@ import { instructionTier } from "../domain/placement";
 import { AsyncLocalStorage } from "async_hooks";
 import { getPersistStorageMode } from "../../../config";
 import { causeChain } from "../../../driver_errors";
-import { errorCodeOf } from "../../../error_code";
+import { errorCodeOf, runtimeErrorTextOf } from "../../../error_code";
 import { logger } from "../../../logger";
 import {
    type BuildKind,
@@ -212,9 +213,19 @@ export class RunTelemetry {
          failed,
          ...(cancelled > 0 ? { cancelled } : {}),
          // A cancelled run's too: an abort can race a genuine failure.
-         ...(err !== undefined ? { code: errorCodeOf(err) } : {}),
+         ...(err !== undefined ? errorLogFields(err) : {}),
       });
    }
+}
+
+/**
+ * What a run log carries of a failure: its code, and beside a bare runtime
+ * code (a timeout's `23`) the runtime's own text for it, which names the
+ * failure where the number does not.
+ */
+function errorLogFields(err: unknown): { code: string; detail?: string } {
+   const detail = runtimeErrorTextOf(err);
+   return { code: errorCodeOf(err), ...(detail ? { detail } : {}) };
 }
 
 // Run failures `materialization.run.finished` already reported, so the
@@ -370,7 +381,7 @@ export function reportSourceFailed(
          : {}),
       outcome: failureClass === "none" ? "cancelled" : "failed",
       failureClass,
-      code: errorCodeOf(err),
+      ...errorLogFields(err),
       ...(source.destination ? { destinationName: source.destination } : {}),
    });
 }
