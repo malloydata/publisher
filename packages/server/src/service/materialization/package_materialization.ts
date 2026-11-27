@@ -1644,15 +1644,21 @@ export class PackageMaterialization {
       }
       // A table withdrawn because an upstream it was built from changed
       // since (a load or publish that could not recompile): incompatible,
-      // its upstream altered.
+      // its upstream altered. One withdrawn because that upstream could not
+      // be read is not known to have changed: `upstream_unread`.
+      const unread = this.plan.withdrawnUnread;
       for (const id of this.plan.withdrawn) {
          const t = tableOf(id);
          if (!t.physicalTableName) continue;
          verdicts.set(id, {
-            reason: "incompatible",
             physicalTableName: t.physicalTableName,
             ...(t.builtAt ? { builtAt: t.builtAt } : {}),
-            incompatibility: { code: "upstream_altered", columns: [] },
+            ...(unread.has(id)
+               ? { reason: "upstream_unread" as const }
+               : {
+                    reason: "incompatible" as const,
+                    incompatibility: { code: "upstream_altered", columns: [] },
+                 }),
          });
       }
       for (const i of this.observedOutcome.incompatible) {

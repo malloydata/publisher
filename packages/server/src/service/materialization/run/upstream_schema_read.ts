@@ -79,7 +79,15 @@ export async function readUpstreamSchemas(args: {
    refresh: boolean;
    /** Overrides the catalog read's timeout (a test's). */
    timeoutMs?: number;
+   /**
+    * False reads a table whose read still fails as `read_failed` even when
+    * an earlier reading of it is known, for a caller that must tell a table
+    * it read from one it could not (`Package.withdrawChangedUpstreams`).
+    * Default true: the last reading stands in, so no address moves.
+    */
+   keepLastOnFailure?: boolean;
 }): Promise<Record<string, UpstreamSchemaReading>> {
+   const keepLast = args.keepLastOnFailure ?? true;
    const out: Record<string, UpstreamSchemaReading> = {};
    const connections = new Map<string, UpstreamReadConnection | undefined>();
    const digests = new Map<string, string>();
@@ -158,11 +166,13 @@ export async function readUpstreamSchemas(args: {
          };
          readings.set(t.cached, reading);
       } else if (reading.unread === "read_failed") {
-         const last = readings.get(t.cached);
+         const last = keepLast ? readings.get(t.cached) : undefined;
          logger.warn(
             last
                ? "Upstream table's columns could not be read; keeping its last reading"
-               : "Upstream table's columns could not be read; the sources that read it are refused until a read succeeds",
+               : keepLast
+                 ? "Upstream table's columns could not be read; the sources that read it are refused until a read succeeds"
+                 : "Upstream table's columns could not be read; it reads as unread",
             { connectionName: t.table.connectionName, reason },
          );
          if (last) reading = last;

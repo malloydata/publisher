@@ -5062,15 +5062,22 @@ components:
             table unread (answered live, read again), never `incompatible`.
             Both are non-terminal and never a plan-time refusal: a rebuild
             fixes them, and a source with either counts as stale, so the next
-            build rebuilds it in full. Each names the generation it judged in
+            build rebuilds it in full. `upstream_unread` (bound, but withdrawn
+            after a recompile, reload or publish failed, and the read of a
+            warehouse table it was built from failed, then or at any read
+            since, so whether that table changed is not known: answered live
+            until a read of it succeeds and finds it unchanged, at the
+            package's next manifest bind or rebind, or a reload plans it
+            again; it judges nothing about the table and never counts it
+            stale). Each names the generation it judged in
             `table`, so a consumer drops a verdict about a table it has since
             replaced. An open set.
         table:
           type: object
           required: [physicalTableName]
           description: >-
-            With `contract_missing` or `incompatible`: the table generation
-            the verdict judged, its `physicalTableName` and the `builtAt` its
+            With `contract_missing`, `incompatible` or `upstream_unread`: the
+            table generation the verdict judged, its `physicalTableName` and the `builtAt` its
             entry carried (absent when the entry carried none).
           properties:
             physicalTableName:

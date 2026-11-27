@@ -120,6 +120,16 @@ type ServeVerdictReason =
     */
    | "incompatible"
    /**
+    * A bound table withdrawn after a failed recompile, reload or publish,
+    * whose upstream (a warehouse table it was built from) could not be read
+    * then, or at any read since, so
+    * whether it changed is not known: answered live until a read of it
+    * succeeds and finds it unchanged. Judges nothing about the table itself,
+    * so it never counts as stale. The plan's `upstream_unread` refusal is
+    * the same cause found before a table was ever addressed.
+    */
+   | "upstream_unread"
+   /**
     * A source the served copy reads (a `#(materialize)` one, or a `#@ persist`
     * one), bound, but no model's compiled served copy reads its table;
     * `notServedIn` names each model and its `served-copy-not-served`
@@ -224,9 +234,12 @@ export interface ServeVerdict {
    views?: ViewServeVerdict[];
 }
 
-/** One bound table the bind held to its contract and left out. */
+/**
+ * One bound table the bind held to its contract and left out, or (for
+ * `upstream_unread`) one withdrawn while its upstream is not known.
+ */
 export interface ContractVerdict {
-   reason: "contract_missing" | "incompatible";
+   reason: "contract_missing" | "incompatible" | "upstream_unread";
    physicalTableName: string;
    builtAt?: string;
    incompatibility?: { code: string; columns: string[] };
@@ -698,6 +711,61 @@ function deploymentVerdict(
 }
 
 /**
+ * The `live` verdict of a bound table the bind held to its contract and left
+ * out, or withdrew while its upstream is unread; undefined when neither.
+ */
+function contractLiveVerdict(s: VerdictSubject): ServeVerdict | undefined {
+   const { source, facts, subject, live } = s;
+   const judged = facts.contractVerdicts?.get(source.sourceEntityId ?? "");
+   if (!judged) return undefined;
+   const table = {
+      physicalTableName: judged.physicalTableName,
+      ...(judged.builtAt ? { builtAt: judged.builtAt } : {}),
+   };
+   if (judged.reason === "upstream_unread") {
+      return {
+         ...live(
+            "upstream_unread",
+            `${subject}'s table is bound, but the read of a warehouse table ` +
+               `it was built from failed, so whether that table changed since ` +
+               `the build is not known; no query is answered from it until a ` +
+               `read of it succeeds and finds it unchanged.`,
+            [
+               "Restore the warehouse connection, or the catalog read that failed: the package's next manifest bind or rebind reads it again.",
+               "Or reload the package.",
+            ],
+         ),
+         table,
+      };
+   }
+   return judged.reason === "contract_missing"
+      ? {
+           ...live(
+              "contract_missing",
+              `${subject}'s table carries no column contract (it was built ` +
+                 `before contracts were recorded), so no query is answered ` +
+                 `from it until a build rebuilds it in full.`,
+              ["Run a build: the table is rebuilt in full, with its contract."],
+           ),
+           table,
+        }
+      : {
+           ...live(
+              "incompatible",
+              `${subject}'s table no longer matches the column contract its ` +
+                 `build recorded (${judged.incompatibility?.code ?? "changed"}: ` +
+                 `${(judged.incompatibility?.columns ?? []).join(", ")}), so no ` +
+                 `query is answered from it until a build rebuilds it.`,
+              ["Run a build: the table is rebuilt from its source."],
+           ),
+           table,
+           ...(judged.incompatibility
+              ? { incompatibility: judged.incompatibility }
+              : {}),
+        };
+}
+
+/**
  * The verdict of a source no deployment fact, storage mode, reach, gate or
  * refusal sends live: served from its bound table, not built yet, or live
  * for what its binding says (stale, shadowed, not read by the served copy).
@@ -789,41 +857,7 @@ function boundVerdict(
          ],
       );
 
-   const contractVerdict = (): ServeVerdict | undefined => {
-      const judged = facts.contractVerdicts?.get(source.sourceEntityId ?? "");
-      if (!judged) return undefined;
-      const table = {
-         physicalTableName: judged.physicalTableName,
-         ...(judged.builtAt ? { builtAt: judged.builtAt } : {}),
-      };
-      return judged.reason === "contract_missing"
-         ? {
-              ...live(
-                 "contract_missing",
-                 `${subject}'s table carries no column contract (it was built ` +
-                    `before contracts were recorded), so no query is answered ` +
-                    `from it until a build rebuilds it in full.`,
-                 [
-                    "Run a build: the table is rebuilt in full, with its contract.",
-                 ],
-              ),
-              table,
-           }
-         : {
-              ...live(
-                 "incompatible",
-                 `${subject}'s table no longer matches the column contract its ` +
-                    `build recorded (${judged.incompatibility?.code ?? "changed"}: ` +
-                    `${(judged.incompatibility?.columns ?? []).join(", ")}), so no ` +
-                    `query is answered from it until a build rebuilds it.`,
-                 ["Run a build: the table is rebuilt from its source."],
-              ),
-              table,
-              ...(judged.incompatibility
-                 ? { incompatibility: judged.incompatibility }
-                 : {}),
-           };
-   };
+   const contractVerdict = () => contractLiveVerdict(s);
 
    if (tier === "storage") {
       const views = facts.views?.get(sourceID);
