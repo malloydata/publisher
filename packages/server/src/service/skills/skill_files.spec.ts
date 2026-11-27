@@ -1067,6 +1067,36 @@ describe("skillFiles", () => {
             expect(result.warnings).toHaveLength(1);
          },
       );
+
+      it("reads the .skillignore through one descriptor, so a swap after a check cannot reach a read that follows a link or blocks", () => {
+         write("a.txt");
+         skillignore("a.txt");
+         const spies = [
+            spyOn(fs, "lstatSync"),
+            spyOn(fs, "readFileSync"),
+            spyOn(fs, "openSync"),
+         ];
+         try {
+            expect(skillFiles(dir).files).toEqual([]);
+            const named = (spy: (typeof spies)[number]) =>
+               spy.mock.calls.filter(([file]) =>
+                  String(file).endsWith(".skillignore"),
+               );
+            expect(named(spies[0]!)).toEqual([]);
+            expect(named(spies[1]!)).toEqual([]);
+            const opens = named(spies[2]!);
+            expect(opens).toHaveLength(1);
+            const flags = Number(opens[0]![1]);
+            expect(flags & (fs.constants.O_NOFOLLOW ?? 0)).toBe(
+               fs.constants.O_NOFOLLOW ?? 0,
+            );
+            expect(flags & (fs.constants.O_NONBLOCK ?? 0)).toBe(
+               fs.constants.O_NONBLOCK ?? 0,
+            );
+         } finally {
+            for (const spy of spies) spy.mockRestore();
+         }
+      });
    });
 });
 
@@ -1166,5 +1196,35 @@ describe("mayChangeSkill", () => {
          path.join(dir, ".skillignore"),
       );
       expect(await mayChangeSkillExactly(dir, "data/raw.log")).toBe(true);
+   });
+
+   it.skipIf(process.platform === "win32")(
+      "applies no .skillignore that is a FIFO, and does not wait on it",
+      async () => {
+         execFileSync("mkfifo", [path.join(dir, ".skillignore")]);
+         expect(await mayChangeSkillExactly(dir, "data/raw.log")).toBe(true);
+      },
+      5000,
+   );
+
+   it("reads the .skillignore through one descriptor, with no check of the path before it", async () => {
+      fs.writeFileSync(path.join(dir, ".skillignore"), "*.log\n");
+      const spies = [
+         spyOn(fs.promises, "lstat"),
+         spyOn(fs.promises, "readFile"),
+         spyOn(fs.promises, "open"),
+      ];
+      try {
+         expect(await mayChangeSkillExactly(dir, "data/raw.log")).toBe(false);
+         const named = (spy: (typeof spies)[number]) =>
+            spy.mock.calls.filter(([file]) =>
+               String(file).endsWith(".skillignore"),
+            );
+         expect(named(spies[0]!)).toEqual([]);
+         expect(named(spies[1]!)).toEqual([]);
+         expect(named(spies[2]!)).toHaveLength(1);
+      } finally {
+         for (const spy of spies) spy.mockRestore();
+      }
    });
 });

@@ -24,6 +24,12 @@ export const isReferenceDir = (name: string): boolean =>
 const ASSETS_DIR = "assets";
 const SKILLIGNORE = ".skillignore";
 const SKILLIGNORE_MAX_BYTES = 16 * 1024;
+/** Open flags for a file whose path may be swapped under the read: no link followed, no wait on a FIFO, no controlling terminal. Windows defines none of these, so the caller's regular-file check is its guard. */
+export const READ_UNFOLLOWED_FLAGS =
+   fs.constants.O_RDONLY |
+   (fs.constants.O_NOFOLLOW ?? 0) |
+   (fs.constants.O_NONBLOCK ?? 0) |
+   (fs.constants.O_NOCTTY ?? 0);
 const SKILLIGNORE_MAX_PATTERNS = 50;
 const SKILLIGNORE_PATTERN_MAX_CHARS = 200;
 /** Each pattern runs against every path the walk examines, so the sum of their lengths is what bounds the matching time. */
@@ -218,21 +224,65 @@ function skillignoreRefusal(stat: fs.Stats): string | undefined {
       : undefined;
 }
 
-/** The text of `<dir>/.skillignore` when it is a regular file within the cap; null otherwise, with the reason in `warnings` unless it is absent. */
+/** The text of what one descriptor gave, at most the cap plus one byte; null with the reason in `warnings` when the file outgrew the cap after its stat. */
+function skillignoreText(read: Buffer, warnings: string[]): string | null {
+   if (read.length > SKILLIGNORE_MAX_BYTES) {
+      warnings.push(
+         `${SKILLIGNORE} grew past the ${capText(SKILLIGNORE_MAX_BYTES)} cap while being read, so it is ignored`,
+      );
+      return null;
+   }
+   return read.toString("utf8");
+}
+
+/** Records why a `.skillignore` could not be opened or read; nothing for an absent one. */
+function skillignoreFailure(error: unknown, warnings: string[]): null {
+   const code = errorCode(error);
+   // `O_NOFOLLOW` answers a link with ELOOP.
+   if (code === "ELOOP") {
+      warnings.push(
+         `${SKILLIGNORE} is a link or not a regular file, so it is ignored`,
+      );
+   } else if (code !== "ENOENT") {
+      warnings.push(`${SKILLIGNORE} cannot be read (${code})`);
+   }
+   return null;
+}
+
+/** The text of `<dir>/.skillignore` when it is a regular file within the cap; null otherwise, with the reason in `warnings` unless it is absent. One descriptor opened, checked and read, so the file cannot change kind between the check and the read. */
 function readSkillignoreSync(dir: string, warnings: string[]): string | null {
-   const file = path.join(dir, SKILLIGNORE);
+   let fd: number | undefined;
    try {
-      const refusal = skillignoreRefusal(fs.lstatSync(file));
+      fd = fs.openSync(path.join(dir, SKILLIGNORE), READ_UNFOLLOWED_FLAGS);
+      const refusal = skillignoreRefusal(fs.fstatSync(fd));
       if (refusal) {
          warnings.push(refusal);
          return null;
       }
-      return fs.readFileSync(file, "utf8");
-   } catch (error) {
-      if (errorCode(error) !== "ENOENT") {
-         warnings.push(`${SKILLIGNORE} cannot be read (${errorCode(error)})`);
+      const bytes = Buffer.allocUnsafe(SKILLIGNORE_MAX_BYTES + 1);
+      let length = 0;
+      while (length < bytes.length) {
+         const read = fs.readSync(
+            fd,
+            bytes,
+            length,
+            bytes.length - length,
+            length,
+         );
+         if (read === 0) break;
+         length += read;
       }
-      return null;
+      return skillignoreText(bytes.subarray(0, length), warnings);
+   } catch (error) {
+      return skillignoreFailure(error, warnings);
+   } finally {
+      if (fd !== undefined) {
+         try {
+            fs.closeSync(fd);
+         } catch {
+            // nothing was written, so a failed close loses nothing
+         }
+      }
    }
 }
 
@@ -241,19 +291,34 @@ async function readSkillignoreText(
    dir: string,
    warnings: string[],
 ): Promise<string | null> {
-   const file = path.join(dir, SKILLIGNORE);
+   let handle: fs.promises.FileHandle | undefined;
    try {
-      const refusal = skillignoreRefusal(await fs.promises.lstat(file));
+      handle = await fs.promises.open(
+         path.join(dir, SKILLIGNORE),
+         READ_UNFOLLOWED_FLAGS,
+      );
+      const refusal = skillignoreRefusal(await handle.stat());
       if (refusal) {
          warnings.push(refusal);
          return null;
       }
-      return await fs.promises.readFile(file, "utf8");
-   } catch (error) {
-      if (errorCode(error) !== "ENOENT") {
-         warnings.push(`${SKILLIGNORE} cannot be read (${errorCode(error)})`);
+      const bytes = Buffer.allocUnsafe(SKILLIGNORE_MAX_BYTES + 1);
+      let length = 0;
+      while (length < bytes.length) {
+         const { bytesRead } = await handle.read(
+            bytes,
+            length,
+            bytes.length - length,
+            length,
+         );
+         if (bytesRead === 0) break;
+         length += bytesRead;
       }
-      return null;
+      return skillignoreText(bytes.subarray(0, length), warnings);
+   } catch (error) {
+      return skillignoreFailure(error, warnings);
+   } finally {
+      await handle?.close().catch(() => undefined);
    }
 }
 

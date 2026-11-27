@@ -22,6 +22,7 @@ import {
    mayChangeSkill,
    mayChangeSkillExactly,
    newWalkBudget,
+   READ_UNFOLLOWED_FLAGS,
    REFERENCE_DIRS,
    SKILL_MD,
    skillFiles,
@@ -1322,15 +1323,9 @@ async function readListedFile(
 ): Promise<{ text: string } | { binary: true } | undefined> {
    let handle: fs.promises.FileHandle | undefined;
    try {
-      // Windows defines none of these flags: the regular-file and size checks below are the guard there.
-      const flags =
-         fs.constants.O_RDONLY |
-         (fs.constants.O_NOFOLLOW ?? 0) |
-         (fs.constants.O_NONBLOCK ?? 0) |
-         (fs.constants.O_NOCTTY ?? 0);
       handle = await fs.promises.open(
          path.join(packagePath, skillRel, relative),
-         flags,
+         READ_UNFOLLOWED_FLAGS,
       );
       const stat = await handle.stat();
       if (!stat.isFile() || stat.size > PACKAGE_ASSET_FILE_MAX_BYTES - 1) {
