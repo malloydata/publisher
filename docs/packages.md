@@ -165,7 +165,7 @@ Skills are read with the rules in [Skills](#skills). Each set is measured on its
 
 ### A broken workflow never fails the package
 
-Publisher never takes a package offline for a workflow mistake. What breaks decides how much is lost. Each finding is in the package's load warnings, and in the `warnings` of a workflow that reads it, with a `code` and a `subject`. Most end with a `Fix:` line saying what to change. These do not: a skipped file (it names the file and says why), a skill set aside by an `assets/` rule or by a `publisher.json` inside it (the reason says what to remove), a problem with a skill's own `.skillignore` or a walk bound it reached (each says what was left out), a Markdown file listed instead of inlined, and the lines counting the findings or skipped files a set leaves unnamed.
+Publisher never takes a package offline for a workflow mistake. What breaks decides how much is lost. Each finding is in the package's load warnings, and in the `warnings` of a workflow that reads it, with a `code` and a `subject`. Most end with a `Fix:` line saying what to change. These do not: a skipped file (it names the file and says why), a skill set aside by an `assets/` rule or by a `publisher.json` inside it (the reason says what to remove), a problem with a skill's own `.skillignore` or a walk bound it reached, or a directory it could not list (each says what was left out), a Markdown file listed instead of inlined, and the lines counting the findings or skipped files a set leaves unnamed.
 
 | `code` | `subject` | What it says |
 | --- | --- | --- |
