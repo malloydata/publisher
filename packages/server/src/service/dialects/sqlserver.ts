@@ -61,6 +61,19 @@ function validateSqlServerShape(connection: ApiConnection): void {
             `${JSON.stringify(port)} (expected an integer from 1 to 65535).`,
       );
    }
+   // The connector checks these itself, but only when it first connects; a
+   // missing one is caught here so a save fails rather than the first query.
+   if (sqlserver.authentication === "azure-service-principal") {
+      const missing = (
+         ["tenantId", "clientId", "clientSecret"] as const
+      ).filter((field) => !sqlserver[field]);
+      if (missing.length > 0) {
+         throw new Error(
+            `Connection '${connection.name}' uses azure-service-principal ` +
+               `authentication but is missing ${missing.join(", ")}.`,
+         );
+      }
+   }
    // The driver takes the instance name over the port when given both.
    if (sqlserver.instanceName && sqlserver.port) {
       logger.warn(
@@ -89,6 +102,10 @@ function buildSqlServerEntry(connection: NamedConnection): CoreConnectionEntry {
       database: sqlserver?.database,
       user: sqlserver?.user,
       password: sqlserver?.password,
+      authentication: sqlserver?.authentication,
+      tenantId: blankAsUnset(sqlserver?.tenantId),
+      clientId: blankAsUnset(sqlserver?.clientId),
+      clientSecret: blankAsUnset(sqlserver?.clientSecret),
       encrypt: sqlserver?.encrypt,
       trustServerCertificate: sqlserver?.trustServerCertificate,
       hostNameInCertificate: blankAsUnset(sqlserver?.hostNameInCertificate),

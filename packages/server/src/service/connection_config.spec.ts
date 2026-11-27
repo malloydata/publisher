@@ -120,6 +120,48 @@ describe("assembleEnvironmentConnections — sqlserver", () => {
       }
    });
 
+   it("passes a Microsoft Entra service principal through to the connector", () => {
+      const { pojo } = assembleEnvironmentConnections([
+         {
+            name: "fabric",
+            type: "sqlserver",
+            sqlserverConnection: {
+               server: "abc.datawarehouse.fabric.microsoft.com",
+               database: "lakehouse",
+               authentication: "azure-service-principal",
+               tenantId: "tenant",
+               clientId: "client",
+               clientSecret: "secret",
+            },
+         },
+      ]);
+      expect(pojo.connections["fabric"]).toMatchObject({
+         is: "sqlserver",
+         server: "abc.datawarehouse.fabric.microsoft.com",
+         authentication: "azure-service-principal",
+         tenantId: "tenant",
+         clientId: "client",
+         clientSecret: "secret",
+      });
+   });
+
+   it("rejects a service principal connection missing a credential, naming it", () => {
+      expect(() =>
+         assembleEnvironmentConnections([
+            {
+               name: "fabric",
+               type: "sqlserver",
+               sqlserverConnection: {
+                  server: "h",
+                  authentication: "azure-service-principal",
+                  tenantId: "tenant",
+                  clientId: "",
+               },
+            },
+         ]),
+      ).toThrow(/missing clientId, clientSecret/);
+   });
+
    it("rejects a sqlserver connection without its config block", () => {
       expect(() =>
          assembleEnvironmentConnections([{ name: "ms", type: "sqlserver" }]),

@@ -9534,8 +9534,8 @@ components:
     SqlserverConnection:
       type: object
       description: >-
-        Microsoft SQL Server connection configuration: a SQL Server login over
-        TCP. Field names are the connector's own (`@malloydata/db-sqlserver`),
+        Microsoft SQL Server connection configuration: a SQL Server login or a
+        Microsoft Entra service principal, over TCP. Field names are the connector's own (`@malloydata/db-sqlserver`),
         so a value here reaches the driver unchanged. The dialect is
         experimental upstream; Publisher accepts it on the model author's
         behalf, so a model needs no `##! experimental.dialect.sqlserver`
@@ -9556,7 +9556,25 @@ components:
           description: SQL Server login name
         password:
           type: string
-          description: SQL Server login password
+          description: SQL Server login password, for `sql` authentication
+        authentication:
+          type: string
+          enum: [sql, azure-service-principal]
+          description: >-
+            How the connection signs in. `sql` (the default) is a SQL Server
+            login with `user` and `password`. `azure-service-principal` signs
+            in as a Microsoft Entra application with `tenantId`, `clientId` and
+            `clientSecret`, which Azure SQL and the Microsoft Fabric SQL
+            analytics endpoint require.
+        tenantId:
+          type: string
+          description: Microsoft Entra tenant (directory) ID, for `azure-service-principal`
+        clientId:
+          type: string
+          description: Microsoft Entra application (client) ID, for `azure-service-principal`
+        clientSecret:
+          type: string
+          description: Microsoft Entra client secret, for `azure-service-principal`
         encrypt:
           type: boolean
           description: >-
