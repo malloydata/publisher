@@ -98,6 +98,12 @@ interface PlanRecord {
    upstreamSchemas: UpstreamSchemaReadings;
    /** Addresses not served while this record serves (see withdraw). */
    withdrawn: ReadonlySet<string>;
+   /**
+    * The addresses in `withdrawn` taken out because a read of an upstream
+    * they are built from failed, so whether it changed is not known (see
+    * withdraw).
+    */
+   withdrawnUnread: ReadonlySet<string>;
    /** See PackagePlan.stringCapabilityReads. */
    stringCapabilityReads: Readonly<Record<string, string>>;
 }
@@ -120,6 +126,7 @@ const EMPTY_RECORD: PlanRecord = {
    asOfBuild: {},
    upstreamSchemas: {},
    withdrawn: new Set(),
+   withdrawnUnread: new Set(),
    stringCapabilityReads: {},
 };
 
@@ -169,6 +176,8 @@ export class PlanLifecycle {
    private refreshFailedTransiently = false;
    /** Addresses every derived record starts withdrawn (see {@link holdWithdrawn}). */
    private heldWithdrawn: ReadonlySet<string> = new Set();
+   /** The held addresses withdrawn as unread (see {@link holdWithdrawn}). */
+   private heldWithdrawnUnread: ReadonlySet<string> = new Set();
    /**
     * Set when a connection edit makes the plan stale, and resolved once a
     * re-derivation started after the latest edit has finished.
@@ -305,18 +314,43 @@ export class PlanLifecycle {
     * is not recompiled (its files no longer compile against the refetched
     * schemas): each query's pin leaves the withdrawn tables out
     * (`domain/binding.ts`, `Snapshot.withdrawn`).
+    *
+    * `unread` are the sources whose upstream that refetch could not read,
+    * so whether it changed is not known: withdrawn too, and recorded as
+    * unread ({@link withdrawnUnread}). They REPLACE the unread set the
+    * record held, so a later refetch that reads an upstream and finds it
+    * unchanged returns its tables to serving; an address withdrawn as
+    * changed stays withdrawn as changed, and a source in both is withdrawn
+    * as changed.
     */
-   withdraw(sourceIDs: readonly string[]): void {
+   withdraw(
+      sourceIDs: readonly string[],
+      unread: readonly string[] = [],
+   ): void {
       const record = this.state.serving;
-      if (!record || sourceIDs.length === 0) return;
-      const withdrawn = new Set([
-         ...record.withdrawn,
-         ...sourceIDs.flatMap((id) => {
+      if (!record) return;
+      if (
+         sourceIDs.length === 0 &&
+         unread.length === 0 &&
+         record.withdrawnUnread.size === 0
+      ) {
+         return;
+      }
+      const addresses = (ids: readonly string[]) =>
+         ids.flatMap((id) => {
             const address = record.plan?.sources[id]?.sourceEntityId;
             return address ? [address] : [];
-         }),
+         });
+      // Withdrawn as changed, before or now: stays so, whatever is unread.
+      const changed = new Set([
+         ...[...record.withdrawn].filter((a) => !record.withdrawnUnread.has(a)),
+         ...addresses(sourceIDs),
       ]);
-      const serving: PlanRecord = { ...record, withdrawn };
+      const withdrawnUnread = new Set(
+         addresses(unread).filter((a) => !changed.has(a)),
+      );
+      const withdrawn = new Set([...changed, ...withdrawnUnread]);
+      const serving: PlanRecord = { ...record, withdrawn, withdrawnUnread };
       this.state = {
          ...this.state,
          serving,
@@ -331,16 +365,28 @@ export class PlanLifecycle {
    }
 
    /**
+    * The addresses in {@link withdrawn} taken out because their upstream
+    * could not be read, so whether it changed is not known.
+    */
+   get withdrawnUnread(): ReadonlySet<string> {
+      return this.serving().withdrawnUnread;
+   }
+
+   /**
     * Carry the addresses withdrawn now into every record derived from here
     * on (`hold` true), or stop carrying them (`hold` false). A package that
     * serves a model kept over an upstream table that changed
     * (`Package.keepLastGoodModels`) holds them, so a derivation in the
     * meantime (a connection edit, a rebind's incompatibility) cannot hand
     * the stored tables built from that upstream back to serving while it is
-    * still changed. Released by the reload that compiles the file again.
+    * still changed (or, for one withdrawn as unread, still not known to be
+    * unchanged). Released by the reload that compiles the file again.
     */
    holdWithdrawn(hold: boolean): void {
       this.heldWithdrawn = hold ? new Set(this.withdrawn) : new Set();
+      this.heldWithdrawnUnread = hold
+         ? new Set(this.withdrawnUnread)
+         : new Set();
    }
 
    /** The plan bindings are matched against: the current one, else the last good one. */
@@ -441,6 +487,7 @@ export class PlanLifecycle {
          asOfBuild: outcome.asOfBuild ?? {},
          upstreamSchemas: outcome.upstreamSchemas ?? {},
          withdrawn: new Set(this.heldWithdrawn),
+         withdrawnUnread: new Set(this.heldWithdrawnUnread),
          stringCapabilityReads: outcome.stringCapabilityReads ?? {},
       };
    }

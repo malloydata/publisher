@@ -99,6 +99,28 @@ describe("R-13: reading the upstream tables' column types", () => {
       });
    });
 
+   it("reads a failed read as `read_failed`, never its last reading, for a caller that asks", async () => {
+      const failing = { on: false };
+      const connection = flaky(failing);
+      await read(["t_flaky"], connection, true);
+      failing.on = true;
+      const during = await readUpstreamSchemas({
+         tables: [{ connectionName: "duckdb", table: "t_flaky" }],
+         connection: async () => connection,
+         refresh: true,
+         timeoutMs: 5_000,
+         keepLastOnFailure: false,
+      });
+      expect(during[key("t_flaky")]).toEqual({ unread: "read_failed" });
+      // The last reading is still there for a caller that keeps it.
+      expect(
+         (await read(["t_flaky"], connection, true))[key("t_flaky")],
+      ).toEqual({
+         columns: [{ name: "n", nativeType: "INTEGER" }],
+         dialect: "duckdb",
+      });
+   });
+
    it("reads a table never read as `read_failed` while its read fails, then its columns", async () => {
       const failing = { on: true };
       const connection = flaky(failing);
