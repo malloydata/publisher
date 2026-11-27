@@ -40,7 +40,11 @@ import {
 } from "./run_plan";
 import { authorModelLiftContext } from "../text/author_model";
 import { reachPersisted } from "../text/source_map";
-import { BuildInstruction, ManifestEntry } from "../domain/types";
+import {
+   BuildInstruction,
+   isLegacyFailedEntry,
+   ManifestEntry,
+} from "../domain/types";
 import { servableContract } from "../domain/column_contract";
 import { isPersistedResultSourceID } from "../domain/table_plans";
 import type { ExtensionParent } from "./incremental_apply";
@@ -397,11 +401,8 @@ function renderBuildSQL(
    );
    // Entries left out of the warehouse render only because they are at the
    // wrong tier for the upstream as declared now, by address.
-   const wrongTier = Object.entries(builtEntries).filter(
-      ([address, entry]) =>
-         !entry.storageDestinationName &&
-         address in manifest.buildManifest.entries &&
-         !upstreamEntryIsCurrent(address, entry, planFacts),
+   const wrongTier = Object.entries(builtEntries).filter(([address, entry]) =>
+      suppliedAtWrongTier(address, entry, manifest, planFacts),
    );
    // The wrong-tier upstreams a strict render misses, by the name its
    // error quotes; a reference carries no sourceName, so the plan's names
@@ -1150,6 +1151,27 @@ function reportingDrift<T>(environment: BuildEnvironment, render: () => T): T {
       }
       throw err;
    }
+}
+
+/**
+ * Whether `entry`, at `address`, is a table supplied at the wrong tier for
+ * its upstream as declared now: in the build manifest, labeled a warehouse
+ * table, and not current. A failed or refused upstream's mirror
+ * (`ManifestEntry.error`) is no table at any tier, so its downstream fails
+ * as that upstream having failed in this run (strictMissReason).
+ */
+function suppliedAtWrongTier(
+   address: string,
+   entry: ManifestEntry,
+   manifest: Manifest,
+   planFacts: ChainedPlanFacts,
+): boolean {
+   return (
+      !isLegacyFailedEntry(entry) &&
+      !entry.storageDestinationName &&
+      address in manifest.buildManifest.entries &&
+      !upstreamEntryIsCurrent(address, entry, planFacts)
+   );
 }
 
 /**
