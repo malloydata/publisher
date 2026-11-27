@@ -187,12 +187,12 @@ export function registerGetWorkflowTool(
             }
             // Throws for a name the manifest declares and did not refuse; an undeclared or refused one is still not found.
             pkg.getWorkflow(params.workflow_name);
-            const unserved = pkg.workflowNotServed(params.workflow_name)!;
-            // No availableWorkflows: an empty list would read as a package with no workflows. An undeclared name loses its Fix clause: its advice is to look in the list.
+            // No availableWorkflows: an empty list would read as a package with no workflows. An undeclared name has no Fix clause: its advice is to look in the list.
+            const unserved = pkg.workflowNotServed(params.workflow_name, false)!;
             return jsonResource(uri, {
                workflow: null,
                reason: unserved.reason,
-               message: `${unserved.reason === "WORKFLOW_NOT_DECLARED" ? unserved.message.replace(/ Fix: .*$/, "") : unserved.message} No workflow can be listed: ${error.message}`,
+               message: `${unserved.message} No workflow can be listed: ${error.message}`,
             });
          }
          const id = extra?.requestId;

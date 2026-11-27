@@ -627,6 +627,19 @@ describe("package workflows", () => {
             "WORKFLOW_NOT_DECLARED",
          );
       });
+
+      it("leaves an undeclared name's Fix clause off when asked, and keeps a refusal's own", async () => {
+         manifest({ workflows: { analyst: analyst(), bad: { nope: 1 } } });
+         const pkg = await load();
+         const undeclared = pkg.workflowNotServed("nope", false)!;
+         expect(undeclared.message).toBe(
+            "No workflow named 'nope' is declared in package 'pkg'.",
+         );
+         expect(pkg.workflowNotServed("nope")!.message).toBe(
+            `${undeclared.message} Fix: use a name the package lists.`,
+         );
+         expect(pkg.workflowNotServed("bad", false)!.message).toContain("Fix:");
+      });
    });
 
    describe("what is no longer read", () => {

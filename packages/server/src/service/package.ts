@@ -765,9 +765,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       }));
    }
 
-   /** Why `name` is not a served workflow: the walk's refusal when the manifest declares it or refuses its whole `workflows` value, else that it declares none of that name. Undefined when it is served. */
+   /** Why `name` is not a served workflow: the walk's refusal when the manifest declares it or refuses its whole `workflows` value, else that it declares none of that name. `withFix: false` leaves off the undeclared name's "use a name the package lists" clause, for a reply that has no list to point at. Undefined when it is served. */
    public workflowNotServed(
       name: string,
+      withFix = true,
    ): { reason: WorkflowNotFoundReason; message: string } | undefined {
       if (this.workflows.workflows.has(name)) return undefined;
       const message =
@@ -779,7 +780,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ? { reason: "WORKFLOW_NOT_SERVED", message }
          : {
               reason: "WORKFLOW_NOT_DECLARED",
-              message: `No workflow named '${name}' is declared in package '${this.packageName}'. Fix: use a name the package lists.`,
+              message: `No workflow named '${name}' is declared in package '${this.packageName}'.${withFix ? " Fix: use a name the package lists." : ""}`,
            };
    }
 
