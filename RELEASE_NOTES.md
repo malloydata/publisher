@@ -57,8 +57,6 @@ An `#(access_filter)` now applies to a named query written as `source extend { w
 
 A `# colspan`, `# break`, `# subtitle` or `# borderless` on a view is no longer reported as an unknown render tag when a grid report names that view as a tile, including a view imported from another file. The same tag on a view no grid tile names is still reported.
 
-## [Unreleased] — a framed data app can save files, copy, go full screen and open new tabs
-
 ## [Unreleased] — Package entities list a record column's members, and every join says how many rows it meets
 
 The package entities (`ModelEntities.fields`) walked a record or repeated-record column (a BigQuery RECORD, a DuckDB STRUCT or STRUCT[]) as if it were a join to a source of the same name. When the model also had a top-level source with that name, the column's members (`lines.sku`, `lines.qty`) were never listed, and the column's `join` named that unrelated source. A record column is now always `nested`, with no `sourceName`, and its members are always listed under dotted names.
