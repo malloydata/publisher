@@ -87,6 +87,28 @@ source: active_orders_x is active_orders extend {
 }
 `;
 
+/**
+ * The joined source gated by an `#(access_filter)` and nothing else, so the
+ * join is served: the served answer must be live's under the same givens.
+ */
+const GATED = `##! experimental { persistence givens }
+given: IDS :: number[]
+
+#(access_filter) customer_id in $IDS
+source: gated_customer is credible.table('customers') extend {
+  primary_key: customer_id
+}
+
+#(materialize) storage="credible"
+source: gated_orders is credible.table('orders') extend {
+  where: status = 'kept'
+}
+
+source: gated_orders_x is gated_orders extend {
+  join_one: gated_customer with customer_id
+}
+`;
+
 /** The same join over a Postgres warehouse: another catalog than the destination. */
 const CROSS = `##! experimental.persistence
 source: wh_customer is wh.table('public.customers') extend {
@@ -228,6 +250,7 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
          {
             "same.malloy": SAME,
             "filtered.malloy": FILTERED,
+            "gated.malloy": GATED,
             "cross.malloy": CROSS,
             "view.malloy": VIEW,
             "sql_expr.malloy": SQL_EXPR,
@@ -401,6 +424,9 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
    } as const;
    type ModelPath = keyof typeof JOINED;
    const live = new Map<string, Answer["rows"]>();
+   const GATED_JOIN =
+      "run: gated_orders_x -> { group_by: gated_customer.customer_id, gated_customer.name; aggregate: n is count() }";
+   const GATED_GIVENS = { IDS: [10, 20] };
 
    it("answers every query live before anything is built", async () => {
       for (const m of Object.keys(JOINED) as ModelPath[]) {
@@ -410,6 +436,9 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
             live.set(q, answer.rows);
          }
       }
+      const gated = await ask("gated.malloy", GATED_JOIN, GATED_GIVENS);
+      expect(gated.servedFrom).toBe(null);
+      live.set(GATED_JOIN, gated.rows);
       expect(live.get(JOINED["same.malloy"])).toEqual([
          { customer_id: 10, name: "ann", n: 2 },
          { customer_id: 20, name: "bo", n: 1 },
@@ -467,6 +496,12 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
          { IDS: [20, 30, 40] },
       );
       expect(gated.rows.map((r) => r.customer_id)).toEqual([20, 40]);
+   });
+
+   it("serves a join to a gated source on the same catalog, equal to live under the same givens", async () => {
+      const answer = await ask("gated.malloy", GATED_JOIN, GATED_GIVENS);
+      expect(answer.servedFrom).toBe("storage");
+      expect(answer.rows).toEqual(live.get(GATED_JOIN)!);
    });
 
    it("answers a join to another catalog live, the decline naming the join", async () => {
