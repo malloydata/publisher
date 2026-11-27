@@ -107,16 +107,16 @@ function InlineLink({
 export default function Home({ onClickEnvironment }: HomeProps) {
    const { apiClients, mutable } = useServer();
 
-   const { data, isSuccess, isError, error } = useQueryWithApiError({
+   const { data, isLoadingError, error } = useQueryWithApiError({
       queryKey: ["environments"],
       queryFn: () => apiClients.environments.listEnvironments(),
    });
 
-   if (isError) {
+   if (isLoadingError) {
       return <ApiErrorDisplay error={error} context="Environments List" />;
    }
 
-   if (!isSuccess) {
+   if (!data) {
       return <Loading text="Loading environments..." />;
    }
 

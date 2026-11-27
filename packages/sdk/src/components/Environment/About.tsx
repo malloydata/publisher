@@ -21,7 +21,7 @@ export default function About({ resourceUri }: AboutProps) {
    const [expanded, setExpanded] = useState(false);
    const wordLimit = 90;
 
-   const { data, isSuccess, isError, error } = useQueryWithApiError({
+   const { data, isLoadingError, error } = useQueryWithApiError({
       queryKey: ["about", environmentName],
       queryFn: () =>
          apiClients.environments.getEnvironment(environmentName, false),
@@ -34,8 +34,8 @@ export default function About({ resourceUri }: AboutProps) {
 
    return (
       <>
-         {!isSuccess && !isError && <Loading text="Fetching About..." />}
-         {isSuccess && readmeContent && (
+         {!data && !isLoadingError && <Loading text="Fetching About..." />}
+         {data && readmeContent && (
             <PackageSection title="Readme">
                <Prose variant="caption">
                   {expanded || !shouldTruncate ? readmeContent : preview}
@@ -50,7 +50,7 @@ export default function About({ resourceUri }: AboutProps) {
                )}
             </PackageSection>
          )}
-         {isError && (
+         {isLoadingError && (
             <ApiErrorDisplay
                error={error}
                context={`${environmentName} > About`}

@@ -52,6 +52,8 @@ export async function fetchReportListing(
  * route answers 404, which reads as a package with no reports rather than an
  * error, so a host still renders. Any other failure is `isError`, with
  * `refetch` to try again: a caller shows it rather than an empty listing.
+ * `isLoadingError` is the same failure when no listing has loaded yet; a
+ * failed refetch keeps the cached `reports`, so it is not one.
  * `isFetching` is true while a request is in flight, including the refetch
  * that follows a write's invalidation, when the cached `reports` predate it.
  */
@@ -82,6 +84,7 @@ export function useReportListing(
       settled: query.isSuccess || query.isError,
       isFetching: query.isFetching,
       isError: query.isError,
+      isLoadingError: query.isLoadingError,
       error: query.error,
       refetch: query.refetch,
    };

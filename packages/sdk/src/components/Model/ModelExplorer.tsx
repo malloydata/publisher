@@ -110,7 +110,7 @@ export function ModelExplorer({
    // If data is not provided, fetch it internally
    const {
       data: fetchedData,
-      isError,
+      isLoadingError,
       isLoading,
       error,
    } = useModelData(resourceUri, !data); // we shld only fetch when data is not provided
@@ -152,7 +152,7 @@ export function ModelExplorer({
       return <Loading text="Fetching Model..." />;
    }
 
-   if (isError && !data) {
+   if (isLoadingError && !data) {
       console.log("error", error);
       return (
          <ApiErrorDisplay

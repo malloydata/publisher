@@ -27,12 +27,12 @@ export default function Packages({
 }: PackagesProps) {
    const { apiClients } = useServer();
    const { environmentName } = parseResourceUri(resourceUri);
-   const { data, isSuccess, isError, error } = useQueryWithApiError({
+   const { data, isLoadingError, error } = useQueryWithApiError({
       queryKey: ["packages", environmentName],
       queryFn: () => apiClients.packages.listPackages(environmentName),
    });
 
-   if (isError) {
+   if (isLoadingError) {
       return (
          <ApiErrorDisplay
             error={error}
@@ -41,7 +41,7 @@ export default function Packages({
       );
    }
 
-   if (!isSuccess) {
+   if (!data) {
       return <Loading text="Fetching Packages..." />;
    }
 

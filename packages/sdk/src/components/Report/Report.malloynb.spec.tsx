@@ -12,7 +12,13 @@
  * suggest queries pinned to the version the report was opened at.
  */
 import { beforeEach, expect, it, mock } from "bun:test";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+   act,
+   fireEvent,
+   render,
+   screen,
+   waitFor,
+} from "@testing-library/react";
 import type { ReactNode } from "react";
 import {
    cacheKeys,
@@ -22,6 +28,7 @@ import {
    serverWrapper,
 } from "../../../test/serverProvider";
 import type { ReportManifest } from "../../client";
+import { globalQueryClient } from "../../utils/queryClient";
 
 const PATH = "notebooks/ops.malloynb";
 
@@ -227,4 +234,29 @@ it("keeps the copy-link icon off a notebook that opens with a code cell", async 
 
    await screen.findByText("Later prose");
    expect(screen.queryAllByTestId("LinkOutlinedIcon")).toHaveLength(0);
+});
+
+it("keeps an open notebook when a refetch fails", async () => {
+   // The cells stay in the cache when a background refetch fails, and the
+   // reader was looking at them. Swapping them for an error card threw the
+   // notebook away over a request the reader never made.
+   render(<Report resourceUri={URI} path={PATH} />, { wrapper: serverWrapper });
+   expect(await screen.findByText("Ops prose")).toBeTruthy();
+
+   getReport.mockImplementation(() =>
+      Promise.reject(new Error("Network Error")),
+   );
+   try {
+      await act(() =>
+         globalQueryClient.refetchQueries({ queryKey: ["report"] }),
+      );
+
+      expect(
+         await screen.findByText(/Could not refresh this report/),
+      ).toBeTruthy();
+      expect(screen.getByText("Ops prose")).toBeTruthy();
+      expect(getReport).toHaveBeenCalledTimes(2);
+   } finally {
+      getReport.mockImplementation(() => Promise.resolve({ data: manifest }));
+   }
 });
