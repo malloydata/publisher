@@ -1539,7 +1539,8 @@ function inDestinationStringReads(
 /**
  * A chained `storage=` `#@ persist` source's compared strings: one that is
  * a query over upstreams stored in its own destination, which its build
- * stacks on there. Undefined for any other source.
+ * stacks on there. Undefined for any other source, and for one that shares
+ * the build of a stored upstream ({@link sharesStoredBuild}).
  */
 async function chainedStringReads(
    source: PersistSource,
@@ -1547,24 +1548,21 @@ async function chainedStringReads(
    materializer: ModelMaterializer,
    ports: StringReadsPorts | undefined,
    judged: Record<string, string>,
+   /** The model's planned `#@ persist` sources, by sourceID. */
+   planned: ReadonlyMap<string, PersistSource>,
 ): Promise<StringReads | undefined> {
    const destination = declaredStorage(source)?.trim();
    if (!destination) return undefined;
    const map = SourceMap.of(modelDef);
-   const def = map.node(source.sourceID)?.def as
-      | { type?: unknown; extends?: unknown }
-      | undefined;
-   // An `extend` of a stored source runs that source's query: its table,
-   // or a projection of it, not a build over it that compares anything.
-   if (def?.type !== "query_source" || typeof def.extends === "string") {
-      return undefined;
-   }
+   const def = map.node(source.sourceID)?.def as { type?: unknown } | undefined;
+   if (def?.type !== "query_source") return undefined;
    const stored = reachedUpstreams(def, modelDef, map)
       .filter(
          (u) => u.storage === destination && u.sourceID !== source.sourceID,
       )
       .map((u) => u.sourceID);
    if (stored.length === 0) return undefined;
+   if (sharesStoredBuild(source, stored, planned)) return undefined;
    const reads = await planStringReads(
       ports,
       materializer,
@@ -1592,6 +1590,33 @@ async function chainedStringReads(
            unstored: true,
         }
       : reads;
+}
+
+/**
+ * Whether `source` runs the same build as one of its `stored` upstreams (an
+ * `extend` of a stored source that adds no query of its own): the run then
+ * copies that upstream's table as a projection, which compares nothing
+ * (`sameBuildUpstream` in run/storage_build_strategy.ts, by the same
+ * compiler key). An `extend` of an unstored query over a stored upstream
+ * builds over that table, and compares what its query compares.
+ */
+function sharesStoredBuild(
+   source: PersistSource,
+   stored: readonly string[],
+   planned: ReadonlyMap<string, PersistSource>,
+): boolean {
+   const keyOf = (s: PersistSource | undefined) => {
+      if (!s) return undefined;
+      try {
+         return compilerBuildId(s);
+      } catch {
+         return undefined;
+      }
+   };
+   const own = keyOf(source);
+   return (
+      own !== undefined && stored.some((id) => keyOf(planned.get(id)) === own)
+   );
 }
 
 /**
@@ -2375,6 +2400,7 @@ async function planV1PersistSources(
    let classificationCtx:
       | { modelDef: ModelDef; deps: GateClassificationDeps }
       | undefined;
+   const plannedByID = new Map(planned.map((s) => [s.sourceID, s]));
    for (const source of planned) {
       const sourceID = source.sourceID;
       // Unknown and retired keys, on the lines that parsed (a line that did
@@ -2436,6 +2462,7 @@ async function planV1PersistSources(
                  materializer,
                  args.stringReads,
                  parts.stringCapabilityReads,
+                 plannedByID,
               )
             : parts.tables[sourceID]?.stringReads;
       // What its build reads: its query, never a join only its read

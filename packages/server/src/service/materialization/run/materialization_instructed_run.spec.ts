@@ -1743,6 +1743,95 @@ describe("executeInstructedBuild", () => {
          expect(reason).not.toContain("not found in manifest");
       });
 
+      // A failed or refused upstream's entry is mirrored into the run's
+      // entries (the `ManifestEntry.error` deprecation window) with no
+      // destination: a downstream that reads it fails as its upstream
+      // having failed in this run, never as a host-supplied wrong tier.
+      it("fails a host-instructed downstream of a storage= upstream that failed in this run as that failure, not the wrong tier", async () => {
+         const connection = {
+            runSQL: sinon.stub().resolves(),
+            dialectName: "duckdb",
+         } as unknown as MalloyConnection;
+         const up = fakeSource({
+            name: "up",
+            sourceEntityId: "up",
+            annotationFields: { storage: "lake" },
+         });
+         const down = fakeSource({
+            name: "down",
+            sourceEntityId: "bdownaaaaaaaaaa",
+            onGetSQL: (o) => {
+               const m = (
+                  o as {
+                     buildManifest?: {
+                        strict?: boolean;
+                        entries?: Record<string, unknown>;
+                     };
+                  }
+               ).buildManifest;
+               if (m?.strict && !m.entries?.up) {
+                  throw Object.assign(
+                     new Error("Persisted source 'up' not found in manifest"),
+                     { code: "runtime-manifest-strict-miss" },
+                  );
+               }
+               if (m?.entries?.up) return "SELECT * FROM up_table";
+            },
+         });
+         const compiled = compiledWith(
+            { up, down },
+            [["up"], ["down"]],
+            new Map([["duckdb", connection]]),
+         );
+         const { restore } = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on" },
+         });
+         try {
+            const reason = await reasonOf(
+               callExecute(
+                  compiled,
+                  [
+                     {
+                        sourceEntityId: "up",
+                        materializedTableId: "mt-u",
+                        physicalTableName: "up__g005",
+                        realization: "COPY",
+                        destination: "lake",
+                     },
+                     {
+                        sourceEntityId: "bdownaaaaaaaaaa",
+                        materializedTableId: "mt-d",
+                        physicalTableName: "down_v1",
+                        realization: "COPY",
+                     },
+                  ],
+                  {
+                     // The previous generation's stored table, as the host
+                     // supplies it.
+                     up: {
+                        sourceEntityId: "up",
+                        physicalTableName: "up__g004",
+                        connectionName: "duckdb",
+                        storageDestinationName: "lake",
+                     },
+                  },
+                  undefined,
+                  true,
+               ),
+            );
+            // The upstream's storage build fails (the fake declares no
+            // columns); its mirror in the run's entries has no destination.
+            expect(reason).toContain("up: Source 'up' cannot be materialized");
+            expect(reason).toContain(
+               "down: Failed to materialize source 'down': its persisted upstream 'up' failed to build in this run: Source 'up' cannot be materialized",
+            );
+            expect(reason).not.toContain("the host supplied an upstream entry");
+            expect(reason).not.toContain("supplied at the wrong tier");
+         } finally {
+            restore();
+         }
+      });
+
       it("still renders a database upstream's warehouse table", async () => {
          const { seen } = await downstreamSees({
             seed: {
