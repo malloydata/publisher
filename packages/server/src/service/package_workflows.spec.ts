@@ -22,6 +22,7 @@ import fsSync from "fs";
 import * as os from "os";
 import * as path from "path";
 import { SkillController } from "../controller/skill.controller";
+import { logger } from "../logger";
 import { skillsFor } from "../retrieval/search/response";
 import { resetDeprecatedUsageMetricsForTest } from "../deprecated_usage_metrics";
 import {
@@ -51,6 +52,8 @@ import { canonicalSha, computeSourceContentSha } from "./package_revision";
 import { BUNDLED_CATALOG } from "./skills/package_skills";
 import {
    readPackageWorkflows,
+   SKILL_FINDING,
+   SKILL_SHADOWED,
    SKILLS_PER_SET_MAX,
 } from "./skills/package_workflows";
 
@@ -490,7 +493,11 @@ describe("package workflows", () => {
             .warnings?.find((w) => w.message?.includes("no description"));
          expect(finding?.severity).toBe("warn");
          expect(pkg.getWorkflow("analyst")!.warnings).toEqual([
-            expect.stringContaining("no description"),
+            expect.objectContaining({
+               code: SKILL_FINDING,
+               subject: MAIN,
+               message: expect.stringContaining("no description"),
+            }),
          ]);
       });
 
@@ -531,9 +538,13 @@ describe("package workflows", () => {
          expect(skillsOf(pkg)).toEqual(["conventions", "extra"]);
          expect(pkg.listSkills()[0]!.description).toBe("House rules.");
          expect(pkg.getWorkflow("default")!.warnings).toEqual([
-            expect.stringContaining(
-               "lists skill 'conventions' in both 'workflows/analyst/skill_sets/main' and 'workflows/analyst/skill_sets/second'",
-            ),
+            expect.objectContaining({
+               code: SKILL_SHADOWED,
+               subject: "default",
+               message: expect.stringContaining(
+                  "lists skill 'conventions' in both 'workflows/analyst/skill_sets/main' and 'workflows/analyst/skill_sets/second'",
+               ),
+            }),
          ]);
       });
 
@@ -685,15 +696,16 @@ describe("package workflows", () => {
       it("carries that set's findings, not another set's and not the shadowing ones", async () => {
          const pkg = await load();
          const second = pkg.getWorkflow("analyst", "full", "second")!;
-         expect(second.warnings.join("\n")).toContain("a..b.py");
-         // This reply serves the set's own copy of the name, so the copy in the first-listed set is not the one served.
-         expect(second.warnings).not.toContain(DUPLICATE);
-         const main = pkg.getWorkflow("analyst", "full", "main")!;
-         expect(main.warnings).toEqual([]);
-         expect(pkg.getWorkflow("analyst")!.warnings).toContain(DUPLICATE);
-         expect(pkg.getWorkflow("analyst")!.warnings.join("\n")).toContain(
+         expect(second.warnings.map((w) => w.message).join("\n")).toContain(
             "a..b.py",
          );
+         // This reply serves the set's own copy of the name, so the copy in the first-listed set is not the one served.
+         expect(second.warnings.map((w) => w.message)).not.toContain(DUPLICATE);
+         const main = pkg.getWorkflow("analyst", "full", "main")!;
+         expect(main.warnings).toEqual([]);
+         const whole = pkg.getWorkflow("analyst")!.warnings;
+         expect(whole.map((w) => w.message)).toContain(DUPLICATE);
+         expect(whole.map((w) => w.message).join("\n")).toContain("a..b.py");
       });
 
       it("is not served for a name no set of the workflow has", async () => {
@@ -1808,6 +1820,77 @@ describe("package workflows", () => {
          });
       });
 
+      describe("a refused workflow's log line", () => {
+         const refusalLogs = (warn: { mock: { calls: unknown[][] } }) =>
+            warn.mock.calls.filter(
+               (call) => call[0] === "Workflow is not served",
+            );
+
+         it("is one warn per refused workflow per load, with the package, the workflow and the code", async () => {
+            manifest({
+               workflows: {
+                  analyst: analyst(),
+                  refused: { surprise: 1 },
+                  "also-refused": { description: 1 },
+               },
+            });
+            const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+            try {
+               await load();
+               const logs = refusalLogs(warn);
+               expect(logs).toHaveLength(2);
+               expect(
+                  logs.map(([, fields]) => {
+                     const { packageName, workflow, code } = fields as Record<
+                        string,
+                        string
+                     >;
+                     return { packageName, workflow, code };
+                  }),
+               ).toEqual([
+                  {
+                     packageName: "pkg",
+                     workflow: "refused",
+                     code: "workflow-not-served",
+                  },
+                  {
+                     packageName: "pkg",
+                     workflow: "also-refused",
+                     code: "workflow-not-served",
+                  },
+               ]);
+            } finally {
+               warn.mockRestore();
+            }
+         });
+
+         it("is not written for a dry run, which adopts the same walk", async () => {
+            manifest({
+               workflows: { analyst: analyst(), refused: { surprise: 1 } },
+            });
+            const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+            try {
+               await Package.create("env", "pkg", dir, malloyConfig, false, {
+                  dryRun: true,
+               });
+               expect(refusalLogs(warn)).toEqual([]);
+            } finally {
+               warn.mockRestore();
+            }
+         });
+
+         it("is not written for a package whose workflows are all served", async () => {
+            manifest({ workflows: { analyst: analyst() } });
+            const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+            try {
+               await load();
+               expect(refusalLogs(warn)).toEqual([]);
+            } finally {
+               warn.mockRestore();
+            }
+         });
+      });
+
       describe("a package whose skill sets cannot be read", () => {
          // A dot directory, which the package's own file listing skips, so only the walk reads it.
          const HIDDEN = ".sets/main";
@@ -1883,7 +1966,10 @@ describe("package workflows", () => {
                expect(undeclared.isError).toBeFalsy();
                const answer = JSON.parse(undeclared.content[0]!.resource!.text);
                expect(answer.workflow).toBeNull();
-               expect(answer.message).toContain('No workflow named "nope"');
+               expect(answer.reason).toBe("WORKFLOW_NOT_DECLARED");
+               expect(answer.message).toContain(
+                  "No workflow named 'nope' is declared in package 'pkg'",
+               );
                // An empty list would read as a package with no workflows.
                expect(answer).not.toHaveProperty("availableWorkflows");
                expect(answer.message).toContain("EACCES");
@@ -1898,7 +1984,12 @@ describe("package workflows", () => {
                   const controller = new SkillController(storeFor(pkg));
                   await expect(
                      controller.getWorkflow("env", "pkg", "refused"),
-                  ).rejects.toBeInstanceOf(WorkflowNotFoundError);
+                  ).rejects.toMatchObject({
+                     reason: "WORKFLOW_NOT_SERVED",
+                     message: expect.stringContaining(
+                        "Workflow 'refused' is not served: ",
+                     ),
+                  });
                   await expect(
                      controller.getWorkflow("env", "pkg", "analyst"),
                   ).rejects.toBeInstanceOf(WorkflowsUnavailableError);
@@ -1985,9 +2076,9 @@ describe("package workflows", () => {
                         (f) => f.relative_filepath,
                      ),
                   ).toEqual(["readable/SKILL.md"]);
-                  expect(workflow.warnings.join("\n")).toContain(
-                     "cannot be read (EACCES",
-                  );
+                  expect(
+                     workflow.warnings.map((w) => w.message).join("\n"),
+                  ).toContain("cannot be read (EACCES");
                   expect(pkg.listWorkflows().map((w) => w.name)).toEqual([
                      "analyst",
                   ]);
@@ -2097,7 +2188,8 @@ describe("package workflows", () => {
             expect(served.has("s062")).toBe(true);
             expect(served.has("s063")).toBe(false);
             expect(workflow.warnings).toHaveLength(1);
-            expect(workflow.warnings[0]).toContain(
+            expect(workflow.warnings[0]!.code).toBe(SKILL_FINDING);
+            expect(workflow.warnings[0]!.message).toContain(
                `more than ${SKILLS_PER_SET_MAX} skill directories`,
             );
          });

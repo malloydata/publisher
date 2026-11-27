@@ -10,6 +10,10 @@ import path from "path";
 import { FCJ_MAX_CHARS } from "../../constants";
 import * as revision from "../package_revision";
 import {
+   boundedDeclaration,
+   MANIFEST_WORKFLOWS_MAX_BYTES,
+} from "../package_revision";
+import {
    advertisedSkills,
    resolveSkills,
    workflowSkillSet,
@@ -23,6 +27,10 @@ import {
    WORKFLOW_INSTRUCTIONS_MAX_BYTES,
    workflowFileServed,
    workflowsToWire,
+   SKILL_FILE_SKIPPED,
+   SKILL_FINDING,
+   SKILL_SHADOWED,
+   WORKFLOW_NOT_SERVED,
    type PackageWorkflows,
 } from "./package_workflows";
 
@@ -48,6 +56,9 @@ const INSTRUCTIONS = "workflows/analyst/instructions.md";
 type FullFile = { relative_filepath: string; file_contents: string };
 const sha = (data: string | Buffer) =>
    createHash("sha256").update(data).digest("hex");
+/** The text of each warning, which most tests read as prose. */
+const texts = (warnings: Array<{ message: string }>) =>
+   warnings.map((w) => w.message);
 
 describe("readPackageWorkflows", () => {
    let pkg: string;
@@ -95,20 +106,26 @@ describe("readPackageWorkflows", () => {
 
    const read = (workflows: unknown) => readPackageWorkflows(pkg, workflows);
 
-   /** Asserts the workflow is refused with one warning in the shape Credible parses; returns that warning. */
+   /** Asserts the workflow is refused with one `workflow-not-served` warning; returns its text. */
    const refused = (workflows: unknown, name = "analyst") => {
       const result = read(workflows);
       expect(result.workflows.has(name)).toBe(false);
       expect(result.warnings).toHaveLength(1);
+      const [warning] = result.warnings;
+      expect(warning).toMatchObject({
+         code: WORKFLOW_NOT_SERVED,
+         subject: name,
+         severity: "warn",
+      });
       expect(
-         result.warnings[0]!.startsWith(`Workflow '${name}' is not served: `),
+         warning!.message.startsWith(`Workflow '${name}' is not served: `),
       ).toBe(true);
       expect(
-         result.warnings[0]!.endsWith(
+         warning!.message.endsWith(
             `. Fix: correct the 'workflows.${name}' entry in publisher.json and the files it names.`,
          ),
       ).toBe(true);
-      return result.warnings[0]!;
+      return warning!.message;
    };
 
    /** The files of one set of a served workflow, as the wire carries them. */
@@ -123,7 +140,7 @@ describe("readPackageWorkflows", () => {
    describe("a workflow", () => {
       it("resolves to the contract shape", () => {
          const result = read({ analyst: analyst() });
-         expect(result.warnings).toEqual([]);
+         expect(texts(result.warnings)).toEqual([]);
          const workflow = result.workflows.get("analyst")!;
          expect(workflow).toMatchObject({
             name: "analyst",
@@ -195,7 +212,7 @@ describe("readPackageWorkflows", () => {
          const result = read({
             analyst: analyst({ "x-owner": "data team", "x-note": 1 }),
          });
-         expect(result.warnings).toEqual([]);
+         expect(texts(result.warnings)).toEqual([]);
          expect(result.workflows.has("analyst")).toBe(true);
       });
 
@@ -206,7 +223,7 @@ describe("readPackageWorkflows", () => {
             brief: { instructions: INSTRUCTIONS },
             skills: { skillSets: [MAIN] },
          });
-         expect(result.warnings).toEqual([]);
+         expect(texts(result.warnings)).toEqual([]);
          const brief = result.workflows.get("brief")!;
          expect(brief.sets).toEqual([]);
          expect(brief.description).toBeUndefined();
@@ -226,8 +243,8 @@ describe("readPackageWorkflows", () => {
          const good = analyst();
          const result = read({ analyst: good, "Bad Name": good, other: good });
          expect([...result.workflows.keys()]).toEqual(["analyst", "other"]);
-         expect(result.warnings).toHaveLength(1);
-         expect(result.warnings[0]).toContain(
+         expect(texts(result.warnings)).toHaveLength(1);
+         expect(texts(result.warnings)[0]).toContain(
             "Workflow 'Bad Name' is not served",
          );
       });
@@ -250,9 +267,9 @@ describe("readPackageWorkflows", () => {
          (value) => {
             const result = read(value);
             expect(result.workflows.size).toBe(0);
-            expect(result.warnings).toHaveLength(1);
-            expect(result.warnings[0]).toContain("must be an object");
-            expect(result.warnings[0]).toContain("Fix:");
+            expect(texts(result.warnings)).toHaveLength(1);
+            expect(texts(result.warnings)[0]).toContain("must be an object");
+            expect(texts(result.warnings)[0]).toContain("Fix:");
          },
       );
 
@@ -267,8 +284,8 @@ describe("readPackageWorkflows", () => {
       ])("refuses a workflow named %p", (name) => {
          const result = read({ [name]: analyst() });
          expect(result.workflows.size).toBe(0);
-         expect(result.warnings).toHaveLength(1);
-         expect(result.warnings[0]).toContain(
+         expect(texts(result.warnings)).toHaveLength(1);
+         expect(texts(result.warnings)[0]).toContain(
             "its name must be 1-64 characters of lowercase letters, digits and single hyphens",
          );
       });
@@ -346,7 +363,7 @@ describe("readPackageWorkflows", () => {
          for (const raw of hostile) {
             const result = read(raw);
             expect(result.workflows.size).toBe(0);
-            expect(result.warnings.length).toBeGreaterThan(0);
+            expect(texts(result.warnings).length).toBeGreaterThan(0);
          }
       });
    });
@@ -413,7 +430,9 @@ describe("readPackageWorkflows", () => {
          write(INSTRUCTIONS, "x".repeat(WORKFLOW_INSTRUCTIONS_MAX_BYTES));
          expect(read({ analyst: entry }).workflows.size).toBe(1);
          write(INSTRUCTIONS, "x".repeat(WORKFLOW_INSTRUCTIONS_MAX_BYTES + 1));
-         expect(refused({ analyst: entry })).toContain("byte cap");
+         expect(refused({ analyst: entry })).toContain(
+            `is ${WORKFLOW_INSTRUCTIONS_MAX_BYTES + 1} bytes, over the 16 KiB cap`,
+         );
       });
 
       it("refuses instructions beside a nested publisher.json", () => {
@@ -500,7 +519,7 @@ describe("readPackageWorkflows", () => {
                // workflow's own real/ inside the package and is served.
                const result = read(workflows);
                expect(result.workflows.has("analyst")).toBe(true);
-               answers.push(JSON.stringify(result.warnings));
+               answers.push(JSON.stringify(texts(result.warnings)));
             }
          }
          expect(answers[0]).toBe(answers[1]);
@@ -546,7 +565,7 @@ describe("readPackageWorkflows", () => {
          expect(
             viewOf(result).skills.map((s) => s.relative_filepath),
          ).not.toContainEqual(expect.stringContaining("linked"));
-         expect(result.warnings.join("\n")).toContain(
+         expect(texts(result.warnings).join("\n")).toContain(
             `Skill set '${MAIN}' skill finding: Package skill '${MAIN}/linked/SKILL.md' resolves outside the package through a link, so it is not served.`,
          );
       });
@@ -596,7 +615,7 @@ describe("readPackageWorkflows", () => {
             expect(
                viewOf(result).skills.map((s) => s.relative_filepath),
             ).not.toContainEqual(expect.stringContaining("bad/"));
-            expect(result.warnings).toEqual([
+            expect(texts(result.warnings)).toEqual([
                `Skill set '${MAIN}' skill finding: Package skill '${MAIN}/bad' is not served: '${MAIN}/bad/${inside}' is a publisher.json, which would make its directory a second package root; remove it or rename it.`,
             ]);
          },
@@ -632,7 +651,7 @@ describe("readPackageWorkflows", () => {
          );
          const result = read({ analyst: entry });
          expect(result.workflows.has("analyst")).toBe(true);
-         expect(result.warnings).toEqual([
+         expect(texts(result.warnings)).toEqual([
             `Skill set '${MAIN}' skill finding: Package skill '${MAIN}/linked' is not served: '${MAIN}/linked/publisher.json' is a publisher.json, which would make its directory a second package root; remove it or rename it.`,
          ]);
       });
@@ -642,7 +661,7 @@ describe("readPackageWorkflows", () => {
          write(`${CONVENTIONS}/templates/publisher.json`, "{}");
          const result = read({ analyst: entry });
          expect(result.workflows.has("analyst")).toBe(true);
-         expect(result.warnings.join("\n")).toContain(
+         expect(texts(result.warnings).join("\n")).toContain(
             `${CONVENTIONS}/templates/publisher.json`,
          );
       });
@@ -704,7 +723,7 @@ describe("readPackageWorkflows", () => {
             one: { skillSets: ["a/main"] },
             two: { skillSets: ["b/main"] },
          });
-         expect(result.warnings).toEqual([]);
+         expect(texts(result.warnings)).toEqual([]);
          expect([...result.sets.keys()]).toEqual(["a/main", "b/main"]);
       });
 
@@ -718,7 +737,7 @@ describe("readPackageWorkflows", () => {
          });
          expect([...result.workflows.keys()]).toEqual(["one", "two"]);
          expect(
-            result.warnings.filter((w) =>
+            texts(result.warnings).filter((w) =>
                w.startsWith(`Skill set '${MAIN}' skill finding:`),
             ),
          ).toHaveLength(1);
@@ -816,7 +835,7 @@ describe("readPackageWorkflows", () => {
          expect(result.workflows.size).toBe(0);
          expect(result.sets.size).toBe(0);
          expect(result.paths).toEqual([]);
-         expect(result.warnings).toEqual([]);
+         expect(texts(result.warnings)).toEqual([]);
          expect(result.skillsDirNotRead).toBe(false);
       };
 
@@ -933,9 +952,11 @@ describe("readPackageWorkflows", () => {
                expect(
                   result.sets.get(MAIN)!.skills.map((s) => s.dirName),
                ).toEqual(["readable"]);
-               expect(result.warnings).toHaveLength(1);
-               expect(result.warnings[0]).toContain("is not served");
-               expect(result.warnings[0]).toContain("cannot be read (EACCES");
+               expect(texts(result.warnings)).toHaveLength(1);
+               expect(texts(result.warnings)[0]).toContain("is not served");
+               expect(texts(result.warnings)[0]).toContain(
+                  "cannot be read (EACCES",
+               );
             } finally {
                fs.chmodSync(file, 0o644);
             }
@@ -1033,8 +1054,8 @@ describe("readPackageWorkflows", () => {
                analyst: { instructions: "workflows/analyst/a.md" },
             });
             expect(result.unavailable).toBeUndefined();
-            expect(result.warnings).toHaveLength(1);
-            expect(result.warnings[0]).toContain("a.md");
+            expect(texts(result.warnings)).toHaveLength(1);
+            expect(texts(result.warnings)[0]).toContain("a.md");
          },
       );
 
@@ -1046,38 +1067,48 @@ describe("readPackageWorkflows", () => {
             },
          });
          expect(result.unavailable).toBeUndefined();
-         expect(result.warnings).toHaveLength(1);
+         expect(texts(result.warnings)).toHaveLength(1);
       });
 
-      it("refuses a workflow, never the whole walk, when its set's folder fails to be examined with a loop", () => {
-         const entry = analyst();
-         const real = fs.statSync;
-         const looping = spyOn(fs, "statSync").mockImplementation(((
-            target: fs.PathLike,
-            ...rest: unknown[]
-         ) => {
-            if (String(target).endsWith(MAIN)) {
-               throw Object.assign(new Error("ELOOP: too many links"), {
-                  code: "ELOOP",
-               });
+      it.each([
+         ["ELOOP", "is part of a link loop"],
+         ["ENAMETOOLONG", "has a name that is too long"],
+      ])(
+         "refuses a workflow, never the whole walk, naming the cause, when its set's folder fails to be examined with %s",
+         (code, cause) => {
+            const entry = analyst();
+            const real = fs.statSync;
+            const failing = spyOn(fs, "statSync").mockImplementation(((
+               target: fs.PathLike,
+               ...rest: unknown[]
+            ) => {
+               if (String(target).endsWith(MAIN)) {
+                  throw Object.assign(new Error(`${code}: injected`), { code });
+               }
+               return (real as (...a: unknown[]) => unknown)(target, ...rest);
+            }) as typeof fs.statSync);
+            try {
+               const result = read({ analyst: entry });
+               expect(result.unavailable).toBeUndefined();
+               expect(texts(result.warnings)).toHaveLength(1);
+               expect(texts(result.warnings)[0]).toContain(
+                  `skill set directory '${MAIN}' ${cause}`,
+               );
+               expect(texts(result.warnings)[0]).not.toContain(
+                  "does not exist",
+               );
+            } finally {
+               failing.mockRestore();
             }
-            return (real as (...a: unknown[]) => unknown)(target, ...rest);
-         }) as typeof fs.statSync);
-         try {
-            const result = read({ analyst: entry });
-            expect(result.unavailable).toBeUndefined();
-            expect(result.warnings).toHaveLength(1);
-         } finally {
-            looping.mockRestore();
-         }
-      });
+         },
+      );
 
       it("is not unavailable for what the author wrote wrong: that refuses the workflow with a warning", () => {
          analyst();
          const result = read({ broken: { skillSets: ["nowhere"] } });
          expect(result.unavailable).toBeUndefined();
-         expect(result.warnings).toHaveLength(1);
-         expect(result.warnings[0]).toContain("does not exist");
+         expect(texts(result.warnings)).toHaveLength(1);
+         expect(texts(result.warnings)[0]).toContain("does not exist");
       });
    });
 
@@ -1095,8 +1126,8 @@ describe("readPackageWorkflows", () => {
          expect([...result.workflows.keys()]).toEqual(["fine"]);
          expect([...result.sets.keys()]).toEqual([MAIN]);
          expect(result.paths.some((p) => p.startsWith(THIRD))).toBe(false);
-         expect(result.warnings).toHaveLength(1);
-         expect(result.warnings[0]).toStartWith(
+         expect(texts(result.warnings)).toHaveLength(1);
+         expect(texts(result.warnings)[0]).toStartWith(
             "Workflow 'broken' is not served: it sets 'not-a-key'",
          );
       });
@@ -1112,7 +1143,12 @@ describe("readPackageWorkflows", () => {
          });
          const workflow = result.workflows.get("analyst")!;
          expect(workflow.shadowing).toEqual([
-            `Workflow 'analyst' lists skill 'conventions' in both '${MAIN}' and '${SECOND}'; the copy in '${MAIN}', listed first, is the one served.`,
+            {
+               code: SKILL_SHADOWED,
+               subject: "analyst",
+               severity: "warn",
+               message: `Workflow 'analyst' lists skill 'conventions' in both '${MAIN}' and '${SECOND}'; the copy in '${MAIN}', listed first, is the one served.`,
+            },
          ]);
          expect(result.warnings).toEqual(workflow.shadowing);
          expect(
@@ -1147,10 +1183,10 @@ describe("readPackageWorkflows", () => {
          fs.mkdirSync(path.join(pkg, MAIN, "empty"));
          const result = read({ analyst: entry });
          expect(result.workflows.has("analyst")).toBe(true);
-         expect(result.warnings).toHaveLength(1);
+         expect(texts(result.warnings)).toHaveLength(1);
          expect(
-            result.warnings[0]!.startsWith(
-               `Skill set '${MAIN}' skill finding: Package skill '${MAIN}/empty/SKILL.md'`,
+            texts(result.warnings)[0]!.startsWith(
+               `Skill set '${MAIN}' skill finding: Package skill '${MAIN}/empty' has no SKILL.md, so it is not served. Fix: add ${MAIN}/empty/SKILL.md, or remove the directory.`,
             ),
          ).toBe(true);
       });
@@ -1162,8 +1198,8 @@ describe("readPackageWorkflows", () => {
          expect(
             viewOf(result).skills.map((s) => s.relative_filepath),
          ).toContain("quiet/SKILL.md");
-         expect(result.warnings.join("\n")).toContain("no description");
-         expect(result.warnings.join("\n")).toContain("'quiet'");
+         expect(texts(result.warnings).join("\n")).toContain("no description");
+         expect(texts(result.warnings).join("\n")).toContain("'quiet'");
       });
 
       // chmod revokes nothing on Windows or for root.
@@ -1177,7 +1213,9 @@ describe("readPackageWorkflows", () => {
             try {
                const result = read({ analyst: analyst() });
                expect(result.workflows.has("analyst")).toBe(true);
-               expect(result.warnings.join("\n")).toContain("cannot be listed");
+               expect(texts(result.warnings).join("\n")).toContain(
+                  "cannot be listed",
+               );
             } finally {
                fs.chmodSync(sealed, 0o755);
             }
@@ -1194,7 +1232,7 @@ describe("readPackageWorkflows", () => {
          expect(
             viewOf(result).skills.map((s) => s.relative_filepath),
          ).not.toContain("other-dir/SKILL.md");
-         expect(result.warnings.join("\n")).toContain("'elsewhere'");
+         expect(texts(result.warnings).join("\n")).toContain("'elsewhere'");
       });
 
       it("serves a set that holds no skills, with a finding", () => {
@@ -1204,7 +1242,7 @@ describe("readPackageWorkflows", () => {
             analyst: { instructions: INSTRUCTIONS, skillSets: [MAIN] },
          });
          expect(result.workflows.has("analyst")).toBe(true);
-         expect(result.warnings).toEqual([
+         expect(texts(result.warnings)).toEqual([
             `Skill set '${MAIN}' skill finding: the skill set holds no skills. Fix: add <skill>/SKILL.md under it or remove the entry.`,
          ]);
       });
@@ -1236,7 +1274,7 @@ describe("readPackageWorkflows", () => {
             const result = read({ analyst: analyst() });
             expect(inlineOf(result)).not.toContain(`conventions/${rel}`);
             expect(assetsOf(result)).not.toContain(`conventions/${rel}`);
-            expect(result.warnings).toContain(
+            expect(texts(result.warnings)).toContain(
                `Skill set '${MAIN}' skill finding: Package skill file '${CONVENTIONS}/${rel}' ${why}${why.endsWith("outside") ? " [A-Za-z0-9_][A-Za-z0-9._-]*" : ""}, so it is not served.`,
             );
          },
@@ -1251,7 +1289,7 @@ describe("readPackageWorkflows", () => {
             expect(
                inlineOf(result).filter((f) => /reference\/dup\.md$/i.test(f)),
             ).toHaveLength(1);
-            expect(result.warnings.join("\n")).toContain(
+            expect(texts(result.warnings).join("\n")).toContain(
                "its name differs from another file's only by case, so it is not served",
             );
          },
@@ -1269,7 +1307,9 @@ describe("readPackageWorkflows", () => {
             path.join(pkg, CONVENTIONS, "reference"),
          );
          const result = read({ analyst: entry });
-         const about = result.warnings.filter((w) => w.includes("big.md"));
+         const about = texts(result.warnings).filter((w) =>
+            w.includes("big.md"),
+         );
          expect(about).toHaveLength(1);
          expect(inlineOf(result)).not.toContain("conventions/reference/big.md");
       });
@@ -1285,12 +1325,14 @@ describe("readPackageWorkflows", () => {
                `#\n${"y".repeat(100 * 1024)}`,
             );
          }
-         const warnings = read({ analyst: analyst() }).warnings.join("\n");
+         const warnings = texts(read({ analyst: analyst() }).warnings).join(
+            "\n",
+         );
          expect(warnings).toMatch(
-            /references\/huge\.md' is \d+ bytes, over the 262144 byte per-file cap, so it is listed instead of inlined/,
+            /references\/huge\.md' is \d+ bytes, over the 256 KiB per-file cap, so it is listed instead of inlined/,
          );
          expect(warnings).toContain(
-            "would take the skill set's Markdown over the 262144 byte cap, so it is listed instead of inlined",
+            "would take the skill set's Markdown over the 256 KiB cap, so it is listed instead of inlined",
          );
       });
    });
@@ -1313,7 +1355,7 @@ describe("readPackageWorkflows", () => {
       it("is warned of once, for SKILL.md, an inline reference and a listed text file, in a set the default workflow lists", () => {
          writeLong();
          const result = read({ default: analyst() });
-         const findings = result.sets.get(MAIN)!.findings;
+         const findings = texts(result.sets.get(MAIN)!.findings);
          for (const file of ["references/long.md", "assets/long.txt"]) {
             expect(
                findings.filter((f) => f.includes(warning(file))),
@@ -1338,9 +1380,9 @@ describe("readPackageWorkflows", () => {
             default: { skillSets: [MAIN] },
          });
          expect(
-            result.sets
-               .get(MAIN)!
-               .findings.filter((f) => f.includes(warning("assets/long.txt"))),
+            texts(result.sets.get(MAIN)!.findings).filter((f) =>
+               f.includes(warning("assets/long.txt")),
+            ),
          ).toHaveLength(1);
       });
 
@@ -1348,7 +1390,7 @@ describe("readPackageWorkflows", () => {
          writeLong();
          const result = read({ analyst: analyst() });
          expect(result.workflows.has("analyst")).toBe(true);
-         expect(result.warnings.join("\n")).not.toContain("get_skill");
+         expect(texts(result.warnings).join("\n")).not.toContain("get_skill");
       });
    });
 
@@ -1674,6 +1716,195 @@ describe("readPackageWorkflows", () => {
       );
    });
 
+   describe("warning codes and subjects", () => {
+      const BIG = "x".repeat(257 * 1024);
+      /** The one finding of the default workflow's set that mentions `needle`. */
+      const findingAbout = (needle: string) => {
+         const found = read({ default: analyst() })
+            .sets.get(MAIN)!
+            .findings.filter((f) => f.message.includes(needle));
+         expect(found).toHaveLength(1);
+         return found[0]!;
+      };
+
+      it.each([
+         [
+            "a skill with no description",
+            SKILL_FINDING,
+            "no description",
+            () =>
+               write(`${MAIN}/quiet/SKILL.md`, "---\nname: quiet\n---\n\nb\n"),
+         ],
+         [
+            "a directory with no SKILL.md",
+            SKILL_FINDING,
+            "has no SKILL.md",
+            () =>
+               fs.mkdirSync(path.join(pkg, MAIN, "empty"), { recursive: true }),
+         ],
+         [
+            "a Markdown file listed in place of inlined",
+            SKILL_FINDING,
+            "so it is listed instead of inlined",
+            () => write(`${CONVENTIONS}/docs/big.md`, BIG),
+         ],
+         [
+            "a skill set aside for a publisher.json inside it",
+            SKILL_FINDING,
+            "is not served: ",
+            () => {
+               write(`${MAIN}/aaa/publisher.json`, "{}");
+               write(
+                  `${MAIN}/aaa/SKILL.md`,
+                  "---\nname: aaa\ndescription: d\n---\n\nb\n",
+               );
+            },
+         ],
+         [
+            "a reference named like a file the host reads with authority",
+            SKILL_FILE_SKIPPED,
+            "references/AGENTS.md",
+            () => write(`${CONVENTIONS}/references/AGENTS.md`, "x"),
+         ],
+         [
+            "a skipped asset",
+            SKILL_FILE_SKIPPED,
+            "scripts/publisher.json",
+            () => write(`${CONVENTIONS}/scripts/publisher.json`, "{}"),
+         ],
+         [
+            "a file over the reply budget of get_skill",
+            SKILL_FILE_SKIPPED,
+            "reply budget",
+            () =>
+               write(
+                  `${CONVENTIONS}/references/long.md`,
+                  "x".repeat(FCJ_MAX_CHARS + 1),
+               ),
+         ],
+      ])("%s is %s of its set", (_label, code, needle, setup) => {
+         setup();
+         expect(findingAbout(needle)).toMatchObject({
+            code,
+            subject: MAIN,
+            severity: "warn",
+         });
+         expect(findingAbout(needle).message).toStartWith(
+            `Skill set '${MAIN}' skill finding: `,
+         );
+      });
+
+      it("makes a set with no skills, and one past the skill cap, findings of the set", () => {
+         write(INSTRUCTIONS, "i");
+         fs.mkdirSync(path.join(pkg, SECOND), { recursive: true });
+         for (let i = 0; i <= SKILLS_PER_SET_MAX; i++) {
+            writeSkill(MAIN, `s${String(i).padStart(3, "0")}`);
+         }
+         const result = read({
+            analyst: { instructions: INSTRUCTIONS, skillSets: [MAIN, SECOND] },
+         });
+         expect(result.sets.get(SECOND)!.findings).toEqual([
+            {
+               code: SKILL_FINDING,
+               subject: SECOND,
+               severity: "warn",
+               message: `Skill set '${SECOND}' skill finding: the skill set holds no skills. Fix: add <skill>/SKILL.md under it or remove the entry.`,
+            },
+         ]);
+         expect(result.sets.get(MAIN)!.findings).toMatchObject([
+            { code: SKILL_FINDING, subject: MAIN },
+         ]);
+         expect(result.sets.get(MAIN)!.findings[0]!.message).toContain(
+            `holds more than ${SKILLS_PER_SET_MAX} skill directories`,
+         );
+      });
+
+      it("counts the skipped assets past the named ones as skipped files", () => {
+         for (let i = 0; i < 21; i++) {
+            write(`${CONVENTIONS}/scripts/m${i}.malloy`, "x");
+         }
+         const counted = findingAbout("further assets are not served");
+         expect(counted).toMatchObject({
+            code: SKILL_FILE_SKIPPED,
+            subject: MAIN,
+         });
+      });
+
+      it("keeps each set's findings on the workflow that reads it whole, beside its shadowing findings", () => {
+         writeSkill(SECOND, "conventions", "second copy");
+         write(`${SECOND}/conventions/scripts/CLAUDE.md`, "x");
+         const result = read({
+            analyst: { ...analyst(), skillSets: [MAIN, SECOND] },
+         });
+         const workflow = result.workflows.get("analyst")!;
+         expect(workflow.shadowing.map((w) => [w.code, w.subject])).toEqual([
+            [SKILL_SHADOWED, "analyst"],
+         ]);
+         expect(result.warnings.map((w) => [w.code, w.subject]).sort()).toEqual(
+            [
+               [SKILL_SHADOWED, "analyst"],
+               [SKILL_FILE_SKIPPED, SECOND],
+            ].sort(),
+         );
+      });
+   });
+
+   describe("a folder that is a skill, not a set", () => {
+      const SKILL_DIR = "sets/margin";
+
+      const listedAsSet = (setPath: string) => {
+         write(
+            `${setPath}/SKILL.md`,
+            "---\nname: margin\ndescription: d\n---\n",
+         );
+         write(`${setPath}/references/a.md`, "# A\n");
+         write(`${setPath}/scripts/run.py`, "print()\n");
+         write(INSTRUCTIONS, "i");
+         return read({
+            analyst: { instructions: INSTRUCTIONS, skillSets: [setPath] },
+         });
+      };
+
+      it("says it is a skill and names its parent folder, with no finding for each of its folders", () => {
+         const result = listedAsSet(SKILL_DIR);
+         expect(result.workflows.has("analyst")).toBe(true);
+         expect(result.sets.get(SKILL_DIR)!.skills).toEqual([]);
+         expect(result.sets.get(SKILL_DIR)!.findings).toEqual([
+            {
+               code: SKILL_FINDING,
+               subject: SKILL_DIR,
+               severity: "warn",
+               message: `Skill set '${SKILL_DIR}' skill finding: this is a skill, not a skill set (it holds a SKILL.md), so none of it is served. Fix: list its parent folder 'sets'.`,
+            },
+         ]);
+      });
+
+      it("asks for a folder of its own when the skill sits at the package root's top level", () => {
+         const result = listedAsSet("margin");
+         expect(result.sets.get("margin")!.findings[0]!.message).toContain(
+            "Fix: move it into a folder and list that folder.",
+         );
+      });
+   });
+
+   describe("a workflows value too large to read", () => {
+      it("says it is too large, not that it must be an object", () => {
+         const result = read(
+            boundedDeclaration({
+               big: "x".repeat(MANIFEST_WORKFLOWS_MAX_BYTES),
+            }).value,
+         );
+         expect(result.workflows.size).toBe(0);
+         expect(result.warnings).toEqual([
+            {
+               severity: "warn",
+               message:
+                  "Package manifest 'workflows' is too deeply nested or over 1 MiB, so no workflow is served. Fix: shorten it; a real declaration is a few KiB.",
+            },
+         ]);
+      });
+   });
+
    describe("assets", () => {
       const ASSETS = `${CONVENTIONS}/assets`;
       const MAX = 1024 * 1024;
@@ -1681,16 +1912,18 @@ describe("readPackageWorkflows", () => {
       const listed = (result: PackageWorkflows) =>
          (viewOf(result).assets ?? []).map((a) => a.relative_filepath);
       const warned = (result: PackageWorkflows, ...needles: string[]) =>
-         result.warnings.some((w) => needles.every((n) => w.includes(n)));
+         texts(result.warnings).some((w) =>
+            needles.every((n) => w.includes(n)),
+         );
       /** A strict finding sets the skill aside with a finding the service matches on, and serves the workflow. */
       const setAside = (needle: string) => {
          const result = read({ analyst: analyst() });
          expect(result.workflows.has("analyst")).toBe(true);
          expect(result.workflows.get("analyst")!.sets[0]!.skills).toEqual([]);
-         expect(result.warnings.join("\n")).toContain(
+         expect(texts(result.warnings).join("\n")).toContain(
             `Skill set '${MAIN}' skill finding: Package skill '${CONVENTIONS}' is not served: `,
          );
-         expect(result.warnings.join("\n")).toContain(needle);
+         expect(texts(result.warnings).join("\n")).toContain(needle);
       };
 
       it("lists text assets with their size and sha, and ignores dotfiles", () => {
@@ -1700,7 +1933,7 @@ describe("readPackageWorkflows", () => {
          write(`${ASSETS}/.DS_Store`, "ignored");
          const result = read({ analyst: analyst() });
 
-         expect(result.warnings).toEqual([]);
+         expect(texts(result.warnings)).toEqual([]);
          expect(viewOf(result).assets).toEqual([
             {
                relative_filepath: `${LISTED}/css/app.css`,
@@ -1728,7 +1961,7 @@ describe("readPackageWorkflows", () => {
       it("serves a set with no assets, or an empty assets directory, with no assets key", () => {
          fs.mkdirSync(path.join(pkg, ASSETS), { recursive: true });
          const result = read({ analyst: analyst() });
-         expect(result.warnings).toEqual([]);
+         expect(texts(result.warnings)).toEqual([]);
          expect("assets" in viewOf(result)).toBe(false);
          // Only inline Markdown is covered: no asset was listed.
          expect(
@@ -1741,7 +1974,9 @@ describe("readPackageWorkflows", () => {
          write(`${ASSETS}/exact.txt`, Buffer.alloc(MAX, "a"));
          const result = read({ analyst: analyst() });
          expect(listed(result)).toEqual([`${LISTED}/under.txt`]);
-         expect(warned(result, "exact.txt", `${MAX} byte file cap`)).toBe(true);
+         expect(
+            warned(result, "exact.txt", "at or over the 1 MiB file cap"),
+         ).toBe(true);
       });
 
       describe("skipped, with the skill still served", () => {
@@ -1752,7 +1987,7 @@ describe("readPackageWorkflows", () => {
             write(`${ASSETS}/nul.txt`, nul);
             write(`${ASSETS}/ok.txt`, "fine");
             const result = read({ analyst: analyst() });
-            expect(result.warnings).toEqual([]);
+            expect(texts(result.warnings)).toEqual([]);
             expect(viewOf(result).assets).toEqual([
                {
                   relative_filepath: `${LISTED}/logo.png`,
@@ -1931,7 +2166,7 @@ describe("readPackageWorkflows", () => {
             for (let i = 0; i < 30; i++) write(`${ASSETS}/m${i}.malloy`, "x");
             const result = read({ analyst: analyst() });
             expect(
-               result.warnings.filter((w) => w.includes(".malloy")),
+               texts(result.warnings).filter((w) => w.includes(".malloy")),
             ).toHaveLength(20);
             expect(warned(result, "10 further assets")).toBe(true);
          });
@@ -2054,11 +2289,13 @@ describe("readPackageWorkflows", () => {
                expect(
                   viewOf(result).skills.map((f) => f.relative_filepath),
                ).toContain("zzz/SKILL.md");
-               const findings = result.sets.get(MAIN)!.findings.join("\n");
+               const findings = texts(result.sets.get(MAIN)!.findings).join(
+                  "\n",
+               );
                expect(findings).toContain(
                   `Package skill '${MAIN}/aaa' is not served`,
                );
-               expect(findings).not.toContain("over the 262144 byte cap");
+               expect(findings).not.toContain("over the 256 KiB cap");
             });
 
             it("for a strict rule met while its files are read, which a later skill's reference would otherwise be listed over", () => {
@@ -2078,9 +2315,9 @@ describe("readPackageWorkflows", () => {
                expect(
                   (view.assets ?? []).map((a) => a.relative_filepath),
                ).not.toContain("zzz/reference/part.md");
-               expect(result.sets.get(MAIN)!.findings.join("\n")).toContain(
-                  `Package skill '${MAIN}/aaa' is not served`,
-               );
+               expect(
+                  texts(result.sets.get(MAIN)!.findings).join("\n"),
+               ).toContain(`Package skill '${MAIN}/aaa' is not served`);
             });
          });
       });
@@ -2114,10 +2351,10 @@ describe("readPackageWorkflows", () => {
             expect(files("sets/b")).toHaveLength(4);
             expect(files("sets/c")).toHaveLength(0);
             expect(
-               result.warnings.some(
+               texts(result.warnings).some(
                   (w) =>
                      w.startsWith("Skill set 'sets/c' skill finding:") &&
-                     w.includes("8388608 byte per-package cap"),
+                     w.includes("8 MiB per-package cap"),
                ),
             ).toBe(true);
             expect(result.sets.size).toBe(3);
@@ -2186,7 +2423,7 @@ describe("readPackageWorkflows", () => {
                (_, i) => `s${String(i).padStart(3, "0")}`,
             ),
          );
-         expect(result.warnings).toEqual([
+         expect(texts(result.warnings)).toEqual([
             `Skill set '${SET}' skill finding: the skill set holds more than ${SKILLS_PER_SET_MAX} skill directories, so the first ${SKILLS_PER_SET_MAX} by name are served and the rest are not read. Fix: move some to another skill set.`,
          ]);
       });
@@ -2197,7 +2434,7 @@ describe("readPackageWorkflows", () => {
          }
          const result = read({ default: { skillSets: [SET] } });
          expect(result.sets.get(SET)!.skills).toHaveLength(SKILLS_PER_SET_MAX);
-         expect(result.warnings).toEqual([]);
+         expect(texts(result.warnings)).toEqual([]);
       });
 
       it("names at most the findings cap of a set's skill findings, and counts the rest", () => {
@@ -2210,8 +2447,8 @@ describe("readPackageWorkflows", () => {
          }
          writeSkill(SET, "ok");
          const result = read({ default: { skillSets: [SET] } });
-         expect(result.warnings).toHaveLength(SKILL_FINDINGS_MAX + 1);
-         expect(result.warnings.at(-1)).toBe(
+         expect(texts(result.warnings)).toHaveLength(SKILL_FINDINGS_MAX + 1);
+         expect(texts(result.warnings).at(-1)).toBe(
             `Skill set '${SET}' skill finding: ${extra} further skill findings are not named, for the same kinds of reasons.`,
          );
          // A skill with a finding is still served.
@@ -2232,7 +2469,9 @@ describe("readPackageWorkflows", () => {
          const result = read({
             default: { skillSets: ["sets/a", "sets/b"] },
          });
-         expect(result.warnings).toHaveLength(2 * (SKILL_FINDINGS_MAX + 1));
+         expect(texts(result.warnings)).toHaveLength(
+            2 * (SKILL_FINDINGS_MAX + 1),
+         );
       });
    });
 

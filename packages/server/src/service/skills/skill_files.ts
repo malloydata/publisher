@@ -106,6 +106,13 @@ export function isNeverShipped(relative: string): boolean {
    );
 }
 
+/** A byte cap as an author reads it (`16 KiB`, `4 MiB`); in bytes only when it is neither. */
+export function capText(bytes: number): string {
+   if (bytes % (1024 * 1024) === 0) return `${bytes / (1024 * 1024)} MiB`;
+   if (bytes % 1024 === 0) return `${bytes / 1024} KiB`;
+   return `${bytes} bytes`;
+}
+
 /** A file is text when its bytes are strict UTF-8 without a NUL; anything else is binary and is never served as a body. */
 export function decodeText(bytes: Buffer): string | undefined {
    if (bytes.includes(0)) return undefined;
@@ -219,7 +226,7 @@ function readSkillignore(
    }
    if (stat.size > SKILLIGNORE_MAX_BYTES) {
       warnings.push(
-         `${SKILLIGNORE} is ${stat.size} bytes, over the ${SKILLIGNORE_MAX_BYTES} byte cap, so it is ignored`,
+         `${SKILLIGNORE} is ${stat.size} bytes, over the ${capText(SKILLIGNORE_MAX_BYTES)} cap, so it is ignored`,
       );
       return null;
    }

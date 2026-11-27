@@ -79,7 +79,7 @@ describe("a skill set read through a workflow", () => {
       return {
          result,
          skills: result.sets.get("skills")?.skills ?? [],
-         warnings: result.warnings,
+         warnings: result.warnings.map((w) => w.message),
       };
    };
 
@@ -254,7 +254,7 @@ describe("a skill set read through a workflow", () => {
       writeSkill("small", "---\nname: small\ndescription: d\n---\nok");
       const { skills, warnings } = readSet();
       expect(skills.map((s) => s.served.name)).toEqual(["small"]);
-      expect(warnings.join("\n")).toContain("byte cap");
+      expect(warnings.join("\n")).toContain("over the 256 KiB cap");
    });
 
    it("reads a skill's frontmatter, and serves its SKILL.md verbatim", async () => {
@@ -309,6 +309,7 @@ describe("a skill set read through a workflow", () => {
       expect(skills.map((s) => s.served.name)).toEqual(["good"]);
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toContain("skills/empty");
+      expect(warnings[0]).toContain("has no SKILL.md");
    });
 
    it("does not serve a skill whose SKILL.md is not UTF-8 text, and names it", () => {

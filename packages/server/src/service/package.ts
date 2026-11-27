@@ -94,6 +94,7 @@ import {
    PackageNotFoundError,
    ServiceUnavailableError,
    WorkflowsUnavailableError,
+   type WorkflowNotFoundReason,
 } from "../errors";
 import { applyExtensionSessionSettings } from "./duckdb_session_setup";
 import { authorSqlRefusals, sandboxedDuckDBOptions } from "./duckdb_lockdown";
@@ -128,6 +129,7 @@ import {
    adoptWorkflows,
    DEFAULT_WORKFLOW,
    emptyWorkflows,
+   WORKFLOW_NOT_SERVED,
    type PackageWorkflows,
 } from "./skills/package_workflows";
 import {
@@ -704,6 +706,22 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             digest: set.digest,
          })),
       }));
+   }
+
+   /** Why `name` is not a served workflow: the walk's refusal when the manifest declares it, else that it declares none of that name. Undefined when it is served. */
+   public workflowNotServed(
+      name: string,
+   ): { reason: WorkflowNotFoundReason; message: string } | undefined {
+      if (this.workflows.workflows.has(name)) return undefined;
+      const refusal = this.workflows.warnings.find(
+         (w) => w.code === WORKFLOW_NOT_SERVED && w.subject === name,
+      );
+      return refusal
+         ? { reason: "WORKFLOW_NOT_SERVED", message: refusal.message }
+         : {
+              reason: "WORKFLOW_NOT_DECLARED",
+              message: `No workflow named '${name}' is declared in package '${this.packageName}'. Fix: use a name the package lists.`,
+           };
    }
 
    /** The package-relative paths an edit to which changes what a workflow serves: each skill set and each instructions file. */
@@ -2312,10 +2330,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.reportWarnings,
          ...this.manifestFindings,
          ...(this.workflows.skillsDirNotRead ? [SKILLS_DIR_NOT_READ] : []),
-         ...this.workflows.warnings.map((message) => ({
-            message,
-            severity: "warn" as const,
-         })),
+         ...this.workflows.warnings,
          ...this.mz.storageWarnings(),
          ...this.mz.dataInliningWarnings(),
          ...this.mz.storedColumnTypeWarnings(),
@@ -3720,6 +3735,15 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          );
       }
       if (this.dryRun) return;
+      for (const refusal of walk.warnings) {
+         if (refusal.code !== WORKFLOW_NOT_SERVED) continue;
+         logger.warn("Workflow is not served", {
+            packageName: this.packageName,
+            workflow: refusal.subject,
+            code: refusal.code,
+            reason: refusal.message,
+         });
+      }
       if (walk.skillsDirNotRead) recordSkillsDirNotRead();
       recordDeprecatedFormatUsage(this.models);
       recordDeprecatedManifestKeys(metadata.deprecatedManifestKeys);

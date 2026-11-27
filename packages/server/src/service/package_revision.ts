@@ -47,7 +47,7 @@ export function canonicalJson(value: unknown): string {
 /** A real `workflows` declaration is a few KB; past this it is not read. */
 export const MANIFEST_WORKFLOWS_MAX_BYTES = 1024 * 1024;
 
-const UNREADABLE_DECLARATION = "[unreadable: too deep or too large]";
+export const UNREADABLE_DECLARATION = "[unreadable: too deep or too large]";
 
 /**
  * The declaration, or a marker string when it is too deep or too large to

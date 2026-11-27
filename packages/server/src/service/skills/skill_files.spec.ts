@@ -303,7 +303,7 @@ describe("skillFiles", () => {
          expect(result.files).toEqual(["SKILL.md", "a.txt"]);
          expect(result.skillignore).toBeNull();
          expect(result.warnings).toHaveLength(1);
-         expect(result.warnings[0]).toContain("16384 byte cap");
+         expect(result.warnings[0]).toContain("16 KiB cap");
       });
 
       it("ignores a .skillignore that is a symlink, with a warning", () => {

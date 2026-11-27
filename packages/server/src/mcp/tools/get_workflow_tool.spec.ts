@@ -33,6 +33,21 @@ const WORKFLOWS = [
    },
 ];
 
+/** The refusal text a package gives for a workflow its manifest declares and does not serve. */
+const REFUSAL =
+   "Workflow 'broken' is not served: its instructions file is missing. Fix: correct the 'workflows.broken' entry in publisher.json and the files it names.";
+
+/** What the package answers for a name it is asked to serve among `served`. */
+const notServed = (served: Array<{ name: string }>) => (name: string) =>
+   served.some((w) => w.name === name)
+      ? undefined
+      : name === "broken"
+        ? { reason: "WORKFLOW_NOT_SERVED", message: REFUSAL }
+        : {
+             reason: "WORKFLOW_NOT_DECLARED",
+             message: `No workflow named '${name}' is declared in package 'pkg'. Fix: use a name the package lists.`,
+          };
+
 /** get_workflow over a package that serves one workflow with one skill set and one skill file; `over` replaces what the package answers. */
 function getWorkflow(
    getPackage?: () => Promise<unknown>,
@@ -40,6 +55,7 @@ function getWorkflow(
 ): Handler {
    const pkg = {
       listWorkflows: () => WORKFLOWS,
+      workflowNotServed: notServed(WORKFLOWS),
       getWorkflow: (name: string, skills: string, skillSet?: string) =>
          skillSet !== undefined && skillSet !== "main"
             ? undefined
@@ -102,13 +118,37 @@ describe("get_workflow", () => {
       );
    });
 
-   it("names an unknown workflow and how to fix it", async () => {
+   it("names an undeclared workflow, with its reason and how to fix it", async () => {
       const payload = parse(
          await getWorkflow()({ scopes, workflow_name: "nope" }),
       );
       expect(payload.workflow).toBeNull();
-      expect(payload.message).toContain('No workflow named "nope"');
+      expect(payload.reason).toBe("WORKFLOW_NOT_DECLARED");
+      expect(payload.message).toContain("No workflow named 'nope' is declared");
       expect(payload.message).toContain("Fix:");
+      expect(payload.availableWorkflows).toEqual(WORKFLOWS);
+   });
+
+   it("gives a declared workflow the package refuses its refusal, with its reason", async () => {
+      const payload = parse(
+         await getWorkflow()({ scopes, workflow_name: "broken" }),
+      );
+      expect(payload.workflow).toBeNull();
+      expect(payload.reason).toBe("WORKFLOW_NOT_SERVED");
+      expect(payload.message).toBe(REFUSAL);
+   });
+
+   it("gives a skill file read of a refused workflow the refusal, not a missing file", async () => {
+      const payload = parse(
+         await getWorkflow()({
+            scopes,
+            workflow_name: "broken",
+            skill_path: "guide/SKILL.md",
+         }),
+      );
+      expect(payload.workflow).toBeNull();
+      expect(payload.reason).toBe("WORKFLOW_NOT_SERVED");
+      expect(payload).not.toHaveProperty("skillFile");
    });
 
    it("resolves a workflow, defaulting to full skills and every set", async () => {
@@ -325,7 +365,14 @@ describe("get_workflow: the reply stays within the tool-result limit", () => {
             skills: [{ relative_filepath: "guide/SKILL.md", text: skillText }],
          },
       ],
-      warnings: ["a finding"],
+      warnings: [
+         {
+            severity: "warn",
+            code: "skill-finding",
+            subject: "sets/main",
+            message: "a finding",
+         },
+      ],
       source,
    });
 
@@ -582,7 +629,10 @@ describe("get_workflow: the reply stays within the tool-result limit", () => {
          ...WORKFLOWS[0]!,
          name: i === 0 ? "analyst" : `analyst-${i}`,
       }));
-      const handler = getWorkflow(undefined, { listWorkflows: () => many });
+      const handler = getWorkflow(undefined, {
+         listWorkflows: () => many,
+         workflowNotServed: notServed(many),
+      });
       for (const params of [
          { scopes },
          call,

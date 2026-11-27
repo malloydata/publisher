@@ -1365,6 +1365,76 @@
       ]
     }
   },
+  "WorkflowNotFoundError for a workflow the package refuses": {
+    "class": "WorkflowNotFoundError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "Workflow 'w' is not served: a reason. Fix: correct it.",
+        "reason": "WORKFLOW_NOT_SERVED"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: Workflow 'w' is not served: a reason. Fix: correct it.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "reason": "WORKFLOW_NOT_SERVED",
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Workflow 'w' is not served: a reason. Fix: correct it.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "WorkflowNotFoundError for a workflow the package does not declare": {
+    "class": "WorkflowNotFoundError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "No workflow named 'w' is declared in package 'pkg'.",
+        "reason": "WORKFLOW_NOT_DECLARED"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: No workflow named 'w' is declared in package 'pkg'.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "reason": "WORKFLOW_NOT_DECLARED",
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: No workflow named 'w' is declared in package 'pkg'.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "ConflictError": {
     "class": "ConflictError",
     "http": {

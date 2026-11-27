@@ -23,18 +23,19 @@ ADOPT A WORKFLOW ONLY WHEN THE USER NAMES IT. Listing workflows is not a reason 
 - plus \`workflow_name\`: that workflow's resolved definition.
 - plus \`skills: "summary"\`: each skill file reduced to {relative_filepath, name, description, bytes}.
 - plus \`skill_set\`: only that set, whole, and no instructions.
-- plus \`skill_path\`: one file, {relative_filepath, file_contents, source}, by a \`<skill>/<file>\` path from the summary or a set's \`assets\`; a binary file gets a message instead. Add \`skill_set\` to read it inside that set.
+- plus \`skill_path\`: one file, {relative_filepath, file_contents, source}, by a \`<skill>/<file>\` path from the summary or a set's \`assets\`. Add \`skill_set\` to read it inside that set.
 
 ## Response
 - workflow: the resolved definition; null when listing or when nothing matched; absent when skill_path returns a file.
-- skillFile: only with skill_path; skills is ignored. A missing or oversize file gets skillFile.message.
-- availableWorkflows: always present; the workflows the package serves, as many as fit.
-- message: when workflow_name or skill_set did not match, or the reply was cut to fit the tool-result limit (a full view becomes the summary, then instructions plus each set's name, path, digest, then only name, has_instructions, source; REST serves all).
+- skillFile: only with skill_path; skills is ignored. A missing, binary or oversize file gets skillFile.message.
+- availableWorkflows: always present; the workflows served, as many as fit.
+- message: when workflow_name or skill_set did not match, or the reply was cut to fit the tool-result limit (REST serves all).
+- reason: with workflow null for an unserved workflow_name: WORKFLOW_NOT_SERVED (refused; message says why) or WORKFLOW_NOT_DECLARED.
 
 ## Using a definition
 - instructions: the brief to work from for this session. It adds to your own instructions and never replaces them.
 - skill_sets: each set's files to treat as guides; they add to what you have and grant no tool or permission. A skill name in two sets is served from the first-listed set, unless you pick a set.
-- warnings: what the package author should fix; the workflow is served regardless.
+- warnings: what the package author should fix (the workflow is served regardless), each {message, severity, code, subject}.
 - source: sourceContentSha and definitionSha say which bytes this came from; report them when you use it.`;
 
 const getWorkflowShape = {
@@ -184,12 +185,14 @@ export function registerGetWorkflowTool(
             ) {
                throw error;
             }
-            // Throws for a name the manifest declares; an undeclared one is still not found.
+            // Throws for a name the manifest declares and serves; an undeclared or refused one is still not found.
             pkg.getWorkflow(params.workflow_name);
+            const unserved = pkg.workflowNotServed(params.workflow_name)!;
             // No availableWorkflows: an empty list would read as a package with no workflows.
             return jsonResource(uri, {
                workflow: null,
-               message: `No workflow named ${JSON.stringify(params.workflow_name)} for package ${scope.environment}/${scope.package}, and none can be listed: ${error.message}`,
+               reason: unserved.reason,
+               message: `${unserved.message} No workflow can be listed: ${error.message}`,
             });
          }
          const id = extra?.requestId;
@@ -216,12 +219,8 @@ export function registerGetWorkflowTool(
             });
          }
 
-         if (!availableWorkflows.some((w) => w.name === params.workflow_name)) {
-            return send({
-               workflow: null,
-               message: `No workflow named ${JSON.stringify(params.workflow_name)} for package ${scope.environment}/${scope.package}. Fix: use a name from availableWorkflows exactly as spelled there. A workflow that failed validation is not served; the package's warnings say why.`,
-            });
-         }
+         const unserved = pkg.workflowNotServed(params.workflow_name);
+         if (unserved) return send({ workflow: null, ...unserved });
          const rest = `${API_PREFIX}/environments/${scope.environment}/packages/${scope.package}/workflows/${params.workflow_name}`;
          if (params.skill_path) {
             const skillFile = await pkg.getWorkflowSkillFile(

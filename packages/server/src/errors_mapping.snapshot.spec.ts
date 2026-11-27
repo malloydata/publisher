@@ -281,6 +281,22 @@ const CASES: Array<[string, () => unknown]> = [
       "WorkflowNotFoundError",
       () => new WorkflowNotFoundError("Workflow not found"),
    ],
+   [
+      "WorkflowNotFoundError for a workflow the package refuses",
+      () =>
+         new WorkflowNotFoundError(
+            "Workflow 'w' is not served: a reason. Fix: correct it.",
+            "WORKFLOW_NOT_SERVED",
+         ),
+   ],
+   [
+      "WorkflowNotFoundError for a workflow the package does not declare",
+      () =>
+         new WorkflowNotFoundError(
+            "No workflow named 'w' is declared in package 'pkg'.",
+            "WORKFLOW_NOT_DECLARED",
+         ),
+   ],
    ["ConflictError", () => new ConflictError("already exists")],
    [
       "ConnectionNotFoundError",

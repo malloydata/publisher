@@ -47,6 +47,10 @@ const isWindows = process.platform === "win32";
 /** A second skill set, holding one skill of its own. */
 const SKILLS_ROOT_B = "workflows/analyst/skill_sets/second";
 
+/** The text of each warning, which most tests read as prose. */
+const texts = (warnings: Array<{ message: string }>) =>
+   warnings.map((w) => w.message);
+
 const hasControlChar = (text: string) =>
    [...text].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
 
@@ -64,7 +68,7 @@ const viewOf = (workflow: PackageWorkflow) => {
          file_contents: string;
       }>,
       assets: assets ?? [],
-      warnings: [...workflow.shadowing, ...entry.set.findings],
+      warnings: texts([...workflow.shadowing, ...entry.set.findings]),
       definitionSha: workflow.definitionSha,
       catalog: entry.skills.map((s) => s.catalog),
    };
@@ -185,7 +189,7 @@ describe("a skill is its whole directory", () => {
          ...view.skills.map((f) => f.relative_filepath),
          ...view.assets.map((a) => a.relative_filepath),
       ].map((p) => p.slice("pricing/".length));
-      const warned = read().warnings.join("\n");
+      const warned = texts(read().warnings).join("\n");
 
       // Served is the candidates less what a skill may not hold, each skip named.
       const skipped = candidates.filter((c) => !served.includes(c));
@@ -358,8 +362,10 @@ describe("a skill is its whole directory", () => {
 
       const dropped = read();
       expect(workflowOf(dropped).sets[0]!.skills).toEqual([]);
-      expect(dropped.warnings.join("\n")).toContain("not a regular file");
-      expect(dropped.warnings.join("\n")).toContain("holds no skills");
+      expect(texts(dropped.warnings).join("\n")).toContain(
+         "not a regular file",
+      );
+      expect(texts(dropped.warnings).join("\n")).toContain("holds no skills");
       expect(dropped.paths).toEqual(["workflows/analyst/instructions.md"]);
       expect([...dropped.contentShas.keys()]).toEqual(dropped.paths);
    });
@@ -374,10 +380,10 @@ describe("a skill is its whole directory", () => {
             write(".skillignore", "assets/\n");
             const result = read();
             expect(workflowOf(result).sets[0]!.skills).toEqual([]);
-            expect(result.warnings.join("\n")).toContain(
+            expect(texts(result.warnings).join("\n")).toContain(
                `Skill set '${SKILLS_ROOT}' skill finding: Package skill '${SKILL}' is not served: '${SKILL}/assets' is a link`,
             );
-            expect(result.warnings.join("\n")).not.toContain("x.txt");
+            expect(texts(result.warnings).join("\n")).not.toContain("x.txt");
          } finally {
             fs.rmSync(outside, { recursive: true, force: true });
          }
@@ -388,7 +394,7 @@ describe("a skill is its whole directory", () => {
          write(".skillignore", "assets/hidden/\n");
          const result = read();
          expect(workflowOf(result).sets[0]!.skills).toEqual([]);
-         expect(result.warnings.join("\n")).toContain(
+         expect(texts(result.warnings).join("\n")).toContain(
             `Package skill '${SKILL}' is not served: '${SKILL}/assets/hidden/Publisher.JSON' is a publisher.json`,
          );
       });
@@ -398,7 +404,7 @@ describe("a skill is its whole directory", () => {
          write(".skillignore", "reference/\n");
          const result = read();
          expect(workflowOf(result).sets[0]!.skills).toEqual([]);
-         expect(result.warnings.join("\n")).toContain(
+         expect(texts(result.warnings).join("\n")).toContain(
             `Package skill '${SKILL}' is not served: '${SKILL}/reference/publisher.json' is a publisher.json`,
          );
       });
@@ -421,7 +427,7 @@ describe("a skill is its whole directory", () => {
          fs.writeFileSync(where, "{}");
          const result = read();
          expect(result.workflows.has("analyst")).toBe(false);
-         expect(result.warnings[0]).toContain("nested publisher.json");
+         expect(texts(result.warnings)[0]).toContain("nested publisher.json");
          fs.rmSync(where);
          expect(viewOf(workflowOf())).toBeDefined();
       });
@@ -435,7 +441,7 @@ describe("a skill is its whole directory", () => {
             write(inside, "{}");
             const result = read();
             expect(workflowOf(result).sets[0]!.skills).toEqual([]);
-            expect(result.warnings.join("\n")).toContain(
+            expect(texts(result.warnings).join("\n")).toContain(
                `'${SKILL}/${inside}' is a publisher.json`,
             );
             fs.rmSync(path.join(skillDir(), inside));
@@ -466,7 +472,9 @@ describe("a skill is its whole directory", () => {
          write("fixtures/deep/Publisher.JSON", "{}");
          const result = read();
          expect(viewOf(workflowOf(result))).toBeDefined();
-         expect(result.warnings.join("\n")).not.toContain("Publisher.JSON");
+         expect(texts(result.warnings).join("\n")).not.toContain(
+            "Publisher.JSON",
+         );
       });
    });
 
@@ -556,7 +564,7 @@ describe("a skill is its whole directory", () => {
             "pricing/references/big.md",
          );
          expect(view.warnings.join("\n")).toContain(
-            `Package skill file '${SKILL}/references/big.md' would take the skill set's Markdown over the ${SKILL_SET_MARKDOWN_MAX_BYTES} byte cap`,
+            `Package skill file '${SKILL}/references/big.md' would take the skill set's Markdown over the ${SKILL_SET_MARKDOWN_MAX_BYTES / 1024} KiB cap`,
          );
          // SKILL.md is re-emitted, so its bytes are a little off the raw ones the cap counts.
          const inlineBytes = view.skills.reduce(
@@ -578,8 +586,8 @@ describe("a skill is its whole directory", () => {
          expect(
             workflowOf(result).sets[0]!.skills.map((s) => s.dirName),
          ).toEqual(["pricing"]);
-         expect(result.warnings.join("\n")).toContain(
-            `Package skill '${SKILLS_ROOT}/second/SKILL.md' would take the skill set's Markdown over the ${SKILL_SET_MARKDOWN_MAX_BYTES} byte cap, so it is not served`,
+         expect(texts(result.warnings).join("\n")).toContain(
+            `Package skill '${SKILLS_ROOT}/second/SKILL.md' would take the skill set's Markdown over the ${SKILL_SET_MARKDOWN_MAX_BYTES / 1024} KiB cap, so it is not served`,
          );
       });
 
@@ -599,11 +607,11 @@ describe("a skill is its whole directory", () => {
             expect(
                workflowOf(result).sets[0]!.skills.map((s) => s.dirName),
             ).toEqual(["second"]);
-            const findings = result.warnings.join("\n");
+            const findings = texts(result.warnings).join("\n");
             expect(findings).toContain(
                `Package skill '${SKILL}' is not served: asset '${SKILL}/assets/link.txt' is a link`,
             );
-            expect(findings).not.toContain("byte cap");
+            expect(findings).not.toContain("KiB cap");
          },
       );
 
@@ -624,7 +632,7 @@ describe("a skill is its whole directory", () => {
                skills.map((s) => s.dirName),
             ),
          ).toEqual([["pricing"], ["second"]]);
-         expect(result.warnings.join("\n")).not.toContain("byte cap");
+         expect(texts(result.warnings).join("\n")).not.toContain("KiB cap");
       });
    });
 });
@@ -642,7 +650,12 @@ describe("a skill set's own skills", () => {
          default: { skillSets: ["skills"] },
       });
       const set = result.sets.get("skills")!;
-      return { result, set, skills: set.skills, warnings: set.findings };
+      return {
+         result,
+         set,
+         skills: set.skills,
+         warnings: texts(set.findings),
+      };
    };
 
    beforeEach(() => {
@@ -989,7 +1002,7 @@ describe("a skill set's own skills", () => {
       expect(Object.keys(catalog[0]!.files)).toHaveLength(1 + 4);
       expect(warnings.join("\n")).toContain("f4.bin");
       expect(warnings.join("\n")).toContain(
-         "it would take the skill set's assets over the 4194304 byte per-set cap",
+         "it would take the skill set's assets over the 4 MiB per-set cap",
       );
    });
 
@@ -1150,7 +1163,9 @@ describe("a skill read whole still serves what it served before", () => {
       for (let i = 0; i < 1000; i++) write(`${ROOT}/s/examples/e${i}.txt`);
       const result = read();
       expect(inline(viewOf(result))).toContain("s/reference/keep.md");
-      expect(result.warnings.join("\n")).toContain("more than 1000 entries");
+      expect(texts(result.warnings).join("\n")).toContain(
+         "more than 1000 entries",
+      );
    });
 
    it("keeps a later skill's assets/ when an earlier skill's scripts fill the file cap", () => {
@@ -1190,7 +1205,7 @@ describe("a skill read whole still serves what it served before", () => {
       expect(inline(view)).toContain("s/reference/keep.md");
       expect(inline(view)).not.toContain("s/README.md");
       expect(listed(view)).toContain("s/README.md");
-      expect(result.warnings.join("\n")).toContain("s/README.md");
+      expect(texts(result.warnings).join("\n")).toContain("s/README.md");
    });
 
    it("lists a Markdown file over the inline cap instead of dropping it", () => {
@@ -1200,8 +1215,8 @@ describe("a skill read whole still serves what it served before", () => {
       const view = viewOf(result);
       expect(inline(view)).not.toContain("s/references/big.md");
       expect(listed(view)).toContain("s/references/big.md");
-      expect(result.warnings.join("\n")).toContain(
-         `s/references/big.md' is ${Buffer.byteLength(`#\n${"x".repeat(300 * 1024)}`)} bytes, over the ${PACKAGE_SKILL_FILE_MAX_BYTES} byte per-file cap, so it is listed instead of inlined`,
+      expect(texts(result.warnings).join("\n")).toContain(
+         `s/references/big.md' is ${Buffer.byteLength(`#\n${"x".repeat(300 * 1024)}`)} bytes, over the ${PACKAGE_SKILL_FILE_MAX_BYTES / 1024} KiB per-file cap, so it is listed instead of inlined`,
       );
    });
 
@@ -1220,7 +1235,7 @@ describe("a skill read whole still serves what it served before", () => {
          expect(inline(view)).toContain(`${name}/reference/keep.md`);
          expect(listed(view)).toContain(`${name}/assets/keep.txt`);
       }
-      const stopped = result.warnings.filter((w) =>
+      const stopped = texts(result.warnings).filter((w) =>
          w.includes("skill walk stopped"),
       );
       expect(stopped).toHaveLength(2);
@@ -1261,9 +1276,9 @@ describe("a skill read whole still serves what it served before", () => {
             fs.symlinkSync(outside, path.join(pkg, ROOT, "s/reference"));
             const result = read();
             expect(inline(viewOf(result))).toEqual(["s/SKILL.md"]);
-            expect(result.warnings.join("\n")).toContain("s/reference");
+            expect(texts(result.warnings).join("\n")).toContain("s/reference");
             // What lies beyond the link is not looked at, so it is not named either.
-            expect(result.warnings.join("\n")).not.toContain("a.md");
+            expect(texts(result.warnings).join("\n")).not.toContain("a.md");
          } finally {
             fs.rmSync(outside, { recursive: true, force: true });
          }
@@ -1277,7 +1292,7 @@ describe("a skill read whole still serves what it served before", () => {
          );
          const result = read();
          expect(inline(viewOf(result))).toEqual(["s/SKILL.md"]);
-         expect(result.warnings.join("\n")).toContain("s/reference");
+         expect(texts(result.warnings).join("\n")).toContain("s/reference");
       });
 
       it("is the only directory link that is read through", () => {
@@ -1289,7 +1304,7 @@ describe("a skill read whole still serves what it served before", () => {
          );
          const result = read();
          expect(listed(viewOf(result))).toEqual([]);
-         expect(result.warnings.join("\n")).toContain(
+         expect(texts(result.warnings).join("\n")).toContain(
             "s/scripts' is not served: it is a link",
          );
       });
@@ -1346,7 +1361,7 @@ describe("a skill read whole still serves what it served before", () => {
          expect(files("skills-a")).toHaveLength(4);
          expect(files("skills-b")).toHaveLength(4);
          expect(files("skills-c")).toEqual([]);
-         expect(result.warnings.join("\n")).toContain("per-package cap");
+         expect(texts(result.warnings).join("\n")).toContain("per-package cap");
       }
       expect(backward.sets.get("skills-c")!.digest).toBe(
          forward.sets.get("skills-c")!.digest,
@@ -1418,7 +1433,7 @@ describe("a skill read whole still serves what it served before", () => {
          );
          expect(references).toHaveLength(1000);
          expect(
-            result.warnings.filter(
+            texts(result.warnings).filter(
                (w) =>
                   w.includes(`Package skill '${ROOT}/s'`) &&
                   w.includes("reference/ holds more than 1000 Markdown files"),
@@ -1433,7 +1448,7 @@ describe("a skill read whole still serves what it served before", () => {
          expect(
             inline(viewOf(result)).filter((f) => f.startsWith("s/reference/")),
          ).toHaveLength(1000);
-         expect(result.warnings.join("\n")).toContain(
+         expect(texts(result.warnings).join("\n")).toContain(
             "reference/ holds more than 1000 Markdown files",
          );
       });
@@ -1477,7 +1492,7 @@ describe("a skill read whole still serves what it served before", () => {
             expect(result.workflows.get("analyst")!.sets[0]!.skills).toEqual(
                [],
             );
-            expect(result.warnings.join("\n")).toContain(
+            expect(texts(result.warnings).join("\n")).toContain(
                `'${ROOT}/s/reference/publisher.json' is a publisher.json`,
             );
          });
@@ -1500,7 +1515,7 @@ describe("a skill read whole still serves what it served before", () => {
             result = read();
          });
          expect(result!.workflows.get("analyst")!.sets[0]!.skills).toEqual([]);
-         expect(result!.warnings.join("\n")).toContain(
+         expect(texts(result!.warnings).join("\n")).toContain(
             `'${ROOT}/s/assets' is a link`,
          );
          // The spies must see the listing, or the bound below is vacuous.
@@ -1516,7 +1531,7 @@ describe("a skill read whole still serves what it served before", () => {
          linkAssets(".old", "shared-assets");
          const result = read();
          expect(result.workflows.has("analyst")).toBe(true);
-         expect(result.warnings.join("\n")).not.toContain(".old");
+         expect(texts(result.warnings).join("\n")).not.toContain(".old");
       });
    });
 });

@@ -122,15 +122,15 @@ export class SkillController {
       skillSet?: string,
       versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiWorkflow> {
-      const workflow = (
-         await this.packageOf(environmentName, packageName, versionId)
-      ).getWorkflow(workflowName, skills, skillSet);
+      const pkg = await this.packageOf(environmentName, packageName, versionId);
+      const workflow = pkg.getWorkflow(workflowName, skills, skillSet);
       if (!workflow) {
-         throw new WorkflowNotFoundError(
-            skillSet === undefined
-               ? `Workflow '${workflowName}' not found in package '${packageName}'.`
-               : `Workflow '${workflowName}' with a skill set '${skillSet}' not found in package '${packageName}'.`,
-         );
+         const unserved = pkg.workflowNotServed(workflowName);
+         throw unserved
+            ? new WorkflowNotFoundError(unserved.message, unserved.reason)
+            : new WorkflowNotFoundError(
+                 `Workflow '${workflowName}' with a skill set '${skillSet}' not found in package '${packageName}'.`,
+              );
       }
       return workflow;
    }
@@ -144,13 +144,20 @@ export class SkillController {
       skillSet?: string,
       versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiWorkflowSkillRead> {
-      const file = await (
-         await this.packageOf(environmentName, packageName, versionId)
-      ).getWorkflowSkillFile(workflowName, relativeFilepath, skillSet);
+      const pkg = await this.packageOf(environmentName, packageName, versionId);
+      const file = await pkg.getWorkflowSkillFile(
+         workflowName,
+         relativeFilepath,
+         skillSet,
+      );
       if (file && "changed" in file) {
          throw new WorkflowNotFoundError(fileChangedMessage(relativeFilepath));
       }
       if (!file) {
+         const unserved = pkg.workflowNotServed(workflowName);
+         if (unserved) {
+            throw new WorkflowNotFoundError(unserved.message, unserved.reason);
+         }
          throw new WorkflowNotFoundError(
             skillSet === undefined
                ? `Skill file '${relativeFilepath}' not found for workflow '${workflowName}' in package '${packageName}'.`

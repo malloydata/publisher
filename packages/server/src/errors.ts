@@ -152,6 +152,11 @@ export type ErrorReason =
    // 409: the package's workflows could not be read at load; a reload reads
    // them again, a retry does not.
    | "WORKFLOWS_UNAVAILABLE"
+   // 404: the manifest declares the workflow and the package refuses it; the
+   // message is the refusal.
+   | "WORKFLOW_NOT_SERVED"
+   // 404: the manifest declares no workflow of that name.
+   | "WORKFLOW_NOT_DECLARED"
    // 500: a version's build manifest was fetched or bound and failed; the
    // version keeps serving what it served before (ManifestBindFailedError).
    | "MANIFEST_BIND_FAILED"
@@ -763,13 +768,20 @@ export class SkillNotFoundError extends Error {
    }
 }
 
-/** No workflow with that name, or no skill set of that name in it, is served for the package, whether undeclared or refused by validation. */
+export type WorkflowNotFoundReason =
+   | "WORKFLOW_NOT_SERVED"
+   | "WORKFLOW_NOT_DECLARED";
+
+/** No workflow with that name, or no skill set or file of that name in it, is served for the package. `reason` says whether a missing workflow was refused or never declared, and is absent for a missing set or file. */
 export class WorkflowNotFoundError extends Error {
    get kind(): "workflow_not_found" {
       return "workflow_not_found";
    }
 
-   constructor(message: string) {
+   constructor(
+      message: string,
+      readonly reason?: WorkflowNotFoundReason,
+   ) {
       super(message);
    }
 }
@@ -2171,7 +2183,11 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    model_not_found: { ...NOT_FOUND, mcpSetup: "model" },
    dashboard_not_found: { status: 404, mcp: { advice: "internal" } },
    skill_not_found: { status: 404, mcp: { advice: "internal" } },
-   workflow_not_found: { status: 404, mcp: { advice: "internal" } },
+   workflow_not_found: {
+      status: 404,
+      reason: (error) => error.reason,
+      mcp: { advice: "internal" },
+   },
    conflict: { status: 409, mcp: { advice: "internal" } },
    // A query-boundary denial is a deliberate 404; `not_found` also drops the
    // source name this class is careful not to confirm.

@@ -43,12 +43,7 @@ import { setEventLoopYieldBudgetMsForTesting } from "../../src/service/event_loo
 import { scopeFactsOf } from "../../src/service/materialization/serve/scope_facts";
 
 type ServeVerdict = components["schemas"]["ServeVerdict"];
-type PackageWarning = {
-   model?: string;
-   subject?: string;
-   code?: string;
-   reason?: string;
-};
+type PackageWarning = components["schemas"]["PackageWarning"];
 
 const DATA = {
    "accounts.csv":
@@ -218,9 +213,9 @@ function verdict(
 function servedCopyWarnings(
    fixture: LoadedFixture | undefined,
 ): PackageWarning[] {
-   return (
-      (fixture?.pkg.getPackageMetadata().warnings ?? []) as PackageWarning[]
-   ).filter((w) => w.code === "served-copy-not-served");
+   return (fixture?.pkg.getPackageMetadata().warnings ?? []).filter(
+      (w) => w.code === "served-copy-not-served",
+   );
 }
 
 /** Where an answer came from, and its rows as text. */

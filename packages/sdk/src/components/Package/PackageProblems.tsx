@@ -10,7 +10,7 @@ import {
    Typography,
 } from "@mui/material";
 import { useState } from "react";
-import type { PackageWarningsInner } from "../../client";
+import type { PackageWarning } from "../../client";
 import { MONO_FONT_FAMILY } from "../styles";
 
 /**
@@ -31,9 +31,9 @@ const RETAINED_ALIAS_OF: Readonly<Record<string, string>> = {
  * former code, with no new code beside it, is the only copy and still shows.
  */
 export function withoutRetainedAliases(
-   warnings: readonly PackageWarningsInner[],
-): PackageWarningsInner[] {
-   const key = (code: string | undefined, w: PackageWarningsInner) =>
+   warnings: readonly PackageWarning[],
+): PackageWarning[] {
+   const key = (code: string | undefined, w: PackageWarning) =>
       `${code}\u0000${w.subject ?? ""}\u0000${w.message ?? ""}`;
    const present = new Set(warnings.map((w) => key(w.code, w)));
    return warnings.filter((w) => {
@@ -55,7 +55,7 @@ export function withoutRetainedAliases(
 export function PackageProblems({
    warnings,
 }: {
-   warnings: PackageWarningsInner[] | undefined;
+   warnings: PackageWarning[] | undefined;
 }) {
    const [showNotes, setShowNotes] = useState(false);
    const shown = withoutRetainedAliases(warnings ?? []);
@@ -96,7 +96,7 @@ export function PackageProblems({
    );
 }
 
-function FindingList({ findings }: { findings: PackageWarningsInner[] }) {
+function FindingList({ findings }: { findings: PackageWarning[] }) {
    return (
       <Stack component="ul" sx={{ m: 0, p: 0, listStyle: "none", gap: 0.75 }}>
          {findings.map((finding, index) => (

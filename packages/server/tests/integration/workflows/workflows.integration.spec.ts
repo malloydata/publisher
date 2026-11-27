@@ -240,17 +240,42 @@ describe("Package skills and workflows (E2E)", () => {
       it("does not serve a workflow whose skill set is missing, and says why in the package's warnings, while the others serve", async () => {
          expect((await get("/workflows/broken")).status).toBe(404);
          const { body } = await get("");
-         const messages = (body.warnings as Array<{ message: string }>).map(
-            (w) => w.message,
-         );
+         const refusals = (
+            body.warnings as Array<{
+               message: string;
+               code?: string;
+               subject?: string;
+            }>
+         ).filter((w) => w.code === "workflow-not-served");
+         expect(refusals).toHaveLength(1);
+         expect(refusals[0]!.subject).toBe("broken");
          expect(
-            messages.some((m) =>
-               m.startsWith(
-                  "Workflow 'broken' is not served: skill set directory 'skill_sets/missing' does not exist",
-               ),
+            refusals[0]!.message.startsWith(
+               "Workflow 'broken' is not served: skill set directory 'skill_sets/missing' does not exist",
             ),
          ).toBe(true);
          expect((await get("/workflows/analyst")).status).toBe(200);
+      });
+
+      it("gives a workflow the package refuses WORKFLOW_NOT_SERVED and its refusal, and one it never declared WORKFLOW_NOT_DECLARED", async () => {
+         const refused = await get("/workflows/broken");
+         expect(refused.status).toBe(404);
+         expect(refused.body.reason).toBe("WORKFLOW_NOT_SERVED");
+         expect(refused.body.message).toStartWith(
+            "Workflow 'broken' is not served: skill set directory 'skill_sets/missing' does not exist",
+         );
+         const undeclared = await get("/workflows/nope");
+         expect(undeclared.status).toBe(404);
+         expect(undeclared.body.reason).toBe("WORKFLOW_NOT_DECLARED");
+         expect(undeclared.body.message).toContain(
+            "No workflow named 'nope' is declared in package",
+         );
+      });
+
+      it("gives a skill set the workflow lacks a 404 with no reason, since the workflow itself is served", async () => {
+         const { status, body } = await get("/workflows/analyst?skillSet=nope");
+         expect(status).toBe(404);
+         expect(body.reason).toBeUndefined();
       });
 
       it("serves workflows beside an agents key, which it no longer reads, and says so", async () => {
@@ -410,6 +435,22 @@ describe("Package skills and workflows (E2E)", () => {
          expect(
             (await read("conventions%252Freference%252Fglossary.md")).status,
          ).toBe(404);
+      });
+
+      it("gives a file read of a refused workflow WORKFLOW_NOT_SERVED, and of an undeclared one WORKFLOW_NOT_DECLARED", async () => {
+         const refused = await read("conventions/SKILL.md", "broken");
+         expect(refused.status).toBe(404);
+         expect(refused.body.reason).toBe("WORKFLOW_NOT_SERVED");
+         expect(refused.body.message).toStartWith(
+            "Workflow 'broken' is not served: ",
+         );
+         const undeclared = await read("conventions/SKILL.md", "nope");
+         expect(undeclared.status).toBe(404);
+         expect(undeclared.body.reason).toBe("WORKFLOW_NOT_DECLARED");
+         // A missing file of a served workflow is neither.
+         const missing = await read("conventions/nope.md");
+         expect(missing.status).toBe(404);
+         expect(missing.body.reason).toBeUndefined();
       });
 
       it("answers 404 for a file outside the resolved set, a skill the workflow does not list, and an unknown workflow", async () => {

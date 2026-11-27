@@ -55,9 +55,24 @@
       }
    ],
    "warnings": [
-      "Skill set 'workflows/analyst/skill_sets/main' skill finding: Package skill 'workflows/analyst/skill_sets/main/pricing': .skillignore matches SKILL.md, which a skill always keeps.",
-      "Skill set 'workflows/analyst/skill_sets/main' skill finding: Package skill reference 'workflows/analyst/skill_sets/main/pricing/templates/CLAUDE.md' is named like a file the agent computer reads with authority, so it is not served.",
-      "Skill set 'workflows/analyst/skill_sets/main' skill finding: asset 'workflows/analyst/skill_sets/main/pricing/scripts/run-link.sh' is not served: it is a link."
+      {
+         "code": "skill-finding",
+         "subject": "workflows/analyst/skill_sets/main",
+         "message": "Skill set 'workflows/analyst/skill_sets/main' skill finding: Package skill 'workflows/analyst/skill_sets/main/pricing': .skillignore matches SKILL.md, which a skill always keeps.",
+         "severity": "warn"
+      },
+      {
+         "code": "skill-file-skipped",
+         "subject": "workflows/analyst/skill_sets/main",
+         "message": "Skill set 'workflows/analyst/skill_sets/main' skill finding: Package skill reference 'workflows/analyst/skill_sets/main/pricing/templates/CLAUDE.md' is named like a file the agent computer reads with authority, so it is not served.",
+         "severity": "warn"
+      },
+      {
+         "code": "skill-file-skipped",
+         "subject": "workflows/analyst/skill_sets/main",
+         "message": "Skill set 'workflows/analyst/skill_sets/main' skill finding: asset 'workflows/analyst/skill_sets/main/pricing/scripts/run-link.sh' is not served: it is a link.",
+         "severity": "warn"
+      }
    ],
    "source": {
       "definitionSha": "aa36a02166b7d7fe7f0e5855a926c358d24b9bd8e0942d1aa8cf0f465cec59bb"

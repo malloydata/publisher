@@ -14,6 +14,7 @@ import {
    ASSET_MAX_DEPTH,
    ASSET_MAX_ENTRIES,
    ASSET_PATH_MAX_CHARS,
+   capText,
    decodeText,
    isInlineMarkdown,
    isReferenceDir,
@@ -32,7 +33,12 @@ import {
    MODEL_FILE_SUFFIX,
    NOTEBOOK_FILE_SUFFIX,
 } from "../../constants";
-import { canonicalSha } from "../package_revision";
+import type { components } from "../../api";
+import {
+   canonicalSha,
+   MANIFEST_WORKFLOWS_MAX_BYTES,
+   UNREADABLE_DECLARATION,
+} from "../package_revision";
 import {
    confinedPackagePathSync,
    ImportOutsidePackageError,
@@ -64,11 +70,51 @@ function insidePackage(packageRoot: string, p: string): string | undefined {
 const sha256 = (data: string | Buffer) =>
    createHash("sha256").update(data).digest("hex");
 
-/** A path that is not there, loops or is too long, which an author wrote wrong; any other errno is a disk that cannot be read, which `strict` reads rethrow so it never refuses a workflow. */
-const isAuthorPathError = (error: unknown) =>
-   ["ENOENT", "ENOTDIR", "ELOOP", "ENAMETOOLONG"].includes(
-      (error as NodeJS.ErrnoException).code ?? "",
-   );
+type PackageWarning = components["schemas"]["PackageWarning"];
+
+/** `PackageWarning.code` of a workflow the manifest declares and this server refuses; `subject` is its name. */
+export const WORKFLOW_NOT_SERVED = "workflow-not-served";
+/** `PackageWarning.code` of a skill name two of a workflow's sets both hold; `subject` is the workflow's name. */
+export const SKILL_SHADOWED = "skill-shadowed";
+/** `PackageWarning.code` of a served skill with a file of its directory left out; `subject` is the skill set's path. */
+export const SKILL_FILE_SKIPPED = "skill-file-skipped";
+/** `PackageWarning.code` of any other finding of a skill set; `subject` is the set's path. */
+export const SKILL_FINDING = "skill-finding";
+
+const warning = (
+   code: string,
+   subject: string,
+   message: string,
+): PackageWarning => ({ code, subject, message, severity: "warn" });
+
+/** A finding of one skill set before it is published: its code, and its text without the set's prefix. */
+interface SetFinding {
+   code: typeof SKILL_FILE_SKIPPED | typeof SKILL_FINDING;
+   message: string;
+}
+const skipped = (message: string): SetFinding => ({
+   code: SKILL_FILE_SKIPPED,
+   message,
+});
+const finding = (message: string): SetFinding => ({
+   code: SKILL_FINDING,
+   message,
+});
+
+const ABSENT = "does not exist";
+
+/** What an author wrote wrong, by errno: a path that is not there, loops or is too long. Any other errno is a disk that cannot be read, which `strict` reads rethrow so it never refuses a workflow. */
+const AUTHOR_PATH_FAULTS = new Map([
+   ["ENOENT", ABSENT],
+   ["ENOTDIR", ABSENT],
+   ["ELOOP", "is part of a link loop"],
+   ["ENAMETOOLONG", "has a name that is too long"],
+]);
+
+const pathFault = (error: unknown) =>
+   AUTHOR_PATH_FAULTS.get((error as NodeJS.ErrnoException).code ?? "");
+
+const isAuthorPathError = (error: unknown) => pathFault(error) !== undefined;
 
 /**
  * Where a Markdown file really is and how big, or why it cannot be served; no
@@ -102,7 +148,9 @@ function markdownInside(
    } catch (error) {
       if (strict && !isAuthorPathError(error)) throw error;
       return {
-         problem: `cannot be read (${callerVisibleText((error as Error).message, packageRoot)})`,
+         problem:
+            pathFault(error) ??
+            `cannot be read (${callerVisibleText((error as Error).message, packageRoot)})`,
       };
    }
 }
@@ -120,7 +168,7 @@ function readFileInside(
    if ("problem" in found) return found;
    if (found.size > maxBytes) {
       return {
-         problem: `is ${found.size} bytes, over the ${maxBytes} byte cap`,
+         problem: `is ${found.size} bytes, over the ${capText(maxBytes)} cap`,
          size: found.size,
       };
    }
@@ -130,7 +178,9 @@ function readFileInside(
    } catch (error) {
       if (strict && !isAuthorPathError(error)) throw error;
       return {
-         problem: `cannot be read (${callerVisibleText((error as Error).message, packageRoot)})`,
+         problem:
+            pathFault(error) ??
+            `cannot be read (${callerVisibleText((error as Error).message, packageRoot)})`,
       };
    }
 }
@@ -168,7 +218,7 @@ function readListedBytes(
       }
       if (stat.size > maxBytes) {
          return {
-            problem: `is ${stat.size} bytes, over the ${maxBytes} byte cap`,
+            problem: `is ${stat.size} bytes, at or over the ${capText(maxBytes + 1)} cap`,
          };
       }
       if (headBytes !== undefined && stat.size > headBytes) {
@@ -279,7 +329,9 @@ function fitsReply(text: string): boolean {
 }
 
 const unreturnableWarning = (shown: string) =>
-   `Package skill file '${shown}' is over the ${FCJ_MAX_CHARS}-character reply budget of get_skill, so get_skill cannot return it whole`;
+   skipped(
+      `Package skill file '${shown}' is over the ${FCJ_MAX_CHARS}-character reply budget of get_skill, so get_skill cannot return it whole`,
+   );
 
 /**
  * A listed file as the budgets see it. With `peek` (the first pass) a file whose
@@ -353,22 +405,26 @@ const newWalk = (shared: PackageAssetBudget): AssetWalk => ({
 });
 
 /** The skips a walk names, at most ASSET_WARNINGS_MAX of them, and one line counting the rest. */
-function skippedWarnings(walk: AssetWalk): string[] {
-   const named = walk.skipped.slice(0, ASSET_WARNINGS_MAX);
+function skippedWarnings(walk: AssetWalk): SetFinding[] {
+   const named = walk.skipped.slice(0, ASSET_WARNINGS_MAX).map(skipped);
    if (walk.skipped.length > ASSET_WARNINGS_MAX) {
       named.push(
-         `${walk.skipped.length - ASSET_WARNINGS_MAX} further assets are not served, for the same kinds of reasons`,
+         skipped(
+            `${walk.skipped.length - ASSET_WARNINGS_MAX} further assets are not served, for the same kinds of reasons`,
+         ),
       );
    }
    return named;
 }
 
 /** The findings a set names, at most SKILL_FINDINGS_MAX of them, and one line counting the rest. */
-function cappedFindings(findings: string[]): string[] {
+function cappedFindings(findings: SetFinding[]): SetFinding[] {
    if (findings.length <= SKILL_FINDINGS_MAX) return findings;
    return [
       ...findings.slice(0, SKILL_FINDINGS_MAX),
-      `${findings.length - SKILL_FINDINGS_MAX} further skill findings are not named, for the same kinds of reasons`,
+      finding(
+         `${findings.length - SKILL_FINDINGS_MAX} further skill findings are not named, for the same kinds of reasons`,
+      ),
    ];
 }
 
@@ -447,10 +503,14 @@ interface Scan {
    warnings: string[];
    /** The set holds more skill directories than {@link SKILLS_PER_SET_MAX}; the rest were not read. */
    pastCap: boolean;
+   /** The folder holds a SKILL.md itself, so it is a skill and not a set of them; nothing in it was read. */
+   isSkill: boolean;
 }
 
 const skillNotServed = (rel: string, problem: string) =>
-   `Package skill '${rel}/${SKILL_MD}' ${problem}, so it is not served. Fix: add a readable SKILL.md inside the package, or remove the directory.`;
+   problem === ABSENT
+      ? `Package skill '${rel}' has no ${SKILL_MD}, so it is not served. Fix: add ${rel}/${SKILL_MD}, or remove the directory.`
+      : `Package skill '${rel}/${SKILL_MD}' ${problem}, so it is not served. Fix: make ${rel}/${SKILL_MD} a UTF-8 file inside the package, under the size cap, or remove the directory.`;
 
 /**
  * Read the skills under `<package>/<dirRel>/<name>/SKILL.md`, and name what else
@@ -472,6 +532,7 @@ function scanSkills(
       skills: [],
       warnings: [],
       pastCap: false,
+      isSkill: false,
    };
    const { packageRoot } = scan;
    const manifestEntries = { left: ASSET_MAX_ENTRIES };
@@ -491,6 +552,15 @@ function scanSkills(
    if (escapes) {
       unserved(
          `Skills directory '${dirRel}' resolves outside the package through a link, so it is not served. Fix: copy the skills into the package.`,
+      );
+      return scan;
+   }
+
+   if (entries.some((entry) => entry.name === SKILL_MD)) {
+      const parent = path.posix.dirname(dirRel);
+      scan.isSkill = true;
+      unserved(
+         `this is a skill, not a skill set (it holds a ${SKILL_MD}), so none of it is served. Fix: ${parent === "." ? "move it into a folder and list that folder" : `list its parent folder '${parent}'`}`,
       );
       return scan;
    }
@@ -609,7 +679,7 @@ interface FinishContext {
    walk: AssetWalk;
    /** Bytes of inline Markdown the set still has free. */
    inline: { left: number };
-   warnings: string[];
+   warnings: SetFinding[];
    /** What the strict rules for `assets/` set a whole skill aside for. */
    refusals: string[];
 }
@@ -684,7 +754,9 @@ function inlineMarkdown(
    const problem = nameProblem(d.s, relative, ctx.walk);
    if (problem) {
       ctx.warnings.push(
-         `Package skill file '${shown}' ${problem.why}, so it is not served.`,
+         skipped(
+            `Package skill file '${shown}' ${problem.why}, so it is not served.`,
+         ),
       );
       return;
    }
@@ -695,16 +767,18 @@ function inlineMarkdown(
    );
    if ("problem" in read && read.size === undefined) {
       ctx.warnings.push(
-         `Package skill reference '${shown}' ${read.problem}, so it is not served.`,
+         skipped(
+            `Package skill reference '${shown}' ${read.problem}, so it is not served.`,
+         ),
       );
       return;
    }
    // Decoded text can outgrow the bytes it came from, so the size alone is not the last word.
-   const overBudget = `would take the skill set's Markdown over the ${SKILL_SET_MARKDOWN_MAX_BYTES} byte cap`;
+   const overBudget = `would take the skill set's Markdown over the ${capText(SKILL_SET_MARKDOWN_MAX_BYTES)} cap`;
    const tooBig =
       "problem" in read
          ? read.size! > PACKAGE_SKILL_FILE_MAX_BYTES
-            ? `is ${read.size} bytes, over the ${PACKAGE_SKILL_FILE_MAX_BYTES} byte per-file cap`
+            ? `is ${read.size} bytes, over the ${capText(PACKAGE_SKILL_FILE_MAX_BYTES)} per-file cap`
             : overBudget
          : Buffer.byteLength(read.text) > ctx.inline.left
            ? overBudget
@@ -775,7 +849,9 @@ function readFirst(s: ScannedSkill, ctx: FinishContext): SkillDraft {
       const why = controlChar ? CONTROL_CHARS_WHY : RESERVED_WHY;
       if (isInlineMarkdown(relative)) {
          ctx.warnings.push(
-            `Package skill reference '${shown}' ${why}, so it is not served.`,
+            skipped(
+               `Package skill reference '${shown}' ${why}, so it is not served.`,
+            ),
          );
       } else {
          ctx.walk.skipped.push(`asset '${shown}' is not served: it ${why}`);
@@ -815,7 +891,9 @@ function readRest(d: SkillDraft, ctx: FinishContext): ReadSkill {
       const why = d.instead.get(relative);
       if (why !== undefined) {
          ctx.warnings.push(
-            `Package skill file '${d.s.rel}/${relative}' ${why}, so it is listed instead of inlined.`,
+            finding(
+               `Package skill file '${d.s.rel}/${relative}' ${why}, so it is listed instead of inlined.`,
+            ),
          );
       }
    }
@@ -917,7 +995,7 @@ function listFile(
    const charged = walk.shared.paths.has(shown);
    if (size >= PACKAGE_ASSET_FILE_MAX_BYTES) {
       skip(
-         `it is ${size} bytes, at or over the ${PACKAGE_ASSET_FILE_MAX_BYTES} byte file cap`,
+         `it is ${size} bytes, at or over the ${capText(PACKAGE_ASSET_FILE_MAX_BYTES)} file cap`,
       );
    } else if (walk.files >= SKILL_SET_ASSETS_MAX_FILES) {
       skip(
@@ -925,14 +1003,14 @@ function listFile(
       );
    } else if (walk.bytes + size > SKILL_SET_ASSETS_MAX_BYTES) {
       skip(
-         `it would take the skill set's assets over the ${SKILL_SET_ASSETS_MAX_BYTES} byte per-set cap`,
+         `it would take the skill set's assets over the ${capText(SKILL_SET_ASSETS_MAX_BYTES)} per-set cap`,
       );
    } else if (
       !charged &&
       walk.shared.bytes + walk.newBytes + size > PACKAGE_ASSETS_MAX_BYTES
    ) {
       skip(
-         `it would take the package's assets over the ${PACKAGE_ASSETS_MAX_BYTES} byte per-package cap`,
+         `it would take the package's assets over the ${capText(PACKAGE_ASSETS_MAX_BYTES)} per-package cap`,
       );
    } else {
       let read = walk.shared.reads.get(shown);
@@ -1293,7 +1371,7 @@ export interface SkillSet {
    digest: string;
    skills: SetSkill[];
    /** Each finding as it is published, once per set. */
-   findings: string[];
+   findings: PackageWarning[];
 }
 
 /** A set as a workflow serves it: a skill name an earlier set of the workflow holds is served from that set only. */
@@ -1310,7 +1388,7 @@ export interface PackageWorkflow {
    /** In the order the manifest lists them. */
    sets: WorkflowSet[];
    /** A skill name two of its sets both hold, served from the first-listed set when the workflow is read whole; a read of one set serves that set's copy, so it has none of these. */
-   shadowing: string[];
+   shadowing: PackageWarning[];
    definitionSha: string;
 }
 
@@ -1323,7 +1401,7 @@ export interface PackageWorkflows {
    /** sha256 of the bytes read of each file in `paths`, so the content hash reads nothing again. */
    contentShas: Map<string, string>;
    /** Why each refused workflow is not served, or a served one's shadowing findings, in manifest order; then each set's findings, once. */
-   warnings: string[];
+   warnings: PackageWarning[];
    /** Package-relative paths whose edit changes what is served: each skill set and each instructions file. */
    watched: string[];
    /** A root `skills/` directory exists and no workflow lists it, so nothing reads it. */
@@ -1433,8 +1511,15 @@ function rollBack(ctx: FinishContext, mark: WalkMark): void {
    ctx.inline.left = mark.inline;
 }
 
-const setFinding = (setPath: string, finding: string) =>
-   `Skill set '${setPath}' skill finding: ${finding.replace(/\.$/, "")}.`;
+const setFinding = (
+   setPath: string,
+   { code, message }: SetFinding,
+): PackageWarning =>
+   warning(
+      code,
+      setPath,
+      `Skill set '${setPath}' skill finding: ${message.replace(/\.$/, "")}.`,
+   );
 
 const skillSetAside = (s: ScannedSkill, why: string) =>
    `Package skill '${s.rel}' is not served: ${why}`;
@@ -1456,10 +1541,12 @@ function readSkillSet(
 ): { set: SkillSet; paths: string[]; shas: Map<string, string> } {
    const name = path.posix.basename(setPath);
    const scan = scanSkills(packagePath, setPath, newWalkBudget("skill set"));
-   const found = [...scan.warnings];
-   if (scan.skills.length === 0) {
+   const found = scan.warnings.map(finding);
+   if (scan.skills.length === 0 && !scan.isSkill) {
       found.push(
-         "the skill set holds no skills. Fix: add <skill>/SKILL.md under it or remove the entry",
+         finding(
+            "the skill set holds no skills. Fix: add <skill>/SKILL.md under it or remove the entry",
+         ),
       );
    }
    // A skill the strict assets/ rules set aside is only found after the budget has dropped a later skill for its SKILL.md, so the set is read again without it.
@@ -1481,7 +1568,7 @@ function readSkillSet(
          if (bytes > inlineLeft) {
             overBudget = true;
             findings.push(
-               `Package skill '${s.rel}/${SKILL_MD}' would take the skill set's Markdown over the ${SKILL_SET_MARKDOWN_MAX_BYTES} byte cap, so it is not served. Fix: shorten the skills, or move one to another skill set`,
+               `Package skill '${s.rel}/${SKILL_MD}' would take the skill set's Markdown over the ${capText(SKILL_SET_MARKDOWN_MAX_BYTES)} cap, so it is not served. Fix: shorten the skills, or move one to another skill set`,
             );
             continue;
          }
@@ -1520,7 +1607,7 @@ function readSkillSet(
       pass = fit();
    }
    const { walk, ctx, drafts } = pass;
-   found.push(...pass.findings);
+   found.push(...pass.findings.map(finding));
    const skills = drafts
       .map((d) => readRest(d, ctx))
       .map(
@@ -1573,7 +1660,9 @@ function readSkillSet(
             ...cappedFindings([...found, ...ctx.warnings]),
             ...(scan.pastCap
                ? [
-                    `the skill set holds more than ${SKILLS_PER_SET_MAX} skill directories, so the first ${SKILLS_PER_SET_MAX} by name are served and the rest are not read. Fix: move some to another skill set`,
+                    finding(
+                       `the skill set holds more than ${SKILLS_PER_SET_MAX} skill directories, so the first ${SKILLS_PER_SET_MAX} by name are served and the rest are not read. Fix: move some to another skill set`,
+                    ),
                  ]
                : []),
             ...skippedWarnings(walk),
@@ -1613,7 +1702,9 @@ function checkSkillSetRoot(
       isDirectory = fs.statSync(rootInside).isDirectory();
    } catch (error) {
       if (!isAuthorPathError(error)) throw error;
-      throw new WorkflowProblem(`skill set directory '${root}' does not exist`);
+      throw new WorkflowProblem(
+         `skill set directory '${root}' ${pathFault(error)}`,
+      );
    }
    if (!isDirectory) {
       throw new WorkflowProblem(
@@ -1817,7 +1908,11 @@ export function workflowFileServed(
 }
 
 const refusal = (name: string, why: string) =>
-   `Workflow '${name}' is not served: ${why}. Fix: correct the 'workflows.${name}' entry in publisher.json and the files it names.`;
+   warning(
+      WORKFLOW_NOT_SERVED,
+      name,
+      `Workflow '${name}' is not served: ${why}. Fix: correct the 'workflows.${name}' entry in publisher.json and the files it names.`,
+   );
 
 const cannotRead = (error: unknown, packagePath: string) =>
    callerVisibleText(
@@ -1830,6 +1925,7 @@ function unavailableWorkflows(
    raw: unknown,
    reason: string,
    declared?: string[],
+   refusals: PackageWarning[] = [],
 ): PackageWorkflows {
    let watched: string[] = [];
    try {
@@ -1843,6 +1939,7 @@ function unavailableWorkflows(
    return {
       ...emptyWorkflows(),
       watched,
+      warnings: refusals,
       unavailable: { reason, declared: declared ?? [] },
    };
 }
@@ -1883,9 +1980,13 @@ function walkPackageWorkflows(
    };
    if (raw === undefined) return result;
    if (!isObject(raw)) {
-      result.warnings.push(
-         'Package manifest \'workflows\' must be an object keyed by workflow name, so no workflow is served. Fix: write "workflows": { "<name>": { "description": ..., "instructions": ..., "skillSets": [...] } }.',
-      );
+      result.warnings.push({
+         severity: "warn",
+         message:
+            raw === UNREADABLE_DECLARATION
+               ? `Package manifest 'workflows' is too deeply nested or over ${capText(MANIFEST_WORKFLOWS_MAX_BYTES)}, so no workflow is served. Fix: shorten it; a real declaration is a few KiB.`
+               : 'Package manifest \'workflows\' must be an object keyed by workflow name, so no workflow is served. Fix: write "workflows": { "<name>": { "description": ..., "instructions": ..., "skillSets": [...] } }.',
+      });
       return result;
    }
    let packageRoot: string;
@@ -1897,7 +1998,7 @@ function walkPackageWorkflows(
    }
    const entries = Object.entries(raw);
    // By manifest position, so the warnings read in manifest order.
-   const notes: string[][] = entries.map(() => []);
+   const notes: PackageWarning[][] = entries.map(() => []);
    const declared = new Map<string, DeclaredWorkflow>();
    const checks = newPathChecks();
    const refused = new Set<string>();
@@ -1923,6 +2024,7 @@ function walkPackageWorkflows(
          raw,
          cannotRead(unreadable, packagePath),
          entries.map(([name]) => name).filter((name) => !refused.has(name)),
+         notes.flat(),
       );
    }
 
@@ -1932,7 +2034,7 @@ function walkPackageWorkflows(
       reads: new Map(),
    };
    const advertised = new Set(declared.get(DEFAULT_WORKFLOW)?.sets);
-   const findings: string[] = [];
+   const findings: PackageWarning[] = [];
    const setPaths = [...new Set([...declared.values()].flatMap((w) => w.sets))];
    for (const setPath of setPaths.sort(compareText)) {
       let one: ReturnType<typeof readSkillSet>;
@@ -1949,6 +2051,7 @@ function walkPackageWorkflows(
             raw,
             `skill set directory '${setPath}' cannot be read (${cannotRead(error, packagePath)})`,
             [...declared.keys()],
+            notes.flat(),
          );
       }
       result.sets.set(setPath, one.set);
@@ -1966,7 +2069,7 @@ function walkPackageWorkflows(
    entries.forEach(([name], i) => {
       const decl = declared.get(name);
       if (!decl) return;
-      const shadowing: string[] = [];
+      const shadowing: PackageWarning[] = [];
       const holder = new Map<string, string>();
       const sets = decl.sets.map((setPath): WorkflowSet => {
          const set = result.sets.get(setPath)!;
@@ -1977,7 +2080,11 @@ function walkPackageWorkflows(
                return true;
             }
             shadowing.push(
-               `Workflow '${name}' lists skill '${skill.dirName}' in both '${first}' and '${setPath}'; the copy in '${first}', listed first, is the one served.`,
+               warning(
+                  SKILL_SHADOWED,
+                  name,
+                  `Workflow '${name}' lists skill '${skill.dirName}' in both '${first}' and '${setPath}'; the copy in '${first}', listed first, is the one served.`,
+               ),
             );
             return false;
          });

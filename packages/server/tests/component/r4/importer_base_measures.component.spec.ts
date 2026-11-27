@@ -157,9 +157,7 @@ for (const shape of SHAPES) {
 
       it("raises no served-copy problem in any model", () => {
          const warnings = (
-            (fixture?.pkg.getPackageMetadata().warnings ?? []) as {
-               code?: string;
-            }[]
+            fixture?.pkg.getPackageMetadata().warnings ?? []
          ).filter((w) => w.code === "served-copy-not-served");
          expect(warnings).toEqual([]);
          for (const model of shape.via) {
