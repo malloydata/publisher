@@ -24,8 +24,8 @@ export const isReferenceDir = (name: string): boolean =>
 const ASSETS_DIR = "assets";
 const SKILLIGNORE = ".skillignore";
 const SKILLIGNORE_MAX_BYTES = 16 * 1024;
-/** Open flags for a file whose path may be swapped under the read: no link followed, no wait on a FIFO, no controlling terminal. Windows defines none of these, so the caller's regular-file check is its guard. */
-export const READ_UNFOLLOWED_FLAGS =
+/** Open flags for a file whose path may be swapped under the read: no link followed, no wait on a FIFO, no controlling terminal. Windows defines none of these: its guard is the caller's `lstat` (`.skillignore`) or sha check (`readListedFile`). */
+export const readUnfollowedFlags = (): number =>
    fs.constants.O_RDONLY |
    (fs.constants.O_NOFOLLOW ?? 0) |
    (fs.constants.O_NONBLOCK ?? 0) |
@@ -214,11 +214,14 @@ function stars(pattern: string): number {
       );
 }
 
+const SKILLIGNORE_LINK = `${SKILLIGNORE} is a link or not a regular file, so it is ignored`;
+
+/** Where `O_NOFOLLOW` is undefined (Windows), `open` follows a link, so the path is checked first. */
+const mustCheckForLink = (): boolean => fs.constants.O_NOFOLLOW === undefined;
+
 /** Why a `.skillignore` that exists is not read, or undefined when it is a regular file within the cap. */
 function skillignoreRefusal(stat: fs.Stats): string | undefined {
-   if (!stat.isFile()) {
-      return `${SKILLIGNORE} is a link or not a regular file, so it is ignored`;
-   }
+   if (!stat.isFile()) return SKILLIGNORE_LINK;
    return stat.size > SKILLIGNORE_MAX_BYTES
       ? `${SKILLIGNORE} is ${stat.size} bytes, over the ${capText(SKILLIGNORE_MAX_BYTES)} cap, so it is ignored`
       : undefined;
@@ -240,9 +243,7 @@ function skillignoreFailure(error: unknown, warnings: string[]): null {
    const code = errorCode(error);
    // `O_NOFOLLOW` answers a link with ELOOP.
    if (code === "ELOOP") {
-      warnings.push(
-         `${SKILLIGNORE} is a link or not a regular file, so it is ignored`,
-      );
+      warnings.push(SKILLIGNORE_LINK);
    } else if (code !== "ENOENT") {
       warnings.push(`${SKILLIGNORE} cannot be read (${code})`);
    }
@@ -253,7 +254,12 @@ function skillignoreFailure(error: unknown, warnings: string[]): null {
 function readSkillignoreSync(dir: string, warnings: string[]): string | null {
    let fd: number | undefined;
    try {
-      fd = fs.openSync(path.join(dir, SKILLIGNORE), READ_UNFOLLOWED_FLAGS);
+      const file = path.join(dir, SKILLIGNORE);
+      if (mustCheckForLink() && fs.lstatSync(file).isSymbolicLink()) {
+         warnings.push(SKILLIGNORE_LINK);
+         return null;
+      }
+      fd = fs.openSync(file, readUnfollowedFlags());
       const refusal = skillignoreRefusal(fs.fstatSync(fd));
       if (refusal) {
          warnings.push(refusal);
@@ -293,10 +299,15 @@ async function readSkillignoreText(
 ): Promise<string | null> {
    let handle: fs.promises.FileHandle | undefined;
    try {
-      handle = await fs.promises.open(
-         path.join(dir, SKILLIGNORE),
-         READ_UNFOLLOWED_FLAGS,
-      );
+      const file = path.join(dir, SKILLIGNORE);
+      if (
+         mustCheckForLink() &&
+         (await fs.promises.lstat(file)).isSymbolicLink()
+      ) {
+         warnings.push(SKILLIGNORE_LINK);
+         return null;
+      }
+      handle = await fs.promises.open(file, readUnfollowedFlags());
       const refusal = skillignoreRefusal(await handle.stat());
       if (refusal) {
          warnings.push(refusal);

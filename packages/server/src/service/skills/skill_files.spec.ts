@@ -17,6 +17,17 @@ import {
    type SkillFilesResult,
 } from "./skill_files";
 
+/** Runs `body` as on a platform that defines no `O_NOFOLLOW` (Windows), the only way Linux covers that branch. */
+async function withoutNofollow<T>(body: () => T | Promise<T>): Promise<T> {
+   const saved = fs.constants.O_NOFOLLOW;
+   (fs.constants as { O_NOFOLLOW?: number }).O_NOFOLLOW = undefined;
+   try {
+      return await body();
+   } finally {
+      (fs.constants as { O_NOFOLLOW?: number }).O_NOFOLLOW = saved;
+   }
+}
+
 describe("skillFiles", () => {
    let dir: string;
 
@@ -324,6 +335,48 @@ describe("skillFiles", () => {
             expect(result.warnings[0]).toContain("link");
          } finally {
             fs.rmSync(outside, { recursive: true, force: true });
+         }
+      });
+
+      it("ignores a .skillignore that is a symlink where the platform has no O_NOFOLLOW, as a walk always has", async () => {
+         write("SKILL.md");
+         write("a.txt");
+         fs.writeFileSync(path.join(dir, "real-ignore"), "a.txt");
+         fs.symlinkSync(
+            path.join(dir, "real-ignore"),
+            path.join(dir, ".skillignore"),
+         );
+         await withoutNofollow(() => {
+            const result = skillFiles(dir);
+            expect(result.files).toContain("a.txt");
+            expect(result.skillignore).toBeNull();
+            expect(result.warnings).toHaveLength(1);
+            expect(result.warnings[0]).toContain("link");
+         });
+      });
+
+      it("ignores a .skillignore that outgrew the cap after its stat, with a warning", () => {
+         write("a.txt");
+         write(".skillignore", `a.txt\n${"# pad\n".repeat(3500)}`);
+         const real = fs.fstatSync;
+         const spy = spyOn(fs, "fstatSync").mockImplementationOnce(((
+            fd: number,
+         ) =>
+            Object.assign(
+               Object.create(Object.getPrototypeOf(real(fd))),
+               real(fd),
+               {
+                  size: 10,
+               },
+            )) as typeof fs.fstatSync);
+         try {
+            const result = skillFiles(dir);
+            expect(result.files).toEqual(["a.txt"]);
+            expect(result.skillignore).toBeNull();
+            expect(result.warnings).toHaveLength(1);
+            expect(result.warnings[0]).toContain("grew past");
+         } finally {
+            spy.mockRestore();
          }
       });
 
@@ -1082,7 +1135,10 @@ describe("skillFiles", () => {
                spy.mock.calls.filter(([file]) =>
                   String(file).endsWith(".skillignore"),
                );
-            expect(named(spies[0]!)).toEqual([]);
+            // Without O_NOFOLLOW the path is checked for a link first.
+            if (fs.constants.O_NOFOLLOW !== undefined) {
+               expect(named(spies[0]!)).toEqual([]);
+            }
             expect(named(spies[1]!)).toEqual([]);
             const opens = named(spies[2]!);
             expect(opens).toHaveLength(1);
@@ -1198,6 +1254,17 @@ describe("mayChangeSkill", () => {
       expect(await mayChangeSkillExactly(dir, "data/raw.log")).toBe(true);
    });
 
+   it("applies no linked .skillignore where the platform has no O_NOFOLLOW, as a walk always has", async () => {
+      fs.writeFileSync(path.join(dir, "real-ignore"), "*.log\n");
+      fs.symlinkSync(
+         path.join(dir, "real-ignore"),
+         path.join(dir, ".skillignore"),
+      );
+      await withoutNofollow(async () => {
+         expect(await mayChangeSkillExactly(dir, "data/raw.log")).toBe(true);
+      });
+   });
+
    it.skipIf(process.platform === "win32")(
       "applies no .skillignore that is a FIFO, and does not wait on it",
       async () => {
@@ -1220,7 +1287,9 @@ describe("mayChangeSkill", () => {
             spy.mock.calls.filter(([file]) =>
                String(file).endsWith(".skillignore"),
             );
-         expect(named(spies[0]!)).toEqual([]);
+         if (fs.constants.O_NOFOLLOW !== undefined) {
+            expect(named(spies[0]!)).toEqual([]);
+         }
          expect(named(spies[1]!)).toEqual([]);
          expect(named(spies[2]!)).toHaveLength(1);
       } finally {

@@ -22,7 +22,7 @@ import {
    mayChangeSkill,
    mayChangeSkillExactly,
    newWalkBudget,
-   READ_UNFOLLOWED_FLAGS,
+   readUnfollowedFlags,
    REFERENCE_DIRS,
    SKILL_MD,
    skillFiles,
@@ -1325,7 +1325,7 @@ async function readListedFile(
    try {
       handle = await fs.promises.open(
          path.join(packagePath, skillRel, relative),
-         READ_UNFOLLOWED_FLAGS,
+         readUnfollowedFlags(),
       );
       const stat = await handle.stat();
       if (!stat.isFile() || stat.size > PACKAGE_ASSET_FILE_MAX_BYTES - 1) {
