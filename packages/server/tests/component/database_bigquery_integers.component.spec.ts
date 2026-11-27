@@ -97,6 +97,12 @@ function standInBigQuery(name: string): Connection {
                   }
                 : { rows: [], totalRows: 0 },
    });
+   // The plan's container check reads the dataset's metadata through the
+   // client; answer it here (the dataset exists) rather than over the
+   // network, where a 404 for the stand-in project refuses every table.
+   Object.assign((connection as unknown as { bigQuery: object }).bigQuery, {
+      dataset: () => ({ getMetadata: async () => [{}] }),
+   });
    return connection;
 }
 
