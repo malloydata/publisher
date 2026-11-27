@@ -29,6 +29,10 @@ import {
    typeVariants,
    writeTableAs,
 } from "./storage_table_load";
+import {
+   createIsolatedBuildSession,
+   type IsolatedSessionConnection,
+} from "./materialization_build_session";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -453,20 +457,20 @@ describe("objectUnreadable: the reader failures a retry cannot cure", () => {
  * Postgres catalog.
  */
 describe("writeTableAs: the load's and the copy's write", () => {
-   let lake: TempDuckDB | undefined;
+   let lake: ReturnType<typeof createIsolatedBuildSession> | undefined;
    afterEach(async () => {
       if (!lake) return;
-      await lake.connection.runSQL("DETACH lake");
+      await lake.session.runSQL("DETACH lake");
       await lake.dispose();
       lake = undefined;
    });
 
    /** `inliningLimit`: a limit the catalog records itself, as a POST can set. */
-   async function attached(inliningLimit?: number): Promise<DuckDBConnection> {
-      lake = openTempDuckDB("write-table-as-", "write_as", {
-         file: "host.duckdb",
-      });
-      const { connection: conn, dir } = lake;
+   async function attached(
+      inliningLimit?: number,
+   ): Promise<IsolatedSessionConnection> {
+      lake = createIsolatedBuildSession("write_as");
+      const { session: conn, workDir: dir } = lake;
       await conn.runSQL("INSTALL ducklake");
       await conn.runSQL("LOAD ducklake");
       const limit =

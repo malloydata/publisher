@@ -26,6 +26,7 @@ import {
    FixedConnectionMap,
    type Runtime,
    type PersistSource,
+   type QueryRecord,
    MalloyError,
 } from "@malloydata/malloy";
 import { leaveOutDefinitionAt } from "../text/declarations_kept";
@@ -50,6 +51,7 @@ import {
 import { logger } from "../../../logger";
 import { errorCodeOf } from "../../../error_code";
 import { errMessage } from "../../../utils";
+import { tokenizeDuckDBSQL } from "../../duckdb_lockdown";
 import {
    quoteIdentifier,
    quoteManifestTablePath,
@@ -314,6 +316,135 @@ export function removeStaleBuildDirs(
 }
 
 /**
+ * The error types DuckDB does not abort a transaction on
+ * (`Exception::InvalidatesTransaction`), matched by message prefix because
+ * node-api exposes no error type.
+ */
+const TRANSACTION_SAFE_ERROR =
+   /^(Binder|Catalog|Connection|Parameter Not Allowed|Parser|Permission) Error:/;
+
+/** The two error types that invalidate a DuckDB instance, which an outer error can quote. */
+const FATAL_ERROR = /\b(INTERNAL|FATAL) Error:/;
+
+/** Whether `sql` is a ROLLBACK (or its alias ABORT), the one statement a refusing session still runs. */
+function isRollback(sql: string): boolean {
+   const [verb, ...rest] = tokenizeDuckDBSQL(sql).filter(
+      (token) => token.kind !== "comment",
+   );
+   return (
+      verb?.kind === "word" &&
+      (verb.value === "rollback" || verb.value === "abort") &&
+      rest.every(
+         (token) =>
+            (token.kind === "word" && token.value === "transaction") ||
+            (token.kind === "punct" && token.value === ";"),
+      )
+   );
+}
+
+/**
+ * The connection of a build-scoped session. It opens its instance with
+ * `disable_database_invalidation`, so an INTERNAL or FATAL error fails its
+ * statement and the instance lives. Otherwise DuckDB 1.5 refuses the
+ * ROLLBACK, and the ClientContext destructor's DuckLake rollback throws and
+ * aborts the process (DuckDB issue 26132, fixed in 2.0). The setting also lifts
+ * DuckDB's refusal of statements after an error, which this class restores:
+ * after a fatal error, an error that aborts the open transaction, or a cancel,
+ * every statement but a rollback is refused. Revisit both on DuckDB >= 2.0.1.
+ */
+export class IsolatedSessionConnection extends DuckDBConnection {
+   /** The first INTERNAL or FATAL error: permanent. */
+   private fatalError: Error | undefined;
+   /** The error that aborted the open transaction: cleared by a rollback. */
+   private abortedBy: Error | undefined;
+   private transactionOpen = false;
+   private cancelled = false;
+
+   /** The first fatal error the session latched. */
+   get fatal(): Error | undefined {
+      return this.fatalError;
+   }
+
+   /** `inTransaction`'s own BEGIN and COMMIT mark it; the session does not parse them. */
+   markTransaction(open: boolean): void {
+      this.transactionOpen = open;
+   }
+
+   /** Refuse everything but a rollback from now on ({@link interruptOnAbort}). */
+   cancel(): void {
+      this.cancelled = true;
+   }
+
+   protected override async runDuckDBQuery(
+      sql: string,
+   ): Promise<{ rows: QueryRecord[]; totalRows: number }> {
+      const rollback = isRollback(sql);
+      if (!rollback) this.refuseIfEnded();
+      try {
+         return await super.runDuckDBQuery(sql);
+      } catch (err) {
+         this.latch(err, rollback);
+         throw err;
+      } finally {
+         // DuckDB clears the transaction before it rolls back, so even a failed rollback leaves none open.
+         if (rollback) {
+            this.abortedBy = undefined;
+            this.transactionOpen = false;
+         }
+      }
+   }
+
+   private refuseIfEnded(): void {
+      if (this.cancelled) throw new BuildCancelledError();
+      if (this.fatalError) {
+         throw new Error(
+            "The build session refuses statements after a fatal DuckDB error",
+            { cause: this.fatalError },
+         );
+      }
+      if (this.abortedBy) {
+         throw new Error(
+            "The build session's transaction was aborted by an earlier error and can only be rolled back",
+            { cause: this.abortedBy },
+         );
+      }
+   }
+
+   private latch(err: unknown, rollback: boolean): void {
+      const error = err instanceof Error ? err : new Error(String(err));
+      if (FATAL_ERROR.test(error.message)) {
+         this.fatalError ??= error;
+      } else if (
+         this.transactionOpen &&
+         !rollback &&
+         !TRANSACTION_SAFE_ERROR.test(error.message)
+      ) {
+         this.abortedBy ??= error;
+      }
+   }
+}
+
+// db-duckdb's option builder is private and has no hook for an instance setting.
+// It is looked up when called, never captured: Publisher patches it (thread cap, open-time lockdown) and that must still apply.
+// It runs inside the base constructor, so it reads no field of the subclass.
+type InstanceOptionsBuilder = (opts?: unknown) => Record<string, string>;
+(
+   IsolatedSessionConnection.prototype as unknown as {
+      buildInstanceOptions: InstanceOptionsBuilder;
+   }
+).buildInstanceOptions = function (this: DuckDBConnection, opts?: unknown) {
+   const base = (
+      DuckDBConnection.prototype as unknown as {
+         buildInstanceOptions: InstanceOptionsBuilder;
+      }
+   ).buildInstanceOptions;
+   return {
+      ...base.call(this, opts),
+      disable_database_invalidation: "true",
+   };
+};
+
+/**
  * A build-scoped DuckDB session on its OWN in-memory instance, plus a disposer
  * that closes it and removes its throwaway working directory.
  *
@@ -332,7 +463,7 @@ export function removeStaleBuildDirs(
  * spill (`temp_directory`) and nothing else; removal on dispose is best-effort.
  */
 export function createIsolatedBuildSession(sessionName: string): {
-   session: DuckDBConnection;
+   session: IsolatedSessionConnection;
    dispose: () => Promise<void>;
    /**
     * The session's private working directory. Returned so the caller can point
@@ -348,21 +479,27 @@ export function createIsolatedBuildSession(sessionName: string): {
    // The disposer that owns removing workDir does not exist until this function
    // returns, so a throw from the constructor would strand the directory with
    // nothing left holding a reference to it.
-   let session: DuckDBConnection;
+   let session: IsolatedSessionConnection;
    try {
       // Lifts db-duckdb's default `rowLimit` of 10, which `runSQL` enforces by
       // slicing. `DESCRIBE` and `duckdb_columns()` return one row per COLUMN, so
       // the default would truncate a wide table's schema: the delta path would
       // see a shape mismatch and rebuild forever, and the manifest would declare
       // a short schema.
-      session = new DuckDBConnection(sessionName, ":memory:", workDir, {
-         rowLimit: Number.MAX_SAFE_INTEGER,
-      });
+      session = new IsolatedSessionConnection(
+         sessionName,
+         ":memory:",
+         workDir,
+         {
+            rowLimit: Number.MAX_SAFE_INTEGER,
+         },
+      );
    } catch (err) {
       rmSync(workDir, { recursive: true, force: true });
       throw err;
    }
    const dispose = async () => {
+      await rollbackBeforeDisconnect(session, sessionName);
       // `close()` alone does not end the session: the node-api Connection's C++
       // ClientContext keeps the instance refcount above zero, so the database —
       // with the destination ATTACH and federated source credentials — survives
@@ -372,7 +509,7 @@ export function createIsolatedBuildSession(sessionName: string): {
       // layer holds weak_ptrs to the Connection). A build session is
       // server-owned and single-use, so it can.
       // Reached through a cast because the handle is library-internal; use an
-      // explicit hard-close if db-duckdb adds one.
+      // explicit hard-close if db-duckdb adds one. Read after the rollback: an init that finished during it would leave an earlier read null.
       const nodeConnection = (
          session as unknown as { connection?: { disconnectSync?: () => void } }
       ).connection;
@@ -405,6 +542,49 @@ export function createIsolatedBuildSession(sessionName: string): {
    return { session, dispose, workDir };
 }
 
+/** An error DuckDB itself answered, as `no transaction is active` is. */
+const DUCKDB_ERROR = /^[A-Za-z ]+ Error:/;
+
+/** A session already closed, or not yet open: a second dispose, or one before any statement. */
+const SESSION_CLOSED =
+   /^Connection not open$|^DuckDB connection ".*" is closed$/;
+
+/**
+ * Roll back whatever `session` left open before it is disconnected: the
+ * disconnect's destructor rolls an open DuckLake transaction back itself, and
+ * a failure there throws past the destructor and aborts the process. DuckDB
+ * clears the transaction before it rolls back, so this protects even when the
+ * ROLLBACK fails. Never throws.
+ */
+async function rollbackBeforeDisconnect(
+   session: IsolatedSessionConnection,
+   sessionName: string,
+): Promise<void> {
+   if (session.fatal) {
+      logger.error("A fatal DuckDB error ended a build session", {
+         sessionName,
+         code: errorCodeOf(session.fatal),
+      });
+   }
+   try {
+      // Queues behind a statement still in flight; no isolated session streams, which is what would hold the gate.
+      await session.runRawSQL("ROLLBACK");
+   } catch (err) {
+      const message = errMessage(err);
+      if (DUCKDB_ERROR.test(message)) {
+         logger.debug("The rollback before a build session closed failed", {
+            sessionName,
+            code: errorCodeOf(err),
+         });
+      } else if (!SESSION_CLOSED.test(message)) {
+         logger.warn("Could not roll back a build session before closing it", {
+            sessionName,
+            code: errorCodeOf(err),
+         });
+      }
+   }
+}
+
 /**
  * Pin a build session's timezone before any predicate is rendered against it.
  *
@@ -431,7 +611,7 @@ export async function pinSessionToUTC(
  */
 export async function withIsolatedSession<T>(
    sessionName: string,
-   fn: (session: DuckDBConnection) => Promise<T>,
+   fn: (session: IsolatedSessionConnection) => Promise<T>,
 ): Promise<T> {
    const { session, dispose, workDir } =
       createIsolatedBuildSession(sessionName);
@@ -494,7 +674,7 @@ export async function withDestinationSession<T>(
          destinationConnection: ApiConnection;
       }[];
    },
-   fn: (session: DuckDBConnection) => Promise<T>,
+   fn: (session: IsolatedSessionConnection) => Promise<T>,
 ): Promise<T> {
    const { destinationName, destinationConnection, environmentPath } =
       destination;
@@ -512,7 +692,9 @@ export async function withDestinationSession<T>(
       },
    );
 
-   async function onDestinationSession(session: DuckDBConnection): Promise<T> {
+   async function onDestinationSession(
+      session: IsolatedSessionConnection,
+   ): Promise<T> {
       if (options.readOnly) {
          await attachDestinationReadOnly(
             session,
@@ -609,7 +791,7 @@ export async function applyLoadSessionSettings(
       `memory_limit='${escapeSQL(memoryLimit)}'`,
       `max_temp_directory_size='${escapeSQL(settings.get("admin.maxTempDirectorySize"))}'`,
       "preserve_insertion_order=false",
-      // No parquet_metadata_cache: DuckDB 1.5.5 fails the second read of an encrypted file it cached.
+      // No parquet_metadata_cache: DuckDB < 2.0 fails the second read of an encrypted file it cached (DuckDB issue 24311).
       "enable_http_metadata_cache=true",
    ]) {
       await session.runSQL(`SET ${setting}`);
@@ -692,24 +874,21 @@ export function createLocalDataPaths(
  * Stop `session`'s work when `signal` aborts (now, if it already has), until
  * the returned function is called. A statement in flight is interrupted,
  * and DuckDB stops it at its next poll; every statement after the abort is
- * refused with {@link BuildCancelledError} before it starts, so an abort that
- * lands while the session is idle (between the federation and the CTAS, say)
- * is not lost. A read DuckDB makes through a warehouse extension
- * (BigQuery's) is not cancelled in the warehouse by the interrupt: a
- * BigQuery build cancels its jobs itself (passthrough/bigquery.ts).
+ * refused with {@link BuildCancelledError} before it starts (a rollback is
+ * not, so a transaction ends in place), so an abort that lands while the
+ * session is idle (between the federation and the CTAS, say) is not lost. A
+ * read DuckDB makes through a warehouse extension (BigQuery's) is not
+ * cancelled in the warehouse by the interrupt: a BigQuery build cancels its
+ * jobs itself (passthrough/bigquery.ts).
  */
 export function interruptOnAbort(
-   session: DuckDBConnection,
+   session: IsolatedSessionConnection,
    signal: AbortSignal | undefined,
 ): () => void {
    if (!signal) return () => {};
-   const original = session.runSQL;
-   const guarded: typeof session.runSQL = (...args) =>
-      signal.aborted
-         ? Promise.reject(new BuildCancelledError())
-         : original.apply(session, args);
-   session.runSQL = guarded;
    const interrupt = () => {
+      // Single-use: the session stays cancelled after the release.
+      session.cancel();
       // The node-api connection is library-internal, as in dispose.
       const connection = (
          session as unknown as { connection?: { interrupt?: () => void } }
@@ -722,10 +901,7 @@ export function interruptOnAbort(
          });
       }
    };
-   const release = () => {
-      signal.removeEventListener("abort", interrupt);
-      if (session.runSQL === guarded) session.runSQL = original;
-   };
+   const release = () => signal.removeEventListener("abort", interrupt);
    if (signal.aborted) {
       interrupt();
       return release;
@@ -1033,7 +1209,7 @@ export async function buildSourceIntoStorage(params: {
  */
 async function buildOnFederatedSession(
    params: Parameters<typeof buildSourceIntoStorage>[0],
-   session: DuckDBConnection,
+   session: IsolatedSessionConnection,
    sourceType: FederatedSourceType,
    handle: string,
 ): Promise<StorageBuildResult> {
@@ -1655,7 +1831,7 @@ export async function buildProjectionIntoStorage(params: {
 
 /** CTAS a stacked build's SQL into the destination, typed as a build from the definition types it. */
 async function writeStackedTable(
-   session: DuckDBConnection,
+   session: IsolatedSessionConnection,
    params: {
       destinationName: string;
       destinationConnection: ApiConnection;
@@ -1886,7 +2062,7 @@ function sourceFederationConfig(sourceConnection: ApiConnection): {
  * paid only by a source whose data the cast rejects.
  */
 export async function createTableWithDeclaredTypes(
-   session: DuckDBConnection,
+   session: IsolatedSessionConnection,
    quotedTablePath: string,
    selectSQL: string,
    declared: { columns: readonly DeclaredColumn[] } & BuildCastOptions,
@@ -2051,7 +2227,7 @@ async function columnsToCast(
  * otherwise find: the caller records nothing until this returns).
  */
 export async function createTableAndDescribe(
-   session: DuckDBConnection,
+   session: IsolatedSessionConnection,
    quotedTablePath: string,
    selectSQL: string,
    options: {
@@ -2183,7 +2359,7 @@ const PARTITIONED_WRITE_FLUSH_THRESHOLD = 8192;
  * low flush threshold ({@link PARTITIONED_WRITE_FLUSH_THRESHOLD}).
  */
 export async function writePartitionedTable(
-   session: DuckDBConnection,
+   session: IsolatedSessionConnection,
    params: {
       quotedTablePath: string;
       selectSQL: string;
@@ -2234,16 +2410,18 @@ export async function writePartitionedTable(
  * the error that caused it.
  */
 export async function inTransaction<T>(
-   session: DuckDBConnection,
+   session: IsolatedSessionConnection,
    quotedTablePath: string,
    body: () => Promise<T>,
    rollbackFailure = "Failed to roll back a storage build; the served generation may have been replaced",
 ): Promise<T> {
+   session.markTransaction(true);
    await session.runSQL("BEGIN TRANSACTION");
    let result: T;
    try {
       result = await body();
       await session.runSQL("COMMIT");
+      session.markTransaction(false);
    } catch (buildErr) {
       try {
          await session.runSQL("ROLLBACK");

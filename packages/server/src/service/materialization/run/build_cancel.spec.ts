@@ -38,8 +38,13 @@ describe("P5-10: a cancelled run stops its read", () => {
          await expect(read).rejects.toThrow(/interrupt/i);
          expect(Date.now() - started).toBeLessThan(10_000);
          stop();
-         // The session is usable again once the interrupted statement ends.
-         await expect(session.runSQL("SELECT 1 AS one")).resolves.toBeDefined();
+         // A cancelled session is single-use: it refuses all but a rollback, released or not.
+         await expect(session.runSQL("SELECT 1 AS one")).rejects.toBeInstanceOf(
+            BuildCancelledError,
+         );
+         await expect(session.runSQL("ROLLBACK")).rejects.toThrow(
+            /no transaction is active/i,
+         );
       } finally {
          await dispose();
       }

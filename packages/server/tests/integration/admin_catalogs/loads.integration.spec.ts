@@ -34,7 +34,10 @@ import {
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
 } from "../../../src/service/connection";
-import { createIsolatedBuildSession } from "../../../src/service/materialization/run/materialization_build_session";
+import {
+   createIsolatedBuildSession,
+   inTransaction,
+} from "../../../src/service/materialization/run/materialization_build_session";
 import { canonicalSha } from "../../../src/service/package_revision";
 import {
    CommittedLoadError,
@@ -123,24 +126,34 @@ describe.skipIf(!SUPERUSER)("loads", () => {
       ).rows;
    }
 
-   /** A DuckLake session on the catalog database, as a replica's would be. */
-   async function attached(
+   /** A DuckLake session on a catalog database (the suite's by default), with its own disposer. */
+   async function openSession(
       name: string,
       mode: "read" | "write",
       catalog = CATALOG,
-   ): Promise<DuckDBConnection> {
+      connectionString = conninfo,
+   ) {
       const { session, dispose } = createIsolatedBuildSession(name);
       disposers.push(dispose);
       const config = {
          catalog: {
-            postgresConnection: { connectionString: conninfo },
+            postgresConnection: { connectionString },
             metadataSchema: catalog,
          },
       } as Parameters<typeof attachDuckLakeReadOnly>[2];
       await (
          mode === "read" ? attachDuckLakeReadOnly : attachDuckLakeReadWrite
       )(session, catalog, config);
-      return session;
+      return { session, dispose };
+   }
+
+   /** A DuckLake session on the catalog database, as a replica's would be. */
+   async function attached(
+      name: string,
+      mode: "read" | "write",
+      catalog = CATALOG,
+   ): Promise<DuckDBConnection> {
+      return (await openSession(name, mode, catalog)).session;
    }
 
    const load = async (
@@ -2243,6 +2256,133 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             expect(wPass).not.toMatch(/\bv\b/);
          },
       );
+   });
+
+   describe("a session that cannot finish its transaction", () => {
+      /** The first rejection of `run`, or undefined when it resolves. */
+      const failure = (run: Promise<unknown>) =>
+         run.then(
+            () => undefined,
+            (e: unknown) => e as Error,
+         );
+
+      it("fails on a fatal DuckDB error, rolls back through Postgres, and leaves the table to the next merge", async () => {
+         const first = await parquet(
+            "SELECT i AS id, 'v' || i AS v FROM range(1, 4) t(i)",
+         );
+         await merge("fatal", [first]);
+         expect(await dataFiles("fatal")).toBeGreaterThan(0);
+         const { session, dispose } = await openSession("loads_fatal", "write");
+         // DuckDB 1.5.5 fails the second read of an encrypted Parquet file it cached (duckdb#24311).
+         await session.runSQL("SET parquet_metadata_cache = true");
+         const table = `${CATALOG}.s.fatal`;
+         const error = await failure(
+            inTransaction(session, table, async () => {
+               await session.runSQL(`INSERT INTO ${table} VALUES (99, 'x')`);
+               await session.runSQL(`SELECT * FROM ${table}`);
+               await session.runSQL(`SELECT * FROM ${table}`);
+            }),
+         );
+         expect(
+            error?.message,
+            "The second read no longer fails: DuckDB fixed duckdb#24311 (v2.0.0), so this case needs another fatal trigger",
+         ).toContain("INTERNAL Error");
+         await dispose();
+         expect(await rowsOf("fatal")).toEqual([
+            { id: 1, v: "v1" },
+            { id: 2, v: "v2" },
+            { id: 3, v: "v3" },
+         ]);
+         const second = await parquet(
+            "SELECT * FROM (VALUES (3, 'changed'), (4, 'v4')) t(id, v)",
+         );
+         expect(await merge("fatal", [second])).toMatchObject({
+            rowsInserted: 1,
+            rowsReplaced: 1,
+            rowCount: 4,
+         });
+      });
+
+      it("fails when the catalog's metadata connection dies mid-transaction, and the catalog serves the next operation", async () => {
+         const deadDb = `loads_dead_${process.pid}`;
+         const deadConninfo = `${SUPERUSER} dbname=${deadDb}`;
+         const deadPath = join(root, "dead-data");
+         await superuser(`DROP DATABASE IF EXISTS ${deadDb} WITH (FORCE)`);
+         await superuser(`CREATE DATABASE ${deadDb}`);
+         try {
+            const deadAdmin = new CatalogAdmin({
+               catalogDatabase: deadConninfo,
+            });
+            await deadAdmin.createCatalog({
+               name: CATALOG,
+               dataPath: deadPath,
+               encrypted: true,
+               schemas: ["s"],
+            });
+            const rowsAfter = async () =>
+               sql(
+                  (
+                     await openSession(
+                        "loads_dead_read",
+                        "read",
+                        CATALOG,
+                        deadConninfo,
+                     )
+                  ).session,
+                  `SELECT id::INTEGER AS id FROM ${CATALOG}.s.dead ORDER BY id`,
+               );
+            await deadAdmin.loadTable(CATALOG, "s", "dead", {
+               mode: "merge",
+               key: ["id"],
+               objects: [
+                  await parquet(
+                     "SELECT i AS id, 'v' || i AS v FROM range(1, 4) t(i)",
+                     deadPath,
+                  ),
+               ],
+            });
+            const { session, dispose } = await openSession(
+               "loads_dead",
+               "write",
+               CATALOG,
+               deadConninfo,
+            );
+            const table = `${CATALOG}.s.dead`;
+            const error = await failure(
+               inTransaction(session, table, async () => {
+                  await session.runSQL(`INSERT INTO ${table} VALUES (99, 'x')`);
+                  await superuser(
+                     "SELECT pg_terminate_backend(pid) FROM pg_stat_activity " +
+                        `WHERE datname = '${deadDb}' AND pid <> pg_backend_pid()`,
+                     deadDb,
+                  );
+                  await session.runSQL(
+                     `INSERT INTO ${table} VALUES (100, 'y')`,
+                  );
+               }),
+            );
+            expect(error).toBeInstanceOf(Error);
+            await dispose();
+            expect(await rowsAfter()).toEqual([
+               { id: 1 },
+               { id: 2 },
+               { id: 3 },
+            ]);
+            const next = await deadAdmin.loadTable(CATALOG, "s", "dead", {
+               mode: "merge",
+               key: ["id"],
+               objects: [
+                  await parquet(
+                     "SELECT * FROM (VALUES (4, 'v4')) t(id, v)",
+                     deadPath,
+                  ),
+               ],
+            });
+            expect(next.load).toMatchObject({ rowsInserted: 1 });
+         } finally {
+            await superuser(`DROP DATABASE IF EXISTS ${deadDb} WITH (FORCE)`);
+         }
+      });
    });
 
    describe("the compare passes", () => {

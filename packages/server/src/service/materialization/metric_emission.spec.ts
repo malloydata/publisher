@@ -3,7 +3,6 @@
 
 import { Package } from "../package";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
-import { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { DuckDBConnection as BuildSession } from "@malloydata/db-duckdb";
 import {
    afterAll,
@@ -47,6 +46,7 @@ import {
 import { derivePackagePlan } from "./plan/build_plan";
 import {
    createTableWithDeclaredTypes,
+   IsolatedSessionConnection,
    issuePassthroughRead,
 } from "./run/materialization_build_session";
 import { MaterializationScheduler } from "./run/materialization_scheduler";
@@ -442,7 +442,10 @@ describe("a storage build's instruments", () => {
    });
 
    it("publisher_storage_column_type_mismatch_total: a declared-type cast that refuses a value", async () => {
-      const conn = new DuckDBConnection("metric_emission_cast", ":memory:");
+      const conn = new IsolatedSessionConnection(
+         "metric_emission_cast",
+         ":memory:",
+      );
       try {
          await createTableWithDeclaredTypes(
             conn,

@@ -12,9 +12,11 @@ import {
    fakeSource,
 } from "../../../test_helpers/materialization_test_fixtures";
 import { createMocks } from "../../../test_helpers/materialization_service_harness";
-import { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
-import { createTableWithDeclaredTypes } from "./materialization_build_session";
+import {
+   createTableWithDeclaredTypes,
+   IsolatedSessionConnection,
+} from "./materialization_build_session";
 import { stackFrames } from "./run_lifecycle";
 import { errorCodeOf } from "../../../error_code";
 import { fakeContractReads } from "../../../test_helpers/contract_fixture";
@@ -387,7 +389,7 @@ describe("build failure logs never carry the driver's message", () => {
    });
 
    it("logs a declared-type cast that refused a value by its code", async () => {
-      const conn = new DuckDBConnection("never_log_cast", ":memory:");
+      const conn = new IsolatedSessionConnection("never_log_cast", ":memory:");
       try {
          const schema = await createTableWithDeclaredTypes(
             conn,
