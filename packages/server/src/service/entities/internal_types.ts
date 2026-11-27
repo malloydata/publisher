@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { Relationship } from "@malloydata/malloy-interfaces";
 import type { MalloyGivenApi } from "../given";
 
 /**
@@ -37,6 +38,8 @@ export interface JoinSourceMetadata {
    original_source_name?: string | null;
    original_source_path?: string | null;
    is_nested_index?: boolean;
+   /** Rows of the joined source per parent row: Malloy's compiled `join`. */
+   relationship?: Relationship;
 }
 
 export interface DimIndexFingerprint {
