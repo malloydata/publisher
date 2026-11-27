@@ -205,11 +205,11 @@ import {
    ZONED_TRUNCATION_REASON,
 } from "./served_copy_checks";
 import { reportQueryWalk } from "./query_walks";
-import { readSameCatalogThroughDestination } from "./same_catalog_reads";
 import {
-   allBaseTables,
-   sameCatalogScope,
-} from "../../same_catalog_destination";
+   readSameCatalogThroughDestination,
+   type SameCatalogTables,
+} from "./same_catalog_reads";
+import { sameCatalogScope } from "../../same_catalog_destination";
 import type { ScopeLane } from "./scope_facts";
 
 export type { ServedCopyProblem } from "./served_copy_types";
@@ -387,6 +387,16 @@ interface ServedCopyHost {
       connection: string,
       schemas: ReadonlySet<string>,
    ): Promise<string | undefined>;
+   /**
+    * Whether tables a same-catalog read moves are, now, base tables made only
+    * of files the managed connection's storage scope reaches
+    * (`sameCatalogTablesReadable`), read over `config`, the copy's
+    * connections. Injected for the same reason. Absent, no table is moved.
+    */
+   sameCatalogTablesReadable?(
+      config: MalloyConfig,
+      read: SameCatalogTables,
+   ): Promise<boolean>;
    /**
     * The storage destinations, while the storage tier serves
     * (`PERSIST_STORAGE_MODE=on`); undefined otherwise, when only database
@@ -917,6 +927,7 @@ export class ServedCopyServe {
             },
          );
       }
+      await this.recheckSameCatalog(compiled);
       const declined = compiled.declined?.get(queryString);
       if (declined !== undefined) throw declined;
       const decline = (
@@ -1326,6 +1337,7 @@ export class ServedCopyServe {
          tablesRead: readonly Binding[];
       },
    ): Promise<void> {
+      await this.recheckSameCatalog(compiled);
       const decline = (
          reason: string,
          code: ServedCopyDeclineCode,
@@ -1378,6 +1390,26 @@ export class ServedCopyServe {
          modelDef: (await prepared()).modelDef ?? compiled.modelDef,
          queryString: args.queryString,
          decline,
+      });
+   }
+
+   /**
+    * Decline, so the query answers live, unless every table a same-catalog
+    * copy reads through its destination is still a base table
+    * ({@link Compiled.sameCatalogRecheck}); a check that fails declines too.
+    * Never memoized per query: the next one reads the catalog again.
+    */
+   private async recheckSameCatalog(compiled: Compiled): Promise<void> {
+      if (!compiled.sameCatalogRecheck) return;
+      const ok = await compiled.sameCatalogRecheck().catch(() => false);
+      if (ok) return;
+      logger.warn(
+         "A served copy's table read through its storage destination is no longer a base table, holds a file outside the managed connection's storage scope, or could not be checked; answering live",
+         { modelPath: this.host.modelPath() },
+      );
+      throw new LegDecline("served_copy_not_served", undefined, {
+         message:
+            "a table the served copy reads through its storage destination is no longer a base table, holds a file outside the managed connection's storage scope, or could not be checked",
       });
    }
 
@@ -2504,7 +2536,6 @@ export class ServedCopyServe {
          }
          const { materializer, servedDef, servedRuntime, leftOut, files } =
             loaded;
-         const compiledConfig = loaded.config ?? config;
          // Only a join of a source still re-rooted was kept for it.
          problems.push(
             ...state.inlinedKept.filter((p) =>
@@ -2530,10 +2561,11 @@ export class ServedCopyServe {
             materializer,
             leftOut,
             files,
-            config: compiledConfig,
+            config: loaded.config ?? config,
             rerooted,
             aliased,
             throughBase,
+            sameCatalogReads: loaded.sameCatalogReads,
          });
       }
       return {
@@ -2850,7 +2882,10 @@ export class ServedCopyServe {
                this.host.managedTablePathRefusal
                   ? this.host.managedTablePathRefusal(path, connection, schemas)
                   : Promise.resolve("no managed scope check is available"),
-            baseTables: (alias, tables) => allBaseTables(config, alias, tables),
+            readable: (read) =>
+               this.host.sameCatalogTablesReadable
+                  ? this.host.sameCatalogTablesReadable(config, read)
+                  : Promise.resolve(false),
          },
       }).catch(() => ({ declined: "a read of its connections failed" }));
       if ("declined" in moved) {
@@ -2875,6 +2910,7 @@ export class ServedCopyServe {
             leftOut: [],
             files: keyed,
             config: aliased,
+            sameCatalogReads: moved.moved,
          };
       } catch (again) {
          logger.debug(
@@ -2972,6 +3008,7 @@ export class ServedCopyServe {
       const { key, generation, over, lane, modelDef, servedMap } = built;
       const { servedDef, servedRuntime, materializer, leftOut } = built;
       const { files, config, rerooted, aliased, throughBase } = built;
+      const sameCatalogReads = built.sameCatalogReads ?? [];
       // Every declaration the model reaches, imported ones included.
       const optOutIDs = new Set<string>();
       for (const node of servedMap.nodes()) {
@@ -3114,6 +3151,18 @@ export class ServedCopyServe {
          rerooted,
          rerootedSourceIDs: rerootedSourceIDsOf(candidates, throughBase),
          ...(throughBase.length > 0 ? { throughBase } : {}),
+         ...(sameCatalogReads.length > 0
+            ? {
+                 sameCatalogRecheck: async () => {
+                    const readable = this.host.sameCatalogTablesReadable;
+                    if (!readable) return false;
+                    const each = await Promise.all(
+                       sameCatalogReads.map((r) => readable(config, r)),
+                    );
+                    return each.every(Boolean);
+                 },
+              }
+            : {}),
          aliased,
          problems,
          pairs: candidates.flatMap((c) =>
@@ -3228,6 +3277,8 @@ interface LoadedCopy {
     * destination up under its alias (same_catalog_reads.ts).
     */
    config?: MalloyConfig;
+   /** The tables such a copy reads through each destination, checked again per query. */
+   sameCatalogReads?: readonly SameCatalogTables[];
 }
 
 /** The pass's loader over its destinations looked up under their aliases, for `names`. */

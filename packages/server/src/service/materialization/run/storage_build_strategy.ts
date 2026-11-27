@@ -317,6 +317,16 @@ async function buildFromWarehouse(
             sourceCarriesAuthorSql: carriesAuthorSql(
                sourceDefOf(persistSource),
             ),
+            ...(environment.managedStorageScope
+               ? {
+                    managedScope: async () =>
+                       sourceConnection.name
+                          ? environment.managedStorageScope!(
+                               sourceConnection.name,
+                            )
+                          : undefined,
+                 }
+               : {}),
             physicalTableName,
             declaredColumns,
             castOptions,

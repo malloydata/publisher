@@ -28,7 +28,13 @@
  *   (`managedTablePathRefusal`) admits its path, read as the connection reads
  *   it;
  * - is a base table: a DuckLake view's body is not held to that scope, and on
- *   the destination would read with the destination's credential;
+ *   the destination would read with the destination's credential. Checked
+ *   when the copy compiles and again before each query it answers, since a
+ *   writer on the catalog may swap a table for a view under a compiled copy;
+ * - is made only of files under the storage prefix of a schema the
+ *   connection may read: a catalog writer can register another schema's file
+ *   into a table, which the connection's scoped secret would refuse to read
+ *   and the destination's would not. Checked with the base-table check;
  * - is named in a plain `.table('<dotted path>')`, with no `.sql()` (or any
  *   other call) on the connection in the files, and no source on the
  *   connection the copy keeps as written carries author SQL (`authorSqlCause`:
@@ -48,6 +54,18 @@ import { authorSqlCause } from "../domain/same_catalog_build";
 import { authorModelReachContext } from "../text/author_model";
 import { refusedJoinPairs } from "../text/cross_connection_text";
 import { destinationOfAlias } from "./served_copy_config";
+
+/** The tables a copy reads through one destination for one managed connection. */
+export interface SameCatalogTables {
+   /** The destination's served-copy alias. */
+   alias: string;
+   /** The managed connection whose tables they are. */
+   connection: string;
+   /** The schemas it may read. */
+   schemas: ReadonlySet<string>;
+   /** Each as `[catalog, schema, table]`, plain names. */
+   tables: readonly (readonly [string, string, string])[];
+}
 
 /** A plain SQL identifier, as a managed connection's scope check admits one. */
 const PLAIN = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -196,11 +214,12 @@ interface SameCatalogPorts {
       connection: string,
       schemas: ReadonlySet<string>,
    ): Promise<string | undefined>;
-   /** Whether each `[catalog, schema, table]` is a base table on the destination `alias` stands for. */
-   baseTables(
-      alias: string,
-      tables: readonly (readonly [string, string, string])[],
-   ): Promise<boolean>;
+   /**
+    * Whether each of `read.tables` is a base table on the destination
+    * `read.alias` stands for, made only of files the managed connection's
+    * storage scope reaches (same_catalog_tables.ts).
+    */
+   readable(read: SameCatalogTables): Promise<boolean>;
 }
 
 /**
@@ -318,7 +337,16 @@ export async function readSameCatalogThroughDestination(args: {
    /** What it reads of the copy's connections. */
    ports: SameCatalogPorts;
 }): Promise<
-   | { files: Map<string, string>; destinations: Set<string> }
+   | {
+        files: Map<string, string>;
+        destinations: Set<string>;
+        /**
+         * The tables it moved, by the alias they are read through: the copy
+         * checks again before each query it answers that each is still a
+         * base table, since the catalog may change under the compiled copy.
+         */
+        moved: SameCatalogTables[];
+     }
    | { declined: string }
 > {
    const moves = await sameCatalogMoves(args.error, args.ports);
@@ -336,6 +364,7 @@ export async function readSameCatalogThroughDestination(args: {
       ...declaringFiles(args.modelDef, names),
    ]);
    const out = new Map(args.files);
+   const moved: SameCatalogTables[] = [];
    for (const move of moves) {
       const paths: string[] = [];
       for (const url of urls) {
@@ -370,12 +399,23 @@ export async function readSameCatalogThroughDestination(args: {
          )!.split(".");
          return [catalog, schema, table] as const;
       });
-      if (!(await args.ports.baseTables(move.alias, tables))) {
-         return { declined: "a table it reads is not a base table" };
+      const read = {
+         alias: move.alias,
+         connection: move.connection,
+         schemas: move.schemas,
+         tables,
+      };
+      if (!(await args.ports.readable(read))) {
+         return {
+            declined:
+               "a table it reads is not a base table, or holds a file outside the connection's storage scope",
+         };
       }
+      if (tables.length > 0) moved.push(read);
    }
    return {
       files: out,
       destinations: new Set(moves.map((m) => m.destination)),
+      moved,
    };
 }

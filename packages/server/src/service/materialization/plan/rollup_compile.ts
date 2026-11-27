@@ -58,6 +58,7 @@ import {
 import {
    measureRefusalKey,
    planModelRollups,
+   grainJoinKeyCheckQuery,
    parentKeyCheckQuery,
    readsAsJoinMany,
    rollupKeyCheckQuery,
@@ -93,10 +94,12 @@ import { SourceMap } from "../text/source_map";
 import type { Omission } from "../domain/omitted_sources";
 import {
    splitSourceID,
+   type GrainJoinKeyCheck,
    type OverStoredBase,
    type ParentKeyCheck,
    type RollupVariantPlan,
 } from "../domain/table_plans";
+import type { SourceJoin } from "../../governance/ir/source_graph";
 import {
    storedBaseCopies,
    storedMaterializeUpstream,
@@ -891,6 +894,111 @@ export async function compileParentKeyChecks(
       }
       if (checks.length > 0) plan.parentKeyChecks = checks;
       else delete plan.parentKeyChecks;
+   }
+}
+
+/** A joined source a grain join key check can read by name (see {@link compileGrainJoinKeyChecks}). */
+export interface GrainJoinKeySource {
+   /** Its name in the model `compile` compiles against. */
+   name: string;
+   connectionName: string | undefined;
+   /** Every sourceID it reads (`reachableSourceIDs`), itself included. */
+   reads(): Iterable<string>;
+   compile: (text: string) => Promise<string>;
+}
+
+/**
+ * Attach to each rollup in `plans` the key check of each join_one its grain
+ * reads (`RollupVariantPlan.joinOneGrain`, `grainJoinKeyChecks`), compiled
+ * once per joined source and key by its `compile` (the author's model that
+ * names the source), so it reads the joined source as a query of it does,
+ * its own `where:` included. No check, and a query that reads none of the
+ * join's fields answers live, for a join that is:
+ *
+ *  - `uncovered` (`joinOneGrain`): the build joins past it for the grain,
+ *    through another join no check of this one covers;
+ *  - keyed on anything but one column of the joined source, or on a source
+ *    no model names (an inline `extend`), which a query by name would not
+ *    read as the join does;
+ *  - over a source that reads a table the run stores (`stored`), whose rows
+ *    the build may have joined at another time than the check reads;
+ *  - one whose check does not compile, or reads a given (the compiler
+ *    refuses it), logged.
+ */
+export async function compileGrainJoinKeyChecks(
+   plans: Iterable<RollupVariantPlan>,
+   joinsOf: (baseSourceID: string) => readonly SourceJoin[],
+   sourceOf: (sourceID: string) => GrainJoinKeySource | undefined,
+   stored: ReadonlySet<string>,
+): Promise<void> {
+   const compiled = new Map<string, Promise<string | undefined>>();
+   for (const plan of plans) {
+      if (plan.variant !== true) continue;
+      const checks: GrainJoinKeyCheck[] = [];
+      for (const { join, uncovered } of plan.joinOneGrain ?? []) {
+         if (uncovered) {
+            logger.info(
+               "A #(rollup) rollup's grain join key is not checked; queries that read nothing through the join are answered live",
+               {
+                  rollup: plan.rollupSourceName,
+                  join,
+                  reason: "the build joins past it, through another join",
+               },
+            );
+            continue;
+         }
+         const j = joinsOf(plan.baseSourceID).find(
+            (x) => x.name === join && x.relationship === "one",
+         );
+         const source = j?.sourceID ? sourceOf(j.sourceID) : undefined;
+         const why =
+            j?.sourceID === undefined || j.keyColumn === undefined
+               ? "its join is not keyed on one column of a declared source"
+               : source === undefined
+                 ? "no model names the joined source"
+                 : [...source.reads()].some((id) => stored.has(id))
+                   ? "the joined source reads a table the run stores"
+                   : undefined;
+         if (why !== undefined || !j?.sourceID || !j.keyColumn || !source) {
+            logger.info(
+               "A #(rollup) rollup's grain join key is not checked; queries that read nothing through the join are answered live",
+               { rollup: plan.rollupSourceName, join, reason: why },
+            );
+            continue;
+         }
+         const { sourceID, keyColumn } = j;
+         const key = `${sourceID}\u0000${keyColumn}`;
+         let sql = compiled.get(key);
+         if (sql === undefined) {
+            sql = source
+               .compile(grainJoinKeyCheckQuery(source.name, keyColumn))
+               .catch((error) => {
+                  logger.warn(
+                     "A #(rollup) rollup's grain join key check did not compile; queries that read nothing through the join are answered live",
+                     {
+                        rollup: plan.rollupSourceName,
+                        join,
+                        source: source.name,
+                        keyColumn,
+                        code: errorCodeOf(error),
+                     },
+                  );
+                  return undefined;
+               });
+            compiled.set(key, sql);
+         }
+         const text = await sql;
+         if (text === undefined) continue;
+         checks.push({
+            join,
+            sourceID,
+            keyColumn,
+            connectionName: source.connectionName,
+            sql: text,
+         });
+      }
+      if (checks.length > 0) plan.grainJoinKeyChecks = checks;
+      else delete plan.grainJoinKeyChecks;
    }
 }
 

@@ -6072,8 +6072,9 @@ components:
                   extension; `warn`).
                   `rollup-join-one-key-repeated`: a rollup's last build found
                   a `join_one` key repeated in the data, so queries that read
-                  that join beside other aggregates are answered live
-                  (`subject` the rollup's base; `warn`). Its former name,
+                  that join beside other aggregates, or, for a `join_one` the
+                  rollup's grain reads, queries that read nothing through it,
+                  are answered live (`subject` the rollup's base; `warn`). Its former name,
                   `preaggregate-join-one-key-repeated`, is retained, no longer
                   produced.
                   `served-copy-not-served`: the served copy (the author's own
@@ -6146,8 +6147,9 @@ components:
                   `rollup-join-one-key-repeated`: a bound rollup whose last
                   build found the key of a `join_one` it reads repeated, so a
                   query reading that join beside other aggregates is answered
-                  live; it clears once a build finds the key unique (one per
-                  rollup; `warn`). `preaggregate-join-one-key-repeated` is
+                  live, or, for a `join_one` its grain reads, a query reading
+                  nothing through it; it clears once a build finds the key
+                  unique (one per rollup and key; `warn`). `preaggregate-join-one-key-repeated` is
                   retained, no longer produced: it is
                   `rollup-join-one-key-repeated` now.
                   `join-bypass`: an author join from a published source to one
