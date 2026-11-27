@@ -28,7 +28,7 @@ const REFUSED_PACKAGE = "workflows-refused";
 describe("Package skills and workflows (E2E)", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
-   const refusedDir = fs.mkdtempSync(path.join(os.tmpdir(), REFUSED_PACKAGE));
+   let refusedDir: string;
 
    const url = (sub: string, packageName = PACKAGE_NAME) =>
       `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${packageName}${sub}`;
@@ -40,6 +40,7 @@ describe("Package skills and workflows (E2E)", () => {
    beforeAll(async () => {
       env = await startRestE2E();
       baseUrl = env.baseUrl;
+      refusedDir = fs.mkdtempSync(path.join(os.tmpdir(), REFUSED_PACKAGE));
       fs.writeFileSync(
          path.join(refusedDir, "publisher.json"),
          JSON.stringify({ name: REFUSED_PACKAGE, workflows: "nope" }),
@@ -91,7 +92,7 @@ describe("Package skills and workflows (E2E)", () => {
       }
       await env?.stop();
       env = null;
-      fs.rmSync(refusedDir, { recursive: true, force: true });
+      if (refusedDir) fs.rmSync(refusedDir, { recursive: true, force: true });
    });
 
    describe("skills", () => {
