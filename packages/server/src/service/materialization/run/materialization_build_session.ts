@@ -421,6 +421,7 @@ export class IsolatedSessionConnection extends DuckDBConnection {
       });
    }
 
+   /** Refuses only at the start, outside the gate, and latches nothing: no build session streams. */
    override async *runSQLStream(
       sql: string,
       options?: RunSQLOptions,

@@ -14,7 +14,8 @@
  * DuckDB already ran them one after another; only the silent truncation goes.
  *
  * Wraps the same two entry points as duckdb_hard_close.ts, and is installed
- * first so the hard close counts a queued statement as in flight too.
+ * first so the hard close counts a queued statement as in flight too (not one
+ * waiting in withStatementGate; after close() that fails before native code).
  *
  * Known holds: a stream nobody finishes or returns holds the gate, and so does
  * a consumer that runs another statement on the same connection inside its

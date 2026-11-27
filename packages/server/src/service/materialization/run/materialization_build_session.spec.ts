@@ -1771,6 +1771,8 @@ describe("IsolatedSessionConnection", () => {
    it("runs the statements queued behind one that was interrupted, and one issued after them", async () => {
       const { session, dispose } = createIsolatedBuildSession("late_row");
       try {
+         // Setup done first, so the timed interrupt can only land on the long read.
+         await session.runSQL("SELECT 0");
          const long = errorOf(
             session.runSQL(
                "SELECT count(*) FROM range(1000000000000) a WHERE a.range % 7 = 3",
@@ -1780,7 +1782,7 @@ describe("IsolatedSessionConnection", () => {
          // A statement-scoped interrupt, as the late-row check's, not a cancel.
          setTimeout(() => session.interrupt(), 200);
          expect((await queued).rows).toEqual([{ one: 1 }]);
-         // Issued while the failed statement's probe is still pending.
+         // Not refused: an interrupt outside a transaction aborts nothing.
          const next = await errorOf(session.runSQL("SELECT 2 AS two"));
          expect(next).toBeUndefined();
          expect((await long)?.message).toMatch(/interrupt/i);
@@ -1814,6 +1816,16 @@ describe("IsolatedSessionConnection", () => {
    it("is not interrupted while it asks DuckDB whether a transaction is open", async () => {
       const { session, dispose } = await seededLake();
       try {
+         // Counted on the native handle: an interrupt this early lands before DuckDB starts the probe, so the outcome alone can't tell.
+         const native = (
+            session as unknown as { connection: { interrupt(): void } }
+         ).connection;
+         const nativeInterrupt = native.interrupt;
+         let interrupts = 0;
+         native.interrupt = function (this: unknown) {
+            interrupts++;
+            return nativeInterrupt.call(this);
+         };
          const probe = Object.getPrototypeOf(session) as {
             transactionIsOpen(): Promise<boolean>;
          };
@@ -1828,7 +1840,9 @@ describe("IsolatedSessionConnection", () => {
             await errorOf(session.runSQL("INSERT INTO lake.t VALUES (NULL)"));
          } finally {
             probe.transactionIsOpen = original;
+            native.interrupt = nativeInterrupt;
          }
+         expect(interrupts).toBe(0);
          await session.runSQL("INSERT INTO lake.t VALUES (4)");
          expect(await count(session)).toBe(4);
       } finally {
