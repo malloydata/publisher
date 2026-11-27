@@ -1945,6 +1945,36 @@ describe("package workflows", () => {
          );
 
          it.skipIf(isRoot || isWindows)(
+            "serves the workflow, with a finding and no 409, when one skill's SKILL.md cannot be read",
+            async () => {
+               write(
+                  `${MAIN}/readable/SKILL.md`,
+                  "---\nname: readable\ndescription: d\n---\n\nbody\n",
+               );
+               manifest({ workflows: { analyst: analyst() } });
+               const file = path.join(dir, MAIN, "conventions/SKILL.md");
+               fs.chmodSync(file, 0o000);
+               try {
+                  const pkg = await load();
+                  const workflow = pkg.getWorkflow("analyst")!;
+                  expect(
+                     workflow.skill_sets[0]!.skills!.map(
+                        (f) => f.relative_filepath,
+                     ),
+                  ).toEqual(["readable/SKILL.md"]);
+                  expect(workflow.warnings.join("\n")).toContain(
+                     "cannot be read (EACCES",
+                  );
+                  expect(pkg.listWorkflows().map((w) => w.name)).toEqual([
+                     "analyst",
+                  ]);
+               } finally {
+                  fs.chmodSync(file, 0o644);
+               }
+            },
+         );
+
+         it.skipIf(isRoot || isWindows)(
             "makes the walk unavailable, and never refuses the workflow, for an instructions file that cannot be read",
             async () => {
                manifest({ workflows: { analyst: analyst() } });

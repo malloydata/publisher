@@ -918,6 +918,29 @@ describe("readPackageWorkflows", () => {
          },
       );
 
+      it.skipIf(isWindows || isRoot)(
+         "skips a skill whose SKILL.md cannot be read with a finding, and still serves the workflow",
+         () => {
+            const entry = analyst();
+            writeSkill(MAIN, "readable");
+            const file = path.join(pkg, CONVENTIONS, "SKILL.md");
+            fs.chmodSync(file, 0o000);
+            try {
+               const result = read({ analyst: entry });
+               expect(result.unavailable).toBeUndefined();
+               expect([...result.workflows.keys()]).toEqual(["analyst"]);
+               expect(
+                  result.sets.get(MAIN)!.skills.map((s) => s.dirName),
+               ).toEqual(["readable"]);
+               expect(result.warnings).toHaveLength(1);
+               expect(result.warnings[0]).toContain("is not served");
+               expect(result.warnings[0]).toContain("cannot be read (EACCES");
+            } finally {
+               fs.chmodSync(file, 0o644);
+            }
+         },
+      );
+
       it("still refuses an instructions file that is not there, as the author's mistake", () => {
          analyst();
          const warning = refused({

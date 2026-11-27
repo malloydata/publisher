@@ -64,7 +64,7 @@ function insidePackage(packageRoot: string, p: string): string | undefined {
 const sha256 = (data: string | Buffer) =>
    createHash("sha256").update(data).digest("hex");
 
-/** A path that is not there, which an author wrote wrong; any other errno is a disk that cannot be read. */
+/** A path that is not there, which an author wrote wrong; any other errno is a disk that cannot be read, which `strict` reads rethrow so it never refuses a workflow. */
 const isAbsent = (error: unknown) =>
    ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "");
 
@@ -77,6 +77,7 @@ const isAbsent = (error: unknown) =>
 function markdownInside(
    packageRoot: string,
    file: string,
+   strict: boolean,
 ): { real: string; size: number } | { problem: string; link?: true } {
    try {
       const real = insidePackage(packageRoot, file);
@@ -97,7 +98,7 @@ function markdownInside(
       }
       return { real, size: stat.size };
    } catch (error) {
-      if (!isAbsent(error)) throw error;
+      if (strict && !isAbsent(error)) throw error;
       return {
          problem: `cannot be read (${callerVisibleText((error as Error).message, packageRoot)})`,
       };
@@ -109,10 +110,11 @@ function readFileInside(
    packageRoot: string,
    file: string,
    maxBytes: number,
+   strict = false,
 ):
    | { text: string; raw: Buffer }
    | { problem: string; link?: true; size?: number } {
-   const found = markdownInside(packageRoot, file);
+   const found = markdownInside(packageRoot, file, strict);
    if ("problem" in found) return found;
    if (found.size > maxBytes) {
       return {
@@ -124,7 +126,7 @@ function readFileInside(
       const raw = fs.readFileSync(found.real);
       return { text: raw.toString("utf8"), raw };
    } catch (error) {
-      if (!isAbsent(error)) throw error;
+      if (strict && !isAbsent(error)) throw error;
       return {
          problem: `cannot be read (${callerVisibleText((error as Error).message, packageRoot)})`,
       };
@@ -1204,6 +1206,7 @@ function readInstructions(
       packageRoot,
       path.join(packagePath, rel),
       WORKFLOW_INSTRUCTIONS_MAX_BYTES,
+      true,
    );
    if ("problem" in read) {
       throw new WorkflowProblem(`${what} '${rel}' ${read.problem}`);
