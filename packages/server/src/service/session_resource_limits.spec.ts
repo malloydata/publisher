@@ -83,7 +83,6 @@ describe("applyLoadSessionSettings", () => {
          "SET max_temp_directory_size='6GiB'",
          "SET preserve_insertion_order=false",
          "SET enable_http_metadata_cache=true",
-         "SET parquet_metadata_cache=true",
       ]);
    });
 
