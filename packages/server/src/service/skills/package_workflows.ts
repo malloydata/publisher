@@ -1029,7 +1029,7 @@ export function packageSkill(
 export const DEFAULT_WORKFLOW = "default";
 const WORKFLOW_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const WORKFLOW_NAME_MAX = 64;
-const WORKFLOW_KEYS = ["description", "instructions", "skill_sets"];
+const WORKFLOW_KEYS = ["description", "instructions", "skillSets"];
 /** Skill sets one workflow lists. */
 const SKILL_SETS_MAX = 8;
 
@@ -1642,7 +1642,7 @@ function checkSkillSetRoot(
    }
 }
 
-/** `skill_sets` after its checks: each entry's path, in order. Throws a WorkflowProblem naming the first entry that breaks a rule. */
+/** `skillSets` after its checks: each entry's path, in order. Throws a WorkflowProblem naming the first entry that breaks a rule. */
 function declareSkillSets(
    packagePath: string,
    packageRoot: string,
@@ -1651,16 +1651,16 @@ function declareSkillSets(
 ): string[] {
    if (raw === undefined) return [];
    if (!Array.isArray(raw)) {
-      throw new WorkflowProblem("'skill_sets' must be a list of directories");
+      throw new WorkflowProblem("'skillSets' must be a list of directories");
    }
    if (raw.length > SKILL_SETS_MAX) {
       throw new WorkflowProblem(
-         `'skill_sets' lists ${raw.length} directories, over the limit of ${SKILL_SETS_MAX}`,
+         `'skillSets' lists ${raw.length} directories, over the limit of ${SKILL_SETS_MAX}`,
       );
    }
    const named = new Map<string, string>();
    return raw.map((entry) => {
-      const root = manifestPath(entry, "'skill_sets' entry");
+      const root = manifestPath(entry, "'skillSets' entry");
       let verdict = checks.roots.get(root);
       if (!verdict) {
          verdict = {};
@@ -1724,12 +1724,12 @@ function declareWorkflow(
    const sets = declareSkillSets(
       packagePath,
       packageRoot,
-      raw.skill_sets,
+      raw.skillSets,
       checks,
    );
    if (instructions === undefined && sets.length === 0) {
       throw new WorkflowProblem(
-         "it declares nothing to serve: add 'instructions' or 'skill_sets'",
+         "it declares nothing to serve: add 'instructions' or 'skillSets'",
       );
    }
    return {
@@ -1771,7 +1771,7 @@ function declaredPaths(raw: Record<string, unknown>): string[] {
    for (const entry of Object.values(raw)) {
       if (!isObject(entry)) continue;
       if (entry.instructions !== undefined) add(entry.instructions);
-      if (Array.isArray(entry.skill_sets)) entry.skill_sets.forEach(add);
+      if (Array.isArray(entry.skillSets)) entry.skillSets.forEach(add);
    }
    return [...found].sort(compareText);
 }
@@ -1884,7 +1884,7 @@ function walkPackageWorkflows(
    if (raw === undefined) return result;
    if (!isObject(raw)) {
       result.warnings.push(
-         'Package manifest \'workflows\' must be an object keyed by workflow name, so no workflow is served. Fix: write "workflows": { "<name>": { "description": ..., "instructions": ..., "skill_sets": [...] } }.',
+         'Package manifest \'workflows\' must be an object keyed by workflow name, so no workflow is served. Fix: write "workflows": { "<name>": { "description": ..., "instructions": ..., "skillSets": [...] } }.',
       );
       return result;
    }

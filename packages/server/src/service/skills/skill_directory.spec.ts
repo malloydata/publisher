@@ -616,7 +616,7 @@ describe("a skill is its whole directory", () => {
          const result = read({
             analyst: {
                ...workflows.analyst,
-               skill_sets: [SKILLS_ROOT, SKILLS_ROOT_B],
+               skillSets: [SKILLS_ROOT, SKILLS_ROOT_B],
             },
          });
          expect(
@@ -639,7 +639,7 @@ describe("a skill set's own skills", () => {
    /** The skill set at `skills/`, read as the default workflow lists it. */
    const readSet = () => {
       const result = readPackageWorkflows(pkg, {
-         default: { skill_sets: ["skills"] },
+         default: { skillSets: ["skills"] },
       });
       const set = result.sets.get("skills")!;
       return { result, set, skills: set.skills, warnings: set.findings };
@@ -1084,7 +1084,7 @@ describe("a skill read whole still serves what it served before", () => {
       analyst: {
          description: "d",
          instructions: "workflows/analyst/instructions.md",
-         skill_sets: roots,
+         skillSets: roots,
       },
    });
    const read = (workflows: unknown = manifest()) =>

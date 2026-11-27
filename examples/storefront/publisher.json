@@ -5,12 +5,12 @@
   "workflows": {
     "default": {
       "description": "The storefront house conventions and search vocabulary",
-      "skill_sets": ["workflows/default/skill_sets/house"]
+      "skillSets": ["workflows/default/skill_sets/house"]
     },
     "weekly-report": {
       "description": "Writes the weekly storefront report as the analyst, using the house conventions",
       "instructions": "workflows/weekly-report/instructions.md",
-      "skill_sets": [
+      "skillSets": [
         "workflows/weekly-report/skill_sets/analyst",
         "workflows/default/skill_sets/house"
       ]

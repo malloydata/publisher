@@ -3201,7 +3201,7 @@ def default_skill_sets(pkg_dir: pathlib.Path) -> list[pathlib.Path]:
     """
     try:
         manifest = json.loads((pkg_dir / "publisher.json").read_text())
-        entries = manifest["workflows"]["default"]["skill_sets"]
+        entries = manifest["workflows"]["default"]["skillSets"]
     except (OSError, ValueError, KeyError, TypeError):
         return []
     root = pkg_dir.resolve()

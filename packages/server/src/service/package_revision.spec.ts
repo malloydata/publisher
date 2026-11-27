@@ -145,7 +145,7 @@ describe("Package serving identity", () => {
       return pkg;
    };
 
-   const DEFAULT_WORKFLOW = { default: { skill_sets: ["skill_sets/main"] } };
+   const DEFAULT_WORKFLOW = { default: { skillSets: ["skill_sets/main"] } };
    const writeSkill = (name: string, body: string) => {
       const skillDir = path.join(dir, "skill_sets", "main", name);
       fs.mkdirSync(skillDir, { recursive: true });

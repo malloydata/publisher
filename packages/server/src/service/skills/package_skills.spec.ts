@@ -74,7 +74,7 @@ describe("a skill set read through a workflow", () => {
    /** The set at `skills/` as the default workflow lists it; `warnings` is everything the package publishes. */
    const readSet = () => {
       const result = readPackageWorkflows(pkg, {
-         default: { skill_sets: ["skills"] },
+         default: { skillSets: ["skills"] },
       });
       return {
          result,

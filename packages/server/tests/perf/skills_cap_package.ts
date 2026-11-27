@@ -113,11 +113,11 @@ export function writeCapPackage(
       "Be useful.\n",
    );
    return {
-      default: { description: "The advertised skills", skill_sets: paths },
+      default: { description: "The advertised skills", skillSets: paths },
       analyst: {
          description: "Shares a set with default",
          instructions: "workflows/analyst/instructions.md",
-         skill_sets: [paths[0], "sets/p"],
+         skillSets: [paths[0], "sets/p"],
       },
    };
 }
@@ -126,6 +126,6 @@ export function writeCapPackage(
 export function writeFloorPackage(root: string): Record<string, unknown> {
    write(path.join(root, "sets", "a", "s", "SKILL.md"), SKILL_MD("s"));
    return {
-      default: { description: "The floor", skill_sets: ["sets/a"] },
+      default: { description: "The floor", skillSets: ["sets/a"] },
    };
 }

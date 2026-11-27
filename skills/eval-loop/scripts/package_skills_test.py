@@ -216,7 +216,7 @@ class ResolveArm(unittest.TestCase):
     def manifest(self, sets: list[str]) -> None:
         (self.pkg / "publisher.json").write_text(json.dumps(
             {"name": "pkg",
-             "workflows": {"default": {"skill_sets": sets}}}))
+             "workflows": {"default": {"skillSets": sets}}}))
 
     def args(self, mode: str, override=None) -> argparse.Namespace:
         return argparse.Namespace(
@@ -386,7 +386,7 @@ class ResolveArm(unittest.TestCase):
         (pkg / "evals").mkdir(parents=True)
         (pkg / "house").symlink_to(pkg / "evals", target_is_directory=True)
         (pkg / "publisher.json").write_text(json.dumps(
-            {"workflows": {"default": {"skill_sets": ["house"]}}}))
+            {"workflows": {"default": {"skillSets": ["house"]}}}))
         self.served_dir = pkg
         with self.assertRaises(SystemExit):
             rb.resolve_package_skills(self.args("tool"))
@@ -398,7 +398,7 @@ class ResolveArm(unittest.TestCase):
         (pkg / "evals" / "house").mkdir(parents=True)
         (pkg / "sets").symlink_to(pkg / "evals", target_is_directory=True)
         (pkg / "publisher.json").write_text(json.dumps(
-            {"workflows": {"default": {"skill_sets": ["sets/house"]}}}))
+            {"workflows": {"default": {"skillSets": ["sets/house"]}}}))
         self.served_dir = pkg
         with self.assertRaises(SystemExit):
             rb.resolve_package_skills(self.args("tool"))

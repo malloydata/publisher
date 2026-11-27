@@ -84,7 +84,7 @@ export function writeWorkflow(pkg: string) {
       analyst: {
          description: "Prices deals",
          instructions: "workflows/analyst/instructions.md",
-         skill_sets: [SKILLS_ROOT],
+         skillSets: [SKILLS_ROOT],
       },
    };
 }

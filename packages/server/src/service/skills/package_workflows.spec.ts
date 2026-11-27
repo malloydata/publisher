@@ -88,7 +88,7 @@ describe("readPackageWorkflows", () => {
       return {
          description: "Answers revenue questions",
          instructions: INSTRUCTIONS,
-         skill_sets: [MAIN],
+         skillSets: [MAIN],
          ...extra,
       };
    };
@@ -173,7 +173,7 @@ describe("readPackageWorkflows", () => {
             '---\nname: quoted\ndescription: Say "net" and use C:\\data\n---\n\nbody\n',
          );
          const result = read({
-            analyst: { instructions: INSTRUCTIONS, skill_sets: [MAIN] },
+            analyst: { instructions: INSTRUCTIONS, skillSets: [MAIN] },
          });
          const full = viewOf(result).skills[0]!;
          expect(
@@ -204,7 +204,7 @@ describe("readPackageWorkflows", () => {
          writeSkill(MAIN, "conventions");
          const result = read({
             brief: { instructions: INSTRUCTIONS },
-            skills: { skill_sets: [MAIN] },
+            skills: { skillSets: [MAIN] },
          });
          expect(result.warnings).toEqual([]);
          const brief = result.workflows.get("brief")!;
@@ -215,10 +215,10 @@ describe("readPackageWorkflows", () => {
 
       it("refuses a workflow that declares nothing to serve", () => {
          expect(refused({ analyst: {} })).toContain(
-            "it declares nothing to serve: add 'instructions' or 'skill_sets'",
+            "it declares nothing to serve: add 'instructions' or 'skillSets'",
          );
          expect(
-            refused({ analyst: { description: "d", skill_sets: [] } }),
+            refused({ analyst: { description: "d", skillSets: [] } }),
          ).toContain("it declares nothing to serve");
       });
 
@@ -294,11 +294,12 @@ describe("readPackageWorkflows", () => {
          ["hooks", {}],
          ["permission-mode", "bypass"],
          ["surprise", 1],
+         ["skill_sets", [MAIN]],
       ])("refuses a workflow that sets %p, naming it", (key, value) => {
          const warning = refused({ analyst: analyst({ [key]: value }) });
          expect(warning).toContain(`'${key}'`);
          expect(warning).toContain(
-            "Allowed keys: description, instructions, skill_sets",
+            "Allowed keys: description, instructions, skillSets",
          );
       });
 
@@ -310,12 +311,12 @@ describe("readPackageWorkflows", () => {
          ["instructions", ""],
          ["instructions", { path: "x" }],
          ["instructions", ["x.md"]],
-         ["skill_sets", "workflows/analyst/skill_sets/main"],
-         ["skill_sets", {}],
-         ["skill_sets", [null]],
-         ["skill_sets", [{}]],
-         ["skill_sets", [["x"]]],
-         ["skill_sets", [""]],
+         ["skillSets", "workflows/analyst/skill_sets/main"],
+         ["skillSets", {}],
+         ["skillSets", [null]],
+         ["skillSets", [{}]],
+         ["skillSets", [["x"]]],
+         ["skillSets", [""]],
       ])("refuses a workflow whose %s is %p", (key, value) => {
          refused({ analyst: analyst({ [key]: value }) });
       });
@@ -335,12 +336,12 @@ describe("readPackageWorkflows", () => {
             { a: [] },
             { a: { instructions: { path: "x" } } },
             { a: { instructions: ["x.md"] } },
-            { a: { instructions: "x.md", skill_sets: [null] } },
-            { a: { instructions: "x.md", skill_sets: [{}] } },
-            { a: { instructions: "x.md", skill_sets: "x" } },
-            { a: { skill_sets: [5] } },
-            { a: { skill_sets: [["x"]] } },
-            { a: { description: { d: 1 }, skill_sets: ["x"] } },
+            { a: { instructions: "x.md", skillSets: [null] } },
+            { a: { instructions: "x.md", skillSets: [{}] } },
+            { a: { instructions: "x.md", skillSets: "x" } },
+            { a: { skillSets: [5] } },
+            { a: { skillSets: [["x"]] } },
+            { a: { description: { d: 1 }, skillSets: ["x"] } },
          ];
          for (const raw of hostile) {
             const result = read(raw);
@@ -380,7 +381,7 @@ describe("readPackageWorkflows", () => {
       it("names the backslash", () => {
          expect(
             refused({
-               analyst: analyst({ skill_sets: ["workflows\\analyst"] }),
+               analyst: analyst({ skillSets: ["workflows\\analyst"] }),
             }),
          ).toContain("backslash");
       });
@@ -430,7 +431,7 @@ describe("readPackageWorkflows", () => {
             analyst: {
                ...entry,
                instructions: "./workflows//analyst/instructions.md",
-               skill_sets: [`${MAIN}/`],
+               skillSets: [`${MAIN}/`],
             },
          });
          expect(dotted.paths.sort()).toEqual(plain.paths.sort());
@@ -440,7 +441,7 @@ describe("readPackageWorkflows", () => {
       });
    });
 
-   describe("skill_sets", () => {
+   describe("skillSets", () => {
       it.each([
          ["missing", "nope"],
          ["absolute", "/tmp"],
@@ -448,18 +449,18 @@ describe("readPackageWorkflows", () => {
          ["a parent escape", "../x"],
          ["a file", INSTRUCTIONS],
       ])("refuses a workflow whose skill set entry is %s", (_label, entry) => {
-         refused({ analyst: analyst({ skill_sets: [entry] }) });
+         refused({ analyst: analyst({ skillSets: [entry] }) });
       });
 
       it("says a missing skill set does not exist", () => {
          expect(
-            refused({ analyst: analyst({ skill_sets: ["nope"] }) }),
+            refused({ analyst: analyst({ skillSets: ["nope"] }) }),
          ).toContain("skill set directory 'nope' does not exist");
       });
 
       it("says a skill set that is a file is not a folder, not that it does not exist", () => {
          const why = refused({
-            analyst: analyst({ skill_sets: [INSTRUCTIONS] }),
+            analyst: analyst({ skillSets: [INSTRUCTIONS] }),
          });
          expect(why).toContain(
             `skill set directory '${INSTRUCTIONS}' is not a folder`,
@@ -489,7 +490,7 @@ describe("readPackageWorkflows", () => {
             const workflows = {
                analyst: {
                   instructions: INSTRUCTIONS,
-                  skill_sets: [LINKED],
+                  skillSets: [LINKED],
                },
             };
             if (linkTextKeptVerbatim()) {
@@ -582,7 +583,7 @@ describe("readPackageWorkflows", () => {
             writeSkill(MAIN, "bad");
             write(`${MAIN}/bad/${inside}`, "{}");
             const result = read({
-               default: { skill_sets: [MAIN] },
+               default: { skillSets: [MAIN] },
                analyst: entry,
             });
             expect([...result.workflows.keys()]).toEqual([
@@ -650,17 +651,17 @@ describe("readPackageWorkflows", () => {
          const names = Array.from({ length: 9 }, (_, i) => `s${i}`);
          for (const name of names) writeSkill(`sets/${name}`, "k");
          const sets = names.map((name) => `sets/${name}`);
-         expect(refused({ analyst: { skill_sets: sets } })).toContain(
-            "'skill_sets' lists 9 directories, over the limit of 8",
+         expect(refused({ analyst: { skillSets: sets } })).toContain(
+            "'skillSets' lists 9 directories, over the limit of 8",
          );
-         const eight = read({ analyst: { skill_sets: sets.slice(0, 8) } });
+         const eight = read({ analyst: { skillSets: sets.slice(0, 8) } });
          expect(eight.workflows.get("analyst")!.sets).toHaveLength(8);
       });
 
       it("refuses a set whose folder is not a valid name", () => {
          writeSkill("sets/Bad_Name", "k");
          expect(
-            refused({ analyst: { skill_sets: ["sets/Bad_Name"] } }),
+            refused({ analyst: { skillSets: ["sets/Bad_Name"] } }),
          ).toContain(
             "skill set directory 'sets/Bad_Name' is named 'Bad_Name', which must be 1-64 characters of lowercase letters, digits and single hyphens",
          );
@@ -672,12 +673,12 @@ describe("readPackageWorkflows", () => {
          writeSkill(`sets/${fits}`, "k");
          writeSkill(`sets/${over}`, "k");
          expect(
-            read({ analyst: { skill_sets: [`sets/${fits}`] } }).workflows.has(
+            read({ analyst: { skillSets: [`sets/${fits}`] } }).workflows.has(
                "analyst",
             ),
          ).toBe(true);
          expect(
-            refused({ analyst: { skill_sets: [`sets/${over}`] } }),
+            refused({ analyst: { skillSets: [`sets/${over}`] } }),
          ).toContain(
             `skill set directory 'sets/${over}' is named '${over}', which must be 1-64 characters`,
          );
@@ -687,12 +688,12 @@ describe("readPackageWorkflows", () => {
          writeSkill("a/main", "one");
          writeSkill("b/main", "two");
          expect(
-            refused({ analyst: { skill_sets: ["a/main", "b/main"] } }),
+            refused({ analyst: { skillSets: ["a/main", "b/main"] } }),
          ).toContain(
             "skill set directories 'a/main' and 'b/main' are both named 'main'",
          );
          expect(
-            refused({ analyst: { skill_sets: ["a/main", "./a//main"] } }),
+            refused({ analyst: { skillSets: ["a/main", "./a//main"] } }),
          ).toContain("skill set directory 'a/main' is listed twice");
       });
 
@@ -700,8 +701,8 @@ describe("readPackageWorkflows", () => {
          writeSkill("a/main", "one");
          writeSkill("b/main", "two");
          const result = read({
-            one: { skill_sets: ["a/main"] },
-            two: { skill_sets: ["b/main"] },
+            one: { skillSets: ["a/main"] },
+            two: { skillSets: ["b/main"] },
          });
          expect(result.warnings).toEqual([]);
          expect([...result.sets.keys()]).toEqual(["a/main", "b/main"]);
@@ -711,9 +712,9 @@ describe("readPackageWorkflows", () => {
          writeSkill(MAIN, "conventions");
          write(`${MAIN}/conventions/scripts/a..b.py`, "x = 1");
          const result = read({
-            one: { skill_sets: [MAIN] },
-            two: { skill_sets: [MAIN] },
-            three: { description: "", skill_sets: [MAIN] },
+            one: { skillSets: [MAIN] },
+            two: { skillSets: [MAIN] },
+            three: { description: "", skillSets: [MAIN] },
          });
          expect([...result.workflows.keys()]).toEqual(["one", "two"]);
          expect(
@@ -728,18 +729,18 @@ describe("readPackageWorkflows", () => {
          const result = read({
             analyst: {
                instructions: INSTRUCTIONS,
-               skill_sets: [MAIN],
+               skillSets: [MAIN],
                surprise: 1,
             },
             broken: {
                instructions: "workflows/broken/instructions.md",
-               skill_sets: [
+               skillSets: [
                   "workflows/broken/skill_sets/main",
                   "../out",
                   "/abs",
                ],
             },
-            junk: { skill_sets: "not a list" },
+            junk: { skillSets: "not a list" },
          });
          expect(result.workflows.size).toBe(0);
          expect([...result.watched].sort()).toEqual(
@@ -777,7 +778,7 @@ describe("readPackageWorkflows", () => {
             Object.fromEntries(
                Array.from({ length: n }, (_, i) => [
                   `w${i}`,
-                  { skill_sets: ["sets/a/b/c", "sets/d/e/f"] },
+                  { skillSets: ["sets/a/b/c", "sets/d/e/f"] },
                ]),
             );
          const all = [
@@ -831,8 +832,8 @@ describe("readPackageWorkflows", () => {
                fs.chmodSync(path.join(pkg, SECOND), mode);
                try {
                   const result = read({
-                     fine: { skill_sets: [MAIN] },
-                     broken: { skill_sets: [SECOND] },
+                     fine: { skillSets: [MAIN] },
+                     broken: { skillSets: [SECOND] },
                   });
                   expectUnavailable(result, "EACCES");
                   // Still watched, so fixing the folder reloads the package.
@@ -852,7 +853,7 @@ describe("readPackageWorkflows", () => {
             fs.chmodSync(above, 0o311);
             try {
                expectUnavailable(
-                  read({ broken: { skill_sets: [MAIN] } }),
+                  read({ broken: { skillSets: [MAIN] } }),
                   "EACCES",
                );
             } finally {
@@ -874,9 +875,9 @@ describe("readPackageWorkflows", () => {
             },
          );
          const result = read({
-            fine: { skill_sets: [MAIN] },
-            broken: { skill_sets: [SECOND] },
-            both: { skill_sets: [MAIN, SECOND] },
+            fine: { skillSets: [MAIN] },
+            broken: { skillSets: [SECOND] },
+            both: { skillSets: [MAIN, SECOND] },
          });
          expectUnavailable(
             result,
@@ -984,8 +985,8 @@ describe("readPackageWorkflows", () => {
          );
          const result = read({
             refused: { surprise: 1 },
-            fine: { skill_sets: [MAIN] },
-            broken: { skill_sets: [SECOND] },
+            fine: { skillSets: [MAIN] },
+            broken: { skillSets: [SECOND] },
          });
          expect(result.unavailable?.declared).toEqual(["fine", "broken"]);
       });
@@ -1073,7 +1074,7 @@ describe("readPackageWorkflows", () => {
 
       it("is not unavailable for what the author wrote wrong: that refuses the workflow with a warning", () => {
          analyst();
-         const result = read({ broken: { skill_sets: ["nowhere"] } });
+         const result = read({ broken: { skillSets: ["nowhere"] } });
          expect(result.unavailable).toBeUndefined();
          expect(result.warnings).toHaveLength(1);
          expect(result.warnings[0]).toContain("does not exist");
@@ -1088,8 +1089,8 @@ describe("readPackageWorkflows", () => {
          // An empty set has a finding of its own, which would be reported if it were read.
          fs.mkdirSync(path.join(pkg, THIRD), { recursive: true });
          const result = read({
-            fine: { skill_sets: [MAIN] },
-            broken: { skill_sets: [THIRD], "not-a-key": 1 },
+            fine: { skillSets: [MAIN] },
+            broken: { skillSets: [THIRD], "not-a-key": 1 },
          });
          expect([...result.workflows.keys()]).toEqual(["fine"]);
          expect([...result.sets.keys()]).toEqual([MAIN]);
@@ -1107,7 +1108,7 @@ describe("readPackageWorkflows", () => {
          writeSkill(SECOND, "conventions", "second copy");
          writeSkill(SECOND, "extra");
          const result = read({
-            analyst: { ...entry, skill_sets: [MAIN, SECOND] },
+            analyst: { ...entry, skillSets: [MAIN, SECOND] },
          });
          const workflow = result.workflows.get("analyst")!;
          expect(workflow.shadowing).toEqual([
@@ -1131,7 +1132,7 @@ describe("readPackageWorkflows", () => {
          const entry = analyst();
          writeSkill(SECOND, "aaa");
          const result = read({
-            analyst: { ...entry, skill_sets: [SECOND, MAIN] },
+            analyst: { ...entry, skillSets: [SECOND, MAIN] },
          });
          expect(
             result.workflows.get("analyst")!.sets.map((s) => s.set.path),
@@ -1200,7 +1201,7 @@ describe("readPackageWorkflows", () => {
          fs.mkdirSync(path.join(pkg, MAIN), { recursive: true });
          write(INSTRUCTIONS, "i");
          const result = read({
-            analyst: { instructions: INSTRUCTIONS, skill_sets: [MAIN] },
+            analyst: { instructions: INSTRUCTIONS, skillSets: [MAIN] },
          });
          expect(result.workflows.has("analyst")).toBe(true);
          expect(result.warnings).toEqual([
@@ -1334,7 +1335,7 @@ describe("readPackageWorkflows", () => {
          writeLong();
          const result = read({
             analyst: analyst(),
-            default: { skill_sets: [MAIN] },
+            default: { skillSets: [MAIN] },
          });
          expect(
             result.sets
@@ -1357,10 +1358,10 @@ describe("readPackageWorkflows", () => {
          writeSkill(SECOND, "extra");
          write("workflows/other/instructions.md", "other brief");
          return {
-            analyst: { ...entry, skill_sets: [MAIN, SECOND] },
+            analyst: { ...entry, skillSets: [MAIN, SECOND] },
             other: {
                instructions: "workflows/other/instructions.md",
-               skill_sets: [SECOND],
+               skillSets: [SECOND],
             },
             ...extra,
          };
@@ -1433,7 +1434,7 @@ describe("readPackageWorkflows", () => {
             definition(read({ analyst: { ...entry, description: "other" } })),
          ).not.toBe(base);
          expect(
-            definition(read({ analyst: { ...entry, skill_sets: [] } })),
+            definition(read({ analyst: { ...entry, skillSets: [] } })),
          ).not.toBe(base);
          expect(
             definition(
@@ -1519,7 +1520,7 @@ describe("readPackageWorkflows", () => {
          const forward = read(workflows);
          const swapped = read({
             ...workflows,
-            analyst: { ...workflows.analyst, skill_sets: [SECOND, MAIN] },
+            analyst: { ...workflows.analyst, skillSets: [SECOND, MAIN] },
          });
          expect(digests(swapped)).toEqual(digests(forward));
          expect(definition(swapped)).not.toBe(definition(forward));
@@ -1551,7 +1552,7 @@ describe("readPackageWorkflows", () => {
          writeSkill(SECOND, "conventions", "second copy");
          writeSkill(SECOND, "extra");
          const result = read({
-            default: { skill_sets: [MAIN, SECOND] },
+            default: { skillSets: [MAIN, SECOND] },
             analyst: entry,
          });
          expect(advertisedSkills(result).map((s) => s.name)).toEqual([
@@ -1575,7 +1576,7 @@ describe("readPackageWorkflows", () => {
             advertisedSkills(read({ default: { instructions: INSTRUCTIONS } })),
          ).toEqual([]);
          expect(
-            advertisedSkills(read({ default: { skill_sets: ["nope"] } })),
+            advertisedSkills(read({ default: { skillSets: ["nope"] } })),
          ).toEqual([]);
       });
 
@@ -1583,7 +1584,7 @@ describe("readPackageWorkflows", () => {
          writeSkill(MAIN, "malloy-analysis", "OUR ANALYSIS");
          const resolved = resolveSkills(
             [],
-            advertisedSkills(read({ default: { skill_sets: [MAIN] } })),
+            advertisedSkills(read({ default: { skillSets: [MAIN] } })),
          );
          expect(resolved.map((s) => [s.name, s.origin])).toEqual([
             ["malloy-analysis", "package"],
@@ -1603,15 +1604,15 @@ describe("readPackageWorkflows", () => {
 
       it("is not flagged when a workflow lists it, or a set under it", () => {
          writeSkill("skills", "old");
-         expect(skillsDirNotRead({ default: { skill_sets: ["skills"] } })).toBe(
+         expect(skillsDirNotRead({ default: { skillSets: ["skills"] } })).toBe(
             false,
          );
          writeSkill("skills/sub", "new");
          expect(
-            skillsDirNotRead({ analyst: { skill_sets: ["skills/sub"] } }),
+            skillsDirNotRead({ analyst: { skillSets: ["skills/sub"] } }),
          ).toBe(false);
          expect(
-            skillsDirNotRead({ analyst: { skill_sets: ["./skills//"] } }),
+            skillsDirNotRead({ analyst: { skillSets: ["./skills//"] } }),
          ).toBe(false);
       });
 
@@ -1619,13 +1620,13 @@ describe("readPackageWorkflows", () => {
          writeSkill("skills", "old");
          expect(
             skillsDirNotRead({
-               default: { description: "", skill_sets: ["skills"] },
+               default: { description: "", skillSets: ["skills"] },
             }),
          ).toBe(true);
          expect(
             skillsDirNotRead({
-               broken: { description: "", skill_sets: ["skills"] },
-               default: { skill_sets: ["skills"] },
+               broken: { description: "", skillSets: ["skills"] },
+               default: { skillSets: ["skills"] },
             }),
          ).toBe(false);
       });
@@ -2101,10 +2102,10 @@ describe("readPackageWorkflows", () => {
             writeAssets("sets/c", 4);
             const result = read({
                // Listed out of order, and `d` shares c's set, which is read once.
-               c: { skill_sets: ["sets/c"] },
-               b: { skill_sets: ["sets/b"] },
-               a: { skill_sets: ["sets/a"] },
-               d: { skill_sets: ["sets/c"] },
+               c: { skillSets: ["sets/c"] },
+               b: { skillSets: ["sets/b"] },
+               a: { skillSets: ["sets/a"] },
+               d: { skillSets: ["sets/c"] },
             });
             const files = (setPath: string) =>
                result.sets.get(setPath)!.skills.flatMap((s) => s.listed);
@@ -2126,7 +2127,7 @@ describe("readPackageWorkflows", () => {
             writeAssets("sets/a", 4);
             writeAssets("sets/b", 4);
             writeAssets("sets/c", 4);
-            const flow = (setPath: string) => ({ skill_sets: [setPath] });
+            const flow = (setPath: string) => ({ skillSets: [setPath] });
             const digests = (result: PackageWorkflows) =>
                Object.fromEntries(
                   [...result.sets].map(([setPath, set]) => [
@@ -2156,9 +2157,9 @@ describe("readPackageWorkflows", () => {
             writeAssets("sets/b", 4);
             writeAssets("sets/c", 4);
             const result = read({
-               a: { skill_sets: ["sets/a"], surprise: true },
-               b: { skill_sets: ["sets/b"] },
-               c: { skill_sets: ["sets/c"] },
+               a: { skillSets: ["sets/a"], surprise: true },
+               b: { skillSets: ["sets/b"] },
+               c: { skillSets: ["sets/c"] },
             });
             expect(result.workflows.has("a")).toBe(false);
             expect(result.sets.has("sets/a")).toBe(false);
@@ -2177,7 +2178,7 @@ describe("readPackageWorkflows", () => {
          for (let i = 0; i < SKILLS_PER_SET_MAX + 3; i++) {
             writeSkill(SET, `s${String(i).padStart(3, "0")}`);
          }
-         const result = read({ default: { skill_sets: [SET] } });
+         const result = read({ default: { skillSets: [SET] } });
          const set = result.sets.get(SET)!;
          expect(set.skills.map((s) => s.dirName)).toEqual(
             Array.from(
@@ -2194,7 +2195,7 @@ describe("readPackageWorkflows", () => {
          for (let i = 0; i < SKILLS_PER_SET_MAX; i++) {
             writeSkill(SET, `s${String(i).padStart(3, "0")}`);
          }
-         const result = read({ default: { skill_sets: [SET] } });
+         const result = read({ default: { skillSets: [SET] } });
          expect(result.sets.get(SET)!.skills).toHaveLength(SKILLS_PER_SET_MAX);
          expect(result.warnings).toEqual([]);
       });
@@ -2208,7 +2209,7 @@ describe("readPackageWorkflows", () => {
             );
          }
          writeSkill(SET, "ok");
-         const result = read({ default: { skill_sets: [SET] } });
+         const result = read({ default: { skillSets: [SET] } });
          expect(result.warnings).toHaveLength(SKILL_FINDINGS_MAX + 1);
          expect(result.warnings.at(-1)).toBe(
             `Skill set '${SET}' skill finding: ${extra} further skill findings are not named, for the same kinds of reasons.`,
@@ -2229,7 +2230,7 @@ describe("readPackageWorkflows", () => {
             }
          }
          const result = read({
-            default: { skill_sets: ["sets/a", "sets/b"] },
+            default: { skillSets: ["sets/a", "sets/b"] },
          });
          expect(result.warnings).toHaveLength(2 * (SKILL_FINDINGS_MAX + 1));
       });
@@ -2273,7 +2274,7 @@ describe("readPackageWorkflows", () => {
    describe("across the worker boundary", () => {
       const declared = () => ({
          one: analyst(),
-         two: { description: "Two", skill_sets: [MAIN] },
+         two: { description: "Two", skillSets: [MAIN] },
       });
 
       /** What a worker ships: the walk without its readers, cloned. */

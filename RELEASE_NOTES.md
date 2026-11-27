@@ -23,7 +23,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 ## [Unreleased] — breaking: workflows replace package agents, a package's skills move into skill sets, and `agents` and a root `skills/` are no longer read
 
-**Breaking: a package declares `workflows`, not `agents`.** An entry under `workflows` in `publisher.json` is a named job with three optional keys: `description`, `instructions` (a `.md` file in the package, at most 16 KiB) and `skill_sets` (at most 8 folders, each holding skills as `<skill>/SKILL.md`). It needs `instructions` or `skill_sets`. The name is 1 to 64 lowercase letters, digits and single hyphens. A key Publisher does not know, a bad name, a bad `instructions` path, a bad set path, or two sets with the same name refuses that one workflow with a load warning, and the others keep serving; a key starting `x-` is ignored. A skill set is read once per load however many workflows list it, so the same set can sit in several, and a skill name that two of one workflow's sets both hold is served from the first-listed set when the workflow is read whole. Publisher still serves a definition and never runs one: adopt a workflow only when the user names it.
+**Breaking: a package declares `workflows`, not `agents`.** An entry under `workflows` in `publisher.json` is a named job with three optional keys: `description`, `instructions` (a `.md` file in the package, at most 16 KiB) and `skillSets` (at most 8 folders, each holding skills as `<skill>/SKILL.md`). It needs `instructions` or `skill_sets`. The name is 1 to 64 lowercase letters, digits and single hyphens. A key Publisher does not know, a bad name, a bad `instructions` path, a bad set path, or two sets with the same name refuses that one workflow with a load warning, and the others keep serving; a key starting `x-` is ignored. A skill set is read once per load however many workflows list it, so the same set can sit in several, and a skill name that two of one workflow's sets both hold is served from the first-listed set when the workflow is read whole. Publisher still serves a definition and never runs one: adopt a workflow only when the user names it.
 
 **Breaking: the `default` workflow is the package's own skills.** The skills in its sets, beside the bundled ones, are what `get_skill`, `get_context` and the `…/skills` routes advertise. A package that declares no `default` has no skills of its own, which is what a root `skills/` directory used to give it.
 
@@ -45,7 +45,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 - A task becomes a workflow whose `instructions` is the task file (`weekly-report.md` becomes `workflows.weekly-report`).
 - An agent's own `instructions` become a skill, with a one-sentence `description` saying when to read it, in a set the workflow lists.
-- Root `skills/<x>/` move to `workflows/default/skill_sets/<set>/<x>/`, and `default` is declared. (`"default": { "skill_sets": ["skills"] }` keeps the folder in place.)
+- Root `skills/<x>/` move to `workflows/default/skill_sets/<set>/<x>/`, and `default` is declared. (`"default": { "skillSets": ["skills"] }` keeps the folder in place.)
 - Delete `agents/` and the old `skills/` in the same change.
 
 Before:
@@ -72,12 +72,12 @@ with `skills/storefront-conventions/SKILL.md` beside it. After:
   "name": "storefront",
   "workflows": {
     "default": {
-      "skill_sets": ["workflows/default/skill_sets/house"]
+      "skillSets": ["workflows/default/skill_sets/house"]
     },
     "weekly-report": {
       "description": "Writes the weekly storefront report as the analyst",
       "instructions": "workflows/weekly-report/instructions.md",
-      "skill_sets": [
+      "skillSets": [
         "workflows/weekly-report/skill_sets/analyst",
         "workflows/default/skill_sets/house"
       ]

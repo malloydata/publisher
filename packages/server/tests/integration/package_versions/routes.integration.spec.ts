@@ -54,12 +54,12 @@ function writePackage(
          workflows: {
             default: {
                description: `Default v${answer}`,
-               skill_sets: ["skill_sets/house"],
+               skillSets: ["skill_sets/house"],
             },
             analyst: {
                description: `Analyst v${answer}`,
                instructions: "workflows/analyst/instructions.md",
-               skill_sets: ["workflows/analyst/skill_sets/analysis"],
+               skillSets: ["workflows/analyst/skill_sets/analysis"],
             },
          },
       }),

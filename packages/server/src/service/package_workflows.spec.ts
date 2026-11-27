@@ -112,7 +112,7 @@ describe("package workflows", () => {
    const analyst = () => ({
       description: "Answers revenue questions",
       instructions: "workflows/analyst/instructions.md",
-      skill_sets: [MAIN],
+      skillSets: [MAIN],
    });
    const other = () => ({
       description: "Other",
@@ -352,13 +352,13 @@ describe("package workflows", () => {
          const afterDescription = await shaOf();
          expect(afterDescription).not.toBe(base);
          manifest({
-            workflows: { analyst: { ...analyst(), skill_sets: [] } },
+            workflows: { analyst: { ...analyst(), skillSets: [] } },
          });
          const afterSets = await shaOf();
          expect(afterSets).not.toBe(afterDescription);
          manifest({
             workflows: {
-               analyst: { ...analyst(), skill_sets: [] },
+               analyst: { ...analyst(), skillSets: [] },
                refused: { surprise: 1 },
             },
          });
@@ -397,7 +397,7 @@ describe("package workflows", () => {
          );
          manifest({
             workflows: {
-               analyst: { ...analyst(), skill_sets: [MAIN, SECOND] },
+               analyst: { ...analyst(), skillSets: [MAIN, SECOND] },
             },
          });
          const digests = async () =>
@@ -525,7 +525,7 @@ describe("package workflows", () => {
             "---\nname: extra\ndescription: d\n---\n\nbody\n",
          );
          manifest({
-            workflows: { default: { skill_sets: [MAIN, SECOND] } },
+            workflows: { default: { skillSets: [MAIN, SECOND] } },
          });
          const pkg = await load();
          expect(skillsOf(pkg)).toEqual(["conventions", "extra"]);
@@ -543,7 +543,7 @@ describe("package workflows", () => {
       });
 
       it("follow a reload", async () => {
-         manifest({ workflows: { default: { skill_sets: [MAIN] } } });
+         manifest({ workflows: { default: { skillSets: [MAIN] } } });
          const pkg = await load();
          expect(skillsOf(pkg)).toEqual(["conventions"]);
          manifest({ workflows: { other: other() } });
@@ -622,7 +622,7 @@ describe("package workflows", () => {
             "---\nname: old\ndescription: d\n---\n\nbody\n",
          );
          manifest({
-            workflows: { default: { description: "", skill_sets: ["skills"] } },
+            workflows: { default: { description: "", skillSets: ["skills"] } },
          });
          const pkg = await load();
          expect(pkg.listSkills()).toEqual([]);
@@ -635,7 +635,7 @@ describe("package workflows", () => {
             "skills/old/SKILL.md",
             "---\nname: old\ndescription: d\n---\n\nbody\n",
          );
-         manifest({ workflows: { default: { skill_sets: ["skills"] } } });
+         manifest({ workflows: { default: { skillSets: ["skills"] } } });
          const pkg = await load();
          expect(pkg.listSkills().map((s) => s.name)).toEqual(["old"]);
          expect(codes(pkg)).not.toContain("PACKAGE_SKILLS_DIR_NOT_READ");
@@ -667,7 +667,7 @@ describe("package workflows", () => {
          );
          manifest({
             workflows: {
-               analyst: { ...analyst(), skill_sets: [MAIN, SECOND] },
+               analyst: { ...analyst(), skillSets: [MAIN, SECOND] },
             },
          });
       });
@@ -867,7 +867,7 @@ describe("package workflows", () => {
          write(`${SECOND}/extra/scripts/run.py`, "print('hi')\n");
          manifest({
             workflows: {
-               analyst: { ...analyst(), skill_sets: [MAIN, SECOND] },
+               analyst: { ...analyst(), skillSets: [MAIN, SECOND] },
             },
          });
          const pkg = await load();
@@ -893,7 +893,7 @@ describe("package workflows", () => {
          );
          const served = async (sets: string[]) => {
             manifest({
-               workflows: { analyst: { ...analyst(), skill_sets: sets } },
+               workflows: { analyst: { ...analyst(), skillSets: sets } },
             });
             return load();
          };
@@ -1173,7 +1173,7 @@ describe("package workflows", () => {
             "82232f8282d7b2d5b82fe7eb6e9f0e9b8b3531dac6eab27b8d70221a3373a4a6",
          );
          expect(pkg.getSourceContentSha()).toBe(
-            "4a2a7b92fcec742e57427a5b1ecfb5d7c71653e3f12088a9712b6450ce462a47",
+            "aae3dacb29a52a2dd035ba72d8c1782a1ba9c66de1c6bedd5de43b1e41e3512e",
          );
       });
    });
@@ -1362,7 +1362,7 @@ describe("package workflows", () => {
             );
             manifest({
                workflows: {
-                  analyst: { ...analyst(), skill_sets: [MAIN, SECOND] },
+                  analyst: { ...analyst(), skillSets: [MAIN, SECOND] },
                },
             });
             const pkg = await load();
@@ -1558,13 +1558,13 @@ describe("package workflows", () => {
       describe("what the main thread adopts", () => {
          const HOUSE = "sets/a/house";
          const declared = () => ({
-            default: { description: "Default", skill_sets: ["sets/a"] },
+            default: { description: "Default", skillSets: ["sets/a"] },
             one: {
                description: "One",
                instructions: "workflows/one.md",
-               skill_sets: ["sets/a", "sets/b"],
+               skillSets: ["sets/a", "sets/b"],
             },
-            two: { description: "Two", skill_sets: ["sets/a"] },
+            two: { description: "Two", skillSets: ["sets/a"] },
          });
 
          function richPackage() {
@@ -1820,7 +1820,7 @@ describe("package workflows", () => {
                );
                manifest({
                   workflows: {
-                     analyst: { ...analyst(), skill_sets: [HIDDEN] },
+                     analyst: { ...analyst(), skillSets: [HIDDEN] },
                      ...others,
                   },
                });
@@ -1963,7 +1963,7 @@ describe("package workflows", () => {
                      ),
                   });
                },
-               { default: { skill_sets: [HIDDEN] } },
+               { default: { skillSets: [HIDDEN] } },
             ),
          );
 

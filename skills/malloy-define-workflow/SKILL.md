@@ -26,12 +26,12 @@ Workflows live under the `workflows` object of the package's `publisher.json`, k
   "name": "storefront",
   "workflows": {
     "default": {
-      "skill_sets": ["workflows/default/skill_sets/house"]
+      "skillSets": ["workflows/default/skill_sets/house"]
     },
     "weekly-report": {
       "description": "Writes the Monday revenue summary for the storefront package",
       "instructions": "workflows/weekly-report/instructions.md",
-      "skill_sets": [
+      "skillSets": [
         "workflows/weekly-report/skill_sets/analyst",
         "workflows/default/skill_sets/house"
       ]
@@ -53,9 +53,9 @@ workflows/
 | name (the key) | `^[a-z0-9]+(-[a-z0-9]+)*$`, at most 64 characters. |
 | `description` | Optional. A non-empty line saying what the workflow is for. |
 | `instructions` | Optional. Package-relative path of a `.md` file. At most 16 KiB. |
-| `skill_sets` | Optional. At most 8 package-relative folders, in the order that decides a name clash. |
+| `skillSets` | Optional. At most 8 package-relative folders, in the order that decides a name clash. |
 
-A workflow with neither `instructions` nor `skill_sets` has nothing to serve and is refused. One with `skill_sets` and no `instructions` is only a bundle of skills; `get_workflow` reports `has_instructions: false` and there is nothing to run.
+A workflow with neither `instructions` nor `skillSets` has nothing to serve and is refused. One with `skillSets` and no `instructions` is only a bundle of skills; `get_workflow` reports `has_instructions: false` and there is nothing to run.
 
 ### Skill sets
 
@@ -70,7 +70,7 @@ A **skill set** is a folder whose subfolders are skills (`<set>/<skill>/SKILL.md
 
 `workflows.default` holds what used to be the package's root `skills/`. Its skills, beside the bundled ones, are what `get_skill` and `get_context` advertise to every session on the package, with no one naming a workflow. So put there only guidance that applies to every use of the package (what a measure counts, vocabulary, house rules). Anything for one job goes in that job's own workflow.
 
-A package's `agents` key is **no longer read**, and neither is a root `skills/` directory on its own: it is read only when a workflow lists it as a skill set (`"skill_sets": ["skills"]` migrates with no file moved, if the folder holds `<skill>/SKILL.md`). A package with either left unlisted loads with a warning (`PACKAGE_AGENTS_NOT_READ`, `PACKAGE_SKILLS_DIR_NOT_READ`) naming the move below.
+A package's `agents` key is **no longer read**, and neither is a root `skills/` directory on its own: it is read only when a workflow lists it as a skill set (`"skillSets": ["skills"]` migrates with no file moved, if the folder holds `<skill>/SKILL.md`). A package with either left unlisted loads with a warning (`PACKAGE_AGENTS_NOT_READ`, `PACKAGE_SKILLS_DIR_NOT_READ`) naming the move below.
 
 ## Instructions or skills
 
@@ -95,7 +95,7 @@ Every set has a `digest` (SHA-256 over its path and what it serves: each inline 
 
 The manifest is an allowlist, and Publisher never takes the package offline for a workflow mistake. What breaks decides how much is lost; every finding is in the package's load warnings.
 
-- **The whole workflow is refused** (not served; `Workflow '<name>' is not served: <why>`): a bad name, a key Publisher does not know, a non-object entry, an empty `description`, an `instructions` file that is missing, not `.md`, over 16 KiB or under a nested `publisher.json`, a bad `skill_sets` list (not a list, over 8, a folder that is missing, outside the package, badly named or listed twice), a set folder that cannot be read, or nothing to serve. Use an `x-` prefix (`"x-owner": "finance"`) for notes you want ignored. `tools`, `hooks`, `permission-mode` and similar are not keys: a definition adds words to a session and never widens what the session may do.
+- **The whole workflow is refused** (not served; `Workflow '<name>' is not served: <why>`): a bad name, a key Publisher does not know, a non-object entry, an empty `description`, an `instructions` file that is missing, not `.md`, over 16 KiB or under a nested `publisher.json`, a bad `skillSets` list (not a list, over 8, a folder that is missing, outside the package, badly named or listed twice), a set folder that cannot be read, or nothing to serve. Use an `x-` prefix (`"x-owner": "finance"`) for notes you want ignored. `tools`, `hooks`, `permission-mode` and similar are not keys: a definition adds words to a session and never widens what the session may do.
 - **One skill is skipped** (the workflow still serves, with a set finding): an unreadable `SKILL.md`, a `name` that is not its directory name, an `assets/` that is a link or leaves the skill, a symlink, `..` or case-colliding names under `assets/`, a `SKILL.md` under `assets/`, a `SKILL.md` that does not fit the set's budget, or a `publisher.json` at the skill's root, in its `reference/` or `references/`, or anywhere under `assets/` (it would make the directory a second package root). A `publisher.json` elsewhere in a skill (say `scripts/`) only skips that file.
 - **A `publisher.json` at or above a set's folder refuses the workflow** for the same reason (below the package root, never the root itself); one inside a skill (the places above) only sets that skill aside; one in a dot-named directory is not read at all.
 - A set that holds no skills is a warning, not a refusal.
@@ -104,7 +104,7 @@ The manifest is an allowlist, and Publisher never takes the package offline for 
 
 1. **Each old agent task becomes its own workflow**, with the task file as that workflow's `instructions`. A task's name is the workflow's name (`weekly-report.md` becomes `workflows.weekly-report`). Move the file to `workflows/<name>/instructions.md`.
 2. **An old agent's standing guidance (its `instructions`) moves into a skill**, in a set of its own (`workflows/<name>/skill_sets/<set>/<skill>/SKILL.md`), with a one-sentence `description` saying when to read it; its old `skills/<x>/` folders move into that set too. List the set in each workflow that needs it.
-3. **Root `skills/<x>/` move to `workflows/default/skill_sets/<set>/<x>/`**, and `default` is declared with that set. (Declaring `"default": { "skill_sets": ["skills"] }` instead keeps the folder where it is; the move is only for tidiness.)
+3. **Root `skills/<x>/` move to `workflows/default/skill_sets/<set>/<x>/`**, and `default` is declared with that set. (Declaring `"default": { "skillSets": ["skills"] }` instead keeps the folder where it is; the move is only for tidiness.)
 4. `schedules`, `budget`, `model` and tasks are gone: nothing runs a workflow on a schedule, and nothing here sets a model or a budget. Drop them, and tell the user a recurring job now needs a scheduler of their own that fetches the workflow.
 5. Delete `agents/` and the old root `skills/` in the same change (unless `default` lists `skills`); leaving them behind keeps the load warnings.
 

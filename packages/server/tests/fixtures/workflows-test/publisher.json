@@ -5,12 +5,12 @@
    "workflows": {
       "default": {
          "description": "The package's advertised skills",
-         "skill_sets": ["skill_sets/house"]
+         "skillSets": ["skill_sets/house"]
       },
       "analyst": {
          "description": "Answers questions using the house conventions",
          "instructions": "workflows/analyst/instructions.md",
-         "skill_sets": [
+         "skillSets": [
             "workflows/analyst/skill_sets/analysis",
             "skill_sets/house"
          ]
@@ -21,7 +21,7 @@
       },
       "broken": {
          "description": "Names a skill set the package does not have, so it is refused",
-         "skill_sets": ["skill_sets/missing"]
+         "skillSets": ["skill_sets/missing"]
       }
    },
    "agents": {
