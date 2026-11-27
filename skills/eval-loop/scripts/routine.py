@@ -153,7 +153,18 @@ def secondary(run: pathlib.Path, set_dir: pathlib.Path | None) -> dict[str, Any]
     decided_unans = [q for q in scores if q in unans]
     right = {q for q, v in scores.items() if v == "match"}
     att = [e for e in events if e.get("kind") == "attempt" and e.get("qid") in right]
-    return {"coverage": round(1 - len(decided_unans) / len(scores), 4) if scores else None,
+    # A question with no key yet, as a set written before launch starts: no
+    # verdict, but whether the agent got to an answer through a query that ran
+    # is already a measurement.
+    bare = [q for q, c in cases.items() if not c.get("golden")]
+    bare_att = [e for e in events if e.get("kind") == "attempt" and e.get("qid") in set(bare)]
+    answered = [e for e in bare_att if e.get("submitted") and e.get("final_query")
+                and e.get("answer_captured")]
+    return {"unkeyed": {"cases": len(bare), "answered": len(answered),
+                        "toolCalls": median([(e.get("n_get_context") or 0) + (e.get("n_execute") or 0)
+                                             for e in answered]),
+                        "failedQueries": median([e.get("n_execute_errors") or 0 for e in answered])},
+            "coverage": round(1 - len(decided_unans) / len(scores), 4) if scores else None,
             "refusals": {"right": sum(1 for q in decided_unans if q in right),
                          "decided": len(decided_unans)},
             "effortToRight": {
@@ -344,6 +355,11 @@ class Routine:
         self.share()
         n = self.result["number"]
         said = f"{n['passed']} of {n['decided']} decided cases passed"
+        bare = n.get("unkeyed") or {}
+        if bare.get("cases"):
+            said += (f"; {bare['cases']} question(s) have no answer key yet, and the agent "
+                     f"answered {bare['answered']} of them with a query that ran. Derive their keys "
+                     f"(skill:eval-import) to score them")
         eff = n.get("effortToRight") or {}
         if eff.get("toolCalls") is not None:
             said += f" (a right answer took {eff['toolCalls']:g} tool calls at the median"

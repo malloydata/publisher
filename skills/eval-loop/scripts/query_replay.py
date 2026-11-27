@@ -405,6 +405,8 @@ def compare(old: list[dict[str, Any]], new: list[dict[str, Any]], band: float,
         ratio = b["median_ms"] / a["median_ms"] if a["median_ms"] else None
         entry = {"qid": qid, "before_ms": a["median_ms"], "after_ms": b["median_ms"],
                  "ratio": round(ratio, 3) if ratio is not None else None}
+        if abs(delta) > min_delta_ms and ratio is not None and abs(ratio - 1) > out.get("swing", 0):
+            out["swing"], out["swing_qid"] = round(abs(ratio - 1), 3), qid
         if abs(delta) <= min_delta_ms or ratio is None or abs(ratio - 1) <= band:
             out["within_band"] += 1
         elif delta < 0:
@@ -440,6 +442,11 @@ def fmt_compare(c: dict[str, Any], before: str, after: str) -> list[str]:
     if not timed:
         lines.append("  no query kept its rows and ran in both, so speed was not compared")
         return lines
+    if c.get("sameVersion") and c.get("swing") is not None:
+        lines.append(f"  the same package version both times, so this is noise: the largest "
+                     f"move is {c['swing']:.0%} ({c['swing_qid']}). Set [performance] "
+                     f"latency_band at least that high"
+                     + (f"; it is {c['band']:.0%}" if c["swing"] > c["band"] else ""))
     lines.append(f"  {len(c['faster'])} faster, {len(c['slower'])} slower, "
                  f"{c['within_band']} within the band; total {c['total_before_ms']} -> "
                  f"{c['total_after_ms']} ms" + (f" (x{c['total_ratio']})" if c["total_ratio"] else ""))
@@ -572,6 +579,15 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
         except (OSError, ValueError):
             before = None
         summary["compare"]["build_before"] = before
+        try:
+            was = json.loads((a.baseline / "run.json").read_text())
+        except (OSError, ValueError):
+            was = {}
+        # Two replays of one package version, nothing changed between them:
+        # how far they moved is this environment's noise, which the band
+        # should be at least.
+        summary["compare"]["sameVersion"] = bool(
+            version and (was.get("package"), was.get("packageVersion")) == (a.package, version))
     pins: dict[str, Any] = {
         "runId": a.out.name, "label": a.label, "target": "local", "answererModel": None,
         "phase": PHASE, "started": started, "status": status,

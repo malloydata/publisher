@@ -156,6 +156,18 @@ make none and say why in `disagreement`.
 """
 
 
+# `[performance] table_storage`: where a materialized table may live. Some
+# owners require every query to be answered from their own warehouse; others
+# want tables in Credible storage. Improve mode refuses an edit that breaks it.
+STORAGE_RULE = {
+    "warehouse": "\nWHERE A TABLE MAY LIVE\n\nOnly in the source's own warehouse. Never write "
+                 "`storage=` on a persist, materialize, preaggregate or rollup annotation.\n",
+    "credible": "\nWHERE A TABLE MAY LIVE\n\nOnly in Credible storage. Every persist, materialize, "
+                "preaggregate or rollup annotation you write carries `storage=`.\n",
+    "either": "",
+}
+
+
 def served_version(rest_url: str | None, environment: str,
                    package: str) -> str | None:
     """The version the model server serves this package as, or None.
@@ -565,7 +577,8 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
                                  "sufficiency", "diagnosis", "evidence")},
                                indent=2),
             cases=json.dumps(members, indent=2)[:8000],
-            unattended=UNATTENDED if getattr(a, "unattended", False) else "",
+            unattended=(UNATTENDED if getattr(a, "unattended", False) else "")
+            + STORAGE_RULE.get(getattr(a, "table_storage", None), ""),
             prior=attempts.brief(attempts.relevant(a.prior, issue.get("qids", [])))[:6000],
             cases_file=(a.set_dir / "cases.jsonl").resolve()),
         skills=["eval-improve", *a.role_skills], skills_root=a.roots,
@@ -726,6 +739,7 @@ def run(argv: list[str] | None, started: dict[str, Any]) -> int:
     a.truth_publisher = a.truth_publisher or cfg.truth_publisher()
     a.truth_environment = a.truth_environment or cfg.get("truth", "environment")
     a.skills_root = a.skills_root or cfg.get("paths", "skills_root")
+    a.table_storage = config.table_storage(cfg)
     if not a.server_root and not a.watch_mode and cfg.server_root("model").exists():
         a.server_root = cfg.server_root("model")
     a.roots = skills_roots(a.skills_root)

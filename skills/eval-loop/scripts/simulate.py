@@ -95,6 +95,7 @@ def objective(cfg: Any) -> dict[str, Any]:
             "usd_per_tb_scanned": get("usd_per_tb_scanned"),
             "credible_usd_per_compute_hour": get("credible_usd_per_compute_hour"),
             "table_read_ms": get("table_read_ms"),
+            "table_storage": config.table_storage(cfg),
             "max_query_ms": get("max_query_ms")}
 
 
@@ -261,15 +262,19 @@ def score(rows: list[dict[str, Any]], tables: list[dict[str, Any]],
     stale = obj["max_staleness_hours"]
     per_day = math.ceil(24 / stale) if stale else 24
     build_day = round(build * per_day, 1)
-    # Priced as the history model prices production: live queries and builds
-    # on the warehouse, table reads on Credible (at the warehouse's price when
-    # no Credible price is given). `usd` is what the option costs a day.
+    # Live queries and builds run on the warehouse. A table read runs where
+    # `table_storage` puts the table: the warehouse, or Credible (at the
+    # warehouse's price when no Credible price is given; with "either", the
+    # cheaper of the two). `usd` is what the option costs a day.
     usd = warehouse_usd = credible_usd = None
     wh = obj["usd_per_compute_hour"]
     if wh:
         cr = obj.get("credible_usd_per_compute_hour") or wh
-        warehouse_usd = round((live_ms + build_day) / 3_600_000 * wh, 4)
-        credible_usd = round(table_ms / 3_600_000 * cr, 4)
+        on_credible = obj.get("table_storage") == "credible" or (
+            obj.get("table_storage") == "either" and cr < wh)
+        warehouse_usd = round((live_ms + build_day + (0 if on_credible else table_ms))
+                              / 3_600_000 * wh, 4)
+        credible_usd = round(table_ms / 3_600_000 * cr, 4) if on_credible else 0.0
         usd = round(warehouse_usd + credible_usd, 4)
     why_not = []
     if obj["max_build_ms_per_day"] and build_day > obj["max_build_ms_per_day"]:
@@ -537,10 +542,14 @@ def assumptions(obj: dict[str, Any], tier: str) -> list[str]:
            *([f"calibrated from {obj['calibratedFrom']}: table_read_ms and build_factor = "
               f"{obj.get('build_factor', 1):g} are what that check measured"]
              if obj.get("calibratedFrom") else []),
-           ("live queries and builds are priced on the warehouse, table reads on Credible at "
-            + (f"credible_usd_per_compute_hour = {obj['credible_usd_per_compute_hour']:g}"
-               if obj.get("credible_usd_per_compute_hour")
-               else "the warehouse's price (no credible_usd_per_compute_hour set)"))]
+           (f"table_storage is {obj.get('table_storage') or 'warehouse'}: "
+            + ("live queries, builds and table reads are priced on the warehouse"
+               if obj.get("table_storage") in (None, "warehouse") else
+               "live queries and builds are priced on the warehouse, table reads on Credible at "
+               + (f"credible_usd_per_compute_hour = {obj['credible_usd_per_compute_hour']:g}"
+                  if obj.get("credible_usd_per_compute_hour")
+                  else "the warehouse's price (no credible_usd_per_compute_hour set)")
+               + (" when that is cheaper" if obj.get("table_storage") == "either" else "")))]
     if tier == "estimate":
         out.append("which queries a rollup answers follows the router's grain rule; a measure "
                    "the router cannot merge (a distinct count, an average) is refused only at "

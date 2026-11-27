@@ -41,6 +41,12 @@ query replay's rows when given `--replay`), against `--baseline record` by
 default, and prints the checkpoint message. The rest stay yours: the judge's
 doubts about a key, and whether the flips clear the bar for their size.
 
+A target a candidate gets wrong still had its failure removed when that wrong
+answer is diagnosed with a different failure than in the baseline: improve
+mode diagnoses each such answer before the check, and the check lists it under
+`failedAnotherWay` instead of rejecting the edit. Diagnosed with the same
+failure, or not diagnosed, it counts as not fixed.
+
 It measures noise when it can: given a second run of the baseline, found by
 its pins or named with `--aa`, a case the two disagree on is unstable, and
 neither a fix nor a regression on it counts (measurement.md). A case on the

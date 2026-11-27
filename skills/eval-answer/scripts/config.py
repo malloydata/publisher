@@ -23,6 +23,7 @@ the servers and paths every step of a run needs:
     budget_ms    = 2000        # a query slower than this is marked slow
     repeats      = 5           # timed calls per query, after one warm-up
     latency_band = 0.2         # a change under 20% is noise, not faster or slower
+    table_storage = "warehouse"  # where a materialized table may live: warehouse, credible, either
 
 A value is taken from a flag first, then this file, then `set.json`, then a
 built-in. Relative paths in the file resolve against the file's own directory,
@@ -95,7 +96,12 @@ SCHEMA: dict[str, dict[str, Any]] = {
                     # a build at the warehouse's price.
                     "credible_usd_per_compute_hour": "positive",
                     "credible_usd_per_gb_month": "positive",
-                    "max_query_ms": "positive"},
+                    "max_query_ms": "positive",
+                    # Where a materialized table may live: "warehouse" (the
+                    # source's own, the default), "credible" (a storage
+                    # destination, `storage=`), or "either". Improve mode
+                    # refuses an edit that puts one anywhere else.
+                    "table_storage": str},
     # The optimization package (eval-loop's optimization_package.py): where its
     # tables, both models and both apps live; the environments whose traffic is
     # the loop's own and never production (ingest_logs.py); and how many
@@ -114,8 +120,21 @@ BUILTIN: dict[tuple[str, str], Any] = {
     ("performance", "latency_band"): 0.2,
     ("performance", "objective"): "weighted_ms",
     ("performance", "table_read_ms"): 10.0,
+    ("performance", "table_storage"): "warehouse",
     ("optimization", "judge_sample"): 25,
 }
+
+
+TABLE_STORAGE = ("warehouse", "credible", "either")
+
+
+def table_storage(cfg: Any) -> str:
+    """`[performance] table_storage`, checked."""
+    v = cfg.get("performance", "table_storage")
+    if v not in TABLE_STORAGE:
+        raise SystemExit(f"Invalid eval.toml on 'performance.table_storage': expected one of "
+                         f"{', '.join(TABLE_STORAGE)}, got {v!r}. Fix: table_storage = \"warehouse\"")
+    return v
 
 
 def within(path: pathlib.Path, directory: pathlib.Path) -> bool:

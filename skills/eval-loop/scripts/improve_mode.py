@@ -38,6 +38,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent / "eval-answer" / "scripts"))
 sys.path.insert(0, str(HERE))
 
+import config  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 
 IDENTITY = ("-c", "user.name=eval-loop", "-c", "user.email=eval-loop@localhost")
@@ -80,8 +81,14 @@ def candidate_cases(set_dir: pathlib.Path, targets: list[str]) -> list[str]:
     neighbours by tag are where a doc or a rename is most likely to break
     something, and the controls are the questions production gets right, which
     an edit must not break. Never a `test` case: no decision is made on those.
+
+    A set with neither holdout nor control cases, such as questions a person
+    wrote before launch, has nothing else that would catch an edit breaking an
+    unrelated question, so every case but `test` is re-asked.
     """
     cases = read_jsonl(set_dir / "cases.jsonl")
+    if not any(c.get("split") == "holdout" or "control" in (c.get("tags") or []) for c in cases):
+        return [c["qid"] for c in cases if c.get("split") != "test"]
     want = set(targets)
     tags = {t for c in cases if c.get("qid") in want for t in c.get("tags") or []} - BROAD_TAGS
     return [c["qid"] for c in cases if c.get("split") != "test" and (
@@ -121,6 +128,29 @@ def stopped_because(code: int, result: dict[str, Any], edited: bool) -> str | No
     return None
 
 
+TABLE_ANNOTATIONS = ("#@ persist", "#@ preaggregate", "#(materialize)", "#(rollup)")
+
+
+def storage_breach(diff: str, allowed: str) -> str | None:
+    """Why an edit puts a table where `[performance] table_storage` forbids,
+    or None. A table annotation with `storage=` lives in a storage destination
+    (Credible); one without it lives in the source's own warehouse."""
+    for line in diff.splitlines():
+        if not line.startswith("+") or line.startswith("+++"):
+            continue
+        text = line[1:].strip()
+        if not text.startswith(TABLE_ANNOTATIONS):
+            continue
+        stored = "storage=" in text.replace(" ", "")
+        if allowed == "warehouse" and stored:
+            return (f"the edit builds a table in Credible storage ({text}), and table_storage "
+                    f"is \"warehouse\": tables stay in the source's own warehouse")
+        if allowed == "credible" and not stored:
+            return (f"the edit builds a table in the warehouse ({text}), and table_storage "
+                    f"is \"credible\": tables go to Credible storage (storage=)")
+    return None
+
+
 def make_edit(R: Any, repo: pathlib.Path, issue: dict[str, Any], k: int,
               extra: tuple[str, ...] = ()) -> tuple[dict[str, Any], pathlib.Path, bool]:
     """Run the improve step for one cluster and commit what it wrote.
@@ -145,6 +175,12 @@ def make_edit(R: Any, repo: pathlib.Path, issue: dict[str, Any], k: int,
         git(repo, "clean", "-fdq", "--", ".")
         return {**out, "outcome": "skipped", "why": stop}, cluster, False
     git(repo, "add", "-A", "--", ".")
+    breach = storage_breach(git(repo, "diff", "--cached", "-U0", "--", ".").stdout,
+                            config.table_storage(R.cfg))
+    if breach:
+        git(repo, "reset", "-q", "--hard")
+        git(repo, "clean", "-fdq", "--", ".")
+        return {**out, "outcome": "skipped", "why": breach}, cluster, False
     if not commit(repo, f"candidate: {out['what']}"):
         git(repo, "reset", "-q", "--hard")
         return {**out, "outcome": "skipped", "why": "the edit could not be committed"}, cluster, False
@@ -181,6 +217,22 @@ def keep_or_drop(R: Any, repo: pathlib.Path, out: dict[str, Any], accepted: bool
     return {**out, "outcome": "rejected" if measured else "skipped", "why": why or "not accepted"}
 
 
+def diagnose_failed_targets(R: Any, name: str, runs: list[str], targets: list[str]) -> None:
+    """Diagnose each target a re-run got wrong, against the edited model, so
+    `accept` can tell the failure the edit aimed at coming back from a
+    different mistake on the same question."""
+    from flip_table import verdicts
+    for r in runs:
+        d = R.cfg.workdir() / "runs" / r
+        if not (d / "events.jsonl").is_file():
+            continue
+        v = verdicts(d)
+        bad = [q for q in targets if q in v and v[q]["passed"] is False]
+        if bad:
+            R.do(f"diagnose {r}", "diagnose", *R.s, "--experiment", name, "--label", r,
+                 "--only", ",".join(bad), "--verdicts", "no_match,near_match", "--no-effort")
+
+
 def one_edit(R: Any, repo: pathlib.Path, issue: dict[str, Any], k: int) -> dict[str, Any]:
     """Improve, commit, measure, accept, keep or drop. Returns what happened."""
     import accept
@@ -203,6 +255,8 @@ def one_edit(R: Any, repo: pathlib.Path, issue: dict[str, Any], k: int) -> dict[
                                        "--max-turns", R.a.max_turns,
                                        "--parallel", R.a.parallel) != 0:
                 failed = f"the run {r} did not finish"
+        if failed is None:
+            diagnose_failed_targets(R, name, runs, targets)
         R.do(f"stop {name}", "experiment", "stop", name, *s)
     before = len(attempts.read(cfg.set_dir))
     if failed is None:
@@ -214,7 +268,7 @@ def one_edit(R: Any, repo: pathlib.Path, issue: dict[str, Any], k: int) -> dict[
     out["runs"] = runs
     r = newest_acceptance(cfg.workdir()) if failed is None else {}
     if r:
-        out["acceptance"] = {k: r.get(k) for k in ("targetsFixed", "regressions", "noise",
+        out["acceptance"] = {k: r.get(k) for k in ("targetsFixed", "failedAnotherWay", "regressions", "noise",
                                                     "unstable", "doubtedGoldens")}
         out["acceptance"]["rules"] = {k: v.get("ok") for k, v in (r.get("rules") or {}).items()}
     why = failed or "; ".join(f"{k}: {v['detail']}" for k, v in (r.get("rules") or {}).items()

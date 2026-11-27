@@ -157,6 +157,23 @@ class Mode(unittest.TestCase):
             {"qid": "ok", "split": "dev", "tags": ["production", "control"]})))
         self.assertEqual(im.candidate_cases(self.cfg.set_dir, ["fix"]), ["fix", "same", "ok"])
 
+    def test_a_set_with_no_holdout_and_no_controls_re_asks_every_case_but_test(self):
+        (self.repo / "evals" / "cases.jsonl").write_text("".join(json.dumps(c) + "\n" for c in (
+            {"qid": "fix", "split": "dev", "tags": ["rank"]},
+            {"qid": "far", "split": "dev", "tags": ["count"]},
+            {"qid": "kept", "split": "test", "tags": ["rank"]})))
+        self.assertEqual(im.candidate_cases(self.cfg.set_dir, ["fix"]), ["fix", "far"])
+
+    def test_a_table_is_refused_where_table_storage_forbids_it(self):
+        lake = "+#@ persist name=\"t\" storage=\"lake\"\n"
+        wh = "+#(rollup) grain=[\"a\"]\n"
+        self.assertIn("Credible storage", im.storage_breach(lake, "warehouse"))
+        self.assertIsNone(im.storage_breach(wh, "warehouse"))
+        self.assertIn("in the warehouse", im.storage_breach(wh, "credible"))
+        self.assertIsNone(im.storage_breach(lake, "credible"))
+        self.assertIsNone(im.storage_breach(lake + wh, "either"))
+        self.assertIsNone(im.storage_breach("-#@ persist storage=\"lake\"\n", "warehouse"))
+
     def test_after_k_edits_in_a_row_not_accepted_it_stops_and_says_so(self):
         self.issue([{"id": f"night:c{i}", "qids": ["fix"], "owner": "model"} for i in range(5)])
         R = FakeRoutine(self.cfg, "night", {})

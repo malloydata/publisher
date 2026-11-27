@@ -226,6 +226,8 @@ def run_flags(cfg: config.Config, name: str, verb: str) -> list[str]:
     flags = ["--package", rec["package"]]
     if verb == "run":
         flags += ["--model-repo", rec["location"]]
+    if verb == "diagnose":
+        flags += ["--model-dir", rec["location"]]
     return flags
 
 

@@ -229,6 +229,16 @@ class Compare(unittest.TestCase):
         self.assertEqual((c["total_before_ms"], c["total_after_ms"]), (2102, 1506))
         self.assertFalse(c["blocked"])
 
+    def test_two_replays_of_one_version_say_how_large_the_noise_is(self):
+        old = [result("a", 1000), result("b", 100), result("tiny", 2)]
+        new = [result("a", 1270), result("b", 95), result("tiny", 6)]
+        c = qr.compare(old, new, band=0.2, min_delta_ms=10)
+        self.assertEqual((c["swing"], c["swing_qid"]), (0.27, "a"))
+        self.assertNotIn("noise", "\n".join(qr.fmt_compare(c, "x", "y")))
+        said = "\n".join(qr.fmt_compare({**c, "sameVersion": True}, "x", "y"))
+        self.assertIn("the largest move is 27% (a). Set [performance] latency_band at least "
+                      "that high; it is 20%", said)
+
     def test_changed_rows_and_new_errors_block_and_are_not_timed(self):
         old = [result("a", 100, "s1"), result("b", 100), result("c", 100, "s1", unstable_rows=True),
                result("d", 100)]

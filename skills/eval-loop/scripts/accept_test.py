@@ -54,6 +54,32 @@ class Rules(unittest.TestCase):
         self.assertTrue(r["accepted"], r["rules"])
         self.assertEqual(r["targets"], ["fix"])
 
+    def issue(self, d, qid, code):
+        with open(d / "events.jsonl", "a") as f:
+            f.write(json.dumps({"kind": "issue", "issue_id": f"{d.name}:x", "qids": [qid],
+                                "primary_code": code}) + "\n")
+
+    def test_a_target_that_fails_another_way_has_had_its_failure_removed(self):
+        self.issue(self.base, "fix", "model-definition")
+        good = {"fix": "match", "keep": "match", "held": "match"}
+        b = run(self.runs / "b", {**good, "fix": "no_match"})
+        self.issue(b, "fix", "SYNTAX")
+        r = self.check(run(self.runs / "a", good), b)
+        self.assertTrue(r["accepted"], r["rules"])
+        self.assertEqual((r["targetsFixed"], r["failedAnotherWay"]),
+                         (["fix"], ["fix in b (SYNTAX, not model-definition)"]))
+
+    def test_a_target_that_fails_the_same_way_or_undiagnosed_still_counts(self):
+        self.issue(self.base, "fix", "model-definition")
+        good = {"fix": "match", "keep": "match", "held": "match"}
+        same = run(self.runs / "b", {**good, "fix": "no_match"})
+        self.issue(same, "fix", "model-definition")
+        bare = run(self.runs / "c", {**good, "fix": "no_match"})
+        for second in (same, bare):
+            r = self.check(run(self.runs / f"a-{second.name}", good), second)
+            self.assertFalse(r["rules"]["targets fixed"]["ok"])
+            self.assertEqual((r["targetsFixed"], r["failedAnotherWay"]), ([], []))
+
     def test_one_run_is_not_twice(self):
         r = self.check(run(self.runs / "a", {"fix": "match", "keep": "match", "held": "match"}))
         self.assertFalse(r["rules"]["twice"]["ok"])

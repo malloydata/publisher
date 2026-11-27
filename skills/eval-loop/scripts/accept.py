@@ -12,7 +12,10 @@ decide, over the cases the candidate runs answered:
                candidates whose model content differs, is refused)
   no regression  no case passing in the baseline fails in any candidate run
   targets fixed  every target case passes in every candidate run (default
-               targets: the cases the baseline did not pass)
+               targets: the cases the baseline did not pass). A target a
+               candidate got wrong, diagnosed there with a different failure
+               than in the baseline, counts as fixed: the failure the edit
+               aimed at is gone, and the new one is listed (failedAnotherWay)
   both splits  the candidates answered holdout cases as well as dev, when the
                set has holdout
   one change   the runs differ from the baseline only in the model: same judge,
@@ -181,6 +184,18 @@ def find_aa(cfg: config.Config, baseline: pathlib.Path) -> pathlib.Path | None:
     return pathlib.Path(best["path"]) if best else None
 
 
+def codes(run: pathlib.Path) -> dict[str, str]:
+    """Each case's diagnosed failure in a run: the `primary_code` of the issue
+    naming it."""
+    out: dict[str, str] = {}
+    f = run / "events.jsonl"
+    for e in read_jsonl(f) if f.is_file() else []:
+        if e.get("kind") == "issue" and e.get("primary_code"):
+            for q in e.get("qids") or []:
+                out[q] = e["primary_code"]
+    return out
+
+
 def unstable_cases(B: dict[str, dict[str, Any]], A2: dict[str, dict[str, Any]]) -> list[str]:
     """The cases two runs of one configuration disagree on."""
     return sorted(q for q in set(B) & set(A2)
@@ -214,7 +229,13 @@ def check(cfg: config.Config, baseline: pathlib.Path, candidates: list[pathlib.P
     rules: dict[str, dict[str, Any]] = {}
     rules["twice"] = {"ok": len(candidates) >= 2,
                       "detail": f"{len(candidates)} candidate run(s)"}
-    regressions, unfixed, noise = [], [], []
+    # The failure each target was diagnosed with in the baseline. A target a
+    # candidate gets wrong, diagnosed there with a DIFFERENT failure, still had
+    # the failure the edit aimed at removed: it is listed, not counted against
+    # the edit. Undiagnosed, or the same failure, it counts.
+    aimed = codes(baseline)
+    candidate_dirs = {c.name: c for c in candidates}
+    regressions, unfixed, noise, another = [], [], [], []
     for name, C in runs.items():
         for q in C:
             if q in moved[name] or q not in B:
@@ -223,13 +244,19 @@ def check(cfg: config.Config, baseline: pathlib.Path, candidates: list[pathlib.P
                 (noise if q in unstable else regressions).append(f"{q} in {name}")
         for q in targets:
             if q in C and not C[q]["passed"]:
+                was, now = aimed.get(q), codes(candidate_dirs[name]).get(q)
+                if was and now and now != was:
+                    another.append(f"{q} in {name} ({now}, not {was})")
+                    continue
                 unfixed.append(f"{q} in {name} ({C[q]['verdict']})")
             if q not in C:
                 unfixed.append(f"{q} not answered in {name}")
     rules["no regression"] = {"ok": not regressions, "detail": ", ".join(regressions) or "none"}
     rules["targets fixed"] = {"ok": bool(targets) and not unfixed,
                               "detail": (", ".join(unfixed) if unfixed else
-                                         f"{len(targets)} target(s) pass in every run")
+                                         f"{len(targets)} target(s) pass in every run"
+                                         + (f", except where they failed another way: "
+                                            f"{', '.join(another)}" if another else ""))
                               if targets else (
                                   "every target is unstable or set aside: it passes or "
                                   "fails with nothing changed, or its question or key "
@@ -260,12 +287,13 @@ def check(cfg: config.Config, baseline: pathlib.Path, candidates: list[pathlib.P
                                          if not c else f"{len(c['rows_changed'])} changed, "
                                          f"{len(c['broke'])} broke, over {c['compared']}")}
     doubted = [d.get("qid") for c in candidates for d in run_config(c).get("doubtedGoldens") or []]
-    fixed = [q for q in targets if all(q in C and C[q]["passed"] for C in runs.values())]
+    still = {u.split(" in ")[0] for u in unfixed}
+    fixed = [q for q in targets if q not in still and all(q in C for C in runs.values())]
     return {"baseline": baseline.name, "candidates": [c.name for c in candidates],
             "aa": aa.name if aa else None, "unstable": sorted(unstable),
             "unstableTargets": unstable_targets, "namedTargets": named,
             "noise": sorted(set(noise)), "regressions": sorted(set(regressions)),
-            "targetsFixed": fixed, "testCasesLeftOut": len(held_out),
+            "targetsFixed": fixed, "failedAnotherWay": another, "testCasesLeftOut": len(held_out),
             "replay": replay.name if replay else None, "targets": targets,
             "setAside": sorted(set_aside), "setAsideTargets": set_aside_targets,
             "doubtedGoldens": sorted(set(filter(None, doubted))),

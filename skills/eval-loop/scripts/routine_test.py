@@ -311,6 +311,20 @@ class Secondary(unittest.TestCase):
         self.assertEqual(got["effortToRight"], {"toolCalls": 3.0, "failedQueries": 0.0,
                                                 "turns": 6.0, "tokens": 90.0})
 
+    def test_a_question_with_no_key_counts_as_answered_only_through_a_query_that_ran(self):
+        import routine
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        (root / "cases.jsonl").write_text("".join(json.dumps(c) + "\n" for c in (
+            {"qid": "x"}, {"qid": "y"}, {"qid": "z"}, {"qid": "k", "golden": {"kind": "scalar"}})))
+        ev = [{"kind": "attempt", "qid": "x", "submitted": True, "final_query": "run: a", "answer_captured": True,
+               "n_get_context": 1, "n_execute": 2, "n_execute_errors": 1},
+              {"kind": "attempt", "qid": "y", "submitted": False, "final_query": None, "answer_captured": True},
+              {"kind": "attempt", "qid": "k", "submitted": True, "final_query": "run: b", "answer_captured": True}]
+        (root / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in ev))
+        self.assertEqual(routine.secondary(root, root)["unkeyed"],
+                         {"cases": 3, "answered": 1, "toolCalls": 3.0, "failedQueries": 1.0})
+
 
 if __name__ == "__main__":
     unittest.main()

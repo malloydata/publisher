@@ -112,7 +112,20 @@ Set it in `eval.toml`. It is not part of the set, so it does not move
 budget_ms    = 2000   # a query slower than this is marked slow; unset, nothing is
 repeats      = 5      # timed calls per query, after one warm-up
 latency_band = 0.2    # a change under 20% is noise
+table_storage = "warehouse"   # where a materialized table may live
 ```
+
+Set `latency_band` from the environment, not the default: replay the unchanged
+package twice (`--baseline` the first). With the same package version on both
+sides, the comparison prints the largest move between them, which is that
+environment's noise. A hosted environment measured 27%.
+
+`table_storage` is the owner's rule, not a tuning knob. `warehouse` (the
+default) keeps every table in the source's own warehouse, for owners who
+require every answer to come from there. `credible` puts every table in Credible
+storage (`storage=`). `either` allows both. `simulate` prices a table read
+where the table will live, and improve mode refuses an edit that puts one
+anywhere else, before anything is built.
 
 Pick `budget_ms` for the warehouse and the people waiting on it. A team that has
 not decided leaves it unset, and the replay only reports times.

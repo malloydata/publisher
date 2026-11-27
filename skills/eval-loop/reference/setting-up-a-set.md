@@ -11,6 +11,28 @@ run from the Publisher clone, unless it names another script.
 without starting a server or calling a model. Run it after each step; the set is
 ready when it prints `ready: nothing blocks a run`.
 
+## Before launch: questions, and maybe answers, but no logs
+
+Nothing here needs production. Two starting points, and where each goes:
+
+- **Questions only** ("these 20 questions, nothing launched"). Import them with
+  no golden (step 2). A run already says something: the routine reports how
+  many the agent answered with a query that ran. To score them, derive each key
+  from the raw tables, twice by different routes (`skill:eval-import`,
+  "Deriving a key yourself"), then step 6 promotes them.
+- **Answers a person checked** ("hill climb on these"). Import each number as a
+  `provisional` value with the person's rubric. Then write the query over the
+  truth package that reproduces each number, and promote with `--attest` naming
+  who checked them (step 6). A number no query can reproduce stays
+  provisional: either the number or the reading of the question is wrong, and
+  the person settles which. A written criterion, with no number, is verified on
+  arrival.
+
+Either way, from there `eval.py routine --kind quality --mode improve` climbs
+on the set. Such a set has no `control` or `holdout` cases, so improve mode
+re-asks every case after each edit: an edit that breaks an unrelated question
+is caught there, not in production.
+
 ## What you need first
 
 - A Malloy package with a `publisher.json`, in a git repository. Git is how a
