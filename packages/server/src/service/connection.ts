@@ -89,6 +89,7 @@ import {
    postgresStatementTimeoutMs,
 } from "./postgres_conninfo";
 import { buildSnowflakeConnection } from "./snowflake_connection";
+import { extendBigQueryRequestTimeout } from "./bigquery_request_timeout";
 import { guardBigQueryTruncation } from "./bigquery_truncation";
 import { gcpImpersonationOverlay } from "./gcp_impersonation";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
@@ -1955,6 +1956,7 @@ export function buildEnvironmentMalloyConfig(
             ownDuckDBConnection(malloyConfig, connection);
             if (metadata?.apiConnection.type === "bigquery") {
                guardBigQueryTruncation(connection);
+               extendBigQueryRequestTimeout(connection);
             }
             if (metadata) {
                await attachOnce(connection, metadata);

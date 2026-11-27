@@ -792,7 +792,7 @@ export class MaterializationService {
       // runs; the run itself checks again.
       if (
          version === null &&
-         environment.getStaleCompileErrors().has(packageName)
+         environment.getRefusedReloads().has(packageName)
       ) {
          throw new BuildPlanUnavailableError(
             `Package ${packageName} serves an older model than its files: its last reload refused them. Fix the files and reload the package, then run again.`,
@@ -1368,7 +1368,7 @@ export class MaterializationService {
       // replaces can be stale.
       const stale =
          versionId === undefined &&
-         environment.getStaleCompileErrors().has(packageName);
+         environment.getRefusedReloads().has(packageName);
       // The load gate's own text, so the run and the load agree.
       const invalid = runPlanGateText(packagePlan, {
          enforceCollisions: getPersistCollisionEnforce(),
@@ -1695,8 +1695,7 @@ export class MaterializationService {
             // a reload replaces can be stale.
             () =>
                versionId === undefined &&
-               (environment.getStaleCompileErrors?.().has(packageName) ??
-                  false),
+               (environment.getRefusedReloads?.().has(packageName) ?? false),
          ),
          instructions,
          seedEntries: carried,
