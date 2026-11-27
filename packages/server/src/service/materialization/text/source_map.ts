@@ -22,6 +22,7 @@
  */
 
 import { isSourceDef, type ModelDef, type SourceDef } from "@malloydata/malloy";
+import { embeddedStructs } from "../../governance/ir/sql_embeds";
 import {
    fieldJoinUsage,
    filterJoinReads,
@@ -503,6 +504,12 @@ export function reachableSourceIDs(
          visit(resolveQuerySourceBase(struct, model));
          visit(resolveCompositeResolvedBase(struct));
       }
+      // A `.sql()` source's `%{ x -> … }` (or `%{ x }`): each embed reads
+      // its source, read as the load's gate check reads it.
+      const segments = (def as { selectSegments?: unknown }).selectSegments;
+      if (Array.isArray(segments)) {
+         for (const segment of segments) visitEmbed(segment);
+      }
       for (const field of def.fields ?? []) {
          const f = field as {
             join?: unknown;
@@ -516,6 +523,25 @@ export function reachableSourceIDs(
             visitPipeline(f.pipeline);
          }
       }
+   };
+   const visitEmbed = (segment: unknown): void => {
+      if (segment === null || typeof segment !== "object") return;
+      const embed = segment as Record<string, unknown>;
+      // Plain SQL text.
+      if ("sql" in embed && embed.type === undefined) return;
+      add(structRefSourceId(embed.structRef));
+      const read =
+         modelDef !== undefined
+            ? embeddedStructs(embed, modelDef as ModelDef)
+            : undefined;
+      if (read !== undefined && "structs" in read) {
+         for (const struct of read.structs) visit(struct);
+      } else {
+         // Unreadable here: scan it whole, so a wrong `unreachable` is never
+         // said of what it reads.
+         scanWhole(embed, 0);
+      }
+      visitPipeline(embed.pipeline);
    };
    for (const root of roots) visit(root);
    return ids;

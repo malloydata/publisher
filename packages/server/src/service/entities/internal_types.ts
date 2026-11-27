@@ -57,6 +57,12 @@ export interface Entity {
    /** The field's annotation lines, trimmed. */
    tags?: string[];
    description?: string;
+   /**
+    * The one-hop join path (`account.region`) whose `#(doc)` `description`
+    * is: the field is a dimension defined as exactly that path, with no doc
+    * of its own.
+    */
+   doc_inherited_from?: string;
    table_info?: TableInfo | null;
    join_source_metadata?: JoinSourceMetadata | null;
    dim_index_fingerprint?: DimIndexFingerprint | null;

@@ -400,6 +400,7 @@ export async function queryPathFor(
          storageWarned: !storageServes(getPersistStorageMode()),
          considered: answer.considered,
          storageTablesRead: routed?.tablesRead?.map(toTable),
+         sqlEmbedReach: host.servedCopy.ownSqlEmbedReach(struct, modelDef),
          ...(answer.leg === "rollup"
             ? {
                  rollupTablesRead: answer.answer.shapeBindings

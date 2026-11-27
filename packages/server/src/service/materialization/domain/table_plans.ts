@@ -578,6 +578,25 @@ export interface RollupMeasure {
  * A {@link RollupPlan} for the build plan's plumbing (its wire `preaggregate`
  * entry, eligibility and run instructions), with what the variant needs.
  */
+/** One stored column of a rollup that holds a one-hop join path's value. */
+export interface RollupPathColumn {
+   /** The grain entry it stores: the path as written, or the dimension's name. */
+   grain: string;
+   /** The stored column. */
+   column: string;
+   /** The join of the base the path reads through. */
+   join: string;
+   /** The joined source's dimension. */
+   field: string;
+   /** The timeframe the joined dimension truncates to, restored on the record. */
+   timeframe?: string;
+   /**
+    * The joined dimension carries annotations, which a record's field cannot:
+    * a query that returns it as a column is answered live.
+    */
+   annotated?: true;
+}
+
 export interface RollupVariantPlan extends RollupPlan {
    /**
     * Marks a rollup the rollup leg plans and serves: a `#(rollup)`
@@ -594,6 +613,29 @@ export interface RollupVariantPlan extends RollupPlan {
     * reads the rollup only when each is fixed at every aggregating level.
     */
    fanOutDimensions: string[];
+   /**
+    * The stored columns that hold a one-hop join path's value, so the
+    * variant declares the join's name as a record over them and a query that
+    * writes the path (`account.region`) reads the rollup: a path grain
+    * (`grain=["account.region"]`, stored as `account__region`), and a grain
+    * dimension whose compiled definition is exactly that path
+    * (`region is account.region`). Absent: none.
+    */
+   pathColumns?: RollupPathColumn[];
+   /**
+    * Each join_one of the base the grain reads through, with the grain
+    * entries that read it: a path grain (`account.region`) or a dimension
+    * defined over the join, any expression (`upper(account.region)`). The
+    * build joined it, so a key the data repeats repeated the rows its
+    * partials summed; a query that reads none of the join's fields does not
+    * join it live, so it is served only when it reads the join, or when the
+    * build found the join's key unique (`grainJoinKeyChecks`). `uncovered`:
+    * the build joins past this join for the grain (another join its
+    * condition, its source's `where:` or the grain's field reads), which no
+    * key check of this one join proves, so only a query that reads it is
+    * served. Absent: none.
+    */
+   joinOneGrain?: { join: string; grain: string[]; uncovered?: true }[];
    /**
     * Whether the base declares a row-level gate (`#(access_filter)` or
     * `#(authorize)`): the join-to-rollup branch reads the rollup through a
@@ -660,6 +702,33 @@ export interface RollupVariantPlan extends RollupPlan {
     * and never NULL.
     */
    parentKeyChecks?: ParentKeyCheck[];
+   /**
+    * The key checks of the join_ones the grain reads ({@link joinOneGrain}),
+    * one per join keyed on one column of a declared source: set on a run's
+    * plan and run by the rollup's build. A query that reads none of a join's
+    * fields is served only when its check found the key unique for the
+    * table it reads; otherwise it answers live, as `joinOneGrain` says.
+    */
+   grainJoinKeyChecks?: GrainJoinKeyCheck[];
+}
+
+/**
+ * The key check of a join_one a rollup's grain reads: whether the joined
+ * source, as a query of it by name reads it (its own `where:` included),
+ * holds a non-NULL value of the join's key column on more than one row. The
+ * SQL is compiled from the author's model and returns one row when a value
+ * repeats. A NULL key meets no base row, so its repeats do not count.
+ */
+export interface GrainJoinKeyCheck {
+   /** The join's name on the rollup's base. */
+   join: string;
+   /** The joined source. */
+   sourceID: string;
+   /** The joined source's column the join is keyed on. */
+   keyColumn: string;
+   /** The connection the joined source reads; the check runs only on it. */
+   connectionName: string | undefined;
+   sql: string;
 }
 
 /**

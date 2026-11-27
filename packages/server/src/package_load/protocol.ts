@@ -90,11 +90,16 @@ import type { PackageWorkflowsWire } from "../service/skills/package_workflows";
  *
  * 9: the target-container read ({@link TargetContainersRequest}).
  *
- * 10: the skills walk and the content shas of the serving identity
- * ({@link LoadPackageRequest.readWorkflows}, `workflowsRead`, `modelShas`),
- * which replace `packageMetadata.workflows`.
+ * 10: a served-copy compile's `virtualMap`
+ * ({@link CompileServedCopyRequest.virtualMap}).
+ *
+ * 11: the skills walk ({@link LoadPackageRequest.readWorkflows}): the walk as
+ * wire data, or why it could not finish (`unavailable`), the whole `workflows`
+ * value's refusal (`manifestRefusal`) and each listed file's `binary` flag
+ * ({@link WorkflowsRead}, `workflowsRead`), and the content shas of the serving
+ * identity (`modelShas`), which replace `packageMetadata.workflows`.
  */
-export const PACKAGE_LOAD_PROTOCOL_VERSION = 10;
+export const PACKAGE_LOAD_PROTOCOL_VERSION = 11;
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -476,6 +481,11 @@ export interface CompileServedCopyRequest {
    defaultConnectionName: string | null;
    /** The re-rooted files, each keyed by its overlay key (`overlay_key.ts`). */
    files: [string, string][];
+   /**
+    * The copy's `virtualMap` (connection -> handle -> table path), which a
+    * `.sql()` source's `%{}` of a re-rooted source reads at compile time.
+    */
+   virtualMap?: [string, [string, string][]][];
 }
 
 /**

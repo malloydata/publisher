@@ -31,7 +31,15 @@
  * `extractCheckedModel` for a model's sources and `run:` statements, and in
  * `compileNotebookCells` for each notebook cell's own `run:` statements.
  */
-import { isSourceDef, type ModelDef, type SourceDef } from "@malloydata/malloy";
+import type { ModelDef } from "@malloydata/malloy";
+import {
+   embeddedStructs,
+   INLINE_SQL,
+   isObj,
+   labelOf,
+   type Obj,
+   sqlSelectsWithin,
+} from "./governance/ir/sql_embeds";
 import { ModelCompilationError } from "../errors";
 import { gatePlan, modelDefGateGraph } from "./governance/gate_plan";
 
@@ -52,77 +60,6 @@ export interface SqlEmbedFinding {
    routes: string[];
    /** Why the embed could not be read (fail closed); absent for a gated embed. */
    unreadable?: string;
-}
-
-type Obj = Record<string, unknown>;
-
-const isObj = (value: unknown): value is Obj =>
-   typeof value === "object" && value !== null;
-
-/** What `via` holds for a `sql()` written inline with no name (e.g. in a query). */
-export const INLINE_SQL = "<inline sql()>";
-
-const labelOf = (struct: Obj): string => {
-   const label = (struct.as as string | undefined) ?? struct.name;
-   if (typeof label !== "string") return "<unnamed>";
-   // An unnamed `conn.sql(...)` is named by Malloy's `sql://conn/<uuid>` key.
-   return label.startsWith("sql://") ? INLINE_SQL : label;
-};
-
-/** Every `sql_select` with embeds reachable from `root`, the root included. */
-function sqlSelectsWithin(root: unknown): Obj[] {
-   const found: Obj[] = [];
-   const seen = new Set<Obj>();
-   const stack: unknown[] = [root];
-   while (stack.length > 0) {
-      const node = stack.pop();
-      if (Array.isArray(node)) {
-         stack.push(...node);
-         continue;
-      }
-      if (!isObj(node) || seen.has(node)) continue;
-      seen.add(node);
-      if (node.type === "sql_select" && Array.isArray(node.selectSegments)) {
-         found.push(node);
-      }
-      stack.push(...Object.values(node));
-   }
-   return found;
-}
-
-/**
- * The source struct(s) one non-text segment reads, or a reason it cannot be
- * read. An embedded query reads its `structRef` and, over a composite, the
- * member Malloy resolved.
- */
-function embeddedStructs(
-   segment: Obj,
-   modelDef: ModelDef,
-): { structs: SourceDef[] } | { unreadable: string; label: string } {
-   if (segment.type === "query") {
-      const ref = segment.structRef;
-      let base: unknown = ref;
-      if (typeof ref === "string") base = modelDef.contents[ref];
-      if (!isObj(base) || !isSourceDef(base as unknown as SourceDef)) {
-         return {
-            unreadable: "its source reference does not resolve in the model",
-            label: typeof ref === "string" ? ref : "<embedded query>",
-         };
-      }
-      const structs = [base as unknown as SourceDef];
-      const resolved = segment.compositeResolvedSourceDef;
-      if (isObj(resolved) && isSourceDef(resolved as unknown as SourceDef)) {
-         structs.push(resolved as unknown as SourceDef);
-      }
-      return { structs };
-   }
-   if (isSourceDef(segment as unknown as SourceDef)) {
-      return { structs: [segment as unknown as SourceDef] };
-   }
-   return {
-      unreadable: `its segment shape (type ${JSON.stringify(segment.type)}) is not one Publisher reads`,
-      label: labelOf(segment),
-   };
 }
 
 /** Where to look: every model entry, or only a notebook cell's own `run:`s. */

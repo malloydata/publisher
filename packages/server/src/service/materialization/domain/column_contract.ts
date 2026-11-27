@@ -85,16 +85,20 @@ export type ContractKeyCheck = {
  * What a key check in `ColumnContract.keys` checked: a pair table's leaf
  * key (`leaf`), a rollup's own key, its one grain dimension (`rollup`), the
  * primary key of a query source that reads a rollup through a join_many on
- * it (`parent`), and a stored source's own primary key (`stored`).
+ * it (`parent`), the key of a join_one a rollup's grain reads, over the
+ * joined source (`grain_join`), and a stored source's own primary key
+ * (`stored`).
  */
-type ContractKeyLevel = "leaf" | "rollup" | "parent" | "stored";
+type ContractKeyLevel = "leaf" | "rollup" | "parent" | "grain_join" | "stored";
 
 /**
  * The name a key check is recorded under in `ColumnContract.keys`:
  * `<level>:<subject>.<keyColumn>`, or `<level>:<keyColumn>` with no subject.
  * The subject is the join path to a pair leaf (`leaf:items.options.option_id`)
- * and the package-relative sourceID of a checked source
- * (`parent:orders@models/orders.malloy.id`); a rollup's own key has none
+ * the package-relative sourceID of a checked source
+ * (`parent:orders@models/orders.malloy.id`), and the join's name on a
+ * rollup's base for a grain join (`grain_join:account.account_id`); a
+ * rollup's own key has none
  * (`rollup:category`). A reader builds the name it needs and looks it up,
  * never parsing one, so a subject may hold dots.
  */
@@ -133,9 +137,10 @@ export interface KeyedSource {
  * it holds under their current primary key (`parent:` and `stored:`, by
  * sourceID), and the check of each pair leaf `leaves` names (`leaf:` under
  * its join path, by the leaf's sourceID), also under the leaf's current
- * primary key. A check of another key, or of a source the model no longer
- * declares, is not one; one that could not run (`unverified`) reads as not
- * passed. Undefined when it records none.
+ * primary key, and each grain join check (`grain_join:`, by its name less the
+ * level, `account.account_id`). A check of another key, or of a source the
+ * model no longer declares, is not one; one that could not run
+ * (`unverified`) reads as not passed. Undefined when it records none.
  */
 export function keyUniquenessOfContract(
    contract: unknown,
@@ -147,6 +152,7 @@ export function keyUniquenessOfContract(
         unique?: boolean;
         parentKeys?: Record<string, boolean>;
         parentKeyColumns?: Record<string, string>;
+        grainJoinKeys?: Record<string, boolean>;
      }
    | undefined {
    const keys = parseContract(contract)?.keys;
@@ -179,9 +185,18 @@ export function keyUniquenessOfContract(
       const source = bySourceID.get(leaf.sourceID);
       if (source) read("leaf", leaf.joinPath, source);
    }
+   const grainJoinKeys: Record<string, boolean> = {};
+   for (const [name, check] of Object.entries(keys)) {
+      const joinKey = contractKeyWithoutLevel(name, "grain_join");
+      if (joinKey !== undefined && check.level === "grain_join") {
+         grainJoinKeys[joinKey] = passed(check);
+      }
+   }
    const anyParent = Object.keys(parentKeys).length > 0;
-   if (!own && !anyParent) return undefined;
+   const anyGrainJoin = Object.keys(grainJoinKeys).length > 0;
+   if (!own && !anyParent && !anyGrainJoin) return undefined;
    return {
+      ...(anyGrainJoin ? { grainJoinKeys } : {}),
       ...(own
          ? {
               keyColumn: contractKeyWithoutLevel(own[0], "rollup")!,

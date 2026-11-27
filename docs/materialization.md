@@ -820,8 +820,20 @@ A reload or publish that refetches the schemas and then fails to compile (a colu
 reads was dropped, say) keeps the previous model serving, reported `stale`. It still reads the
 upstream tables again, and each source whose build names a column that changed or is gone stops
 serving its stored tables: its queries answer as live does, which for a dropped column is
-live's error. Sources whose columns did not change keep serving. The stale message names the
-changed tables and the sources that answer live.
+live's error. Sources whose columns did not change keep serving. An upstream table that read
+fails on is not taken as unchanged: each source that reads it stops serving its stored tables too,
+with the serve verdict `upstream_unread`, so a table built from an upstream nobody could read never
+answers from its last build. It serves again once a read of that upstream succeeds and finds it
+unchanged. There is no server timer or backoff: the read happens only when the host's calls drive
+one, at the package's next manifest bind (a `storage=`-only package's included) or rebind (a run's
+commit, or a poll of an unchanged manifest, which does not skip while one is withdrawn), or when a
+reload or publish plans the package afresh. The withdrawal is held across plan refreshes (a
+connection edit's), the one a failed reload or publish leaves included, until every file compiles
+again and the read succeeds; a file that compiles again while the read still fails stays withdrawn.
+A failure that cannot tell which tables
+withdraws every stored table of the file that did not recompile. The stale message, and the
+`model-recompile-failed` warning when a rebind keeps a file, name the changed tables, the tables
+that could not be read, and the sources that answer live.
 
 The same holds when the table did not move but its source did, and the address did not move with
 it (the type was read before the retype, with no reload since, or the source has no `reads`): a
@@ -1206,6 +1218,7 @@ A `live` verdict's `reason`:
 | `connection_cannot_hold_table` | Materialized in its own warehouse, on a connection whose type creates no tables.                                                                                                                                                                                                                                                                                                                                                                                              | Add `storage=` naming a configured destination, or drop the annotation.                                                                       |
 | `contract_missing`             | Its table is bound, but its manifest entry carries no column contract: it was built by an earlier release, its contract capture failed, or a host sent none. The bind cannot tell whether the table still holds what it was built to hold, so it is never served from. Non-terminal: a rebuild fixes it. The warning is `materialization-contract-missing`.                                                                                                                   | Rebuild the table. A host stores each entry's `contract` and sends it back.                                                                   |
 | `incompatible`                 | Its table is bound, but no longer holds what its contract records: a column gone, retyped or recollated, the destination's `default_collation` changed under a string column that declares none, the source now declaring another type (`declared_moved`), or an upstream it was built from changed under it (`upstream_altered`). `incompatibility` says which and names the columns. Non-terminal: a rebuild fixes it. The warning is `materialization-table-incompatible`. | Rebuild the table; a standalone run rebuilds it in full on its own.                                                                           |
+| `upstream_unread`              | Its table is bound, but it was withdrawn after a recompile, reload or publish failed, and the read of an upstream table it was built from failed (then, or at any read since), so whether that table changed is not known. Judges nothing about the table, and never counts it stale.                                                                                                                                                                                         | Restore the warehouse read: the next manifest bind or rebind reads it again and, unchanged, serves the table; or reload.                      |
 | `types_unrecorded`             | Retained, no longer produced: a table with no recorded types is `contract_missing`.                                                                                                                                                                                                                                                                                                                                                                                           | —                                                                                                                                             |
 | `stale`                        | Its table is past its freshness window, and its fallback does not serve stale.                                                                                                                                                                                                                                                                                                                                                                                                | Run a build, widen the freshness window, or set its fallback to `stale_ok`.                                                                   |
 | `materialization_off`          | A `#(materialize)` source, which only the served copy reads, and the served copy is off.                                                                                                                                                                                                                                                                                                                                                                                      | Set `PUBLISHER_MATERIALIZE=true` (and, for `storage=`, `PERSIST_STORAGE_MODE=on`).                                                            |
@@ -1225,7 +1238,16 @@ imports it) but does not read its table, with `reasons`:
   counts: for example `cross_connection_join` (a join the copy left out across connections, and the
   source with it) before `fields_not_carried`, or `cross_connection_unbuilt` (a join across
   connections that cannot be left out, so the model's whole copy is off until both sides are built
-  into one destination);
+  into one destination), `sql_embed_cross_connection` (a `.sql()` source reads it through
+  `%{ x -> { … } }`, whose SQL runs on the `.sql()` source's own connection and cannot reach a table
+  in a storage destination, or in a managed catalog read through one), or `sql_embed_bare`
+  (a `.sql()` source embeds it bare, `%{ x }`, which Malloy allows only of a source it can compile
+  to SQL, and a stored table read through `virtual()` is not one, on either tier). Either leaves
+  the source alone as written; the model's other stored sources, in every file its copy compiles
+  (an imported file compiles whole, whatever the import names), still serve. In the source's own
+  database a `%{ x -> { … } }` reads its table. Elsewhere, persist the `.sql()` source itself with
+  the same `storage=` as what it reads, or drop `storage=` from what it reads; on a DuckLake or
+  managed connection, build what it reads into a warehouse table read with `.table()`;
 - `not_rerooted` alone when no warning names one.
 
 When a model's whole copy is off, every stored source it holds lists it, not only the one whose join

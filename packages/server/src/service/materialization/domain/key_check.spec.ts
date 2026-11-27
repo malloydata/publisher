@@ -21,6 +21,7 @@ const DECIDED: Record<KeyCheckKind, [string, string]> = {
    pair_level: ["fails", "fail_build"],
    rollup_key: ["ignored", "record"],
    parent_key: ["fails", "record"],
+   grain_join_key: ["ignored", "record"],
    stored_key: ["fails", "record"],
 };
 

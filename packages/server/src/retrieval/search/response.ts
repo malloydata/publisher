@@ -120,6 +120,12 @@ interface SourceCardEntity {
    description?: string;
    /** "dbmeta" when `description` is the database's column description. */
    description_source?: "dbmeta";
+   /**
+    * Publisher extension. The one-hop join path (`account.region`) whose doc
+    * `description` is: the field is a dimension defined as exactly that path,
+    * with no doc of its own.
+    */
+   description_inherited_from?: string;
    data_type?: string;
    /**
     * Publisher extension. The data classes the field carries, sorted, as the
@@ -278,6 +284,9 @@ export function toSourceResults(
          ...(r.score !== undefined ? { relevance: r.score } : {}),
          ...(r.doc ? { description: r.doc } : {}),
          ...(r.doc && r.docSource ? { description_source: r.docSource } : {}),
+         ...(r.doc && r.docInheritedFrom
+            ? { description_inherited_from: r.docInheritedFrom }
+            : {}),
          ...(r.dataType ? { data_type: r.dataType } : {}),
          ...(r.classifications ? { classifications: r.classifications } : {}),
          ...(r.classificationInferred ? { classification_inferred: true } : {}),
@@ -416,6 +425,7 @@ export function projectEntity(
       doc: e.doc,
       ...(e.embedDoc ? { embedDoc: e.embedDoc } : {}),
       ...(e.docSource ? { docSource: e.docSource } : {}),
+      ...(e.docInheritedFrom ? { docInheritedFrom: e.docInheritedFrom } : {}),
       ...(e.relationship ? { relationship: e.relationship } : {}),
       ...(e.aliases ? { aliases: e.aliases } : {}),
       ...(e.joinPath ? { joinPath: e.joinPath } : {}),

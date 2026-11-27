@@ -304,6 +304,8 @@ export interface CompileServedCopyJob {
    defaultConnectionName: string | null;
    /** The re-rooted files, by overlay key. */
    files: ReadonlyMap<string, string>;
+   /** See {@link CompileServedCopyRequest.virtualMap}. */
+   virtualMap?: ReadonlyMap<string, ReadonlyMap<string, string>>;
    /** Never background work: a query may be waiting on it. */
    background?: undefined;
 }
@@ -607,6 +609,17 @@ export class PackageLoadPool {
             modelPath: qj.request.modelPath,
             defaultConnectionName: qj.request.defaultConnectionName,
             files: [...qj.request.files],
+            ...(qj.request.virtualMap
+               ? {
+                    virtualMap: [...qj.request.virtualMap].map(
+                       ([connection, handles]) =>
+                          [connection, [...handles]] as [
+                             string,
+                             [string, string][],
+                          ],
+                    ),
+                 }
+               : {}),
          };
          pw.worker.postMessage(message);
          return;

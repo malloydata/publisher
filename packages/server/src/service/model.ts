@@ -218,6 +218,7 @@ import {
 import { QueryPrivileges, type QueryRequest } from "./model_query_request";
 import { annotationNearMisses, authoredNotes } from "./annotation_near_miss";
 import { managedTablePathRefusal } from "./managed_catalog_scope";
+import { sameCatalogTablesReadable } from "./same_catalog_tables";
 import {
    type ColumnContract,
    parseContract,
@@ -287,6 +288,22 @@ export interface RenderTagWarning {
    message: string;
    severity: "error" | "warn";
 }
+
+/**
+ * The `code` on each {@link RenderTagWarning} once it is a package warning or
+ * a compile problem. Stable: a client may branch on it, and the message may
+ * change. The name predates the package warning; a compile at package scope
+ * has always reported these under it.
+ */
+export const RENDER_TAG_CODE = "render-tag";
+
+/**
+ * The `code` on the finding that says a model's render-tag check did not
+ * finish (the model would not hydrate, or the validator threw), so its
+ * render-tag findings are unknown rather than clean. Named after
+ * `malloynb-cell-check-failed`, the other check that can fail to run.
+ */
+export const RENDER_TAG_CHECK_FAILED_CODE = "render-tag-check-failed";
 
 /** The one empty result {@link Model.preaggregateViolations} hands back, so its
  *  identity contract holds on the branch that never reaches the memo. */
@@ -2938,6 +2955,7 @@ export class Model {
    private newServedCopy(): ServedCopyServe {
       return new ServedCopyServe({
          managedTablePathRefusal,
+         sameCatalogTablesReadable,
          // The author's compile of a query, reading no table: what a query
          // over a table with a column left out is checked against.
          authorResultShape: async (queryString, givens) => {
@@ -2962,6 +2980,7 @@ export class Model {
             this.ensureSharedQueryModel(materializer),
          modelPath: () => this.modelPath,
          modelDef: () => this.modelDef,
+         siblingModelDef: (url) => this.siblingModelDefResolver?.(url),
          // Database tables (on the source's own connection) need no
          // destination.
          serveDestinationConfig: () => this.servingDestinationConfig(),
@@ -3478,6 +3497,7 @@ export class Model {
       const pinned = pin(makeSnapshot(bindings), new Date(0));
       const copy = new ServedCopyServe({
          managedTablePathRefusal,
+         sameCatalogTablesReadable,
          modelPath: () => this.modelPath,
          modelDef: () => this.modelDef,
          // Compile-only, as the view preview: a destination's catalog need
@@ -3525,6 +3545,7 @@ export class Model {
       // the dialect must not depend on reaching it.
       const copy = new ServedCopyServe({
          managedTablePathRefusal,
+         sameCatalogTablesReadable,
          modelPath: () => this.modelPath,
          modelDef: () => this.modelDef,
          quiet: true,

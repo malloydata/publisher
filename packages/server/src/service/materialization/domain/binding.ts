@@ -85,6 +85,12 @@ export interface Binding {
     */
    rollupKey?: { keyColumn: string; unique: boolean };
    /**
+    * A stored rollup's grain join key checks, as the run that wrote or
+    * carried the table found them (`KeyUniqueness.grainJoinKeys`). Internal,
+    * as {@link primaryKeys} is.
+    */
+   grainJoinKeys?: Record<string, boolean>;
+   /**
     * A `storage=` table plan admitted past a stored source's own row-level
     * gate under own-gate keeping (`SourceEligibility.gateKept`), marked under
     * every name it is bound by: the router lets a served answer reading it past
@@ -524,8 +530,9 @@ export function bindingServesModelSource(
 /**
  * A stored entry's `keyUniqueness`, each part kept only when it is well formed
  * and not empty: the rollup's own check (`keyColumn` with `unique`), the
- * primary key checks by sourceID (`parentKeys`), and the column each read
- * (`parentKeyColumns`). Undefined when no part is.
+ * primary key checks by sourceID (`parentKeys`), the column each read
+ * (`parentKeyColumns`), and the grain join key checks (`grainJoinKeys`).
+ * Undefined when no part is.
  */
 function parseKeyUniqueness(raw: unknown): KeyUniqueness | undefined {
    if (!raw || typeof raw !== "object") return undefined;
@@ -540,9 +547,15 @@ function parseKeyUniqueness(raw: unknown): KeyUniqueness | undefined {
    const parentKeyColumns = recordOf(k.parentKeyColumns, "string") as
       | Record<string, string>
       | undefined;
-   if (!own && !parentKeys && !parentKeyColumns) return undefined;
+   const grainJoinKeys = recordOf(k.grainJoinKeys, "boolean") as
+      | Record<string, boolean>
+      | undefined;
+   if (!own && !parentKeys && !parentKeyColumns && !grainJoinKeys) {
+      return undefined;
+   }
    return {
       ...(own ?? {}),
+      ...(grainJoinKeys ? { grainJoinKeys } : {}),
       ...(parentKeys ? { parentKeys } : {}),
       ...(parentKeyColumns ? { parentKeyColumns } : {}),
    };
@@ -605,6 +618,11 @@ function rollupKeyOf(entry: object): Binding["rollupKey"] {
       : undefined;
 }
 
+/** A rollup's grain join key checks a run recorded on a stored entry, as {@link primaryKeysOf}. */
+function grainJoinKeysOf(entry: object): Binding["grainJoinKeys"] {
+   return keyUniquenessOf(entry)?.grainJoinKeys;
+}
+
 /**
  * `binding` with the key checks `entry` records now (its stored sources'
  * primary keys, and a rollup's own key), in place of the ones it was made
@@ -619,6 +637,7 @@ export function withEntryKeyChecks(
       primaryKeys: _was,
       primaryKeyColumns: _wasColumns,
       rollupKey: _wasKey,
+      grainJoinKeys: _wasJoinKeys,
       ...rest
    } = binding;
    const primaryKeys = primaryKeysOf(entry);
@@ -626,11 +645,15 @@ export function withEntryKeyChecks(
    const rollupKey = isRollupOrigin(entry.origin)
       ? rollupKeyOf(entry)
       : undefined;
+   const grainJoinKeys = isRollupOrigin(entry.origin)
+      ? grainJoinKeysOf(entry)
+      : undefined;
    return {
       ...rest,
       ...(primaryKeys ? { primaryKeys } : {}),
       ...(primaryKeyColumns ? { primaryKeyColumns } : {}),
       ...(rollupKey ? { rollupKey } : {}),
+      ...(grainJoinKeys ? { grainJoinKeys } : {}),
    };
 }
 
@@ -683,6 +706,9 @@ export function deriveServeBindings(
       const rollupKey = isRollupOrigin(entry.origin)
          ? rollupKeyOf(entry)
          : undefined;
+      const grainJoinKeys = isRollupOrigin(entry.origin)
+         ? grainJoinKeysOf(entry)
+         : undefined;
       for (const sourceName of names) {
          // Set whenever there is a plan to read, even empty: an empty list
          // names no source, so the binding serves nothing (planSourceIds).
@@ -708,6 +734,7 @@ export function deriveServeBindings(
             ...(primaryKeys ? { primaryKeys } : {}),
             ...(primaryKeyColumns ? { primaryKeyColumns } : {}),
             ...(rollupKey ? { rollupKey } : {}),
+            ...(grainJoinKeys ? { grainJoinKeys } : {}),
          });
       }
    }

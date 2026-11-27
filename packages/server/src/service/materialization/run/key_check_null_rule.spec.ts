@@ -36,7 +36,11 @@ import {
 } from "../plan/build_file_generator";
 import { type MaterializePlan } from "../domain/table_plans";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
-import { parentKeyCheckQuery, rollupKeyCheckQuery } from "../plan/rollup_plan";
+import {
+   grainJoinKeyCheckQuery,
+   parentKeyCheckQuery,
+   rollupKeyCheckQuery,
+} from "../plan/rollup_plan";
 import { rollupBaseAlias } from "../text/read_text";
 import type { RollupVariantPlan } from "../domain/table_plans";
 import { storedKeyCheckSql } from "../text/key_check_text";
@@ -175,6 +179,31 @@ describe("a query source's primary key check", () => {
             runMalloyCheck("parent", keys, parentKeyCheckQuery("parent", "k")),
          ),
       ).toEqual(FAILS_ON_NULL);
+   });
+});
+
+describe("a rollup's grain join key check", () => {
+   it("is this Malloy, over the joined source by name", () => {
+      expect(grainJoinKeyCheckQuery("accounts", "account_id"))
+         .toBe(`run: accounts -> {
+  where: account_id != null
+  group_by: account_id
+  aggregate: key_rows__check is count()
+  having: key_rows__check > 1
+  limit: 1
+}`);
+   });
+
+   it("ignores a NULL key, which meets no base row", async () => {
+      expect(
+         await verdicts((keys) =>
+            runMalloyCheck(
+               "joined",
+               keys,
+               grainJoinKeyCheckQuery("joined", "k"),
+            ),
+         ),
+      ).toEqual(IGNORES_NULL);
    });
 });
 
