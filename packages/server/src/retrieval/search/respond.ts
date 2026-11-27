@@ -533,6 +533,9 @@ async function place(
          doc,
          ...(node.doc ? { embedDoc: node.doc } : {}),
          ...(node.docSource ? { docSource: node.docSource } : {}),
+         ...(node.docInheritedFrom
+            ? { docInheritedFrom: node.docInheritedFrom }
+            : {}),
          joinPath: path.join("."),
          ...(throughFanout(entry.fanout, fieldFanout(node))
             ? { relationship: throughFanout(entry.fanout, fieldFanout(node)) }
@@ -580,6 +583,9 @@ function routeRow(
       doc: node.displayDoc ? `${node.displayDoc} ${note}` : note,
       ...(node.doc ? { embedDoc: node.doc } : {}),
       ...(node.docSource ? { docSource: node.docSource } : {}),
+      ...(node.docInheritedFrom
+         ? { docInheritedFrom: node.docInheritedFrom }
+         : {}),
       joinPath,
       ...(throughFanout(hop?.fanout, fieldFanout(node))
          ? { relationship: throughFanout(hop?.fanout, fieldFanout(node)) }

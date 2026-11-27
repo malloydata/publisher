@@ -392,6 +392,52 @@ function readFieldProvenance(
    return provenance;
 }
 
+/**
+ * A field's docs ({@link entityDocs}), and for a dimension defined as exactly
+ * a one-hop join path (`region is account.region`, its compiled definition's
+ * `aliasOf`) with no doc of its own, the joined field's, marked
+ * `docInheritedFrom` with the path in plain names (`source.x`, as
+ * `GET …/entities` writes it). A dimension defined as exactly another such
+ * dimension of the source (`a_chain is a_res`), each link public and
+ * undocumented, inherits the same. A doc on the dimension wins, and an
+ * expression over the path (`upper(account.region)`) has no `aliasOf`, so
+ * inherits nothing.
+ */
+function fieldDocs(
+   field: { kind?: string; annotations?: AnnotationLines },
+   aliasOf: string | undefined,
+   siblings: readonly JoinSchemaField[],
+   aliasOfField: (name: string) => string | undefined,
+): Pick<Entity, "doc" | "embedDoc" | "docSource" | "docInheritedFrom"> {
+   const own = entityDocs(field.annotations);
+   if (field.kind !== "dimension" || own.embedDoc) return own;
+   let path = aliasOf;
+   for (let depth = 0; path !== undefined && !path.includes("."); depth++) {
+      const link = siblings.find(
+         (f) => f.kind === "dimension" && memberSegment(f.name) === path,
+      );
+      if (depth >= MAX_ALIAS_CHAIN || !link) return own;
+      if (entityDocs(link.annotations).embedDoc) return own;
+      path = aliasOfField(link.name);
+   }
+   const parts = path?.split(".") ?? [];
+   if (parts.length !== 2) return own;
+   const join = siblings.find(
+      (f) => f.kind === "join" && memberSegment(f.name) === parts[0],
+   );
+   const joined = join?.schema?.fields?.find(
+      (f) => f.kind !== "join" && memberSegment(f.name) === parts[1],
+   );
+   if (!join || !joined) return own;
+   const inherited = entityDocs(joined.annotations);
+   return inherited.embedDoc
+      ? { ...inherited, docInheritedFrom: `${join.name}.${joined.name}` }
+      : own;
+}
+
+/** How many dimension-to-dimension links {@link fieldDocs} follows. */
+const MAX_ALIAS_CHAIN = 8;
+
 /** The shape of a field inside a join's inlined schema. */
 interface JoinSchemaField {
    kind?: string;
@@ -1080,7 +1126,12 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                name: field.name,
                source: sourceName,
                modelPath,
-               ...entityDocs(field.annotations),
+               ...fieldDocs(
+                  field,
+                  fieldProvenance?.aliasOf,
+                  sourceInfo.schema.fields as JoinSchemaField[],
+                  (name) => provenance.get(name)?.aliasOf,
+               ),
                ...(field.kind === "view"
                   ? {}
                   : {
@@ -1444,6 +1495,12 @@ function collapseAliases(entities: Entity[]): Entity[] {
             keep.doc = donor.doc;
             keep.embedDoc = donor.embedDoc;
             if (donor.docSource) keep.docSource = donor.docSource;
+            // A doc the donor inherited across a join stays marked so on
+            // the spelling that survives (`a_chain is a_res`, with
+            // `a_res is account.region`).
+            if (donor.docInheritedFrom) {
+               keep.docInheritedFrom = donor.docInheritedFrom;
+            }
          }
       }
       // A class belongs to the column, so a spelling's class is the group's:
