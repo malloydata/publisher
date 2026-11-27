@@ -18,7 +18,7 @@
  */
 
 import { randomBytes } from "crypto";
-import { MalloyConfig } from "@malloydata/malloy";
+import { type Connection, MalloyConfig } from "@malloydata/malloy";
 import { toMalloyConfig, type ModelConnectionInput } from "../../model_runtime";
 
 const TOKEN = randomBytes(12).toString("hex");
@@ -56,14 +56,80 @@ export function withoutServedCopyAliases(text: string): string {
    );
 }
 
+/** The storage destination a served-copy alias stands for, or undefined for any other name. */
+export function destinationOfAlias(name: string): string | undefined {
+   return destinationsByAlias.get(name);
+}
+
+/**
+ * A connection the served copy compiles with, in a caller's words: a
+ * served-copy alias as the storage destination it stands for, by its
+ * configured name (never the alias), any other name as a connection.
+ */
+export function servedConnectionLabel(name: string): string {
+   const destination = destinationsByAlias.get(name);
+   return destination !== undefined
+      ? `storage destination '${destination}'`
+      : `connection '${name}'`;
+}
+
+/** Each destination connection's view under an alias, so a lookup returns one object. */
+const aliasedViews = new WeakMap<Connection, Map<string, Connection>>();
+
+/**
+ * `connection` as a served copy reads it under `alias`: its `name` is the
+ * alias, and so is the connection of every table schema it fetches, so a
+ * `<alias>.table(...)` source compiles on the alias, as a `virtual()` one
+ * does, and its queries look the alias up again. Every other member is the
+ * connection's own, called on it.
+ */
+function underAlias(connection: Connection, alias: string): Connection {
+   let views = aliasedViews.get(connection);
+   if (!views) {
+      views = new Map();
+      aliasedViews.set(connection, views);
+   }
+   const known = views.get(alias);
+   if (known) return known;
+   const view = new Proxy(connection, {
+      get(target, prop) {
+         if (prop === "name") return alias;
+         if (prop === "fetchSchemaForTables") {
+            return async (
+               ...args: Parameters<Connection["fetchSchemaForTables"]>
+            ) => {
+               const fetched = await target.fetchSchemaForTables(...args);
+               return {
+                  ...fetched,
+                  schemas: Object.fromEntries(
+                     Object.entries(fetched.schemas).map(([key, def]) => [
+                        key,
+                        { ...def, connection: alias },
+                     ]),
+                  ),
+               };
+            };
+         }
+         const value = Reflect.get(target, prop, target);
+         return typeof value === "function" ? value.bind(target) : value;
+      },
+   });
+   views.set(alias, view);
+   return view;
+}
+
 /**
  * The package's connections, plus `destinations` (those in `allowed`) under
- * their aliases. The default connection is the package's.
+ * their aliases. The default connection is the package's. A destination in
+ * `tablesUnderAlias` is looked up as itself under its alias
+ * ({@link underAlias}), for a copy that reads a connection's tables through
+ * it (same_catalog_reads.ts); every other one as the connection itself.
  */
 export function servedCopyConfig(
    packageConfig: ModelConnectionInput,
    destinations: MalloyConfig,
    allowed: ReadonlySet<string>,
+   tablesUnderAlias: ReadonlySet<string> = new Set(),
 ): MalloyConfig {
    const base = toMalloyConfig(packageConfig);
    const config = new MalloyConfig({ connections: {} });
@@ -77,7 +143,11 @@ export function servedCopyConfig(
                      `A storage destination is not available to this served copy`,
                   );
                }
-               return destinations.connections.lookupConnection(destination);
+               const connection =
+                  await destinations.connections.lookupConnection(destination);
+               return tablesUnderAlias.has(destination)
+                  ? underAlias(connection, name)
+                  : connection;
             }
          }
          return base.connections.lookupConnection(name);

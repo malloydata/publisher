@@ -77,6 +77,13 @@ export interface ServedCopyProblem {
     * is, in a destination the source's own connection cannot reach.
     */
    declarerNotStored?: true;
+   /**
+    * For `cross_connection_join`: the sourceID of the source declaring the
+    * join, when it is stored, so the warning can tell a `storage=` its author
+    * wrote from a destination the host placed it in. Not {@link sourceID}:
+    * the source still serves, so nothing keys on it as left out.
+    */
+   storedSourceID?: string;
 }
 
 /** A decline the served copy records per source at its compile. */
