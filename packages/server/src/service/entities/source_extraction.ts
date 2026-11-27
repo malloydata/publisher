@@ -23,9 +23,11 @@ import type {
    SourceMetadata,
 } from "./internal_types";
 
-import type {
-   Explore as MalloyExplore,
-   Model as MalloyModel,
+import {
+   isJoined,
+   isJoinedSource,
+   type Explore as MalloyExplore,
+   type Model as MalloyModel,
 } from "@malloydata/malloy";
 
 import { type Refuse, throwRefusal } from "./dim_index_discovery";
@@ -160,6 +162,40 @@ export function parseJoinCode(
 }
 
 /**
+ * What a join field joins, and how many rows of it each parent row meets.
+ *
+ * The relationship is Malloy's compiled `join` (`one`, `many` or `cross`), not
+ * the `join_one:` / `join_many:` text, so it is right for every join form.
+ *
+ * A record or repeated-record column is an explore field like a join, but it
+ * has no join text and no source of its own. Its members exist only through
+ * it, so it is always nested and names no source. Parsed as a join, the
+ * column's own name was taken as the joined source: a top-level source with
+ * that name hid the members from the walk, and a reader drew a join edge to
+ * that unrelated source. A record is `one`; a repeated record is `many`.
+ */
+export function joinMetadataOf(
+   field: MalloyExplore,
+   docString: string,
+   sourceToModelPath: Map<string, string>,
+): JoinSourceMetadata {
+   const structDef = field.structDef;
+   const metadata: JoinSourceMetadata = isJoinedSource(structDef)
+      ? parseJoinCode(
+           extractCodeFromEntity(field, docString),
+           field.name,
+           sourceToModelPath,
+        )
+      : {
+           original_source_name: null,
+           original_source_path: null,
+           is_nested_index: true,
+        };
+   if (isJoined(structDef)) metadata.relationship = structDef.join;
+   return metadata;
+}
+
+/**
  * Whether the extraction reports a public join's fields under the join's dotted
  * path, rather than only under the joined source's own top-level walk. The
  * `#(index)` candidate walk asks the same question ({@link joinDescent}), so it
@@ -215,11 +251,7 @@ export function joinDescent(
    const topLevelExploreNames = new Set(explores.map((e) => e.name));
    return (join, parentSourceName) =>
       descendsIntoJoin(
-         parseJoinCode(
-            extractCodeFromEntity(join, docString),
-            join.name,
-            sourceToModelPath,
-         ),
+         joinMetadataOf(join, docString, sourceToModelPath),
          parentSourceName.split(".")[0]!,
          topLevelExploreNames,
          boundary,
@@ -273,14 +305,13 @@ function getEntitiesFromExplore(
 
       let joinMetadata: JoinSourceMetadata | null = null;
       if (field.isExploreField()) {
-         // Parse the join to understand what kind it is. Use the
-         // file-aware ``extractCodeFromEntity`` (not ``getCode``) so a
-         // field imported from another file is read from its OWN file
-         // rather than slicing line numbers out of the current
+         // Parse the join to understand what kind it is. The join text is
+         // read with the file-aware ``extractCodeFromEntity`` (not
+         // ``getCode``) so a field imported from another file is read from
+         // its OWN file rather than slicing line numbers out of the current
          // ``docString`` (which would mis-parse imported joins as
          // direct-table joins and spuriously recurse the extraction).
-         const joinCode = extractCodeFromEntity(field, docString);
-         joinMetadata = parseJoinCode(joinCode, field.name, sourceToModelPath);
+         joinMetadata = joinMetadataOf(field, docString, sourceToModelPath);
 
          // Recurse into the joined source when its fields are otherwise
          // unreachable from the top-level walk:
@@ -760,12 +791,7 @@ function planJoinAuthorizeMetadata(
       }
       if (getAccessModifier(field) !== AccessModifierEnum.Public) continue;
 
-      const joinCode = extractCodeFromEntity(field, docString);
-      const joinMetadata = parseJoinCode(
-         joinCode,
-         field.name,
-         sourceToModelPath,
-      );
+      const joinMetadata = joinMetadataOf(field, docString, sourceToModelPath);
 
       // Direct-table joins (`a is duckdb.table(...)`) have no separate named
       // source declared elsewhere — `targetName` is null — but the join
