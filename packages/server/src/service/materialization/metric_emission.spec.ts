@@ -45,8 +45,8 @@ import {
 } from "./plan/build_plan_compile";
 import { derivePackagePlan } from "./plan/build_plan";
 import {
+   createIsolatedBuildSession,
    createTableWithDeclaredTypes,
-   IsolatedSessionConnection,
    issuePassthroughRead,
 } from "./run/materialization_build_session";
 import { MaterializationScheduler } from "./run/materialization_scheduler";
@@ -442,13 +442,12 @@ describe("a storage build's instruments", () => {
    });
 
    it("publisher_storage_column_type_mismatch_total: a declared-type cast that refuses a value", async () => {
-      const conn = new IsolatedSessionConnection(
+      const { session, dispose } = createIsolatedBuildSession(
          "metric_emission_cast",
-         ":memory:",
       );
       try {
          await createTableWithDeclaredTypes(
-            conn,
+            session,
             "t",
             `SELECT 'open' AS flag`,
             {
@@ -456,7 +455,7 @@ describe("a storage build's instruments", () => {
             },
          );
       } finally {
-         await conn.close();
+         await dispose();
       }
       expect(
          await harness.collectAttributes(

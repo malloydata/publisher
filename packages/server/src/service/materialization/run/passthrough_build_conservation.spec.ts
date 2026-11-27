@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -17,6 +16,7 @@ import { storageDeltaTarget } from "./incremental_storage";
 import {
    buildSourceIntoStorage,
    type BuildSessionDeps,
+   type IsolatedSessionConnection,
    type StorageIncrementalRefresh,
 } from "./materialization_build_session";
 
@@ -202,7 +202,7 @@ function errorOf(error: unknown): { error: string; name: string } {
 
 /** Each delta-target read, as the late-row check and a refresh make them. */
 async function deltaReads(
-   session: DuckDBConnection,
+   session: IsolatedSessionConnection,
    sourceType: FederatedSourceType,
    metadata: Record<string, string> | undefined,
 ): Promise<Record<string, unknown>> {

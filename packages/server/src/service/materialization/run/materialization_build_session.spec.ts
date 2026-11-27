@@ -43,6 +43,8 @@ import {
    oneFileModel,
    assertSingleSelect,
 } from "./materialization_build_session";
+import { applyDeltaScript } from "./incremental_apply";
+import { sessionRunner } from "./incremental_storage";
 import { dropStorageTable, dropStorageTableSql } from "./storage_admin";
 import { identifier } from "../../malloy_text";
 import { declarableColumns } from "../stored_column_types";
@@ -861,7 +863,6 @@ describe("createTableAndDescribe (schema read-back window)", () => {
    const sessionThatFailsDescribe = (opts: { dropFails?: boolean } = {}) => {
       const issued: string[] = [];
       const session = {
-         markTransaction: () => {},
          runSQL: async (sql: string) => {
             issued.push(sql);
             if (/^DESCRIBE/i.test(sql.trim())) throw new Error("describe boom");
@@ -907,7 +908,6 @@ describe("createTableAndDescribe (schema read-back window)", () => {
    it("issues no drop on the happy path", async () => {
       const issued: string[] = [];
       const session = {
-         markTransaction: () => {},
          runSQL: async (sql: string) => {
             issued.push(sql);
             return {
@@ -988,7 +988,6 @@ describe("writePartitionedTable", () => {
    const recordingSession = () => {
       const issued: string[] = [];
       const session = {
-         markTransaction: () => {},
          runSQL: async (sql: string) => {
             issued.push(sql.trim());
             return { rows: [] };
@@ -1677,17 +1676,102 @@ describe("IsolatedSessionConnection", () => {
       expect(await countInFreshSession(dir)).toBe(3);
    });
 
+   it("refuses the COMMIT after an ordinary error in a script sent as one statement, and a rollback restores the table", async () => {
+      const { dir, session, dispose } = await seededLake();
+      try {
+         const script = await errorOf(
+            session.runSQL(
+               "BEGIN; INSERT INTO lake.t VALUES (4); INSERT INTO lake.t VALUES (NULL); COMMIT",
+            ),
+         );
+         expect(script?.message).toContain("NOT NULL");
+         expect((await errorOf(session.runSQL("COMMIT")))?.message).toContain(
+            "transaction was aborted",
+         );
+         await session.runSQL("ROLLBACK");
+         expect(await count(session)).toBe(3);
+      } finally {
+         await dispose();
+      }
+      expect(await countInFreshSession(dir)).toBe(3);
+   });
+
+   it("keeps running after a delta script that failed before its BEGIN, and after a failed autocommit statement", async () => {
+      const { session, dispose } = await seededLake();
+      try {
+         await expect(
+            applyDeltaScript(sessionRunner(session), "duckdb", [
+               "CREATE TEMP TABLE stage AS SELECT CAST('x' AS INTEGER) AS id",
+               "BEGIN TRANSACTION",
+               "INSERT INTO lake.t SELECT id FROM stage",
+               "COMMIT",
+            ]),
+         ).rejects.toThrow("Conversion Error");
+         await session.runSQL("INSERT INTO lake.t VALUES (4)");
+         expect(
+            (await errorOf(session.runSQL("INSERT INTO lake.t VALUES (NULL)")))
+               ?.message,
+         ).toContain("NOT NULL");
+         await session.runSQL("INSERT INTO lake.t VALUES (5)");
+         expect(await count(session)).toBe(5);
+      } finally {
+         await dispose();
+      }
+   });
+
+   it("latches on a BEGIN inside a transaction, until a rollback", async () => {
+      const { session, dispose } = await seededLake();
+      try {
+         await session.runSQL("BEGIN TRANSACTION");
+         expect((await errorOf(session.runSQL("BEGIN")))?.message).toContain(
+            "within a transaction",
+         );
+         expect(
+            (await errorOf(session.runSQL("INSERT INTO lake.t VALUES (4)")))
+               ?.message,
+         ).toContain("transaction was aborted");
+         await session.runSQL("ROLLBACK");
+         await session.runSQL("INSERT INTO lake.t VALUES (4)");
+         expect(await count(session)).toBe(4);
+      } finally {
+         await dispose();
+      }
+   });
+
+   it.each([
+      ["a quoted value", "SELECT CAST('INTERNAL Error: x' AS INTEGER)"],
+      [
+         "a quoted value holding an apostrophe",
+         "SELECT CAST('a''INTERNAL Error: x' AS INTEGER)",
+      ],
+      ["a message from error()", "SELECT error('INTERNAL Error: x')"],
+   ])("does not read %s as a fatal DuckDB error", async (_label, sql) => {
+      const { session, dispose } =
+         createIsolatedBuildSession("isolated_quoted");
+      try {
+         const error = await errorOf(session.runSQL(sql));
+         expect(error?.message).toContain("INTERNAL Error: x");
+         expect(session.fatal).toBeUndefined();
+         expect((await session.runSQL("SELECT 1 AS one")).rows).toEqual([
+            { one: 1 },
+         ]);
+      } finally {
+         await dispose();
+      }
+   });
+
    it.each([
       ["ROLLBACK"],
       ["rollback transaction"],
+      ["ROLLBACK WORK"],
       ["ABORT"],
+      ["abort work"],
       ["-- end it\n/* now */ Rollback ;"],
    ])(
       "lets %j clear an aborted transaction, and only a rollback does",
       async (rollback) => {
          const { session, dispose } = await seededLake();
          try {
-            session.markTransaction(true);
             await session.runSQL("BEGIN TRANSACTION");
             await errorOf(session.runSQL("INSERT INTO lake.t VALUES (NULL)"));
             for (const sql of ["SELECT 1", "COMMIT", "ROLLBACK TO x"]) {

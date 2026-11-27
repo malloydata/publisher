@@ -14,6 +14,7 @@
  */
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
+import type { IsolatedSessionConnection } from "./materialization_build_session";
 import {
    FixedConnectionMap,
    InMemoryURLReader,
@@ -78,7 +79,7 @@ const session = {
          ),
          { rowLimit: 100_000 },
       ),
-} as unknown as DuckDBConnection;
+} as unknown as IsolatedSessionConnection;
 
 interface Case {
    /** The source's columns, its query and its `extend` (renames). */

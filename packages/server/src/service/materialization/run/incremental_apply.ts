@@ -1013,8 +1013,10 @@ export function deltaScript(statements: string[]): string {
  * Required, not belt-and-braces: a failed script leaves the SESSION in an aborted
  * transaction, and neither Postgres nor node-postgres's pool rolls back on
  * release, so every later borrower of that connection would fail. Proven in
- * incremental_dml_semantics.spec.ts. DuckDB needs it too once `BEGIN` has run; a
- * bind-time failure opens no transaction, and the rollback is harmless there.
+ * incremental_dml_semantics.spec.ts. DuckDB needs it too once `BEGIN` has run,
+ * and on an isolated build session it also clears the session's refusal of
+ * statements after the failure; a bind-time failure opens no transaction, and
+ * the rollback is harmless there.
  *
  * Rollback failures are swallowed: the caller needs the ORIGINAL error.
  */

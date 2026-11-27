@@ -28,7 +28,10 @@ import {
    readTableColumns,
    withCollations,
 } from "../../src/service/materialization/run/database_column_read";
-import { createTableAndDescribe } from "../../src/service/materialization/run/materialization_build_session";
+import {
+   createTableAndDescribe,
+   IsolatedSessionConnection,
+} from "../../src/service/materialization/run/materialization_build_session";
 
 /** Each column a build may write, by the expression that writes it. */
 const COLUMNS: Record<string, string> = {
@@ -67,7 +70,7 @@ describe.skipIf(process.platform === "win32")(
    "a storage= table's contract, at the bind after its build",
    () => {
       let dir: string;
-      let build: DuckDBConnection;
+      let build: IsolatedSessionConnection;
       let described: { name?: string; type?: string }[];
       let contract: Awaited<ReturnType<typeof storageContract>>;
       let observed: ObservedColumns;
@@ -83,9 +86,14 @@ describe.skipIf(process.platform === "win32")(
 
       /** A session as a build's or a bind's: db-duckdb's row limit of 10 lifted. */
       const session = (name: string) =>
-         new DuckDBConnection(name, path.join(dir, `${name}.duckdb`), dir, {
-            rowLimit: Number.MAX_SAFE_INTEGER,
-         });
+         new IsolatedSessionConnection(
+            name,
+            path.join(dir, `${name}.duckdb`),
+            dir,
+            {
+               rowLimit: Number.MAX_SAFE_INTEGER,
+            },
+         );
 
       beforeAll(async () => {
          dir = fs.mkdtempSync(path.join(os.tmpdir(), "contract-round-trip-"));

@@ -14,8 +14,8 @@ import {
 import { createMocks } from "../../../test_helpers/materialization_service_harness";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import {
+   createIsolatedBuildSession,
    createTableWithDeclaredTypes,
-   IsolatedSessionConnection,
 } from "./materialization_build_session";
 import { stackFrames } from "./run_lifecycle";
 import { errorCodeOf } from "../../../error_code";
@@ -389,10 +389,10 @@ describe("build failure logs never carry the driver's message", () => {
    });
 
    it("logs a declared-type cast that refused a value by its code", async () => {
-      const conn = new IsolatedSessionConnection("never_log_cast", ":memory:");
+      const { session, dispose } = createIsolatedBuildSession("never_log_cast");
       try {
          const schema = await createTableWithDeclaredTypes(
-            conn,
+            session,
             "t",
             `SELECT 'x${ROW_VALUE}' AS flag`,
             { columns: [{ name: "flag", type: "boolean" }] },
@@ -400,7 +400,7 @@ describe("build failure logs never carry the driver's message", () => {
          // The cast refused the value, so the warehouse's type is stored.
          expect(schema).toEqual([{ name: "flag", type: "VARCHAR" }]);
       } finally {
-         await conn.close();
+         await dispose();
       }
       expect(
          logged.some(
