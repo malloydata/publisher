@@ -211,3 +211,46 @@ export function postgresColumnCollation(
  */
 export const DUCKDB_COLLATE_DEFINITIONS =
    "SELECT (SELECT count(*) FROM duckdb_tables() WHERE NOT internal AND sql ILIKE '%collate%') + (SELECT count(*) FROM duckdb_views() WHERE NOT internal AND sql ILIKE '%collate%') + (SELECT count(*) FROM duckdb_functions() WHERE NOT internal AND function_type IN ('macro', 'table_macro') AND (macro_definition IS NULL OR macro_definition ILIKE '%collate%')) AS n";
+
+/**
+ * Why a build's catalog read did not prove its strings byte-exact, when it
+ * did not: a read that failed or saw too little. Bounded, so a log line
+ * carries one of these and never a driver's text.
+ */
+export type BigQueryBuildUnreadReason =
+   /** The build's SQL names a COLLATE, which no catalog read accounts for. */
+   | "collate_in_sql"
+   /** The connection names no project to read the catalog of. */
+   | "no_job_project"
+   /** A table the source reads is on another connection. */
+   | "table_on_other_connection"
+   /** A table path that names no one table (a wildcard, too many segments). */
+   | "table_unplaceable"
+   /** The project-wide read of the tables' types failed or was denied. */
+   | "table_types_unread"
+   /** The project-wide read did not list a table the source reads. */
+   | "table_not_listed"
+   /** A project's regions or collated datasets could not be read. */
+   | "project_unread"
+   /** A project holds a collated dataset, so an unplaced read may be collated. */
+   | "project_collated"
+   /** A dataset's own read did not list the table, or not as a table. */
+   | "dataset_table_not_listed"
+   /** A read threw where none of the above names it. */
+   | "read_failed";
+
+/**
+ * Where a BigQuery build's failed catalog read was looking, never a
+ * credential or a driver's text: the project (the connection's own when the
+ * read failed before reaching one), the connection's location (absent: each
+ * dataset's location was to be read), and the dataset and table it reached.
+ */
+export interface BigQueryBuildUnread {
+   reason: BigQueryBuildUnreadReason;
+   project?: string;
+   location?: string;
+   dataset?: string;
+   table?: string;
+   /** The catalog's type for a table read as other than a table. */
+   tableType?: string;
+}
