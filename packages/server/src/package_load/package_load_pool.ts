@@ -30,6 +30,7 @@ import {
    type UpstreamSchemaReader,
    type UpstreamSchemaReading,
 } from "../service/materialization/domain/upstream_schemas";
+import type { TargetContainerReader } from "../service/materialization/domain/target_containers";
 import type {
    Connection,
    FetchSchemaOptions,
@@ -73,6 +74,8 @@ import type {
    SchemaForSqlResponse,
    UpstreamSchemasRequest,
    UpstreamSchemasResponse,
+   TargetContainersRequest,
+   TargetContainersResponse,
    SchemaForTablesRequest,
    SchemaForTablesResponse,
    SerializedModel,
@@ -152,6 +155,8 @@ interface JobContext {
    refreshRequestedAt?: number;
    /** See {@link LoadPackageJob.upstreamSchemas}. */
    upstreamSchemas?: UpstreamSchemaReader;
+   /** See {@link LoadPackageJob.targetContainers}. */
+   targetContainers?: TargetContainerReader;
 }
 
 /**
@@ -248,6 +253,12 @@ export interface LoadPackageJob {
     * materialization (a dry run, a test) need not pass it.
     */
    upstreamSchemas?: UpstreamSchemaReader;
+   /**
+    * Reads whether the containers the plan's database tables are placed in
+    * exist (materialization's `readTargetContainers`). Absent, none is read
+    * and none is refused for it.
+    */
+   targetContainers?: TargetContainerReader;
    /** Optional buildManifest passed through to Malloy Runtime. */
    buildManifest?: unknown;
    /** Optional in-memory model replacement for a package compile dry-run. */
@@ -332,6 +343,8 @@ export interface LoadPackageOutcome {
    timings: LoadPackageResult["timings"];
    /** See {@link LoadPackageResult.buildPlan}. */
    buildPlan?: LoadPackageResult["buildPlan"];
+   /** See {@link LoadPackageResult.fileDigests}. */
+   fileDigests?: Readonly<Record<string, string>>;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -601,6 +614,9 @@ export class PackageLoadPool {
          ...(qj.request.upstreamSchemas
             ? { upstreamSchemas: qj.request.upstreamSchemas }
             : {}),
+         ...(qj.request.targetContainers
+            ? { targetContainers: qj.request.targetContainers }
+            : {}),
          resolve: (result) => {
             clearTimeout(timeout);
             const checked = checkLoadPackageResult(result);
@@ -821,6 +837,9 @@ export class PackageLoadPool {
          case "upstream-schemas":
             this.answerWorker(pw, msg, this.handleUpstreamSchemas(pw, msg));
             return;
+         case "target-containers":
+            this.answerWorker(pw, msg, this.handleTargetContainers(pw, msg));
+            return;
          case "read-url":
             this.answerWorker(pw, msg, this.handleReadUrl(pw, msg));
             return;
@@ -964,6 +983,55 @@ export class PackageLoadPool {
                      : msg.connectionName,
                generation: connectionGeneration(conn),
             },
+         });
+      } catch (error) {
+         reply({
+            type: "rpc-error",
+            requestId: msg.requestId,
+            ok: false,
+            error: serializeError(error),
+         });
+      }
+   }
+
+   /**
+    * Read whether a worker's plan's target containers exist through the
+    * job's connections; a job handed no reader reads none.
+    */
+   private async handleTargetContainers(
+      pw: PoolWorker,
+      msg: TargetContainersRequest,
+   ): Promise<void> {
+      const ctx = this.jobs.get(msg.jobId);
+      const reply = (
+         response: TargetContainersResponse | RpcErrorResponse,
+      ): void => {
+         this.postToWorker(pw, response as MainToWorkerMessage);
+      };
+      if (!ctx) {
+         reply({
+            type: "rpc-error",
+            requestId: msg.requestId,
+            ok: false,
+            error: { name: "Error", message: `Unknown jobId ${msg.jobId}` },
+         });
+         return;
+      }
+      try {
+         const readings = ctx.targetContainers
+            ? await ctx.targetContainers({
+                 containers: msg.containers,
+                 connection: async (name) =>
+                    (await ctx.connections.lookupConnection(
+                       name,
+                    )) as unknown as Connection,
+              })
+            : {};
+         reply({
+            type: "target-containers-response",
+            requestId: msg.requestId,
+            ok: true,
+            readings,
          });
       } catch (error) {
          reply({
@@ -1323,6 +1391,7 @@ function adaptResult(result: LoadPackageResult): LoadPackageOutcome {
       loadDurationMs: result.loadDurationMs,
       timings: result.timings,
       buildPlan: result.buildPlan,
+      ...(result.fileDigests ? { fileDigests: result.fileDigests } : {}),
    };
 }
 

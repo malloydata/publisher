@@ -1742,6 +1742,39 @@
       ]
     }
   },
+  "ContainerNotFoundError": {
+    "class": "ContainerNotFoundError",
+    "http": {
+      "status": 422,
+      "json": {
+        "code": 422,
+        "message": "No dataset named analytics"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: No dataset named analytics",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: No dataset named analytics",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "StorageDestinationNotFoundError": {
     "class": "StorageDestinationNotFoundError",
     "http": {

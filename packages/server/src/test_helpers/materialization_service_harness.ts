@@ -202,7 +202,7 @@ export const UNVERSIONED_ENVIRONMENT = {
    registerVersionBuild: () => () => undefined,
    // Nothing configured is refused, and nothing is stale.
    publishRefusedConfiguredPackage: async () => undefined,
-   getStaleCompileErrors: () => new Map<string, unknown>(),
+   getRefusedReloads: () => new Map<string, unknown>(),
    // Every package a spec names is loaded.
    hasLoadedPackage: () => true,
 };

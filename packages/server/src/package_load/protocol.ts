@@ -54,6 +54,10 @@ import type {
    UpstreamSchemaReadings,
    UpstreamTable,
 } from "../service/materialization/domain/upstream_schemas";
+import type {
+   TargetContainer,
+   TargetContainerReadings,
+} from "../service/materialization/domain/target_containers";
 
 /**
  * Version of this wire protocol. The worker stamps it on every
@@ -82,8 +86,10 @@ import type {
  *
  * 8: the upstream-schema read ({@link UpstreamSchemasRequest}), and a build
  * plan's `upstreamSchemas`.
+ *
+ * 9: the target-container read ({@link TargetContainersRequest}).
  */
-export const PACKAGE_LOAD_PROTOCOL_VERSION = 8;
+export const PACKAGE_LOAD_PROTOCOL_VERSION = 9;
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -296,6 +302,14 @@ export interface LoadPackageResult {
     * the other workers to forget (see {@link ForgetSchemasMessage}).
     */
    refreshedSchemaKeys?: string[];
+   /**
+    * The sha256 of every `file:` text this load's compiles read, failed
+    * compiles' included, by normalized URL (`job_files.ts` `urlKey`). A
+    * reload keeps a file's last good model only when every file that model
+    * read is unchanged since it compiled, so a recompile that fails on an
+    * author's edit is never mistaken for one that failed on a dropped table.
+    */
+   fileDigests?: Record<string, string>;
    /** Wall-clock ms inside the worker for the full package load. */
    loadDurationMs: number;
    /**
@@ -542,6 +556,24 @@ export interface UpstreamSchemasResponse {
    readings: UpstreamSchemaReadings;
 }
 
+/**
+ * Read whether the containers a build plan's database tables are placed in
+ * exist, through the main thread's connections (a worker runs no SQL).
+ */
+export interface TargetContainersRequest {
+   type: "target-containers";
+   requestId: string;
+   jobId: string;
+   containers: TargetContainer[];
+}
+
+export interface TargetContainersResponse {
+   type: "target-containers-response";
+   requestId: string;
+   ok: true;
+   readings: TargetContainerReadings;
+}
+
 export interface RpcErrorResponse {
    type: "rpc-error";
    requestId: string;
@@ -604,6 +636,7 @@ export type MainToWorkerMessage =
    | SchemaForTablesResponse
    | SchemaForSqlResponse
    | UpstreamSchemasResponse
+   | TargetContainersResponse
    | ReadUrlResponse
    | RpcErrorResponse
    | ShutdownRequest
@@ -617,6 +650,7 @@ export type WorkerToMainMessage =
    | SchemaForTablesRequest
    | SchemaForSqlRequest
    | UpstreamSchemasRequest
+   | TargetContainersRequest
    | ReadUrlRequest
    | WorkerLogMessage
    | WorkerUnhandledRejectionMessage

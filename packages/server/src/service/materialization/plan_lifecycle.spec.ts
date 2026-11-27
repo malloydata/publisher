@@ -365,3 +365,35 @@ describe("PlanLifecycle after a failed refresh", () => {
       expect(plan.databaseSourceEligibility).toBeUndefined();
    });
 });
+
+describe("PlanLifecycle.withdraw", () => {
+   const derivedAgain = async (plan: PlanLifecycle) => {
+      plan.markStale();
+      expect(await plan.refresh(async () => okWorkerPlan(richOutcome()))).toBe(
+         true,
+      );
+   };
+
+   it("a derivation replaces the withdrawn set when nothing holds it", async () => {
+      const { plan } = lifecycle();
+      await plan.load(okWorkerPlan(richOutcome()));
+      plan.withdraw(["a@m.malloy"]);
+      expect([...plan.withdrawn]).toEqual(["addr-a"]);
+      await derivedAgain(plan);
+      expect([...plan.withdrawn]).toEqual([]);
+   });
+
+   it("carries a held withdrawn set into every later derivation, until released", async () => {
+      const { plan } = lifecycle();
+      await plan.load(okWorkerPlan(richOutcome()));
+      plan.withdraw(["a@m.malloy"]);
+      plan.holdWithdrawn(true);
+      await derivedAgain(plan);
+      expect([...plan.withdrawn]).toEqual(["addr-a"]);
+      await derivedAgain(plan);
+      expect([...plan.withdrawn]).toEqual(["addr-a"]);
+      plan.holdWithdrawn(false);
+      await derivedAgain(plan);
+      expect([...plan.withdrawn]).toEqual([]);
+   });
+});

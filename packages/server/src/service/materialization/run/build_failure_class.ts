@@ -23,6 +23,7 @@ import {
    ChainedUpstreamMissingError,
    ConnectionAuthError,
    ConnectionError,
+   ContainerNotFoundError,
    DestinationNotFoundError,
    MaterializationEligibilityError,
    ModelCompilationError,
@@ -170,7 +171,9 @@ const BIGQUERY_DETERMINISTIC_REASONS: ReadonlySet<string> = new Set([
 
 /**
  * A BigQuery message for a missing table or column, which `invalidQuery` also
- * carries: left unclassified, as a Postgres or Snowflake one is.
+ * carries: left unclassified, as a Postgres or Snowflake one is. A missing
+ * dataset for the table a build writes never reaches here: the build checks
+ * its container first (`ContainerNotFoundError`, deterministic).
  */
 const BIGQUERY_MISSING_NAME = /unrecognized name|not found:/i;
 
@@ -257,7 +260,8 @@ export function classifyBuildError(err: unknown): BuildRetryable {
       err instanceof BadRequestError ||
       err instanceof ConnectionAuthError ||
       err instanceof UnconfiguredConnectionError ||
-      err instanceof DestinationNotFoundError
+      err instanceof DestinationNotFoundError ||
+      err instanceof ContainerNotFoundError
    ) {
       return false;
    }

@@ -141,7 +141,11 @@ import {
    storedMalloyType,
    TIMEFRAMES,
 } from "./served_copy";
-import { servedCopyConfig, servedCopyAlias } from "./served_copy_config";
+import {
+   servedConnectionLabel,
+   servedCopyConfig,
+   servedCopyAlias,
+} from "./served_copy_config";
 import {
    failingReroots,
    rerootKey,
@@ -161,6 +165,7 @@ import {
 } from "../../classification";
 import { annotationValue } from "../../malloy_text";
 import {
+   errorProblems,
    isCrossConnectionRefusal,
    leaveOutCrossConnectionJoins,
 } from "../text/cross_connection_text";
@@ -195,6 +200,11 @@ import {
    ZONED_TRUNCATION_REASON,
 } from "./served_copy_checks";
 import { reportQueryWalk } from "./query_walks";
+import { readSameCatalogThroughDestination } from "./same_catalog_reads";
+import {
+   allBaseTables,
+   sameCatalogScope,
+} from "../../same_catalog_destination";
 import type { ScopeLane } from "./scope_facts";
 
 export type { ServedCopyProblem } from "./served_copy_types";
@@ -221,28 +231,58 @@ const NO_DESTINATIONS = (): MalloyConfig =>
 const PAIR_BLOCKS_DETAIL =
    "The table stores more than one inlined join_many, one block of rows each, and the query reads more than one of them (live aggregates each by its own key over their cross product, which no block holds), so it is answered without this table.";
 
-/** The caller's detail for a query through a join left out across connections. */
-const LEFT_OUT_JOIN_DETAIL =
-   "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.";
+/**
+ * The caller's detail for a query through joins left out across connections:
+ * each join, by its source, and the two connections it would join.
+ */
+export function leftOutJoinDetail(joins: readonly LeftOutDefinition[]): string {
+   const named = joins.map((j) => {
+      const join = j.join ?? j.name;
+      // A source left out whole for its join is named by the definition.
+      const source =
+         j.declaration ?? (j.join !== undefined ? j.name : undefined);
+      const where = source ? ` of \`${source}\`` : "";
+      const across = j.connections
+         ? ` (${servedConnectionLabel(j.connections.joined)} into ` +
+           `${servedConnectionLabel(j.connections.into)})`
+         : "";
+      return `\`${join}\`${where}${across}`;
+   });
+   const subject =
+      named.length === 0
+         ? "a join"
+         : `the join${named.length === 1 ? "" : "s"} ${named.join(", ")}`;
+   return (
+      `The query uses ${subject}, whose joined source is on another connection ` +
+      "than the storage destination its table is read from, so it is answered live."
+   );
+}
 
 /**
- * Whether a query's compile failure reads a definition the served copy left
- * out across connections: a missing field whose name, where the problem points
- * in the query's text, is one left out (the copy keeps every other field of
- * the author's). A problem whose place cannot be read counts, since declining
- * only sends the query on to live.
+ * The joins left out across connections that a query's compile failure
+ * reads, or undefined when it reads none: a missing field whose name, where
+ * the problem points in the query's text, is one left out (the copy keeps
+ * every other field of the author's). A problem whose place cannot be read
+ * counts, since declining only sends the query on to live. A query that
+ * reads only what a join's leaving out took with it (a dimension through
+ * the join) is answered with every join left out, which the compile does
+ * not tie to it.
  */
-function readsLeftOutDefinition(
+function leftOutJoinsRead(
    compiled: Compiled,
    error: unknown,
    queryString: string,
-): boolean {
-   if (!compiled.leftOut?.length) return false;
-   return readsMissingName(
+): readonly LeftOutDefinition[] | undefined {
+   if (!compiled.leftOut?.length) return undefined;
+   const read = missingNamesRead(
       new Set(compiled.leftOut.map((l) => l.name)),
       error,
       queryString,
    );
+   if (read === undefined) return undefined;
+   const joins = compiled.leftOut.filter((l) => l.crossConnection);
+   const direct = joins.filter((l) => read.has(l.name));
+   return direct.length > 0 ? direct : joins;
 }
 
 /**
@@ -254,25 +294,46 @@ function readsMissingName(
    error: unknown,
    queryString: string,
 ): boolean {
-   if (!(error instanceof MalloyError)) return false;
-   return (
-      error.problems as {
-         code?: string;
-         at?: { range?: { start: { line: number; character: number } } };
-      }[]
-   ).some((p) => {
-      if (p.code === undefined || !MISSING_FIELD_CODES.has(p.code)) {
-         return false;
-      }
+   return missingNamesRead(names, error, queryString) !== undefined;
+}
+
+/**
+ * The names of `names` a compile reading fields the model lacks reads, by
+ * the paths the problems point at; empty when one such problem is at a place
+ * the query text cannot show; undefined when it reads none of them.
+ */
+function missingNamesRead(
+   names: ReadonlySet<string>,
+   error: unknown,
+   queryString: string,
+): ReadonlySet<string> | undefined {
+   if (!(error instanceof MalloyError)) return undefined;
+   const read = new Set<string>();
+   let any = false;
+   for (const p of error.problems as {
+      code?: string;
+      at?: { range?: { start: { line: number; character: number } } };
+   }[]) {
+      if (p.code === undefined || !MISSING_FIELD_CODES.has(p.code)) continue;
       const start = p.at?.range?.start;
       const offset = start ? offsetOf(queryString, start) : -1;
-      if (offset < 0) return true;
-      const path = /^[`A-Za-z0-9_.]+/.exec(queryString.slice(offset))?.[0];
-      if (!path) return true;
-      return path
-         .split(".")
-         .some((part) => names.has(part.replace(/^`|`$/g, "")));
-   });
+      const path =
+         offset < 0
+            ? undefined
+            : /^[`A-Za-z0-9_.]+/.exec(queryString.slice(offset))?.[0];
+      if (!path) {
+         any = true;
+         continue;
+      }
+      for (const part of path.split(".")) {
+         const name = part.replace(/^`|`$/g, "");
+         if (names.has(name)) {
+            read.add(name);
+            any = true;
+         }
+      }
+   }
+   return any ? read : undefined;
 }
 
 /** Malloy's codes for a compile that reads a field the model does not have. */
@@ -288,6 +349,17 @@ export const SERVED_COPY_WARNING_CODE = "served-copy-not-served";
 interface ServedCopyHost {
    modelPath(): string;
    modelDef(): unknown;
+   /**
+    * The managed scope check of a `.table()` path (`managedTablePathRefusal`),
+    * which a same-catalog read holds every moved path to. Injected because it
+    * parses with DuckDB, which nothing this module imports may load (the
+    * package-load worker imports it). Absent, no path is moved.
+    */
+   managedTablePathRefusal?(
+      path: string,
+      connection: string,
+      schemas: ReadonlySet<string>,
+   ): Promise<string | undefined>;
    /**
     * The storage destinations, while the storage tier serves
     * (`PERSIST_STORAGE_MODE=on`); undefined otherwise, when only database
@@ -840,11 +912,13 @@ export class ServedCopyServe {
          try {
             return await work();
          } catch (error) {
-            if (readsLeftOutDefinition(compiled, error, queryString)) {
+            const leftOutJoins = leftOutJoinsRead(compiled, error, queryString);
+            if (leftOutJoins) {
+               const detail = leftOutJoinDetail(leftOutJoins);
                decline(
-                  "the query reads a join the served copy leaves out across connections",
+                  `the query reads a join the served copy leaves out across connections: ${detail}`,
                   "served_copy_cross_connection",
-                  LEFT_OUT_JOIN_DETAIL,
+                  detail,
                );
             }
             const zoned = new Set(
@@ -1718,6 +1792,7 @@ export class ServedCopyServe {
             reroot.sourceID,
             reroot.url,
             fileText,
+            this.declarationOf,
          ),
       );
       const needed =
@@ -1727,7 +1802,11 @@ export class ServedCopyServe {
          // A base the re-root replaces declares a measure, view or join
          // the source inherits; only its block, written again over the
          // table, keeps it (else the source is not carried, call 2).
-         confirmed.some((a) => declaresBlocks(map.node(a.sourceID)?.def));
+         confirmed.some((a) =>
+            declaresBlocks(
+               map.node(a.sourceID)?.def ?? this.declarationOf?.(a.sourceID),
+            ),
+         );
       if (!needed) return undefined;
       return confirmed
          .flatMap((a) => (a.runText ? [a.runText] : []))
@@ -2289,8 +2368,9 @@ export class ServedCopyServe {
          }));
          const overlay = new Map(copy.files);
          const packagePath = this.packagePath;
+         const packageConfig = this.packageConfig;
          const config = servedCopyConfig(
-            this.packageConfig,
+            packageConfig,
             destinations(),
             new Set(
                rerooted
@@ -2299,7 +2379,21 @@ export class ServedCopyServe {
             ),
          );
          const load = this.passLoader(packagePath, config);
-         const loaded = await this.loadCopy(state, copy, overlay, load, lift);
+         const underAlias = this.underAliasLoader(
+            packagePath,
+            packageConfig,
+            destinations,
+            rerooted,
+         );
+         const loaded = await this.loadCopy(
+            state,
+            copy,
+            overlay,
+            load,
+            lift,
+            config,
+            underAlias,
+         );
          if (loaded === "retry") continue;
          if (loaded === "failed") {
             return {
@@ -2314,6 +2408,7 @@ export class ServedCopyServe {
          }
          const { materializer, servedDef, servedRuntime, leftOut, files } =
             loaded;
+         const compiledConfig = loaded.config ?? config;
          // Only a join of a source still re-rooted was kept for it.
          problems.push(
             ...state.inlinedKept.filter((p) =>
@@ -2339,7 +2434,7 @@ export class ServedCopyServe {
             materializer,
             leftOut,
             files,
-            config,
+            config: compiledConfig,
             rerooted,
             aliased,
             throughBase,
@@ -2353,6 +2448,32 @@ export class ServedCopyServe {
          rerooted: [],
          aliased: [],
          problems,
+      };
+   }
+
+   /**
+    * A pass's loader over its destinations' connections looked up under
+    * their aliases, for a copy that reads a connection's tables through them
+    * (same_catalog_reads.ts).
+    */
+   private underAliasLoader(
+      packagePath: string,
+      packageConfig: ModelConnectionInput,
+      destinations: () => MalloyConfig,
+      rerooted: readonly Binding[],
+   ): SameCatalogLoad {
+      return (names) => {
+         const config = servedCopyConfig(
+            packageConfig,
+            destinations(),
+            new Set(
+               rerooted
+                  .filter((b) => !isDatabase(b))
+                  .map((b) => b.destinationName),
+            ),
+            names,
+         );
+         return { config, load: this.passLoader(packagePath, config) };
       };
    }
 
@@ -2461,6 +2582,8 @@ export class ServedCopyServe {
       overlay: ReadonlyMap<string, string>,
       load: CopyLoad,
       lift: ReturnType<typeof authorModelLiftContext>,
+      config: MalloyConfig,
+      underAlias: SameCatalogLoad,
    ): Promise<LoadedCopy | "retry" | "failed"> {
       const { withoutKept, problems } = state;
       let materializer: ModelMaterializer;
@@ -2503,12 +2626,24 @@ export class ServedCopyServe {
             if (!known) this.rememberFailure(failureKey, err, state.asOf);
             return "retry";
          }
-         // A reference join the re-root moved across connections (question
-         // 11): leave it out, with what reads it, so every other query
-         // still reads the table.
          const byURL = new Map(
             [...copy.files].map(([url, text]) => [url, text] as const),
          );
+         // A join the re-root moved across connections that are one catalog
+         // (same_catalog_reads.ts): read the joined source through the
+         // destination too, so the join compiles and is served.
+         const merged = await this.readSameCatalogThroughDestination(
+            state,
+            err,
+            byURL,
+            lift,
+            config,
+            underAlias,
+         );
+         if (merged) return merged;
+         // A reference join the re-root moved across connections (question
+         // 11): leave it out, with what reads it, so every other query
+         // still reads the table.
          const kept = await leaveOutCrossConnectionJoins({
             firstError: err,
             overlay: byURL,
@@ -2569,6 +2704,72 @@ export class ServedCopyServe {
          leftOut = kept.leftOut;
       }
       return { materializer, servedDef, servedRuntime, leftOut, files };
+   }
+
+   /**
+    * The pass's copy with every table on a connection its cross-connection
+    * refusal `err` joins across one catalog read through the destination
+    * (same_catalog_reads.ts), compiled; undefined when the refusal is not
+    * only such joins, a table may not be moved, or the moved copy does not
+    * compile, so the joins are left out as before.
+    */
+   private async readSameCatalogThroughDestination(
+      state: CopyPassState,
+      err: unknown,
+      files: ReadonlyMap<string, string>,
+      lift: ReturnType<typeof authorModelLiftContext>,
+      config: MalloyConfig,
+      underAlias: SameCatalogLoad,
+   ): Promise<LoadedCopy | undefined> {
+      const moved = await readSameCatalogThroughDestination({
+         error: err,
+         files,
+         readText: (u) => lift.fileText(u),
+         modelDef: this.host.modelDef(),
+         rerooted: new Set(state.candidates.map((c) => c.reroot.sourceID)),
+         ports: {
+            scope: (connection, alias) =>
+               sameCatalogScope(config, connection, alias),
+            pathRefusal: (path, connection, schemas) =>
+               this.host.managedTablePathRefusal
+                  ? this.host.managedTablePathRefusal(path, connection, schemas)
+                  : Promise.resolve("no managed scope check is available"),
+            baseTables: (alias, tables) => allBaseTables(config, alias, tables),
+         },
+      }).catch(() => ({ declined: "a read of its connections failed" }));
+      if ("declined" in moved) {
+         logger.debug(
+            "A served copy's join across one catalog is not read through the destination; its joins are left out",
+            { modelPath: this.host.modelPath(), why: moved.declined },
+         );
+         return undefined;
+      }
+      const keyed = keyedOverlay(moved.files);
+      const { config: aliased, load } = underAlias(moved.destinations);
+      try {
+         const loaded = await load(keyed);
+         logger.debug(
+            "A served copy reads a joined source on its destination's catalog through the destination",
+            { modelPath: this.host.modelPath() },
+         );
+         return {
+            materializer: loaded.materializer,
+            servedDef: loaded.def,
+            servedRuntime: loaded.runtime,
+            leftOut: [],
+            files: keyed,
+            config: aliased,
+         };
+      } catch (again) {
+         logger.debug(
+            "A served copy's same-catalog read does not compile; its joins are left out",
+            {
+               modelPath: this.host.modelPath(),
+               codes: errorProblems(again)?.map((p) => p.code),
+            },
+         );
+         return undefined;
+      }
    }
 
    /**
@@ -2667,7 +2868,18 @@ export class ServedCopyServe {
       for (const l of leftOut) {
          if (!l.crossConnection) continue;
          const sourceName = l.declaration ?? l.name;
+         // The stored side is this source unless the whole source is left
+         // out for its join, whose advice is about the joined source.
+         const sourceID =
+            l.join === undefined
+               ? candidates.find(
+                    (c) =>
+                       c.reroot.sourceName === sourceName &&
+                       c.reroot.url === l.url,
+                 )?.reroot.sourceID
+               : undefined;
          problems.push({
+            ...(sourceID !== undefined ? { storedSourceID: sourceID } : {}),
             sourceName,
             reason: "cross_connection_join",
             join: l.join ?? l.name,
@@ -2894,7 +3106,19 @@ interface LoadedCopy {
    servedRuntime: GraftRuntime;
    leftOut: LeftOutDefinition[];
    files: ReadonlyMap<string, string>;
+   /**
+    * The connections it compiled with, when not the pass's: a copy that
+    * reads a connection's tables through a destination looks the
+    * destination up under its alias (same_catalog_reads.ts).
+    */
+   config?: MalloyConfig;
 }
+
+/** The pass's loader over its destinations looked up under their aliases, for `names`. */
+type SameCatalogLoad = (names: ReadonlySet<string>) => {
+   config: MalloyConfig;
+   load: CopyLoad;
+};
 
 /**
  * The author sources a compiled copy reads from a stored table: each one

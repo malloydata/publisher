@@ -1819,6 +1819,66 @@ describe("sourceExtraction.extractMetadataFromExplores — join-aware authorize 
       assert.deepStrictEqual(orderItemsGivens!.givens, modelGivens);
    });
 
+   test("a record column's GIVENS and AUTHORIZE rows use its dotted path, never a same-named source", async () => {
+      // `lines` is both a top-level source and a repeated-record column of
+      // `orders`. A record column is walked as a nested join, so its rows are
+      // keyed `orders.<column>`: bare `delivery` and `tags`, and nothing for
+      // `lines`, were the rows when the column was parsed as a join to a
+      // source of its own name.
+      const files = {
+         "entry.malloy":
+            `source: lines is duckdb.table('t')\n` +
+            `#(authorize) "$REGION = 'us'"\n` +
+            `source: orders is duckdb.sql("""\n` +
+            `  SELECT 1 AS id,\n` +
+            `    {'city': 'Boston'} AS delivery,\n` +
+            `    [{'sku': 'a'}] AS lines,\n` +
+            `    ['red'] AS tags\n` +
+            `""")\n`,
+      };
+      const modelGivens: ApiGiven[] = [{ name: "REGION", type: "string" }];
+      const metadata = await compileMetadata(
+         files,
+         "entry.malloy",
+         modelGivens,
+      );
+
+      const keysOf = (type: string) =>
+         metadata
+            .filter((m) => m.metadataType === type)
+            .map((m) => m.sourceName)
+            .sort();
+      assert.deepStrictEqual(keysOf("GIVENS"), [
+         "lines",
+         "orders",
+         "orders.delivery",
+         "orders.lines",
+         "orders.tags",
+      ]);
+      const authorize = metadata.filter((m) => m.metadataType === "AUTHORIZE");
+      assert.deepStrictEqual(
+         authorize.find((r) => r.sourceName === "orders")?.authorize,
+         [
+            {
+               expression: "$REGION = 'us'",
+               given_names: ["REGION"],
+               route: "authorize",
+            },
+         ],
+      );
+      for (const row of authorize) {
+         assert.ok(
+            [
+               "orders",
+               "orders.delivery",
+               "orders.lines",
+               "orders.tags",
+            ].includes(row.sourceName),
+            `unexpected AUTHORIZE row for ${row.sourceName}`,
+         );
+      }
+   });
+
    test("inline extend-join alias emits a dotted AUTHORIZE row", async () => {
       // `a is order_items extend { ... }` — parseJoinCode reports
       // `is_nested_index: true`. The gate is declared directly above the

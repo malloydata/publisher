@@ -683,6 +683,13 @@ export function servedCopyWarnings(
     * `#(materialize)` one does. Absent, every source is advised to inline.
     */
    takesInline?: (sourceID: string) => boolean,
+   /**
+    * Whether the author wrote `storage=` on what a problem's stored side is
+    * (its source, when that is stored; else the package's stored sources): a
+    * source the host placed in a destination is not advised to drop it.
+    * Absent, every source is taken to write it.
+    */
+   writesStorage?: (problem: ServedCopyProblem, modelPath: string) => boolean,
 ): ApiPackageWarning[] {
    const warnings: ApiPackageWarning[] = [];
    for (const [modelPath, model] of models) {
@@ -708,6 +715,7 @@ export function servedCopyWarnings(
                p.sourceID === undefined || !takesInline
                   ? true
                   : takesInline(p.sourceID),
+               writesStorage ? writesStorage(p, modelPath) : true,
             ),
          });
          // The coded warning the compile of record's own check raises.
@@ -1023,11 +1031,13 @@ function servedCopyProblemMessage(
    problem: ServedCopyProblem,
    inlinedButKept = false,
    takesInline = true,
+   writesStorage = true,
 ): string {
    const message = servedCopyProblemReasonMessage(
       problem,
       inlinedButKept,
       takesInline,
+      writesStorage,
    );
    // A storage table the served copy dropped for a source it then
    // re-rooted on its database table: the reason, said of that table.
@@ -1039,6 +1049,11 @@ function servedCopyProblemReasonMessage(
    inlinedButKept = false,
    /** Whether the source's declaration takes `inline=` (a `#(materialize)` one). */
    takesInline = true,
+   /**
+    * Whether the author wrote the `storage=` that placed the stored side in
+    * its destination; false when the host placed it there.
+    */
+   writesStorage = true,
 ): string {
    const { reason, join } = problem;
    switch (reason) {
@@ -1087,15 +1102,22 @@ function servedCopyProblemReasonMessage(
          return "This source filters by a given in a place its stored table cannot keep, or is filtered and reached here only through a join, so the served copy leaves it as written rather than answer every caller alike.";
       case "fields_not_carried":
          return "This source inherits fields (a measure, view or join declared on the source it is built from) that its stored table does not carry, so the served copy leaves it as written.";
-      case "cross_connection_join":
+      case "cross_connection_join": {
+         // A destination the author wrote (`storage=`) can be dropped; one the
+         // host placed the source in cannot, so it is not advised.
+         const orOwnDatabase = (what: string, drop: string) =>
+            writesStorage
+               ? `, or build ${what} in its own database (drop ${drop})`
+               : "";
          if (problem.leftOutWhole) {
             return (
                `This source's join${join ? ` \`${join}\`` : ""} reads a source the served copy moves to its ` +
                "storage destination, so the join crosses connections there, and it cannot be left out alone " +
                "(what reads it cannot be left out with it). The served copy leaves this source out, so its " +
                "queries are answered live, and the model's other stored sources still serve. To serve it, " +
-               "store this source in the same destination, or build the joined source in its own database " +
-               "(drop `storage=`)."
+               "store this source in the same destination" +
+               orOwnDatabase("the joined source", "`storage=`") +
+               "."
             );
          }
          if (problem.declarerNotStored) {
@@ -1103,24 +1125,31 @@ function servedCopyProblemReasonMessage(
                `This source's join${join ? ` \`${join}\`` : ""} reads a source the served copy reads from its ` +
                "storage destination, which this source's own connection cannot reach. Queries that use the " +
                "join are answered live; the others are answered as before. To serve them too, store this " +
-               "source in the same destination, or build the joined source in its own database (drop its " +
-               "`storage=`)."
+               "source in the same destination" +
+               orOwnDatabase("the joined source", "its `storage=`") +
+               "."
             );
          }
+         const ownDatabase = orOwnDatabase("this source", "`storage=`");
          return (
             `This source is stored in a destination its join${join ? ` \`${join}\`` : ""} cannot reach: ` +
             "the joined source reads another connection. Queries that use the join are answered live; " +
             "the others read the stored table. To serve them too, " +
             (inlinedButKept
                ? "fix what keeps the inlined join from being answered from its stored columns (the warning on " +
-                 "this join says what), materialize the joined source into the same destination, or build this " +
-                 "source in its own database (drop `storage=`)."
+                 "this join says what), " +
+                 (ownDatabase
+                    ? `materialize the joined source into the same destination${ownDatabase}.`
+                    : "or materialize the joined source into the same destination.")
                : takesInline
-                 ? "inline the join (inline=), materialize the joined source into the same destination, or build " +
-                   "this source in its own database (drop `storage=`)."
+                 ? "inline the join (inline=)" +
+                   (ownDatabase
+                      ? `, materialize the joined source into the same destination${ownDatabase}.`
+                      : " or materialize the joined source into the same destination.")
                  : // `#@ persist` takes no `inline=`.
-                   "materialize the joined source into the same destination, or build this source in its own database (drop `storage=`).")
+                   `materialize the joined source into the same destination${ownDatabase}.`)
          );
+      }
       case "inline_join_kept":
          return (
             `This source inlines its join${join ? ` \`${join}\`` : ""} (inline=), but its served copy does not compile ` +
