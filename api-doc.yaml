@@ -3251,7 +3251,9 @@ paths:
         404 when no workflow of that name is served. `reason` says why:
         `WORKFLOW_NOT_SERVED` when the manifest declares the workflow and
         Publisher refuses it (the message is the refusal, the same text as the
-        package's `workflow-not-served` warning for it), `WORKFLOW_NOT_DECLARED`
+        package's `workflow-not-served` warning for it), or refuses its whole
+        `workflows` value, for every name (the message is the text of the
+        package warning that says so), `WORKFLOW_NOT_DECLARED`
         when the manifest declares no workflow of that name. A served
         workflow with no set named `skillSet` is a 404 with no `reason`. A
         repeated or empty `skillSet` is a 400.
@@ -6314,11 +6316,12 @@ components:
             served from the first-listed set (`subject` the workflow's name).
             `skill-file-skipped`: a served skill has a file of its directory
             left out, a skipped reference or asset or a file over the reply
-            budget of `get_skill` (`subject` the skill set's path, once per
-            set however many workflows list it). `skill-finding`: any other
-            finding of a skill set, a skill not served, a skill served with a
-            gap, a set with no skills or a set past its skill cap (`subject`
-            the set's path, once per set). All four are `warn`.
+            budget of `get_skill` (`subject` the skill set's path).
+            `skill-finding`: any other finding of a skill set, a skill not
+            served, a skill served with a gap, a set with no skills or a set
+            past its skill cap (`subject` the set's path). Each finding of a
+            set is published once, however many workflows list it. All four
+            are `warn`.
             `PACKAGE_AGENTS_NOT_READ`: the manifest declares `agents`,
             which is no longer read (one per load; the message says to
             declare `workflows`). `PACKAGE_SKILLS_DIR_NOT_READ`: the
@@ -10560,9 +10563,11 @@ components:
                 be read when it loaded, so its workflows and skills are not
                 served until it reloads.
               * WORKFLOW_NOT_SERVED (404): the workflow routes name a workflow
-                the manifest declares and Publisher refuses. The message is the
-                refusal, the same text as the package's `workflow-not-served`
-                warning for it.
+                the manifest declares and Publisher refuses, or any workflow
+                while the manifest's whole `workflows` value is refused. The
+                message is the refusal, the same text as the package's
+                `workflow-not-served` warning for it, or of the package warning
+                that refuses the whole value.
               * WORKFLOW_NOT_DECLARED (404): the workflow routes name a
                 workflow the manifest does not declare.
 

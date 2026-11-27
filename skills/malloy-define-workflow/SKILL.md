@@ -84,8 +84,8 @@ A workflow with neither `instructions` nor `skillSets` has nothing to serve and 
 ### Skill sets
 
 A **skill set** is a folder whose subfolders are skills (`<set>/<skill>/SKILL.md`). Its name is its folder's name, which is what a chat picks it by and what `skill_set` (MCP) or `skillSet` (REST) takes. Any folder inside the package works (`analyst/` above); the convention for several workflows is `workflows/<workflow>/skill_sets/<set>/`. A set can be listed by several workflows (list the path again); it is read once.
-- A folder that holds a `SKILL.md` itself is a skill, not a set: list its parent folder (or move it into a folder and list that), or it loads nothing.
 
+- A folder that holds a `SKILL.md` itself is a skill, not a set: list its parent folder (or move it into a folder and list that), or, if its subfolders are the skills, remove its `SKILL.md`; otherwise it loads nothing.
 - The folder name must meet the same regex as a workflow name, and two entries of one workflow may not share a name or a path.
 - A skill is its whole directory: `SKILL.md`, other Markdown (`references/` is the default folder for it; an existing `reference/` keeps working), `scripts/` the skill runs as commands, and `assets/` or any other folder of files it copies. Frontmatter `name` must equal the directory name.
 - A skill name that two sets of one workflow both hold is served from the **first-listed** set, and the workflow's warnings say so. Order the sets so the one that should win is first.
@@ -118,12 +118,13 @@ Every set has a `digest` (SHA-256 over its path and what it serves: each inline 
 
 ## Refusal versus skip
 
-The manifest is an allowlist, and Publisher never takes the package offline for a workflow mistake. What breaks decides how much is lost; every finding is in the package's load warnings, with a `code` (`workflow-not-served`, `skill-shadowed`, `skill-file-skipped`, `skill-finding`) and a `subject` (the workflow's name, or the skill set's path). A refused workflow's `GET …/workflows/{name}` and `get_workflow` answer not-found with a `reason`: `WORKFLOW_NOT_SERVED` (the message is the refusal) or `WORKFLOW_NOT_DECLARED`.
+The manifest is an allowlist, and Publisher never takes the package offline for a workflow mistake. What breaks decides how much is lost; every finding is in the package's load warnings, with a `code` (`workflow-not-served`, `skill-shadowed`, `skill-file-skipped`, `skill-finding`) and a `subject` (the workflow's name, or the skill set's path). A refused workflow's `GET …/workflows/{name}` and `get_workflow` answer not-found with a `reason`: `WORKFLOW_NOT_SERVED` (the message is the refusal; a `workflows` value refused whole gives it for every name) or `WORKFLOW_NOT_DECLARED`.
 
-- **The whole workflow is refused** (not served; `Workflow '<name>' is not served: <why>`): a bad name, a key Publisher does not know, a non-object entry, an empty `description`, an `instructions` file that is missing, not `.md`, over 16 KiB or under a nested `publisher.json`, a bad `skillSets` list (not a list, over 8, a folder that is missing, outside the package, badly named or listed twice), a set folder that cannot be read, or nothing to serve. Use an `x-` prefix (`"x-owner": "finance"`) for notes you want ignored. `tools`, `hooks`, `permission-mode` and similar are not keys: a definition adds words to a session and never widens what the session may do.
+- **The whole workflow is refused** (not served; `Workflow '<name>' is not served: <why>`): a bad name, a key Publisher does not know, a non-object entry, an empty `description`, an `instructions` file that is missing, not `.md`, over 16 KiB or under a nested `publisher.json`, a bad `skillSets` list (not a list, over 8, a folder that is missing, outside the package, badly named or listed twice), or nothing to serve. Use an `x-` prefix (`"x-owner": "finance"`) for notes you want ignored. `tools`, `hooks`, `permission-mode` and similar are not keys: a definition adds words to a session and never widens what the session may do.
 - **One skill is skipped** (the workflow still serves, with a set finding): an unreadable `SKILL.md`, a `name` that is not its directory name, an `assets/` that is a link or leaves the skill, a symlink, `..` or case-colliding names under `assets/`, a `SKILL.md` under `assets/`, a `SKILL.md` that does not fit the set's budget, or a `publisher.json` at the skill's root, in its `reference/` or `references/`, or anywhere under `assets/` (it would make the directory a second package root). A `publisher.json` elsewhere in a skill (say `scripts/`) only skips that file.
 - **A `publisher.json` at or above a set's folder refuses the workflow** for the same reason (below the package root, never the root itself); one inside a skill (the places above) only sets that skill aside; one in a dot-named directory is not read at all.
 - A set that holds no skills is a warning, not a refusal.
+- A set folder or instructions file that exists but cannot be read (`EACCES`, `EIO`) refuses nothing and makes every workflow answer 409 until the package reloads.
 
 ## Migrating a package from agents
 

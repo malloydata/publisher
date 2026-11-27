@@ -112,7 +112,7 @@ analyst/
 ```
 
 ```json
-{ "name": "storefront", "workflows": { "analyst": { "skillSets": ["analyst"] } } }
+{ "name": "storefront", "workflows": { "default": { "skillSets": ["analyst"] } } }
 ```
 
 `analyst/margin-rules/SKILL.md` is a complete skill:
@@ -254,7 +254,7 @@ characters), and it refuses a workflow past it. A `description` written as a YAM
 
 The package-load worker walks and hashes a package's workflows and skill sets, on creation and on
 every reload, in the same job that compiles its models, so the server's event loop does not wait
-for it. A load bound to a build manifest still walks twice, and both walks now run in the worker. The walk counts against that job's timeout (`packageLoad.jobTimeoutMs`, 120 s). The main thread pays only to
+for it. A load bound to a build manifest walks twice, both times in the worker. The walk counts against that job's timeout (`packageLoad.jobTimeoutMs`, 120 s). The main thread pays only to
 receive the result and adopt it: rebuild each skill's reader and hash the shas the worker shipped,
 reading no file. `bun run perf:skills-reload` in `packages/server` builds a package with nine skill
 sets of one skill each, listed by two workflows, and times both sides. The second row is the
