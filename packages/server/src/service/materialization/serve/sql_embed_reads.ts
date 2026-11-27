@@ -45,7 +45,7 @@ interface SqlEmbedRead {
 }
 
 /** Why a re-root cannot be compiled under a `.sql()` that reads it. */
-export type SqlEmbedConflict = "cross_connection" | "whole_source";
+type SqlEmbedConflict = "cross_connection" | "whole_source";
 
 /**
  * Every `.sql()` with a `%{}` in `modelDefs` (a model and the models of the
