@@ -26,7 +26,6 @@ import {
    underAssets,
    type WalkBudget,
 } from "./skill_files";
-import type { ServedSkill } from "./package_skills";
 import { compareText } from "../../compare_text";
 import {
    FCJ_MAX_CHARS,
@@ -207,6 +206,26 @@ const RESERVED_BASENAMES = new Set([
    "agents.md",
    "publisher.json",
 ]);
+
+/**
+ * What a read of one listed file of a skill gives: its text; a message when
+ * the server does not carry it; `binary` when it is not text; or `changed`
+ * when it is no longer the file that was listed.
+ */
+export type SkillFileRead =
+   | { text: string }
+   | { message: string }
+   | { binary: true }
+   | { changed: true };
+
+/** A skill served from a package or the bundle: its catalog entry and how to read a file the entry lists. */
+export interface ServedSkill {
+   name: string;
+   description: string;
+   catalog: SkillCatalogEntry;
+   /** Reads a path of `catalog.files`; never joins a caller's path onto the filesystem. */
+   read(path: string): SkillFileRead;
+}
 
 /** One listed file: its path is `<skill>/<path>`, relative to its skill set. */
 export interface ListedFile {
@@ -1275,7 +1294,7 @@ export interface PackageWorkflows {
    watched: string[];
    /** A root `skills/` directory exists and no workflow lists it, so nothing reads it. */
    skillsDirNotRead: boolean;
-   /** Why the walk could not finish (a listed set cannot be read, or the walk threw) and the workflow names the manifest declares. Only `watched` is then filled: a reader answers the failure for a declared name, never an absence, and an undeclared name is still not found. */
+   /** Why the walk could not finish, and the workflow names the manifest declares: a declared name answers the reason, an undeclared one is still absent. */
    unavailable?: { reason: string; declared: string[] };
 }
 
@@ -1761,7 +1780,7 @@ const cannotRead = (error: unknown, packagePath: string) =>
       packagePath,
    );
 
-/** A walk that could not finish: nothing is served, and `reason` says why. The paths the declaration names stay watched, so fixing what failed reloads the package. */
+/** A walk that could not finish: nothing is served, and the declared paths stay watched so fixing the cause reloads. */
 function unavailableWorkflows(raw: unknown, reason: string): PackageWorkflows {
    let watched: string[] = [];
    let declared: string[] = [];

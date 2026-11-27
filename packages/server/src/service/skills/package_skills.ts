@@ -1,11 +1,12 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { BundledSkill, SkillCatalogEntry } from "./build_skills_bundle";
+import type { BundledSkill } from "./build_skills_bundle";
 import {
    DEFAULT_WORKFLOW,
    servedInline,
    type PackageWorkflow,
+   type ServedSkill,
    type PackageWorkflows,
    type SetSkill,
    type WorkflowSet,
@@ -19,32 +20,14 @@ export const BUNDLED_CATALOG = (
    skillsBundle as unknown as { skills: BundledSkill[] }
 ).skills;
 
+export type { ServedSkill, SkillFileRead } from "./package_workflows";
+
 /** Where a skill came from, once the bundled and package sets are resolved. */
 type SkillOrigin = "bundled" | "package";
-
-/**
- * What a read of one listed file of a skill gives: its text; a message when
- * the server does not carry it; `binary` when it is not text; or `changed`
- * when it is no longer the file that was listed.
- */
-export type SkillFileRead =
-   | { text: string }
-   | { message: string }
-   | { binary: true }
-   | { changed: true };
 
 /** Why a listed file that changed since the package loaded is not served. */
 export function fileChangedMessage(relative: string): string {
    return `'${relative}' changed on disk after the package loaded, so it is not served until the package reloads.`;
-}
-
-/** A skill served from a package or the bundle: its catalog entry and how to read a file the entry lists. */
-export interface ServedSkill {
-   name: string;
-   description: string;
-   catalog: SkillCatalogEntry;
-   /** Reads a path of `catalog.files`; never joins a caller's path onto the filesystem. */
-   read(path: string): SkillFileRead;
 }
 
 export interface ResolvedSkill extends ServedSkill {
