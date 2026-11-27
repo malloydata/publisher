@@ -1007,6 +1007,9 @@ export function deltaScript(statements: string[]): string {
    return statements.map((s) => `${s};`).join("\n");
 }
 
+/** What DuckDB answers a ROLLBACK when nothing was open: the usual case, not a failure. */
+export const NO_TRANSACTION = /no transaction is active/i;
+
 /**
  * Run a delta's statements, rolling back the session if they fail.
  *
@@ -1044,11 +1047,17 @@ export async function applyDeltaScript(
          try {
             await runner(transactionKeywords(dialect).rollback);
          } catch (rollbackErr) {
-            logger.warn(
-               "Could not roll back a failed delta; a pooled connection may " +
-                  "stay in an aborted transaction",
-               { dialect, code: errorCodeOf(rollbackErr) },
-            );
+            if (NO_TRANSACTION.test(errMessage(rollbackErr))) {
+               logger.debug("No transaction was open after a failed delta", {
+                  dialect,
+               });
+            } else {
+               logger.warn(
+                  "Could not roll back a failed delta; a pooled connection may " +
+                     "stay in an aborted transaction",
+                  { dialect, code: errorCodeOf(rollbackErr) },
+               );
+            }
          }
       }
       throw err;

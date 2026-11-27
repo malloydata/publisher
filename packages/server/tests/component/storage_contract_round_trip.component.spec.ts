@@ -86,18 +86,18 @@ describe.skipIf(process.platform === "win32")(
 
       /** A session as a build's or a bind's: db-duckdb's row limit of 10 lifted. */
       const session = (name: string) =>
-         new IsolatedSessionConnection(
-            name,
-            path.join(dir, `${name}.duckdb`),
-            dir,
-            {
-               rowLimit: Number.MAX_SAFE_INTEGER,
-            },
-         );
+         new DuckDBConnection(name, path.join(dir, `${name}.duckdb`), dir, {
+            rowLimit: Number.MAX_SAFE_INTEGER,
+         });
 
       beforeAll(async () => {
          dir = fs.mkdtempSync(path.join(os.tmpdir(), "contract-round-trip-"));
-         build = session("build");
+         build = new IsolatedSessionConnection(
+            "build",
+            path.join(dir, "build.duckdb"),
+            dir,
+            { rowLimit: Number.MAX_SAFE_INTEGER },
+         );
          await attach(build, false);
          // The build: CTAS, then its DESCRIBE and collations, in one transaction.
          const captured: { collations?: never } = {};

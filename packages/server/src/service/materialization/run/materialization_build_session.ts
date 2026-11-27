@@ -95,6 +95,7 @@ import {
    attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
 } from "../../connection";
+import { hardCloseWhenIdle } from "../../duckdb_hard_close";
 import { managedSearchPathSql } from "../../dialects/ducklake";
 import type { PartitionKey } from "../../dialects/ducklake_catalog";
 import {
@@ -107,7 +108,7 @@ import {
    applySessionResourceLimits,
    escapeSQL,
 } from "../../duckdb_session_setup";
-import type { WatermarkBound } from "./incremental_apply";
+import { NO_TRANSACTION, type WatermarkBound } from "./incremental_apply";
 import type { LateRows } from "../domain/types";
 import {
    storageDestinationFile,
@@ -331,17 +332,28 @@ function isRollback(sql: string): boolean {
    const [verb, ...rest] = tokenizeDuckDBSQL(sql).filter(
       (token) => token.kind !== "comment",
    );
+   if (
+      verb?.kind !== "word" ||
+      (verb.value !== "rollback" && verb.value !== "abort")
+   ) {
+      return false;
+   }
+   // At most one modifier: DuckDB's parser refuses `ROLLBACK WORK WORK`.
+   const [modifier, ...tail] = rest;
+   const after =
+      modifier?.kind === "word"
+         ? modifier.value === "transaction" || modifier.value === "work"
+            ? tail
+            : undefined
+         : rest;
    return (
-      verb?.kind === "word" &&
-      (verb.value === "rollback" || verb.value === "abort") &&
-      rest.every(
-         (token) =>
-            (token.kind === "word" &&
-               (token.value === "transaction" || token.value === "work")) ||
-            (token.kind === "punct" && token.value === ";"),
-      )
+      after !== undefined &&
+      after.every((token) => token.kind === "punct" && token.value === ";")
    );
 }
+
+/** A statement DuckDB refused to parse, so nothing of it ran. */
+const PARSER_ERROR = /^Parser Error:/;
 
 /**
  * The connection of a build-scoped session. It opens its instance with
@@ -378,35 +390,21 @@ export class IsolatedSessionConnection extends DuckDBConnection {
       this.connection?.interrupt();
    }
 
-   /**
-    * `close()`, then disconnect the node-api connection, which `close()` alone
-    * does not: its ClientContext keeps the instance alive, with the attached
-    * catalogs and credentials. db-duckdb cannot do this unconditionally
-    * (malloy's translate layer holds weak_ptrs to its Connection); a build
-    * session is single-use. The handle is read before `close()` nulls it.
-    */
-   async hardClose(): Promise<void> {
-      const handle = this.connection;
-      try {
-         await this.close();
-      } finally {
-         handle?.disconnectSync();
-      }
-   }
-
    protected override async runDuckDBQuery(
       sql: string,
    ): Promise<{ rows: QueryRecord[]; totalRows: number }> {
       const rollback = isRollback(sql);
       if (!rollback) this.refuseIfEnded();
+      let ran = true;
       try {
          return await super.runDuckDBQuery(sql);
       } catch (err) {
+         ran = !PARSER_ERROR.test(errMessage(err));
          await this.latch(err, rollback);
          throw err;
       } finally {
-         // DuckDB clears the transaction before it rolls back, so even a failed rollback leaves none open.
-         if (rollback) this.abortedBy = undefined;
+         // DuckDB clears the transaction before it rolls back, so even a failed rollback leaves none open; a parse error ran nothing.
+         if (rollback && ran) this.abortedBy = undefined;
       }
    }
 
@@ -433,19 +431,20 @@ export class IsolatedSessionConnection extends DuckDBConnection {
       } else if (
          !rollback &&
          !this.cancelled &&
-         !TRANSACTION_SAFE_ERROR.test(error.message) &&
-         (await this.transactionIsOpen())
+         !TRANSACTION_SAFE_ERROR.test(error.message)
       ) {
+         // Latched before the probe, which waits on the statement gate: a statement issued meanwhile is refused.
          this.abortedBy ??= error;
+         if (!(await this.transactionIsOpen()) && this.abortedBy === error) {
+            this.abortedBy = undefined;
+         }
       }
    }
 
    /**
     * Whether a transaction is open, asked of DuckDB: a BEGIN inside one fails
     * and leaves it untouched, and with none open the pair leaves none. Any
-    * other failure counts as open, so the next rollback clears it. It runs
-    * after the statement gate releases, so a statement queued on the session
-    * could run first.
+    * other failure counts as open, so the next rollback clears it.
     */
    private async transactionIsOpen(): Promise<boolean> {
       try {
@@ -533,14 +532,22 @@ export function createIsolatedBuildSession(sessionName: string): {
    }
    const dispose = async () => {
       await rollbackBeforeDisconnect(session, sessionName);
+      // `close()` alone does not end the session: the node-api Connection's C++
+      // ClientContext keeps the instance refcount above zero, so the database,
+      // with the destination ATTACH and federated source credentials, survives
+      // (idle Postgres backends stranded until process exit). The disconnect
+      // waits for any native call still in flight; db-duckdb cannot disconnect
+      // unconditionally (malloy's translate layer holds weak_ptrs to its
+      // Connection), but a build session is server-owned and single-use.
       try {
-         await session.hardClose();
+         await session.close();
       } catch (err) {
-         logger.warn(
-            "Failed to close build session (leaked session or connection)",
-            { sessionName, code: errorCodeOf(err) },
-         );
+         logger.warn("Failed to close build session (leaked session)", {
+            sessionName,
+            code: errorCodeOf(err),
+         });
       }
+      hardCloseWhenIdle(session);
       try {
          rmSync(workDir, { recursive: true, force: true });
       } catch (err) {
@@ -553,9 +560,6 @@ export function createIsolatedBuildSession(sessionName: string): {
    };
    return { session, dispose, workDir };
 }
-
-/** What DuckDB answers a ROLLBACK when nothing was open: the usual case, not a failure. */
-const NO_TRANSACTION = /no transaction is active/i;
 
 /** A session already closed, or not yet open: a second dispose, or one before any statement. */
 const SESSION_CLOSED =
@@ -2431,13 +2435,20 @@ export async function inTransaction<T>(
       try {
          await session.runSQL("ROLLBACK");
       } catch (rollbackErr) {
-         logger.warn(rollbackFailure, {
-            table: quotedTablePath,
-            code: errorCodeOf(rollbackErr),
-            // The build's error can quote its SQL or a value; it is
-            // rethrown to the run's record.
-            causeCode: errorCodeOf(buildErr),
-         });
+         // A failed COMMIT has already ended the transaction.
+         if (NO_TRANSACTION.test(errMessage(rollbackErr))) {
+            logger.debug("No transaction was open to roll back", {
+               table: quotedTablePath,
+            });
+         } else {
+            logger.warn(rollbackFailure, {
+               table: quotedTablePath,
+               code: errorCodeOf(rollbackErr),
+               // The build's error can quote its SQL or a value; it is
+               // rethrown to the run's record.
+               causeCode: errorCodeOf(buildErr),
+            });
+         }
       }
       throw buildErr;
    }

@@ -1739,6 +1739,61 @@ describe("IsolatedSessionConnection", () => {
    });
 
    it.each([
+      // Not a rollback to the session: refused like any statement.
+      ["ROLLBACK WORK WORK", "transaction was aborted"],
+      ["ROLLBACK TRANSACTION WORK", "transaction was aborted"],
+      ["ROLLBACK; ROLLBACK", "transaction was aborted"],
+      // Shaped like one, but DuckDB refuses to parse it, so nothing rolled back.
+      ["ROLLBACK /* unterminated", "Parser Error"],
+   ])(
+      "keeps an aborted transaction latched through %j",
+      async (sql, message) => {
+         const { dir, session, dispose } = await seededLake();
+         try {
+            await session.runSQL("BEGIN TRANSACTION");
+            await session.runSQL("INSERT INTO lake.t VALUES (4)");
+            await errorOf(session.runSQL("INSERT INTO lake.t VALUES (NULL)"));
+            expect((await errorOf(session.runSQL(sql)))?.message).toContain(
+               message,
+            );
+            expect(
+               (await errorOf(session.runSQL("COMMIT")))?.message,
+            ).toContain("transaction was aborted");
+            await session.runSQL("ROLLBACK");
+            expect(await count(session)).toBe(3);
+         } finally {
+            await dispose();
+         }
+         expect(await countInFreshSession(dir)).toBe(3);
+      },
+   );
+
+   it("refuses a statement issued while the probe asks DuckDB whether a transaction is open", async () => {
+      const { session, dispose } = await seededLake();
+      try {
+         const probe = Object.getPrototypeOf(session) as {
+            transactionIsOpen(): Promise<boolean>;
+         };
+         const original = probe.transactionIsOpen;
+         let meanwhile: Error | undefined;
+         probe.transactionIsOpen = async function (this: typeof session) {
+            meanwhile = await errorOf(this.runSQL("SELECT 1"));
+            return original.call(this);
+         };
+         try {
+            await session.runSQL("BEGIN TRANSACTION");
+            await errorOf(session.runSQL("INSERT INTO lake.t VALUES (NULL)"));
+         } finally {
+            probe.transactionIsOpen = original;
+         }
+         expect(meanwhile?.message).toContain("transaction was aborted");
+         await session.runSQL("ROLLBACK");
+      } finally {
+         await dispose();
+      }
+   });
+
+   it.each([
       ["a quoted value", "SELECT CAST('INTERNAL Error: x' AS INTEGER)"],
       [
          "a quoted value holding an apostrophe",

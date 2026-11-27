@@ -2330,15 +2330,30 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                const line = stdout
                   .split("\n")
                   .find((l) => l.startsWith("RESULT "));
-               resolve({
-                  status,
-                  signal,
-                  stdout,
-                  stderr,
-                  result: line && JSON.parse(line.slice("RESULT ".length)),
-               });
+               try {
+                  resolve({
+                     status,
+                     signal,
+                     stdout,
+                     stderr,
+                     result: line && JSON.parse(line.slice("RESULT ".length)),
+                  });
+               } catch (error) {
+                  reject(error);
+               }
             });
          });
+      }
+
+      /** Terminates every other backend of `database` and waits for each to exit: the signal alone returns before they have. */
+      async function killBackends(database: string) {
+         const rows = await superuser(
+            "SELECT pg_terminate_backend(pid, 5000) AS terminated FROM pg_stat_activity " +
+               `WHERE datname = '${database}' AND pid <> pg_backend_pid()`,
+            database,
+         );
+         expect(rows.length).toBeGreaterThan(0);
+         expect(rows.every((row) => row.terminated === true)).toBe(true);
       }
 
       /**
@@ -2445,11 +2460,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             const error = await failure(
                inTransaction(session, table, async () => {
                   await session.runSQL(`INSERT INTO ${table} VALUES (99, 'x')`);
-                  await superuser(
-                     "SELECT pg_terminate_backend(pid) FROM pg_stat_activity " +
-                        `WHERE datname = '${dead.database}' AND pid <> pg_backend_pid()`,
-                     dead.database,
-                  );
+                  await killBackends(dead.database);
                   await session.runSQL(
                      `INSERT INTO ${table} VALUES (100, 'y')`,
                   );
@@ -2482,13 +2493,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                "dead",
                dead.conninfo,
                `${CATALOG}.s.dead`,
-               async () => {
-                  await superuser(
-                     "SELECT pg_terminate_backend(pid) FROM pg_stat_activity " +
-                        `WHERE datname = '${dead.database}' AND pid <> pg_backend_pid()`,
-                     dead.database,
-                  );
-               },
+               () => killBackends(dead.database),
             );
             // Exit 134 is DuckLake's destructor rollback throwing past the disconnect.
             expect({
