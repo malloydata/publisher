@@ -1,865 +1,1331 @@
 {
-   "ascii": {
-      "stripped": "source: orders is t extend { dimension: x is 1 }",
-      "identifiers": [
-         "source",
-         "orders",
-         "is",
-         "t",
-         "extend",
-         "dimension",
-         "x",
-         "1"
+  "ascii": {
+    "stripped": "source: orders is t extend { dimension: x is 1 }",
+    "identifiers": [
+      "source",
+      "orders",
+      "is",
+      "t",
+      "extend",
+      "dimension",
+      "x",
+      "1"
+    ],
+    "scanned": [
+      "1",
+      "dimension",
+      "extend",
+      "is",
+      "orders",
+      "source",
+      "t",
+      "x"
+    ],
+    "names": [
+      "1",
+      "dimension",
+      "extend",
+      "is",
+      "orders",
+      "source",
+      "t",
+      "x"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "orders": "t"
+    },
+    "derivations": {
+      "orders": [
+        "t"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "orders": [
+        "t"
       ],
-      "scanned": [
-         "1",
-         "dimension",
-         "extend",
-         "is",
-         "orders",
-         "source",
-         "t",
-         "x"
+      "x": [
+        "1"
+      ]
+    }
+  },
+  "non-ASCII source name": {
+    "stripped": "source: café is t extend { measure: n is count() }",
+    "identifiers": [
+      "source",
+      "café",
+      "is",
+      "t",
+      "extend",
+      "measure",
+      "n",
+      "count"
+    ],
+    "scanned": [
+      "café",
+      "count",
+      "extend",
+      "is",
+      "measure",
+      "n",
+      "source",
+      "t"
+    ],
+    "names": [
+      "café",
+      "count",
+      "extend",
+      "is",
+      "measure",
+      "n",
+      "source",
+      "t"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "café": "t"
+    },
+    "derivations": {
+      "café": [
+        "t"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "café": [
+        "t"
       ],
-      "names": ["1", "dimension", "extend", "is", "orders", "source", "t", "x"],
-      "runTargets": ["s"],
-      "aliases": {
-         "orders": "t"
-      },
-      "derivations": {
-         "orders": ["t"]
-      },
-      "joins": {},
-      "isEdges": {
-         "orders": ["t"],
-         "x": ["1"]
-      }
-   },
-   "non-ASCII source name": {
-      "stripped": "source: café is t extend { measure: n is count() }",
-      "identifiers": [
-         "source",
-         "café",
-         "is",
-         "t",
-         "extend",
-         "measure",
-         "n",
-         "count"
+      "n": [
+        "count"
+      ]
+    }
+  },
+  "non-ASCII field name": {
+    "stripped": "source: s is t extend { dimension: größe is size }\nsource: u is s",
+    "identifiers": [
+      "source",
+      "s",
+      "is",
+      "t",
+      "extend",
+      "dimension",
+      "größe",
+      "size",
+      "u"
+    ],
+    "scanned": [
+      "dimension",
+      "extend",
+      "größe",
+      "is",
+      "s",
+      "size",
+      "source",
+      "t",
+      "u"
+    ],
+    "names": [
+      "dimension",
+      "extend",
+      "größe",
+      "is",
+      "s",
+      "size",
+      "source",
+      "t",
+      "u"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "s": "t",
+      "u": "s"
+    },
+    "derivations": {
+      "s": [
+        "t"
       ],
-      "scanned": [
-         "café",
-         "count",
-         "extend",
-         "is",
-         "measure",
-         "n",
-         "source",
-         "t"
+      "u": [
+        "s"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "größe": [
+        "size"
       ],
-      "names": ["café", "count", "extend", "is", "measure", "n", "source", "t"],
-      "runTargets": ["s"],
-      "aliases": {
-         "café": "t"
-      },
-      "derivations": {
-         "café": ["t"]
-      },
-      "joins": {},
-      "isEdges": {
-         "café": ["t"],
-         "n": ["count"]
-      }
-   },
-   "non-ASCII field name": {
-      "stripped": "source: s is t extend { dimension: größe is size }\nsource: u is s",
-      "identifiers": [
-         "source",
-         "s",
-         "is",
-         "t",
-         "extend",
-         "dimension",
-         "größe",
-         "size",
-         "u"
+      "s": [
+        "t"
       ],
-      "scanned": [
-         "dimension",
-         "extend",
-         "größe",
-         "is",
-         "s",
-         "size",
-         "source",
-         "t",
-         "u"
+      "u": [
+        "s"
+      ]
+    }
+  },
+  "non-ASCII after a name": {
+    "stripped": "source: s is t extend { dimension: aé: is 1 }",
+    "identifiers": [
+      "source",
+      "s",
+      "is",
+      "t",
+      "extend",
+      "dimension",
+      "aé",
+      "1"
+    ],
+    "scanned": [
+      "1",
+      "aé",
+      "dimension",
+      "extend",
+      "is",
+      "s",
+      "source",
+      "t"
+    ],
+    "names": [
+      "1",
+      "aé",
+      "dimension",
+      "extend",
+      "is",
+      "s",
+      "source",
+      "t"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "s": "t"
+    },
+    "derivations": {
+      "s": [
+        "t"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "s": [
+        "t"
+      ]
+    }
+  },
+  "CJK name": {
+    "stripped": "source: 注文 is t extend { measure: 件数 is count() }",
+    "identifiers": [
+      "source",
+      "注文",
+      "is",
+      "t",
+      "extend",
+      "measure",
+      "件数",
+      "count"
+    ],
+    "scanned": [
+      "count",
+      "extend",
+      "is",
+      "measure",
+      "source",
+      "t",
+      "件数",
+      "注文"
+    ],
+    "names": [
+      "count",
+      "extend",
+      "is",
+      "measure",
+      "source",
+      "t",
+      "件数",
+      "注文"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "注文": "t"
+    },
+    "derivations": {
+      "注文": [
+        "t"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "件数": [
+        "count"
       ],
-      "names": [
-         "dimension",
-         "extend",
-         "größe",
-         "is",
-         "s",
-         "size",
-         "source",
-         "t",
-         "u"
+      "注文": [
+        "t"
+      ]
+    }
+  },
+  "string crossing a line": {
+    "stripped": "source: s is t extend { where: x = 'a\nb' }\nsource: u is s",
+    "identifiers": [
+      "source",
+      "s",
+      "is",
+      "t",
+      "extend",
+      "where",
+      "x",
+      "a",
+      "b",
+      "u"
+    ],
+    "scanned": [
+      "a",
+      "b",
+      "extend",
+      "is",
+      "s",
+      "source",
+      "t",
+      "u",
+      "where",
+      "x"
+    ],
+    "names": [
+      "a",
+      "b",
+      "extend",
+      "is",
+      "s",
+      "source",
+      "t",
+      "u",
+      "where",
+      "x"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "s": "t",
+      "u": "s"
+    },
+    "derivations": {
+      "s": [
+        "t"
       ],
-      "runTargets": ["s"],
-      "aliases": {
-         "s": "t",
-         "u": "s"
-      },
-      "derivations": {
-         "s": ["t"],
-         "u": ["s"]
-      },
-      "joins": {},
-      "isEdges": {
-         "größe": ["size"],
-         "s": ["t"],
-         "u": ["s"]
-      }
-   },
-   "non-ASCII after a name": {
-      "stripped": "source: s is t extend { dimension: aé: is 1 }",
-      "identifiers": [
-         "source",
-         "s",
-         "is",
-         "t",
-         "extend",
-         "dimension",
-         "aé",
-         "1"
+      "u": [
+        "s"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "s": [
+        "t"
       ],
-      "scanned": ["1", "aé", "dimension", "extend", "is", "s", "source", "t"],
-      "names": ["1", "aé", "dimension", "extend", "is", "s", "source", "t"],
-      "runTargets": ["s"],
-      "aliases": {
-         "s": "t"
-      },
-      "derivations": {
-         "s": ["t"]
-      },
-      "joins": {},
-      "isEdges": {
-         "s": ["t"]
-      }
-   },
-   "CJK name": {
-      "stripped": "source: 注文 is t extend { measure: 件数 is count() }",
-      "identifiers": [
-         "source",
-         "注文",
-         "is",
-         "t",
-         "extend",
-         "measure",
-         "件数",
-         "count"
+      "u": [
+        "s"
+      ]
+    }
+  },
+  "double-quoted string crossing a line": {
+    "stripped": "source: s is t extend { where: x = \"a\nb\" }\nsource: u is s",
+    "identifiers": [
+      "source",
+      "s",
+      "is",
+      "t",
+      "extend",
+      "where",
+      "x",
+      "a",
+      "b",
+      "u"
+    ],
+    "scanned": [
+      "a",
+      "b",
+      "extend",
+      "is",
+      "s",
+      "source",
+      "t",
+      "u",
+      "where",
+      "x"
+    ],
+    "names": [
+      "a",
+      "b",
+      "extend",
+      "is",
+      "s",
+      "source",
+      "t",
+      "u",
+      "where",
+      "x"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "s": "t",
+      "u": "s"
+    },
+    "derivations": {
+      "s": [
+        "t"
       ],
-      "scanned": [
-         "count",
-         "extend",
-         "is",
-         "measure",
-         "source",
-         "t",
-         "件数",
-         "注文"
+      "u": [
+        "s"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "s": [
+        "t"
       ],
-      "names": [
-         "count",
-         "extend",
-         "is",
-         "measure",
-         "source",
-         "t",
-         "件数",
-         "注文"
+      "u": [
+        "s"
+      ]
+    }
+  },
+  "sql block": {
+    "stripped": "source: s is duckdb.sql(\"\"\"             \"\"\")\nsource: u is s",
+    "identifiers": [
+      "source",
+      "s",
+      "is",
+      "duckdb",
+      "sql",
+      "u"
+    ],
+    "scanned": [
+      "1",
+      "as",
+      "duckdb",
+      "is",
+      "s",
+      "select",
+      "source",
+      "sql",
+      "u",
+      "x"
+    ],
+    "names": [
+      "1",
+      "as",
+      "duckdb",
+      "is",
+      "s",
+      "select",
+      "source",
+      "sql",
+      "u",
+      "x"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "s": "duckdb",
+      "u": "s"
+    },
+    "derivations": {
+      "s": [
+        "duckdb"
       ],
-      "runTargets": ["s"],
-      "aliases": {
-         "注文": "t"
-      },
-      "derivations": {
-         "注文": ["t"]
-      },
-      "joins": {},
-      "isEdges": {
-         "件数": ["count"],
-         "注文": ["t"]
-      }
-   },
-   "string crossing a line": {
-      "stripped": "source: s is t extend { where: x = 'a\nb' }\nsource: u is s",
-      "identifiers": [
-         "source",
-         "s",
-         "is",
-         "t",
-         "extend",
-         "where",
-         "x",
-         "a",
-         "b",
-         "u"
+      "u": [
+        "s"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "s": [
+        "duckdb"
       ],
-      "scanned": [
-         "a",
-         "b",
-         "extend",
-         "is",
-         "s",
-         "source",
-         "t",
-         "u",
-         "where",
-         "x"
+      "u": [
+        "s"
+      ]
+    }
+  },
+  "sql block with interpolation": {
+    "stripped": "source: s is duckdb.sql(\"\"\"              %{ t -> { select: x } }            \"\"\")\nsource: u is s",
+    "identifiers": [
+      "source",
+      "s",
+      "is",
+      "duckdb",
+      "sql",
+      "t",
+      "select",
+      "x",
+      "u"
+    ],
+    "scanned": [
+      "1",
+      "duckdb",
+      "from",
+      "is",
+      "s",
+      "select",
+      "source",
+      "sql",
+      "t",
+      "u",
+      "where",
+      "x"
+    ],
+    "names": [
+      "1",
+      "duckdb",
+      "from",
+      "is",
+      "s",
+      "select",
+      "source",
+      "sql",
+      "t",
+      "u",
+      "where",
+      "x"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "s": "duckdb",
+      "u": "s"
+    },
+    "derivations": {
+      "s": [
+        "duckdb"
       ],
-      "names": [
-         "a",
-         "b",
-         "extend",
-         "is",
-         "s",
-         "source",
-         "t",
-         "u",
-         "where",
-         "x"
+      "u": [
+        "s"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "s": [
+        "duckdb"
       ],
-      "runTargets": ["s"],
-      "aliases": {
-         "s": "t",
-         "u": "s"
-      },
-      "derivations": {
-         "s": ["t"],
-         "u": ["s"]
-      },
-      "joins": {},
-      "isEdges": {
-         "s": ["t"],
-         "u": ["s"]
-      }
-   },
-   "double-quoted string crossing a line": {
-      "stripped": "source: s is t extend { where: x = \"a\nb\" }\nsource: u is s",
-      "identifiers": [
-         "source",
-         "s",
-         "is",
-         "t",
-         "extend",
-         "where",
-         "x",
-         "a",
-         "b",
-         "u"
+      "u": [
+        "s"
+      ]
+    }
+  },
+  "sql block with a brace in SQL": {
+    "stripped": "source: s is duckdb.sql(\"\"\"               \"\"\")\nsource: u is s",
+    "identifiers": [
+      "source",
+      "s",
+      "is",
+      "duckdb",
+      "sql",
+      "u"
+    ],
+    "scanned": [
+      "as",
+      "duckdb",
+      "is",
+      "s",
+      "select",
+      "source",
+      "sql",
+      "u",
+      "x"
+    ],
+    "names": [
+      "as",
+      "duckdb",
+      "is",
+      "s",
+      "select",
+      "source",
+      "sql",
+      "u",
+      "x"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "s": "duckdb",
+      "u": "s"
+    },
+    "derivations": {
+      "s": [
+        "duckdb"
       ],
-      "scanned": [
-         "a",
-         "b",
-         "extend",
-         "is",
-         "s",
-         "source",
-         "t",
-         "u",
-         "where",
-         "x"
+      "u": [
+        "s"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "s": [
+        "duckdb"
       ],
-      "names": [
-         "a",
-         "b",
-         "extend",
-         "is",
-         "s",
-         "source",
-         "t",
-         "u",
-         "where",
-         "x"
+      "u": [
+        "s"
+      ]
+    }
+  },
+  "backtick name": {
+    "stripped": "source: `my-src` is t extend { dimension: `a b` is 1 }",
+    "identifiers": [
+      "source",
+      "my-src",
+      "is",
+      "t",
+      "extend",
+      "dimension",
+      "a b",
+      "1"
+    ],
+    "scanned": [
+      "1",
+      "a b",
+      "dimension",
+      "extend",
+      "is",
+      "my-src",
+      "source",
+      "t"
+    ],
+    "names": [
+      "1",
+      "a b",
+      "dimension",
+      "extend",
+      "is",
+      "my-src",
+      "source",
+      "t"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "my-src": "t"
+    },
+    "derivations": {
+      "my-src": [
+        "t"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "a b": [
+        "1"
       ],
-      "runTargets": ["s"],
-      "aliases": {
-         "s": "t",
-         "u": "s"
-      },
-      "derivations": {
-         "s": ["t"],
-         "u": ["s"]
-      },
-      "joins": {},
-      "isEdges": {
-         "s": ["t"],
-         "u": ["s"]
-      }
-   },
-   "sql block": {
-      "stripped": "source: s is duckdb.sql(\"\"\"             \"\"\")\nsource: u is s",
-      "identifiers": ["source", "s", "is", "duckdb", "sql", "u"],
-      "scanned": [
-         "1",
-         "as",
-         "duckdb",
-         "is",
-         "s",
-         "select",
-         "source",
-         "sql",
-         "u",
-         "x"
+      "my-src": [
+        "t"
+      ]
+    }
+  },
+  "backtick name with an escape": {
+    "stripped": "source: `a\\`b` is t extend { dimension: `c\\`d` is 1 }\nsource: u is `a\\`b`",
+    "identifiers": [
+      "source",
+      "a`b",
+      "is",
+      "t",
+      "extend",
+      "dimension",
+      "c`d",
+      "1",
+      "u"
+    ],
+    "scanned": [
+      "1",
+      "a`b",
+      "c`d",
+      "dimension",
+      "extend",
+      "is",
+      "source",
+      "t",
+      "u"
+    ],
+    "names": [
+      "1",
+      "a`b",
+      "c`d",
+      "dimension",
+      "extend",
+      "is",
+      "source",
+      "t",
+      "u"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "a`b": "t",
+      "u": "a`b"
+    },
+    "derivations": {
+      "a`b": [
+        "t"
       ],
-      "names": [
-         "1",
-         "as",
-         "duckdb",
-         "is",
-         "s",
-         "select",
-         "source",
-         "sql",
-         "u",
-         "x"
+      "u": [
+        "a`b"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "a`b": [
+        "t"
       ],
-      "runTargets": ["s"],
-      "aliases": {
-         "s": "duckdb",
-         "u": "s"
-      },
-      "derivations": {
-         "s": ["duckdb"],
-         "u": ["s"]
-      },
-      "joins": {},
-      "isEdges": {
-         "s": ["duckdb"],
-         "u": ["s"]
-      }
-   },
-   "sql block with interpolation": {
-      "stripped": "source: s is duckdb.sql(\"\"\"              %{ t -> { select: x } }            \"\"\")\nsource: u is s",
-      "identifiers": [
-         "source",
-         "s",
-         "is",
-         "duckdb",
-         "sql",
-         "t",
-         "select",
-         "x",
-         "u"
+      "c`d": [
+        "1"
       ],
-      "scanned": [
-         "1",
-         "duckdb",
-         "from",
-         "is",
-         "s",
-         "select",
-         "source",
-         "sql",
-         "t",
-         "u",
-         "where",
-         "x"
+      "u": [
+        "a`b"
+      ]
+    }
+  },
+  "backtick crossing a line": {
+    "stripped": "source: `a\nb` is t\nsource: u is t",
+    "identifiers": [
+      "source",
+      "a",
+      "b",
+      "is",
+      "t",
+      "u"
+    ],
+    "scanned": [
+      "a",
+      "b",
+      "is",
+      "source",
+      "t",
+      "u"
+    ],
+    "names": [
+      "a",
+      "b",
+      "is",
+      "source",
+      "t",
+      "u"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "u": "t"
+    },
+    "derivations": {
+      "u": [
+        "t"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "u": [
+        "t"
+      ]
+    }
+  },
+  "filter literal": {
+    "stripped": "source: s is t extend { where: x ~ f'   ' }\nsource: u is s",
+    "identifiers": [
+      "source",
+      "s",
+      "is",
+      "t",
+      "extend",
+      "where",
+      "x",
+      "f",
+      "u"
+    ],
+    "scanned": [
+      "a",
+      "b",
+      "extend",
+      "f",
+      "is",
+      "s",
+      "source",
+      "t",
+      "u",
+      "where",
+      "x"
+    ],
+    "names": [
+      "a",
+      "b",
+      "extend",
+      "f",
+      "is",
+      "s",
+      "source",
+      "t",
+      "u",
+      "where",
+      "x"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "s": "t",
+      "u": "s"
+    },
+    "derivations": {
+      "s": [
+        "t"
       ],
-      "names": [
-         "1",
-         "duckdb",
-         "from",
-         "is",
-         "s",
-         "select",
-         "source",
-         "sql",
-         "t",
-         "u",
-         "where",
-         "x"
+      "u": [
+        "s"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "s": [
+        "t"
       ],
-      "runTargets": ["s"],
-      "aliases": {
-         "s": "duckdb",
-         "u": "s"
-      },
-      "derivations": {
-         "s": ["duckdb"],
-         "u": ["s"]
-      },
-      "joins": {},
-      "isEdges": {
-         "s": ["duckdb"],
-         "u": ["s"]
-      }
-   },
-   "sql block with a brace in SQL": {
-      "stripped": "source: s is duckdb.sql(\"\"\"               \"\"\")\nsource: u is s",
-      "identifiers": ["source", "s", "is", "duckdb", "sql", "u"],
-      "scanned": [
-         "as",
-         "duckdb",
-         "is",
-         "s",
-         "select",
-         "source",
-         "sql",
-         "u",
-         "x"
+      "u": [
+        "s"
+      ]
+    }
+  },
+  "regex literal": {
+    "stripped": "source: s is t extend { where: x ~ r'  ' }\nsource: u is s",
+    "identifiers": [
+      "source",
+      "s",
+      "is",
+      "t",
+      "extend",
+      "where",
+      "x",
+      "r",
+      "u"
+    ],
+    "scanned": [
+      "a",
+      "extend",
+      "is",
+      "r",
+      "s",
+      "source",
+      "t",
+      "u",
+      "where",
+      "x"
+    ],
+    "names": [
+      "a",
+      "extend",
+      "is",
+      "r",
+      "s",
+      "source",
+      "t",
+      "u",
+      "where",
+      "x"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "s": "t",
+      "u": "s"
+    },
+    "derivations": {
+      "s": [
+        "t"
       ],
-      "names": ["as", "duckdb", "is", "s", "select", "source", "sql", "u", "x"],
-      "runTargets": ["s"],
-      "aliases": {
-         "s": "duckdb",
-         "u": "s"
-      },
-      "derivations": {
-         "s": ["duckdb"],
-         "u": ["s"]
-      },
-      "joins": {},
-      "isEdges": {
-         "s": ["duckdb"],
-         "u": ["s"]
-      }
-   },
-   "backtick name": {
-      "stripped": "source: `my-src` is t extend { dimension: `a b` is 1 }",
-      "identifiers": [
-         "source",
-         "my-src",
-         "is",
-         "t",
-         "extend",
-         "dimension",
-         "a b",
-         "1"
+      "u": [
+        "s"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "s": [
+        "t"
       ],
-      "scanned": [
-         "1",
-         "a b",
-         "dimension",
-         "extend",
-         "is",
-         "my-src",
-         "source",
-         "t"
+      "u": [
+        "s"
+      ]
+    }
+  },
+  "line comments": {
+    "stripped": "    \n    \nsource: s is t     \nsource: u is s     ",
+    "identifiers": [
+      "source",
+      "s",
+      "is",
+      "t",
+      "u"
+    ],
+    "scanned": [
+      "c",
+      "d",
+      "e",
+      "f",
+      "is",
+      "s",
+      "source",
+      "t",
+      "u"
+    ],
+    "names": [
+      "c",
+      "d",
+      "e",
+      "f",
+      "is",
+      "s",
+      "source",
+      "t",
+      "u"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "s": "t",
+      "u": "s"
+    },
+    "derivations": {
+      "s": [
+        "t"
       ],
-      "names": [
-         "1",
-         "a b",
-         "dimension",
-         "extend",
-         "is",
-         "my-src",
-         "source",
-         "t"
+      "u": [
+        "s"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "s": [
+        "t"
       ],
-      "runTargets": ["s"],
-      "aliases": {
-         "my-src": "t"
-      },
-      "derivations": {
-         "my-src": ["t"]
-      },
-      "joins": {},
-      "isEdges": {
-         "a b": ["1"],
-         "my-src": ["t"]
-      }
-   },
-   "backtick name with an escape": {
-      "stripped": "source: `a\\`b` is t extend { dimension: `c\\`d` is 1 }\nsource: u is `a\\`b`",
-      "identifiers": [
-         "source",
-         "a`b",
-         "is",
-         "t",
-         "extend",
-         "dimension",
-         "c`d",
-         "1",
-         "u"
+      "u": [
+        "s"
+      ]
+    }
+  },
+  "block comment": {
+    "stripped": "    \n     source: s is t\nsource: u is s",
+    "identifiers": [
+      "source",
+      "s",
+      "is",
+      "t",
+      "u"
+    ],
+    "scanned": [
+      "a",
+      "b",
+      "is",
+      "s",
+      "source",
+      "t",
+      "u"
+    ],
+    "names": [
+      "a",
+      "b",
+      "is",
+      "s",
+      "source",
+      "t",
+      "u"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "s": "t",
+      "u": "s"
+    },
+    "derivations": {
+      "s": [
+        "t"
       ],
-      "scanned": [
-         "1",
-         "a`b",
-         "c`d",
-         "dimension",
-         "extend",
-         "is",
-         "source",
-         "t",
-         "u"
+      "u": [
+        "s"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "s": [
+        "t"
       ],
-      "names": [
-         "1",
-         "a`b",
-         "c`d",
-         "dimension",
-         "extend",
-         "is",
-         "source",
-         "t",
-         "u"
+      "u": [
+        "s"
+      ]
+    }
+  },
+  "unclosed block comment": {
+    "stripped": "source: s is t                \n              ",
+    "identifiers": [
+      "source",
+      "s",
+      "is",
+      "t"
+    ],
+    "scanned": [
+      "closed",
+      "is",
+      "never",
+      "s",
+      "source",
+      "t",
+      "u"
+    ],
+    "names": [
+      "closed",
+      "is",
+      "never",
+      "s",
+      "source",
+      "t",
+      "u"
+    ],
+    "runTargets": [],
+    "aliases": {
+      "s": "t"
+    },
+    "derivations": {
+      "s": [
+        "t"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "s": [
+        "t"
+      ]
+    }
+  },
+  "annotations": {
+    "stripped": "            \n       \nsource: s is t\n        \nsource: u is s",
+    "identifiers": [
+      "source",
+      "s",
+      "is",
+      "t",
+      "u"
+    ],
+    "scanned": [
+      "a",
+      "doc",
+      "is",
+      "label",
+      "model",
+      "s",
+      "source",
+      "t",
+      "u"
+    ],
+    "names": [
+      "a",
+      "doc",
+      "is",
+      "label",
+      "model",
+      "s",
+      "source",
+      "t",
+      "u"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "s": "t",
+      "u": "s"
+    },
+    "derivations": {
+      "s": [
+        "t"
       ],
-      "runTargets": ["s"],
-      "aliases": {
-         "a`b": "t",
-         "u": "a`b"
-      },
-      "derivations": {
-         "a`b": ["t"],
-         "u": ["a`b"]
-      },
-      "joins": {},
-      "isEdges": {
-         "a`b": ["t"],
-         "c`d": ["1"],
-         "u": ["a`b"]
-      }
-   },
-   "backtick crossing a line": {
-      "stripped": "source: `a\nb` is t\nsource: u is t",
-      "identifiers": ["source", "a", "b", "is", "t", "u"],
-      "scanned": ["a", "b", "is", "source", "t", "u"],
-      "names": ["a", "b", "is", "source", "t", "u"],
-      "runTargets": ["s"],
-      "aliases": {
-         "u": "t"
-      },
-      "derivations": {
-         "u": ["t"]
-      },
-      "joins": {},
-      "isEdges": {
-         "u": ["t"]
-      }
-   },
-   "filter literal": {
-      "stripped": "source: s is t extend { where: x ~ f'   ' }\nsource: u is s",
-      "identifiers": [
-         "source",
-         "s",
-         "is",
-         "t",
-         "extend",
-         "where",
-         "x",
-         "f",
-         "u"
+      "u": [
+        "s"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "s": [
+        "t"
       ],
-      "scanned": [
-         "a",
-         "b",
-         "extend",
-         "f",
-         "is",
-         "s",
-         "source",
-         "t",
-         "u",
-         "where",
-         "x"
+      "u": [
+        "s"
+      ]
+    }
+  },
+  "unbalanced open": {
+    "stripped": "source: s is t extend { dimension: x is (1 }",
+    "identifiers": [
+      "source",
+      "s",
+      "is",
+      "t",
+      "extend",
+      "dimension",
+      "x",
+      "1"
+    ],
+    "scanned": [
+      "1",
+      "dimension",
+      "extend",
+      "is",
+      "s",
+      "source",
+      "t",
+      "x"
+    ],
+    "names": [
+      "1",
+      "dimension",
+      "extend",
+      "is",
+      "s",
+      "source",
+      "t",
+      "x"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "s": "t"
+    },
+    "derivations": {
+      "s": [
+        "t"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "s": [
+        "t"
       ],
-      "names": [
-         "a",
-         "b",
-         "extend",
-         "f",
-         "is",
-         "s",
-         "source",
-         "t",
-         "u",
-         "where",
-         "x"
+      "x": [
+        "1"
+      ]
+    }
+  },
+  "unbalanced close": {
+    "stripped": "source: s is t extend { dimension: x is 1 } }",
+    "identifiers": [
+      "source",
+      "s",
+      "is",
+      "t",
+      "extend",
+      "dimension",
+      "x",
+      "1"
+    ],
+    "scanned": [
+      "1",
+      "dimension",
+      "extend",
+      "is",
+      "s",
+      "source",
+      "t",
+      "x"
+    ],
+    "names": [
+      "1",
+      "dimension",
+      "extend",
+      "is",
+      "s",
+      "source",
+      "t",
+      "x"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "s": "t"
+    },
+    "derivations": {
+      "s": [
+        "t"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "s": [
+        "t"
       ],
-      "runTargets": ["s"],
-      "aliases": {
-         "s": "t",
-         "u": "s"
-      },
-      "derivations": {
-         "s": ["t"],
-         "u": ["s"]
-      },
-      "joins": {},
-      "isEdges": {
-         "s": ["t"],
-         "u": ["s"]
-      }
-   },
-   "regex literal": {
-      "stripped": "source: s is t extend { where: x ~ r'  ' }\nsource: u is s",
-      "identifiers": [
-         "source",
-         "s",
-         "is",
-         "t",
-         "extend",
-         "where",
-         "x",
-         "r",
-         "u"
-      ],
-      "scanned": [
-         "a",
-         "extend",
-         "is",
-         "r",
-         "s",
-         "source",
-         "t",
-         "u",
-         "where",
-         "x"
-      ],
-      "names": [
-         "a",
-         "extend",
-         "is",
-         "r",
-         "s",
-         "source",
-         "t",
-         "u",
-         "where",
-         "x"
-      ],
-      "runTargets": ["s"],
-      "aliases": {
-         "s": "t",
-         "u": "s"
-      },
-      "derivations": {
-         "s": ["t"],
-         "u": ["s"]
-      },
-      "joins": {},
-      "isEdges": {
-         "s": ["t"],
-         "u": ["s"]
-      }
-   },
-   "line comments": {
-      "stripped": "    \n    \nsource: s is t     \nsource: u is s     ",
-      "identifiers": ["source", "s", "is", "t", "u"],
-      "scanned": ["c", "d", "e", "f", "is", "s", "source", "t", "u"],
-      "names": ["c", "d", "e", "f", "is", "s", "source", "t", "u"],
-      "runTargets": ["s"],
-      "aliases": {
-         "s": "t",
-         "u": "s"
-      },
-      "derivations": {
-         "s": ["t"],
-         "u": ["s"]
-      },
-      "joins": {},
-      "isEdges": {
-         "s": ["t"],
-         "u": ["s"]
-      }
-   },
-   "block comment": {
-      "stripped": "    \n     source: s is t\nsource: u is s",
-      "identifiers": ["source", "s", "is", "t", "u"],
-      "scanned": ["a", "b", "is", "s", "source", "t", "u"],
-      "names": ["a", "b", "is", "s", "source", "t", "u"],
-      "runTargets": ["s"],
-      "aliases": {
-         "s": "t",
-         "u": "s"
-      },
-      "derivations": {
-         "s": ["t"],
-         "u": ["s"]
-      },
-      "joins": {},
-      "isEdges": {
-         "s": ["t"],
-         "u": ["s"]
-      }
-   },
-   "unclosed block comment": {
-      "stripped": "source: s is t                \n              ",
-      "identifiers": ["source", "s", "is", "t"],
-      "scanned": ["closed", "is", "never", "s", "source", "t", "u"],
-      "names": ["closed", "is", "never", "s", "source", "t", "u"],
-      "runTargets": [],
-      "aliases": {
-         "s": "t"
-      },
-      "derivations": {
-         "s": ["t"]
-      },
-      "joins": {},
-      "isEdges": {
-         "s": ["t"]
-      }
-   },
-   "annotations": {
-      "stripped": "            \n       \nsource: s is t\n        \nsource: u is s",
-      "identifiers": ["source", "s", "is", "t", "u"],
-      "scanned": ["a", "doc", "is", "label", "model", "s", "source", "t", "u"],
-      "names": ["a", "doc", "is", "label", "model", "s", "source", "t", "u"],
-      "runTargets": ["s"],
-      "aliases": {
-         "s": "t",
-         "u": "s"
-      },
-      "derivations": {
-         "s": ["t"],
-         "u": ["s"]
-      },
-      "joins": {},
-      "isEdges": {
-         "s": ["t"],
-         "u": ["s"]
-      }
-   },
-   "unbalanced open": {
-      "stripped": "source: s is t extend { dimension: x is (1 }",
-      "identifiers": [
-         "source",
-         "s",
-         "is",
-         "t",
-         "extend",
-         "dimension",
-         "x",
-         "1"
-      ],
-      "scanned": ["1", "dimension", "extend", "is", "s", "source", "t", "x"],
-      "names": ["1", "dimension", "extend", "is", "s", "source", "t", "x"],
-      "runTargets": ["s"],
-      "aliases": {
-         "s": "t"
-      },
-      "derivations": {
-         "s": ["t"]
-      },
-      "joins": {},
-      "isEdges": {
-         "s": ["t"],
-         "x": ["1"]
-      }
-   },
-   "unbalanced close": {
-      "stripped": "source: s is t extend { dimension: x is 1 } }",
-      "identifiers": [
-         "source",
-         "s",
-         "is",
-         "t",
-         "extend",
-         "dimension",
-         "x",
-         "1"
-      ],
-      "scanned": ["1", "dimension", "extend", "is", "s", "source", "t", "x"],
-      "names": ["1", "dimension", "extend", "is", "s", "source", "t", "x"],
-      "runTargets": ["s"],
-      "aliases": {
-         "s": "t"
-      },
-      "derivations": {
-         "s": ["t"]
-      },
-      "joins": {},
-      "isEdges": {
-         "s": ["t"],
-         "x": ["1"]
-      }
-   },
-   "unclosed string": {
-      "stripped": "source: s is t extend { where: x = 'a }",
-      "identifiers": ["source", "s", "is", "t", "extend", "where", "x", "a"],
-      "scanned": ["a", "extend", "is", "s", "source", "t", "where", "x"],
-      "names": ["a", "extend", "is", "s", "source", "t", "where", "x"],
-      "runTargets": ["s"],
-      "aliases": {
-         "s": "t"
-      },
-      "derivations": {
-         "s": ["t"]
-      },
-      "joins": {},
-      "isEdges": {
-         "s": ["t"]
-      }
-   },
-   "time literal": {
-      "stripped": "source: s is t extend { where: ts > @2021-01-01 10:00 }",
-      "identifiers": [
-         "source",
-         "s",
-         "is",
-         "t",
-         "extend",
-         "where",
-         "ts",
-         "2021",
-         "01",
-         "10",
-         "00"
-      ],
-      "scanned": [
-         "00",
-         "01",
-         "10",
-         "2021",
-         "extend",
-         "is",
-         "s",
-         "source",
-         "t",
-         "ts",
-         "where"
-      ],
-      "names": [
-         "00",
-         "01",
-         "10",
-         "2021",
-         "extend",
-         "is",
-         "s",
-         "source",
-         "t",
-         "ts",
-         "where"
-      ],
-      "runTargets": ["s"],
-      "aliases": {
-         "s": "t"
-      },
-      "derivations": {
-         "s": ["t"]
-      },
-      "joins": {},
-      "isEdges": {
-         "s": ["t"]
-      }
-   },
-   "number then colon": {
-      "stripped": "query: q is t -> { limit: 10 }",
-      "identifiers": ["query", "q", "is", "t", "limit", "10"],
-      "scanned": ["10", "is", "limit", "q", "query", "t"],
-      "names": ["10", "is", "limit", "q", "query", "t"],
-      "runTargets": ["s"],
-      "aliases": {},
-      "derivations": {
-         "q": ["t"]
-      },
-      "joins": {},
-      "isEdges": {
-         "q": ["t"]
-      }
-   }
+      "x": [
+        "1"
+      ]
+    }
+  },
+  "unclosed string": {
+    "stripped": "source: s is t extend { where: x = 'a }",
+    "identifiers": [
+      "source",
+      "s",
+      "is",
+      "t",
+      "extend",
+      "where",
+      "x",
+      "a"
+    ],
+    "scanned": [
+      "a",
+      "extend",
+      "is",
+      "s",
+      "source",
+      "t",
+      "where",
+      "x"
+    ],
+    "names": [
+      "a",
+      "extend",
+      "is",
+      "s",
+      "source",
+      "t",
+      "where",
+      "x"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "s": "t"
+    },
+    "derivations": {
+      "s": [
+        "t"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "s": [
+        "t"
+      ]
+    }
+  },
+  "time literal": {
+    "stripped": "source: s is t extend { where: ts > @2021-01-01 10:00 }",
+    "identifiers": [
+      "source",
+      "s",
+      "is",
+      "t",
+      "extend",
+      "where",
+      "ts",
+      "2021",
+      "01",
+      "10",
+      "00"
+    ],
+    "scanned": [
+      "00",
+      "01",
+      "10",
+      "2021",
+      "extend",
+      "is",
+      "s",
+      "source",
+      "t",
+      "ts",
+      "where"
+    ],
+    "names": [
+      "00",
+      "01",
+      "10",
+      "2021",
+      "extend",
+      "is",
+      "s",
+      "source",
+      "t",
+      "ts",
+      "where"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {
+      "s": "t"
+    },
+    "derivations": {
+      "s": [
+        "t"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "s": [
+        "t"
+      ]
+    }
+  },
+  "number then colon": {
+    "stripped": "query: q is t -> { limit: 10 }",
+    "identifiers": [
+      "query",
+      "q",
+      "is",
+      "t",
+      "limit",
+      "10"
+    ],
+    "scanned": [
+      "10",
+      "is",
+      "limit",
+      "q",
+      "query",
+      "t"
+    ],
+    "names": [
+      "10",
+      "is",
+      "limit",
+      "q",
+      "query",
+      "t"
+    ],
+    "runTargets": [
+      "s"
+    ],
+    "aliases": {},
+    "derivations": {
+      "q": [
+        "t"
+      ]
+    },
+    "joins": {},
+    "isEdges": {
+      "q": [
+        "t"
+      ]
+    }
+  }
 }
