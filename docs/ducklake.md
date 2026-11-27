@@ -483,8 +483,10 @@ source carrying an `.sql()` source or a `sql_*` expression anywhere beneath it i
 DuckLake source was before, and so is a table read from a file or URL (`lake.table('/x.csv')`),
 which that session would read with the destination's storage credential. Such a source is refused when
 the package loads (`persist-not-built`, reason `storage_source_unsupported`) and answered live, rather
-than failing its build. The build also reads only base tables of the catalog: one whose SQL names a view
-there fails, since a view's body is SQL too and would run with the destination's credential. That check
+than failing its build. A build from a `managed` connection also reads only base tables of the catalog:
+one whose SQL names a view there fails, since a view's body is not held to the connection's scope and
+would run with the destination's credential (an unmanaged connection reads the whole catalog itself, so
+its build may read a view). That check
 runs in the build's own transaction, so the build reads the catalog as the check saw it. A served copy
 that reads a managed connection's tables through the destination, to serve a join across the one catalog,
 holds to the same rule, and checks it again before every query it answers: once a table it reads is a view,

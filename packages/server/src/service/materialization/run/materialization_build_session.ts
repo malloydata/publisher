@@ -1223,13 +1223,20 @@ async function buildSameCatalogIntoStorage(params: {
                ...(params.replacesView
                   ? { replacesView: params.replacesView }
                   : {}),
-               beforeCreate: () =>
-                  refuseViewsRead(
-                     session,
-                     alias,
-                     params.buildSQL,
-                     destinationName,
-                  ),
+               // A managed connection reads only its scope; the destination's
+               // credential reads the whole catalog. An unmanaged one reads the
+               // whole catalog itself, so its views have no scope to leave.
+               ...(params.sourceConnection.managed === true
+                  ? {
+                       beforeCreate: () =>
+                          refuseViewsRead(
+                             session,
+                             alias,
+                             params.buildSQL,
+                             destinationName,
+                          ),
+                    }
+                  : {}),
             },
          );
          // Reads no warehouse, as a chained build does: nothing was charged.
@@ -1290,11 +1297,11 @@ async function namesReadIn(
 }
 
 /**
- * Refuse a same-catalog build whose SQL reads a view of the catalog. The
- * build's session reads with the destination's credential, which reaches the
- * whole catalog, and a DuckLake view's body is not held to the source
- * connection's scope, so the build reads only base tables, as a served copy
- * does (same_catalog_destination.ts). Run in the build's transaction
+ * Refuse a same-catalog build from a `managed` connection whose SQL reads a
+ * view of the catalog. The build's session reads with the destination's
+ * credential, which reaches the whole catalog, and a DuckLake view's body is
+ * not held to the managed connection's scope, so such a build reads only base
+ * tables, as a served copy does (same_catalog_destination.ts). Run in the build's transaction
  * (`beforeCreate`), so the CREATE reads the snapshot this read: a view
  * swapped in after it is not read. SQL it cannot parse is refused.
  */

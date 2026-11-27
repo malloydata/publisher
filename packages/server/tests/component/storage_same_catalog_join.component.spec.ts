@@ -193,6 +193,16 @@ source: swap_orders is credible.table('orders') extend {
 source: swap_names is credible.table('names_s')
 `;
 
+/**
+ * A stored source over a view of the catalog on an unmanaged connection to
+ * it: that connection reads the whole catalog itself, so its build may read
+ * the view.
+ */
+const UNMANAGED = `##! experimental.persistence
+#(materialize) storage="credible"
+source: open_view is openlake.table('main.customers_v')
+`;
+
 type Answer = {
    rows: Record<string, unknown>[];
    servedFrom: string | null;
@@ -323,6 +333,7 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
             "sql_expr.malloy": SQL_EXPR,
             "sql_source.malloy": SQL_SOURCE,
             "swap.malloy": SWAP,
+            "unmanaged.malloy": UNMANAGED,
          },
          { manifest: { name: PKG, description: "fixture" } },
       );
@@ -368,6 +379,14 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
                name: "credible",
                type: "ducklake",
                managed: true,
+               ducklakeConnection: {
+                  catalog,
+                  storage: { bucketUrl: dataPath },
+               },
+            } as never,
+            {
+               name: "openlake",
+               type: "ducklake",
                ducklakeConnection: {
                   catalog,
                   storage: { bucketUrl: dataPath },
@@ -531,6 +550,18 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
    it("builds every stored source", async () => {
       const run = await build();
       expect([run.status, run.error]).toEqual(["MANIFEST_FILE_READY", null]);
+   });
+
+   it("builds a source over a view on an unmanaged connection to the catalog", async () => {
+      const answer = await ask(
+         "unmanaged.malloy",
+         "run: open_view -> { group_by: name }",
+      );
+      expect(answer.servedFrom).toBe("storage");
+      expect(answer.rows).toEqual([
+         { name: "secret-ann" },
+         { name: "secret-bo" },
+      ]);
    });
 
    it("serves a plain query on every stored source", async () => {
