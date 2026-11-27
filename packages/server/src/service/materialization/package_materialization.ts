@@ -2413,8 +2413,37 @@ export class PackageMaterialization {
 
    servedCopyWarnings(): ApiPackageWarning[] {
       const materialized = this.plan.materializePlans;
-      return warnings.servedCopyWarnings(this.owner.models(), (sourceID) =>
-         Object.hasOwn(materialized, sourceID),
+      const buildPlan = this.plan.buildPlan;
+      const planned = buildPlan?.sources ?? {};
+      // Whether the author wrote `storage=` on a source, by sourceID:
+      // undefined for one this package plans no table of.
+      const writes = (sourceID: string): boolean | undefined =>
+         Object.hasOwn(materialized, sourceID)
+            ? materialized[sourceID].persist.storage !== undefined
+            : Object.hasOwn(planned, sourceID)
+              ? planned[sourceID].annotationFields?.storage !== undefined
+              : undefined;
+      // Any source the package stores: a `#(materialize)` one, or a
+      // `#@ persist` one written by its author (not a rollup or a generated
+      // build source, whose `storage=` the planner wrote). With no plan yet,
+      // nothing says the destination was placed, so it is taken as written.
+      const anyWrites = () =>
+         !buildPlan ||
+         Object.values(materialized).some(
+            (m) => m.persist.storage !== undefined,
+         ) ||
+         Object.values(planned).some(
+            (s) =>
+               (s.origin ?? "persist") === "persist" &&
+               s.annotationFields?.storage !== undefined,
+         );
+      return warnings.servedCopyWarnings(
+         this.owner.models(),
+         (sourceID) => Object.hasOwn(materialized, sourceID),
+         (problem) =>
+            (problem.storedSourceID !== undefined
+               ? writes(problem.storedSourceID)
+               : undefined) ?? anyWrites(),
       );
    }
 

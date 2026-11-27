@@ -293,6 +293,8 @@ describe("R4: an inlined hidden join_many (known limitation 24)", () => {
       // live, as for a public join_many: its own copy would read the join.
       expect(await fixture.servedCopyProblems()).toEqual([
          {
+            // The stored source declaring the join, for the warning's advice.
+            storedSourceID: expect.stringMatching(/^ext_many@/),
             sourceName: "ext_many",
             reason: "cross_connection_join",
             join: "segments",
