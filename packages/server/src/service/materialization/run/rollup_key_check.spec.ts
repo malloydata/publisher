@@ -62,6 +62,8 @@ const SEED = [
    "CREATE OR REPLACE TABLE crew_src AS SELECT * FROM (VALUES (1, 3), (3, 2), (5, 4)) AS t(flight_id, size)",
    "CREATE OR REPLACE TABLE flights_src AS SELECT * FROM (VALUES (1, 'AA'), (2, 'AA'), (3, 'BB')) AS t(id, carrier)",
    "CREATE OR REPLACE TABLE segs_src AS SELECT * FROM (VALUES (10, 1, 2.0), (11, 1, 3.0), (12, 3, 4.0)) AS t(seg_id, flight_id, miles)",
+   "CREATE OR REPLACE TABLE accounts_src AS SELECT * FROM (VALUES (1, 'EU', true), (2, 'EU', true), (3, 'NA', true)) AS t(account_id, region, active)",
+   "CREATE OR REPLACE TABLE subs_src AS SELECT * FROM (VALUES (10, 1, DATE '2026-01-01', 100.0), (11, 2, DATE '2026-02-01', 50.0)) AS t(sub_id, account_id, period, amount)",
 ];
 
 const CREW = `source: crew is duckdb.table('crew_src') extend {
@@ -99,7 +101,7 @@ source: flights is duckdb.table('flights_src') extend {
  */
 function contractCheck(
    entry: ManifestEntry | undefined,
-   level: "rollup" | "parent" | "stored",
+   level: "rollup" | "parent" | "stored" | "grain_join",
    subject: string,
    keyColumn: string,
 ): { keyColumn: string; unique: boolean } | undefined {
@@ -198,7 +200,37 @@ async function scenario(model: string) {
            )
          : undefined;
    };
-   return { duckdb, compiled, rollup, address, run, record, parentRecord };
+   /** The grain join key check of `join` its table's contract records. */
+   const grainJoinRecord = (r: Run, join: string, keyColumn: string) =>
+      contractCheck(r.entries[address], "grain_join", join, keyColumn);
+   return {
+      duckdb,
+      compiled,
+      rollup,
+      address,
+      run,
+      record,
+      parentRecord,
+      grainJoinRecord,
+   };
+}
+
+/** #2048's repro: `subs`' rollup grain reads `account.region` through a join_one, `accounts` by `body`. */
+function grainJoinModel(
+   accounts = "",
+   join = "join_one: account is accounts with account_id",
+) {
+   return `source: accounts is duckdb.table('accounts_src') extend {
+  primary_key: account_id${accounts}
+}
+source: subs is duckdb.table('subs_src') extend {
+  primary_key: sub_id
+  ${join}
+  dimension: period_month is period.month
+  #(rollup) grain=["account.region", "period_month"]
+  measure: mrr is amount.sum()
+}
+`;
 }
 
 describe("the rollup key check, on a build", () => {
@@ -251,6 +283,139 @@ describe("the rollup key check, on a build", () => {
          const first = await s.run(true);
          expect(Object.keys(first.entries)).toContain(s.address);
          expect(s.record(first)).toBeUndefined();
+      },
+      { timeout: 60000 },
+   );
+});
+
+describe("the grain join key check, on a build (#2048, option A)", () => {
+   it("is planned for each join_one the grain reads, keyed on one column of a named source", async () => {
+      const s = await scenario(grainJoinModel());
+      expect(
+         s.rollup?.grainJoinKeyChecks?.map(({ join, keyColumn }) => ({
+            join,
+            keyColumn,
+         })),
+      ).toEqual([{ join: "account", keyColumn: "account_id" }]);
+      expect(s.rollup?.grainJoinKeyChecks?.[0]?.sql).toMatch(/HAVING/i);
+      // An inline extend is no source a query can name: no check, and a
+      // query that reads nothing through the join answers live.
+      const inline = await scenario(
+         grainJoinModel(
+            "",
+            "join_one: account is accounts extend { where: active } with account_id",
+         ),
+      );
+      expect(inline.rollup?.joinOneGrain).toBeDefined();
+      expect(inline.rollup?.grainJoinKeyChecks).toBeUndefined();
+   });
+
+   it("is not planned for a grain whose joined field reads a join of the joined source", async () => {
+      // `owner_region` reads `accounts`' own join_one `owner`: the build joins
+      // past `account`, which a check of `account_id` alone does not cover.
+      const s =
+         await scenario(`source: owners is duckdb.sql("select 100 as owner_id, 'X' as oregion") extend {
+  primary_key: owner_id
+}
+source: accounts is duckdb.table('accounts_src') extend {
+  primary_key: account_id
+  dimension: owner_id is 100
+  join_one: owner is owners with owner_id
+  dimension: owner_region is owner.oregion
+}
+source: subs is duckdb.table('subs_src') extend {
+  primary_key: sub_id
+  join_one: account is accounts with account_id
+  dimension:
+    period_month is period.month
+    owner_r is account.owner_region
+  #(rollup) grain=["account.owner_region", "period_month"]
+  measure: mrr is amount.sum()
+  #(rollup) grain=["owner_r", "period_month"]
+  measure: n is count()
+}
+`);
+      const plans = Object.values(
+         rollupPlansIn(s.compiled) ?? {},
+      ) as RollupVariantPlan[];
+      expect(plans).toHaveLength(2);
+      for (const plan of plans) {
+         expect(plan.joinOneGrain).toEqual([
+            expect.objectContaining({ join: "account", uncovered: true }),
+         ]);
+         expect(plan.grainJoinKeyChecks).toBeUndefined();
+      }
+   });
+
+   it(
+      "records unique, carries it with the table, and checks again on a rebuild",
+      async () => {
+         const s = await scenario(grainJoinModel());
+         const first = await s.run(true);
+         expect(s.grainJoinRecord(first, "account", "account_id")).toEqual({
+            keyColumn: "account_id",
+            unique: true,
+         });
+         // Carried with the table, unchanged.
+         const second = await s.run(false);
+         expect(s.grainJoinRecord(second, "account", "account_id")).toEqual(
+            s.grainJoinRecord(first, "account", "account_id"),
+         );
+         // A repeat in the joined source reaches the verdict at the rebuild,
+         // the table its partials inflate; a NULL key is not one.
+         await s.duckdb.runSQL(
+            "INSERT INTO accounts_src VALUES (NULL, 'EU', true), (NULL, 'NA', true)",
+         );
+         expect(
+            s.grainJoinRecord(await s.run(true), "account", "account_id")
+               ?.unique,
+         ).toBe(true);
+         await s.duckdb.runSQL(
+            "INSERT INTO accounts_src VALUES (1, 'EU', true)",
+         );
+         const third = await s.run(false);
+         expect(s.grainJoinRecord(third, "account", "account_id")?.unique).toBe(
+            true,
+         );
+         const fourth = await s.run(true);
+         expect(
+            s.grainJoinRecord(fourth, "account", "account_id")?.unique,
+         ).toBe(false);
+         expect(
+            s.grainJoinRecord(await s.run(false), "account", "account_id")
+               ?.unique,
+         ).toBe(false);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "reads the joined source as a query of it does, its own where: included",
+      async () => {
+         const s = await scenario(grainJoinModel("\n  where: active"));
+         await s.duckdb.runSQL(
+            "INSERT INTO accounts_src VALUES (1, 'EU', false)",
+         );
+         const first = await s.run(true);
+         expect(s.grainJoinRecord(first, "account", "account_id")?.unique).toBe(
+            true,
+         );
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "records nothing when the check cannot run, and never fails the build",
+      async () => {
+         const s = await scenario(grainJoinModel());
+         for (const check of s.rollup?.grainJoinKeyChecks ?? []) {
+            check.sql = "SELECT * FROM nowhere";
+         }
+         const first = await s.run(true);
+         expect(Object.keys(first.entries)).toContain(s.address);
+         expect(
+            s.grainJoinRecord(first, "account", "account_id"),
+         ).toBeUndefined();
       },
       { timeout: 60000 },
    );
@@ -1071,6 +1236,53 @@ describe("a key check, bound for serving", () => {
       ).toEqual(["crew"]);
    });
 
+   it("warns, under the same code, of a join_one the grain reads whose key the build found repeated", () => {
+      const materialization = new PackageMaterialization({
+         models: () => new Map(),
+         packageName: () => "pkg",
+         packagePath: () => "/nowhere",
+      } as unknown as PackageMaterializationOwner);
+      const rollup = (id: string) => ({
+         name: `subs__rollup_${id}`,
+         sourceEntityId: id,
+         modelPath: "m.malloy",
+         preaggregate: {
+            baseSourceName: "subs",
+            grainDimensions: ["account.region", "period_month"],
+            measures: ["mrr"],
+         },
+      });
+      materialization.plan.buildPlan = {
+         sources: { "r1@m": rollup("a"), "r2@m": rollup("b") },
+      } as never;
+      const grainJoin = (unique: boolean) => ({
+         ...contractFor(),
+         keys: {
+            [contractKeyName("grain_join", "account", "account_id")]: {
+               unique,
+               level: "grain_join",
+            },
+         },
+      });
+      materialization.bind({
+         databaseAsGiven: true,
+         database: {
+            a: { tableName: "r_t", contract: grainJoin(false) },
+            b: { tableName: "s_t", contract: grainJoin(true) },
+         },
+      });
+      const warnings = materialization.repeatedJoinOneKeyWarnings();
+      expect(warnings.map((w) => [w.subject, w.code, w.model])).toEqual([
+         ["subs", "rollup-join-one-key-repeated", "m.malloy"],
+      ]);
+      expect(warnings[0].message).toContain(
+         "joins `account` on `account_id`, which the joined source holds more than once",
+      );
+      expect(warnings[0].message).toContain(
+         "Queries that read nothing through `account` are answered live",
+      );
+   });
+
    it("does not warn of a join_one key for a rollup whose build ran only query source key checks", () => {
       const materialization = declaring({
          flights: { sourceID: "flights@m", primaryKey: "id" },
@@ -1167,6 +1379,22 @@ describe("a bind's key checks, read only off the table's contract", () => {
             unique: false,
             parentKeys: { "flights@m": false },
             parentKeyColumns: { "flights@m": "id" },
+         },
+      },
+      {
+         name: "a grain join key check binds by its join and key, a check that could not run as not passed",
+         table: "a",
+         entry: {
+            contract: contract({
+               "grain_join:account.account_id": true,
+               "grain_join:owner.user_id": "unverified",
+            }),
+         },
+         bound: {
+            grainJoinKeys: {
+               "account.account_id": true,
+               "owner.user_id": false,
+            },
          },
       },
       {

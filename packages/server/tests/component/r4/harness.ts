@@ -39,6 +39,7 @@ import { expect, it } from "bun:test";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
 import { assertInlinedJoinsUnique } from "../../../src/service/materialization/run/inline_uniqueness";
 import {
+   compileGrainJoinKeyChecks,
    compileParentKeyChecks,
    parentKeyCheckCompiler,
    tryCompileRollupCompanion,
@@ -51,6 +52,7 @@ import {
    storedKeyChecksOf,
 } from "../../../src/service/materialization/plan/rollup_plan";
 import { SourceMap } from "../../../src/service/materialization/text/source_map";
+import type { RollupVariantPlan } from "../../../src/service/materialization/domain/table_plans";
 import {
    pairLeafKeyChecksOf,
    runKeyCheck,
@@ -706,7 +708,48 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             compile: parentKeyCheckCompiler(materializer),
          })),
       );
+      // The grain join key checks, as a run's plan compiles them: over the
+      // joined source by its name in the author's model. No source here is
+      // stored upstream of a rollup's join.
+      const authorMap = SourceMap.of(authorDef);
+      await compileGrainJoinKeyChecks(
+         rollups.generated.plans,
+         (sourceID) => authorMap.joinsOf(sourceID),
+         (sourceID) => {
+            const node = authorMap.node(sourceID);
+            if (node?.name === undefined) return undefined;
+            return {
+               name: node.name,
+               connectionName: "duckdb",
+               reads: () => [sourceID],
+               compile: parentKeyCheckCompiler(materializer),
+            };
+         },
+         new Set(),
+      );
    }
+   // A rollup's grain join key checks run once its table is built, as an
+   // auto-run runs them (`checkRollupKeys`), by `<join>.<keyColumn>`.
+   const grainJoinKeysOf = async (
+      plan: RollupVariantPlan | undefined,
+   ): Promise<Record<string, boolean> | undefined> => {
+      const checks = scenario.rollupKeyChecks ?? true;
+      if (checks === false || !plan?.grainJoinKeyChecks?.length) {
+         return undefined;
+      }
+      const out: Record<string, boolean> = {};
+      for (const check of plan.grainJoinKeyChecks) {
+         const record =
+            checks === "unique"
+               ? { unique: true }
+               : await runKeyCheck(
+                    check,
+                    connections.get(check.connectionName ?? "duckdb") ?? duckdb,
+                 );
+         if (record) out[`${check.join}.${check.keyColumn}`] = record.unique;
+      }
+      return out;
+   };
    const rollupPlanned: [
       string,
       {
@@ -777,6 +820,13 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                ...databaseEntries[target.buildId].keyUniqueness,
                parentKeys,
                parentKeyColumns,
+            };
+         }
+         const grainJoinKeys = await grainJoinKeysOf(plan);
+         if (grainJoinKeys) {
+            databaseEntries[target.buildId].keyUniqueness = {
+               ...databaseEntries[target.buildId].keyUniqueness,
+               grainJoinKeys,
             };
          }
          rollupPlanned.push([
@@ -1296,6 +1346,15 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                unique: record.unique,
             };
          }
+      }
+      const grainJoinKeys = rollupOrigin.has(source.sourceID)
+         ? await grainJoinKeysOf(rollupPlanByName.get(source.name))
+         : undefined;
+      if (grainJoinKeys) {
+         const entry = entries[`h${i}`] as ManifestEntry & {
+            keyUniqueness?: KeyUniqueness;
+         };
+         entry.keyUniqueness = { ...entry.keyUniqueness, grainJoinKeys };
       }
       entryBySourceID.set(source.sourceID, entries[`h${i}`]);
    }
