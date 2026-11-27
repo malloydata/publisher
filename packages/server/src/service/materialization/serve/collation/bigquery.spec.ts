@@ -191,6 +191,7 @@ source: joined is bq.table('proj.ds.plain_t') extend {
 }
 source: authored is bq.sql("SELECT 1 AS id, 'a' AS region FROM proj.ds.plain_t")
 source: elsewhere is bq.sql("SELECT id, region FROM \`other-project.ds.t\`")
+source: wild is bq.table('x.proj.ds.plain_t')
 source: plain_sql is plain extend {
   dimension: r is sql_string("UPPER(\${region})")
 }
@@ -689,7 +690,7 @@ describe("a BigQuery storage= build's live string comparison, for its contract",
       expect(
          (
             await buildBinary(
-               { location: "US", projects: { proj: "fail" } },
+               { location: "US", datasets: { "proj.ds": "fail" } },
                "plain",
             )
          ).binary,
@@ -702,6 +703,223 @@ describe("a BigQuery storage= build's live string comparison, for its contract",
             )
          ).binary,
       ).toBe(false);
+   });
+
+   it("reads only the datasets a .table() build reads, never the project-wide region views, so a dataset's READER proves it", async () => {
+      // The project-wide views are denied, as to a dataset-scoped account.
+      const denied = { location: "US", projects: { proj: "fail" as const } };
+      const plain = await buildBinary(denied, "plain");
+      expect(plain.binary).toBe(true);
+      expect(plain.sent).toHaveLength(1);
+      expect(plain.sent[0]).toContain("`proj`.`ds`.INFORMATION_SCHEMA.TABLES");
+      expect(plain.sent.join("\n")).not.toContain("region-");
+      // A dataset of the job's own project, read in that project.
+      const other = await buildBinary(denied, "other");
+      expect(other.binary).toBe(true);
+      expect(other.sent).toHaveLength(1);
+      expect(other.sent[0]).toContain("FROM `ds2`.INFORMATION_SCHEMA.TABLES");
+   });
+
+   it("reads an .sql() build's projects region-wide: its tables are not known up front", async () => {
+      const authored = await buildBinary({ location: "US" }, "authored");
+      expect(authored.binary).toBe(true);
+      expect(authored.sent.join("\n")).toContain(
+         "`proj`.`region-us`.INFORMATION_SCHEMA",
+      );
+      expect(
+         (
+            await buildBinary(
+               { location: "US", projects: { proj: "fail" } },
+               "authored",
+            )
+         ).binary,
+      ).toBe(false);
+   });
+});
+
+/**
+ * Each reason a build's catalog read answers not binary, told once with the
+ * project, location, dataset and table it read, and never a driver's text
+ * (the stub's failures say "Access Denied", which nothing told carries).
+ */
+describe("a BigQuery storage= build's unproved read, told why", () => {
+   async function unread(
+      catalog: Catalog,
+      name: string,
+      options: {
+         sql?: (sql: string) => string;
+         connectionName?: string;
+         noProject?: true;
+         datasetReadLimit?: number;
+      } = {},
+   ): Promise<{ binary: boolean; told: Record<string, unknown>[] }> {
+      const { connection } = stubBigQuery(catalog);
+      const model = new SingleConnectionRuntime({ connection }).loadModel(
+         MODEL,
+      );
+      const { sql } = await model
+         .loadQuery(`run: ${name} -> { select: * }`)
+         .getPreparedResult();
+      const def = (
+         (await model.getModel()) as unknown as {
+            _modelDef: { contents: Record<string, unknown> };
+         }
+      )._modelDef.contents[name];
+      if (options.noProject) {
+         Object.assign(connection as object, {
+            projectId: "",
+            billingProjectId: "",
+         });
+      }
+      const told: Record<string, unknown>[] = [];
+      const binary = await bigqueryBuildCompareBinary({
+         connection,
+         source: {
+            name,
+            connectionName: options.connectionName ?? "bq",
+            _sourceDef: def,
+         } as never,
+         sql: options.sql ? options.sql(sql) : sql,
+         onUnread: (unread) => told.push({ ...unread }),
+         ...(options.datasetReadLimit !== undefined
+            ? { datasetReadLimit: options.datasetReadLimit }
+            : {}),
+      });
+      for (const t of told) {
+         expect(JSON.stringify(t)).not.toContain("Access Denied");
+      }
+      return { binary, told };
+   }
+
+   const CASES: {
+      reason: string;
+      catalog: Catalog;
+      name: string;
+      options?: Parameters<typeof unread>[2];
+      expected: Record<string, unknown>;
+   }[] = [
+      {
+         reason: "collate_in_sql",
+         catalog: { location: "US" },
+         name: "plain",
+         options: { sql: (sql) => `${sql} -- COLLATE` },
+         expected: { project: "proj" },
+      },
+      {
+         reason: "no_job_project",
+         catalog: { location: "US" },
+         name: "plain",
+         options: { noProject: true },
+         expected: {},
+      },
+      {
+         reason: "table_on_other_connection",
+         catalog: { location: "US" },
+         name: "plain",
+         options: { connectionName: "other_bq" },
+         expected: { project: "proj" },
+      },
+      {
+         reason: "table_unplaceable",
+         catalog: { location: "US" },
+         name: "wild",
+         expected: { project: "proj" },
+      },
+      {
+         reason: "table_types_unread",
+         catalog: { location: "US", projects: { proj: "fail" } },
+         name: "plain",
+         options: { datasetReadLimit: 0 },
+         expected: { project: "proj" },
+      },
+      {
+         reason: "table_not_listed",
+         catalog: { location: "US", unseen: ["ds.plain_t"] },
+         name: "plain",
+         options: { datasetReadLimit: 0 },
+         expected: { project: "proj", dataset: "ds", table: "plain_t" },
+      },
+      {
+         reason: "dataset_unread",
+         catalog: { location: "US", datasets: { "proj.ds": "fail" } },
+         name: "plain",
+         expected: { project: "proj", dataset: "ds", table: "plain_t" },
+      },
+      {
+         reason: "project_unread",
+         catalog: { location: "US", projects: { proj: "fail" } },
+         name: "authored",
+         expected: { project: "proj" },
+      },
+      {
+         reason: "project_collated",
+         catalog: { location: "US", projects: { proj: ["ds"] } },
+         name: "authored",
+         expected: { project: "proj" },
+      },
+      {
+         reason: "dataset_table_not_listed",
+         catalog: {
+            location: "US",
+            projects: { proj: ["ds"] },
+            datasets: { "proj.ds": CI_DS },
+            unseenInDataset: ["ds.ci_t"],
+         },
+         name: "ci",
+         expected: { project: "proj", dataset: "ds", table: "ci_t" },
+      },
+      {
+         reason: "read_failed",
+         catalog: {
+            location: "US",
+            projects: { proj: ["ds"] },
+            datasets: { "proj.ds": "fail" },
+         },
+         name: "ci",
+         options: { datasetReadLimit: 0 },
+         expected: { project: "proj", dataset: "ds", table: "ci_t" },
+      },
+      {
+         reason: "project_unread",
+         catalog: {
+            location: "US",
+            projects: { proj: "fail" },
+            types: { "ds.plain_t": "VIEW" },
+         },
+         name: "plain",
+         expected: {
+            project: "proj",
+            dataset: "ds",
+            table: "plain_t",
+            tableType: "VIEW",
+         },
+      },
+   ];
+
+   for (const c of CASES) {
+      it(`answers not binary and tells ${c.reason}`, async () => {
+         const { binary, told } = await unread(c.catalog, c.name, c.options);
+         expect(binary).toBe(false);
+         expect(told).toEqual([
+            { reason: c.reason, location: "us", ...c.expected },
+         ]);
+      });
+   }
+
+   it("tells nothing when the read proves the strings, or proves them collated", async () => {
+      expect(await unread({ location: "US" }, "plain")).toEqual({
+         binary: true,
+         told: [],
+      });
+      const collated = await unread(
+         {
+            location: "US",
+            projects: { proj: ["ds"] },
+            datasets: { "proj.ds": CI_DS },
+         },
+         "ci",
+      );
+      expect(collated).toEqual({ binary: false, told: [] });
    });
 });
 
