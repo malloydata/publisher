@@ -59,6 +59,7 @@ import {
    recordedCatalogSettings,
    recordedSchemaPaths,
    ScopeContainmentError,
+   recordManagedScope,
    storageSecretScope,
 } from "./ducklake_catalog";
 import { catalogKey, reconcileDataInlining } from "./ducklake_inlining";
@@ -848,6 +849,10 @@ async function secureCatalogStorage(
       for (const root of roots ?? []) {
          if (root) allowForLockdown(connection, root);
       }
+      const allowed = (roots ?? []).filter((r): r is string => !!r);
+      if (managedView && allowed.length > 0) {
+         recordManagedScope(connection, dbName, allowed);
+      }
    }
    if (storage) {
       // The storage secret, scoped to the catalog's prefix. After the ATTACH,
@@ -876,6 +881,7 @@ async function secureCatalogStorage(
          await attachCloudStorage(connection, storage, options.origin, scope);
          // The lock allows exactly what the secret is scoped to.
          for (const prefix of scope) allowForLockdown(connection, prefix);
+         if (managedView) recordManagedScope(connection, dbName, scope);
       } catch (error) {
          // Once the instance is locked the catalog is the locker's, attached
          // and scoped, and nothing could ATTACH it again: detaching it would

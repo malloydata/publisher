@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { managedScopeOf } from "./dialects/ducklake_catalog";
 import { isUnderStorageLocation } from "../driver_errors";
 import type { GivenValue } from "@malloydata/malloy";
 import { recordAnnotationFindings } from "../materialization_metrics";
@@ -1346,6 +1347,16 @@ export class Environment {
 
    public async getMalloyConnection(connectionName: string) {
       return this.malloyConfig.malloyConfig.connections.lookupConnection(
+         connectionName,
+      );
+   }
+
+   /** The build port's `managedStorageScope` (build_upstreams.ts). */
+   public async managedStorageScope(
+      connectionName: string,
+   ): Promise<readonly string[] | undefined> {
+      return managedScopeOf(
+         await this.getMalloyConnection(connectionName),
          connectionName,
       );
    }
