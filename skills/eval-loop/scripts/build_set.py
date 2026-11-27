@@ -15,7 +15,9 @@ Two outputs:
     2. asked in a turn judged but left undecided,
     3. asked most often,
   until `--questions` are chosen. A turn whose `kind` is `build` (an edit
-  request, not a data question) is never chosen. A question the set already
+  request, not a data question) is never chosen, nor a question whose every
+  turn judging drew and left with no golden (a remark, a build request the
+  log did not mark). A question the set already
   holds is skipped. Each case goes to the `dev` split, tagged `production`
   and with why it was chosen.
   Its golden is the one production judging verified for one of its turns
@@ -63,8 +65,10 @@ def qid_for(q: str) -> str:
 
 
 def choose(turns: list[dict[str, str]], judgments: list[dict[str, str]],
-           held: set[str], n: int) -> list[dict[str, Any]]:
-    """Distinct questions in the order the docstring gives, at most n."""
+           held: set[str], n: int, unkeyable: set[str] = frozenset()) -> list[dict[str, Any]]:
+    """Distinct questions in the order the docstring gives, at most n. A
+    question all of whose turns judging drew and left with no golden is
+    dropped: judging already found nothing in it to answer."""
     verdict: dict[str, str] = {}
     for j in judgments:
         # A wrong verdict is never hidden by a later undecided one.
@@ -82,6 +86,7 @@ def choose(turns: list[dict[str, str]], judgments: list[dict[str, str]],
         v = verdict.get(t["turn_id"])
         g["wrong"] += v == "False"
         g["undecided"] += v == ""
+    groups = {k: g for k, g in groups.items() if not set(g["turns"]) <= unkeyable}
     for g in groups.values():
         g["why"] = WHY[0] if g["wrong"] else WHY[1] if g["undecided"] else WHY[2]
     order = sorted(groups.values(), key=lambda g: (WHY.index(g["why"]), -g["wrong"],
@@ -89,20 +94,32 @@ def choose(turns: list[dict[str, str]], judgments: list[dict[str, str]],
     return order[:n]
 
 
-def judged_keys(workdir: pathlib.Path) -> dict[str, tuple[str, dict[str, Any]]]:
-    """Turn id -> (judging set, verified golden), from every judging set."""
-    out: dict[str, tuple[str, dict[str, Any]]] = {}
+Key = tuple[str, dict[str, Any], pathlib.Path]
+
+
+def judged_keys(workdir: pathlib.Path) -> tuple[dict[str, Key], set[str]]:
+    """From every judging set: turn id -> (judging set, verified golden, its
+    gold/<qid>.json), and the turns judging drew but gave no golden (a
+    remark, a build request)."""
+    keys: dict[str, Key] = {}
+    seen: set[str] = set()
     for f in sorted((workdir / "judging").glob("*/cases.jsonl")):
         for line in f.read_text(encoding="utf-8").splitlines():
             c = json.loads(line) if line.strip() else {}
+            if not c.get("source"):
+                continue
+            seen.add(str(c["source"]))
             g = c.get("golden") or {}
-            if c.get("source") and g.get("status") == "verified":
-                out.setdefault(str(c["source"]), (f.parent.name, g))
-    return out
+            if g.get("status") == "verified":
+                keys.setdefault(str(c["source"]),
+                                (f.parent.name, g, f.parent / "gold" / f"{c.get('qid')}.json"))
+    return keys, seen - set(keys)
 
 
-def case(g: dict[str, Any], label: str,
-         keys: dict[str, tuple[str, dict[str, Any]]] | None = None) -> dict[str, Any]:
+def case(g: dict[str, Any], label: str, keys: dict[str, Key] | None = None,
+         set_dir: pathlib.Path | None = None) -> dict[str, Any]:
+    """The case, keyed from judging when it can be. Its derivation record
+    (gold/<qid>.json, what --refresh re-runs) is copied under the new qid."""
     c: dict[str, Any] = {
         "qid": qid_for(g["question"]), "question": g["question"], "split": "dev",
         "tags": ["production", g["why"].replace(", ", "-").replace(" ", "-")],
@@ -111,9 +128,15 @@ def case(g: dict[str, Any], label: str,
                          "lastAsked": g["last"], "turns": g["turns"][:5]}}
     keyed = next(((t, keys[t]) for t in g["turns"] if keys and t in keys), None)
     if keyed:
-        turn, (judging, golden) = keyed
+        turn, (judging, golden, gold) = keyed
         c["golden"] = golden
         c["sourceFields"]["keyFrom"] = f"judging:{judging}:{turn}"
+        if set_dir is not None and gold.is_file():
+            rec = json.loads(gold.read_text(encoding="utf-8"))
+            rec["qid"] = c["qid"]
+            out = set_dir / "gold" / f"{c['qid']}.json"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(rec, indent=1) + "\n", encoding="utf-8")
     return c
 
 
@@ -134,16 +157,22 @@ def main(argv: list[str] | None = None) -> int:
     turns = read(data / "prod_turns.csv")
     if not turns:
         raise SystemExit(f"No production turns in {data}. Fix: eval.py ingest --set {set_dir} --turns turns.jsonl")
-    chosen = choose(turns, read(data / "prod_judgments.csv"), held, a.questions)
-    keys = judged_keys(cfg.workdir())
-    new = [case(g, a.label, keys) for g in chosen]
+    keys, unkeyable = judged_keys(cfg.workdir())
+    chosen = choose(turns, read(data / "prod_judgments.csv"), held, a.questions, unkeyable)
+    by_question: dict[str, set[str]] = {}
+    for t in turns:
+        if (t.get("kind") or "") != "build" and normal(t.get("question", "")) not in held:
+            by_question.setdefault(normal(t.get("question", "")), set()).add(t["turn_id"])
+    dropped = sum(1 for ids in by_question.values() if ids <= unkeyable)
+    new = [case(g, a.label, keys, set_dir) for g in chosen]
     with cases_path.open("a", encoding="utf-8") as f:
         for c in new:
             f.write(json.dumps(c) + "\n")
     builds = sum(1 for t in turns if (t.get("kind") or "") == "build")
     print(f"cases: added {len(new)} to {cases_path}"
           + (f" ({', '.join(f'{sum(c['tags'][1] == w.replace(', ', '-').replace(' ', '-') for c in new)} {w}' for w in WHY)})" if new else "")
-          + f"; skipped {builds} build turns and {len(held)} questions the set holds")
+          + f"; skipped {builds} build turns, {len(held)} questions the set holds"
+          + f" and {dropped} judging found no question to key in")
 
     rows = [{"query": q["query_text"], "modelPath": q["model_path"], "package": q["package"]}
             for q in read(data / "prod_queries.csv")

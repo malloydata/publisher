@@ -84,6 +84,8 @@ class Main(unittest.TestCase):
         judging = root / "w" / "judging" / "prod-j1"
         judging.mkdir(parents=True)
         gold = {"kind": "scalar", "value": 7, "status": "verified"}
+        (judging / "gold").mkdir()
+        (judging / "gold" / "p-2.json").write_text(json.dumps({"qid": "p-2", "truthQuery": "run: t -> v"}))
         (judging / "cases.jsonl").write_text(
             json.dumps({"qid": "p-2", "question": "keyed", "source": "2", "golden": gold}) + "\n"
             + json.dumps({"qid": "p-3", "question": "Unverified", "source": "3",
@@ -94,10 +96,14 @@ class Main(unittest.TestCase):
                  (json.loads(l) for l in (s / "cases.jsonl").read_text().splitlines())}
         self.assertEqual(cases["keyed"]["golden"], gold)
         self.assertEqual(cases["keyed"]["sourceFields"]["keyFrom"], "judging:prod-j1:2")
-        self.assertNotIn("golden", cases["unverified"])
+        qid = cases["keyed"]["qid"]
+        self.assertEqual(json.loads((s / "gold" / f"{qid}.json").read_text()),
+                         {"qid": qid, "truthQuery": "run: t -> v"})
+        self.assertNotIn("unverified", cases)  # judging drew it and found nothing to key
         self.assertNotIn("golden", cases["never judged"])
-        self.assertIn("keys: 1 of 3 new cases", out.getvalue())
-        self.assertIn("for the 2 without one", out.getvalue())
+        self.assertIn("keys: 1 of 2 new cases", out.getvalue())
+        self.assertIn("for the 1 without one", out.getvalue())
+        self.assertIn("and 1 judging found no question to key in", out.getvalue())
 
 
 if __name__ == "__main__":
