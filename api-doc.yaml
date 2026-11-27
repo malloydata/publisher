@@ -5905,7 +5905,15 @@ components:
                 description: >-
                   A stable identifier for the finding's family, for a client that
                   acts on it rather than only showing it; absent for a family that
-                  has none yet. `deprecated-malloynb-notebook`: a `.malloynb`
+                  has none yet. `render-tag`: a render annotation the
+                  renderer cannot apply as written, malformed for its field
+                  (`error`) or inert where it sits (`warn`); one per finding,
+                  `model` its file and `subject` the query or view it sits on.
+                  `render-tag-check-failed`: a model whose render-tag check did
+                  not finish (it could not be read, `error`, or the validator
+                  failed, `warn`), so its render-tag findings are unknown
+                  rather than clean; reported by a package-scope compile,
+                  one per model. `deprecated-malloynb-notebook`: a `.malloynb`
                   notebook, the deprecated cell format (one per file, `model`
                   naming it). `malloynb-cell-refused`: a `.malloynb` code cell
                   whose `run:` statement the query route refuses for every
@@ -10462,7 +10470,8 @@ components:
             reload over every .malloy and .malloynb file, without swapping the
             result into the served package; with a source, importers compile
             against the replacement. It also reports the render-tag findings
-            (code "render-tag"), the dashboard, given and drill findings
+            (code "render-tag", or "render-tag-check-failed" for a model whose
+            check did not finish), the dashboard, given and drill findings
             (code "dashboard-lint") and each .malloynb code cell the query
             route would refuse (code "malloynb-cell-refused", at most 10 per
             notebook and 50 per package, with the rest named in

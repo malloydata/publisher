@@ -354,11 +354,11 @@ describe("compile_model, package scope: curation findings", () => {
          problems.filter(
             (p) =>
                p.model === "dashboards/hidden.malloy" &&
-               (p as { code?: string }).code === "render-tag",
+               (p as { code?: string }).code === "render-tag-check-failed",
          ),
       ).toEqual([
          {
-            code: "render-tag",
+            code: "render-tag-check-failed",
             severity: "error",
             model: "dashboards/hidden.malloy",
             message:
@@ -373,6 +373,37 @@ describe("compile_model, package scope: curation findings", () => {
             problems.filter((p) => p.model === "dashboards/tiles.malloy"),
          ),
       ).toEqual(SAVED_REFUSALS.slice(1));
+   });
+
+   it("says a model's render-tag findings are unknown when the validator throws", async () => {
+      await install("dashboards-convention");
+      const real = Model.prototype.validateRenderTags;
+      spies.push(
+         spyOn(Model.prototype, "validateRenderTags").mockImplementation(
+            async function (this: Model) {
+               if (this.getPath() === "orders.malloy") {
+                  throw new Error("simulated validator failure");
+               }
+               return real.call(this);
+            },
+         ),
+      );
+      const { problems } = await compilePackage("dashboards-convention");
+
+      expect(
+         problems.filter(
+            (p) => (p as { code?: string }).code === "render-tag-check-failed",
+         ),
+      ).toEqual([
+         {
+            code: "render-tag-check-failed",
+            severity: "warn",
+            model: "orders.malloy",
+            message:
+               "The render-tag check did not finish for this model, so its " +
+               "render-tag findings are unknown rather than clean.",
+         } as (typeof problems)[number],
+      ]);
    });
 
    /**

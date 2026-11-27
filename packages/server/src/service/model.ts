@@ -288,6 +288,22 @@ export interface RenderTagWarning {
    severity: "error" | "warn";
 }
 
+/**
+ * The `code` on each {@link RenderTagWarning} once it is a package warning or
+ * a compile problem. Stable: a client may branch on it, and the message may
+ * change. The name predates the package warning; a compile at package scope
+ * has always reported these under it.
+ */
+export const RENDER_TAG_CODE = "render-tag";
+
+/**
+ * The `code` on the finding that says a model's render-tag check did not
+ * finish (the model would not hydrate, or the validator threw), so its
+ * render-tag findings are unknown rather than clean. Named after
+ * `malloynb-cell-check-failed`, the other check that can fail to run.
+ */
+export const RENDER_TAG_CHECK_FAILED_CODE = "render-tag-check-failed";
+
 /** The one empty result {@link Model.preaggregateViolations} hands back, so its
  *  identity contract holds on the branch that never reaches the memo. */
 const NO_PREAGGREGATE_VIOLATIONS: readonly Readonly<PreaggregateViolation>[] =
