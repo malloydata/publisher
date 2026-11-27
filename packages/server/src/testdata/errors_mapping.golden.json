@@ -1346,7 +1346,7 @@
     "mcp": {
       "message": "Workflow not found",
       "suggestions": [
-        "This is not transient: the package serves no such workflow, skill set or file until its manifest or files change.",
+        "This is not transient: the package serves no such workflow, skill set or file until the package reloads with them fixed.",
         "Use a name from get_workflow's availableWorkflows, and read the package's warnings for why a declared workflow is refused."
       ],
       "logs": []
@@ -1380,7 +1380,7 @@
     "mcp": {
       "message": "Workflow 'w' is not served: a reason. Fix: correct it.",
       "suggestions": [
-        "This is not transient: the package serves no such workflow, skill set or file until its manifest or files change.",
+        "This is not transient: the package serves no such workflow, skill set or file until the package reloads with them fixed.",
         "Use a name from get_workflow's availableWorkflows, and read the package's warnings for why a declared workflow is refused."
       ],
       "reason": "WORKFLOW_NOT_SERVED",
@@ -1415,7 +1415,7 @@
     "mcp": {
       "message": "No workflow named 'w' is declared in package 'pkg'.",
       "suggestions": [
-        "This is not transient: the package serves no such workflow, skill set or file until its manifest or files change.",
+        "This is not transient: the package serves no such workflow, skill set or file until the package reloads with them fixed.",
         "Use a name from get_workflow's availableWorkflows, and read the package's warnings for why a declared workflow is refused."
       ],
       "reason": "WORKFLOW_NOT_DECLARED",

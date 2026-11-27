@@ -2190,7 +2190,7 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
          // A refusal, not a fault: the message says which workflow, set or file is not served.
          advice: "fixed",
          suggestions: [
-            "This is not transient: the package serves no such workflow, skill set or file until its manifest or files change.",
+            "This is not transient: the package serves no such workflow, skill set or file until the package reloads with them fixed.",
             "Use a name from get_workflow's availableWorkflows, and read the package's warnings for why a declared workflow is refused.",
          ],
       },
