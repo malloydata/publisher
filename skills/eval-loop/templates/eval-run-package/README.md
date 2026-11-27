@@ -152,9 +152,8 @@ curl -s .../api/v0/environments/<env>/packages/<pkg>/reports     # lists the rep
 `models` returns a 424 with the full compiler error when the Malloy is broken,
 which is the fastest way to see a compile failure. Reports are listed by
 `reports`, and a linear report is **not** in the `models` list. It still compiles
-as a model, so `models/notebooks/eval_run.malloy` shows its compile errors; only a
-legacy `.malloynb` returns `404 "<file> is a notebook"` there. To verify every
-tile, run each named query through `execute_query`.
+as a model, so `models/notebooks/eval_run.malloy` shows its compile errors. To verify
+every tile, run each named query through `execute_query`.
 
 Pass `--mcp_port` explicitly. It defaults to 4040 and any other local Publisher
 already holds it; the server logs `Port 4040 in use` and carries on without an MCP
