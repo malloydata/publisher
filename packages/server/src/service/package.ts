@@ -788,6 +788,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    ): Promise<ApiWorkflowSkillRead | { changed: true } | undefined> {
       const workflow = this.readableWorkflows(name).workflows.get(name);
       if (!workflow) return undefined;
+      // Taken before the read: a reload that lands during it must not give an old definition the new load's identity.
+      const source = this.workflowSource(workflow.definitionSha);
       const relative = workflowFilePath(relativeFilepath);
       const skillName = relative.split("/")[0]!;
       const skill = pickedSets(workflow, skillSet)
@@ -801,7 +803,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...("text" in read
             ? { file_contents: read.text }
             : { message: read.message }),
-         source: this.workflowSource(workflow.definitionSha),
+         source,
       };
    }
 

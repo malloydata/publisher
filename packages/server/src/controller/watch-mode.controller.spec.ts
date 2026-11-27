@@ -120,11 +120,17 @@ describe("live reload of what a package's workflows serve", () => {
       fs.rmSync(envDir, { recursive: true, force: true });
    });
 
-   /** A watcher over a real directory: the package names the environment is asked to recompile, and the files the controller then announced. */
-   async function watchPackage() {
+   /**
+    * A watcher over a real directory: the package names the environment is asked to recompile, and the files the controller then announced.
+    * `onReload` stands in for the package adopting a manifest on a reload: it may change the paths the package reports as watched.
+    */
+   async function watchPackage(
+      onReload: (watched: string[]) => void = () => undefined,
+   ) {
       envDir = fs.mkdtempSync(path.join(root, "env-"));
       fs.mkdirSync(path.join(envDir, "pkg", SET, "skill"), { recursive: true });
       fs.mkdirSync(path.join(envDir, "pkg", "scripts"), { recursive: true });
+      const watched = [SET, "wf/instructions.md"];
       const reloaded: string[] = [];
       const announced: string[] = [];
       const waiting = new Map<string, () => void>();
@@ -139,11 +145,14 @@ describe("live reload of what a package's workflows serve", () => {
          getLoadedPackages: () => [
             {
                getPackageName: () => "pkg",
-               workflowPaths: () => [SET, "wf/instructions.md"],
+               workflowPaths: () => watched,
             },
          ],
          getPackage: async (name: string, reload: boolean) => {
-            if (reload) reloaded.push(name);
+            if (reload) {
+               reloaded.push(name);
+               onReload(watched);
+            }
          },
       };
       controller = new WatchModeController(
@@ -163,6 +172,16 @@ describe("live reload of what a package's workflows serve", () => {
       );
       return { reloaded, announced, announcedFile };
    }
+
+   /** A model save always recompiles, so its announcement closes the window in which an earlier file save would have shown up. */
+   const sentinelSaved = async (
+      announcedFile: (file: string) => Promise<void>,
+   ) => {
+      const sentinel = path.join(envDir, "pkg", "scripts", "sentinel.malloy");
+      fs.writeFileSync(sentinel, "source: s is duckdb.sql('select 1')");
+      await announcedFile(sentinel);
+      return sentinel;
+   };
 
    it("recompiles the package for a script saved under a skill set, whatever its extension, and not for one outside any set", async () => {
       const { reloaded, announced, announcedFile } = await watchPackage();
@@ -189,6 +208,51 @@ describe("live reload of what a package's workflows serve", () => {
       await announcedFile(atSet);
       expect(announced).toEqual([manifest, atSet]);
       expect(reloaded).toEqual(["pkg", "pkg"]);
+   }, 10_000);
+
+   it("recompiles for a file in a skill set the manifest declares after the watcher started, from the reload that adopted the manifest", async () => {
+      const NEW = "sets/declared-later";
+      let declared = false;
+      const { reloaded, announced, announcedFile } = await watchPackage(
+         (watched) => {
+            if (declared && !watched.includes(NEW)) watched.push(NEW);
+         },
+      );
+      const skill = path.join(envDir, "pkg", NEW, "skill");
+      fs.mkdirSync(skill, { recursive: true });
+      // No manifest lists the set yet, so a save under it is no skill's.
+      fs.writeFileSync(path.join(skill, "early.py"), "print(0)");
+      const sentinel = await sentinelSaved(announcedFile);
+      expect(announced).toEqual([sentinel]);
+
+      declared = true;
+      const manifest = path.join(envDir, "pkg", "publisher.json");
+      fs.writeFileSync(manifest, "{}");
+      await announcedFile(manifest);
+
+      const late = path.join(skill, "late.py");
+      fs.writeFileSync(late, "print(1)");
+      await announcedFile(late);
+      expect(announced).toEqual([sentinel, manifest, late]);
+      expect(reloaded).toEqual(["pkg", "pkg", "pkg"]);
+   }, 10_000);
+
+   it("reads a skill's .skillignore when a file is saved, so one added after the watcher started stops the recompile for what it matches", async () => {
+      const { reloaded, announced, announcedFile } = await watchPackage();
+      const skill = path.join(envDir, "pkg", SET, "skill");
+      const log = path.join(skill, "debug.log");
+      fs.writeFileSync(log, "one");
+      await announcedFile(log);
+
+      const skillignore = path.join(skill, ".skillignore");
+      fs.writeFileSync(skillignore, "*.log\n");
+      await announcedFile(skillignore);
+
+      // The same file, saved again, is now the skill's to ignore.
+      fs.writeFileSync(log, "two");
+      const sentinel = await sentinelSaved(announcedFile);
+      expect(announced).toEqual([log, skillignore, sentinel]);
+      expect(reloaded).toEqual(["pkg", "pkg", "pkg"]);
    }, 10_000);
 
    it("leaves a file the skill never serves alone, and recompiles for the .skillignore that decides it and for the instructions", async () => {

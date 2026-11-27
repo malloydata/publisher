@@ -1300,16 +1300,7 @@ function readInstructions(
 const emitSkillMd = (name: string, description: string, body: string) =>
    `---\nname: ${JSON.stringify(name)}\ndescription: ${JSON.stringify(description)}\n---\n\n${body}\n`;
 
-/**
- * A listed file of the skill at `skillRel`, re-checked on every request and
- * served only when its bytes still hash to `sha`: files can change after load,
- * and a watch-mode edit does not reload. The sha is also the guard against a
- * parent directory swapped for a link, which no path check looks through. The
- * file is opened once and read through that descriptor, never more than its
- * stat size plus one byte, so a FIFO swapped in or a file that grew is refused
- * and never waited on. A binary file answers `{binary: true}`, never its bytes.
- * Undefined (a 404) when it is no longer servable.
- */
+/** A listed file of the skill at `skillRel`, served only when its bytes still hash to `sha`, which is also the guard against a parent directory swapped for a link, since no path check looks through one. */
 async function readListedFile(
    packagePath: string,
    skillRel: string,
@@ -1318,11 +1309,12 @@ async function readListedFile(
 ): Promise<{ text: string } | { binary: true } | undefined> {
    let handle: fs.promises.FileHandle | undefined;
    try {
-      // Windows defines neither flag: the regular-file and size checks below are the guard there.
+      // Windows defines none of these flags: the regular-file and size checks below are the guard there.
       const flags =
          fs.constants.O_RDONLY |
          (fs.constants.O_NOFOLLOW ?? 0) |
-         (fs.constants.O_NONBLOCK ?? 0);
+         (fs.constants.O_NONBLOCK ?? 0) |
+         (fs.constants.O_NOCTTY ?? 0);
       handle = await fs.promises.open(
          path.join(packagePath, skillRel, relative),
          flags,
@@ -1343,7 +1335,7 @@ async function readListedFile(
          if (bytesRead === 0) break;
          length += bytesRead;
       }
-      // One byte past the size means the file grew after the stat.
+      // A length other than the stat size means the file changed after the stat.
       if (length !== stat.size) return undefined;
       const read = bytes.subarray(0, length);
       if (sha256(read) !== sha) return undefined;

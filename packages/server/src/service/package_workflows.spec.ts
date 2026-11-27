@@ -1167,6 +1167,92 @@ describe("package workflows", () => {
          ).toEqual({ changed: true });
       });
 
+      /** `fs.promises.open` held at the first open of a file ending `suffix`, which `reached` announces; `release` lets it through. */
+      const holdOpen = (suffix: string) => {
+         const real = fsSync.promises.open;
+         let release!: () => void;
+         const held = new Promise<void>((resolve) => (release = resolve));
+         let reach!: () => void;
+         const reached = new Promise<void>((resolve) => (reach = resolve));
+         const spy = spyOn(fsSync.promises, "open").mockImplementation(((
+            file: Parameters<typeof real>[0],
+            ...rest: unknown[]
+         ) => {
+            const open = () =>
+               (real as (...args: unknown[]) => Promise<unknown>)(
+                  file,
+                  ...rest,
+               );
+            if (!String(file).endsWith(suffix)) return open();
+            reach();
+            return held.then(open);
+         }) as never);
+         return { reached, release, restore: () => spy.mockRestore() };
+      };
+
+      it("answers a read with the identity it began under when a reload lands while it is pending", async () => {
+         write(`${ASSETS}/index.html`, "<h1>hi</h1>");
+         const pkg = await load();
+         const began = pkg.getWorkflow("analyst")!.source;
+         const hold = holdOpen("index.html");
+         try {
+            const pending = pkg.getWorkflowSkillFile(
+               "analyst",
+               `${LISTED}/index.html`,
+            );
+            await hold.reached;
+            write(
+               "model.malloy",
+               `source: t is duckdb.sql("select 2 as id")\n`,
+            );
+            await pkg.reloadAllModels({});
+            expect(pkg.getSourceContentSha()).not.toBe(began.sourceContentSha);
+            hold.release();
+            expect(await pending).toMatchObject({
+               file_contents: "<h1>hi</h1>",
+               source: began,
+            });
+         } finally {
+            hold.release();
+            hold.restore();
+         }
+      });
+
+      it.skipIf(process.platform === "win32")(
+         "opens a listed file without following a link, waiting on it or letting it become the controlling terminal",
+         async () => {
+            write(`${ASSETS}/index.html`, "<h1>hi</h1>");
+            const pkg = await load();
+            const real = fsSync.promises.open;
+            const flags: number[] = [];
+            const spy = spyOn(fsSync.promises, "open").mockImplementation(((
+               file: Parameters<typeof real>[0],
+               flag: number,
+               ...rest: unknown[]
+            ) => {
+               if (String(file).endsWith("index.html")) flags.push(flag);
+               return (real as (...args: unknown[]) => Promise<unknown>)(
+                  file,
+                  flag,
+                  ...rest,
+               );
+            }) as never);
+            try {
+               await fileOf(pkg, "analyst", `${LISTED}/index.html`);
+            } finally {
+               spy.mockRestore();
+            }
+            expect(flags).toHaveLength(1);
+            for (const flag of [
+               fsSync.constants.O_NOFOLLOW,
+               fsSync.constants.O_NONBLOCK,
+               fsSync.constants.O_NOCTTY,
+            ]) {
+               expect(flags[0]! & flag).toBe(flag);
+            }
+         },
+      );
+
       it("keeps a skill named __proto__ and serves its asset", async () => {
          write(
             `${MAIN}/__proto__/SKILL.md`,
