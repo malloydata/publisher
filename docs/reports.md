@@ -941,7 +941,10 @@ that are otherwise silent: a control that never appears, a click that goes nowhe
   The warning leaves the source unnamed when the package gates anything with `#(authorize)`.
 
 - **Tags that did not parse**, on the report or on a `given:` declaration, and renderer tags the validator
-  rejects.
+  rejects (`render-tag`, one per finding, on every model in the package, not just reports: `error` for a
+  tag malformed for its field, `warn` for one that is inert where it sits). A package-scope compile reports
+  a model whose render-tag check did not finish as `render-tag-check-failed`, so an empty list for that
+  model means unknown, not clean.
 
 That is the shape of the list rather than the whole of it: the findings on the package page are the
 authoritative set. Findings carry a `severity`, but `warn` is the ordinary default, so read the text, not
