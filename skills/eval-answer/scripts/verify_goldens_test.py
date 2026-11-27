@@ -62,6 +62,16 @@ class RequiredIds(unittest.TestCase):
             MODEL)
         self.assertEqual(len(f), 1)
 
+    def test_a_dimension_of_a_named_source_may_be_an_undeclared_column(self):
+        # signup_date, retail_price: columns a source over a table exposes
+        # with no line naming them. A prompt, not a finding that blocks.
+        f = unknown_name_findings(
+            [case(required=["dimension:order_items:created_at"])], MODEL)
+        self.assertEqual(len(f), 1)
+        self.assertTrue(f[0].startswith("review q1:"), f[0])
+        self.assertFalse(unknown_name_findings(
+            [case(required=["measure:order_items:no_such"])], MODEL)[0].startswith("review"))
+
     def test_a_two_part_id_is_checked_on_its_name(self):
         self.assertEqual(unknown_name_findings([case(required=["measure:total_sales"])],
                                                MODEL), [])

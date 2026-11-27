@@ -1154,6 +1154,14 @@ def _id_named(entity_id: str, text: str) -> bool:
     return len(parts) > 1 and all(_named(p, text) for p in parts[1:])
 
 
+def _maybe_implicit(entity_id: str, text: str) -> bool:
+    """A dimension whose source this model names and whose own name is a plain
+    column name: possibly a column of the source's table that no line names."""
+    parts = (entity_id or "").split(":")
+    return (len(parts) == 3 and parts[0] == "dimension" and _named(parts[1], text)
+            and "." not in parts[2])
+
+
 def truth_isolation_findings(base: str, environment: str,
                              target_package: str | None) -> list[str]:
     """Refuse a "truth" server that also serves the package under test.
@@ -1334,6 +1342,15 @@ def unknown_name_findings(cases: list[dict[str, Any]], text: str) -> list[str]:
                            f"prefix, so it can never match a returned id "
                            f"whatever the model holds. Fix: "
                            f"measure:<source>:<name>, or dimension:/view:")
+            elif not _id_named(e, text) and _maybe_implicit(e, text):
+                # A source over a table exposes every column of it without
+                # naming one, so a grep cannot tell such a column from a typo.
+                # Blocking on it stopped every improve edit on a set whose keys
+                # name one. The source is this model's, so it is a prompt.
+                out.append(f"review {qid}: required entity {e} is not in the "
+                           f"model text, and its source is: it may be a column "
+                           f"the source exposes without declaring it. "
+                           f"check_findable.py settles it")
             elif not _id_named(e, text):
                 out.append(f"{qid}: required entity {e} does not appear in "
                            f"the model TEXT. Confirm with check_findable.py "

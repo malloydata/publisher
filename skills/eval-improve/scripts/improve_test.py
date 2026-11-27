@@ -564,7 +564,7 @@ class PreExisting(unittest.TestCase):
         # check fails it, on the edited and the unedited model alike.
         (self.set_dir / "cases.jsonl").write_text(json.dumps({
             "qid": "q1", "question": "?", "golden": {"kind": "criteria", "rubric": "r"},
-            "expectedEntities": {"required": ["dimension:orders:never_named"]}}) + "\n")
+            "expectedEntities": {"required": ["measure:orders:never_named"]}}) + "\n")
         model = self.tmp / "model"
         model.mkdir()
         (model / "shop.malloy").write_text("source: orders is x\n")
@@ -589,7 +589,7 @@ class PreExisting(unittest.TestCase):
     def test_a_finding_the_edit_introduced_still_blocks(self):
         (self.set_dir / "cases.jsonl").write_text(json.dumps({
             "qid": "q1", "question": "?", "golden": {"kind": "criteria", "rubric": "r"},
-            "expectedEntities": {"required": ["dimension:orders:total"]}}) + "\n")
+            "expectedEntities": {"required": ["measure:orders:total"]}}) + "\n")
         subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
                         "commit", "-q", "--allow-empty", "-m", "x"], cwd=self.model, check=True)
         (self.model / "shop.malloy").write_text("source: orders is x extend { dimension: total is 1 }\n")
