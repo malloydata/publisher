@@ -608,19 +608,35 @@ it, and the tarball needs Node only, no Bun. `prepublishOnly` refuses to publish
 `dist/index.js`, since `files` is `dist` alone and a missing build would otherwise ship an empty
 package and exit 0.
 
-It is the last step of the same job, so a CLI publish that fails fails `publish-npm`, and with it
-`gh-release` and `publish-packages`, after sdk, app and server are already on npm. Re-running the job
-cannot help (sdk's publish would fail on a taken version) and re-running the release burns a version.
-Publish the missing CLI by hand from the release branch with an npm login that can publish to the
-scope (`cd packages/cli && bun run build && npm publish --access public`; OIDC works only inside
-Actions), then create the tag and release page by hand from that branch (`gh release create
-v<version> --target release/v<version>`, with the notes `release-notes.mjs extract <version>` prints),
-and dispatch `skills-npm.yml` then `create-malloy-package-npm.yml` on `main`.
+**One-time setup, outside the repo.** npm takes a trusted-publisher entry only for a package that
+already exists, so the first version cannot come from CI:
 
-Its trusted-publisher entry names **`release.yml`**, like sdk/app/server, for the reason under *Rules
-that bite*. npm will not take an entry until the package exists, so the first version is published by hand
-and the entry registered **before** the change that wires it into `npm-sdk.yml` merges; otherwise the
-first release fails exactly as above (see *Adding a published package*).
+1. Publish it by hand with an npm login that can publish to the `@malloy-publisher` scope:
+   `cd packages/cli && bun run build && npm publish --access public`. Any version at or below the
+   next release's works; the one `main` declares is the natural choice.
+2. Register its trusted publisher on npmjs.com: repository `malloydata/publisher`, workflow
+   **`release.yml`**, like sdk/app/server, for the reason under *Rules that bite* (`npm-sdk.yml` is
+   the reusable workflow, not the caller npm matches). No environment, the same as the other three.
+
+**Until that is done the CLI step skips, and the release stays green.** Before publishing, the step
+asks `npm view @malloy-publisher/cli version`. On an E404 it emits a `CLI not published` warning
+naming the setup above and exits 0, so a release that lands before the setup still publishes
+sdk/app/server, cuts its tag and runs `publish-packages`, instead of failing `publish-npm` after
+three packages are on npm. The version bump does not depend on it: `prepare` sets
+`packages/cli/package.json` regardless, so the release branch and `main` stay lockstep even for a
+release that skipped the CLI. Read the run's annotations: a green release with that warning shipped
+no CLI. Any other `npm view` failure (registry down, auth) fails the step, since it cannot tell a
+missing package from an unreachable registry.
+
+**Once the package exists, a failed CLI publish is a real failure,** and it is the last step of the
+same job, so it fails `publish-npm`, and with it `gh-release` and `publish-packages`, after sdk, app
+and server are already on npm. A trusted-publisher entry that is missing or names the wrong workflow
+fails this way, not through the skip. Re-running the job cannot help (sdk's publish would fail on a
+taken version) and re-running the release burns a version. Publish the missing CLI by hand from the
+release branch as in step 1 (OIDC works only inside Actions), then create the tag and release page by
+hand from that branch (`gh release create v<version> --target release/v<version>`, with the notes
+`release-notes.mjs extract <version>` prints), and dispatch `skills-npm.yml` then
+`create-malloy-package-npm.yml` on `main`.
 
 For completeness: `api-doc.yaml`'s `info.version: v0` is the REST API version behind the `/api/v0`
 path prefix, not a package version. It is unrelated to any of this and should not be bumped with a

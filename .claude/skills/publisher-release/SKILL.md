@@ -492,6 +492,10 @@ after the merge (the first command in step 3).
   anchor release (`packages/server/tests/perf/main-thread/anchor.json`), so
   main-thread growth above about 1.3x that is wanted still blocks the release.
   Move the anchor forward in a PR of its own, then dispatch again.
+- **A green release with a `CLI not published` warning** → sdk/app/server
+  shipped and the CLI did not, because `@malloy-publisher/cli` is not on npm
+  yet. Nothing to re-run: do the one-time setup in *The CLI rides the lockstep
+  train* (`.github/workflows/CONTEXT.md`); the next release publishes it.
 - **`publish-npm` is red at its last step, *Build & publish CLI package*** →
   sdk, app and server are on npm, and `gh-release` and `publish-packages` did
   not run. Do not re-run either the job or the release. Publish the CLI by hand

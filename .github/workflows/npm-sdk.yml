@@ -95,14 +95,37 @@ jobs:
 
       # The CLI (`malloy-pub`) is on the same lockstep version as sdk/app/server:
       # `release.yml`'s `prepare` sets packages/cli/package.json with the other
-      # three. It goes last so a failure here leaves the server already
-      # published, as a failure in the server step leaves sdk and app. `build`'s
-      # `prebuild` generates the API client from api-doc.yaml first, and the
-      # bundle carries its dependencies, so the tarball needs Node only.
+      # three, whether or not this step publishes. `build`'s `prebuild`
+      # generates the API client from api-doc.yaml first, and the bundle carries
+      # its dependencies, so the tarball needs Node only.
+      #
+      # Guarded on the package existing. npm takes a trusted-publisher entry only
+      # for a package that already exists, so until the first version is
+      # published by hand an OIDC publish here cannot succeed, and failing would
+      # fail publish-npm after sdk/app/server are on npm, skipping gh-release
+      # and publish-packages: a half-published release. So a package npm says
+      # does not exist (E404) skips with a warning and the job stays green.
+      # Anything else `npm view` fails on is a real error and fails the step, as
+      # does any failure of the publish itself once the package exists.
       - name: Build & publish CLI package
         env:
           NODE_AUTH_TOKEN: ""
         run: |
+          set -euo pipefail
+          VIEW_LOG="$(mktemp)"
+          if npm view @malloy-publisher/cli version >/dev/null 2>"$VIEW_LOG"; then
+            :
+          elif grep -q 'E404' "$VIEW_LOG"; then
+            echo "::warning title=CLI not published::@malloy-publisher/cli does not exist on npm yet, so ${{ steps.version_step.outputs.current_version }} was NOT published (sdk, app and server were). One-time setup: publish the first version by hand (cd packages/cli && bun run build && npm publish --access public), then register its npm trusted publisher naming repository malloydata/publisher and workflow release.yml. See .github/workflows/CONTEXT.md, 'The CLI rides the lockstep train'."
+            exit 0
+          else
+            # Prefixed so a line of npm's output starting with `::` is not
+            # read as a workflow command.
+            sed 's/^/[npm view] /' "$VIEW_LOG"
+            echo "::error title=CLI publish::could not ask npm whether @malloy-publisher/cli exists (logged above), so it was not published."
+            exit 1
+          fi
+
           cd packages/cli
           NODE_ENV=production bun run build
           npm publish --access public --tag ${{ steps.version_step.outputs.npm_tag }}
