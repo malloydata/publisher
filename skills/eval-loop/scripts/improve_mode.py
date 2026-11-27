@@ -608,17 +608,28 @@ def pr_body(R: Any, imp: dict[str, Any]) -> str:
         lines.append(f"- {e['what']}")
     if not accepted:
         lines.append("- No edit was accepted.")
-    lines += ["", "## Why: production failures it closes" if accepted
-              else "## The production failures the edits aimed at", ""]
-    for e in accepted or [e for e in imp.get("edits") or [] if e.get("targets")]:
-        for q in e.get("targets") or []:
-            c = cases.get(q) or {}
-            sf = c.get("sourceFields") or {}
-            codes = [t.split(":", 1)[1] for t in c.get("tags") or [] if t.startswith("failure:")]
-            lines.append(f"- \"{c.get('question', q)}\": asked {sf.get('asked', '?')} time(s), "
-                         f"judged wrong {sf.get('judgedWrong', '?')}"
-                         + (f" ({', '.join(codes)})" if codes else "")
-                         + (f"; key from {sf['keyFrom']}" if sf.get("keyFrom") else ""))
+    aimed = [q for e in accepted or [e for e in imp.get("edits") or [] if e.get("targets")]
+             for q in e.get("targets") or []]
+    # A set written before launch has no production behind its questions:
+    # say what it does have, not "asked ? times".
+    from_prod = any("asked" in ((cases.get(q) or {}).get("sourceFields") or {}) for q in aimed)
+    lines += ["", ("## Why: production failures it closes" if accepted
+                   else "## The production failures the edits aimed at") if from_prod
+              else ("## Why: the set's questions it fixes" if accepted
+                    else "## The set's questions the edits aimed at"), ""]
+    for q in aimed:
+        c = cases.get(q) or {}
+        sf = c.get("sourceFields") or {}
+        codes = [t.split(":", 1)[1] for t in c.get("tags") or [] if t.startswith("failure:")]
+        if "asked" not in sf:
+            lines.append(f"- \"{c.get('question', q)}\": wrong in the baseline run, and the "
+                         f"failure it had gone in every run of the edit" if accepted else
+                         f"- \"{c.get('question', q)}\": wrong in the baseline run")
+            continue
+        lines.append(f"- \"{c.get('question', q)}\": asked {sf.get('asked', '?')} time(s), "
+                     f"judged wrong {sf.get('judgedWrong', '?')}"
+                     + (f" ({', '.join(codes)})" if codes else "")
+                     + (f"; key from {sf['keyFrom']}" if sf.get("keyFrom") else ""))
     lines += ["", "## Evidence", "",
               f"- Baseline run `{R.label}`: {n.get('passed')} of {n.get('decided')} decided cases passed."]
     controls = [q for q, c in cases.items() if "control" in (c.get("tags") or [])]
@@ -629,6 +640,8 @@ def pr_body(R: Any, imp: dict[str, Any]) -> str:
                      + (f", runs {', '.join(f'`{r}`' for r in e.get('runs') or [])}" if e.get("runs") else "")
                      + (f"; targets fixed: {len(acc.get('targetsFixed') or [])} of {len(e.get('targets') or [])}"
                         if acc else "")
+                     + (f"; wrong another way, a separate issue: {', '.join(acc['failedAnotherWay'])}"
+                        if acc.get("failedAnotherWay") else "")
                      + (f"; regressions: {len(acc.get('regressions') or [])}" if acc else "")
                      + (f"; controls re-asked: {len(controls)}" if controls else "")
                      + (f"; rules: {', '.join(k + (' ok' if v else ' FAILED') for k, v in rules.items())}"

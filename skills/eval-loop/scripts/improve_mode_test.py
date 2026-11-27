@@ -213,6 +213,24 @@ class Mode(unittest.TestCase):
         self.assertIn("`ok`: the key is `provisional`, not verified", body)
         self.assertIn("`ok`: the judge would not decide: two readings", body)
 
+    def test_a_pr_body_for_a_set_written_before_launch_names_no_production(self):
+        (self.repo / "evals" / "cases.jsonl").write_text(json.dumps(
+            {"qid": "fix", "question": "Who are our best customers?", "split": "dev",
+             "golden": {"status": "verified"}}) + "\n")
+        R = FakeRoutine(config.load(self.repo / "evals"), "night", {})
+        R.result = {"number": {"passed": 8, "decided": 11, "costUsd": {}}}
+        imp = {"edits": [{"issue": "night:c1", "outcome": "accepted", "what": "say what best means",
+                          "targets": ["fix"], "runs": ["a", "b"],
+                          "acceptance": {"targetsFixed": ["fix"], "regressions": [],
+                                         "failedAnotherWay": ["x in b (SYNTAX, not RULE)"]}}]}
+        body = im.pr_body(R, imp)
+        self.assertNotIn("production", body)
+        self.assertNotIn("?", body.split("## Evidence")[0].replace("customers?", ""))
+        self.assertIn("## Why: the set's questions it fixes", body)
+        self.assertIn('"Who are our best customers?": wrong in the baseline run, and the failure it had '
+                      'gone in every run of the edit', body)
+        self.assertIn("wrong another way, a separate issue: x in b (SYNTAX, not RULE)", body)
+
     # ------------------------------------------------------------ the branch
 
     def test_an_accepted_edit_is_one_commit_on_the_branch_with_its_attempt(self):
