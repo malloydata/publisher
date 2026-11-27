@@ -690,7 +690,7 @@ describe("a BigQuery storage= build's live string comparison, for its contract",
       expect(
          (
             await buildBinary(
-               { location: "US", projects: { proj: "fail" } },
+               { location: "US", datasets: { "proj.ds": "fail" } },
                "plain",
             )
          ).binary,
@@ -699,6 +699,37 @@ describe("a BigQuery storage= build's live string comparison, for its contract",
          (
             await buildBinary(
                { location: "US", projects: { proj: ["ds"] } },
+               "authored",
+            )
+         ).binary,
+      ).toBe(false);
+   });
+
+   it("reads only the datasets a .table() build reads, never the project-wide region views, so a dataset's READER proves it", async () => {
+      // The project-wide views are denied, as to a dataset-scoped account.
+      const denied = { location: "US", projects: { proj: "fail" as const } };
+      const plain = await buildBinary(denied, "plain");
+      expect(plain.binary).toBe(true);
+      expect(plain.sent).toHaveLength(1);
+      expect(plain.sent[0]).toContain("`proj`.`ds`.INFORMATION_SCHEMA.TABLES");
+      expect(plain.sent.join("\n")).not.toContain("region-");
+      // A dataset of the job's own project, read in that project.
+      const other = await buildBinary(denied, "other");
+      expect(other.binary).toBe(true);
+      expect(other.sent).toHaveLength(1);
+      expect(other.sent[0]).toContain("FROM `ds2`.INFORMATION_SCHEMA.TABLES");
+   });
+
+   it("reads an .sql() build's projects region-wide: its tables are not known up front", async () => {
+      const authored = await buildBinary({ location: "US" }, "authored");
+      expect(authored.binary).toBe(true);
+      expect(authored.sent.join("\n")).toContain(
+         "`proj`.`region-us`.INFORMATION_SCHEMA",
+      );
+      expect(
+         (
+            await buildBinary(
+               { location: "US", projects: { proj: "fail" } },
                "authored",
             )
          ).binary,
@@ -719,6 +750,7 @@ describe("a BigQuery storage= build's unproved read, told why", () => {
          sql?: (sql: string) => string;
          connectionName?: string;
          noProject?: true;
+         datasetReadLimit?: number;
       } = {},
    ): Promise<{ binary: boolean; told: Record<string, unknown>[] }> {
       const { connection } = stubBigQuery(catalog);
@@ -749,6 +781,9 @@ describe("a BigQuery storage= build's unproved read, told why", () => {
          } as never,
          sql: options.sql ? options.sql(sql) : sql,
          onUnread: (unread) => told.push({ ...unread }),
+         ...(options.datasetReadLimit !== undefined
+            ? { datasetReadLimit: options.datasetReadLimit }
+            : {}),
       });
       for (const t of told) {
          expect(JSON.stringify(t)).not.toContain("Access Denied");
@@ -794,11 +829,19 @@ describe("a BigQuery storage= build's unproved read, told why", () => {
          reason: "table_types_unread",
          catalog: { location: "US", projects: { proj: "fail" } },
          name: "plain",
+         options: { datasetReadLimit: 0 },
          expected: { project: "proj" },
       },
       {
          reason: "table_not_listed",
          catalog: { location: "US", unseen: ["ds.plain_t"] },
+         name: "plain",
+         options: { datasetReadLimit: 0 },
+         expected: { project: "proj", dataset: "ds", table: "plain_t" },
+      },
+      {
+         reason: "dataset_unread",
+         catalog: { location: "US", datasets: { "proj.ds": "fail" } },
          name: "plain",
          expected: { project: "proj", dataset: "ds", table: "plain_t" },
       },
@@ -833,7 +876,23 @@ describe("a BigQuery storage= build's unproved read, told why", () => {
             datasets: { "proj.ds": "fail" },
          },
          name: "ci",
+         options: { datasetReadLimit: 0 },
          expected: { project: "proj", dataset: "ds", table: "ci_t" },
+      },
+      {
+         reason: "project_unread",
+         catalog: {
+            location: "US",
+            projects: { proj: "fail" },
+            types: { "ds.plain_t": "VIEW" },
+         },
+         name: "plain",
+         expected: {
+            project: "proj",
+            dataset: "ds",
+            table: "plain_t",
+            tableType: "VIEW",
+         },
       },
    ];
 

@@ -234,6 +234,8 @@ export type BigQueryBuildUnreadReason =
    | "project_unread"
    /** A project holds a collated dataset, so an unplaced read may be collated. */
    | "project_collated"
+   /** A dataset's own catalog read failed or was denied. */
+   | "dataset_unread"
    /** A dataset's own read did not list the table, or not as a table. */
    | "dataset_table_not_listed"
    /** A read threw where none of the above names it. */

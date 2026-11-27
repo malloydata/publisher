@@ -22,6 +22,7 @@ const REASONS: BigQueryBuildUnreadReason[] = [
    "table_not_listed",
    "project_unread",
    "project_collated",
+   "dataset_unread",
    "dataset_table_not_listed",
    "read_failed",
 ];

@@ -20,11 +20,22 @@ import {
 } from "./bigquery";
 
 /**
+ * Most distinct datasets a build reads each dataset's own catalog of. A
+ * build reading more is judged by the project-wide region reads instead,
+ * two queries per project and region however many datasets it reads.
+ */
+const MAX_BUILD_DATASET_READS = 20;
+
+/**
  * Whether a `storage=` build's warehouse SQL on BigQuery reads only strings
  * compared byte-exact: `sql`, the build of `source`, reading the tables its
- * definition reads (unknown: every project the SQL names is read instead),
- * judged by the catalog reads an answer's check makes
- * ({@link bigqueryCollatedPaths}), complete or not at all. False whenever a
+ * definition reads, judged from the catalog ({@link bigqueryCollatedPaths}),
+ * complete or not at all. Each dataset those tables are in is read in its
+ * own `INFORMATION_SCHEMA`, which a dataset's READER may read, up to
+ * {@link MAX_BUILD_DATASET_READS} of them; a source whose tables are not
+ * known up front (author SQL, which may read any dataset), or one reading
+ * more datasets, is read project-wide in each region, which needs the
+ * project's `bigquery.tables.list`. False whenever a
  * read fails or is incomplete: the build's column contract then records its
  * strings compared `none`, which fails closed. Each such false tells
  * `onUnread` why and where ({@link BigQueryBuildUnread}), since a contract
@@ -37,6 +48,8 @@ export async function bigqueryBuildCompareBinary(args: {
    sql: string;
    /** Told why, when a read failed or saw too little (the caller logs it). */
    onUnread?: (unread: BigQueryBuildUnread) => void;
+   /** {@link MAX_BUILD_DATASET_READS}, which a spec lowers. */
+   datasetReadLimit?: number;
 }): Promise<boolean> {
    const io = catalogIO(args.connection);
    let read: Awaited<ReturnType<typeof bigqueryCollatedPaths>>;
@@ -47,6 +60,7 @@ export async function bigqueryBuildCompareBinary(args: {
          connectionName: args.source.connectionName,
          sql: args.sql,
          tables: sourceReads(args.source),
+         datasetReadLimit: args.datasetReadLimit ?? MAX_BUILD_DATASET_READS,
       });
    } catch {
       read = { known: false, unread: { reason: "read_failed" } };
@@ -91,6 +105,7 @@ async function bigqueryCollatedPaths(args: {
    connectionName: string | undefined;
    sql: string;
    tables: ReturnType<typeof sourceReads>;
+   datasetReadLimit: number;
 }): Promise<
    | { known: false; unread: BigQueryBuildUnread }
    | {
@@ -150,6 +165,37 @@ async function bigqueryCollatedPaths(args: {
             ? unknown(why)
             : { known: true, collated: new Map(), catalog };
       }
+      // Every table known: each dataset's own catalog, which a dataset's
+      // READER may read, unlike the project-wide region views.
+      if (new Set(placed.map((t) => t.dataset)).size <= args.datasetReadLimit) {
+         const collated = new Map<string, Set<string>>();
+         for (const t of placed) {
+            const where = { dataset: t.datasetName, table: t.name };
+            at = { project: t.projects[0], ...where };
+            let listed: Awaited<ReturnType<BigQueryCatalog["datasetTables"]>>;
+            try {
+               listed = await catalog.datasetTables(t.dataset);
+            } catch {
+               return unknown({ reason: "dataset_unread", ...at });
+            }
+            const datasetTable = listed.get(t.name);
+            if (datasetTable === undefined) {
+               return unknown({ reason: "dataset_table_not_listed", ...at });
+            }
+            // A view's columns carry no collation of what it reads: proved
+            // only by its whole project holding no collated column.
+            if (!TABLE_TYPES.has(datasetTable.type)) {
+               const why = await unclean(t.projects, {
+                  ...where,
+                  tableType: datasetTable.type,
+               });
+               if (why) return unknown(why);
+               continue;
+            }
+            addCollated(collated, datasetTable.collated);
+         }
+         return { known: true, collated, catalog };
+      }
       const types = await catalog.tableTypes(placed);
       // A failed or denied read answers live; only a project with no region
       // to read is read dataset by dataset.
@@ -207,17 +253,25 @@ async function bigqueryCollatedPaths(args: {
                ...(datasetTable ? { tableType: datasetTable.type } : {}),
             });
          }
-         for (const [path, c] of datasetTable.collated) {
-            let set = collated.get(path);
-            if (!set) {
-               set = new Set();
-               collated.set(path, set);
-            }
-            set.add(c);
-         }
+         addCollated(collated, datasetTable.collated);
       }
       return { known: true, collated, catalog };
    } catch {
       return unknown({ reason: "read_failed", ...at });
+   }
+}
+
+/** `table`'s collated paths added to `collated`, by path. */
+function addCollated(
+   collated: Map<string, Set<string>>,
+   table: ReadonlyMap<string, string>,
+): void {
+   for (const [path, c] of table) {
+      let set = collated.get(path);
+      if (!set) {
+         set = new Set();
+         collated.set(path, set);
+      }
+      set.add(c);
    }
 }
