@@ -12,6 +12,7 @@ import {
    BadRequestError,
    BuildPlanRefreshingError,
    BuildPlanUnavailableError,
+   WorkflowsUnavailableError,
    ChainedShapeNotCarriedError,
    ContractCaptureFailedError,
    SchemaIncompatibleError,
@@ -159,6 +160,13 @@ const CASES: Array<[string, () => unknown]> = [
    [
       "BuildPlanUnavailableError",
       () => new BuildPlanUnavailableError("build plan could not be derived"),
+   ],
+   [
+      "WorkflowsUnavailableError",
+      () =>
+         new WorkflowsUnavailableError(
+            "Workflows are unavailable: skill set directory 'sets/a' cannot be read (EACCES)",
+         ),
    ],
    [
       "BuildPlanRefreshingError",

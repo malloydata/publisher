@@ -430,6 +430,38 @@
       ]
     }
   },
+  "WorkflowsUnavailableError": {
+    "class": "WorkflowsUnavailableError",
+    "http": {
+      "status": 503,
+      "json": {
+        "code": 503,
+        "message": "Workflows are unavailable: skill set directory 'sets/a' cannot be read (EACCES)"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Workflows are unavailable: skill set directory 'sets/a' cannot be read (EACCES)",
+      "suggestions": [
+        "Fix the cause named above, then reload the package: its skill sets are read at load, so a retry before then fails the same way."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Workflows are unavailable: skill set directory 'sets/a' cannot be read (EACCES)",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "BuildPlanRefreshingError": {
     "class": "BuildPlanRefreshingError",
     "http": {

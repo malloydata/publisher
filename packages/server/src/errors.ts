@@ -539,6 +539,23 @@ export class BuildPlanUnavailableError extends Error {
 }
 
 /**
+ * A loaded package whose workflows could not be read at load (a listed skill
+ * set that cannot be read, or a walk that threw): 503, because the models
+ * still serve and the workflows are not absent. The message carries the
+ * reason, and it lasts until the package reloads.
+ */
+export class WorkflowsUnavailableError extends Error {
+   get kind(): "workflows_unavailable" {
+      return "workflows_unavailable";
+   }
+
+   constructor(message: string) {
+      super(message);
+      this.name = "WorkflowsUnavailableError";
+   }
+}
+
+/**
  * A package's build plan is being re-derived after a connection change and
  * the wait for it passed its cap: answered 503 with Retry-After, rather than
  * holding the request until the re-derivation finishes.
@@ -1747,6 +1764,7 @@ type PayloadTooLargeKind = "payload_too_large" | "response_unserializable";
 interface ErrorByKind {
    package_version: PackageVersionError;
    build_plan_unavailable: BuildPlanUnavailableError;
+   workflows_unavailable: WorkflowsUnavailableError;
    build_plan_refreshing: BuildPlanRefreshingError;
    not_implemented: NotImplementedError;
    bad_request: BadRequestError;
@@ -1839,6 +1857,7 @@ const ERROR_CLASSES: {
 } = {
    package_version: PackageVersionError,
    build_plan_unavailable: BuildPlanUnavailableError,
+   workflows_unavailable: WorkflowsUnavailableError,
    build_plan_refreshing: BuildPlanRefreshingError,
    not_implemented: NotImplementedError,
    bad_request: BadRequestError,
@@ -2192,6 +2211,16 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       status: 409,
       reason: "BUILD_PLAN_UNAVAILABLE",
       mcp: { advice: "internal" },
+   },
+   workflows_unavailable: {
+      status: 503,
+      // No Retry-After: the walk's failure lasts until the package reloads.
+      mcp: {
+         advice: "fixed",
+         suggestions: [
+            "Fix the cause named above, then reload the package: its skill sets are read at load, so a retry before then fails the same way.",
+         ],
+      },
    },
    build_plan_refreshing: {
       status: 503,
