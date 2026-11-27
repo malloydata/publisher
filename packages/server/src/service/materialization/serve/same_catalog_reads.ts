@@ -28,7 +28,9 @@
  *   (`managedTablePathRefusal`) admits its path, read as the connection reads
  *   it;
  * - is a base table: a DuckLake view's body is not held to that scope, and on
- *   the destination would read with the destination's credential;
+ *   the destination would read with the destination's credential. Checked
+ *   when the copy compiles and again before each query it answers, since a
+ *   writer on the catalog may swap a table for a view under a compiled copy;
  * - is named in a plain `.table('<dotted path>')`, with no `.sql()` (or any
  *   other call) on the connection in the files, and no source on the
  *   connection the copy keeps as written carries author SQL (`authorSqlCause`:
@@ -48,6 +50,13 @@ import { authorSqlCause } from "../domain/same_catalog_build";
 import { authorModelReachContext } from "../text/author_model";
 import { refusedJoinPairs } from "../text/cross_connection_text";
 import { destinationOfAlias } from "./served_copy_config";
+
+/** The tables a copy reads through one destination, by its alias. */
+export interface SameCatalogTables {
+   alias: string;
+   /** Each as `[catalog, schema, table]`, plain names. */
+   tables: readonly (readonly [string, string, string])[];
+}
 
 /** A plain SQL identifier, as a managed connection's scope check admits one. */
 const PLAIN = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -318,7 +327,16 @@ export async function readSameCatalogThroughDestination(args: {
    /** What it reads of the copy's connections. */
    ports: SameCatalogPorts;
 }): Promise<
-   | { files: Map<string, string>; destinations: Set<string> }
+   | {
+        files: Map<string, string>;
+        destinations: Set<string>;
+        /**
+         * The tables it moved, by the alias they are read through: the copy
+         * checks again before each query it answers that each is still a
+         * base table, since the catalog may change under the compiled copy.
+         */
+        moved: SameCatalogTables[];
+     }
    | { declined: string }
 > {
    const moves = await sameCatalogMoves(args.error, args.ports);
@@ -336,6 +354,7 @@ export async function readSameCatalogThroughDestination(args: {
       ...declaringFiles(args.modelDef, names),
    ]);
    const out = new Map(args.files);
+   const moved: SameCatalogTables[] = [];
    for (const move of moves) {
       const paths: string[] = [];
       for (const url of urls) {
@@ -373,9 +392,11 @@ export async function readSameCatalogThroughDestination(args: {
       if (!(await args.ports.baseTables(move.alias, tables))) {
          return { declined: "a table it reads is not a base table" };
       }
+      if (tables.length > 0) moved.push({ alias: move.alias, tables });
    }
    return {
       files: out,
       destinations: new Set(moves.map((m) => m.destination)),
+      moved,
    };
 }

@@ -483,7 +483,12 @@ source carrying an `.sql()` source or a `sql_*` expression anywhere beneath it i
 DuckLake source was before, and so is a table read from a file or URL (`lake.table('/x.csv')`),
 which that session would read with the destination's storage credential. Such a source is refused when
 the package loads (`persist-not-built`, reason `storage_source_unsupported`) and answered live, rather
-than failing its build. On a connection configured `managed` the same holds with no `storage=` too: a
+than failing its build. The build also reads only base tables of the catalog: one whose SQL names a view
+there fails, since a view's body is SQL too and would run with the destination's credential. That check
+runs in the build's own transaction, so the build reads the catalog as the check saw it. A served copy
+that reads a managed connection's tables through the destination, to serve a join across the one catalog,
+holds to the same rule, and checks it again before every query it answers: once a table it reads is a view,
+queries answer live. On a connection configured `managed` the same holds with no `storage=` too: a
 managed catalog's tables are built inside it, so a `#@ persist`, `#(materialize)` or rollup over author
 SQL there is refused at load whatever it declares. A chained build (a
 downstream stacked on its stored parents in the destination) runs on the same kind of session and follows

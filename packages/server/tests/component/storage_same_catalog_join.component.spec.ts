@@ -16,7 +16,9 @@
  * source through the destination too, as the build does: only while every
  * table it moves passes the managed connection's scope check, is a base
  * table, and nothing it moves carries author SQL. Otherwise the decline
- * stays, naming the join.
+ * stays, naming the join. A table swapped for a view after the copy compiled
+ * stops the copy serving at the next query, and a same-catalog build refuses
+ * to read a view.
  *
  * Opt-in: set PUBLISHER_TEST_POSTGRES_URL, for the DuckLake catalogs and
  * the Postgres warehouse.
@@ -172,6 +174,25 @@ source: sql_orders_x is sql_orders extend {
 }
 `;
 
+/**
+ * A served join and a stored source whose tables the host later swaps for
+ * views over a schema the connection may not read.
+ */
+const SWAP = `##! experimental.persistence
+source: swap_customer is credible.table('customers_s') extend {
+  primary_key: customer_id
+}
+
+#(materialize) storage="credible"
+source: swap_orders is credible.table('orders') extend {
+  where: status = 'kept'
+  join_one: swap_customer with customer_id
+}
+
+#(materialize) storage="credible"
+source: swap_names is credible.table('names_s')
+`;
+
 type Answer = {
    rows: Record<string, unknown>[];
    servedFrom: string | null;
@@ -198,8 +219,12 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
       password: string;
    };
 
-   /** The host's own writer on the catalog: seeds main and crm. */
-   async function seedCatalog(dataPath: string): Promise<void> {
+   let dataPath: string;
+
+   /** The host's own writer on the catalog; the last statement's rows. */
+   async function asHost(
+      statements: readonly string[],
+   ): Promise<Record<string, unknown>[]> {
       const instance = await DuckDBInstance.create(":memory:");
       const w = await instance.connect();
       try {
@@ -208,6 +233,48 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
          );
          await w.run(
             `ATTACH 'ducklake:postgres:host=${pg.host} port=${pg.port} dbname=${catalogDb} user=${pg.userName} password=${pg.password}' AS credible (DATA_PATH '${dataPath}', METADATA_SCHEMA 'lake_meta')`,
+         );
+         let rows: Record<string, unknown>[] = [];
+         for (const sql of statements) {
+            rows = (await (await w.run(sql)).getRowObjectsJson()) as Record<
+               string,
+               unknown
+            >[];
+         }
+         return rows;
+      } finally {
+         w.closeSync();
+         instance.closeSync();
+      }
+   }
+
+   /** Swap main table `name` for a same-named view over crm's secret names. */
+   const swapForView = (name: string) =>
+      asHost([
+         `DROP TABLE credible.main.${name}`,
+         `CREATE VIEW credible.main.${name} AS SELECT customer_id, name FROM credible.crm.customers`,
+      ]);
+
+   /** The host's own writer on the catalog: seeds main and crm. */
+   async function seedCatalog(): Promise<void> {
+      const instance = await DuckDBInstance.create(":memory:");
+      const w = await instance.connect();
+      try {
+         await w.run(
+            "INSTALL ducklake; LOAD ducklake; INSTALL postgres; LOAD postgres;",
+         );
+         await w.run(
+            `ATTACH 'ducklake:postgres:host=${pg.host} port=${pg.port} dbname=${catalogDb} user=${pg.userName} password=${pg.password}' AS credible (DATA_PATH '${dataPath}', METADATA_SCHEMA 'lake_meta')`,
+         );
+         await w.run(
+            `CREATE TABLE credible.main.customers_s AS SELECT * FROM (VALUES
+               (10, 'ann'), (20, 'bo')
+             ) AS t(customer_id, name)`,
+         );
+         await w.run(
+            `CREATE TABLE credible.main.names_s AS SELECT * FROM (VALUES
+               (10, 'ann'), (20, 'bo')
+             ) AS t(customer_id, name)`,
          );
          await w.run(
             `CREATE TABLE credible.main.orders AS SELECT * FROM (VALUES
@@ -255,6 +322,7 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
             "view.malloy": VIEW,
             "sql_expr.malloy": SQL_EXPR,
             "sql_source.malloy": SQL_SOURCE,
+            "swap.malloy": SWAP,
          },
          { manifest: { name: PKG, description: "fixture" } },
       );
@@ -283,11 +351,11 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
           ) AS t(customer_id, name)`,
       );
       await warehouse.close();
-      const dataPath = path.join(root, "bucket") + "/";
+      dataPath = path.join(root, "bucket") + "/";
       fs.mkdirSync(dataPath, { recursive: true });
       const lakePath = path.join(root, "lake") + "/";
       fs.mkdirSync(lakePath, { recursive: true });
-      await seedCatalog(dataPath);
+      await seedCatalog();
       const catalog = {
          postgresConnection: { ...pg, databaseName: catalogDb },
          metadataSchema: "lake_meta",
@@ -356,8 +424,10 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
    });
 
    /** Start a run and wait until it is terminal and its worker is gone. */
-   async function build(): Promise<Materialization> {
-      const created = await service.createMaterialization(ENV, PKG, {});
+   async function build(forceRefresh = false): Promise<Materialization> {
+      const created = await service.createMaterialization(ENV, PKG, {
+         forceRefresh,
+      });
       const deadline = Date.now() + 120_000;
       for (;;) {
          const m = await repo.getMaterializationById(created.id);
@@ -413,6 +483,8 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
          "run: tagged_orders_x -> { group_by: tagged_customer.customer_id, tagged_customer.doubled; aggregate: n is count() }",
       "sql_source.malloy":
          "run: sql_orders_x -> { group_by: sql_customer.customer_id, sql_customer.name; aggregate: n is count() }",
+      "swap.malloy":
+         "run: swap_orders -> { group_by: swap_customer.customer_id, swap_customer.name; aggregate: n is count() }",
    } as const;
    const PLAIN = {
       "filtered.malloy": "run: active_orders -> { aggregate: n is count() }",
@@ -421,6 +493,7 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
       "view.malloy": "run: viewed_orders -> { aggregate: n is count() }",
       "sql_expr.malloy": "run: tagged_orders_x -> { aggregate: n is count() }",
       "sql_source.malloy": "run: sql_orders_x -> { aggregate: n is count() }",
+      "swap.malloy": "run: swap_names -> { group_by: name }",
    } as const;
    type ModelPath = keyof typeof JOINED;
    const live = new Map<string, Answer["rows"]>();
@@ -533,6 +606,44 @@ describe.skipIf(!url)("a stored table joined across one catalog", () => {
          expect(JSON.stringify(answer.path)).toContain(
             `the join \`${join}\` of \`${source}\` (connection 'credible' into storage destination 'credible')`,
          );
+      }
+   });
+
+   it("stops serving a join once a table it reads is swapped for a view, and answers live", async () => {
+      const before = await ask("swap.malloy", JOINED["swap.malloy"]);
+      expect(before.servedFrom).toBe("storage");
+      expect(before.rows).toEqual(live.get(JOINED["swap.malloy"])!);
+      // The compiled copy checked customers_s was a base table; a writer on
+      // the catalog now swaps it for a view over a schema the managed
+      // connection may not read.
+      await swapForView("customers_s");
+      const after = await ask("swap.malloy", JOINED["swap.malloy"]).catch(
+         (error: unknown) => error,
+      );
+      // Answered live (the managed connection's own read), or refused: never
+      // from the copy, whose destination credential would read the view.
+      if (!(after instanceof Error)) {
+         expect((after as Answer).servedFrom).toBe(null);
+      }
+   });
+
+   it("refuses a same-catalog build that reads a view", async () => {
+      await swapForView("names_s");
+      const run = await build(true);
+      expect(JSON.stringify(run)).toContain("reads a view");
+      // Every table built for swap_names holds the base table's rows: no
+      // row of the view's schema reached storage.
+      const tables = await asHost([
+         "SELECT table_name FROM information_schema.tables " +
+            "WHERE table_catalog = 'credible' AND table_schema = 'materialized' " +
+            "AND table_name LIKE 'pkg__swap__swap_names%'",
+      ]);
+      expect(tables.length).toBeGreaterThan(0);
+      for (const { table_name } of tables) {
+         const rows = await asHost([
+            `SELECT name FROM credible.materialized."${String(table_name)}" ORDER BY name`,
+         ]);
+         expect(rows).toEqual([{ name: "ann" }, { name: "bo" }]);
       }
    });
 });

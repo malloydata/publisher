@@ -94,6 +94,7 @@ import {
    attachDuckLakeReadWrite,
 } from "../../connection";
 import { managedSearchPathSql } from "../../dialects/ducklake";
+import { serializeSQL } from "../../single_select";
 import type { PartitionKey } from "../../dialects/ducklake_catalog";
 import {
    connectionDialectOf,
@@ -1222,6 +1223,13 @@ async function buildSameCatalogIntoStorage(params: {
                ...(params.replacesView
                   ? { replacesView: params.replacesView }
                   : {}),
+               beforeCreate: () =>
+                  refuseViewsRead(
+                     session,
+                     alias,
+                     params.buildSQL,
+                     destinationName,
+                  ),
             },
          );
          // Reads no warehouse, as a chained build does: nothing was charged.
@@ -1234,6 +1242,92 @@ async function buildSameCatalogIntoStorage(params: {
          };
       },
    );
+}
+
+/**
+ * Each `[schema, table]` (lower case) a reference in DuckDB's parse of
+ * `selectSQL` may resolve to in catalog `alias`, whose search path is its
+ * `main`: a bare name is `main`'s; `s.t` is schema `s`'s, or `main`'s when
+ * `s` is the catalog; `<alias>.s.t` is `s`'s. A name a CTE gives is listed
+ * too, which only widens the check. Undefined when DuckDB does not parse it
+ * as SELECT statements.
+ */
+async function namesReadIn(
+   selectSQL: string,
+   alias: string,
+): Promise<[string, string][] | undefined> {
+   const parsed = await serializeSQL(selectSQL);
+   if (parsed.error || !Array.isArray(parsed.statements)) return undefined;
+   const catalog = alias.toLowerCase();
+   const names: [string, string][] = [];
+   const str = (v: unknown) => (typeof v === "string" ? v.toLowerCase() : "");
+   const walk = (node: unknown): void => {
+      if (node === null || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+         node.forEach(walk);
+         return;
+      }
+      const record = node as Record<string, unknown>;
+      if (record.type === "BASE_TABLE") {
+         const [c, s, t] = [
+            str(record.catalog_name),
+            str(record.schema_name),
+            str(record.table_name),
+         ];
+         if (c) {
+            if (c === catalog) names.push([s || "main", t]);
+         } else if (s) {
+            names.push([s, t]);
+            if (s === catalog) names.push(["main", t]);
+         } else {
+            names.push(["main", t]);
+         }
+      }
+      Object.values(record).forEach(walk);
+   };
+   walk(parsed.statements);
+   return names;
+}
+
+/**
+ * Refuse a same-catalog build whose SQL reads a view of the catalog. The
+ * build's session reads with the destination's credential, which reaches the
+ * whole catalog, and a DuckLake view's body is not held to the source
+ * connection's scope, so the build reads only base tables, as a served copy
+ * does (same_catalog_destination.ts). Run in the build's transaction
+ * (`beforeCreate`), so the CREATE reads the snapshot this read: a view
+ * swapped in after it is not read. SQL it cannot parse is refused.
+ */
+async function refuseViewsRead(
+   session: DuckDBConnection,
+   alias: string,
+   selectSQL: string,
+   destinationName: string,
+): Promise<void> {
+   const names = await namesReadIn(selectSQL, alias);
+   const refuse = (why: string) =>
+      new BadRequestError(
+         `Cannot materialize a source into storage destination '${destinationName}' ` +
+            `that ${why}: the build reads the destination's own catalog with its ` +
+            `credential, which a view's body is not held to, so it reads only ` +
+            `base tables there.`,
+      );
+   if (!names) throw refuse("reads SQL it cannot parse");
+   if (names.length === 0) return;
+   const result = await session.runSQL(
+      "SELECT lower(table_schema) AS s, lower(table_name) AS t " +
+         "FROM information_schema.tables " +
+         `WHERE lower(table_catalog) = '${alias.toLowerCase().replace(/'/g, "''")}' ` +
+         "AND table_type <> 'BASE TABLE'",
+   );
+   const views = new Set(
+      (result.rows as { s?: unknown; t?: unknown }[]).map(
+         (r) => `${String(r.s)}.${String(r.t)}`,
+      ),
+   );
+   if (names.some(([s, t]) => views.has(`${s}.${t}`))) {
+      throw refuse("reads a view");
+   }
 }
 
 /**
@@ -2062,6 +2156,12 @@ export async function createTableAndDescribe(
        */
       replacesView?: string[];
       /**
+       * Run first in the same transaction, after `replacesView`: what it
+       * reads of the catalog is the snapshot the CREATE reads. It throws to
+       * refuse the build, which rolls back.
+       */
+      beforeCreate?: () => Promise<void>;
+      /**
        * The column names the build source declares: a stored column that
        * matches one only by a unique case fold is renamed to it, in the same
        * transaction ({@link canonicalRenames}).
@@ -2083,6 +2183,7 @@ export async function createTableAndDescribe(
       for (const sql of options.replacesView ?? []) {
          await session.runSQL(sql);
       }
+      await options.beforeCreate?.();
       await session.runSQL(
          `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
       );

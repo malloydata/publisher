@@ -140,6 +140,14 @@ export interface Compiled {
    /** Bindings actually re-rooted, with their destination under its alias. */
    rerooted: Binding[];
    /**
+    * For a copy that reads a managed connection's tables through a storage
+    * destination (same_catalog_reads.ts): whether each is still a base table,
+    * read before every query the copy answers, since a writer on the catalog
+    * may swap one for a view under the compiled copy. False, or a throw,
+    * answers the query live.
+    */
+   sameCatalogRecheck?: () => Promise<boolean>;
+   /**
     * The author `sourceID`s the copy re-rooted on their tables (a
     * `#(materialize)` binding's author source, not its generated one).
     */
