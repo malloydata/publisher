@@ -75,6 +75,11 @@ const PROBLEMS = {
       sourceName: "s",
       detail: "`u` on `duckdb`",
    },
+   sql_embed_whole_source: {
+      reason: "sql_embed_whole_source",
+      sourceName: "s",
+      detail: "`u` on `duckdb`",
+   },
 } satisfies { [R in Reason]: ServedCopyProblem & { reason: R } };
 
 const WARNINGS: Record<
@@ -195,7 +200,15 @@ const WARNINGS: Record<
          code: "served-copy-not-served",
          subject: "s",
          message:
-            "This source is read through a `.sql()` source's `%{}` (`u` on `duckdb`), whose SQL runs on its own connection, while its table is read on another (a storage destination, or a managed catalog read through one), which a `%{}` cannot reach. The served copy leaves this source as written, so its queries are answered live, and the model's other stored sources still serve. To serve it, persist the `.sql()` source itself (`#@ persist` on it, or on a source `<name> -> { select: * }` over it), so its own table answers (not on a DuckLake or managed connection, which builds no author SQL), or build what it reads into a warehouse table and read that with `.table()`.",
+            "This source is read through a `.sql()` source's `%{}` (`u` on `duckdb`), whose SQL runs on its own connection, while its table is read on another (a storage destination, or a managed catalog read through one), which a `%{}` cannot reach. The served copy leaves this source as written, so its queries are answered live, and the model's other stored sources still serve. To serve it, persist the `.sql()` source itself with the same `storage=` as the sources its `%{}` reads: the copy then reads the `.sql()` source's own table, and theirs serve too. Or drop `storage=` from the sources it reads, so they are built in their own database, where its `%{}` reads their tables. On a DuckLake or managed connection, which builds no author SQL and places every table itself, build what it reads into a warehouse table and read that with `.table()`.",
+      },
+   ],
+   sql_embed_whole_source: [
+      {
+         code: "served-copy-not-served",
+         subject: "s",
+         message:
+            "This source is embedded whole by a `.sql()` source's `%{}` (`u` on `duckdb`), which Malloy allows only of a source it can compile to SQL, and its stored table is not one. The served copy leaves this source as written, so its queries are answered live, and the model's other stored sources still serve. To serve it, embed it as a query, `%{ <source> -> { select: * } }` (whose columns are the source's fields, not its SQL's): in the source's own database the copy then reads its table, and in a storage destination the fix for `sql_embed_cross_connection` applies.",
       },
    ],
 };
@@ -212,7 +225,7 @@ function warningsFor(problems: ServedCopyProblem[]) {
 }
 
 describe("the served copy's refusal codes", () => {
-   it("has fourteen reasons", () => {
+   it("has fifteen reasons", () => {
       expect(Object.keys(PROBLEMS)).toEqual([
          "compile_failed",
          "cross_connection_unbuilt",
@@ -228,6 +241,7 @@ describe("the served copy's refusal codes", () => {
          "reroot_not_compiled",
          "classification_not_kept",
          "sql_embed_cross_connection",
+         "sql_embed_whole_source",
       ]);
    });
 

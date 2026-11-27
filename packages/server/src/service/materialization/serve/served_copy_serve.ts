@@ -56,7 +56,7 @@ import {
    liftProbeFilterCondition,
 } from "../../authorize";
 import { keyedOverlay } from "../../overlay_key";
-import { crossingSqlEmbeds, sqlEmbedReads } from "./sql_embed_reads";
+import { conflictingSqlEmbeds, sqlEmbedReads } from "./sql_embed_reads";
 import { createEventLoopYielder } from "../../event_loop_yield";
 import type { ModelConnectionInput } from "../../model_runtime";
 import { packageFiles } from "../text/package_files";
@@ -221,6 +221,21 @@ function servedConnectionOf(b: Binding): string {
       : servedCopyAlias(b.destinationName);
 }
 
+/** Every file `modelDef` imports, directly or not, by URL. */
+function importedFileURLs(modelDef: unknown): string[] {
+   const urls = new Set<string>();
+   const walk = (tree: unknown, depth: number): void => {
+      if (depth > 64 || typeof tree !== "object" || tree === null) return;
+      for (const [url, below] of Object.entries(tree)) {
+         if (urls.has(url)) continue;
+         urls.add(url);
+         walk(below, depth + 1);
+      }
+   };
+   walk((modelDef as { dependencies?: unknown } | undefined)?.dependencies, 0);
+   return [...urls];
+}
+
 /** Nothing bound, pinned: what a copy reads with no host tables. */
 const NOTHING_PINNED = pin(EMPTY_SNAPSHOT, new Date(0));
 
@@ -350,6 +365,13 @@ export const SERVED_COPY_WARNING_CODE = "served-copy-not-served";
 interface ServedCopyHost {
    modelPath(): string;
    modelDef(): unknown;
+   /**
+    * The package's own compile of the model file at `url` (a `file://` URL),
+    * when the package holds one: a file this model imports compiles whole in
+    * its copy, `.sql()` sources it does not import included. Absent, or
+    * undefined, only this model's own `.sql()` sources are read.
+    */
+   siblingModelDef?(url: string): unknown;
    /**
     * The managed scope check of a `.table()` path (`managedTablePathRefusal`),
     * which a same-catalog read holds every moved path to. Injected because it
@@ -2016,16 +2038,25 @@ export class ServedCopyServe {
     * chained build's text, so both re-root one way.
     */
    /**
-    * `candidates` without each one a `.sql()` source reads through `%{}` on
-    * another connection than its re-root would put it on (sql_embed_reads.ts):
-    * left as written, alone, with `sql_embed_cross_connection`, so the rest
-    * of the copy still compiles. A storage table so left out falls back to
-    * its database twin, if it has one, which the next compile re-roots.
+    * `candidates` without each one whose re-root a `.sql()` source's `%{}`
+    * cannot read (sql_embed_reads.ts): a bare `%{ x }` of it, or a
+    * `%{ x -> { … } }` on another connection than its re-root. Each is left
+    * as written, alone, with its reason, so the rest of the copy still
+    * compiles. Read over every file the copy compiles: the model and each
+    * file it imports, which compiles whole, whatever the import names. A
+    * storage table so left out falls back to its database twin, if it has
+    * one, which the next compile re-roots.
     */
-   private withoutCrossingSqlEmbeds<
+   private withoutConflictingSqlEmbeds<
       C extends { binding: Binding; reroot: AuthorReroot },
    >(candidates: C[], map: SourceMap, problems: ServedCopyProblem[]): C[] {
-      const reads = sqlEmbedReads(this.host.modelDef());
+      const modelDef = this.host.modelDef();
+      const reads = sqlEmbedReads([
+         modelDef,
+         ...importedFileURLs(modelDef).map((url) =>
+            this.host.siblingModelDef?.(url),
+         ),
+      ]);
       if (reads.length === 0) return candidates;
       const rerootedIDs = new Set(candidates.map((c) => c.reroot.sourceID));
       // A `.sql()` source re-rooted itself, or built on one that is, is
@@ -2036,20 +2067,30 @@ export class ServedCopyServe {
          return chain.some((id) => rerootedIDs.has(id));
       };
       return candidates.filter((c) => {
-         const crossing = crossingSqlEmbeds(
+         const conflicts = conflictingSqlEmbeds(
             reads,
             c.reroot.sourceID,
             servedConnectionOf(c.binding),
             rerooted,
          );
-         if (crossing.length === 0) return true;
+         if (conflicts.length === 0) return true;
+         const whole = conflicts.some((x) => x.conflict === "whole_source");
          problems.push({
             sourceName: c.reroot.sourceName,
             sourceID: c.reroot.sourceID,
-            reason: "sql_embed_cross_connection",
-            detail: crossing
-               .map((r) => `\`${r.via}\` on \`${r.connection}\``)
-               .join(", "),
+            reason: whole
+               ? "sql_embed_whole_source"
+               : "sql_embed_cross_connection",
+            detail: [
+               ...new Set(
+                  conflicts
+                     .filter((x) => !whole || x.conflict === "whole_source")
+                     .map(
+                        ({ read }) =>
+                           `\`${read.via}\` on \`${read.connection}\``,
+                     ),
+               ),
+            ].join(", "),
          });
          return false;
       });
@@ -2121,7 +2162,7 @@ export class ServedCopyServe {
             .map((o) => o.binding.tier);
          return servedCopyReadsTier(c.binding.tier, tiers);
       });
-      candidates = this.withoutCrossingSqlEmbeds(candidates, map, problems);
+      candidates = this.withoutConflictingSqlEmbeds(candidates, map, problems);
       // An extension of a re-rooted source reads it by name already, and
       // re-rooting the extension too would replace the base it inherits its
       // parent's fields from. Leave it as written, unless it is an extension

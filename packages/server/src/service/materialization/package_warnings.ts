@@ -1175,7 +1175,16 @@ function servedCopyProblemReasonMessage(
             "destination, or a managed catalog read through one), which a `%{}` cannot reach. The served copy " +
             "leaves this source as written, so its queries are answered live, and the model's other stored " +
             "sources still serve. " +
-            SQL_EMBED_FIX
+            SQL_EMBED_FIX.sql_embed_cross_connection
+         );
+      case "sql_embed_whole_source":
+         return (
+            "This source is embedded whole by a `.sql()` source's `%{}`" +
+            (problem.detail ? ` (${problem.detail})` : "") +
+            ", which Malloy allows only of a source it can compile to SQL, and its stored table is not " +
+            "one. The served copy leaves this source as written, so its queries are answered live, and " +
+            "the model's other stored sources still serve. " +
+            SQL_EMBED_FIX.sql_embed_whole_source
          );
    }
 }

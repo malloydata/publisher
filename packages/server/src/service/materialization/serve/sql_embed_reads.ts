@@ -34,52 +34,114 @@ interface SqlEmbedRead {
    connection: string;
    /** The `.sql()` source's own `sourceID`, when it has one. */
    sourceID?: string;
-   /** Every `sourceID` its embeds read. */
+   /** Every `sourceID` its query embeds (`%{ x -> { … } }`) read. */
    reaches: ReadonlySet<string>;
+   /**
+    * Every `sourceID` its bare embeds (`%{ x }`) read. Malloy embeds a
+    * source bare only when it is persistable (a table, SQL or query source),
+    * which a re-root, a `virtual()` source, is not.
+    */
+   bareReaches: ReadonlySet<string>;
 }
 
-/** Every `.sql()` in `modelDef` with a `%{}`, with what its embeds read. */
-export function sqlEmbedReads(modelDef: unknown): SqlEmbedRead[] {
-   const out: SqlEmbedRead[] = [];
-   for (const select of sqlSelectsWithin(modelDef)) {
-      const connection = select.connection;
-      if (typeof connection !== "string") continue;
-      const segments = (select.selectSegments as unknown[]).filter(
-         (s) =>
-            typeof s === "object" &&
-            s !== null &&
-            !("sql" in s && (s as { type?: unknown }).type === undefined),
-      );
-      if (segments.length === 0) continue;
-      out.push({
-         via: labelOf(select),
-         connection,
-         ...(typeof select.sourceID === "string"
-            ? { sourceID: select.sourceID }
-            : {}),
-         reaches: reachableSourceIDs(segments, modelDef as ModelDef),
-      });
+/** Why a re-root cannot be compiled under a `.sql()` that reads it. */
+export type SqlEmbedConflict = "cross_connection" | "whole_source";
+
+/**
+ * Every `.sql()` with a `%{}` in `modelDefs` (a model and the models of the
+ * files it imports, which its copy compiles whole), with what its embeds
+ * read. One `.sql()` seen in several models is listed once.
+ */
+export function sqlEmbedReads(modelDefs: readonly unknown[]): SqlEmbedRead[] {
+   const out = new Map<string, SqlEmbedRead>();
+   for (const modelDef of modelDefs) {
+      for (const select of sqlSelectsWithin(modelDef)) {
+         const connection = select.connection;
+         if (typeof connection !== "string") continue;
+         const segments = (select.selectSegments as unknown[]).filter(
+            (s) =>
+               typeof s === "object" &&
+               s !== null &&
+               !("sql" in s && (s as { type?: unknown }).type === undefined),
+         );
+         if (segments.length === 0) continue;
+         const isQuery = (s: unknown) =>
+            (s as { type?: unknown }).type === "query";
+         const read: SqlEmbedRead = {
+            via: labelOf(select),
+            connection,
+            ...(typeof select.sourceID === "string"
+               ? { sourceID: select.sourceID }
+               : {}),
+            reaches: reachableSourceIDs(
+               segments.filter(isQuery),
+               modelDef as ModelDef,
+            ),
+            bareReaches: reachableSourceIDs(
+               segments.filter((s) => !isQuery(s)),
+               modelDef as ModelDef,
+            ),
+         };
+         // An extension of a `.sql()` source carries its SQL again.
+         const key = [
+            read.via,
+            connection,
+            [...read.reaches].sort().join(","),
+            [...read.bareReaches].sort().join(","),
+         ].join("\u0000");
+         if (!out.has(key)) out.set(key, read);
+      }
+   }
+   return [...out.values()];
+}
+
+/**
+ * The `.sql()` sources whose text the copy cannot compile with `sourceID`
+ * re-rooted on a connection `servedOn`, each with why: a bare `%{ x }` of
+ * it (`whole_source`, on any connection), or a `%{ x -> { … } }` whose SQL
+ * runs on another connection than `servedOn` (`cross_connection`). Empty
+ * when none. A `.sql()` source the copy re-roots itself (`rerooted`, by its
+ * `sourceID`, or one it is built from) is replaced by its table, so its text
+ * is not compiled and it is not counted.
+ */
+export function conflictingSqlEmbeds(
+   reads: readonly SqlEmbedRead[],
+   sourceID: string,
+   servedOn: string,
+   rerooted: (sqlSourceID: string) => boolean,
+): { read: SqlEmbedRead; conflict: SqlEmbedConflict }[] {
+   const out: { read: SqlEmbedRead; conflict: SqlEmbedConflict }[] = [];
+   for (const read of reads) {
+      if (read.sourceID !== undefined && rerooted(read.sourceID)) continue;
+      if (read.bareReaches.has(sourceID)) {
+         out.push({ read, conflict: "whole_source" });
+      } else if (read.connection !== servedOn && read.reaches.has(sourceID)) {
+         out.push({ read, conflict: "cross_connection" });
+      }
    }
    return out;
 }
 
 /**
- * The `.sql()` sources that read `sourceID` through a `%{}` on another
- * connection than `servedOn`, the connection its re-root reads it on; empty
- * when none does. A `.sql()` source the copy re-roots itself (`rerooted`, by
- * `sourceID`, its own or one it is built from) is replaced by its table, so
- * its text is not compiled and it is not counted.
+ * Every `sourceID` the queried source's own `%{}` embeds read, when it is a
+ * `.sql()` source (or an extension of one); empty otherwise. The tables
+ * these name are the ones a served union reads in its own place.
  */
-export function crossingSqlEmbeds(
-   reads: readonly SqlEmbedRead[],
-   sourceID: string,
-   servedOn: string,
-   rerooted: (sqlSourceID: string) => boolean,
-): SqlEmbedRead[] {
-   return reads.filter(
-      (r) =>
-         r.connection !== servedOn &&
-         r.reaches.has(sourceID) &&
-         !(r.sourceID !== undefined && rerooted(r.sourceID)),
+export function ownSqlEmbedReach(
+   struct: unknown,
+   modelDef: unknown,
+): ReadonlySet<string> {
+   const select = struct as { type?: unknown; selectSegments?: unknown };
+   if (select?.type !== "sql_select" || !Array.isArray(select.selectSegments)) {
+      return new Set();
+   }
+   return reachableSourceIDs(
+      select.selectSegments.filter(
+         (s: unknown) =>
+            typeof s === "object" &&
+            s !== null &&
+            !("sql" in s && (s as { type?: unknown }).type === undefined),
+      ),
+      modelDef as ModelDef,
    );
 }

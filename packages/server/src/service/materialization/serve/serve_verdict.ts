@@ -721,25 +721,38 @@ function boundVerdict(
    const base = { ...s.base, ...where };
    // Left out of every copy only because a `.sql()` source's `%{}` reads it
    // on another connection than its table: said as that, with its fix.
+   const sqlEmbedReasons = new Set(
+      (copy?.notServedIn ?? []).flatMap((n) => n.reasons),
+   );
    const onlySqlEmbed =
       copy !== undefined &&
       copy.notServedIn.length > 0 &&
-      copy.notServedIn.every((n) =>
-         n.reasons.every((r) => r === "sql_embed_cross_connection"),
+      [...sqlEmbedReasons].every(
+         (r) =>
+            r === "sql_embed_cross_connection" ||
+            r === "sql_embed_whole_source",
       );
    const notServed = (): ServeVerdict =>
       onlySqlEmbed
          ? {
               ...live(
                  "served_copy",
-                 `${subject}'s table is bound, but it is read through a ` +
-                    "`.sql()` source's `%{}`, whose SQL runs on another " +
-                    "connection than its table is read on (a storage " +
-                    "destination, or a managed catalog read through one), " +
-                    "which a `%{}` cannot reach, so no query is answered from " +
-                    `it (${copy.notServedIn.map((n) => n.model).join(", ")}). ` +
-                    "The served-copy-not-served warning names the `.sql()` source.",
-                 [SQL_EMBED_FIX],
+                 `${subject}'s table is bound, but a \`.sql()\` source's ` +
+                    "`%{}` reads it " +
+                    (sqlEmbedReasons.has("sql_embed_whole_source")
+                       ? "whole (`%{ <source> }`), which its stored table " +
+                         "cannot be embedded as"
+                       : "with SQL that runs on another connection than its " +
+                         "table is read on (a storage destination, or a " +
+                         "managed catalog read through one), which a `%{}` " +
+                         "cannot reach") +
+                    ", so no query is answered from it (" +
+                    copy.notServedIn.map((n) => n.model).join(", ") +
+                    "). The served-copy-not-served warning names the " +
+                    "`.sql()` source.",
+                 [...sqlEmbedReasons].map(
+                    (r) => SQL_EMBED_FIX[r as keyof typeof SQL_EMBED_FIX],
+                 ),
               ),
               ...where,
            }

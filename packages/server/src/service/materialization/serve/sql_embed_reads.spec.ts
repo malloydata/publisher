@@ -4,7 +4,11 @@
 import { describe, expect, it } from "bun:test";
 import { SourceMap } from "../text/source_map";
 import { materializationFixture } from "../../../test_helpers/materialization_fixture";
-import { crossingSqlEmbeds, sqlEmbedReads } from "./sql_embed_reads";
+import {
+   conflictingSqlEmbeds,
+   ownSqlEmbedReach,
+   sqlEmbedReads,
+} from "./sql_embed_reads";
 
 const mz = materializationFixture();
 
@@ -20,35 +24,58 @@ source: ab_ext is ab extend { dimension: y is x + 1 }
 `;
 
 describe("sqlEmbedReads", () => {
-   it("names each .sql() with a %{}, its connection and what it reads", async () => {
+   it("names each .sql() with a %{} once, its connection and what its query and bare embeds read", async () => {
       const modelDef = await mz.compile(
          { "model.malloy": MODEL },
          { entry: "model.malloy" },
       );
       const map = SourceMap.of(modelDef);
       const id = (name: string) => map.sourceIDOf(name)!;
-      const reads = sqlEmbedReads(modelDef);
-      // The plain `.sql()` bases of a, b and c embed nothing; `ab` (and the
-      // extension carrying its SQL) embeds `a` and `b`.
-      expect(reads.length).toBeGreaterThan(0);
+      // `ab`, and the extension carrying its SQL under its own name; the
+      // model listed twice (an import's) reads each once.
+      const reads = sqlEmbedReads([modelDef, modelDef, undefined]);
+      expect(reads.map((r) => [r.via, r.connection]).sort()).toEqual([
+         ["ab", "duckdb"],
+         ["ab_ext", "duckdb"],
+      ]);
       for (const r of reads) {
-         expect(r.connection).toBe("duckdb");
          expect(r.reaches.has(id("a"))).toBe(true);
-         expect(r.reaches.has(id("b"))).toBe(true);
-         expect(r.reaches.has(id("c"))).toBe(false);
+         expect(r.reaches.has(id("b"))).toBe(false);
+         expect(r.bareReaches.has(id("b"))).toBe(true);
+         expect(r.reaches.has(id("c")) || r.bareReaches.has(id("c"))).toBe(
+            false,
+         );
       }
-      expect(reads.map((r) => r.via)).toContain("ab");
 
-      // On its own connection, nothing crosses; on another, `a` does.
       const none = () => false;
-      expect(crossingSqlEmbeds(reads, id("a"), "duckdb", none)).toEqual([]);
-      expect(
-         crossingSqlEmbeds(reads, id("a"), "elsewhere", none).map((r) => r.via),
-      ).toContain("ab");
-      expect(crossingSqlEmbeds(reads, id("c"), "elsewhere", none)).toEqual([]);
+      const conflicts = (sourceID: string, on: string, rerooted = none) =>
+         conflictingSqlEmbeds(reads, sourceID, on, rerooted).map(
+            (x) => x.conflict,
+         );
+      // A query embed: only on another connection.
+      expect(conflicts(id("a"), "duckdb")).toEqual([]);
+      expect(conflicts(id("a"), "elsewhere")).toEqual([
+         "cross_connection",
+         "cross_connection",
+      ]);
+      // A bare embed: on any connection.
+      expect(conflicts(id("b"), "duckdb")).toEqual([
+         "whole_source",
+         "whole_source",
+      ]);
+      expect(conflicts(id("c"), "elsewhere")).toEqual([]);
       // A `.sql()` source the copy re-roots itself is replaced by its table.
-      expect(
-         crossingSqlEmbeds(reads, id("a"), "elsewhere", () => true),
-      ).toEqual([]);
+      expect(conflicts(id("b"), "elsewhere", () => true)).toEqual([]);
+
+      // The queried `.sql()` source's own embeds, extension included.
+      for (const name of ["ab", "ab_ext"]) {
+         const reach = ownSqlEmbedReach(modelDef.contents[name], modelDef);
+         expect([name, reach.has(id("a")), reach.has(id("b"))]).toEqual([
+            name,
+            true,
+            true,
+         ]);
+      }
+      expect(ownSqlEmbedReach(modelDef.contents["c"], modelDef).size).toBe(0);
    });
 });

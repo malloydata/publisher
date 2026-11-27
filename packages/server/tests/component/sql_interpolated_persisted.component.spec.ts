@@ -72,21 +72,33 @@ const INDEX = `import "outreach.malloy"
 export { outreach_daily, carriers_copy }
 `;
 
-const QUERIES = {
-   outreach:
-      "run: outreach_daily -> { aggregate: n is count(), total is sent.sum() }",
-   carriers:
-      "run: carriers_copy -> { group_by: region; aggregate: carrier_count; order_by: region }",
+type Query = { model: string; query: string };
+
+const QUERIES: Record<string, Query> = {
+   outreach: {
+      model: "index.malloy",
+      query: "run: outreach_daily -> { aggregate: n is count(), total is sent.sum() }",
+   },
+   carriers: {
+      model: "index.malloy",
+      query: "run: carriers_copy -> { group_by: region; aggregate: carrier_count; order_by: region }",
+   },
 };
 
-/** A package loaded, built and bound, with what was answered before the bind. */
-function scenario(storage?: string) {
+/**
+ * A package loaded, built and bound, with each query answered before the
+ * bind and after it, and each served answer's path report.
+ */
+function scenario(
+   files: Record<string, string>,
+   queries: Record<string, Query> = QUERIES,
+) {
    const state: {
       fixture?: LoadedFixture;
       live: Record<string, Outcome>;
       served: Record<string, Outcome>;
-      path?: QueryPath;
-   } = { live: {}, served: {} };
+      paths: Record<string, QueryPath | undefined>;
+   } = { live: {}, served: {}, paths: {} };
    let restore: () => void;
    let loader: Awaited<ReturnType<typeof loadFixture>> | undefined;
    beforeAll(async () => {
@@ -94,26 +106,22 @@ function scenario(storage?: string) {
          env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
       }).restore;
       await freshLoadPool();
-      loader = await loadFixture({
-         "outreach.malloy": outreach(storage),
-         "index.malloy": INDEX,
-         ...DATA,
-      });
-      for (const [name, q] of Object.entries(QUERIES)) {
-         state.live[name] = await loader.run("index.malloy", q);
+      loader = await loadFixture({ ...files, ...DATA });
+      for (const [name, q] of Object.entries(queries)) {
+         state.live[name] = await loader.run(q.model, q.query);
       }
       state.fixture = await loader.bind({});
-      for (const [name, q] of Object.entries(QUERIES)) {
-         state.served[name] = await state.fixture.run("index.malloy", q);
+      for (const [name, q] of Object.entries(queries)) {
+         state.served[name] = await state.fixture.run(q.model, q.query);
+         const result = await state.fixture.pkg
+            .getModel(q.model)!
+            .runQuery(
+               unrecordedAudit(),
+               { query: q.query } as never,
+               QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+            );
+         state.paths[name] = result.path as QueryPath | undefined;
       }
-      const result = await state.fixture.pkg
-         .getModel("index.malloy")!
-         .runQuery(
-            unrecordedAudit(),
-            { query: QUERIES.outreach } as never,
-            QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
-         );
-      state.path = result.path as QueryPath | undefined;
    }, 600_000);
    afterAll(async () => {
       await state.fixture?.dispose();
@@ -122,6 +130,11 @@ function scenario(storage?: string) {
       await freshLoadPool();
    });
    return state;
+}
+
+/** The package's warnings of a code. */
+function warningsOf(fixture: LoadedFixture | undefined, code: string) {
+   return (fixture?.warnings ?? []).filter((w) => w.code === code);
 }
 
 function verdict(fixture: LoadedFixture | undefined, name: string) {
@@ -145,7 +158,10 @@ function answer(o: Outcome | undefined): { servedBy: string; rows: string } {
 }
 
 describe("a .sql() source's %{} of stored sources in their own database", () => {
-   const s = scenario();
+   const s = scenario({
+      "outreach.malloy": outreach(),
+      "index.malloy": INDEX,
+   });
 
    it("built every table", () => {
       expect(s.fixture?.buildErrors).toEqual({});
@@ -157,13 +173,13 @@ describe("a .sql() source's %{} of stored sources in their own database", () => 
          servedBy: "materialized",
          rows: answer(s.live.outreach).rows,
       });
-      expect(s.path?.servedBy).toMatchObject({
+      expect(s.paths.outreach?.servedBy).toMatchObject({
          kind: "materialized",
          tier: "database",
          via: "served_copy",
       });
       // Both tables, each named used.
-      const used = (s.path?.considered ?? []).filter(
+      const used = (s.paths.outreach?.considered ?? []).filter(
          (c) => c.outcome === "used",
       );
       expect(new Set(used.map((c) => c.tableId)).size).toBe(2);
@@ -196,7 +212,10 @@ describe("a .sql() source's %{} of stored sources in their own database", () => 
 });
 
 describe("a .sql() source's %{} of stored sources in a storage destination", () => {
-   const s = scenario(LAKE);
+   const s = scenario({
+      "outreach.malloy": outreach(LAKE),
+      "index.malloy": INDEX,
+   });
 
    it("built every table", () => {
       expect(s.fixture?.buildErrors).toEqual({});
@@ -227,8 +246,13 @@ describe("a .sql() source's %{} of stored sources in a storage destination", () 
                },
             ],
          });
-         expect(v.message).toContain("read through a `.sql()` source's `%{}`");
-         expect(v.fixes?.join(" ")).toContain("persist the `.sql()` source");
+         expect(v.message).toContain(
+            "a `.sql()` source's `%{}` reads it with SQL",
+         );
+         expect(v.fixes?.join(" ")).toContain(
+            "persist the `.sql()` source itself with the same `storage=`",
+         );
+         expect(v.fixes?.join(" ")).toContain("drop `storage=`");
          expect(v.fixes?.join(" ")).toContain("`.table()`");
       }
       const warned = (s.fixture?.warnings ?? []).filter(
@@ -249,6 +273,160 @@ describe("a .sql() source's %{} of stored sources in a storage destination", () 
          servedBy: "materialized",
          rows: answer(s.live.carriers).rows,
       });
+   });
+});
+
+/** `outreach(storage)` with the union's SQL replaced. */
+function withUnion(storage: string | undefined, union: string): string {
+   return outreach(storage).replace(
+      /source: outreach_daily is duckdb\.sql\(""".*"""\)/,
+      () => `source: outreach_daily is duckdb.sql("""${union}""")`,
+   );
+}
+
+const BARE_UNION =
+   "select * from %{ email_daily_rows } union all by name select * from %{ linkedin_daily_rows -> { select: * } }";
+
+describe("a file another file imports selectively, its %{} union in a storage destination", () => {
+   // `b.malloy` names only `email_daily_rows` and `carriers_copy`, but its
+   // copy compiles `outreach.malloy` whole, `outreach_daily` included.
+   const B = `import { email_daily_rows, carriers_copy } from "outreach.malloy"
+`;
+   const queries: Record<string, Query> = {
+      carriers: {
+         model: "b.malloy",
+         query: "run: carriers_copy -> { group_by: region; aggregate: carrier_count; order_by: region }",
+      },
+      email: {
+         model: "b.malloy",
+         query: "run: email_daily_rows -> { aggregate: total is sent.sum() }",
+      },
+   };
+   const s = scenario(
+      { "outreach.malloy": outreach(LAKE), "b.malloy": B },
+      queries,
+   );
+
+   it("serves the importer's other stored source, its copy compiling", () => {
+      expect(answer(s.served.carriers)).toEqual({
+         servedBy: "materialized",
+         rows: answer(s.live.carriers).rows,
+      });
+      expect(
+         warningsOf(s.fixture, "served-copy-not-served").filter(
+            (w) => !w.subject,
+         ),
+      ).toEqual([]);
+   });
+
+   it("leaves the %{}-read source live in the importer too, for the same reason", () => {
+      expect(answer(s.served.email)).toEqual({
+         servedBy: "live",
+         rows: answer(s.live.email).rows,
+      });
+      expect(verdict(s.fixture, "email_daily_rows").notServedIn).toEqual([
+         { model: "b.malloy", reasons: ["sql_embed_cross_connection"] },
+         { model: "outreach.malloy", reasons: ["sql_embed_cross_connection"] },
+      ]);
+   });
+});
+
+for (const [tier, storage] of [
+   ["their own database", undefined],
+   ["a storage destination", LAKE],
+] as const) {
+   describe(`a bare %{ x } of a stored source, in ${tier}`, () => {
+      const s = scenario({
+         "outreach.malloy": withUnion(storage, BARE_UNION),
+         "index.malloy": INDEX,
+      });
+
+      it("built every table", () => {
+         expect(s.fixture?.buildErrors).toEqual({});
+      });
+
+      it("answers the union equal to live", () => {
+         expect(answer(s.served.outreach).rows).toBe(
+            answer(s.live.outreach).rows,
+         );
+      });
+
+      it("leaves only the source embedded bare as written, with its reason and fix", () => {
+         const v = verdict(s.fixture, "email_daily_rows");
+         expect(v).toMatchObject({ verdict: "live", reason: "served_copy" });
+         expect(
+            new Set(v.notServedIn?.flatMap((n) => n.reasons) ?? []),
+         ).toEqual(new Set(["sql_embed_whole_source"]));
+         expect(v.message).toContain("whole (`%{ <source> }`)");
+         expect(v.fixes?.join(" ")).toContain(
+            "`%{ <source> -> { select: * } }`",
+         );
+         const warned = warningsOf(s.fixture, "served-copy-not-served").find(
+            (w) => w.subject === "email_daily_rows",
+         );
+         expect(warned?.message).toContain("embedded whole");
+      });
+
+      it("still serves the file's other stored sources", () => {
+         expect(verdict(s.fixture, "carriers_copy").verdict).toBe("serves");
+         expect(answer(s.served.carriers)).toEqual({
+            servedBy: "materialized",
+            rows: answer(s.live.carriers).rows,
+         });
+         // The query embed: served in its own database; elsewhere, the
+         // cross-connection reason.
+         const li = verdict(s.fixture, "linkedin_daily_rows");
+         if (storage) {
+            expect(li.notServedIn?.[0]?.reasons).toEqual([
+               "sql_embed_cross_connection",
+            ]);
+         } else {
+            expect(li.verdict).toBe("serves");
+         }
+      });
+   });
+}
+
+describe("the fix: the .sql() source persisted with the same storage= as what it reads", () => {
+   const persisted = outreach(LAKE).replace(
+      "source: outreach_daily is",
+      `#@ persist name="outreach_rows" storage="${LAKE}"\nsource: outreach_daily is`,
+   );
+   // Its rows by day. (Its `sent`, a sum the destination stores as DOUBLE,
+   // is a column-type matter of its own, which a `.sql()` source declares no
+   // subtype for: not read here.)
+   const s = scenario(
+      { "outreach.malloy": persisted, "index.malloy": INDEX },
+      {
+         ...QUERIES,
+         outreach: {
+            model: "index.malloy",
+            query: "run: outreach_daily -> { group_by: d; aggregate: n is count(); order_by: d }",
+         },
+      },
+   );
+
+   it("built every table", () => {
+      expect(s.fixture?.buildErrors).toEqual({});
+   });
+
+   it("serves the union from its own table, equal to live, and every source it reads", () => {
+      expect(answer(s.served.outreach)).toEqual({
+         servedBy: "materialized",
+         rows: answer(s.live.outreach).rows,
+      });
+      for (const name of [
+         "outreach_daily",
+         "email_daily_rows",
+         "linkedin_daily_rows",
+         "carriers_copy",
+      ]) {
+         expect([name, verdict(s.fixture, name).verdict]).toEqual([
+            name,
+            "serves",
+         ]);
+      }
+      expect(warningsOf(s.fixture, "served-copy-not-served")).toEqual([]);
    });
 });
 
