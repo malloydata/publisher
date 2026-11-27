@@ -854,6 +854,10 @@
       "description": "Measurement. Reference detail for the eval-loop skill."
     },
     {
+      "name": "eval-loop/optimization-loop",
+      "description": "The optimization loop. Reference detail for the eval-loop skill."
+    },
+    {
       "name": "eval-loop/query-performance",
       "description": "Query speed in the loop. Reference detail for the eval-loop skill."
     },
