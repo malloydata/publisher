@@ -397,7 +397,7 @@ export class Model {
               snapshot: Snapshot;
               lane?: ReturnType<ServedCopyServe["scopeLane"]>;
            },
-        ) => void)
+        ) => Promise<void>)
       | undefined;
 
    /** Set what {@link recordScopeFactsOver} records through. */
@@ -2950,6 +2950,12 @@ export class Model {
                   }),
             );
          },
+         // The author's compile of a query: which source it runs against,
+         // for a decline that names that source's left-out columns.
+         authorPreparedQuery: async (queryString) =>
+            this.modelMaterializer
+               ?.loadRestrictedQuery(queryString)
+               .getPreparedQuery(),
          ensureSharedQueryModel: (materializer) =>
             this.ensureSharedQueryModel(materializer),
          modelPath: () => this.modelPath,
@@ -3150,7 +3156,7 @@ export class Model {
       await this.refreshStringCapabilities();
       const snapshot = this.servingSnapshot();
       await this.prepareServedCopyOver(snapshot);
-      this.recordScopeFactsOver(snapshot);
+      await this.recordScopeFactsOver(snapshot);
    }
 
    /**
@@ -3211,9 +3217,9 @@ export class Model {
     * query pinned to `snapshot` walks none of it. The served copy's lane is
     * the one compiled last, over the same bindings when its compile ran.
     */
-   public recordScopeFactsOver(
+   public async recordScopeFactsOver(
       snapshot: Snapshot = this.servingSnapshot(),
-   ): void {
+   ): Promise<void> {
       const lane = this.servedCopyEnabled()
          ? this.servedCopy.scopeLane()
          : undefined;
@@ -3226,7 +3232,7 @@ export class Model {
          return;
       }
       try {
-         record(runtime, {
+         await record(runtime, {
             modelDef,
             snapshot,
             ...(lane ? { lane } : {}),

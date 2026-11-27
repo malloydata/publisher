@@ -27,7 +27,7 @@
 import { declarationSpans, declaredBaseName } from "./declaration_text";
 import { lexAll } from "../../malloy_lexer_core";
 import { offsetOf } from "./malloy_lexer";
-import type { SourceMap } from "./source_map";
+import { detachedNode, type SourceMap, type SourceNode } from "./source_map";
 import {
    splitSourceID,
    type KeptAlias,
@@ -37,6 +37,24 @@ import {
 
 /** The ancestors' walk is bounded, as every chain walk in the module is. */
 const MAX_HOPS = 64;
+
+/**
+ * A declaration's definition from whichever package model holds it, by
+ * sourceID: how the walk reaches an ancestor this model's compiled IR does
+ * not hold (a base declared in a file the declaring file imports, which a
+ * model importing the declaring file does not see, as Malloy imports are not
+ * transitive).
+ */
+type DeclarationLookup = (sourceID: string) => unknown;
+
+/** The node for `sourceID`: this model's, else one another model declares. */
+function nodeIn(
+   map: SourceMap,
+   sourceID: string,
+   elsewhere: DeclarationLookup | undefined,
+): SourceNode | undefined {
+   return map.node(sourceID) ?? detachedNode(elsewhere?.(sourceID));
+}
 
 /**
  * The renames of `sourceID` declared in `url`, transitively: each a rename hop
@@ -136,14 +154,15 @@ export function keptAncestorChain(
    map: SourceMap,
    sourceID: string,
    url: string,
+   elsewhere?: DeclarationLookup,
 ): LocatedAncestor[] {
    const out: LocatedAncestor[] = [];
-   let node = map.node(sourceID);
+   let node = nodeIn(map, sourceID, elsewhere);
    let childURL = url;
    for (let hops = 0; node && hops < MAX_HOPS; hops++) {
       const base = node.base;
       if (!base || base.hop === "query" || base.sourceID === undefined) break;
-      const parent = map.node(base.sourceID);
+      const parent = nodeIn(map, base.sourceID, elsewhere);
       const parentURL = declaringURLOf(parent?.def);
       const range = parentURL ? locatedIn(parent?.def, parentURL) : undefined;
       if (!parent || !parentURL || !range) break;
@@ -164,28 +183,51 @@ export function keptAncestorChain(
  * {@link keptAncestorChain}, and for a source the compiled model records no
  * base for, the base its declaration names in the text. Malloy records no
  * edge for an extension of a table-backed source, and the source map infers
- * one only when the extension holds every field of its base: an `except:`
- * drops one, so `no_region is orders extend { except: region }` gets no
- * edge, and a measure, view or join `orders` declares was lost from the
- * re-root (`fields_not_carried`). Its base is the source of the name
- * the declaration reads (`<name> is <base> extend …`), in its own file or
- * one it imports, when that is a table-backed source on the same table and
- * every field the source has that its own statement does not declare is
- * one of the base's. {@link confirmedAncestors} confirms the step against
- * the text as it does any other, and the chain continues from the base.
+ * one only when the extension holds every field of its base and the base is
+ * declared where the compiled model shows the order: an `except:` drops a
+ * field, so `no_region is orders extend { except: region }` gets no edge, and
+ * a model that imports the extension's file but not its base's cannot order
+ * the two (`ModelDef.imports` holds the model's own imports only), so the
+ * base of `trips_2015 is trips extend { … }`, declared in a file the
+ * extension's file imports, gets none in a file importing that one. Without
+ * the edge a measure, view or join the base declares was lost from the
+ * re-root (`fields_not_carried`). Its base is the source of the name the
+ * declaration reads (`<name> is <base> extend …`), resolved in the declaring
+ * file's own scope ({@link declaredBaseID}), when that is a table-backed
+ * source on the same table and every field the source has that its own
+ * statement does not declare is one of the base's. Each ancestor the walk
+ * ends on is read the same way, so a chain whose links are all such
+ * extensions is followed to its root. {@link confirmedAncestors} confirms
+ * each step against the text as it does any other.
  */
 export function keptAncestorChainOrDeclared(
    map: SourceMap,
    sourceID: string,
    url: string,
    fileText: (url: string) => string | undefined,
+   elsewhere?: DeclarationLookup,
 ): LocatedAncestor[] {
-   const chain = keptAncestorChain(map, sourceID, url);
-   const node = map.node(sourceID);
-   if (chain.length > 0 || !node || node.base !== undefined) return chain;
-   const base = declaredTableBase(node.def, url, map, fileText);
-   if (!base) return chain;
-   return [base, ...keptAncestorChain(map, base.sourceID, base.url)];
+   const out: LocatedAncestor[] = [];
+   const seen = new Set([sourceID]);
+   let tail = { sourceID, url };
+   for (let hops = 0; hops < MAX_HOPS; hops++) {
+      const chain = keptAncestorChain(map, tail.sourceID, tail.url, elsewhere);
+      out.push(...chain);
+      tail = chain.at(-1) ?? tail;
+      const node = nodeIn(map, tail.sourceID, elsewhere);
+      // The walk stopped at a recorded hop it does not follow (a query, an
+      // unresolved base): only a missing edge is read from the text.
+      if (!node || node.base !== undefined) break;
+      const base = declaredTableBase(node.def, tail.url, fileText, (id) =>
+         nodeIn(map, id, elsewhere),
+      );
+      for (const a of chain) seen.add(a.sourceID);
+      if (!base || seen.has(base.sourceID)) break;
+      seen.add(base.sourceID);
+      out.push(base);
+      tail = base;
+   }
+   return out;
 }
 
 /** A table-backed source's compiled shape, as the declared-base check reads it. */
@@ -200,8 +242,8 @@ interface TableDef {
 function declaredTableBase(
    def: unknown,
    url: string,
-   map: SourceMap,
    fileText: (url: string) => string | undefined,
+   nodeOf: (sourceID: string) => SourceNode | undefined,
 ): LocatedAncestor | undefined {
    const own = def as TableDef | undefined;
    if (own?.type !== "table") return undefined;
@@ -210,10 +252,8 @@ function declaredTableBase(
    if (text === undefined || !range) return undefined;
    const name = declaredBaseName(text, range);
    if (name === undefined) return undefined;
-   const parentID = [`${name}@${url}`, map.sourceIDOf(name)].find(
-      (id): id is string => id !== undefined && map.node(id) !== undefined,
-   );
-   const parent = parentID ? map.node(parentID) : undefined;
+   const parentID = declaredBaseID(name, url, text, nodeOf);
+   const parent = parentID ? nodeOf(parentID) : undefined;
    const base = parent?.def as TableDef | undefined;
    if (
       !parent ||
@@ -233,6 +273,31 @@ function declaredTableBase(
       return undefined;
    }
    return { sourceID: parent.sourceID, url: parentURL, range: parentRange };
+}
+
+/**
+ * The sourceID `name` reads in the file at `url`, by that file's own scope,
+ * never the compiled model's namespace (the entry file's: Malloy imports are
+ * not transitive, and the entry may declare a namesake): a source the file
+ * declares (`name@url`), or one a whole import brings (`name@<imported
+ * file>`). A sourceID names the file that declares it, so a name an imported
+ * file imported in turn is not found. Exactly one the package declares, or
+ * undefined: a selective import (whose text {@link confirmedAncestors} would
+ * not confirm either), or text that does not lex, answers live as before.
+ */
+function declaredBaseID(
+   name: string,
+   url: string,
+   text: string,
+   nodeOf: (sourceID: string) => SourceNode | undefined,
+): string | undefined {
+   const imports = topLevelImports(text, url);
+   if (!imports) return undefined;
+   const found = [
+      `${name}@${url}`,
+      ...imports.filter((i) => i.whole).map((i) => `${name}@${i.resolved}`),
+   ].filter((id) => nodeOf(id) !== undefined);
+   return found.length === 1 ? found[0] : undefined;
 }
 
 function fieldList(def: TableDef): unknown[] {

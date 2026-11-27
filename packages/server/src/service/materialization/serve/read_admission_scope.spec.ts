@@ -69,7 +69,7 @@ describe("read admission's recorded row scope reads", () => {
       const runtime = {};
       const snapshot = makeSnapshot([]);
       // The lane stores the source and re-roots nothing.
-      recordScopeFacts(runtime, {
+      await recordScopeFacts(runtime, {
          modelDef: MODEL,
          snapshot,
          lane: { stored: new Set(["stored@m"]), rerooted: new Set() },

@@ -36,6 +36,66 @@ export function isPublisherResizeMessage(
 }
 
 /**
+ * postMessage `type` a host sends an embedded data app with the reader's light or dark mode: when the frame loads,
+ * whenever the reader switches, and whenever the app asks with {@link PUBLISHER_COLOR_SCHEME_REQUEST_MESSAGE_TYPE}.
+ * Payload shape is {@link PublisherColorSchemeMessage}. A "system" choice is resolved to light or dark by the host.
+ */
+export const PUBLISHER_COLOR_SCHEME_MESSAGE_TYPE = "publisher:color-scheme";
+
+/**
+ * postMessage `type` a data app's runtime sends its host on start, asking for the reader's mode, in case the host
+ * spoke before the page was listening. It carries nothing else.
+ */
+export const PUBLISHER_COLOR_SCHEME_REQUEST_MESSAGE_TYPE =
+   "publisher:color-scheme-request";
+
+/**
+ * postMessage `type` a data app sends its host once it has drawn the mode it was told. A host may hold a frame
+ * light until its page answers, since a page written only for a light background would be unreadable on a dark one.
+ * Payload shape is {@link PublisherColorSchemeMessage}.
+ */
+export const PUBLISHER_COLOR_SCHEME_APPLIED_MESSAGE_TYPE =
+   "publisher:color-scheme-applied";
+
+export type PublisherColorScheme = "light" | "dark";
+
+/** The reader's mode, from the host, or the mode a page answers it drew. */
+export interface PublisherColorSchemeMessage {
+   type:
+      | typeof PUBLISHER_COLOR_SCHEME_MESSAGE_TYPE
+      | typeof PUBLISHER_COLOR_SCHEME_APPLIED_MESSAGE_TYPE;
+   mode: PublisherColorScheme;
+}
+
+const isMode = (m: unknown): m is PublisherColorScheme =>
+   m === "light" || m === "dark";
+
+/** Type guard for a page's {@link PUBLISHER_COLOR_SCHEME_REQUEST_MESSAGE_TYPE}. */
+export function isPublisherColorSchemeRequest(
+   data: unknown,
+): data is { type: typeof PUBLISHER_COLOR_SCHEME_REQUEST_MESSAGE_TYPE } {
+   return (
+      typeof data === "object" &&
+      data !== null &&
+      (data as { type?: unknown }).type ===
+         PUBLISHER_COLOR_SCHEME_REQUEST_MESSAGE_TYPE
+   );
+}
+
+/** Type guard for a page's {@link PUBLISHER_COLOR_SCHEME_APPLIED_MESSAGE_TYPE} answer. */
+export function isPublisherColorSchemeApplied(
+   data: unknown,
+): data is PublisherColorSchemeMessage {
+   return (
+      typeof data === "object" &&
+      data !== null &&
+      (data as { type?: unknown }).type ===
+         PUBLISHER_COLOR_SCHEME_APPLIED_MESSAGE_TYPE &&
+      isMode((data as { mode?: unknown }).mode)
+   );
+}
+
+/**
  * Derive the Publisher data origin (where static package files are served)
  * from the configured API base URL by stripping the trailing `/api/v0`.
  *

@@ -221,7 +221,11 @@ describe("Materialization reference manifest, always strict (E2E)", () => {
          });
 
          expect(run.status).toBe("FAILED");
-         expect(String(run.error ?? "")).toContain("manifest");
+         // Loud, and in the author's terms: it names the upstream the build
+         // could not read, never Malloy's internal "not found in manifest".
+         const error = String(run.error ?? "");
+         expect(error).toContain("its persisted upstream 'orders_base'");
+         expect(error).not.toContain("not found in manifest");
 
          await deleteRun(run.id as string);
       },

@@ -22,7 +22,7 @@ SPDX-License-Identifier: MIT
 </script>
 ```
 
-`embed(selector, options)` returns `{ iframe, destroy() }`. Options: `src` (required), `token` (a signed token for cross-origin auth, appended as `embed_token`), `height` (omit to auto-size; a number is treated as pixels), and `allow` (the iframe permissions policy).
+`embed(selector, options)` returns `{ iframe, destroy() }`. Options: `src` (required), `token` (a signed token for cross-origin auth, appended as `embed_token`), `height` (omit to auto-size; a number is treated as pixels), `allow` (the iframe permissions policy; `clipboard-write; fullscreen` when omitted, `""` for none) and `sandbox` (the iframe sandbox tokens, replacing the default below).
 
 ## Sizing and the resize contract
 
@@ -37,6 +37,26 @@ The host scrolls; the frame does not. Inside an auto-sized frame `window.innerHe
 - **An auto-sized frame must never become scrollable.** Anything whose box reaches past the content's bottom edge (a sentinel, an absolutely positioned helper, an overlay) is scrollable overflow: the document grows past the height the host sized, and the reader's first wheel turns scroll the app inside its frame before the host moves. Keep every added element within the content, and check it with the harness rather than hiding overflow: a fixed-height frame (`height` above, or `publisher:fit`) needs the app to scroll inside it.
 - **Anything that floats over the page needs placing.** A drawer, a compare tray, a toast: built with `position: fixed` it opens at the top of the document, far above the reader, and focusing it scrolls the host page up to meet it. `reference/overlays.md` is the recipe: track the slice of the page the reader can see, place one clipped layer over it, contain its scroll, and focus without scrolling.
 
+A frame as tall as its content changes more than these two. Each is invisible standalone:
+
+- **`100vh` is the whole frame.** Size nothing to the viewport; a block sized to `100vh` grows to the host's height cap.
+- **Sticky never sticks**, because the frame never scrolls. A sticky header or scope bar is fine as long as nothing
+  depends on it staying in view.
+- **`scrollTo`, `scrollBy` and `scrollY` do nothing**, while `scrollIntoView` scrolls the host. To land a reader at
+  the top of a new view, call `scrollIntoView({ block: 'start' })` on its header, as the kit does.
+- **`IntersectionObserver` ignores `rootMargin` in a cross-origin frame**, so a lazy tile starts loading as it
+  enters the screen rather than before (`reference/lazy-load.md`).
+- **The runtime measures the bottoms of `body`'s children**, so a margin on the last child sits outside the
+  measurement and gives the frame an inner scrollbar. Put the space inside, as padding.
+- **The host may cap the frame's height**, for example at 20,000 px. A view runs taller at phone width than at
+  desktop, by half again or more, so keep each view under about 5,000 px at desktop width; split a long view into two
+  views rather than growing one.
+- **What the frame refuses fails silently.** Publisher's frame sandbox allows scripts, same-origin requests and
+  forms, so a download (a CSV button), a new tab and an `alert` do nothing inside it, though each works standalone.
+  A clipboard write and full screen work in the same-origin Console, and are refused in a frame on another origin
+  unless the host delegates them. A host may allow more. Check the kit's "Download CSV" and "Copy link"
+  in the frame your app will live in.
+
 Test embedded, not just standalone: the Publisher console renders a package's app at `/<env>/<package>/data-apps/<path>`, which exercises the same resize contract a host does (`reference/verification-harness.md`).
 
 ## Auth
@@ -46,5 +66,5 @@ Test embedded, not just standalone: the Publisher console renders a package's ap
 
 ## Guardrails (v1)
 
-- The iframe is sandboxed (`allow-scripts allow-same-origin allow-forms`). Design for that: no top-level navigation, no popups.
+- By default the iframe is sandboxed (`allow-scripts allow-same-origin allow-forms allow-downloads allow-popups`), with `clipboard-write` and `fullscreen` allowed. A download, a link in a new tab, a copy and full screen work; the opened tab keeps the sandbox, so its own dialogs do nothing and Chromium won't show a PDF in it: link a PDF with `download`. Top-level navigation and `alert`, `confirm`, `prompt` and `print` do not: drive dialogs in-page. A host's own `sandbox` replaces these tokens.
 - Embedded author JavaScript runs with the viewing user's data authority, so treat everything under `public/` as strictly first-party code: do not load untrusted third-party scripts, and do not move query results off to other hosts. Tighter per-embed isolation is planned.
