@@ -229,7 +229,9 @@ export function useModelSources(
       modelDoc: query.data?.modelDoc,
       hasImports: query.data?.hasImports ?? false,
       isLoading: query.isLoading,
-      isError: query.isError,
+      // Only a failure with nothing loaded: a background refetch that fails
+      // keeps the model already shown, as every other page does.
+      isLoadingError: query.isLoadingError,
       error: query.error as Error | null,
       // Exposed so the model pane's failure can offer a Retry: it replaces the
       // whole surface, which guide §6a says owns its error and its way out.

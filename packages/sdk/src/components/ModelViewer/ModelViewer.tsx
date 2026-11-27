@@ -219,7 +219,7 @@ export function ModelViewer({
       modelDoc,
       hasImports,
       isLoading,
-      isError,
+      isLoadingError,
       error,
       refetch,
    } = useModelSources(
@@ -275,7 +275,7 @@ export function ModelViewer({
    );
    // Withheld until the model has loaded: before then nothing is declared, and
    // a report would tell the host to clear every parameter it wrote.
-   const loaded = !isLoading && !isError;
+   const loaded = !isLoading && !isLoadingError;
    const reportGivens = useCallback(
       (next: Record<string, string>) =>
          onGivensChange?.(next, Array.from(declaredTypes.keys())),
@@ -504,7 +504,7 @@ export function ModelViewer({
 
    const body = (() => {
       if (isLoading) return <Loading text="Fetching Model..." />;
-      if (isError) {
+      if (isLoadingError) {
          // A refused read is an answer, not a failure: no Retry that asks the
          // same question again. In the server's words where it gave some.
          if (isNotFoundOrForbidden(error)) {

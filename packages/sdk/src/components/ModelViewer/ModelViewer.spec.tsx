@@ -1,7 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+   act,
+   fireEvent,
+   render,
+   screen,
+   waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import {
    cacheKeys,
@@ -9,6 +15,7 @@ import {
    mockServerProvider,
    serverWrapper,
 } from "../../../test/serverProvider";
+import { globalQueryClient } from "../../utils/queryClient";
 
 const string = { kind: "string_type" };
 const number = { kind: "number_type" };
@@ -157,6 +164,42 @@ describe("ModelViewer", () => {
          await screen.findByRole("button", { name: /Open source other/ }),
       );
       expect(onSourceChange.mock.calls).toEqual([["other"]]);
+   });
+
+   it("keeps a loaded model when a refetch fails", async () => {
+      // The model stays in the cache when a background refetch fails, and the
+      // reader was looking at it: an error card in its place threw it away
+      // over a request the reader never made.
+      render(<ModelViewer resourceUri={URI} />, { wrapper: serverWrapper });
+      expect(
+         await screen.findByRole("heading", { name: "items", level: 1 }),
+      ).toBeTruthy();
+
+      getModel.mockImplementation(() =>
+         Promise.reject(new Error("Network Error")),
+      );
+      try {
+         await act(async () => {
+            await globalQueryClient.refetchQueries();
+            // Let the failed refetch's state reach the render.
+            await new Promise((resolve) => setTimeout(resolve, 0));
+         });
+         expect(getModel).toHaveBeenCalledTimes(2);
+         console.log(
+            "DBG",
+            globalQueryClient
+               .getQueryCache()
+               .getAll()
+               .map((q) => JSON.stringify(q.queryKey) + ":" + q.state.status),
+            document.body.textContent?.slice(0, 300),
+         );
+         expect(
+            screen.getByRole("heading", { name: "items", level: 1 }),
+         ).toBeTruthy();
+         expect(screen.queryByText(/Failed to load model/)).toBeNull();
+      } finally {
+         getModel.mockImplementation(() => Promise.resolve(model));
+      }
    });
 
    it("says what the server said when the model isn't there", async () => {
