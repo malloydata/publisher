@@ -730,13 +730,17 @@ def claude(prompt: str, cwd: str, model: str, *, mcp: str | None,
            effort: str | None = None, timeout: int = 900,
            skills: bool = True, retry: int = 2,
            backoff: float = 20.0,
-           retry_when: Any = no_events) -> list[dict[str, Any]]:
-    """One `claude -p` run. With `skills=True` the workspace's
+           retry_when: Any = no_events,
+           resume: str | None = None) -> list[dict[str, Any]]:
+    """One `claude -p` run. `resume` continues that session (a follow-up
+    question after the earlier ones), with every fence below set again. With `skills=True` the workspace's
     `.claude/skills/` is loaded; see ISOLATION in the module docstring for how
     the answerer is confined once `--restricted` is off."""
     cmd = ["claude", "-p", prompt, "--model", model,
            "--output-format", "stream-json", "--verbose",
            "--max-turns", str(turns)]
+    if resume:
+        cmd += ["--resume", resume]
     # `--restricted` and skill loading are mutually exclusive: --restricted
     # ignores user, project and local settings, and project settings are what
     # load `.claude/skills/`. With skills on, isolation comes from the
@@ -2289,6 +2293,44 @@ PROVENANCE = "provenance"
 SERVER_DEAD = "server_dead"
 
 
+MAX_PRIOR = 3
+
+
+def replay_prior(case: dict[str, Any], a: argparse.Namespace, work: str, mcp: str,
+                 d: pathlib.Path, prompt: str) -> tuple[str | None, str]:
+    """Answer a follow-up's earlier questions first, in one session.
+
+    A production follow-up ("all summers, year over year") was asked after
+    other questions, and the agent answering it already knew the model from
+    them. So the earlier questions (`context.priorQuestions`, at most
+    MAX_PRIOR) are put to the same answerer first, the first with the full
+    prompt and each later one as a resumed turn. Their transcripts go to
+    `prior.jsonl` and are never judged or scored: the attempt is the last
+    turn alone. Returns (the session to resume, the prompt for the judged
+    question), or (None, prompt) when the case has no earlier questions."""
+    prior = ((case.get("context") or {}).get("priorQuestions") or [])[-MAX_PRIOR:]
+    if not prior:
+        return None, prompt
+    session, kept = None, []
+    for i, q in enumerate(prior):
+        text = prompt.replace(case["question"], q) if i == 0 else q
+        ev = claude(text, work, a.model, mcp=mcp, resume=session,
+                    tools=answer_tools(a), denied=answer_denied(a),
+                    builtins=tuple(sorted(ANSWERER_ALLOWED)),
+                    turns=a.max_turns, effort=a.effort, timeout=a.timeout,
+                    skills=bool(a.answerer_skills))
+        kept += [{"type": "prior_question", "index": i + 1, "question": q}, *ev]
+        res = next((e for e in reversed(ev) if e.get("type") == "result"), {})
+        session = res.get("session_id") or next(
+            (e.get("session_id") for e in ev if e.get("session_id")), None)
+        if not session:
+            break
+    (d / "prior.jsonl").write_text("".join(json.dumps(e) + "\n" for e in kept))
+    if not session:
+        return None, prompt
+    return session, case["question"]
+
+
 def capture_answerer(case: dict[str, Any], a: argparse.Namespace,
                      d: pathlib.Path) -> tuple[list[dict[str, Any]], float | None]:
     """The answerer's transcript, either spawned fresh or read back from disk.
@@ -2346,8 +2388,9 @@ def capture_answerer(case: dict[str, Any], a: argparse.Namespace,
             environment=a.environment, package=a.package,
             question=case["question"], scope_line=scope_line)
         t0 = time.time()
+        session, prompt = replay_prior(case, a, work, mcp, d, prompt)
         events = claude(
-            prompt, work, a.model, mcp=mcp,
+            prompt, work, a.model, mcp=mcp, resume=session,
             tools=answer_tools(a),
             # Only the local arm: the hosted server's tool surface belongs to
             # the platform, so there is no complement here to enumerate. That
@@ -2894,7 +2937,11 @@ with the keys in exactly this order:
   "verdict": "match|near_match|no_match|needs_human",
   "confidence": 1-10, "column_pairing": null,
   "gold_status": "verified|verified_benign|suspect|verified_wrong",
-  "gold_note": null}}
+  "gold_note": null, "depends_on": []}}
+
+`depends_on` lists the numbers of the EARLIER MESSAGES below that the question
+cannot be understood without, directly or through another earlier message.
+`[]` when it stands alone, or when there are no earlier messages.
 
 `why` comes first because the verdict must follow from the reasoning. Before you
 emit `verdict`, re-read what you wrote in `why`: if it says the value and the
@@ -2906,7 +2953,7 @@ It is `verified` unless you can point at something specific, and `gold_note` has
 to be concrete enough for someone else to check.
 
 QUESTION: {question}
-
+{conversation}
 GOLDEN ({kind}): {golden}
 
 CASE RUBRIC: {rubric_note}
@@ -3059,9 +3106,12 @@ def parse_verdict(text: str) -> dict[str, Any]:
     gs = v.get("gold_status")
     if gs not in ("verified", "verified_benign", "suspect", "verified_wrong"):
         gs = None
+    dep = v.get("depends_on")
+    dep = sorted({d for d in dep if isinstance(d, int) and d > 0}) if isinstance(dep, list) else []
     return {"verdict": verdict, "reason": reason, "confidence": conf,
             "column_pairing": v.get("column_pairing"),
-            "gold_status": gs, "gold_note": v.get("gold_note")}
+            "gold_status": gs, "gold_note": v.get("gold_note"),
+            **({"depends_on": dep} if dep else {})}
 
 
 def void_contaminated(verdict: dict[str, Any],
@@ -3480,6 +3530,33 @@ def unscorable_preflight(cases: list[dict[str, Any]], set_name: str
         "set of underived keys.")
 
 
+def conversation_for_judge(case: dict[str, Any]) -> str:
+    """What came before the question, and what the person said after it.
+
+    A follow-up ("all summers, year over year") means nothing alone, so the
+    judge reads the session's earlier user messages, each with a short excerpt
+    of the answer it got, never their tool calls. Two sources: a judging set's
+    `context.earlierMessages` (every earlier message, up to three; the judge
+    says which matter in `depends_on`), and an eval case's
+    `context.priorQuestions` (the ones the answerer replayed before this one).
+    `context.nextMessage` is what the person said next in production. It is
+    evidence (a correction, the question asked again), never the verdict."""
+    ctx = case.get("context") or {}
+    earlier = ctx.get("earlierMessages") or [
+        {"question": q} for q in ctx.get("priorQuestions") or []]
+    out = []
+    if earlier:
+        out.append("\nEARLIER MESSAGES in the same conversation, oldest first:")
+        for i, m in enumerate(earlier, 1):
+            out.append(f"  {i}. {m.get('question')}")
+            if m.get("answer"):
+                out.append(f"     (answer excerpt: {m['answer']})")
+    if ctx.get("nextMessage"):
+        out.append("\nWHAT THE PERSON SAID NEXT (evidence about the answer, not a verdict): "
+                   f"{ctx['nextMessage']}")
+    return "\n".join(out) + "\n" if out else ""
+
+
 def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
               art: pathlib.Path, rubric: str, model_src: str,
               reexec: bool) -> dict[str, Any]:
@@ -3578,6 +3655,7 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
     # "this alternate reading is fine" into one that appeared not to.
     prompt = JUDGE_PROMPT.format(
         rubric=rubric, question=case["question"], kind=g.get("kind"),
+        conversation=conversation_for_judge(case),
         golden=golden_for_judge(g, a.set_dir, case["qid"]),
         rubric_note=(g.get("rubric") or "none"),
         must_not_use=(must_not_use_note(

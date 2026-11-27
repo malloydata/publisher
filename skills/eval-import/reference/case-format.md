@@ -156,3 +156,20 @@ out by channel" is a shape nothing can settle with a query, so it became
 rubric prose and scores on day one; and "Up 12.4%" is a second figure the
 rubric now has to state consistently with the value, which
 `verify_goldens.py` reads the accepting clause for.
+
+## A question asked mid-conversation
+
+Two optional fields under `context`:
+
+- `context.priorQuestions`: the earlier questions a follow-up needs, oldest
+  first, at most three. A run answers them first, in the same session, and
+  judges only the case's own question. `eval.py build-set` writes it from what
+  production judging recorded in `depends_on`; write it by hand for a
+  hand-authored follow-up. The key answers the case's question as asked after
+  those, so derive it with them in mind.
+- `context.earlierMessages` and `context.nextMessage`: written only on a
+  judging set (`eval.py judge-sample pick`). The session's earlier user
+  messages, each with `question`, `kind` and an `answer` excerpt, and what the
+  person said next. The judge reads both. When you derive a key for a judging
+  case, read the earlier messages first: "all summers, year over year" after
+  "Ray-Ban summer sales" is about Ray-Ban.

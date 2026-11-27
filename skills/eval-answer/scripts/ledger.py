@@ -146,7 +146,10 @@ EVENTS: dict[str, dict[str, set[str]]] = {
                      # was expensive -- and a case that spent its whole turn
                      # budget without producing a verdict is the one worth
                      # finding.
-                     "judge_cost_usd", "at"},
+                     "judge_cost_usd", "at",
+                     # Which earlier messages of the conversation the question
+                     # needs (1-based), when the case carried any.
+                     "depends_on"},
     },
     "retrieval_score": {
         "required": {"intentId", "term"},

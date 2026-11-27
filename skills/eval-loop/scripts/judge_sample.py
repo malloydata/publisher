@@ -39,8 +39,24 @@ match nor a miss, is kept with `right` empty: it is left out of the rate and
 counted, never guessed. Rows are only appended. A new judge or rubric gives a
 new `metric_version`, and the history model never mixes two.
 
-The sample is uniform over the turns not yet judged, seeded by the label, so
-the same label picks the same turns.
+WHAT IS DRAWN
+
+- **Groups, not turns.** Turns asking the same question are one group
+  (case and spacing ignored; a follow-up groups only with turns that asked it
+  after the same earlier question). A demo prompt asked 45 times is judged
+  once, and its verdict is written for all 45 turns: the judged one, and 44
+  rows with `sampled_because: carried` and `judged_turn` naming it. So the
+  quality rate weighs it 45 times and the key is derived once.
+- **Signals first.** A group where the person's next message corrected the
+  answer, or asked the same question again, is drawn before the rest. The
+  signal is `user_signal` on the row and `context.nextMessage` on the case,
+  for the judge to weigh. It is never the verdict.
+- **Earlier messages.** Each case carries up to three earlier user messages
+  of its session (`context.earlierMessages`, with a short excerpt of each
+  answer). The judge says which the question needs (`depends_on`), and
+  `build-set` turns that into a follow-up case.
+- Up to N groups, uniform among the rest, seeded by the label, so the same
+  label draws the same groups. A turn whose `kind` is `build` is never drawn.
 """
 from __future__ import annotations
 
@@ -60,7 +76,9 @@ sys.path.insert(0, str(HERE))
 import config  # noqa: E402
 from optimization_package import APPENDED, append, install_for, metric_version, read  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
+from score_retrieval import score_case  # noqa: E402
 from build_set import normal  # noqa: E402
+import hashlib  # noqa: E402
 
 JUDGMENT_COLUMNS = APPENDED["prod_judgments"][2]
 SAFE = re.compile(r"[^A-Za-z0-9_-]+")
@@ -70,11 +88,99 @@ def qid_for(turn_id: str) -> str:
     return "p-" + SAFE.sub("-", turn_id).strip("-")[:60]
 
 
-def pick(turns: list[dict[str, str]], judged: set[str], n: int, seed: str) -> list[dict[str, str]]:
-    """N turns with a question and no judgment yet, drawn uniformly, oldest first."""
-    open_ = [t for t in turns if t.get("question") and t["turn_id"] not in judged]
-    chosen = random.Random(seed).sample(open_, min(n, len(open_)))
-    return sorted(chosen, key=lambda t: (t.get("at") or "", t["turn_id"]))
+MAX_EARLIER = 3
+EXCERPT = 300
+# What a person writes when the answer was wrong. Only a reason to judge the
+# turn first; the judge decides.
+CORRECTION = re.compile(
+    r"\b(wrong|incorrect|not (right|correct|what i)|doesn'?t (look right|match|add up|seem right)"
+    r"|that'?s not|is not right|isn'?t right|mistake|you missed|should (be|have)|are you sure)\b"
+    r"|^(no|nope|actually)\b", re.I)
+
+
+def sessions(turns: list[dict[str, str]]) -> dict[str, list[dict[str, str]]]:
+    """Each session's question turns, oldest first. Build turns are kept: a
+    follow-up of an edit request is not a data question."""
+    out: dict[str, list[dict[str, str]]] = {}
+    for t in turns:
+        if t.get("question"):
+            out.setdefault(t.get("session_id") or t["turn_id"], []).append(t)
+    for ts in out.values():
+        ts.sort(key=lambda t: (t.get("at") or "", t["turn_id"]))
+    return out
+
+
+def signal(turn: dict[str, str], nxt: dict[str, str] | None) -> str:
+    """What the person's next message says about this answer: `asked_again`,
+    `correction`, or ''."""
+    if not nxt:
+        return ""
+    if normal(nxt["question"]) == normal(turn["question"]):
+        return "asked_again"
+    return "correction" if CORRECTION.search(nxt["question"].strip()) else ""
+
+
+def answer_excerpt(transcript: str | None) -> str | None:
+    """The last prose the agent wrote in a turn, cut short."""
+    try:
+        events = json.loads(transcript) if transcript else []
+    except ValueError:
+        return None
+    text = ""
+    for e in events if isinstance(events, list) else []:
+        if e.get("type") == "assistant":
+            parts = [c.get("text", "") for c in (e.get("message") or {}).get("content") or []
+                     if isinstance(c, dict) and c.get("type") == "text"]
+            text = "".join(parts).strip() or text
+    text = " ".join(text.split())
+    return (text[:EXCERPT] + "...") if len(text) > EXCERPT else (text or None)
+
+
+def annotate(turns: list[dict[str, str]],
+             transcripts: dict[str, str] | None = None) -> dict[str, dict[str, Any]]:
+    """Per turn: its group, the signal in the next message, the next message,
+    and the earlier messages of its session."""
+    transcripts = transcripts or {}
+    out: dict[str, dict[str, Any]] = {}
+    for ts in sessions(turns).values():
+        for i, t in enumerate(ts):
+            prev = ts[i - 1]["question"] if i else ""
+            key = normal(t["question"]) if not i else normal(prev) + "\n" + normal(t["question"])
+            nxt = ts[i + 1] if i + 1 < len(ts) else None
+            earlier = [{"question": e["question"], "kind": e.get("kind") or "question",
+                        "answer": answer_excerpt(transcripts.get(e["turn_id"]))}
+                       for e in ts[max(0, i - MAX_EARLIER):i]]
+            out[t["turn_id"]] = {"group": hashlib.sha256(key.encode()).hexdigest()[:12],
+                                 "signal": signal(t, nxt),
+                                 "next": nxt["question"] if nxt else None,
+                                 "earlier": earlier}
+    return out
+
+
+def pick(turns: list[dict[str, str]], judged: set[str], n: int, seed: str,
+         notes: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Up to n groups of open turns (a question, not a build request, not yet
+    judged): groups with a signal first, then uniformly. Each group is
+    {"turn": the one judged, "members": every open turn in it, "signal"}.
+    Oldest first."""
+    notes = notes or annotate(turns)
+    groups: dict[str, list[dict[str, str]]] = {}
+    for t in turns:
+        if (t.get("question") and t["turn_id"] not in judged
+                and (t.get("kind") or "") != "build" and t["turn_id"] in notes):
+            groups.setdefault(notes[t["turn_id"]]["group"], []).append(t)
+    rng = random.Random(seed)
+    flagged, plain = [], []
+    for key in sorted(groups):
+        members = sorted(groups[key], key=lambda t: (t.get("at") or "", t["turn_id"]))
+        sig = [t for t in members if notes[t["turn_id"]]["signal"]]
+        rep = sig[0] if sig else rng.choice(members)
+        (flagged if sig else plain).append({"turn": rep, "members": members,
+                                            "signal": notes[rep["turn_id"]]["signal"]})
+    rng.shuffle(flagged)
+    rng.shuffle(plain)
+    chosen = (flagged + plain)[:n]
+    return sorted(chosen, key=lambda g: (g["turn"].get("at") or "", g["turn"]["turn_id"]))
 
 
 def judging_config(cfg: Any, dir_: pathlib.Path) -> dict[str, Any]:
@@ -109,8 +215,9 @@ def held_keys(parent: pathlib.Path) -> dict[str, dict[str, Any]]:
     return out
 
 
-def write_set(dir_: pathlib.Path, label: str, chosen: list[dict[str, str]],
-              cfg_data: dict[str, Any], parent: pathlib.Path | None = None) -> int:
+def write_set(dir_: pathlib.Path, label: str, chosen: list[dict[str, Any]],
+              cfg_data: dict[str, Any], parent: pathlib.Path | None = None,
+              notes: dict[str, dict[str, Any]] | None = None) -> int:
     """Write the judging set. Returns how many cases took a key from `parent`."""
     dir_.mkdir(parents=True, exist_ok=True)
     (dir_ / "eval.json").write_text(json.dumps(cfg_data, indent=1) + "\n")
@@ -124,15 +231,24 @@ def write_set(dir_: pathlib.Path, label: str, chosen: list[dict[str, str]],
             p = json.loads((parent / "set.json").read_text())
             meta.update({k: p[k] for k in INHERITED if k in p})
         keys = held_keys(parent)
-    n = 0
+    n, notes = 0, notes or {}
     with (dir_ / "cases.jsonl").open("w", encoding="utf-8") as f:
-        for t in chosen:
+        for grp in chosen:
+            t = grp["turn"]
             # `dev`: diagnose never reads the `test` split, which a set holds
             # back so its reported number stays honest. A judging set is never
             # used to accept an edit, and diagnosing its failures is the point.
             case = {"qid": qid_for(t["turn_id"]), "question": t["question"],
                     "source": t["turn_id"], "split": "dev", "tags": []}
-            g = keys.get(normal(t["question"]))
+            note = notes.get(t["turn_id"]) or {}
+            ctx = {k: v for k, v in (("earlierMessages", note.get("earlier")),
+                                     ("nextMessage", note.get("next"))) if v}
+            if ctx:
+                case["context"] = ctx
+            case["sourceFields"] = {"group": note.get("group"), "signal": grp.get("signal") or None,
+                                    "members": [m["turn_id"] for m in grp["members"]]}
+            # A held key fits only a question that stands alone.
+            g = None if note.get("earlier") else keys.get(normal(t["question"]))
             if g:
                 case["golden"], n = g, n + 1
             f.write(json.dumps(case) + "\n")
@@ -140,10 +256,11 @@ def write_set(dir_: pathlib.Path, label: str, chosen: list[dict[str, str]],
     return n
 
 
-def write_transcripts(run: pathlib.Path, chosen: list[dict[str, str]],
+def write_transcripts(run: pathlib.Path, chosen: list[dict[str, Any]],
                       transcripts: dict[str, str]) -> int:
     n = 0
-    for t in chosen:
+    for grp in chosen:
+        t = grp["turn"]
         text = transcripts.get(t["turn_id"])
         try:
             events = json.loads(text) if text else None
@@ -175,6 +292,20 @@ def judgments(run: pathlib.Path, cases: list[dict[str, Any]], now: str) -> list[
     judge, metric = meta.get("judgeVersion"), metric_version(meta)
     scores = {e.get("qid"): e for e in events if e.get("kind") == "score"}
     attempts = {e.get("qid"): e for e in events if e.get("kind") == "attempt"}
+    # Did get_context deliver what the key's query used: recall over the
+    # case's expectedEntities, scored from the transcript's tool calls.
+    recall: dict[str, float] = {}
+    for c in cases:
+        if not (c.get("expectedEntities") or {}).get("required") and not (
+                c.get("expectedEntities") or {}).get("requiredAnyOf"):
+            continue
+        phase = (attempts.get(c["qid"]) or {}).get("phase") or "baseline"
+        try:
+            r = score_case(c, events, (c["qid"], None, phase), None)
+        except Exception:  # noqa: BLE001 - a scoring failure leaves the cell empty
+            continue
+        if r.get("recall") is not None:
+            recall[c["qid"]] = r["recall"]
     issues: dict[str, dict[str, Any]] = {}
     for e in events:
         if e.get("kind") == "issue":
@@ -186,15 +317,31 @@ def judgments(run: pathlib.Path, cases: list[dict[str, Any]], now: str) -> list[
         a = attempts.get(c["qid"]) or {}
         v = s.get("verdict")
         right = True if v == "match" else False if v == "no_match" else None
-        out.append({"turn_id": c["source"], "judged_at": now, "run_id": run.name,
-                    "judge_version": judge, "metric_version": metric, "sampled_because": "random",
-                    "verdict": v or "not judged", "right": right,
-                    "failure_code": i.get("primary_code") if right is False else None,
-                    "component": i.get("component") if right is False else None,
-                    "owner": i.get("owner") if right is False else None,
-                    "note": None if v else "no score: the golden was not established, or the "
-                                           "case did not run",
-                    "basis": basis(a)})
+        sf = c.get("sourceFields") or {}
+        earlier = (c.get("context") or {}).get("earlierMessages") or []
+        deps = [earlier[d - 1]["question"] for d in s.get("depends_on") or []
+                if 0 < d <= len(earlier)]
+        r = recall.get(c["qid"])
+        row = {"turn_id": c["source"], "judged_at": now, "run_id": run.name,
+               "judge_version": judge, "metric_version": metric,
+               "sampled_because": "user_signal" if sf.get("signal") else "random",
+               "verdict": v or "not judged", "right": right,
+               "failure_code": i.get("primary_code") if right is False else None,
+               "component": i.get("component") if right is False else None,
+               "owner": i.get("owner") if right is False else None,
+               "note": None if v else "no score: the golden was not established, or the "
+                                      "case did not run",
+               "basis": basis(a), "question_group": sf.get("group"),
+               "judged_turn": c["source"], "user_signal": sf.get("signal"),
+               "depends_on": json.dumps(deps) if deps else None,
+               "key_kind": (c.get("golden") or {}).get("kind"),
+               "retrieval_recall": round(r, 4) if r is not None else None}
+        out.append(row)
+        # The rest of the group: same question, same key, same verdict.
+        for m in sf.get("members") or []:
+            if m != c["source"]:
+                out.append({**row, "turn_id": m, "sampled_because": "carried",
+                            "user_signal": None})
     return out
 
 
@@ -217,15 +364,19 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"No production turns in {data}. Fix: eval.py ingest --turns <file> first.")
         judged = {r["turn_id"] for r in read(data / "prod_judgments.csv")}
         n = a.n or cfg.get("optimization", "judge_sample")
-        chosen = pick(turns, judged, n, a.label)
+        transcripts = {r["turn_id"]: r["transcript"] for r in read(data / "prod_transcripts.csv")}
+        notes = annotate(turns, transcripts)
+        chosen = pick(turns, judged, n, a.label, notes)
         if not chosen:
             print("every ingested turn is already judged")
             return 0
         keyed = write_set(set_dir, a.label, chosen, judging_config(cfg, set_dir),
-                          pathlib.Path(a.set_dir))
-        transcripts = {r["turn_id"]: r["transcript"] for r in read(data / "prod_transcripts.csv")}
+                          pathlib.Path(a.set_dir), notes)
         have = write_transcripts(run, chosen, transcripts)
-        print(f"{len(chosen)} turns drawn ({len(turns) - len(judged)} not yet judged); "
+        weight = sum(len(g["members"]) for g in chosen)
+        flagged = sum(1 for g in chosen if g["signal"])
+        print(f"{len(chosen)} question groups drawn, covering {weight} turns "
+              f"({len(turns) - len(judged)} not yet judged); {flagged} drawn for a user signal; "
               f"{have} transcripts written to {run / 'artifacts'}")
         if have < len(chosen):
             print(f"  {len(chosen) - have} need fetch_transcripts.py --set {set_dir} --out {run}")

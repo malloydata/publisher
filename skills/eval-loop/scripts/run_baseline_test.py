@@ -2930,5 +2930,48 @@ class Recovery(unittest.TestCase):
         self.assertEqual(f(True, None, ["a"], True), "aborted")
 
 
+class FollowUps(unittest.TestCase):
+    def test_the_judge_reads_earlier_messages_and_the_next_one_and_says_which_matter(self):
+        case = {"question": "all summers, year over year",
+                "context": {"earlierMessages": [{"question": "ray ban summer sales",
+                                                 "answer": "Ray-Ban sold $7,402 in summer 2025."}],
+                            "nextMessage": "that's not right"}}
+        text = rb.conversation_for_judge(case)
+        self.assertIn("1. ray ban summer sales", text)
+        self.assertIn("answer excerpt: Ray-Ban sold $7,402", text)
+        self.assertIn("WHAT THE PERSON SAID NEXT", text)
+        self.assertEqual(rb.conversation_for_judge({"question": "x"}), "")
+        v = rb.parse_verdict('{"why": "ok", "verdict": "match", "confidence": 9, '
+                             '"column_pairing": null, "gold_status": "verified", '
+                             '"gold_note": null, "depends_on": [1, 1, 0, "x"]}')
+        self.assertEqual(v["depends_on"], [1])
+        self.assertNotIn("depends_on", rb.parse_verdict(
+            '{"why": "ok", "verdict": "match", "confidence": 9, "depends_on": []}'))
+
+    def test_earlier_questions_are_answered_first_in_one_session_and_kept_apart(self):
+        d = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        calls = []
+
+        def fake(prompt, work, model, **kw):
+            calls.append((prompt, kw.get("resume")))
+            return [{"type": "result", "session_id": "S1", "total_cost_usd": 0.1}]
+
+        a = argparse.Namespace(model="m", max_turns=30, effort=None, timeout=60,
+                               answerer_skills=None, target="local", package_skills_dir=None)
+        case = {"question": "all summers?", "context": {"priorQuestions": ["q1", "q2", "q3", "q4"]}}
+        with mock.patch.object(rb, "claude", fake), \
+                mock.patch.object(rb, "answer_tools", lambda a: ()), \
+                mock.patch.object(rb, "answer_denied", lambda a: ()):
+            session, prompt = rb.replay_prior(case, a, "/w", "/w/mcp.json", d,
+                                              "Question: all summers?\nUse get_context")
+        # At most three, the first with the full prompt, the rest resumed.
+        self.assertEqual(calls, [("Question: q2\nUse get_context", None), ("q3", "S1"), ("q4", "S1")])
+        self.assertEqual((session, prompt), ("S1", "all summers?"))
+        kept = [json.loads(l) for l in (d / "prior.jsonl").read_text().splitlines()]
+        self.assertEqual([e["question"] for e in kept if e["type"] == "prior_question"], ["q2", "q3", "q4"])
+        self.assertEqual(rb.replay_prior({"question": "x"}, a, "/w", "", d, "P"), (None, "P"))
+
+
 if __name__ == "__main__":
     unittest.main()
