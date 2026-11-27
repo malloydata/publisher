@@ -915,6 +915,8 @@ export interface GrainJoinKeySource {
  * its own `where:` included. No check, and a query that reads none of the
  * join's fields answers live, for a join that is:
  *
+ *  - `uncovered` (`joinOneGrain`): the build joins past it for the grain,
+ *    through another join no check of this one covers;
  *  - keyed on anything but one column of the joined source, or on a source
  *    no model names (an inline `extend`), which a query by name would not
  *    read as the join does;
@@ -933,7 +935,18 @@ export async function compileGrainJoinKeyChecks(
    for (const plan of plans) {
       if (plan.variant !== true) continue;
       const checks: GrainJoinKeyCheck[] = [];
-      for (const { join } of plan.joinOneGrain ?? []) {
+      for (const { join, uncovered } of plan.joinOneGrain ?? []) {
+         if (uncovered) {
+            logger.info(
+               "A #(rollup) rollup's grain join key is not checked; queries that read nothing through the join are answered live",
+               {
+                  rollup: plan.rollupSourceName,
+                  join,
+                  reason: "the build joins past it, through another join",
+               },
+            );
+            continue;
+         }
          const j = joinsOf(plan.baseSourceID).find(
             (x) => x.name === join && x.relationship === "one",
          );

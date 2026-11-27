@@ -2020,7 +2020,9 @@ async function storedJoinOf(
  * its own (a join_one keyed on its grain) and its base's
  * primary key, both over the base's rows on the source's own connection, the
  * rows a build from the author's definition groups; the key of each join_one
- * its grain reads, over the joined source's rows there; and the primary key of
+ * its grain reads, over the joined source's rows there as they are when the
+ * check runs (a separate query, so a change since the build is read, not the
+ * build's join); and the primary key of
  * each query source that reads a database rollup through a join_many on it.
  *
  * A build that stacked on a stored upstream (`upstreamReuse: "reused"`)

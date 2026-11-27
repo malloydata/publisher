@@ -653,3 +653,78 @@ for (const [label, grain, cases] of [
       });
    }
 }
+
+/**
+ * A grain read through `account` whose joined field reads `accounts`' own
+ * join_one `owner` (`owner_region is owner.oregion`): the build joins
+ * `account` and `account.owner`, so a check of `accounts.account_id` cannot
+ * prove the rows a repeated `owner_id` (100 twice) repeats. No key check is
+ * planned for it, and a query that reads nothing through `account` answers
+ * live, with live's totals; one that reads it is served, equal to live.
+ */
+const OWNER_MODEL = (body: string) => `##! experimental { persistence }
+source: owners is duckdb.sql("""select * from (values (100,'X'),(100,'Y'),(200,'Z')) t(owner_id, oregion)""") extend {
+  primary_key: owner_id
+}
+source: accounts is duckdb.sql("""select * from (values (1,'EU',100),(2,'EU',200),(3,'NA',200)) t(account_id, region, owner_id)""") extend {
+  primary_key: account_id
+  join_one: owner is owners with owner_id
+  dimension: owner_region is owner.oregion
+}
+source: subs is duckdb.sql("""select * from (values (10,1,DATE '2026-01-01',100.0),(11,1,DATE '2026-02-01',120.0),(12,2,DATE '2026-01-01',50.0),(13,3,DATE '2026-02-01',80.0),(14,3,DATE '2026-02-01',20.0),(15,7,DATE '2026-01-01',5.0)) t(sub_id, account_id, period, amount)""") extend {
+  primary_key: sub_id
+  join_one: account is accounts with account_id
+${body}
+}
+`;
+
+for (const [placementLabel, placement] of PLACEMENTS)
+   for (const [label, body, byOwner] of [
+      [
+         "path grain",
+         `  dimension: period_month is period.month
+  #(rollup) grain=["account.owner_region", "period_month"]${placement}
+  measure: mrr is amount.sum()`,
+         "run: subs -> { group_by: account.owner_region; aggregate: mrr }",
+      ],
+      [
+         "declared dimension",
+         `  dimension:
+    owner_region is account.owner_region
+    period_month is period.month
+  #(rollup) grain=["owner_region", "period_month"]${placement}
+  measure: mrr is amount.sum()`,
+         "run: subs -> { group_by: owner_region; aggregate: mrr }",
+      ],
+   ] as const)
+      describe(`R4 #2048: a grain read past the join_one, a repeated nested key [${label}, ${placementLabel}]`, () => {
+         let restore: () => void;
+         let fixture: R4Fixture;
+         beforeAll(async () => {
+            restore = installSettings(SETTINGS).restore;
+            fixture = await buildScenario({
+               files: { "m.malloy": OWNER_MODEL(body) },
+               seedSql: [],
+               preaggregate: true,
+               rollupKeyChecks: true,
+            });
+         });
+         afterAll(async () => {
+            restore();
+            await disposeScenarios();
+         });
+         it("a coarser query that does not read the join answers live, with live's totals", async () => {
+            const run = await fixture.run({
+               name: "coarser",
+               malloy:
+                  "run: subs -> { group_by: period_month; aggregate: mrr }",
+            });
+            expectLive(run);
+            expect(run.served.map((r) => r.mrr).sort()).toEqual([155, 220]);
+         });
+         it("a query grouped through the join is served, equal to live", async () => {
+            expectRollup(
+               await fixture.run({ name: "by owner", malloy: byOwner }),
+            );
+         });
+      });

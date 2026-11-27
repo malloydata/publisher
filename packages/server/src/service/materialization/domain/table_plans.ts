@@ -628,9 +628,14 @@ export interface RollupVariantPlan extends RollupPlan {
     * defined over the join, any expression (`upper(account.region)`). The
     * build joined it, so a key the data repeats repeated the rows its
     * partials summed; a query that reads none of the join's fields does not
-    * join it live, so it is served only when it reads the join. Absent: none.
+    * join it live, so it is served only when it reads the join, or when the
+    * build found the join's key unique (`grainJoinKeyChecks`). `uncovered`:
+    * the build joins past this join for the grain (another join its
+    * condition, its source's `where:` or the grain's field reads), which no
+    * key check of this one join proves, so only a query that reads it is
+    * served. Absent: none.
     */
-   joinOneGrain?: { join: string; grain: string[] }[];
+   joinOneGrain?: { join: string; grain: string[]; uncovered?: true }[];
    /**
     * Whether the base declares a row-level gate (`#(access_filter)` or
     * `#(authorize)`): the join-to-rollup branch reads the rollup through a

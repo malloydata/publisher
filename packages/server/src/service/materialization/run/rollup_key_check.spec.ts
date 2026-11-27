@@ -310,6 +310,43 @@ describe("the grain join key check, on a build (#2048, option A)", () => {
       expect(inline.rollup?.grainJoinKeyChecks).toBeUndefined();
    });
 
+   it("is not planned for a grain whose joined field reads a join of the joined source", async () => {
+      // `owner_region` reads `accounts`' own join_one `owner`: the build joins
+      // past `account`, which a check of `account_id` alone does not cover.
+      const s =
+         await scenario(`source: owners is duckdb.sql("select 100 as owner_id, 'X' as oregion") extend {
+  primary_key: owner_id
+}
+source: accounts is duckdb.table('accounts_src') extend {
+  primary_key: account_id
+  dimension: owner_id is 100
+  join_one: owner is owners with owner_id
+  dimension: owner_region is owner.oregion
+}
+source: subs is duckdb.table('subs_src') extend {
+  primary_key: sub_id
+  join_one: account is accounts with account_id
+  dimension:
+    period_month is period.month
+    owner_r is account.owner_region
+  #(rollup) grain=["account.owner_region", "period_month"]
+  measure: mrr is amount.sum()
+  #(rollup) grain=["owner_r", "period_month"]
+  measure: n is count()
+}
+`);
+      const plans = Object.values(
+         rollupPlansIn(s.compiled) ?? {},
+      ) as RollupVariantPlan[];
+      expect(plans).toHaveLength(2);
+      for (const plan of plans) {
+         expect(plan.joinOneGrain).toEqual([
+            expect.objectContaining({ join: "account", uncovered: true }),
+         ]);
+         expect(plan.grainJoinKeyChecks).toBeUndefined();
+      }
+   });
+
    it(
       "records unique, carries it with the table, and checks again on a rebuild",
       async () => {

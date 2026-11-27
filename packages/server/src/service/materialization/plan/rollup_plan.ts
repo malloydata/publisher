@@ -185,6 +185,10 @@ import {
 
 export type { GrainJoinKeyCheck, ParentKeyCheck, RollupKeyCheck };
 import type { SourceMap, SourceNode } from "../text/source_map";
+import {
+   filterJoinReads,
+   joinedSourceReads,
+} from "../../governance/ir/source_graph";
 import { fieldNotes } from "../text/field_notes";
 import { grainColumnOf, grainPathOf } from "../domain/rollup_grain";
 
@@ -1508,13 +1512,22 @@ function pathReadsCurrentTime(
 /**
  * The join_ones the grain reads through, each with the entries that read it
  * (`RollupVariantPlan.joinOneGrain`): a path entry's join, and each join_one
- * a dimension's definition reads, whatever the expression.
+ * a dimension's definition reads, whatever the expression. A join is marked
+ * `uncovered` when the build joins more than that one hop for the grain:
+ * the join's condition or its source's own `where:` reads another join, a
+ * path's joined field reads a join of the joined source
+ * (`account.owner_region` over `accounts`' own `owner`), a dimension reads
+ * past the join (`nested`) or through a join that is not a join_one, or
+ * the compiler did not record what any of these reads. A key check of the
+ * one join cannot prove the rows those other joins repeat, so no check is
+ * planned for it, and no verdict serves it.
  */
 function joinOneGrainOf(
    grain: readonly string[],
-   facts: Pick<RollupFacts, "joins" | "joinUsage">,
+   facts: Pick<RollupFacts, "joins" | "joinUsage" | "byName">,
 ): Pick<RollupVariantPlan, "joinOneGrain"> {
    const byJoin = new Map<string, string[]>();
+   const uncovered = new Set<string>();
    const add = (join: string, entry: string) => {
       if (facts.joins.get(join)?.relationship !== "one") return;
       const entries = byJoin.get(join) ?? [];
@@ -1525,15 +1538,46 @@ function joinOneGrainOf(
       const path = grainPathOf(g);
       if (path) {
          add(path.join, g);
+         const join = facts.joins.get(path.join);
+         if (!join) continue;
+         const field = joinedSourceReads(join).fieldJoins.get(path.field);
+         if (field === undefined || field.joins.size > 0 || field.nested) {
+            uncovered.add(path.join);
+         }
          continue;
       }
-      for (const j of facts.joinUsage.get(g)?.joins ?? []) add(j, g);
+      const usage = facts.joinUsage.get(g);
+      for (const j of usage?.joins ?? []) add(j, g);
+      const onlyOnes = [...(usage?.joins ?? [])].every(
+         (j) => facts.joins.get(j)?.relationship === "one",
+      );
+      if (usage === undefined || usage.nested || !onlyOnes) {
+         for (const j of usage?.joins ?? []) uncovered.add(j);
+      }
+   }
+   for (const join of byJoin.keys()) {
+      const condition = facts.joins.get(join)?.condition;
+      const filter = filterJoinReads(facts.byName.get(join));
+      if (
+         condition === undefined ||
+         condition.joins.size > 0 ||
+         condition.nested ||
+         filter === undefined ||
+         filter.joins.size > 0 ||
+         filter.nested
+      ) {
+         uncovered.add(join);
+      }
    }
    if (byJoin.size === 0) return {};
    return {
       joinOneGrain: [...byJoin]
          .sort(([a], [b]) => byCodepoint(a, b))
-         .map(([join, entries]) => ({ join, grain: entries })),
+         .map(([join, entries]) => ({
+            join,
+            grain: entries,
+            ...(uncovered.has(join) ? { uncovered: true as const } : {}),
+         })),
    };
 }
 

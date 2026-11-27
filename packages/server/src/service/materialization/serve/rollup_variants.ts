@@ -4215,7 +4215,10 @@ function baseShapeDecline(
  * a field through it (`account.region`), a grain entry that reads it
  * (`region is account.region`), or a stored measure that does; it then joins
  * live as the build did, and the rows agree whatever the key holds. A key
- * found unique repeated no row, so the partials are exact either way.
+ * the build's check found unique is read as repeating no row; the check is
+ * a separate query after the build, so it reads the joined source as it was
+ * then. A join the build joins past for the grain (`uncovered`) is never
+ * read as unique.
  */
 function joinOneDecline(
    plan: Pick<RollupVariantPlan, "joinOneGrain" | "rollupMeasures">,
@@ -4237,25 +4240,32 @@ function joinOneDecline(
             ),
       );
    let verdict = "unique" as KeyVerdict;
-   const unread = (plan.joinOneGrain ?? []).find(({ join, grain }) => {
-      if (
-         reads.some(
-            (p) =>
-               p.startsWith(`${join}.`) ||
-               grain.includes(p) ||
-               measureReads(p, join),
-         )
-      ) {
-         return false;
-      }
-      verdict = keyVerdict(join);
-      return !requireUnique(verdict);
-   });
+   let past = false;
+   const unread = (plan.joinOneGrain ?? []).find(
+      ({ join, grain, uncovered }) => {
+         if (
+            reads.some(
+               (p) =>
+                  p.startsWith(`${join}.`) ||
+                  grain.includes(p) ||
+                  measureReads(p, join),
+            )
+         ) {
+            return false;
+         }
+         // Joined past it for the grain: no check of this key covers the rows
+         // the other joins repeat, whatever one records.
+         past = uncovered === true;
+         verdict = past ? "unknown" : keyVerdict(join);
+         return !requireUnique(verdict);
+      },
+   );
    if (unread === undefined) return undefined;
-   const why =
-      verdict === "repeated"
-         ? "the rollup's last build found its key held more than once in the joined source, so the partials it summed are inflated"
-         : "its key was not checked unique when the rollup was built, so a repeat would have inflated the partials it summed";
+   const why = past
+      ? "the build joined past it, through another join no key check covers, so a repeat there would have inflated the partials it summed"
+      : verdict === "repeated"
+        ? "the rollup's last build found its key held more than once in the joined source, so the partials it summed are inflated"
+        : "its key was not checked unique when the rollup was built, so a repeat would have inflated the partials it summed";
    return new LegDecline(
       "rollup_count_semantics",
       // malloy-text: a decline detail for a person, not Malloy
