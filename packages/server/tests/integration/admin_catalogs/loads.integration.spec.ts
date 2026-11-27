@@ -2345,15 +2345,20 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          });
       }
 
-      /** Terminates every other backend of `database` and waits for each to exit: the signal alone returns before they have. */
-      async function killBackends(database: string) {
+      /** Terminates every other backend of `database` and waits for each to exit (the signal alone returns before it has); whether each did. */
+      async function killBackends(database: string): Promise<boolean[]> {
          const rows = await superuser(
             "SELECT pg_terminate_backend(pid, 5000) AS terminated FROM pg_stat_activity " +
                `WHERE datname = '${database}' AND pid <> pg_backend_pid()`,
             database,
          );
-         expect(rows.length).toBeGreaterThan(0);
-         expect(rows.every((row) => row.terminated === true)).toBe(true);
+         return rows.map((row) => row.terminated === true);
+      }
+
+      /** Asserted outside any transaction body, where a failed expectation would pass as the expected error. */
+      function expectKilled(killed: boolean[]) {
+         expect(killed.length).toBeGreaterThan(0);
+         expect(killed.every(Boolean)).toBe(true);
       }
 
       /**
@@ -2457,15 +2462,17 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                dead.conninfo,
             );
             const table = `${CATALOG}.s.dead`;
+            let killed: boolean[] = [];
             const error = await failure(
                inTransaction(session, table, async () => {
                   await session.runSQL(`INSERT INTO ${table} VALUES (99, 'x')`);
-                  await killBackends(dead.database);
+                  killed = await killBackends(dead.database);
                   await session.runSQL(
                      `INSERT INTO ${table} VALUES (100, 'y')`,
                   );
                }),
             );
+            expectKilled(killed);
             expect(error).toBeInstanceOf(Error);
             await dispose();
             expect(await dead.rowsAfter()).toEqual([
@@ -2493,7 +2500,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                "dead",
                dead.conninfo,
                `${CATALOG}.s.dead`,
-               () => killBackends(dead.database),
+               async () => expectKilled(await killBackends(dead.database)),
             );
             // Exit 134 is DuckLake's destructor rollback throwing past the disconnect.
             expect({

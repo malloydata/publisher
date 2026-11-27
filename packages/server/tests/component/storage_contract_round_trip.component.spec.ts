@@ -84,7 +84,7 @@ describe.skipIf(process.platform === "win32")(
          );
       };
 
-      /** A session as a build's or a bind's: db-duckdb's row limit of 10 lifted. */
+      /** A bind's session, on a plain connection as production binds: db-duckdb's row limit of 10 lifted. */
       const session = (name: string) =>
          new DuckDBConnection(name, path.join(dir, `${name}.duckdb`), dir, {
             rowLimit: Number.MAX_SAFE_INTEGER,

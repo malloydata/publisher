@@ -14,8 +14,8 @@
  * native memory and threads by the instance between collections: a sandbox
  * loop measured 2.7 GiB and about 700 threads within 30 s.
  *
- * The fix is `disconnectSync()` on that handle after `close()`, as build
- * sessions already do (createIsolatedBuildSession). db-duckdb cannot do it
+ * The fix is `disconnectSync()` on that handle after `close()`, which build
+ * sessions use too (createIsolatedBuildSession). db-duckdb cannot do it
  * unconditionally: upstream reverted it (PR #2793) because work still running
  * on the handle crashed (SIGSEGV, `bad_weak_ptr`). So this module disconnects
  * only a handle it can prove idle:

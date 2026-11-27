@@ -433,7 +433,7 @@ export class IsolatedSessionConnection extends DuckDBConnection {
          !this.cancelled &&
          !TRANSACTION_SAFE_ERROR.test(error.message)
       ) {
-         // Latched before the probe, which waits on the statement gate: a statement issued meanwhile is refused.
+         // Latched before the probe waits on the statement gate: a statement issued from now on is refused, one already queued is not.
          this.abortedBy ??= error;
          if (!(await this.transactionIsOpen()) && this.abortedBy === error) {
             this.abortedBy = undefined;
@@ -532,13 +532,7 @@ export function createIsolatedBuildSession(sessionName: string): {
    }
    const dispose = async () => {
       await rollbackBeforeDisconnect(session, sessionName);
-      // `close()` alone does not end the session: the node-api Connection's C++
-      // ClientContext keeps the instance refcount above zero, so the database,
-      // with the destination ATTACH and federated source credentials, survives
-      // (idle Postgres backends stranded until process exit). The disconnect
-      // waits for any native call still in flight; db-duckdb cannot disconnect
-      // unconditionally (malloy's translate layer holds weak_ptrs to its
-      // Connection), but a build session is server-owned and single-use.
+      // close() leaves the native ClientContext, with its attaches and credentials, alive until disconnected.
       try {
          await session.close();
       } catch (err) {
