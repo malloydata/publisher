@@ -27,6 +27,7 @@ import {
    type Runtime,
    type PersistSource,
    type QueryRecord,
+   type RunSQLOptions,
    MalloyError,
 } from "@malloydata/malloy";
 import { leaveOutDefinitionAt } from "../text/declarations_kept";
@@ -96,6 +97,7 @@ import {
    attachDuckLakeReadWrite,
 } from "../../connection";
 import { hardCloseWhenIdle } from "../../duckdb_hard_close";
+import { withStatementGate } from "../../duckdb_statement_gate";
 import { managedSearchPathSql } from "../../dialects/ducklake";
 import { serializeSQL } from "../../single_select";
 import { fileOutsideScope } from "../../same_catalog_tables";
@@ -367,8 +369,12 @@ const PARSER_ERROR = /^Parser Error:/;
  * DuckDB's refusal of statements after an error, which this class restores for
  * every transaction on the session: after a fatal error, an error that aborts
  * the open transaction, or a cancel, every statement but a rollback is refused.
- * The one gap is DuckDB's own default: a Binder or Catalog error mid-script
- * leaves the earlier statements committable. Revisit both on DuckDB >= 2.0.1.
+ * The check, the statement and the latch run under one hold of the statement
+ * gate, so no other statement interleaves. The gaps: DuckDB's own default, a
+ * Binder or Catalog error mid-script leaves the earlier statements committable;
+ * and a DuckLake catalog kept in a local DuckDB file is still checkpointed on
+ * close after a fatal error (production catalogs keep their metadata in
+ * Postgres). Revisit both on DuckDB >= 2.0.1.
  */
 export class IsolatedSessionConnection extends DuckDBConnection {
    /** The first INTERNAL or FATAL error: permanent. */
@@ -376,6 +382,8 @@ export class IsolatedSessionConnection extends DuckDBConnection {
    /** The error that aborted the open transaction: cleared by a rollback. */
    private abortedBy: Error | undefined;
    private cancelled = false;
+   /** The transaction probe is running: a statement-scoped interrupt must not kill it. */
+   private probing = false;
 
    /** The first fatal error the session latched. */
    get fatal(): Error | undefined {
@@ -388,27 +396,37 @@ export class IsolatedSessionConnection extends DuckDBConnection {
       this.interrupt();
    }
 
-   /** Interrupt the statement in flight; DuckDB stops it at its next poll. */
+   /** Interrupt the statement in flight; DuckDB stops it at its next poll. A no-op while the probe runs, whose statement is not the one being given up. */
    interrupt(): void {
-      this.connection?.interrupt();
+      if (!this.probing) this.connection?.interrupt();
    }
 
-   protected override async runDuckDBQuery(
+   protected override runDuckDBQuery(
       sql: string,
    ): Promise<{ rows: QueryRecord[]; totalRows: number }> {
       const rollback = isRollback(sql);
-      if (!rollback) this.refuseIfEnded();
-      let ran = true;
-      try {
-         return await super.runDuckDBQuery(sql);
-      } catch (err) {
-         ran = !PARSER_ERROR.test(errMessage(err));
-         await this.latch(err, rollback);
-         throw err;
-      } finally {
-         // DuckDB clears the transaction before it rolls back, so even a failed rollback leaves none open; a parse error ran nothing.
-         if (rollback && ran) this.abortedBy = undefined;
-      }
+      return withStatementGate(this, async () => {
+         if (!rollback) this.refuseIfEnded();
+         let ran = true;
+         try {
+            return await super.runDuckDBQuery(sql);
+         } catch (err) {
+            ran = !PARSER_ERROR.test(errMessage(err));
+            await this.latch(err, rollback);
+            throw err;
+         } finally {
+            // DuckDB clears the transaction before it rolls back, so even a failed rollback leaves none open; a parse error ran nothing.
+            if (rollback && ran) this.abortedBy = undefined;
+         }
+      });
+   }
+
+   override async *runSQLStream(
+      sql: string,
+      options?: RunSQLOptions,
+   ): AsyncIterableIterator<QueryRecord> {
+      this.refuseIfEnded();
+      yield* super.runSQLStream(sql, options);
    }
 
    private refuseIfEnded(): void {
@@ -436,11 +454,7 @@ export class IsolatedSessionConnection extends DuckDBConnection {
          !this.cancelled &&
          !TRANSACTION_SAFE_ERROR.test(error.message)
       ) {
-         // Latched before the probe waits on the statement gate: a statement issued from now on is refused, one already queued is not.
-         this.abortedBy ??= error;
-         if (!(await this.transactionIsOpen()) && this.abortedBy === error) {
-            this.abortedBy = undefined;
-         }
+         if (await this.transactionIsOpen()) this.abortedBy ??= error;
       }
    }
 
@@ -450,11 +464,14 @@ export class IsolatedSessionConnection extends DuckDBConnection {
     * other failure counts as open, so the next rollback clears it.
     */
    private async transactionIsOpen(): Promise<boolean> {
+      this.probing = true;
       try {
          await super.runDuckDBQuery("BEGIN; ROLLBACK");
          return false;
       } catch {
          return true;
+      } finally {
+         this.probing = false;
       }
    }
 }
@@ -574,9 +591,11 @@ async function rollbackBeforeDisconnect(
    sessionName: string,
 ): Promise<void> {
    if (session.fatal) {
+      // Only the matched type, never the message, which can quote a value.
+      const fatalType = FATAL_ERROR.exec(session.fatal.message)?.[1];
       logger.error("A fatal DuckDB error ended a build session", {
          sessionName,
-         code: errorCodeOf(session.fatal),
+         fatalType,
       });
    }
    try {

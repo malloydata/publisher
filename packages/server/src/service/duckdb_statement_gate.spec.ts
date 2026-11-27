@@ -7,7 +7,10 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { streamSqlWithBudget } from "../stream_helpers";
-import { installDuckDBStatementGate } from "./duckdb_statement_gate";
+import {
+   installDuckDBStatementGate,
+   withStatementGate,
+} from "./duckdb_statement_gate";
 
 installDuckDBStatementGate();
 
@@ -210,5 +213,22 @@ describe("concurrent statements on one DuckDB connection", () => {
       } finally {
          await fresh.close();
       }
+   });
+
+   it("holds the gate for a body, whose own statements and nested holds pass straight through", async () => {
+      const order: string[] = [];
+      const held = withStatementGate(connection, async () => {
+         await connection.runSQL("SELECT 1 AS one", ALL);
+         await withStatementGate(connection, async () => {
+            await connection.runSQL("SELECT 2 AS two", ALL);
+         });
+         await sleep(50);
+         order.push("body");
+      });
+      const other = connection
+         .runSQL("SELECT 3 AS three", ALL)
+         .then(() => order.push("other"));
+      await Promise.all([held, other]);
+      expect(order).toEqual(["body", "other"]);
    });
 });

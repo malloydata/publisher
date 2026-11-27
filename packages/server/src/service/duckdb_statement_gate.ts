@@ -48,6 +48,8 @@ const gates = new WeakMap<object, Mutex>();
  */
 const holding = new AsyncLocalStorage<{ connection: object; held: boolean }>();
 let installed = false;
+/** Whether the gate patched db-duckdb; false when its internals changed shape. */
+let active = false;
 
 /**
  * Takes the gate, or gives up when `signal` aborts first (undefined), so a
@@ -89,6 +91,28 @@ function gateOf(connection: object): Mutex {
       gates.set(connection, gate);
    }
    return gate;
+}
+
+/**
+ * Run `fn` holding `connection`'s gate, so the statements it runs on that
+ * connection (which pass straight through, as a stream's own do) are not
+ * interleaved with another caller's. Runs `fn` as is when the context already
+ * holds that gate, or when the gate is not installed.
+ */
+export async function withStatementGate<T>(
+   connection: object,
+   fn: () => Promise<T>,
+): Promise<T> {
+   const hold = holding.getStore();
+   if (!active || (hold?.held && hold.connection === connection)) return fn();
+   return gateOf(connection).runExclusive(async () => {
+      const mine = { connection, held: true };
+      try {
+         return await holding.run(mine, fn);
+      } finally {
+         mine.held = false;
+      }
+   });
 }
 
 /** Idempotent; installed once per process (connection.ts). */
@@ -144,4 +168,5 @@ export function installDuckDBStatementGate(): void {
          release();
       }
    };
+   active = true;
 }
