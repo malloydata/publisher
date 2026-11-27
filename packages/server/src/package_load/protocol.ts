@@ -299,6 +299,14 @@ export interface LoadPackageResult {
     * the other workers to forget (see {@link ForgetSchemasMessage}).
     */
    refreshedSchemaKeys?: string[];
+   /**
+    * The sha256 of every `file:` text this load's compiles read, failed
+    * compiles' included, by normalized URL (`job_files.ts` `urlKey`). A
+    * reload keeps a file's last good model only when every file that model
+    * read is unchanged since it compiled, so a recompile that fails on an
+    * author's edit is never mistaken for one that failed on a dropped table.
+    */
+   fileDigests?: Record<string, string>;
    /** Wall-clock ms inside the worker for the full package load. */
    loadDurationMs: number;
    /**

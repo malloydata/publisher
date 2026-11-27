@@ -58,6 +58,7 @@ import { deserializeError, serializeError } from "./error_wire";
 import {
    compileOrder,
    dataStylesForModel,
+   fileTextDigests,
    jobFiles,
    ModelCacheView,
    modelFileTexts,
@@ -1602,6 +1603,7 @@ async function loadPackage(
       models,
       replacementMatchedExisting,
       ...(refresh ? { refreshedSchemaKeys: [...refresh.refetched] } : {}),
+      fileDigests: fileTextDigests(files),
       loadDurationMs: loadEnd - loadStart,
       timings: {
          // Clamped: rounding can nudge it slightly negative.

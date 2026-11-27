@@ -305,6 +305,17 @@ export function checkLoadPackageResult(raw: unknown): LoadPackageResult {
          `a load-package-result has refreshedSchemaKeys that are not strings`,
       );
    }
+   if (
+      raw.fileDigests !== undefined &&
+      !(
+         isRecord(raw.fileDigests) &&
+         Object.values(raw.fileDigests).every((d) => typeof d === "string")
+      )
+   ) {
+      throw new PackageLoadProtocolError(
+         `a load-package-result has fileDigests that are not strings`,
+      );
+   }
    for (const model of raw.models) decodeSerializedModel(model);
    return raw as unknown as LoadPackageResult;
 }

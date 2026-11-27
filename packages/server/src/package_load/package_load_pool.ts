@@ -340,6 +340,8 @@ export interface LoadPackageOutcome {
    timings: LoadPackageResult["timings"];
    /** See {@link LoadPackageResult.buildPlan}. */
    buildPlan?: LoadPackageResult["buildPlan"];
+   /** See {@link LoadPackageResult.fileDigests}. */
+   fileDigests?: Readonly<Record<string, string>>;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1386,6 +1388,7 @@ function adaptResult(result: LoadPackageResult): LoadPackageOutcome {
       loadDurationMs: result.loadDurationMs,
       timings: result.timings,
       buildPlan: result.buildPlan,
+      ...(result.fileDigests ? { fileDigests: result.fileDigests } : {}),
    };
 }
 
