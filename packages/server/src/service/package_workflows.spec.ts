@@ -593,7 +593,8 @@ describe("package workflows", () => {
          ).toEqual([
             {
                code: "PACKAGE_AGENTS_NOT_READ",
-               message: '"agents" is no longer read; declare "workflows"',
+               message:
+                  '"agents" is no longer read. Fix: declare "workflows" instead; the "Migrating from agents and a root skills/" section of the packages guide shows how each agent maps onto one',
                severity: "warn",
             },
          ]);
@@ -618,7 +619,7 @@ describe("package workflows", () => {
             {
                code: "PACKAGE_SKILLS_DIR_NOT_READ",
                message:
-                  'skills/ is no longer read; move each skill into a skill set and list it under "workflows.default"',
+                  'skills/ is no longer read, so none of its skills is served. Fix: add "workflows": { "default": { "skillSets": ["skills"] } } to publisher.json (or add "skills" to the skillSets of a default workflow it already declares), or move each skill into a skill set and list that set under "workflows.default"',
                severity: "warn",
             },
          ]);
@@ -663,7 +664,7 @@ describe("package workflows", () => {
    });
 
    describe("a skill set picked alone", () => {
-      const DUPLICATE = `Workflow 'analyst' lists skill 'conventions' in both '${MAIN}' and '${SECOND}'; the copy in '${MAIN}', listed first, is the one served.`;
+      const DUPLICATE = `Workflow 'analyst' lists skill 'conventions' in both '${MAIN}' and '${SECOND}'; the copy in '${MAIN}', listed first, is the one served. Fix: rename one of the two skills, or list only one of the sets.`;
 
       beforeEach(() => {
          write(

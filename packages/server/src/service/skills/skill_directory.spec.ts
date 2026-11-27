@@ -1063,6 +1063,7 @@ describe("a skill set's own skills", () => {
          expect(warnings).toHaveLength(1);
          expect(warnings[0]).toContain("skills/loose/SKILL.md");
          expect(warnings[0]).toContain("not valid YAML");
+         expect(warnings[0]).toContain("Fix: correct the YAML");
       });
 
       it("warns about a name outside the spec's character set, and still serves a skill whose directory has that name", () => {
@@ -1075,6 +1076,7 @@ describe("a skill set's own skills", () => {
          expect(warnings).toHaveLength(1);
          expect(warnings[0]).toContain("skills/My_Skill/SKILL.md");
          expect(warnings[0]).toContain('"My_Skill"');
+         expect(warnings[0]).toContain("Fix: rename the skill to such a name");
       });
    });
 });

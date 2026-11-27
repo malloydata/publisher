@@ -1147,7 +1147,7 @@ describe("readPackageWorkflows", () => {
                code: SKILL_SHADOWED,
                subject: "analyst",
                severity: "warn",
-               message: `Workflow 'analyst' lists skill 'conventions' in both '${MAIN}' and '${SECOND}'; the copy in '${MAIN}', listed first, is the one served.`,
+               message: `Workflow 'analyst' lists skill 'conventions' in both '${MAIN}' and '${SECOND}'; the copy in '${MAIN}', listed first, is the one served. Fix: rename one of the two skills, or list only one of the sets.`,
             },
          ]);
          expect(result.warnings).toEqual(workflow.shadowing);

@@ -105,7 +105,7 @@ export function parseFrontmatter(md: string, dirName: string): Frontmatter {
          frontmatter: {},
          body,
          warnings: [
-            `has frontmatter of ${bytes} bytes, over 4 KiB, so it is not read as YAML and its name and description are read line by line`,
+            `has frontmatter of ${bytes} bytes, over 4 KiB, so it is not read as YAML and its name and description are read line by line. Fix: shorten the frontmatter`,
          ],
       };
    }
@@ -117,8 +117,8 @@ export function parseFrontmatter(md: string, dirName: string): Frontmatter {
          body,
          warnings: [
             parsed.bound
-               ? `has frontmatter that is valid YAML but too large to read once its aliases are expanded (${parsed.problem}), so its name and description are read line by line`
-               : `has frontmatter that is not valid YAML (${parsed.problem}), so its name and description are read line by line`,
+               ? `has frontmatter that is valid YAML but too large to read once its aliases are expanded (${parsed.problem}), so its name and description are read line by line. Fix: remove the aliases`
+               : `has frontmatter that is not valid YAML (${parsed.problem}), so its name and description are read line by line. Fix: correct the YAML`,
          ],
       };
    }
@@ -137,7 +137,7 @@ export function parseFrontmatter(md: string, dirName: string): Frontmatter {
          frontmatter: value,
          body,
          warnings: [
-            `declares the name ${JSON.stringify(declared)}, which is not 1-${SKILL_NAME_MAX_CHARS} lowercase letters, digits and single hyphens, so its name and description are read line by line`,
+            `declares the name ${JSON.stringify(declared)}, which is not 1-${SKILL_NAME_MAX_CHARS} lowercase letters, digits and single hyphens, so its name and description are read line by line. Fix: rename the skill to such a name`,
          ],
       };
    }

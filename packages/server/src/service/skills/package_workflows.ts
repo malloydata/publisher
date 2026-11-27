@@ -2083,7 +2083,7 @@ function walkPackageWorkflows(
                warning(
                   SKILL_SHADOWED,
                   name,
-                  `Workflow '${name}' lists skill '${skill.dirName}' in both '${first}' and '${setPath}'; the copy in '${first}', listed first, is the one served.`,
+                  `Workflow '${name}' lists skill '${skill.dirName}' in both '${first}' and '${setPath}'; the copy in '${first}', listed first, is the one served. Fix: rename one of the two skills, or list only one of the sets.`,
                ),
             );
             return false;

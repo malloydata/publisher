@@ -55,7 +55,8 @@ export function agentsNotReadFindings(parsed: {
       : [
            {
               code: PACKAGE_AGENTS_NOT_READ,
-              message: '"agents" is no longer read; declare "workflows"',
+              message:
+                 '"agents" is no longer read. Fix: declare "workflows" instead; the "Migrating from agents and a root skills/" section of the packages guide shows how each agent maps onto one',
               severity: "warn",
            },
         ];
@@ -65,7 +66,7 @@ export const SKILLS_DIR_NOT_READ: ApiPackageWarning = {
    code: PACKAGE_SKILLS_DIR_NOT_READ,
    severity: "warn",
    message:
-      'skills/ is no longer read; move each skill into a skill set and list it under "workflows.default"',
+      'skills/ is no longer read, so none of its skills is served. Fix: add "workflows": { "default": { "skillSets": ["skills"] } } to publisher.json (or add "skills" to the skillSets of a default workflow it already declares), or move each skill into a skill set and list that set under "workflows.default"',
 };
 
 /** Count one load or reload of a package whose root `skills/` nothing reads. */
