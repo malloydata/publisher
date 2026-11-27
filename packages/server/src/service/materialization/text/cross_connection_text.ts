@@ -88,6 +88,25 @@ export function refusedJoinConnections(
    return named ? { joined: named[1], into: named[2] } : undefined;
 }
 
+/**
+ * The two connections each join refusal in `error` names, when `error` is
+ * Malloy refusing joins across connections ({@link isCrossConnectionRefusal});
+ * undefined otherwise, or when a refusal's words name no two connections.
+ */
+export function refusedJoinPairs(
+   error: unknown,
+): { joined: string; into: string }[] | undefined {
+   if (!isCrossConnectionRefusal(error)) return undefined;
+   const pairs: { joined: string; into: string }[] = [];
+   for (const p of errorProblems(error) ?? []) {
+      if (p.code !== JOIN_CONNECTION_MISMATCH) continue;
+      const pair = refusedJoinConnections(p.message);
+      if (!pair) return undefined;
+      pairs.push(pair);
+   }
+   return pairs;
+}
+
 /** Whether a problem's code is Malloy refusing a join across connections. */
 export function isJoinConnectionMismatch(code: string | undefined): boolean {
    return code === JOIN_CONNECTION_MISMATCH;

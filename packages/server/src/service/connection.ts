@@ -2034,6 +2034,7 @@ export function buildEnvironmentMalloyConfig(
                      metadata?.apiConnection.ducklakeConnection
                         ?.readableSchemas,
                   ),
+                  config: metadata?.apiConnection,
                });
                return applyConnectionFingerprint(connection, metadata);
             },

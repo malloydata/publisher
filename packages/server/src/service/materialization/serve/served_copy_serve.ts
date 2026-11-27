@@ -165,6 +165,7 @@ import {
 } from "../../classification";
 import { annotationValue } from "../../malloy_text";
 import {
+   errorProblems,
    isCrossConnectionRefusal,
    leaveOutCrossConnectionJoins,
 } from "../text/cross_connection_text";
@@ -199,6 +200,11 @@ import {
    ZONED_TRUNCATION_REASON,
 } from "./served_copy_checks";
 import { reportQueryWalk } from "./query_walks";
+import { readSameCatalogThroughDestination } from "./same_catalog_reads";
+import {
+   allBaseTables,
+   sameCatalogScope,
+} from "../../same_catalog_destination";
 import type { ScopeLane } from "./scope_facts";
 
 export type { ServedCopyProblem } from "./served_copy_types";
@@ -2351,8 +2357,9 @@ export class ServedCopyServe {
          }));
          const overlay = new Map(copy.files);
          const packagePath = this.packagePath;
+         const packageConfig = this.packageConfig;
          const config = servedCopyConfig(
-            this.packageConfig,
+            packageConfig,
             destinations(),
             new Set(
                rerooted
@@ -2361,7 +2368,21 @@ export class ServedCopyServe {
             ),
          );
          const load = this.passLoader(packagePath, config);
-         const loaded = await this.loadCopy(state, copy, overlay, load, lift);
+         const underAlias = this.underAliasLoader(
+            packagePath,
+            packageConfig,
+            destinations,
+            rerooted,
+         );
+         const loaded = await this.loadCopy(
+            state,
+            copy,
+            overlay,
+            load,
+            lift,
+            config,
+            underAlias,
+         );
          if (loaded === "retry") continue;
          if (loaded === "failed") {
             return {
@@ -2376,6 +2397,7 @@ export class ServedCopyServe {
          }
          const { materializer, servedDef, servedRuntime, leftOut, files } =
             loaded;
+         const compiledConfig = loaded.config ?? config;
          // Only a join of a source still re-rooted was kept for it.
          problems.push(
             ...state.inlinedKept.filter((p) =>
@@ -2401,7 +2423,7 @@ export class ServedCopyServe {
             materializer,
             leftOut,
             files,
-            config,
+            config: compiledConfig,
             rerooted,
             aliased,
             throughBase,
@@ -2415,6 +2437,32 @@ export class ServedCopyServe {
          rerooted: [],
          aliased: [],
          problems,
+      };
+   }
+
+   /**
+    * A pass's loader over its destinations' connections looked up under
+    * their aliases, for a copy that reads a connection's tables through them
+    * (same_catalog_reads.ts).
+    */
+   private underAliasLoader(
+      packagePath: string,
+      packageConfig: ModelConnectionInput,
+      destinations: () => MalloyConfig,
+      rerooted: readonly Binding[],
+   ): SameCatalogLoad {
+      return (names) => {
+         const config = servedCopyConfig(
+            packageConfig,
+            destinations(),
+            new Set(
+               rerooted
+                  .filter((b) => !isDatabase(b))
+                  .map((b) => b.destinationName),
+            ),
+            names,
+         );
+         return { config, load: this.passLoader(packagePath, config) };
       };
    }
 
@@ -2523,6 +2571,8 @@ export class ServedCopyServe {
       overlay: ReadonlyMap<string, string>,
       load: CopyLoad,
       lift: ReturnType<typeof authorModelLiftContext>,
+      config: MalloyConfig,
+      underAlias: SameCatalogLoad,
    ): Promise<LoadedCopy | "retry" | "failed"> {
       const { withoutKept, problems } = state;
       let materializer: ModelMaterializer;
@@ -2565,12 +2615,24 @@ export class ServedCopyServe {
             if (!known) this.rememberFailure(failureKey, err, state.asOf);
             return "retry";
          }
-         // A reference join the re-root moved across connections (question
-         // 11): leave it out, with what reads it, so every other query
-         // still reads the table.
          const byURL = new Map(
             [...copy.files].map(([url, text]) => [url, text] as const),
          );
+         // A join the re-root moved across connections that are one catalog
+         // (same_catalog_reads.ts): read the joined source through the
+         // destination too, so the join compiles and is served.
+         const merged = await this.readSameCatalogThroughDestination(
+            state,
+            err,
+            byURL,
+            lift,
+            config,
+            underAlias,
+         );
+         if (merged) return merged;
+         // A reference join the re-root moved across connections (question
+         // 11): leave it out, with what reads it, so every other query
+         // still reads the table.
          const kept = await leaveOutCrossConnectionJoins({
             firstError: err,
             overlay: byURL,
@@ -2631,6 +2693,68 @@ export class ServedCopyServe {
          leftOut = kept.leftOut;
       }
       return { materializer, servedDef, servedRuntime, leftOut, files };
+   }
+
+   /**
+    * The pass's copy with every table on a connection its cross-connection
+    * refusal `err` joins across one catalog read through the destination
+    * (same_catalog_reads.ts), compiled; undefined when the refusal is not
+    * only such joins, a table may not be moved, or the moved copy does not
+    * compile, so the joins are left out as before.
+    */
+   private async readSameCatalogThroughDestination(
+      state: CopyPassState,
+      err: unknown,
+      files: ReadonlyMap<string, string>,
+      lift: ReturnType<typeof authorModelLiftContext>,
+      config: MalloyConfig,
+      underAlias: SameCatalogLoad,
+   ): Promise<LoadedCopy | undefined> {
+      const moved = await readSameCatalogThroughDestination({
+         error: err,
+         files,
+         readText: (u) => lift.fileText(u),
+         modelDef: this.host.modelDef(),
+         rerooted: new Set(state.candidates.map((c) => c.reroot.sourceID)),
+         ports: {
+            scope: (connection, alias) =>
+               sameCatalogScope(config, connection, alias),
+            baseTables: (alias, tables) => allBaseTables(config, alias, tables),
+         },
+      }).catch(() => ({ declined: "a read of its connections failed" }));
+      if ("declined" in moved) {
+         logger.debug(
+            "A served copy's join across one catalog is not read through the destination; its joins are left out",
+            { modelPath: this.host.modelPath(), why: moved.declined },
+         );
+         return undefined;
+      }
+      const keyed = keyedOverlay(moved.files);
+      const { config: aliased, load } = underAlias(moved.destinations);
+      try {
+         const loaded = await load(keyed);
+         logger.debug(
+            "A served copy reads a joined source on its destination's catalog through the destination",
+            { modelPath: this.host.modelPath() },
+         );
+         return {
+            materializer: loaded.materializer,
+            servedDef: loaded.def,
+            servedRuntime: loaded.runtime,
+            leftOut: [],
+            files: keyed,
+            config: aliased,
+         };
+      } catch (again) {
+         logger.debug(
+            "A served copy's same-catalog read does not compile; its joins are left out",
+            {
+               modelPath: this.host.modelPath(),
+               codes: errorProblems(again)?.map((p) => p.code),
+            },
+         );
+         return undefined;
+      }
    }
 
    /**
@@ -2967,7 +3091,19 @@ interface LoadedCopy {
    servedRuntime: GraftRuntime;
    leftOut: LeftOutDefinition[];
    files: ReadonlyMap<string, string>;
+   /**
+    * The connections it compiled with, when not the pass's: a copy that
+    * reads a connection's tables through a destination looks the
+    * destination up under its alias (same_catalog_reads.ts).
+    */
+   config?: MalloyConfig;
 }
+
+/** The pass's loader over its destinations looked up under their aliases, for `names`. */
+type SameCatalogLoad = (names: ReadonlySet<string>) => {
+   config: MalloyConfig;
+   load: CopyLoad;
+};
 
 /**
  * The author sources a compiled copy reads from a stored table: each one
