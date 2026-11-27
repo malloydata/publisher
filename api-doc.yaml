@@ -7883,10 +7883,13 @@ components:
           type: string
           description: >-
             Present when `doc` is not the field's own: the one-hop join path
-            (`account.region`) whose `#(doc)` it reports, because the field is
-            a dimension defined as exactly that path and has none of its own.
-            A `#(doc)` written on the dimension wins, and an expression over
-            the path inherits nothing.
+            whose `#(doc)` it reports, because the field is a dimension
+            defined as exactly that path (or as exactly another such
+            undocumented dimension of the source, `a_chain is a_res`) and has
+            none of its own. Written in plain names, `join.field`, never
+            backquoted, even for a join named by a reserved word
+            (`source.region`). A `#(doc)` written on the dimension wins, and an
+            expression over the path inherits nothing.
         table:
           $ref: "#/components/schemas/EntityTable"
         join:

@@ -37,6 +37,10 @@ source: subs is duckdb.sql("select 10 as sub_id, 1 as account_id") extend {
     #(doc) The region, as the subscription reports it.
     own_region is account.sales_region
     up_region is upper(account.sales_region)
+    a_res is account.sales_region
+    a_chain is a_res
+  join_one: \`source\` is accounts with account_id
+  dimension: via_reserved is \`source\`.sales_region
 }
 `;
 
@@ -97,6 +101,33 @@ describe("an inherited #(doc) in the package index (get_context)", () => {
    });
 });
 
+describe("an inherited #(doc) through an alias chain and a reserved-word join (get_context)", () => {
+   it("keeps the mark on a chained alias, which folds its link into it", async () => {
+      const { pkg } = await compileJoinFixture("m.malloy", {
+         modelText: MODEL_TEXT,
+      });
+      const index = await getPackageIndex(
+         new WeakMap(),
+         storeServing(pkg),
+         "env",
+         "pkg",
+      );
+      const dims = [...index.byId.values()].filter(
+         (e) => e.kind === "dimension" && e.source === "subs",
+      );
+      const chain = dims.find((e) => e.name === "a_chain");
+      expect(chain).toMatchObject({
+         doc: REGION_DOC,
+         docInheritedFrom: "account.sales_region",
+         aliases: ["a_res"],
+      });
+      expect(dims.find((e) => e.name === "via_reserved")).toMatchObject({
+         doc: REGION_DOC,
+         docInheritedFrom: "source.sales_region",
+      });
+   });
+});
+
 describe("an inherited #(doc) in GET …/entities", () => {
    async function field(name: string) {
       const results = await compileFixture({ "m.malloy": MODEL_TEXT });
@@ -115,6 +146,22 @@ describe("an inherited #(doc) in GET …/entities", () => {
       const f = await field("own_region");
       expect(f?.doc).toBe("The region, as the subscription reports it.");
       expect(f?.docInheritedFrom).toBeUndefined();
+   });
+
+   it("reports it on each link of an alias chain, with the same mark", async () => {
+      for (const name of ["a_res", "a_chain"]) {
+         expect(await field(name)).toMatchObject({
+            doc: REGION_DOC,
+            docInheritedFrom: "account.sales_region",
+         });
+      }
+   });
+
+   it("names a reserved-word join in plain names, as the index does", async () => {
+      expect(await field("via_reserved")).toMatchObject({
+         doc: REGION_DOC,
+         docInheritedFrom: "source.sales_region",
+      });
    });
 
    it("inherits nothing for an expression over the path", async () => {
