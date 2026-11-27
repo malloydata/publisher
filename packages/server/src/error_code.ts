@@ -54,3 +54,32 @@ export function errorCodeOf(err: unknown): string {
    }
    return "Error";
 }
+
+/** The runtime's own errors whose text {@link runtimeErrorTextOf} carries. */
+const RUNTIME_ERROR_NAMES = new Set(["TimeoutError", "AbortError"]);
+
+// A short plain sentence, as the runtime writes one: no digits, quotes or
+// punctuation that could carry an identifier, a value or SQL.
+const RUNTIME_TEXT = /^[A-Za-z][A-Za-z ,.'-]{0,119}$/;
+
+/**
+ * The runtime's own text for a timeout or an abort in `err`'s cause chain (a
+ * `TimeoutError` or `AbortError` DOMException, whose code is a number: "The
+ * operation timed out." beside code `23`), which a log may carry beside
+ * {@link errorCodeOf}: the runtime writes it, so it quotes no SQL and no
+ * value, and the bare number names nothing. Undefined for any other error.
+ */
+export function runtimeErrorTextOf(err: unknown): string | undefined {
+   for (const e of causeChain(err)) {
+      const { code } = e as Error & { code?: unknown };
+      if (
+         typeof code === "number" &&
+         RUNTIME_ERROR_NAMES.has(e.name) &&
+         typeof e.message === "string" &&
+         RUNTIME_TEXT.test(e.message)
+      ) {
+         return e.message;
+      }
+   }
+   return undefined;
+}
