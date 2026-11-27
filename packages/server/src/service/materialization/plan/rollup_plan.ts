@@ -173,6 +173,7 @@ import {
    type ParentKeyCheck,
    type RollupKeyCheck,
    type RollupMeasure,
+   type RollupPathColumn,
    type RollupVariantPlan,
 } from "../domain/table_plans";
 import {
@@ -183,6 +184,8 @@ import {
 
 export type { ParentKeyCheck, RollupKeyCheck };
 import type { SourceMap, SourceNode } from "../text/source_map";
+import { fieldNotes } from "../text/field_notes";
+import { grainColumnOf, grainPathOf } from "../domain/rollup_grain";
 
 /** The route `#(rollup)` is on. */
 const ROLLUP_ROUTE = "rollup";
@@ -1182,18 +1185,7 @@ function declarationRefusal(
          "the measure is not public, and a rollup would publish it",
       );
    }
-   const grainProblem = decl.grain
-      .map((g) => {
-         const f = byName.get(g);
-         if (g.includes(".")) {
-            return `the grain names \`${g}\`, a path; declare a dimension on the source that reads it, and name that`;
-         }
-         if (!f || !isDimension(f)) {
-            return `the grain names \`${g}\`, which is not a dimension of the source`;
-         }
-         return undefined;
-      })
-      .find((p) => p !== undefined);
+   const grainProblem = grainProblemOf(decl.grain, facts);
    if (grainProblem) {
       // v1's validation fails the load for its own line, in its words.
       if (decl.v1) return "skip";
@@ -1210,7 +1202,7 @@ function declarationRefusal(
       : timeFields.has(decl.measure)
         ? "the measure reads the current time (`now`, or a relative time filter)"
         : decl.grain
-             .filter((g) => timeFields.has(g))
+             .filter((g) => timeFields.has(g) || pathReadsCurrentTime(g, facts))
              .map(
                 (g) =>
                    `its grain dimension \`${g}\` reads the current time (\`now\`, or a relative time filter)`,
@@ -1274,7 +1266,15 @@ function declarationRefusal(
    const unreadableGrain =
       decl.storage === undefined
          ? undefined
-         : unreadableStoredGrain(decl.grain, byName, facts.dialect);
+         : unreadableStoredGrain(
+              decl.grain,
+              (g) => {
+                 if (!g.includes(".")) return byName.get(g);
+                 const path = pathGrainOf(g, facts);
+                 return "problem" in path ? undefined : path.joined;
+              },
+              facts.dialect,
+           );
    if (unreadableGrain) {
       return unservable(
          "unreadable_grain",
@@ -1352,6 +1352,205 @@ function declarationRefusal(
 }
 
 /**
+ * Why `grain` does not name the source's grain, or undefined: each entry a
+ * dimension of the source, or a one-hop path ({@link pathGrainOf}) whose
+ * stored column (`account__region`) no field of the source and no other
+ * entry already has.
+ */
+function grainProblemOf(
+   grain: readonly string[],
+   facts: Pick<RollupFacts, "byName" | "joins">,
+): string | undefined {
+   const { byName } = facts;
+   const columns = new Map<string, string>();
+   return grain
+      .map((g) => {
+         const f = byName.get(g);
+         if (g.includes(".")) {
+            const path = pathGrainOf(g, facts);
+            if ("problem" in path) return path.problem;
+            // Stored under the `inline=` naming, which no field of the
+            // source and no other grain entry may already have.
+            const column = grainColumnOf(g);
+            if (byName.has(column) || columns.has(column)) {
+               // malloy-text: a refusal message for a person, not Malloy
+               return `the grain names \`${g}\`, stored as \`${column}\`, which is already the name of ${byName.has(column) ? "a field of the source" : `\`${columns.get(column)}\``}`;
+            }
+            columns.set(column, g);
+            return undefined;
+         }
+         if (!f || !isDimension(f)) {
+            return `the grain names \`${g}\`, which is not a dimension of the source`;
+         }
+         columns.set(g, g);
+         return undefined;
+      })
+      .find((p) => p !== undefined);
+}
+
+/**
+ * A path grain entry (`account.region`) resolved: `join` a join_one or
+ * join_many of the source, one hop, and `field` a public dimension of the
+ * joined source, with the joined field itself; else why it is refused, in
+ * words that name what was written. A path through a hidden join, or to a
+ * field that is not public, is refused too: the build reads the base from
+ * outside it, where neither is readable.
+ */
+function pathGrainOf(
+   grain: string,
+   facts: Pick<RollupFacts, "byName" | "joins">,
+):
+   | { join: string; field: string; joined: FieldLike; relationship: string }
+   | { problem: string } {
+   const [head, second, ...rest] = grain.split(".");
+   const join = facts.joins.get(head as string);
+   const joinField = facts.byName.get(head as string);
+   if (!join || !joinField) {
+      return {
+         problem: `the grain names \`${grain}\`, which reads no join of the source; a truncation or a field of a record is named through a dimension on the source that reads it`,
+      };
+   }
+   const joinedFields = new Map(
+      (((joinField as { fields?: unknown[] }).fields ?? []) as FieldLike[]).map(
+         (f) => [fieldNameOf(f), f],
+      ),
+   );
+   const joined = joinedFields.get(second);
+   if (rest.length > 0) {
+      return {
+         problem:
+            joined?.join !== undefined
+               ? `the grain names \`${grain}\`, a path through more than one join; a grain reads one join, so declare a dimension on \`${head}\`'s source that reads the rest, and name \`${head}.<that dimension>\``
+               : `the grain names \`${grain}\`, a truncation through a join; declare the truncated dimension on \`${head}\`'s source, and name \`${head}.<that dimension>\``,
+      };
+   }
+   if (join.relationship === "cross") {
+      return {
+         problem: `the grain names \`${grain}\`, through \`${head}\`, a join_cross; a path grain reads a join_one or a join_many`,
+      };
+   }
+   if (!joined || !isDimension(joined)) {
+      return {
+         problem: `the grain names \`${grain}\`, but \`${second}\` is not a dimension of \`${head}\`'s source`,
+      };
+   }
+   if (isHidden(joinField) || isHidden(joined)) {
+      return {
+         problem: `the grain names \`${grain}\`, which is not public (${isHidden(joinField) ? `the join \`${head}\`` : `\`${second}\` on its source`} is not), so a rollup's build cannot read it`,
+      };
+   }
+   return {
+      join: head as string,
+      field: second as string,
+      joined,
+      relationship: join.relationship,
+   };
+}
+
+/**
+ * The stored columns of `grain` that hold a one-hop join path's value
+ * (`RollupVariantPlan.pathColumns`): each path entry, and each dimension
+ * whose compiled definition is exactly a read of one (`region is
+ * account.region`), matched on the compiler's expression, never its text.
+ */
+function pathColumnsOf(
+   grain: readonly string[],
+   facts: Pick<RollupFacts, "byName" | "joins">,
+): RollupPathColumn[] {
+   const out: RollupPathColumn[] = [];
+   const add = (
+      entry: string,
+      column: string,
+      join: string,
+      joined: FieldLike,
+   ) => {
+      const field = fieldNameOf(joined) as string;
+      const timeframe = (joined as { timeframe?: unknown }).timeframe;
+      out.push({
+         grain: entry,
+         column,
+         join,
+         field,
+         ...(typeof timeframe === "string" ? { timeframe } : {}),
+         ...(fieldNotes(joined).length > 0 ? { annotated: true as const } : {}),
+      });
+   };
+   for (const g of grain) {
+      if (g.includes(".")) {
+         const path = pathGrainOf(g, facts);
+         if (!("problem" in path))
+            add(g, grainColumnOf(g), path.join, path.joined);
+         continue;
+      }
+      const read = exactPathRead(facts.byName.get(g)?.e);
+      if (!read) continue;
+      const path = pathGrainOf(read.join("."), facts);
+      if ("problem" in path) continue;
+      add(g, g, path.join, path.joined);
+   }
+   return out;
+}
+
+/** Whether the path grain entry `g` names a joined dimension that reads the current time. */
+function pathReadsCurrentTime(
+   g: string,
+   facts: Pick<RollupFacts, "byName" | "joins">,
+): boolean {
+   const path = grainPathOf(g);
+   if (!path || !facts.joins.has(path.join)) return false;
+   const joinField = facts.byName.get(path.join) as
+      | { fields?: unknown[] }
+      | undefined;
+   return currentTimeFields(joinField?.fields as never).has(path.field);
+}
+
+/**
+ * The join_ones the grain reads through, each with the entries that read it
+ * (`RollupVariantPlan.joinOneGrain`): a path entry's join, and each join_one
+ * a dimension's definition reads, whatever the expression.
+ */
+function joinOneGrainOf(
+   grain: readonly string[],
+   facts: Pick<RollupFacts, "joins" | "joinUsage">,
+): Pick<RollupVariantPlan, "joinOneGrain"> {
+   const byJoin = new Map<string, string[]>();
+   const add = (join: string, entry: string) => {
+      if (facts.joins.get(join)?.relationship !== "one") return;
+      const entries = byJoin.get(join) ?? [];
+      if (!entries.includes(entry)) entries.push(entry);
+      byJoin.set(join, entries);
+   };
+   for (const g of grain) {
+      const path = grainPathOf(g);
+      if (path) {
+         add(path.join, g);
+         continue;
+      }
+      for (const j of facts.joinUsage.get(g)?.joins ?? []) add(j, g);
+   }
+   if (byJoin.size === 0) return {};
+   return {
+      joinOneGrain: [...byJoin]
+         .sort(([a], [b]) => byCodepoint(a, b))
+         .map(([join, entries]) => ({ join, grain: entries })),
+   };
+}
+
+/** The two-part field path `e` is exactly a read of, or undefined. */
+function exactPathRead(e: unknown): [string, string] | undefined {
+   const n = e as { node?: unknown; path?: unknown } | undefined;
+   if (
+      n?.node !== "field" ||
+      !Array.isArray(n.path) ||
+      n.path.length !== 2 ||
+      !n.path.every((p) => typeof p === "string")
+   ) {
+      return undefined;
+   }
+   return n.path as [string, string];
+}
+
+/**
  * The first grain dimension a `storage=` rollup's table would store as a type
  * no stored read declares ({@link storedMalloyType}: a BLOB, an INTERVAL, a
  * MAP or a JSON), with that type. Every read of the rollup groups by its
@@ -1361,12 +1560,12 @@ function declarationRefusal(
  */
 function unreadableStoredGrain(
    grain: readonly string[],
-   byName: ReadonlyMap<string, FieldLike>,
+   fieldOf: (grain: string) => FieldLike | undefined,
    dialect: string | undefined,
 ): { name: string; storedType: string } | undefined {
    if (dialect !== STORAGE_DIALECT) return undefined;
    for (const name of grain) {
-      const f = byName.get(name);
+      const f = fieldOf(name);
       if (f?.type !== "sql native" || typeof f.rawType !== "string") continue;
       const storedType = f.rawType.toUpperCase();
       if (storedMalloyType(storedType) === undefined) {
@@ -1497,6 +1696,7 @@ function rollupPlanOf(
          );
       }
    }
+   const pathColumns = pathColumnsOf(decl.grain, facts);
    const liftedAncestors = [...inherited.values()].sort(
       (a, b) =>
          a.range.start.line - b.range.start.line ||
@@ -1537,7 +1737,11 @@ function rollupPlanOf(
       facts.declaration
          ? { declaration: facts.declaration }
          : {}),
+      ...(pathColumns.length > 0 ? { pathColumns } : {}),
+      ...joinOneGrainOf(decl.grain, facts),
       fanOutDimensions: decl.grain.filter((g) => {
+         const path = grainPathOf(g);
+         if (path) return joins.get(path.join)?.relationship !== "one";
          const usage = joinUsage.get(g);
          if (usage === undefined) return joinUsage.has(g);
          return (
@@ -1914,7 +2118,10 @@ export function rollupKeyCheckQuery(
    plan: RollupVariantPlan,
 ): string | undefined {
    const [key, ...rest] = plan.grainDimensions;
-   if (key === undefined || rest.length > 0) return undefined;
+   // A path grain is never a join's key column: no join reads it as one.
+   if (key === undefined || rest.length > 0 || grainPathOf(key)) {
+      return undefined;
+   }
    // malloy-text: keyCheckPipeline writes its names through identifier
    return `run: ${keyCheckPipeline("rollup_key", rollupBaseAlias(plan.baseDeclaredName), key)}`;
 }
