@@ -541,12 +541,7 @@ export class BuildPlanUnavailableError extends Error {
    }
 }
 
-/**
- * A loaded package whose workflows could not be read at load (a listed skill
- * set that cannot be read, or a walk that threw): 409, because the models
- * still serve and the workflows are not absent. The message carries the
- * reason, and it lasts until the package reloads.
- */
+/** 409: the package's workflows could not be read at load; the models still serve and the workflows are not absent, until it reloads. */
 export class WorkflowsUnavailableError extends Error {
    get kind(): "workflows_unavailable" {
       return "workflows_unavailable";

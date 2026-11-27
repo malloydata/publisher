@@ -22,12 +22,14 @@ import fsSync from "fs";
 import * as os from "os";
 import * as path from "path";
 import { SkillController } from "../controller/skill.controller";
+import { skillsFor } from "../retrieval/search/response";
 import { resetDeprecatedUsageMetricsForTest } from "../deprecated_usage_metrics";
 import {
    PackageManifestError,
    WorkflowNotFoundError,
    WorkflowsUnavailableError,
 } from "../errors";
+import { registerGetSkillTool } from "../mcp/tools/get_skill_tool";
 import { registerGetWorkflowTool } from "../mcp/tools/get_workflow_tool";
 import {
    PackageLoadPool,
@@ -46,6 +48,7 @@ import { compileSource, type CompileSourceHost } from "./compile_source";
 import type { PackageLookup } from "./environment_ports";
 import { Package } from "./package";
 import { canonicalSha, computeSourceContentSha } from "./package_revision";
+import { BUNDLED_CATALOG } from "./skills/package_skills";
 import {
    readPackageWorkflows,
    SKILLS_PER_SET_MAX,
@@ -148,6 +151,8 @@ describe("package workflows", () => {
       isError?: boolean;
       content: Array<{ resource?: { text: string } }>;
    }>;
+
+   type ToolReply = Awaited<ReturnType<Handler>>;
 
    const toolFor = (pkg: Package): Handler => {
       let handler: Handler | undefined;
@@ -1786,23 +1791,26 @@ describe("package workflows", () => {
       describe("a package whose skill sets cannot be read", () => {
          // A dot directory, which the package's own file listing skips, so only the walk reads it.
          const HIDDEN = ".sets/main";
-         const unreadable = (fn: () => Promise<void>) => async () => {
-            write(
-               `${HIDDEN}/conventions/SKILL.md`,
-               "---\nname: conventions\ndescription: d\n---\n\nbody\n",
-            );
-            manifest({
-               workflows: {
-                  analyst: { ...analyst(), skill_sets: [HIDDEN] },
-               },
-            });
-            fs.chmodSync(path.join(dir, HIDDEN), 0o000);
-            try {
-               await fn();
-            } finally {
-               fs.chmodSync(path.join(dir, HIDDEN), 0o755);
-            }
-         };
+         const unreadable =
+            (fn: () => Promise<void>, others: Record<string, unknown> = {}) =>
+            async () => {
+               write(
+                  `${HIDDEN}/conventions/SKILL.md`,
+                  "---\nname: conventions\ndescription: d\n---\n\nbody\n",
+               );
+               manifest({
+                  workflows: {
+                     analyst: { ...analyst(), skill_sets: [HIDDEN] },
+                     ...others,
+                  },
+               });
+               fs.chmodSync(path.join(dir, HIDDEN), 0o000);
+               try {
+                  await fn();
+               } finally {
+                  fs.chmodSync(path.join(dir, HIDDEN), 0o755);
+               }
+            };
 
          it.skipIf(isRoot || isWindows)(
             "still loads its models, and answers the workflow routes 409 with the reason, not 404",
@@ -1827,9 +1835,8 @@ describe("package workflows", () => {
                      "conventions/SKILL.md",
                   ),
                ).rejects.toBeInstanceOf(WorkflowsUnavailableError);
-               expect(() => pkg.listSkills()).toThrow(
-                  WorkflowsUnavailableError,
-               );
+               // `analyst` is no `default`, so the package has no skills of its own to be unavailable.
+               expect(pkg.listSkills()).toEqual([]);
                // A name the manifest never declared is still not found.
                await expect(
                   controller.getWorkflow("env", "pkg", "nope"),
@@ -1852,7 +1859,115 @@ describe("package workflows", () => {
                const named = await tool({ scopes, workflow_name: "analyst" });
                expect(named.isError).toBe(true);
                expect(named.content[0]!.resource?.text).toContain("EACCES");
+               const undeclared = await tool({ scopes, workflow_name: "nope" });
+               expect(undeclared.isError).toBeFalsy();
+               const answer = JSON.parse(undeclared.content[0]!.resource!.text);
+               expect(answer.workflow).toBeNull();
+               expect(answer.message).toContain('No workflow named "nope"');
             }),
+         );
+
+         it.skipIf(isRoot || isWindows)(
+            "keeps a workflow refused at declaration not found, while another one's set cannot be read",
+            unreadable(
+               async () => {
+                  const pkg = await load();
+                  const controller = new SkillController(storeFor(pkg));
+                  await expect(
+                     controller.getWorkflow("env", "pkg", "refused"),
+                  ).rejects.toBeInstanceOf(WorkflowNotFoundError);
+                  await expect(
+                     controller.getWorkflow("env", "pkg", "analyst"),
+                  ).rejects.toBeInstanceOf(WorkflowsUnavailableError);
+               },
+               { refused: { surprise: 1 } },
+            ),
+         );
+
+         it.skipIf(isRoot || isWindows)(
+            "serves the bundled skills, and says nothing in get_context, when the package declares no default",
+            unreadable(async () => {
+               const pkg = await load();
+               const controller = new SkillController(storeFor(pkg));
+               const listed = await controller.listSkills("env", "pkg");
+               expect(listed.length).toBeGreaterThan(0);
+               expect(listed.every((skill) => skill.origin === "bundled")).toBe(
+                  true,
+               );
+               const first = listed[0]!.name!;
+               expect(
+                  (await controller.getSkill("env", "pkg", first)).name,
+               ).toBe(first);
+               let handler: ((p: unknown) => Promise<ToolReply>) | undefined;
+               registerGetSkillTool(
+                  {
+                     registerTool: (
+                        _n: string,
+                        _c: unknown,
+                        h: (p: unknown) => Promise<ToolReply>,
+                     ) => {
+                        handler = h;
+                     },
+                  } as never,
+                  storeFor(pkg),
+                  BUNDLED_CATALOG,
+               );
+               const viaMcp = await handler!({
+                  scopes: [{ environment: "env", package: "pkg" }],
+                  skill_name: first,
+               });
+               expect(viaMcp.isError).toBeFalsy();
+               expect(skillsFor({ pkgIndex: { pkg } } as never)).toEqual({});
+            }),
+         );
+
+         it.skipIf(isRoot || isWindows)(
+            "answers the reason, not an empty list, for the package's own skills when it declares a default",
+            unreadable(
+               async () => {
+                  const pkg = await load();
+                  const controller = new SkillController(storeFor(pkg));
+                  await expect(
+                     controller.listSkills("env", "pkg"),
+                  ).rejects.toBeInstanceOf(WorkflowsUnavailableError);
+                  await expect(
+                     controller.getSkill("env", "pkg", "conventions"),
+                  ).rejects.toBeInstanceOf(WorkflowsUnavailableError);
+                  const reply = skillsFor({ pkgIndex: { pkg } } as never);
+                  expect(reply).toEqual({
+                     skills_note: expect.stringContaining(
+                        `scandir '${HIDDEN}'`,
+                     ),
+                  });
+               },
+               { default: { skill_sets: [HIDDEN] } },
+            ),
+         );
+
+         it.skipIf(isRoot || isWindows)(
+            "makes the walk unavailable, and never refuses the workflow, for an instructions file that cannot be read",
+            async () => {
+               manifest({ workflows: { analyst: analyst() } });
+               const file = path.join(dir, "workflows/analyst/instructions.md");
+               fs.chmodSync(file, 0o000);
+               try {
+                  const pkg = await load();
+                  const controller = new SkillController(storeFor(pkg));
+                  await expect(
+                     controller.getWorkflow("env", "pkg", "analyst"),
+                  ).rejects.toBeInstanceOf(WorkflowsUnavailableError);
+                  await expect(
+                     controller.listWorkflows("env", "pkg"),
+                  ).rejects.toBeInstanceOf(WorkflowsUnavailableError);
+                  expect(
+                     (pkg.getPackageMetadata().warnings ?? [])
+                        .map((w) => w.message ?? "")
+                        .join("\n"),
+                  ).not.toContain("is not served");
+               } finally {
+                  fs.chmodSync(file, 0o644);
+               }
+            },
          );
 
          it.skipIf(isRoot || isWindows)(
@@ -1869,6 +1984,41 @@ describe("package workflows", () => {
                ]);
             }),
          );
+      });
+
+      describe("a notebook in the package", () => {
+         const NOTEBOOK =
+            '>>>markdown\n# Notes\n>>>malloy\nrun: duckdb.sql("select 1 as id")\n';
+         let pool: TamperingPool;
+         let outcome: LoadPackageOutcome | undefined;
+         beforeEach(async () => {
+            pool = new TamperingPool(1);
+            pool.tamper = (o) => {
+               outcome = o;
+            };
+            outcome = undefined;
+            await usePool(pool);
+            manifest({});
+            write("nb.malloynb", NOTEBOOK);
+         });
+
+         it("hashes into the source pin without joining the digests that keep a last good model serving", async () => {
+            const pkg = await load();
+            expect(
+               Object.keys(outcome!.fileDigests!).some((url) =>
+                  url.endsWith("nb.malloynb"),
+               ),
+            ).toBe(false);
+            expect(outcome!.modelShas!.get("nb.malloynb")).toBe(sha(NOTEBOOK));
+            const compiledFrom = (
+               pkg as unknown as { compiledFrom: Map<string, unknown> }
+            ).compiledFrom;
+            expect(compiledFrom.has("nb.malloynb")).toBe(false);
+            expect(compiledFrom.has("model.malloy")).toBe(true);
+            const before = pkg.getSourceContentSha();
+            write("nb.malloynb", `${NOTEBOOK}\n`);
+            expect((await load()).getSourceContentSha()).not.toBe(before);
+         });
       });
 
       describe("a skill set past the skill cap", () => {

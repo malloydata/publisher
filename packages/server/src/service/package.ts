@@ -126,6 +126,7 @@ import {
 } from "./skills/package_skills";
 import {
    adoptWorkflows,
+   DEFAULT_WORKFLOW,
    emptyWorkflows,
    type PackageWorkflows,
 } from "./skills/package_workflows";
@@ -671,13 +672,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.sourceContentSha;
    }
 
-   /**
-    * The walk of the package's workflows, or a {@link WorkflowsUnavailableError}
-    * (a 409 that says why) when the load could not read its skill sets: an
-    * unread set is not an absent workflow, which a 404 would say. With `name`,
-    * a workflow the manifest never declared is still absent, so it is returned
-    * (empty) rather than thrown.
-    */
+   /** Throws for an unread walk, since an unread set is not an absent workflow; a `name` the manifest never declared is still absent. */
    private readableWorkflows(name?: string): PackageWorkflows {
       const { unavailable } = this.workflows;
       if (
@@ -691,9 +686,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.workflows;
    }
 
-   /** The agent skills this package advertises: its `default` workflow's, none without one. */
+   /** The agent skills this package advertises: its `default` workflow's, none without one, and unavailable only when `default` is declared. */
    public listSkills(): ServedSkill[] {
-      this.readableWorkflows();
+      this.readableWorkflows(DEFAULT_WORKFLOW);
       return this.packageSkills;
    }
 
@@ -3231,7 +3226,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          }),
       );
 
-      // Same checks as create, before anything is swapped.
       assertOutcomeStagesAvailable(outcome);
       assertServingIdentityShipped(outcome);
 
@@ -3694,13 +3688,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       }
    }
 
-   /**
-    * Take what a load or reload read: the publisher.json settings, and the
-    * walk of the workflows with the shas of every file the serving identity
-    * hashes, which it installs under a new revision. It reads no file, and
-    * `assertServingIdentityShipped` has judged the outcome, so it only
-    * assigns. Also counts the deprecated features the installed models use.
-    */
+   /** Installs what a load read under a new revision; it reads no file, since `assertServingIdentityShipped` has already judged the outcome. */
    private adoptOutcomeMetadata(outcome: LoadPackageOutcome): void {
       const metadata = outcome.packageMetadata;
       const { walk, declarationSha } = metadata.workflowsRead!;

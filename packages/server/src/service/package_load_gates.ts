@@ -86,12 +86,7 @@ export function assertOutcomeStagesAvailable(
    );
 }
 
-/**
- * A load that installs a package ships the workflows walk and a sha for every
- * file its serving identity hashes. Checked before anything is installed, so
- * adopting the outcome only assigns, and a worker that left something out
- * fails the load instead of half of a reload.
- */
+/** Checked before anything is installed, so a worker that left out the walk or a sha fails the load instead of half of a reload. */
 export function assertServingIdentityShipped(
    outcome: LoadPackageOutcome,
 ): void {

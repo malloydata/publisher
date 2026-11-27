@@ -901,6 +901,103 @@ describe("readPackageWorkflows", () => {
          expect(result.workflows.size).toBe(0);
       });
 
+      it.skipIf(isWindows || isRoot)(
+         "is unavailable, not refused, when an instructions file cannot be read",
+         () => {
+            const entry = analyst();
+            const file = path.join(pkg, INSTRUCTIONS);
+            fs.chmodSync(file, 0o000);
+            try {
+               const result = read({ analyst: entry });
+               expectUnavailable(result, "EACCES");
+               expect(result.unavailable?.declared).toEqual(["analyst"]);
+               expect(result.watched).toEqual([INSTRUCTIONS, MAIN]);
+            } finally {
+               fs.chmodSync(file, 0o644);
+            }
+         },
+      );
+
+      it("still refuses an instructions file that is not there, as the author's mistake", () => {
+         analyst();
+         const warning = refused({
+            analyst: { instructions: "workflows/analyst/missing.md" },
+         });
+         expect(warning).toContain("missing.md");
+      });
+
+      it("is unavailable, not refused, when a set's folder fails to be examined with anything but absence", () => {
+         analyst();
+         const real = fs.statSync;
+         const failing = spyOn(fs, "statSync").mockImplementation(((
+            target: fs.PathLike,
+            ...rest: unknown[]
+         ) => {
+            if (String(target).endsWith(MAIN)) {
+               throw Object.assign(new Error("EIO: i/o error"), {
+                  code: "EIO",
+               });
+            }
+            return (real as (...a: unknown[]) => unknown)(target, ...rest);
+         }) as typeof fs.statSync);
+         try {
+            expectUnavailable(read({ analyst: analyst() }), "EIO");
+         } finally {
+            failing.mockRestore();
+         }
+      });
+
+      it("names only the workflows that passed declaration, when what failed is a set read", () => {
+         analyst();
+         writeSkill(SECOND, "extra");
+         const real = revision.canonicalSha;
+         boom = spyOn(revision, "canonicalSha").mockImplementation(
+            (value: unknown) => {
+               if ((value as { path?: string }).path === SECOND) {
+                  throw new Error("injected failure");
+               }
+               return real(value);
+            },
+         );
+         const result = read({
+            refused: { surprise: 1 },
+            fine: { skill_sets: [MAIN] },
+            broken: { skill_sets: [SECOND] },
+         });
+         expect(result.unavailable?.declared).toEqual(["fine", "broken"]);
+      });
+
+      it("names only the workflows that passed declaration, when what failed is a file the declaration reads", () => {
+         const entry = analyst();
+         const real = fs.readFileSync;
+         const failing = spyOn(fs, "readFileSync").mockImplementation(((
+            target: fs.PathOrFileDescriptor,
+            ...rest: unknown[]
+         ) => {
+            if (String(target).endsWith(INSTRUCTIONS)) {
+               throw Object.assign(new Error("EIO: i/o error"), {
+                  code: "EIO",
+               });
+            }
+            return (real as (...a: unknown[]) => unknown)(target, ...rest);
+         }) as typeof fs.readFileSync);
+         try {
+            const result = read({ refused: { surprise: 1 }, analyst: entry });
+            expect(result.unavailable?.declared).toEqual(["analyst"]);
+         } finally {
+            failing.mockRestore();
+         }
+      });
+
+      it("is unavailable, not absent, when the package's own folder cannot be resolved", () => {
+         const result = readPackageWorkflows(path.join(pkg, "gone"), {
+            analyst: { instructions: INSTRUCTIONS },
+         });
+         expect(result.unavailable?.declared).toEqual(["analyst"]);
+         expect(result.unavailable?.reason).toContain("ENOENT");
+         expect(result.workflows.size).toBe(0);
+      });
+
       it("is not unavailable for what the author wrote wrong: that refuses the workflow with a warning", () => {
          analyst();
          const result = read({ broken: { skill_sets: ["nowhere"] } });

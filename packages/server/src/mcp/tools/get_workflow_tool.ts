@@ -5,6 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
 import { API_PREFIX, FCJ_MAX_CHARS } from "../../constants";
 import type { PackageLookup } from "../../service/environment_ports";
+import { WorkflowsUnavailableError } from "../../errors";
 import { fileChangedMessage } from "../../service/skills/package_skills";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
@@ -173,7 +174,20 @@ export function registerGetWorkflowTool(
             parsePackageName(scope.package),
             false,
          );
-         const availableWorkflows = pkg.listWorkflows();
+         let availableWorkflows: ReturnType<typeof pkg.listWorkflows>;
+         try {
+            availableWorkflows = pkg.listWorkflows();
+         } catch (error) {
+            if (
+               !(error instanceof WorkflowsUnavailableError) ||
+               !params.workflow_name
+            ) {
+               throw error;
+            }
+            // Throws for a name the manifest declares; an undeclared one is still not found.
+            pkg.getWorkflow(params.workflow_name);
+            availableWorkflows = [];
+         }
          const id = extra?.requestId;
          const reply = (payload: Payload) =>
             withAvailable(uri, id, availableWorkflows, payload);

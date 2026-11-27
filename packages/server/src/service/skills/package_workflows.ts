@@ -64,6 +64,10 @@ function insidePackage(packageRoot: string, p: string): string | undefined {
 const sha256 = (data: string | Buffer) =>
    createHash("sha256").update(data).digest("hex");
 
+/** A path that is not there, which an author wrote wrong; any other errno is a disk that cannot be read. */
+const isAbsent = (error: unknown) =>
+   ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "");
+
 /**
  * Where a Markdown file really is and how big, or why it cannot be served; no
  * byte is read. The real path must sit inside the real package root: a symlink
@@ -93,6 +97,7 @@ function markdownInside(
       }
       return { real, size: stat.size };
    } catch (error) {
+      if (!isAbsent(error)) throw error;
       return {
          problem: `cannot be read (${callerVisibleText((error as Error).message, packageRoot)})`,
       };
@@ -119,6 +124,7 @@ function readFileInside(
       const raw = fs.readFileSync(found.real);
       return { text: raw.toString("utf8"), raw };
    } catch (error) {
+      if (!isAbsent(error)) throw error;
       return {
          problem: `cannot be read (${callerVisibleText((error as Error).message, packageRoot)})`,
       };
@@ -473,7 +479,7 @@ function scanSkills(
    // that leads out is refused whatever it leads to.
    const inside = insidePackage(packageRoot, root);
    const escapes = inside === undefined;
-   // The set's folder was checked when its workflow was declared, so a failure to list it now throws: the caller refuses the workflows that list the set rather than serve it empty.
+   // The folder was checked at declaration, so a failure to list it now throws and makes the walk unavailable.
    const entries =
       inside === undefined
          ? []
@@ -1567,7 +1573,8 @@ function checkSkillSetRoot(
    let isDirectory: boolean;
    try {
       isDirectory = fs.statSync(rootInside).isDirectory();
-   } catch {
+   } catch (error) {
+      if (!isAbsent(error)) throw error;
       throw new WorkflowProblem(`skill set directory '${root}' does not exist`);
    }
    if (!isDirectory) {
@@ -1781,18 +1788,25 @@ const cannotRead = (error: unknown, packagePath: string) =>
    );
 
 /** A walk that could not finish: nothing is served, and the declared paths stay watched so fixing the cause reloads. */
-function unavailableWorkflows(raw: unknown, reason: string): PackageWorkflows {
+function unavailableWorkflows(
+   raw: unknown,
+   reason: string,
+   declared?: string[],
+): PackageWorkflows {
    let watched: string[] = [];
-   let declared: string[] = [];
    try {
       if (isObject(raw)) {
          watched = declaredPaths(raw);
-         declared = Object.keys(raw);
+         declared ??= Object.keys(raw);
       }
    } catch {
       // The declaration is what threw; there is nothing to watch or name.
    }
-   return { ...emptyWorkflows(), watched, unavailable: { reason, declared } };
+   return {
+      ...emptyWorkflows(),
+      watched,
+      unavailable: { reason, declared: declared ?? [] },
+   };
 }
 
 /**
@@ -1840,14 +1854,16 @@ function walkPackageWorkflows(
    try {
       fs.realpathSync(packagePath);
       packageRoot = path.resolve(packagePath);
-   } catch {
-      return result;
+   } catch (error) {
+      return unavailableWorkflows(raw, cannotRead(error, packagePath));
    }
    const entries = Object.entries(raw);
    // By manifest position, so the warnings read in manifest order.
    const notes: string[][] = entries.map(() => []);
    const declared = new Map<string, DeclaredWorkflow>();
    const checks = newPathChecks();
+   const refused = new Set<string>();
+   let unreadable: unknown;
    entries.forEach(([name, entry], i) => {
       try {
          declared.set(
@@ -1856,10 +1872,21 @@ function walkPackageWorkflows(
          );
       } catch (error) {
          // Only what the author wrote refuses a workflow; a disk that cannot be read makes the walk unavailable.
-         if (!(error instanceof WorkflowProblem)) throw error;
+         if (!(error instanceof WorkflowProblem)) {
+            unreadable ??= error;
+            return;
+         }
+         refused.add(name);
          notes[i]!.push(refusal(name, error.message));
       }
    });
+   if (unreadable !== undefined) {
+      return unavailableWorkflows(
+         raw,
+         cannotRead(unreadable, packagePath),
+         entries.map(([name]) => name).filter((name) => !refused.has(name)),
+      );
+   }
 
    const budget: PackageAssetBudget = {
       bytes: 0,
@@ -1883,6 +1910,7 @@ function walkPackageWorkflows(
          return unavailableWorkflows(
             raw,
             `skill set directory '${setPath}' cannot be read (${cannotRead(error, packagePath)})`,
+            [...declared.keys()],
          );
       }
       result.sets.set(setPath, one.set);

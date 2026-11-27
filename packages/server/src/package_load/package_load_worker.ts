@@ -1419,8 +1419,10 @@ async function compileNotebookModel(
 
    const { runtime, urlReader } = buildRuntimeForModel(job, malloyConfig);
    const fileContents = await readPackageURL(job.packagePath, modelURL);
-   // Beside the texts the other models read, so the load hashes it too.
-   files.texts.set(modelURL.toString(), fileContents);
+   files.notebookShas.set(
+      urlKey(modelURL.href),
+      createHash("sha256").update(fileContents).digest("hex"),
+   );
    const { materializer, cells } = await compileNotebookCells(
       runtime,
       importBaseURL,
@@ -1639,7 +1641,14 @@ async function loadPackage(
       ...(refresh ? { refreshedSchemaKeys: [...refresh.refetched] } : {}),
       fileDigests,
       ...(job.readWorkflows
-         ? { modelShas: modelContentShas(job.packagePath, models, fileDigests) }
+         ? {
+              modelShas: modelContentShas(
+                 job.packagePath,
+                 models,
+                 fileDigests,
+                 files.notebookShas,
+              ),
+           }
          : {}),
       loadDurationMs: loadEnd - loadStart,
       timings: {
@@ -1663,14 +1672,18 @@ function modelContentShas(
    packagePath: string,
    models: readonly SerializedModel[],
    fileDigests: Readonly<Record<string, string>>,
+   notebookShas: ReadonlyMap<string, string>,
 ): Map<string, string> {
    return new Map(
-      models.map(({ modelPath }) => [
-         modelPath,
-         fileDigests[
-            urlKey(pathToFileURL(path.join(packagePath, modelPath)).href)
-         ] ?? UNREADABLE_SHA,
-      ]),
+      models.map(({ modelPath }) => {
+         const key = urlKey(
+            pathToFileURL(path.join(packagePath, modelPath)).href,
+         );
+         return [
+            modelPath,
+            fileDigests[key] ?? notebookShas.get(key) ?? UNREADABLE_SHA,
+         ];
+      }),
    );
 }
 

@@ -20,14 +20,16 @@ describe("skillsFor", () => {
       ]);
    });
 
-   it("attaches nothing, and does not throw, when the package's workflows could not be read at load", () => {
-      expect(
-         skillsFor(
-            ctxOf(() => {
-               throw new WorkflowsUnavailableError("EACCES");
-            }),
-         ),
-      ).toEqual({});
+   it("says the package's guidance could not be read, with the reason, instead of looking empty", () => {
+      const reply = skillsFor(
+         ctxOf(() => {
+            throw new WorkflowsUnavailableError("EACCES on sets/a");
+         }),
+      );
+      expect(reply).toEqual({
+         skills_note: expect.stringContaining("EACCES on sets/a"),
+      });
+      expect(reply).not.toHaveProperty("skills");
    });
 
    it("lets any other failure through", () => {

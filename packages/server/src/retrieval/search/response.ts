@@ -450,16 +450,6 @@ export function makeWarningsFor(ctx: Pick<ListingContext, "warnings">) {
 /** Most description characters `skillsFor` attaches to one response, across every skill. */
 const SKILLS_DESCRIPTION_BUDGET = 4000;
 
-/** The package's advertised skills, none when its load could not read them: the skills routes answer 409 with the reason, and this reply is still the models'. */
-function advertisedSkillsOf(pkg: Pick<Package, "listSkills">) {
-   try {
-      return pkg.listSkills();
-   } catch (error) {
-      if (error instanceof WorkflowsUnavailableError) return [];
-      throw error;
-   }
-}
-
 /**
  * Spread into a payload to attach `skills`: the package's own guides, name and
  * description only ({} when it ships none). Every description rather than a
@@ -469,7 +459,17 @@ function advertisedSkillsOf(pkg: Pick<Package, "listSkills">) {
 export function skillsFor(ctx: Pick<ListingContext, "pkgIndex">) {
    // Descriptions are author-written and ride every response, so their total is bounded.
    let budget = SKILLS_DESCRIPTION_BUDGET;
-   const skills = advertisedSkillsOf(ctx.pkgIndex.pkg).map((skill) => {
+   let listed: ReturnType<Package["listSkills"]>;
+   try {
+      listed = ctx.pkgIndex.pkg.listSkills();
+   } catch (error) {
+      if (!(error instanceof WorkflowsUnavailableError)) throw error;
+      // The models still answer; the note says the package's guidance is missing, not absent.
+      return {
+         skills_note: `This package's own guidance could not be read, so none is listed. ${error.message}`,
+      };
+   }
+   const skills = listed.map((skill) => {
       const description = skill.description.slice(0, budget);
       budget -= description.length;
       return { name: skill.name, description };
