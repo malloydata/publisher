@@ -550,6 +550,17 @@ class AValueFreeSetNeedsNoTruthServer(unittest.TestCase):
         self.assertEqual(stored["golden"]["status"], "verified")
         self.assertEqual(stored["golden"]["verifiedBy"], "authored_criteria")
 
+    def test_a_case_with_no_golden_is_left_out_not_a_crash(self):
+        (self.tmp / "cases.jsonl").write_text(
+            json.dumps({"qid": "q0", "question": "x", "split": "dev",
+                        "golden": {"status": "provisional", "kind": "criteria",
+                                   "rubric": "r"}}) + "\n"
+            + json.dumps({"qid": "q1", "question": "make a dashboard", "split": "dev"}) + "\n")
+        r = verify(self.tmp, None, "samples", promote=True, quiet=True)
+        self.assertEqual(r["promoted"], ["q0"])
+        stored = [json.loads(l) for l in (self.tmp / "cases.jsonl").read_text().splitlines()]
+        self.assertNotIn("golden", stored[1])
+
     def test_an_unanswerable_set_promotes_with_no_server(self):
         self.write({"status": "provisional", "kind": "unanswerable"})
         r = verify(self.tmp, None, "samples", promote=True, quiet=True)

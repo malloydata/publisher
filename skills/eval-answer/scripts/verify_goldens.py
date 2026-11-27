@@ -1431,6 +1431,9 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     lines = path.read_text().splitlines()
     cases = [json.loads(l) for l in lines if l.strip()]
     chosen = [c for c in cases if not qids or c["qid"] in qids]
+    # A case with no golden (a judging set has one per build request or
+    # remark) is still audited, but has no value to check or promote.
+    keyed = [c for c in chosen if c.get("golden")]
 
     # A set where no golden holds a value has nothing for a truth server to
     # re-derive, so a missing one is not a check that did not happen. Left as a
@@ -1526,7 +1529,7 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     # truthPackage is not the escape either: a criteria-only set has no value to
     # put in one.
     if promote:
-        for c in chosen:
+        for c in keyed:
             g = c["golden"]
             if (g.get("kind") in ("unanswerable", "criteria")
                     and g.get("status") == "provisional"):
@@ -1545,7 +1548,7 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     # path: an authored control plus a human vouching, with no second
     # derivation, is too thin to call verified.
     if promote and ledger_validated:
-        for c in chosen:
+        for c in keyed:
             g = c["golden"]
             if not needs_value_check(c) or g.get("status") != "provisional":
                 continue
@@ -1574,7 +1577,7 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
         # The value-free kinds were promoted above, where they need no server.
         # What is left here is the value-based promotion, and `check_value` IS
         # its evidence.
-        if promote and needs_value_check(c):
+        if promote and c.get("golden") and needs_value_check(c):
             g = c["golden"]
             if status != "ok":
                 promotion_notes.append(
