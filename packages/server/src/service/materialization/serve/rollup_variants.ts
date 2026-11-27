@@ -3696,6 +3696,16 @@ function checkCoverage(
    const anyMeasureFanOut = new Set(
       plan.rollupMeasures.flatMap((m) => m.fanOutDimensions),
    );
+   // A field named by a path a stored column holds (`account.region`) is
+   // its grain entry. Only grouping by a path fixes it: a `where:` on one
+   // does not (a single value would be exact, an `IN` or a range is not).
+   const paths = pathGrainEntries(plan);
+   const grainOfRef = (ref: readonly string[] | undefined) =>
+      ref?.length === 1
+         ? ref[0]
+         : ref?.length === 2
+           ? paths.get(ref.join("."))
+           : undefined;
    const visit = (level: QueryLevelFacts, fixedAbove: ReadonlySet<string>) => {
       if (level.kind !== "reduce") {
          throw new LegDecline(
@@ -3731,7 +3741,7 @@ function checkCoverage(
                `\`${f.name}\` re-sums across a fan-out dimension of the rollup's grain`,
             );
          }
-         const ref = f.ref?.length === 1 ? f.ref[0] : undefined;
+         const ref = grainOfRef(f.ref);
          const named = ref !== undefined ? measureFanOut.get(ref) : undefined;
          if (ref !== undefined && named === undefined) grouped.add(ref);
          else if (named !== undefined) {

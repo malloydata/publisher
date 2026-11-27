@@ -13,6 +13,10 @@
  *  - a joined dimension the author annotated is not returned from the
  *    rollup as a column of its own (its record field cannot carry the
  *    notes), but a field over it is;
+ *  - through a join_many: a query that groups by the path is served, with
+ *    the symmetric-aggregate partials live computes, a base row with several
+ *    joined rows sharing a value and one with none (the `null` group)
+ *    included; one that drops the path or only filters on it answers live.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -225,6 +229,103 @@ describe("R4 #2048: an annotated joined dimension", () => {
       });
    }
 });
+
+/**
+ * Sub 10 has items of two skus; sub 11 has two items of one sku (several
+ * joined rows sharing a value); sub 12 has none (the `null` group); item 99
+ * has no sub.
+ */
+const ITEMS_MODEL = `##! experimental { persistence }
+source: items is duckdb.sql("""select * from (values (1,10,'A',2),(2,10,'B',1),(3,11,'A',4),(4,11,'A',1),(5,13,'B',3),(6,14,'C',1),(7,99,'A',8)) t(item_id, sub_id, sku, qty)""") extend {
+  primary_key: item_id
+}
+source: subs is duckdb.sql("""select * from (values (10,1,DATE '2026-01-01',100.0),(11,1,DATE '2026-02-01',120.0),(12,2,DATE '2026-01-01',50.0),(13,3,DATE '2026-02-01',80.0),(14,3,DATE '2026-02-01',20.0)) t(sub_id, account_id, period, amount)""") extend {
+  primary_key: sub_id
+  join_many: items on items.sub_id = sub_id
+  dimension: period_month is period.month
+  #(rollup) grain=["items.sku", "period_month"]
+  measure: mrr is amount.sum()
+  #(rollup) grain=["items.sku", "period_month"]
+  measure: n is count()
+  #(rollup) grain=["items.sku", "period_month"]
+  measure: top is amount.max()
+}
+`;
+
+for (const [label, placement] of PLACEMENTS)
+   describe(`R4 #2048: a path grain through a join_many [${label}]`, () => {
+      let restore: () => void;
+      let fixture: R4Fixture;
+      beforeAll(async () => {
+         restore = installSettings(SETTINGS).restore;
+         fixture = await buildScenario({
+            files: {
+               "m.malloy": ITEMS_MODEL.replaceAll(
+                  '"period_month"]\n',
+                  `"period_month"]${placement}\n`,
+               ),
+            },
+            seedSql: [],
+            preaggregate: true,
+         });
+      });
+      afterAll(async () => {
+         restore();
+         await disposeScenarios();
+      });
+      for (const [name, malloy] of [
+         [
+            "grouped by the path",
+            "run: subs -> { group_by: items.sku; aggregate: mrr, n, top }",
+         ],
+         [
+            "grouped by the path and the other grain dimension",
+            "run: subs -> { group_by: items.sku, period_month; aggregate: mrr, n }",
+         ],
+         [
+            "grouped by the path, filtered on it",
+            "run: subs -> { where: items.sku = 'A'; group_by: items.sku; aggregate: mrr, n }",
+         ],
+         [
+            "a nest under a grouping by the path",
+            "run: subs -> { group_by: items.sku; aggregate: mrr; nest: by_month is { group_by: period_month; aggregate: mrr } }",
+         ],
+      ] as const) {
+         it(`${name}: served from the rollup, equal to live`, async () => {
+            expectRollup(await fixture.run({ name, malloy }));
+         });
+      }
+      for (const [name, malloy] of [
+         [
+            "a query that drops the path",
+            "run: subs -> { group_by: period_month; aggregate: mrr, n }",
+         ],
+         [
+            "a filter on the path without grouping by it",
+            "run: subs -> { where: items.sku = 'A'; aggregate: mrr }",
+         ],
+         [
+            // A field the query defines is not read as the path it reads: an
+            // expression over it could merge two values' groups.
+            "grouped by the path under another name",
+            "run: subs -> { group_by: s is items.sku; aggregate: mrr }",
+         ],
+         ["a total with no grouping", "run: subs -> { aggregate: mrr }"],
+      ] as const) {
+         it(`${name}: answered live`, async () => {
+            expectLive(await fixture.run({ name, malloy }));
+         });
+      }
+      it("holds the null group live computes for a base row with no joined rows", async () => {
+         const run = await fixture.run({
+            name: "null group",
+            malloy: "run: subs -> { group_by: items.sku; aggregate: mrr, n }",
+         });
+         expectRollup(run);
+         expect(run.served).toContainEqual({ sku: null, mrr: 50, n: 1 });
+         expect(run.served).toContainEqual({ sku: "A", mrr: 220, n: 2 });
+      });
+   });
 
 /**
  * A join_one whose key repeats in the data inflates the build's rows, so a
