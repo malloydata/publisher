@@ -218,13 +218,13 @@ function availableAnswer(
 }
 
 /** One file of a skill as the tool answers it; `relative` is a path the skill lists. */
-function fileAnswer(
+async function fileAnswer(
    skill: ResolvedSkill,
    relative: string,
    uri: string,
    id?: string | number,
 ) {
-   const read = readSkillFile(skill, relative);
+   const read = await readSkillFile(skill, relative);
    if ("changed" in read) return { message: fileChangedMessage(relative) };
    if (!("text" in read)) {
       return {
@@ -345,7 +345,7 @@ export function registerGetSkillTool(
          }
          return jsonResource(
             uri,
-            fileAnswer(skill, relative, uri, extra?.requestId),
+            await fileAnswer(skill, relative, uri, extra?.requestId),
          );
       },
    });

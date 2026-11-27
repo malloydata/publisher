@@ -53,7 +53,7 @@ const packageSkill = (
       frontmatter: { name, description },
       files: { "SKILL.md": { digest, size: body.length } },
    },
-   read: () => ({ text: body }),
+   read: async () => ({ text: body }),
 });
 
 /** The package-relative path of each inline file the skills carry. */
@@ -257,7 +257,7 @@ describe("a skill set read through a workflow", () => {
       expect(warnings.join("\n")).toContain("byte cap");
    });
 
-   it("reads a skill's frontmatter, and serves its SKILL.md verbatim", () => {
+   it("reads a skill's frontmatter, and serves its SKILL.md verbatim", async () => {
       const text =
          "---\nname: revenue-rules\ndescription: How revenue is defined here.\n---\n\nUse net_revenue, never gross.\n";
       writeSkill("revenue-rules", text);
@@ -272,7 +272,7 @@ describe("a skill set read through a workflow", () => {
          name: "revenue-rules",
          description: "How revenue is defined here.",
       });
-      expect(skills[0]!.served.read("SKILL.md")).toEqual({ text });
+      expect(await skills[0]!.served.read("SKILL.md")).toEqual({ text });
       expect(inlinePaths(skills)).toEqual(["skills/revenue-rules/SKILL.md"]);
    });
 
@@ -281,7 +281,7 @@ describe("a skill set read through a workflow", () => {
       expect(readSet().skills[0]!.served.name).toBe("house-style");
    });
 
-   it("serves a reference file by its path, and the skill's own text with nothing added", () => {
+   it("serves a reference file by its path, and the skill's own text with nothing added", async () => {
       const text =
          "---\nname: revenue-rules\ndescription: d\n---\n\nSee reference/margin.md.\n";
       writeSkill("revenue-rules", text);
@@ -292,8 +292,8 @@ describe("a skill set read through a workflow", () => {
          "SKILL.md",
          "reference/margin.md",
       ]);
-      expect(skills[0]!.served.read("SKILL.md")).toEqual({ text });
-      expect(skills[0]!.served.read("reference/margin.md")).toEqual({
+      expect(await skills[0]!.served.read("SKILL.md")).toEqual({ text });
+      expect(await skills[0]!.served.read("reference/margin.md")).toEqual({
          text: "# Margin\n\nDetail.\n",
       });
       expect(inlinePaths(skills)).toEqual([
@@ -438,29 +438,29 @@ describe("resolveSkills", () => {
       bundledSkill("malloy-phrase-detection", "bundled phrases", "PHRASES"),
    ];
 
-   it("returns the bundled set unchanged when the package ships none", () => {
+   it("returns the bundled set unchanged when the package ships none", async () => {
       const resolved = resolveSkills(bundled, []);
       expect(resolved.map((s) => [s.name, s.origin])).toEqual([
          ["malloy-analysis", "bundled"],
          ["malloy-phrase-detection", "bundled"],
       ]);
       expect(resolved[0]!.description).toBe("bundled analysis");
-      expect(resolved[0]!.read("SKILL.md")).toEqual({
+      expect(await resolved[0]!.read("SKILL.md")).toEqual({
          text: "BUNDLED ANALYSIS",
       });
    });
 
-   it("shadows a bundled skill of the same name, in place", () => {
+   it("shadows a bundled skill of the same name, in place", async () => {
       const resolved = resolveSkills(bundled, [
          packageSkill("malloy-phrase-detection", "ours", "OUR PHRASES"),
       ]);
       expect(resolved).toHaveLength(2);
       const shadowed = resolved[1]!;
       expect(shadowed.name).toBe("malloy-phrase-detection");
-      expect(shadowed.read("SKILL.md")).toEqual({ text: "OUR PHRASES" });
+      expect(await shadowed.read("SKILL.md")).toEqual({ text: "OUR PHRASES" });
       expect(shadowed.origin).toBe("package");
       // The one it did not shadow is untouched.
-      expect(resolved[0]!.read("SKILL.md")).toEqual({
+      expect(await resolved[0]!.read("SKILL.md")).toEqual({
          text: "BUNDLED ANALYSIS",
       });
       expect(resolved[0]!.origin).toBe("bundled");
@@ -502,12 +502,12 @@ describe("resolveSkills", () => {
       expect(Object.keys(resolved[0]!.catalog.files)).toEqual(["SKILL.md"]);
    });
 
-   it("serves a bundled skill's Markdown, and names the package to install for any other file", () => {
+   it("serves a bundled skill's Markdown, and names the package to install for any other file", async () => {
       const [skill] = resolveSkills(
          [bundledSkill("pricing", "d", "B", { "scripts/run.py": 120 })],
          [],
       );
-      const read = skill!.read("scripts/run.py");
+      const read = await skill!.read("scripts/run.py");
       expect(read).toEqual({
          message: expect.stringContaining("@malloy-publisher/skills"),
       });

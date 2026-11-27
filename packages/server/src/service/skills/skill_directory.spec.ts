@@ -8,6 +8,7 @@
  * resolves to is pinned in expected-definition.json beside it.
  */
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { execFileSync } from "child_process";
 import { createHash } from "crypto";
 import fs from "fs";
 import os from "os";
@@ -29,6 +30,7 @@ import {
    workflowSkillSet,
 } from "./package_skills";
 import {
+   PACKAGE_ASSET_FILE_MAX_BYTES,
    PACKAGE_SKILL_FILE_MAX_BYTES,
    SKILL_SET_MARKDOWN_MAX_BYTES,
    readPackageWorkflows,
@@ -299,19 +301,19 @@ describe("a skill is its whole directory", () => {
       expect(definitionSha()).not.toBe(base);
    });
 
-   it("serves a listed text file, and refuses a binary one with a message naming its size and not its bytes", () => {
+   it("serves a listed text file, and refuses a binary one with a message naming its size and not its bytes", async () => {
       const skill = workflowOf().sets[0]!.skills[0]!;
-      expect(readWorkflowFile(skill, "pricing/scripts/run.py")).toEqual({
+      expect(await readWorkflowFile(skill, "pricing/scripts/run.py")).toEqual({
          text: FILES["scripts/run.py"] as string,
       });
-      const refused = readWorkflowFile(skill, "pricing/assets/logo.png");
+      const refused = await readWorkflowFile(skill, "pricing/assets/logo.png");
       expect(refused).toEqual({
          message: expect.stringContaining(`${PNG.length} bytes`),
       });
       expect(JSON.stringify(refused)).not.toContain(PNG.toString("base64"));
       // Listed, and still a 404 for what is not.
       expect(
-         readWorkflowFile(skill, "pricing/fixtures/data.csv"),
+         await readWorkflowFile(skill, "pricing/fixtures/data.csv"),
       ).toBeUndefined();
    });
 
@@ -715,33 +717,35 @@ describe("a skill set's own skills", () => {
       }
    });
 
-   it("reads every file it lists by its path: Markdown verbatim, a script as text, a binary as a message", () => {
+   it("reads every file it lists by its path: Markdown verbatim, a script as text, a binary as a message", async () => {
       writeSkill(pkg, "skills");
       const [skill] = readSet().skills;
       const { read } = skill!.served;
-      expect(read("SKILL.md")).toEqual({
+      expect(await read("SKILL.md")).toEqual({
          text: String(FILES["SKILL.md"]),
       });
-      expect(read("reference/rule-of-50.md")).toEqual({
+      expect(await read("reference/rule-of-50.md")).toEqual({
          text: String(FILES["reference/rule-of-50.md"]),
       });
-      expect(read("scripts/run.py")).toEqual({
+      expect(await read("scripts/run.py")).toEqual({
          text: String(FILES["scripts/run.py"]),
       });
-      expect(read("docs/Guide.MD")).toEqual({
+      expect(await read("docs/Guide.MD")).toEqual({
          text: String(FILES["docs/Guide.MD"]),
       });
-      expect(read("assets/logo.png")).toEqual({ binary: true });
+      expect(await read("assets/logo.png")).toEqual({ binary: true });
    });
 
-   it("answers a listed file that changed on disk since the load as changed, never its new bytes", () => {
+   it("answers a listed file that changed on disk since the load as changed, never its new bytes", async () => {
       writeSkill(pkg, "skills");
       const [skill] = readSet().skills;
       fs.writeFileSync(path.join(setDir(), "pricing/scripts/run.py"), "x");
-      expect(skill!.served.read("scripts/run.py")).toEqual({ changed: true });
+      expect(await skill!.served.read("scripts/run.py")).toEqual({
+         changed: true,
+      });
    });
 
-   it("lists and serves a root file named __proto__", () => {
+   it("lists and serves a root file named __proto__", async () => {
       writeSkillMd("odd", "---\nname: odd\ndescription: d\n---\n\nbody\n");
       fs.writeFileSync(path.join(setDir(), "odd/__proto__"), "hi\n");
       const [skill] = readSet().skills;
@@ -750,10 +754,10 @@ describe("a skill set's own skills", () => {
          "SKILL.md",
          "__proto__",
       ]);
-      expect(skill!.served.read("__proto__")).toEqual({ text: "hi\n" });
+      expect(await skill!.served.read("__proto__")).toEqual({ text: "hi\n" });
    });
 
-   it("lists a Markdown file that is not UTF-8 text as a binary file, never as lossy text", () => {
+   it("lists a Markdown file that is not UTF-8 text as a binary file, never as lossy text", async () => {
       writeSkillMd("odd", "---\nname: odd\ndescription: d\n---\n\nbody\n");
       const dir = path.join(setDir(), "odd/reference");
       fs.mkdirSync(dir, { recursive: true });
@@ -767,14 +771,18 @@ describe("a skill set's own skills", () => {
          "reference/nul.md",
       ]);
       expect(skill.catalog.files["reference/latin.md"]!.size).toBe(2);
-      expect(skill.served.read("reference/nul.md")).toEqual({ binary: true });
-      expect(skill.served.read("reference/latin.md")).toEqual({ binary: true });
+      expect(await skill.served.read("reference/nul.md")).toEqual({
+         binary: true,
+      });
+      expect(await skill.served.read("reference/latin.md")).toEqual({
+         binary: true,
+      });
       expect(warnings.join("\n")).toContain("not UTF-8 text");
    });
 
    it.skipIf(isWindows)(
       "does not read a listed file that became a link out of the skill",
-      () => {
+      async () => {
          writeSkill(pkg, "skills");
          const [skill] = readSet().skills;
          // The target holds run.py's own bytes, so its digest still matches and only the link refusal can stop the read.
@@ -783,11 +791,157 @@ describe("a skill set's own skills", () => {
          const file = path.join(setDir(), "pricing/scripts/run.py");
          fs.rmSync(file);
          fs.symlinkSync(secret, file);
-         expect(skill!.served.read("scripts/run.py")).toEqual({
+         expect(await skill!.served.read("scripts/run.py")).toEqual({
             changed: true,
          });
       },
    );
+
+   it.skipIf(isWindows)(
+      "refuses a listed file swapped for a FIFO with no writer, promptly",
+      async () => {
+         writeSkill(pkg, "skills");
+         const [skill] = readSet().skills;
+         const file = path.join(setDir(), "pricing/scripts/run.py");
+         fs.rmSync(file);
+         execFileSync("mkfifo", [file]);
+         const started = performance.now();
+         expect(await skill!.served.read("scripts/run.py")).toEqual({
+            changed: true,
+         });
+         expect(performance.now() - started).toBeLessThan(2000);
+      },
+   );
+
+   /** What the callback's `fs.promises.open` calls did: each handle's `read` lengths and its whole-file reads, with `stat` reporting `statSize` when given. */
+   const observingOpens = async (
+      statSize: number | undefined,
+      run: () => Promise<void>,
+   ) => {
+      const real = fs.promises.open.bind(fs.promises);
+      const opened: Array<{ requested: number[]; wholeReads: number }> = [];
+      const open = spyOn(fs.promises, "open").mockImplementation(((
+         ...args: Parameters<typeof fs.promises.open>
+      ) =>
+         real(...args).then((handle) => {
+            const seen = { requested: [] as number[], wholeReads: 0 };
+            opened.push(seen);
+            const stat = handle.stat.bind(handle);
+            const read = handle.read.bind(handle) as (
+               ...a: unknown[]
+            ) => Promise<unknown>;
+            const readFile = handle.readFile.bind(handle) as (
+               ...a: unknown[]
+            ) => Promise<unknown>;
+            handle.stat = (async (...a: Parameters<typeof stat>) => {
+               const stats = await stat(...a);
+               if (statSize !== undefined) stats.size = statSize;
+               return stats;
+            }) as typeof handle.stat;
+            handle.read = ((...a: unknown[]) => {
+               seen.requested.push(a[2] as number);
+               return read(...a);
+            }) as typeof handle.read;
+            handle.readFile = ((...a: unknown[]) => {
+               seen.wholeReads++;
+               return readFile(...a);
+            }) as typeof handle.readFile;
+            return handle;
+         })) as typeof fs.promises.open);
+      try {
+         await run();
+      } finally {
+         open.mockRestore();
+      }
+      return opened;
+   };
+
+   it("refuses a listed file that grew past the cap since the listing", async () => {
+      writeSkill(pkg, "skills");
+      const [skill] = readSet().skills;
+      fs.writeFileSync(
+         path.join(setDir(), "pricing/scripts/run.py"),
+         Buffer.alloc(PACKAGE_ASSET_FILE_MAX_BYTES + 10, 1),
+      );
+      let answer: unknown;
+      const opened = await observingOpens(undefined, async () => {
+         answer = await skill!.served.read("scripts/run.py");
+      });
+      expect(answer).toEqual({ changed: true });
+      expect(opened).toHaveLength(1);
+      expect(opened[0]!.wholeReads).toBe(0);
+      expect(
+         opened[0]!.requested.reduce((a, b) => a + b, 0),
+      ).toBeLessThanOrEqual(PACKAGE_ASSET_FILE_MAX_BYTES);
+   });
+
+   it("never takes more than the cap and one byte from a file that grows after its size was read", async () => {
+      writeSkill(pkg, "skills");
+      const [skill] = readSet().skills;
+      fs.writeFileSync(
+         path.join(setDir(), "pricing/scripts/run.py"),
+         Buffer.alloc(PACKAGE_ASSET_FILE_MAX_BYTES * 2, 1),
+      );
+      let answer: unknown;
+      // The handle reports the listed size, as a file would that grew between the stat and the read.
+      const opened = await observingOpens(16, async () => {
+         answer = await skill!.served.read("scripts/run.py");
+      });
+      expect(answer).toEqual({ changed: true });
+      expect(opened).toHaveLength(1);
+      expect(opened[0]!.wholeReads).toBe(0);
+      expect(
+         opened[0]!.requested.reduce((a, b) => a + b, 0),
+      ).toBeLessThanOrEqual(PACKAGE_ASSET_FILE_MAX_BYTES);
+   });
+
+   it.skipIf(isWindows)(
+      "refuses a listed file whose parent directory was swapped for a link to another directory holding a file of the same name",
+      async () => {
+         writeSkill(pkg, "skills");
+         const [skill] = readSet().skills;
+         const scripts = path.join(setDir(), "pricing/scripts");
+         const elsewhere = path.join(pkg, "elsewhere");
+         fs.mkdirSync(elsewhere);
+         fs.writeFileSync(path.join(elsewhere, "run.py"), "print('swapped')\n");
+         fs.renameSync(scripts, `${scripts}.orig`);
+         fs.symlinkSync(elsewhere, scripts);
+         expect(await skill!.served.read("scripts/run.py")).toEqual({
+            changed: true,
+         });
+      },
+   );
+
+   it("reads a file of a workflow's skill without emitting its SKILL.md again, and emits that once", async () => {
+      writeSkill(pkg, "skills");
+      const [skill] = readSet().skills;
+      let metaReads = 0;
+      const counted = {
+         ...skill!,
+         meta: new Proxy(skill!.meta, {
+            get(target, key, receiver) {
+               metaReads++;
+               return Reflect.get(target, key, receiver);
+            },
+         }),
+      };
+      for (const file of [
+         "pricing/scripts/run.py",
+         "pricing/NOTES.md",
+         "pricing/references/a.md",
+      ]) {
+         expect(await readWorkflowFile(counted, file)).toMatchObject({
+            text: expect.any(String),
+         });
+      }
+      expect(metaReads).toBe(0);
+      await readWorkflowFile(counted, "pricing/SKILL.md");
+      const emitted = metaReads;
+      expect(emitted).toBeGreaterThan(0);
+      await readWorkflowFile(counted, "pricing/SKILL.md");
+      await readWorkflowFile(counted, "pricing/NOTES.md");
+      expect(metaReads).toBe(emitted);
+   });
 
    it("lists exactly the files it serves: a skipped, ignored or built-in-excluded file is not in the catalog", () => {
       writeSkill(pkg, "skills");

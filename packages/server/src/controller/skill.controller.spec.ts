@@ -32,7 +32,7 @@ const packageSkill = (
          ]),
       ),
    },
-   read: (p) => ({ text: files[p]! }),
+   read: async (p) => ({ text: files[p]! }),
 });
 
 const storeWith = (skills: ServedSkill[]): PackageLookup =>

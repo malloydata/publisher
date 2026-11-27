@@ -95,7 +95,7 @@ export class SkillController {
          );
       }
       // A SKILL.md is held inline from the load, so it always reads as text.
-      const { text } = skill.read(SKILL_MD) as { text: string };
+      const { text } = (await skill.read(SKILL_MD)) as { text: string };
       return {
          ...skillFileView(skill, SKILL_MD, text),
          description: skill.description,
@@ -144,7 +144,7 @@ export class SkillController {
       skillSet?: string,
       versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiWorkflowSkillRead> {
-      const file = (
+      const file = await (
          await this.packageOf(environmentName, packageName, versionId)
       ).getWorkflowSkillFile(workflowName, relativeFilepath, skillSet);
       if (file && "changed" in file) {

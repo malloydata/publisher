@@ -763,11 +763,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /** One file of a workflow's skills by its `<skill>/<file>` path, looked up in the resolved skills (or, with `skillSet`, in that set whole) and never joined onto the filesystem; a listed file is matched exactly, then read from disk and re-checked against its listed sha. A binary one answers with a message, not its bytes, and one that changed since load with `changed`. */
-   public getWorkflowSkillFile(
+   public async getWorkflowSkillFile(
       name: string,
       relativeFilepath: string,
       skillSet?: string,
-   ): ApiWorkflowSkillRead | { changed: true } | undefined {
+   ): Promise<ApiWorkflowSkillRead | { changed: true } | undefined> {
       const workflow = this.readableWorkflows(name).workflows.get(name);
       if (!workflow) return undefined;
       const relative = workflowFilePath(relativeFilepath);
@@ -775,7 +775,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const skill = pickedSets(workflow, skillSet)
          ?.flatMap(({ skills }) => skills)
          .find((s) => s.dirName === skillName);
-      const read = skill && readWorkflowFile(skill, relative);
+      const read = skill && (await readWorkflowFile(skill, relative));
       if (!read) return undefined;
       if ("changed" in read) return read;
       return {

@@ -1021,6 +1021,56 @@ describe("readPackageWorkflows", () => {
          expect(result.workflows.size).toBe(0);
       });
 
+      it.skipIf(isWindows)(
+         "refuses a workflow whose instructions path is a link loop, as the author's mistake",
+         () => {
+            analyst();
+            const dir = path.join(pkg, "workflows/analyst");
+            fs.symlinkSync("b.md", path.join(dir, "a.md"));
+            fs.symlinkSync("a.md", path.join(dir, "b.md"));
+            const result = read({
+               analyst: { instructions: "workflows/analyst/a.md" },
+            });
+            expect(result.unavailable).toBeUndefined();
+            expect(result.warnings).toHaveLength(1);
+            expect(result.warnings[0]).toContain("a.md");
+         },
+      );
+
+      it("refuses a workflow whose instructions name is over-long, as the author's mistake", () => {
+         analyst();
+         const result = read({
+            analyst: {
+               instructions: `workflows/analyst/${"x".repeat(300)}.md`,
+            },
+         });
+         expect(result.unavailable).toBeUndefined();
+         expect(result.warnings).toHaveLength(1);
+      });
+
+      it("refuses a workflow, never the whole walk, when its set's folder fails to be examined with a loop", () => {
+         const entry = analyst();
+         const real = fs.statSync;
+         const looping = spyOn(fs, "statSync").mockImplementation(((
+            target: fs.PathLike,
+            ...rest: unknown[]
+         ) => {
+            if (String(target).endsWith(MAIN)) {
+               throw Object.assign(new Error("ELOOP: too many links"), {
+                  code: "ELOOP",
+               });
+            }
+            return (real as (...a: unknown[]) => unknown)(target, ...rest);
+         }) as typeof fs.statSync);
+         try {
+            const result = read({ analyst: entry });
+            expect(result.unavailable).toBeUndefined();
+            expect(result.warnings).toHaveLength(1);
+         } finally {
+            looping.mockRestore();
+         }
+      });
+
       it("is not unavailable for what the author wrote wrong: that refuses the workflow with a warning", () => {
          analyst();
          const result = read({ broken: { skill_sets: ["nowhere"] } });
@@ -1496,7 +1546,7 @@ describe("readPackageWorkflows", () => {
    });
 
    describe("advertised skills", () => {
-      it("are the default workflow's, each name from the first set that holds it", () => {
+      it("are the default workflow's, each name from the first set that holds it", async () => {
          const entry = analyst();
          writeSkill(SECOND, "conventions", "second copy");
          writeSkill(SECOND, "extra");
@@ -1508,7 +1558,7 @@ describe("readPackageWorkflows", () => {
             "conventions",
             "extra",
          ]);
-         expect(advertisedSkills(result)[0]!.read("SKILL.md")).toEqual({
+         expect(await advertisedSkills(result)[0]!.read("SKILL.md")).toEqual({
             text: expect.stringContaining("Use net revenue."),
          });
       });
@@ -2254,18 +2304,20 @@ describe("readPackageWorkflows", () => {
          expect(files).toEqual(walked.sets.get(MAIN)!.skills[0]!.catalog.files);
       });
 
-      it("keeps one skill shared by every set and workflow that holds it, with its reader rebuilt", () => {
+      it("keeps one skill shared by every set and workflow that holds it, with its reader rebuilt", async () => {
          const adopted = shipped(read(declared()));
          const fromSet = adopted.sets.get(MAIN)!.skills[0]!;
          for (const workflow of adopted.workflows.values()) {
             expect(workflow.sets[0]!.skills[0]).toBe(fromSet);
          }
-         expect(fromSet.served.read("SKILL.md")).toEqual(
-            read(declared()).sets.get(MAIN)!.skills[0]!.served.read("SKILL.md"),
+         expect(await fromSet.served.read("SKILL.md")).toEqual(
+            await read(declared())
+               .sets.get(MAIN)!
+               .skills[0]!.served.read("SKILL.md"),
          );
       });
 
-      it("answers a binary listed file from its listing, without reading the disk", () => {
+      it("answers a binary listed file from its listing, without reading the disk", async () => {
          write(`${CONVENTIONS}/assets/logo.bin`, Buffer.from([0, 255, 1]));
          const adopted = shipped(read(declared()));
          const skill = adopted.sets.get(MAIN)!.skills[0]!;
@@ -2278,15 +2330,18 @@ describe("readPackageWorkflows", () => {
                "realpathSync",
             ] as const
          ).map((fn) => spyOn(fs, fn));
+         const open = spyOn(fs.promises, "open");
          try {
-            expect(skill.served.read("assets/logo.bin")).toEqual({
+            expect(await skill.served.read("assets/logo.bin")).toEqual({
                binary: true,
             });
             expect(reads.map((spy) => spy.mock.calls.length)).toEqual([
                0, 0, 0, 0, 0,
             ]);
+            expect(open).not.toHaveBeenCalled();
          } finally {
             for (const spy of reads) spy.mockRestore();
+            open.mockRestore();
          }
       });
 

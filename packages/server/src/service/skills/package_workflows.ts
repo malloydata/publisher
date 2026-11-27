@@ -64,9 +64,11 @@ function insidePackage(packageRoot: string, p: string): string | undefined {
 const sha256 = (data: string | Buffer) =>
    createHash("sha256").update(data).digest("hex");
 
-/** A path that is not there, which an author wrote wrong; any other errno is a disk that cannot be read, which `strict` reads rethrow so it never refuses a workflow. */
-const isAbsent = (error: unknown) =>
-   ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "");
+/** A path that is not there, loops or is too long, which an author wrote wrong; any other errno is a disk that cannot be read, which `strict` reads rethrow so it never refuses a workflow. */
+const isAuthorPathError = (error: unknown) =>
+   ["ENOENT", "ENOTDIR", "ELOOP", "ENAMETOOLONG"].includes(
+      (error as NodeJS.ErrnoException).code ?? "",
+   );
 
 /**
  * Where a Markdown file really is and how big, or why it cannot be served; no
@@ -98,7 +100,7 @@ function markdownInside(
       }
       return { real, size: stat.size };
    } catch (error) {
-      if (strict && !isAbsent(error)) throw error;
+      if (strict && !isAuthorPathError(error)) throw error;
       return {
          problem: `cannot be read (${callerVisibleText((error as Error).message, packageRoot)})`,
       };
@@ -126,7 +128,7 @@ function readFileInside(
       const raw = fs.readFileSync(found.real);
       return { text: raw.toString("utf8"), raw };
    } catch (error) {
-      if (strict && !isAbsent(error)) throw error;
+      if (strict && !isAuthorPathError(error)) throw error;
       return {
          problem: `cannot be read (${callerVisibleText((error as Error).message, packageRoot)})`,
       };
@@ -194,7 +196,7 @@ export const WORKFLOW_INSTRUCTIONS_MAX_BYTES = 16 * 1024;
 export const SKILL_SET_MARKDOWN_MAX_BYTES = 256 * 1024;
 
 /** A listed file of this size or more is refused; the draft store refuses a 1 MiB file. */
-const PACKAGE_ASSET_FILE_MAX_BYTES = 1024 * 1024;
+export const PACKAGE_ASSET_FILE_MAX_BYTES = 1024 * 1024;
 const SKILL_SET_ASSETS_MAX_BYTES = 4 * 1024 * 1024;
 const SKILL_SET_ASSETS_MAX_FILES = 200;
 /** Counted once per package path, however many sets share the skill. */
@@ -232,7 +234,7 @@ export interface ServedSkill {
    description: string;
    catalog: SkillCatalogEntry;
    /** Reads a path of `catalog.files`; never joins a caller's path onto the filesystem. */
-   read(path: string): SkillFileRead;
+   read(path: string): Promise<SkillFileRead>;
 }
 
 /** One listed file: its path is `<skill>/<path>`, relative to its skill set. */
@@ -1008,11 +1010,11 @@ export function packageSkill(
       name: read.meta.name,
       description: read.meta.description,
       catalog: read.catalog,
-      read(relative) {
+      async read(relative) {
          const text = texts.get(relative);
          if (text !== undefined) return { text };
          if (binary.has(relative)) return { binary: true };
-         const listed = readListedFile(
+         const listed = await readListedFile(
             packagePath,
             read.rel,
             relative,
@@ -1086,8 +1088,7 @@ function manifestIn(
          : fs.readdirSync(inside);
       return names.find(isManifest);
    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (strict && code !== "ENOENT" && code !== "ENOTDIR") throw error;
+      if (strict && !isAuthorPathError(error)) throw error;
       return undefined;
    }
 }
@@ -1222,34 +1223,58 @@ const emitSkillMd = (name: string, description: string, body: string) =>
    `---\nname: ${JSON.stringify(name)}\ndescription: ${JSON.stringify(description)}\n---\n\n${body}\n`;
 
 /**
- * A listed file of the skill at `skillRel`, re-checked on every request with
- * the checks that listed it, and only when its bytes still hash to `sha`:
- * files can change after load, and a watch-mode edit does not reload. A binary
- * file answers `{binary: true}`, never its bytes. Undefined (a 404) when it is no
- * longer servable.
+ * A listed file of the skill at `skillRel`, re-checked on every request and
+ * served only when its bytes still hash to `sha`: files can change after load,
+ * and a watch-mode edit does not reload. The sha is also the guard against a
+ * parent directory swapped for a link, which no path check looks through. The
+ * file is opened once and read through that descriptor, never more than its
+ * stat size plus one byte, so a FIFO swapped in or a file that grew is refused
+ * and never waited on. A binary file answers `{binary: true}`, never its bytes.
+ * Undefined (a 404) when it is no longer servable.
  */
-function readListedFile(
+async function readListedFile(
    packagePath: string,
    skillRel: string,
    relative: string,
    sha: string,
-): { text: string } | { binary: true } | undefined {
+): Promise<{ text: string } | { binary: true } | undefined> {
+   let handle: fs.promises.FileHandle | undefined;
    try {
-      const skillDir = path.join(packagePath, skillRel);
-      // The skill directory is resolved by the package's own walk first, so
-      // one swapped for a link out is not looked through.
-      if (insidePackage(packagePath, skillDir) === undefined) return undefined;
-      const read = readListedBytes(
-         packagePath,
-         skillDir,
-         path.join(skillDir, relative),
-         PACKAGE_ASSET_FILE_MAX_BYTES - 1,
+      // Windows defines neither flag: the regular-file and size checks below are the guard there.
+      const flags =
+         fs.constants.O_RDONLY |
+         (fs.constants.O_NOFOLLOW ?? 0) |
+         (fs.constants.O_NONBLOCK ?? 0);
+      handle = await fs.promises.open(
+         path.join(packagePath, skillRel, relative),
+         flags,
       );
-      if (!("bytes" in read) || sha256(read.bytes) !== sha) return undefined;
-      const text = decodeText(read.bytes);
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size > PACKAGE_ASSET_FILE_MAX_BYTES - 1) {
+         return undefined;
+      }
+      const bytes = Buffer.allocUnsafe(stat.size + 1);
+      let length = 0;
+      while (length < bytes.length) {
+         const { bytesRead } = await handle.read(
+            bytes,
+            length,
+            bytes.length - length,
+            length,
+         );
+         if (bytesRead === 0) break;
+         length += bytesRead;
+      }
+      // One byte past the size means the file grew after the stat.
+      if (length !== stat.size) return undefined;
+      const read = bytes.subarray(0, length);
+      if (sha256(read) !== sha) return undefined;
+      const text = decodeText(read);
       return text === undefined ? { binary: true } : { text };
    } catch {
       return undefined;
+   } finally {
+      await handle?.close().catch(() => undefined);
    }
 }
 
@@ -1318,19 +1343,29 @@ export const emptyWorkflows = (): PackageWorkflows => ({
    skillsDirNotRead: false,
 });
 
+const emittedSkillMd = new WeakMap<ReadSkill, string>();
+
+/** A skill's SKILL.md as a workflow serves it, emitted once per skill. */
+export function servedSkillMd(skill: ReadSkill): string {
+   let text = emittedSkillMd.get(skill);
+   if (text === undefined) {
+      text = emitSkillMd(
+         skill.meta.name,
+         skill.meta.description,
+         skill.meta.body,
+      );
+      emittedSkillMd.set(skill, text);
+   }
+   return text;
+}
+
 /** A skill's inline files as a workflow serves them: `<skill>/<file>` with its text, a SKILL.md re-emitted with only a quoted name and description. */
 export function servedInline(skill: ReadSkill) {
    return skill.inline.map((f) => {
       const isSkillMd = f.relative === SKILL_MD;
       return {
          relative_filepath: `${skill.dirName}/${f.relative}`,
-         file_contents: isSkillMd
-            ? emitSkillMd(
-                 skill.meta.name,
-                 skill.meta.description,
-                 skill.meta.body,
-              )
-            : f.text,
+         file_contents: isSkillMd ? servedSkillMd(skill) : f.text,
          ...(isSkillMd && {
             name: skill.meta.name,
             description: skill.meta.description,
@@ -1577,7 +1612,7 @@ function checkSkillSetRoot(
    try {
       isDirectory = fs.statSync(rootInside).isDirectory();
    } catch (error) {
-      if (!isAbsent(error)) throw error;
+      if (!isAuthorPathError(error)) throw error;
       throw new WorkflowProblem(`skill set directory '${root}' does not exist`);
    }
    if (!isDirectory) {

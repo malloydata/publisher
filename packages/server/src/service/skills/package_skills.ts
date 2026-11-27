@@ -5,6 +5,7 @@ import type { BundledSkill } from "./build_skills_bundle";
 import {
    DEFAULT_WORKFLOW,
    servedInline,
+   servedSkillMd,
    type PackageWorkflow,
    type ServedSkill,
    type PackageWorkflows,
@@ -86,21 +87,26 @@ export function workflowSkillSet(
 }
 
 /** One file of a workflow's skill by its `<skill>/<file>` path: an inline file as the workflow serves it, or a listed file as the skill reads it (a binary one answers with a message naming its size, one that changed since load with `changed`). Undefined when it is not served. */
-export function readWorkflowFile(
+export async function readWorkflowFile(
    skill: SetSkill,
    relativeFilepath: string,
-): { text: string } | { message: string } | { changed: true } | undefined {
-   const inline = servedInline(skill).find(
-      (f) => f.relative_filepath === relativeFilepath,
-   );
-   if (inline) return { text: inline.file_contents };
+): Promise<
+   { text: string } | { message: string } | { changed: true } | undefined
+> {
+   const prefix = `${skill.dirName}/`;
+   if (!relativeFilepath.startsWith(prefix)) return undefined;
+   const relative = relativeFilepath.slice(prefix.length);
+   const inline = skill.inline.find((f) => f.relative === relative);
+   if (inline) {
+      return {
+         text: relative === SKILL_MD ? servedSkillMd(skill) : inline.text,
+      };
+   }
    const listing = skill.listed.find(
       (a) => a.relative_filepath === relativeFilepath,
    );
    if (!listing) return undefined;
-   const read = skill.served.read(
-      relativeFilepath.slice(skill.dirName.length + 1),
-   );
+   const read = await skill.served.read(relative);
    if ("text" in read || "changed" in read) return read;
    return {
       message: binaryFileMessage(relativeFilepath, listing.bytes),
@@ -127,7 +133,7 @@ function bundledSkill({ bodies, ...catalog }: BundledSkill): ServedSkill {
       name: catalog.name,
       description: typeof description === "string" ? description.trim() : "",
       catalog,
-      read: (relative) =>
+      read: async (relative) =>
          Object.hasOwn(bodies, relative)
             ? { text: bodies[relative]! }
             : {
@@ -197,11 +203,11 @@ export function binaryFileMessage(relative: string, size: number): string {
 }
 
 /** One listed file of a skill read for an answer: its text, a message saying why there is none, or `changed` when it is no longer the file that was listed. */
-export function readSkillFile(
+export async function readSkillFile(
    skill: ServedSkill,
    relative: string,
-): { text: string } | { message: string } | { changed: true } {
-   const read = skill.read(relative);
+): Promise<{ text: string } | { message: string } | { changed: true }> {
+   const read = await skill.read(relative);
    return "binary" in read
       ? {
            message: binaryFileMessage(

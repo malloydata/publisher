@@ -186,7 +186,11 @@ export function registerGetWorkflowTool(
             }
             // Throws for a name the manifest declares; an undeclared one is still not found.
             pkg.getWorkflow(params.workflow_name);
-            availableWorkflows = [];
+            // No availableWorkflows: an empty list would read as a package with no workflows.
+            return jsonResource(uri, {
+               workflow: null,
+               message: `No workflow named ${JSON.stringify(params.workflow_name)} for package ${scope.environment}/${scope.package}, and none can be listed: ${error.message}`,
+            });
          }
          const id = extra?.requestId;
          const reply = (payload: Payload) =>
@@ -220,7 +224,7 @@ export function registerGetWorkflowTool(
          }
          const rest = `${API_PREFIX}/environments/${scope.environment}/packages/${scope.package}/workflows/${params.workflow_name}`;
          if (params.skill_path) {
-            const skillFile = pkg.getWorkflowSkillFile(
+            const skillFile = await pkg.getWorkflowSkillFile(
                params.workflow_name,
                params.skill_path,
                skillSet,

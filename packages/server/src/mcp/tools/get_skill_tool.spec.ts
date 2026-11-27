@@ -66,7 +66,7 @@ const packageSkill = (
          ]),
       ),
    },
-   read: (p) => {
+   read: async (p) => {
       const file = files[p]!;
       return typeof file === "string" ? { text: file } : file.read;
    },
