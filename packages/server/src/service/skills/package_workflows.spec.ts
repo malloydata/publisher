@@ -66,6 +66,8 @@ const sha = (data: string | Buffer) =>
 /** The text of each warning, which most tests read as prose. */
 const texts = (warnings: Array<{ message: string }>) =>
    warnings.map((w) => w.message);
+/** A path a spied `fs` call was handed, with `/` for its separators as the manifest paths here are written. */
+const posix = (target: unknown) => String(target).split(path.sep).join("/");
 
 describe("readPackageWorkflows", () => {
    let pkg: string;
@@ -876,7 +878,10 @@ describe("readPackageWorkflows", () => {
       it("refuses a set whose directory is a link out of the package", () => {
          analyst();
          fs.mkdirSync(path.join(outside, "s"));
-         writeSkill(outside, "s");
+         fs.writeFileSync(
+            path.join(outside, "s", "SKILL.md"),
+            "---\nname: s\ndescription: d\n---\n\nbody\n",
+         );
          fs.rmSync(path.join(pkg, MAIN), { recursive: true });
          fs.symlinkSync(outside, path.join(pkg, MAIN));
          expect(refusedSet({ house: { path: MAIN } })).toContain(
@@ -1312,7 +1317,7 @@ describe("readPackageWorkflows", () => {
             target: fs.PathLike,
             ...rest: unknown[]
          ) => {
-            if (String(target).endsWith(MAIN)) {
+            if (posix(target).endsWith(MAIN)) {
                throw Object.assign(new Error("EIO: i/o error"), {
                   code: "EIO",
                });
@@ -1353,7 +1358,7 @@ describe("readPackageWorkflows", () => {
             target: fs.PathOrFileDescriptor,
             ...rest: unknown[]
          ) => {
-            if (String(target).endsWith(INSTRUCTIONS)) {
+            if (posix(target).endsWith(INSTRUCTIONS)) {
                throw Object.assign(new Error("EIO: i/o error"), {
                   code: "EIO",
                });
@@ -1422,7 +1427,7 @@ describe("readPackageWorkflows", () => {
                target: fs.PathLike,
                ...rest: unknown[]
             ) => {
-               if (String(target).endsWith(MAIN)) {
+               if (posix(target).endsWith(MAIN)) {
                   throw Object.assign(new Error(`${code}: injected`), { code });
                }
                return (real as (...a: unknown[]) => unknown)(target, ...rest);

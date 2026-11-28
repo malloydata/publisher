@@ -574,13 +574,23 @@ describe("skillFiles", () => {
 
       it("bounds paths of a thousand characters under assets/ and elsewhere, where a slash pattern backtracks across every segment", () => {
          write("SKILL.md");
+         // macOS caps a whole path at 1,024 bytes, `/var` growing to `/private/var` in it, where Linux allows 4,096: narrower segments keep the shape inside the limit.
+         const width = Math.min(
+            245,
+            Math.floor(
+               ((process.platform === "darwin" ? 1024 : 4096) -
+                  dir.length -
+                  64) /
+                  8,
+            ),
+         );
          const chain = (base: string, levels: number, tag: string) => {
             const dirs = Array.from({ length: levels }, (_, l) =>
-               `${tag}${l}`.padEnd(245, "n"),
+               `${tag}${l}`.padEnd(width, "n"),
             ).join("/");
             for (let i = 0; i < ASSET_MAX_ENTRIES; i++) {
                write(
-                  `${base}/${dirs}/${`${tag}f${String(i).padStart(4, "0")}`.padEnd(244, "n")}.dat`,
+                  `${base}/${dirs}/${`${tag}f${String(i).padStart(4, "0")}`.padEnd(width - 1, "n")}.dat`,
                );
             }
          };

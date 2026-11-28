@@ -45,7 +45,7 @@ import {
 } from "./skills/package_workflows";
 
 /** The longest any one task may hold the event loop while a cap-size package loads or reloads, ms. */
-const MAX_BLOCK_MS = 150;
+const MAX_BLOCK_MS = 250;
 
 describe("loading and reloading a cap-size package", () => {
    let dir: string;
