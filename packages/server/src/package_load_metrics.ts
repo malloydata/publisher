@@ -36,16 +36,19 @@ const SCHEMA_FETCH_COUNT_BUCKETS = [0, 1, 2, 5, 10, 25, 50, 100, 250, 500];
 
 /**
  * Terminal status of a package load, matching `malloy_package_load_duration`'s
- * `status` label. The phase histograms never see `pool_unavailable`, which
- * fails before the worker returns timings. `policy_rejected` is split from
- * `error` because it is the author's problem (a gate refused what compiled
- * models declared, or publisher.json is unusable), not the server's.
+ * `status` label. The phase histograms never see `pool_unavailable` or
+ * `database_busy`, which fail before the worker returns timings.
+ * `policy_rejected` is split from `error` because it is the author's problem
+ * (a gate refused what compiled models declared, or publisher.json is
+ * unusable), not the server's; `database_busy` because it is neither: the
+ * package's database had no room for a schema read, and a later load may pass.
  */
 export type PackageLoadStatus =
    | "success"
    | "compilation_error"
    | "policy_rejected"
    | "pool_unavailable"
+   | "database_busy"
    | "error";
 
 /** Phase timings a single package load reports (subset of the total). */

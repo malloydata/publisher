@@ -89,6 +89,7 @@ import {
 } from "../constants";
 import {
    BadRequestError,
+   DatabaseBusyError,
    ModelCompilationError,
    PackageManifestError,
    PackageNotFoundError,
@@ -446,6 +447,9 @@ function packageLoadFailureStatus(error: unknown): PackageLoadStatus {
       error instanceof PackageManifestError
    ) {
       return "policy_rejected";
+   }
+   if (error instanceof DatabaseBusyError) {
+      return "database_busy";
    }
    if (error instanceof ServiceUnavailableError) {
       return "pool_unavailable";

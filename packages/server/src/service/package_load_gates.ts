@@ -4,6 +4,7 @@
 import { MalloyError } from "@malloydata/malloy";
 import {
    BadRequestError,
+   DatabaseBusyError,
    ModelCompilationError,
    PackageManifestError,
    ServiceUnavailableError,
@@ -60,7 +61,9 @@ export async function loadOutcomeOrThrow(
          realError instanceof MalloyError ||
          realError instanceof ModelCompilationError ||
          realError instanceof PackageManifestError ||
-         realError instanceof PackageLoadProtocolError
+         realError instanceof PackageLoadProtocolError ||
+         // Already a 503, and its message names the connection and the cause.
+         realError instanceof DatabaseBusyError
       ) {
          throw realError;
       }

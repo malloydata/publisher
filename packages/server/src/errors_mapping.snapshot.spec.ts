@@ -29,6 +29,7 @@ import {
    DashboardNotFoundError,
    DestinationNotFoundError,
    ContainerNotFoundError,
+   DatabaseBusyError,
    DryRunCapacityError,
    EnvironmentNotFoundError,
    FrozenConfigError,
@@ -562,6 +563,14 @@ const CASES: Array<[string, () => unknown]> = [
    [
       "PackageAdmissionRefusedError",
       () => new PackageAdmissionRefusedError("package load refused"),
+   ],
+   [
+      "DatabaseBusyError",
+      () =>
+         new DatabaseBusyError(
+            "pg",
+            "Connection 'pg' has no free database session: this server opens at most 10 at a time for it, and none came free within 30 s. Retry once fewer queries are running on this connection.",
+         ),
    ],
    [
       "DryRunCapacityError",
