@@ -386,7 +386,7 @@ const NO_SHUTDOWN_CHECKPOINT = "PRAGMA disable_checkpoint_on_shutdown";
  * off the checkpoint on close, so a DuckLake catalog kept in a local DuckDB
  * file keeps its write-ahead log. The one gap is DuckDB's own default: a Binder
  * or Catalog error mid-script leaves the earlier statements committable.
- * Revisit both on DuckDB >= 2.0.1.
+ * Revisit the setting, and with it these guards, on DuckDB >= 2.0.1.
  */
 export class IsolatedSessionConnection extends DuckDBConnection {
    /** The first INTERNAL or FATAL error: permanent. */
@@ -394,8 +394,8 @@ export class IsolatedSessionConnection extends DuckDBConnection {
    /** The error that aborted the open transaction: cleared by a rollback. */
    private abortedBy: Error | undefined;
    private cancelled = false;
-   /** The transaction probe is running: a statement-scoped interrupt must not kill it. */
-   private probing = false;
+   /** Publisher's own statement is running: a statement-scoped interrupt must not kill it. */
+   private ownStatement = false;
 
    /** The first fatal error the session latched. */
    get fatal(): Error | undefined {
@@ -413,9 +413,9 @@ export class IsolatedSessionConnection extends DuckDBConnection {
       this.interrupt();
    }
 
-   /** Interrupt the statement in flight; DuckDB stops it at its next poll. A no-op while the probe runs, whose statement is not the one being given up. */
+   /** Interrupt the statement in flight; DuckDB stops it at its next poll. A no-op while Publisher's own statement runs, which is not the one being given up. */
    interrupt(): void {
-      if (!this.probing) this.connection?.interrupt();
+      if (!this.ownStatement) this.connection?.interrupt();
    }
 
    protected override runDuckDBQuery(
@@ -483,32 +483,36 @@ export class IsolatedSessionConnection extends DuckDBConnection {
       if (this.fatalError) return;
       this.fatalError = error;
       try {
-         await runAsInternalStatement(NO_SHUTDOWN_CHECKPOINT, () =>
-            super.runDuckDBQuery(NO_SHUTDOWN_CHECKPOINT),
-         );
+         await this.runOwnStatement(NO_SHUTDOWN_CHECKPOINT);
       } catch {
          // Best effort: the session is already refusing everything.
       }
    }
 
    /**
-    * Whether a transaction is open, asked of DuckDB as Publisher's own
-    * statement (a locked instance admits it). A fatal error from the probe is
-    * latched; any failure counts as open, so the next rollback clears it.
+    * Whether a transaction is open, asked of DuckDB. A fatal error from the
+    * probe is latched; any failure counts as open, so the next rollback
+    * clears it.
     */
    private async transactionIsOpen(): Promise<boolean> {
-      this.probing = true;
       try {
-         await runAsInternalStatement(TRANSACTION_PROBE, () =>
-            super.runDuckDBQuery(TRANSACTION_PROBE),
-         );
+         await this.runOwnStatement(TRANSACTION_PROBE);
          return false;
       } catch (err) {
          const error = err instanceof Error ? err : new Error(String(err));
          if (FATAL_ERROR.test(error.message)) await this.latchFatal(error);
          return true;
+      }
+   }
+
+   /** Publisher's own statement: a locked instance admits it, and an interrupt meant for the caller's statement does not kill it. */
+   private async runOwnStatement(sql: string): Promise<void> {
+      const outer = this.ownStatement;
+      this.ownStatement = true;
+      try {
+         await runAsInternalStatement(sql, () => super.runDuckDBQuery(sql));
       } finally {
-         this.probing = false;
+         this.ownStatement = outer;
       }
    }
 }
@@ -589,8 +593,6 @@ export function createIsolatedBuildSession(sessionName: string): {
    }
    const dispose = async () => {
       await rollbackBeforeDisconnect(session, sessionName);
-      // An open still in flight would assign its connection after the close, and leak it; it never rejects.
-      await session.connecting;
       // close() leaves the native ClientContext, with its attaches and credentials, alive until disconnected.
       try {
          await session.close();
