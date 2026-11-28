@@ -338,7 +338,7 @@ model-owned finding deserves a probe of its own before it justifies an edit.
 ## Step 4: Append issue events, then stop
 
 Append to `<workdir>/runs/<runId>/events.jsonl` with `kind: issue`
-(shapes in `skill:eval-answer` `reference/ledger-schema.md`):
+(shapes in `skill:eval-answer` `reference/ledger-schema-events.md`):
 
 - `issue_id`, affected `qids`, `primary_code`, `contributing_codes`
 - `component`, `owner`, `severity`, `confidence`

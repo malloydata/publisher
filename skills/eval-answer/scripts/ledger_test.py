@@ -23,7 +23,8 @@ RUN = {"runId": "set-baseline-01", "target": "local", "answererModel": "m",
 
 
 class Contaminated(unittest.TestCase):
-    """`contaminated` is `bool or "unknown"` (ledger-schema.md:162, :216).
+    """`contaminated` is `bool or "unknown"` (the `attempt` and `score` events of
+    ledger-schema-events.md).
 
     The drift this pins: run_baseline wrote the strings "true"/"false", which
     `bool()` reads as True in BOTH cases. A consumer taking the documented type

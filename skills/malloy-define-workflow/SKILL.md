@@ -75,7 +75,7 @@ workflows/
 | name (the key, of a set or a workflow) | `^[a-z0-9]+(-[a-z0-9]+)*$`, at most 64 characters. A workflow named `default` is an ordinary workflow. |
 | `skillSets.<name>.path` | Required. A package-relative folder whose subfolders are skills. Two sets may not declare one path. |
 | `skillSets.<name>.description` | Optional. A non-empty line saying what the set holds. |
-| `skillSets.<name>.overrides` | Optional. Up to 64 distinct skill names. On `default`, the names that replace a bundled skill of the same name; on any set, the names whose clash with a bundled skill is not reported as a finding. |
+| `skillSets.<name>.overrides` | Optional, and read only on `default`: up to 64 distinct skill names that replace a bundled skill of the same name. On any other set it is ignored, with a finding. |
 | `workflows.<name>.description` | Optional. A non-empty line saying what the workflow is for. |
 | `workflows.<name>.instructions` | Required. Package-relative path of a `.md` file. At most 16 KiB. |
 | `workflows.<name>.skillSets` | Optional. At most 8 distinct names of declared sets, in the order an installer reads them. |
@@ -90,7 +90,7 @@ A set is a folder whose subfolders are skills (`<path>/<skill>/SKILL.md`). Any f
 - A skill is its whole directory: `SKILL.md`, other Markdown (`references/` is the default folder for it; an existing `reference/` keeps working), `scripts/` the skill runs as commands, and `assets/` or any other folder of files it copies. Frontmatter `name` must equal the directory name.
 - A skill name that two sets of one workflow both hold is in both, each served whole, and the workflow's warnings say so. An installer keeps the first-listed set's copy, so order the sets so the one that should win is first.
 - Dot-named folders are skipped, and a `.skillignore` at a skill's root (gitignore syntax) keeps tests and fixtures out of it. An ignored file is still in the package, so it hides nothing; keep secrets out of the package.
-- The `malloy-` and `eval-` prefixes belong to the skills Publisher bundles. Give a package skill a name outside both.
+- The `malloy-` and `eval-` prefixes belong to the skills Publisher bundles, and a future bundled skill may take any name under them. Give a package skill a name outside both.
 
 ### The `default` set
 
@@ -98,7 +98,7 @@ The set named `default` holds the package's own skills. Its skills, beside the b
 
 A `default` skill named like a bundled skill replaces it, for `get_skill`, `get_context` and the skills routes, **only if `default`'s `overrides` lists the name**; otherwise the bundled skill is served and the set carries a finding that names the fix. Set reads and workflow reads serve every skill of a set whatever `overrides` says. Credible's agent keeps its own copy of a bundled skill and skips a package skill of that name, so a skill that must behave the same everywhere gets a name no bundled skill has.
 
-A package's `agents` key is **no longer read**, and neither is a root `skills/` directory on its own: it is read only when `default` is declared at it. The one-line fix moves no file: `"skillSets": { "default": { "path": "skills" } }`, if the folder holds `<skill>/SKILL.md`. A package with either left undeclared loads with a warning (`PACKAGE_AGENTS_NOT_READ`, `PACKAGE_SKILLS_DIR_NOT_READ`) that names the fix.
+A package's `agents` key is **no longer read**, and neither is a root `skills/` directory unless a declared skill set is at or under it. The one-line fix moves no file: `"skillSets": { "default": { "path": "skills" } }`, if the folder holds `<skill>/SKILL.md`. Two things change with it: a skill named like a bundled one is served only if `default`'s `overrides` lists it, and every file of a skill is now served, so put what it must not serve in a `.skillignore`. A package with either left undeclared loads with a warning (`package-agents-not-read`, `package-skills-dir-not-read`) that names the fix.
 
 ## Instructions or skills
 

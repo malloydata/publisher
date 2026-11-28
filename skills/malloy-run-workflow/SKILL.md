@@ -52,7 +52,7 @@ Write each file under the directory your harness reads skills from:
 
 Rules:
 
-- **Never overwrite a skill the user already has.** If `<dir>/<skill-name>/` exists, leave it alone and say you skipped it. Do not merge files into it.
+- **Never overwrite a skill the user already has.** If `<dir>/<skill-name>/` exists, whether it was there before the install or an earlier set of this install wrote it, leave it alone and say you skipped it. Do not merge files into it, and install none of its listed files.
 - Write only the paths the response gave, under that one skills directory. Refuse any `relative_filepath` that is absolute or has a `..` segment (the script below does).
 - A harness that scanned its skills at startup may not see new ones. If it does not pick them up, read the `SKILL.md` you just wrote directly.
 - Install into the project directory only, never the user's home directory: these files outlive the session and are text a package author wrote.
@@ -77,13 +77,14 @@ Write the entry's own `name` and `description` fields, never ones read out of th
 A set's `assets` lists every file of its skills that is not inline Markdown as `{relative_filepath, bytes, sha256}`, with no contents. These are scripts the skill runs, files its instructions tell you to copy into what you build (a chart module, a template), data and images. Install each one at `<dir>/<relative_filepath>`, beside the skill's `SKILL.md`, and **never read it into your context or retype it**:
 
 - **You have the package's files** (a checkout or a mounted package): copy it from `<set.path>/<relative_filepath>` in the package. This is the only way to install a binary file, which the Publisher never serves as text.
-- **You have a shell that reaches the Publisher:** fetch a text file over REST (`.../skill-sets/{set name}/skills/{relative_filepath}?versionId=<source.versionId>`, each path segment percent-encoded), not through `get_skill_set`'s `skill_path`, which would put it in your context. Write it to a temporary file and move it into place only when `file_contents` came back and its SHA-256 is the listed `sha256`, so a failed or altered fetch installs nothing. Set `failed=0` once, before the first file, then call this for each one (`DIR` is the skills directory, `BASE` the `.../skill-sets/{set name}/skills` URL above, `Q` its query string; `shasum -a 256` stands in for `sha256sum` on macOS):
+- **You have a shell that reaches the Publisher:** fetch a text file over REST (`.../skill-sets/{set name}/skills/{relative_filepath}?versionId=<source.versionId>`, each path segment percent-encoded), not through `get_skill_set`'s `skill_path`, which would put it in your context. Write it to a temporary file and move it into place only when `file_contents` came back and its SHA-256 is the listed `sha256`, so a failed or altered fetch installs nothing. Set `failed=0` once, and `taken` to the names of the skills that rule made you skip, each side wrapped in a space (`taken=" ops-guide notes "`, or `taken=" "` when none), before the first file, then call this for each one (`DIR` is the skills directory, `BASE` the `.../skill-sets/{set name}/skills` URL above, `Q` its query string; `shasum -a 256` stands in for `sha256sum` on macOS):
 
   ```bash
   set -o pipefail
   install_file() {  # $1 relative_filepath, $2 its listed sha256
     rel=$1; sha=$2; dest="$DIR/$rel"
     case "$rel" in /*|..|../*|*/..|*/../*) echo "refused path: $rel" >&2; failed=1; return ;; esac
+    case "$taken" in *" ${rel%%/*} "*) echo "skill exists, skipped: $dest" >&2; return ;; esac
     if [ -e "$dest" ]; then echo "exists, skipped: $dest" >&2; return; fi
     uri=$(jq -nr --arg p "$rel" '$p | split("/") | map(@uri) | join("/")')  # each segment percent-encoded
     mkdir -p "$(dirname "$dest")" \

@@ -233,7 +233,7 @@ each one, because a rerun against stale goldens measures nothing.
 
 Compile, reload, run one trivial query against each source you touched.
 Append a `candidate` event to the run's `events.jsonl` (shape in
-`skill:eval-answer` `reference/ledger-schema.md`): the files touched, a
+`skill:eval-answer` `reference/ledger-schema-events.md`): the files touched, a
 one-line diff summary per file, the issue_ids, probe receipts, and this
 report. Every proposal gets its event, accepted or not; a rejected direction
 keeps its record. Then stop and wait for the acceptance check in `skill:eval-loop`. That
