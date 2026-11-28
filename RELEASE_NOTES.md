@@ -21,6 +21,15 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — an inherited `where:` that cannot be verified says so
+
+**[new] A query denied because a `where:` its source inherits could not be verified now answers with its own reason and says why.** Publisher checks, on every query, that a `where:` a source inherits from a source it is built from still reads the fields it was written against. Until now a failed check answered `403`, `reason: ACCESS_DENIED`, `Access denied for source "…"`, exactly like a gate's denial, and logged its reason only at debug level. An author whose model was denied this way could not tell it from a permission rule (gtme, Credible's feedback S4). The deny itself is unchanged, and it still fails closed with the same status. Two things change:
+
+- **The response:** `reason: INHERITED_FILTER_UNVERIFIED`. The message names the source and a reason class (`redefined_field`, `unrecorded_join`, `unresolved_declaration` or `resolution_bound`), and says it is not a permission rule. It never names the filter or the file.
+- **The server:** logs one info line, `Inherited where: could not be verified; denying`, with the model, source, filter text, declaring source and file. A new counter, `publisher_inherited_filter_unverified_total{reason}`, counts these denials.
+
+**Who is affected:** clients that branch on `reason: ACCESS_DENIED`. This denial no longer carries it, so treat `INHERITED_FILTER_UNVERIFIED` as a model problem, not a permission one; supplying givens does not help. The access record still books it as `denied_filter`, and `publisher_authorize_row_level_total{decision="denied_by_gate"}` still counts it. **What to do:** to find one of these denials, search the server log for the info line above.
+
 ## [Unreleased] — clearer advice on two stored-source warnings
 
 **[fix] A `#@ persist` source is no longer told to inline a join it cannot inline.** When a stored source's join reads another connection, its `served-copy-not-served` warning (`cross_connection_join`) told every source to "inline the join (inline=)", but only a `#(materialize)` source takes `inline=`. The warning now gives that advice to `#(materialize)` sources only; a `#@ persist` source is told to materialize the joined source into the same destination, or to build itself in its own database. **Who is affected:** authors reading this warning on a `#@ persist` source. **What to do:** nothing.

@@ -5,6 +5,7 @@ import { MalloyError, type LogMessage } from "@malloydata/malloy";
 import { PUBLISHER_CONFIG_NAME } from "./constants";
 import { logger } from "./logger";
 import type { EligibilityRefusalReason } from "./materialization_metrics";
+import type { InheritedFilterReason } from "./service/inherited_filter_reasons";
 import {
    causeChain,
    isConnectionFailure,
@@ -126,6 +127,10 @@ export type ErrorReason =
    // A gate that could not be decided answers the same; only the metrics and
    // the log tell the two apart.
    | "ACCESS_DENIED"
+   // 403: a `where:` the source inherits could not be verified to read the
+   // fields it was written against here (the model's own text, not a
+   // permission rule); the message gives the reason class, the log the rest.
+   | "INHERITED_FILTER_UNVERIFIED"
    // 422: a valid materialization declaration this server will not build;
    // the body's `refusalReason` is its `RefusedSource.reason`.
    | "MATERIALIZATION_REFUSED"
@@ -1345,14 +1350,28 @@ export class AccessDeniedError extends Error {
     */
    readonly gate: "lock" | "row_filter";
 
+   /**
+    * Set when no gate refused: a `where:` the source inherits could not be
+    * verified on it (the inherited-filter guard), with why. The response's
+    * `reason` is then `INHERITED_FILTER_UNVERIFIED`.
+    */
+   readonly inheritedFilter?: InheritedFilterReason;
+
    constructor(
       message: string,
-      options?: { source?: string; gate?: "lock" | "row_filter" },
+      options?: {
+         source?: string;
+         gate?: "lock" | "row_filter";
+         inheritedFilter?: InheritedFilterReason;
+      },
    ) {
       super(message);
       this.name = "AccessDeniedError";
       if (options?.source !== undefined) this.source = options.source;
       this.gate = options?.gate ?? "lock";
+      if (options?.inheritedFilter !== undefined) {
+         this.inheritedFilter = options.inheritedFilter;
+      }
    }
 
    /**
@@ -1368,7 +1387,33 @@ export class AccessDeniedError extends Error {
          gate,
       });
    }
+
+   /**
+    * The inherited-filter guard's refusal for `source`: the same 403, saying
+    * which kind of check failed and that it is not a permission rule. Never
+    * the filter's text or the declaring file, which name the model's fields
+    * and layout; the server log carries those.
+    */
+   static inheritedFilterUnverified(
+      source: string,
+      reason: InheritedFilterReason,
+   ): AccessDeniedError {
+      return new AccessDeniedError(
+         `Access denied for source "${source}": a where: it inherits from a source it is built from could not be verified here (${INHERITED_FILTER_WHY[reason]}; reason: ${reason}). This is not a permission rule: the model's author can find the filter and the source that declares it in the server log.`,
+         { source, gate: "row_filter", inheritedFilter: reason },
+      );
+   }
 }
+
+/** Each inherited-filter reason class, as the caller is told it. */
+const INHERITED_FILTER_WHY: Record<InheritedFilterReason, string> = {
+   redefined_field:
+      "a field it reads is defined again on the way to this source, by rename:, except: or a new definition",
+   unrecorded_join: "it reads through a join whose inputs are not recorded",
+   unresolved_declaration:
+      "the source that declares it could not be found from this model",
+   resolution_bound: "it is nested past the depth the check follows",
+};
 
 /**
  * Caller-submitted query text that did not compile, with problem ranges in the
@@ -2139,8 +2184,12 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    access_denied: {
       status: 403,
       // Every gate 403, a gate that could not be decided included: the caller
-      // learns nothing the status does not already say.
-      reason: "ACCESS_DENIED",
+      // learns nothing the status does not already say. An inherited filter
+      // that could not be verified is no gate's, and says so.
+      reason: (error) =>
+         error.inheritedFilter !== undefined
+            ? "INHERITED_FILTER_UNVERIFIED"
+            : "ACCESS_DENIED",
       mcp: { advice: "malloy" },
       // The #(authorize) gate fires at query time, not setup, but a denial
       // must never surface as an opaque internal error.

@@ -67,6 +67,11 @@ import { findSourceByOwnAnnotationIdentity } from "./gate_classification";
 import { parseAuthorizeAnnotation } from "./authorize";
 import { sameNotePosition } from "./annotations";
 import { hiddenAccess } from "./governance/ir/compiled_model";
+import type { InheritedFilterReason } from "./inherited_filter_reasons";
+export {
+   INHERITED_FILTER_REASONS,
+   type InheritedFilterReason,
+} from "./inherited_filter_reasons";
 
 /**
  * The next struct back in a derivation chain, trying the same links the gate
@@ -1421,45 +1426,51 @@ export function assertInheritedSourceFiltersBind(
       if (alreadyProven.has(condition)) continue;
       if (conditionReadsNoField(condition)) continue;
       if (isCallerWritten(condition, freshness.callerText)) continue;
-      // Before the fresh-filter check: an inline `extend {}` may carry its
-      // base's `.location`, which would wrongly "prove" an inherited
-      // condition fresh. A non-`struct` origin is always a genuine ancestor
-      // holding this exact condition object.
-      const { origin, inlineBase } = findFilterOrigin(
-         struct,
-         condition,
-         modelDef,
-         resolveSibling,
-         unresolved,
-         freshness.virtualUrl,
-      );
-      if (origin !== struct) {
-         assertFilterConditionBindsToDeclaringSource(
-            origin,
+      let declaring: SourceDef | undefined;
+      try {
+         // Before the fresh-filter check: an inline `extend {}` may carry its
+         // base's `.location`, which would wrongly "prove" an inherited
+         // condition fresh. A non-`struct` origin is always a genuine ancestor
+         // holding this exact condition object.
+         const { origin, inlineBase } = findFilterOrigin(
             struct,
             condition,
+            modelDef,
+            resolveSibling,
             unresolved,
-            inlineBase,
+            freshness.virtualUrl,
          );
-         continue;
-      }
-      if (isOwnFreshFilter(struct, condition, freshness)) continue;
-      const members = composite
-         ? membersDeclaringCondition(composite, condition)
-         : [];
-      if (members.length > 0) {
-         for (const member of members) {
+         declaring = origin;
+         if (origin !== struct) {
             assertFilterConditionBindsToDeclaringSource(
-               member,
+               origin,
                struct,
                condition,
+               unresolved,
+               inlineBase,
             );
+            continue;
          }
-         continue;
+         if (isOwnFreshFilter(struct, condition, freshness)) continue;
+         const members = composite
+            ? membersDeclaringCondition(composite, condition)
+            : [];
+         if (members.length > 0) {
+            for (const member of members) {
+               assertFilterConditionBindsToDeclaringSource(
+                  member,
+                  struct,
+                  condition,
+               );
+            }
+            continue;
+         }
+         throw new Error(
+            "a row-security filter's declaring source could not be resolved",
+         );
+      } catch (err) {
+         throw InheritedFilterUnverifiedError.of(err, condition, declaring);
       }
-      throw new Error(
-         "a row-security filter's declaring source could not be resolved",
-      );
    }
    const descend = (
       next: SourceDef,
@@ -1797,4 +1808,63 @@ function privateFieldNamesOf(def: unknown): Set<string> {
          .map((f) => (typeof f.as === "string" ? f.as : f.name))
          .filter((n): n is string => typeof n === "string"),
    );
+}
+
+/** The reason class of one of this module's refusals, read from its message. */
+export function inheritedFilterReasonOf(
+   message: string,
+): InheritedFilterReason {
+   if (message.includes("resolves to a different field")) {
+      return "redefined_field";
+   }
+   if (message.includes("inputs are not recorded")) return "unrecorded_join";
+   if (message.includes("resolution bound")) return "resolution_bound";
+   return "unresolved_declaration";
+}
+
+/**
+ * The guard's refusal of one inherited condition, with what an operator needs
+ * to find it: the condition's text and the declaration it was checked
+ * against. For the server log only; the caller is told the reason class.
+ */
+export class InheritedFilterUnverifiedError extends Error {
+   constructor(
+      message: string,
+      readonly reason: InheritedFilterReason,
+      readonly filter: {
+         text?: string;
+         declaringSource?: string;
+         declaringFile?: string;
+      } = {},
+   ) {
+      super(message);
+      this.name = "InheritedFilterUnverifiedError";
+   }
+
+   static of(
+      err: unknown,
+      condition: FilterCondition,
+      declaring: SourceDef | undefined,
+   ): InheritedFilterUnverifiedError {
+      if (err instanceof InheritedFilterUnverifiedError) return err;
+      const message = err instanceof Error ? err.message : String(err);
+      const at = firstFieldUsageLocation(condition);
+      const sourceID = (declaring as { sourceID?: unknown } | undefined)
+         ?.sourceID;
+      return new InheritedFilterUnverifiedError(
+         message,
+         inheritedFilterReasonOf(message),
+         {
+            ...(typeof condition.code === "string"
+               ? { text: condition.code }
+               : {}),
+            ...(typeof sourceID === "string"
+               ? { declaringSource: sourceID.split("@")[0] }
+               : {}),
+            ...((declaring?.location?.url ?? at?.url)
+               ? { declaringFile: declaring?.location?.url ?? at?.url }
+               : {}),
+         },
+      );
+   }
 }

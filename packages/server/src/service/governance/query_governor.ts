@@ -97,6 +97,8 @@ import {
    assertGraftedGateBindsToDeclaringSource,
    assertInheritedSourceFiltersBind,
    findFilterAnnotationDeclaringSource,
+   InheritedFilterUnverifiedError,
+   inheritedFilterReasonOf,
    type DocumentLocationLike,
    type SiblingModelDefResolver,
    type StageLike,
@@ -121,6 +123,7 @@ import {
    recordLockDecision,
    recordRowLevelGateDecision,
    recordRowLevelGateRejected,
+   recordInheritedFilterUnverified,
    type AuthorizeBypassEntryPoint,
    type AuthorizeGateSite,
 } from "../../authorize_metrics";
@@ -3316,15 +3319,33 @@ export class QueryGovernor {
          );
       } catch (err) {
          recordRowLevelGateDecision("denied_by_gate", site);
-         logger.debug("Inherited source filter binding check failed; denying", {
-            modelPath: this.modelPath,
-            error: err instanceof Error ? err.message : String(err),
-         });
          // The MODEL alias, never the raw struct name: on a table source
          // `name` is the physical table identifier (`duckdb:orgtable`).
          const named = struct ?? target;
          const label = (named as { as?: string }).as || named.name;
-         throw AccessDeniedError.forSource(label);
+         const message = err instanceof Error ? err.message : String(err);
+         const unverified =
+            err instanceof InheritedFilterUnverifiedError ? err : undefined;
+         const reason = unverified?.reason ?? inheritedFilterReasonOf(message);
+         recordInheritedFilterUnverified(reason);
+         // At info, with what the author needs to find it: the caller is told
+         // only the reason class.
+         logger.info("Inherited where: could not be verified; denying", {
+            modelPath: this.modelPath,
+            source: label,
+            reason,
+            ...(unverified?.filter.text !== undefined
+               ? { filter: unverified.filter.text }
+               : {}),
+            ...(unverified?.filter.declaringSource !== undefined
+               ? { declaringSource: unverified.filter.declaringSource }
+               : {}),
+            ...(unverified?.filter.declaringFile !== undefined
+               ? { declaringFile: unverified.filter.declaringFile }
+               : {}),
+            error: message,
+         });
+         throw AccessDeniedError.inheritedFilterUnverified(label, reason);
       }
    }
 

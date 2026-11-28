@@ -47,7 +47,7 @@ import { QueryPrivileges } from "../../src/service/model_query_request";
 
 /** The guard logs its reason under one of these: the inherited-filter walk, or a grafted gate's proof. */
 const DENY_MESSAGES = [
-   "Inherited source filter binding check failed; denying",
+   "Inherited where: could not be verified; denying",
    "Row-level authorize attach failed; denying",
 ];
 /** The guard could not find where a filter was declared, so it refuses rather than guess. */
@@ -124,12 +124,13 @@ function invalid(e: unknown): Outcome {
 /** Run `act` with the guard's debug reasons captured. */
 async function withDenialSpy(act: () => Promise<Outcome>): Promise<Outcome> {
    const debug = spyOn(logger, "debug");
+   const info = spyOn(logger, "info");
    try {
       return await act();
    } catch (e) {
       if (e instanceof AccessDeniedError) {
          return classifyDenial(
-            debug.mock.calls
+            [...debug.mock.calls, ...info.mock.calls]
                .filter((c) => DENY_MESSAGES.includes(String(c[0])))
                .map((c) =>
                   String(
@@ -142,6 +143,7 @@ async function withDenialSpy(act: () => Promise<Outcome>): Promise<Outcome> {
       return invalid(e);
    } finally {
       debug.mockRestore();
+      info.mockRestore();
    }
 }
 
