@@ -54,7 +54,8 @@ conformance job:
 The flip is a code change in one breaking minor. That release also carries:
 
 - lifting the `storage=` persist-over-`#(materialize)` refusal (D6);
-- retiring `#@ preaggregate` (D8);
+- making `#@ preaggregate` a deprecated synonym of `#(rollup)`, read by the rollup leg, with the v1
+  synthesis and classifier deleted (D8);
 - removing `materialize.enabled`'s off position (D9);
 - one shape predicate everywhere (D10);
 - deleting the v1 walk.
@@ -155,7 +156,9 @@ These are Kyle's, and the design treats them as constraints:
 
 - `#@ persist` on a query-shaped source, a named query and a view is correct and supported
   indefinitely. Sources are materialized with `#(materialize)`. Metrics roll up with `#(rollup)`.
-  `#@ preaggregate` is deprecated and goes.
+  `#@ preaggregate` is deprecated. Since D8 (revised) it is a synonym of `#(rollup)` that warns; it
+  does not fail the load. The authoring rule is unchanged: docs, skills and examples use `#(rollup)`
+  only.
 - `persist-not-materializable` keeps today's tier, message and load failure, and does not weaken.
   Only an **own** `#@ persist` on a table-shaped source produces it.
 - One leg per `sourceID`. An inherited-only `#@ persist` never creates a table.
@@ -356,7 +359,8 @@ These are deleted:
   `domain/package_plan.ts`) and its golden key;
 - the `inherited_persist` refusal, apart from decision [D5](#decisions-kyle-2026-11-28);
 - the five copies of the ownership rule;
-- the `#@ preaggregate` and `#(preaggregate)` readers (D8);
+- the v1 `#@ preaggregate` synthesis, classifier and validation (D8). The line itself is still read,
+  by the rollup leg, as a `#(rollup)` synonym;
 - the off position of `materialize.enabled` (D9).
 
 The D4 bind rule is added in that release and deleted in a later one.
@@ -502,15 +506,16 @@ classes:
 | E6 `base_unrefused`                      | A base refused in v1 only through `refuseDatabaseTablesSharedWithARefusal` against an inherited-only extension (D7)                                                                                                 | expected |
 | E7 `persist_over_materialize_planned`    | A `storage=` `#@ persist` over a `#(materialize)` table in its destination, refused `upstream_table_unusable` by the base, now planned over that table, with its new edge (D6)                                      | expected |
 | E8 `sql_upstream_stored`                 | A view, query, rollup or persist source over a persisted `.sql()` source that now has an edge to its table and builds over it, or is refused at plan as `upstream_table_unusable` or `generated_build_failed` (D10) | expected |
-| E9 `preaggregate_retired`                | A package declaring `#@ preaggregate` or `#(preaggregate)` that fails to load with `rollup-retired-annotation` (D8)                                                                                                 | expected |
+| E9 `preaggregate_warning_text`           | A `deprecated-preaggregate-annotation` warning whose message changed to the synonym text (D8); the rollup plans, addresses and tables are identical                                                                 | expected |
 | everything else                          | any moved address, name or edge; a changed refusal reason; a new or missing finding; a plan that fails on one side                                                                                                  | **bug**  |
 
 An E1 whose address does **not** equal a retained source's would mean the extension had a table of
 its own that v2 drops. It is a bug until shown otherwise.
 
-E9 makes the two `preaggregate-v1-*` service fixtures fail by design. In the bump PR they are
-rewritten to `#(rollup)`, and their rollups must keep their names, addresses and tables (see
-[Removing `#@ preaggregate`](#removing--preaggregate)).
+The two `preaggregate-v1-*` service fixtures keep their `#@ preaggregate` lines and must plan exactly
+as before: the same rollups, names, addresses and tables. Only their deprecation warning's text
+differs (E9). Any other diff on them is a bug (see
+[`#@ preaggregate` as a synonym of `#(rollup)`](#-preaggregate-as-a-synonym-of-rollup)).
 
 The runner's existing served-versus-live check runs on the candidate too. Every `served_equal` must
 stay `served_equal`. An inherited-only extension that is now served through its base's table is
@@ -543,8 +548,6 @@ The critical path is marked ★. Everything breaking is in phase 2.
      `publisher_ref` input;
    - per-leg containment in `collectModelBuildPlan`, so one leg's throw costs only that leg's file;
    - moving the three helpers `rollup_plan.ts` takes from the `#@ preaggregate` modules (below);
-   - a counter, by package, on the existing `deprecated-preaggregate-annotation` warning. It feeds
-     D8's fallback.
 1. **★ `StoredParent` and the persist companion generator, unused.** `chainVerdict` and the
    cross-file walk take `StoredParent` (3.3). With no persist parent planned yet this changes
    nothing. The companion text generator lands with its unit tests. Both can merge before the
@@ -557,7 +560,8 @@ The critical path is marked ★. Everything breaking is in phase 2.
    5. `inherited_persist` narrowed (D5);
    6. lifting the D6 refusal;
    7. the D4 bind rule;
-   8. retiring `#@ preaggregate` and `#(preaggregate)`, and deleting their readers (D8);
+   8. `#@ preaggregate` read as a `#(rollup)` synonym, with its new warning text, and the v1
+      synthesis, classifier and validation deleted (D8);
    9. deleting the v1 walk and everything in 3.5.
 
    Its gates:
@@ -567,6 +571,8 @@ The critical path is marked ★. Everything breaking is in phase 2.
    - **D7 security review:** an adversarial review of the read path for a gated inherited-only
      extension over an ungated base's stored table.
    - **Goldens:** the regenerated plan goldens differ only by E1–E9.
+   - **Preaggregate parity:** every `#@ preaggregate` case plans the same rollups under the synonym
+     as under the v1 reader (see the preaggregate section).
    - **Service, already confirmed** (G3, Credible's review): retiring an inherited-only anchor
      (`AnchorRetirementPolicy.REASON_ABSENT`) drops nothing its base holds.
      `MaterializationGarbageCollector.isCollectible` drops a table only when
@@ -585,49 +591,91 @@ The critical path is marked ★. Everything breaking is in phase 2.
    `persist-not-materializable` "never refused", and `:1320`, the 1.0.0 plan for
    `#@ preaggregate`, are corrected at the same time.
 
-### Removing `#@ preaggregate`
+### `#@ preaggregate` as a synonym of `#(rollup)`
 
-The retirement ships in the breaking minor with the flip (D8). It is independent of the persist leg
-except for three helpers that `rollup_plan.ts` imports from v1 modules. Those helpers move in
-phase 0:
+**Signed off ([D8](#decisions-kyle-2026-11-28), revised):** `#@ preaggregate` is not retired and
+does not fail the load. It becomes a pure synonym of `#(rollup)`. It behaves identically and shares
+one implementation, the v2 rollup leg, and using it warns. The authoring rule is unchanged: docs,
+skills and examples write `#(rollup)` only.
+
+**How the synonym is read.** The rollup leg already reads a measure's `#@ preaggregate` lines as its
+own declarations. It builds and serves them under the `#(rollup)` rollup's name
+(`plan/rollup_plan.ts:892-920`, step G4 of the 0.13 cutover). It still reads them through v1's own
+reader (`readPreaggregateAnnotation`) and v1's validation. Under the synonym, each `#@ preaggregate`
+note is read by `#(rollup)`'s declaration reader (`readDeclaration`, `plan/rollup_plan.ts:499`),
+through a small normalizer for the spellings v1 accepts and `#(rollup)` does not:
+
+- `grain="a, b"`, a comma-separated string, is read as `grain=["a", "b"]`;
+- `#@ -preaggregate` clears the grains declared above it on that measure, as it does today
+  (`plan/preaggregation_annotation.ts:24-46`);
+- `namespace=` is `name=`'s deprecated spelling on both routes already.
+
+Everything else is `#(rollup)`'s. That covers the key set, the grain rules, and the refusal and
+malformed codes (`rollup-unknown-key`, `rollup-unknown-grain`, `rollup-not-mergeable`,
+`rollup-invalid`, `rollup-not-built` and the rest). `preaggregateViolationCode` already maps v1's
+violations onto those codes (`plan/load_gate_text.ts:387-402`). `PREAGG_WARN_ONLY`'s two refusals
+are `#(rollup)`'s own reasons, `hidden_field` and `join_not_in_grain` (`:372-382`). A v1 line that
+fails today therefore fails the same way, and a valid one plans the same rollup.
+
+**Deleted with the v1 walk:**
+
+- the v1 synthesis (`preaggregation_synthesis.ts`);
+- the classifier (`preaggregation_classifier.ts`);
+- v1's validation (`preaggregation_validation.ts`, `preaggregateGateLines` and `PREAGG_WARN_ONLY` in
+  `plan/load_gate_text.ts:372-420`, `v1RollupRefusals` in `plan/build_plan.ts:2192`, and the
+  model-level import in `service/model.ts:145`);
+- v1's reader (`preaggregation_annotation.ts`), whose two rules above move into the normalizer.
+
+Three helpers `rollup_plan.ts` imports from those modules move first, in phase 0:
 
 - `hasFanoutJoin` (`plan/preaggregation_validation.ts:160`);
-- `basePersistNamespace` (`plan/preaggregation_synthesis.ts:119`);
+- `basePersistNamespace` (`plan/preaggregation_synthesis.ts:119`), which reads the base's
+  `#@ persist` `name=` container and so uses `tableOwnerOf`;
 - `nameContainer` and `readRollupContainer` (`plan/preaggregation_namespace.ts`).
 
-These move into `rollup_plan.ts` or `domain/` first. `basePersistNamespace` reads the base's
-`#@ persist` `name=` container, so it uses `tableOwnerOf`.
+**The warning.** The code stays `deprecated-preaggregate-annotation` (`annotation_reader.ts:468`).
+Its reason for existing is unchanged, and hosts and dashboards already key on it. The usage counter
+it feeds (`preaggregate_annotation` in `deprecated_usage_metrics.ts`) stays. The warning is
+emitted by `deprecated/lints.ts:84-97`. Today it is shown only with `materialize.enabled` on
+(`:111-117`); with D9 it is always shown.
 
-**Signed off ([D8](#decisions-kyle-2026-11-28)):** in the breaking minor that carries the flip, a
-`#@ preaggregate` line becomes a retired annotation. It fails publish and load, malformed, with the
-code `rollup-retired-annotation` and a message naming the `#(rollup) grain=[…]` that it reads as.
-This follows the retired-key precedent (`persist-retired-key`) and the rule that an invalid
-annotation fails.
+Today's message is:
 
-The readers are deleted in the same release, with the v1 walk. Lines are cited so the deletion can be checked:
+> Measure M on source S uses #@ preaggregate, which is deprecated: its v2 spelling is #(rollup) grain=[…] (see …). Until you switch, #@ preaggregate still builds and serves its rollups.
 
-- the `readsPreaggregateLines` path (`plan/rollup_plan.ts:653`, `:892-920`);
-- `preaggregation_annotation.ts`, `preaggregation_classifier.ts`, `preaggregation_synthesis.ts` and
-  `preaggregation_validation.ts`;
-- `preaggregateGateLines` and `PREAGG_WARN_ONLY` (`plan/load_gate_text.ts:372-420`);
-- `v1RollupRefusals` (`plan/build_plan.ts:2192`);
-- the model-level validation import (`service/model.ts:145`);
-- `deprecated-preaggregate-annotation` (`annotation_reader.ts:469`).
+**Proposed message, for Kyle's sign-off.** It names the exact rewrite and drops "until you switch",
+since the synonym is not retired:
 
-`#(preaggregate)`, the one-release alias of `#(rollup)` (`plan/rollup_plan.ts:877-884`), goes in
-the same release.
+> Measure `total` on source `orders` uses `#@ preaggregate`, a deprecated synonym of `#(rollup)`: it is read and built exactly as `#(rollup) grain=["category", "order_day"]`. Write `#(rollup)` instead (see docs/materialization-migration.md#preaggregate).
 
-**The rollup's table survives the rewrite.** The rollup leg already plans a v1 line and a
-`#(rollup)` line of the same grain as one rollup (`plan/v1_rollup_plan.spec.ts:24-35`). An author
-who rewrites `#@ preaggregate grain="d"` as `#(rollup) grain=["d"]` therefore keeps the rollup's
-name, address and table. The removal adds a spec that pins this for every preaggregate case in the
-hammer and fixture corpus.
+The `#(rollup)` text in the message is the normalized declaration, with `storage=` or `name=` added
+when the line has one. There is one warning per measure and line, with `subject` the source.
 
-**Fleet evidence before the removal:** the existing deprecation warning gets a counter by package in
-phase 0. If the counter shows hosted use, the breaking minor warns and serves live for one release
-instead, and fails the release after. That is D8's only fallback. The service already treats `origin: preaggregate`
-as "retained, no longer produced" (`api-doc.yaml:11499-11517`). Its `PreaggregateProjection` keeps
-reading old rows.
+`#(preaggregate)`, the existing route alias of `#(rollup)` (`plan/rollup_plan.ts:877-884`), keeps
+working the same way under the same code. Its text says "one release", which is no longer true, so it
+is reworded to match. **Sign-off:** keep `#(preaggregate)` as a synonym too, rather than retiring it
+on its own.
+
+**Addresses stay the same, and how that is proven.** A rollup's name, and so its readable table
+name and address, derives from its plan: the base, the canonical grain, placement and measures
+(`plan/preaggregation_synthesis.ts`, "Determinism is a correctness property"). Since the 0.13
+cutover, v1 lines are already planned as `#(rollup)` plans by the rollup leg. The synonym changes
+only the reader that produces the declaration. When the normalizer yields the same grain, placement
+and measure set, the plan is the same, and so are the name, address and table. Three things prove
+it:
+
+- `plan/v1_rollup_plan.spec.ts:24-35` already shows that a `#@ preaggregate` line and a `#(rollup)`
+  line of the same grain plan one rollup;
+- a new `plan/preaggregate_synonym_parity.spec.ts` plans every `#@ preaggregate` case under the v1
+  reader (on `main`, before the change) and under the synonym. The cases come from the hammer
+  `preaggregation` scenario group and `preaggregation_*` specs, and from the service's
+  `preaggregate-v1-colocated` and `preaggregate-v1-storage` fixtures. The spec asserts equal rollup
+  names, grains, measures, placements, addresses and auto-run table names, and equal findings apart
+  from the warning text;
+- the bump-PR plan-diff on the two service fixtures allows only E9.
+
+The service already treats `origin: preaggregate` as "retained, no longer produced"
+(`api-doc.yaml:11499-11517`), and a synonym rollup's entry stays `origin: rollup`.
 
 ## 6. Sequencing with X1
 
@@ -685,9 +733,9 @@ All of these ship in the one breaking minor, except where an item says otherwise
 9. For one release window, the bind accepts a manifest entry whose named source is absent from the
    plan when a persist-leg source holds the entry's address (D4). This is a temporary relaxation of
    #1713's same-name check, deleted once every cell has replanned.
-10. `#@ preaggregate` and `#(preaggregate)` are retired: `rollup-retired-annotation`, malformed,
-    failing publish and load (D8). Fallback: warn for one release only if the counter shows hosted
-    use.
+10. `#@ preaggregate` is a deprecated synonym of `#(rollup)`: it is read by the rollup leg, plans
+    the same rollups, and does not fail the load. It warns with `deprecated-preaggregate-annotation`
+    and the new message text (D8, revised). `#(preaggregate)` stays a synonym as well.
 11. `materialize.enabled` loses its off position (D9).
 
 ## Decisions (Kyle, 2026-11-28)
@@ -731,10 +779,14 @@ expected class E7. There is no "lift after" follow-up.
 inherited-only extension's gate refusal. An adversarial security review of the read path, a gated
 extension over an ungated base's stored table, is a flip gate.
 
-**D8. `#@ preaggregate`: (a).** `#@ preaggregate` and `#(preaggregate)` are retired as
-`rollup-retired-annotation`, failing publish and load, in the breaking minor with the flip, and
-their readers are deleted with the v1 walk. If the counter shows hosted use, that release falls back
-to a warning for one release.
+**D8. `#@ preaggregate`: revised by Kyle, a synonym, not a retirement.** `#@ preaggregate` does
+not fail the load. It is a pure synonym of `#(rollup)`: it behaves identically and shares the v2
+rollup leg's implementation. The line is read as `#(rollup)`, and the v1 synthesis and classifier
+are deleted with the v1 walk. Using it warns that it is deprecated and to write `#(rollup)`, under
+the existing `deprecated-preaggregate-annotation` code; the proposed message text is in the
+preaggregate section, for sign-off. The authoring rule is unchanged: docs, skills and examples use
+`#(rollup)` only. This replaces the earlier choice of `rollup-retired-annotation` and its
+counter-triggered fallback.
 
 **D9. `materialize.enabled`: (a).** Its off position is removed first, in the same breaking minor.
 
@@ -745,11 +797,11 @@ expected class E8.
 ## Critical path, in one line
 
 1. **Phase 0:** harness, parity specs against v1, the service's required bump-PR plan-diff and
-   `publisher_ref` input, per-leg containment, the helper moves and the preaggregate counter.
+   `publisher_ref` input, per-leg containment, and the helper moves.
 2. **Phase 1:** `StoredParent` and the companion generator.
 3. **Phase 2, one breaking minor:** D9, D10, the persist leg through its companion, D5, D6, the D4
-   bind rule, the D8 retirement, and deleting v1. Gated on address parity, chained-build parity,
-   the D7 security review and the goldens. Cells take it after a green bump-PR plan-diff.
+   bind rule, the D8 synonym, and deleting v1. Gated on address parity, chained-build parity,
+   the D7 security review, the goldens and preaggregate parity. Cells take it after a green bump-PR plan-diff.
 4. **Phase 3:** delete the D4 bind rule once every cell has replanned.
 
 X1 follows phase 2.
