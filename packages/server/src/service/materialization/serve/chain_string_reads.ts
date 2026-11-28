@@ -17,6 +17,12 @@ import { queryFilterReadsOfQuery } from "./gate_reads";
 import type { GateReads } from "./gate_reads_types";
 import { chainBuildBaseOf, chainBuildReadsOfQuery } from "./result_reads";
 
+/** The refusal of a downstream whose query's base has no name of its own. */
+export const UNNAMED_BASE =
+   "the base its strings are read on is not named (its query runs on an " +
+   "inline `extend` or an unnamed query); declare that base as a source of " +
+   "its own and build this one over it by name";
+
 /**
  * What the build `request` names compares, read in the model `load`
  * compiles queries in: a query-shaped source's own query over its base, a
@@ -43,8 +49,9 @@ export async function chainBuildStringReads(
             downstream,
          );
       }
-      if (base === undefined)
-         return { refused: "the base its strings are read on is not named" };
+      // A query over an inline `extend` (or an unnamed query) has no base
+      // name to read it on; naming that base is the author's fix.
+      if (base === undefined) return { refused: UNNAMED_BASE };
       const clauses: string[] = [];
       if (rollup && rollup.grain.length > 0) {
          clauses.push(`group_by: ${rollup.grain.map(quotedPath).join(", ")}`);
