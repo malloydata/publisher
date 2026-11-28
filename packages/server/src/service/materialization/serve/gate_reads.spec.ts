@@ -431,6 +431,43 @@ describe("gateReads: compares no string", () => {
       expect(gate(byAmount)).toBe(true);
    });
 
+   it("lists a string-comparing join's keys as entry paths when a read goes through it", () => {
+      const joined = (on: unknown) => ({
+         ...ORDERS,
+         fields: [
+            ...ORDERS.fields,
+            { ...ORDERS, name: "o", join: "one", onExpression: on },
+         ],
+      });
+      const byRegion = {
+         node: "=",
+         kids: { left: field(["region"]), right: field(["o", "region"]) },
+      };
+      const byAmount = {
+         node: "=",
+         kids: { left: field(["amount"]), right: field(["o", "amount"]) },
+      };
+      const where = (on: unknown) =>
+         gateReads(
+            {
+               ...joined(on),
+               filterList: [
+                  { e: { node: "is-null", e: field(["o", "amount"]) } },
+               ],
+            },
+            [],
+            MODEL,
+         );
+      // Which rows are joined follows the on:, so its string keys are
+      // compared as the read is: a probe judges each one's collation.
+      expect(where(byRegion).entryPaths).toEqual(
+         expect.arrayContaining([["region"], ["o", "region"]]),
+      );
+      expect(where(byRegion).equalityOnly).toBe(true);
+      // An on: comparing no string adds nothing to judge.
+      expect(where(byAmount).entryPaths).not.toContainEqual(["region"]);
+   });
+
    it("does not hold for a gate over a dimension computed from a string", () => {
       for (const name of ["late", "is_m", "late_n"]) {
          expect(

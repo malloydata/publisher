@@ -744,6 +744,7 @@ class GateReadWalk {
             this.unresolved = true;
             return;
          }
+         this.joinKeys(source, f, chain, joins, entry);
          // A stored table holds a joined source's fields under the join's
          // name: an inlined join's record, or flattened as `<join>__<field>`.
          this.resolve(
@@ -756,6 +757,38 @@ class GateReadWalk {
          return;
       }
       this.field(source, f, chain, joins, entry);
+   }
+
+   private keyedJoins = new Set<unknown>();
+
+   /**
+    * A join read through decides which rows are there (and so which of its
+    * fields are null) by its `on:`. One that compares strings matches rows
+    * under their collation, so its key fields are compared as the read is:
+    * each is a path a probe judges, its column one the read holds. Under a
+    * deterministic collation equality is byte equality, as a stored copy
+    * compares it; a nondeterministic one (case-insensitive ICU) is judged
+    * unknown, and refuses.
+    */
+   private joinKeys(
+      source: unknown,
+      join: FieldLike,
+      chain: readonly string[],
+      joins: readonly string[],
+      entry: boolean,
+   ): void {
+      if (this.keyedJoins.has(join)) return;
+      this.keyedJoins.add(join);
+      const on = (join as { onExpression?: unknown }).onExpression;
+      if (on === undefined || this.leavesNotString(on, source, 0, false)) {
+         return;
+      }
+      if (!this.equalityOrNotString(on, source)) this.equalityOnly = false;
+      for (const p of fieldPathsIn(on)) {
+         if (entry) this.entryPaths.push([...joins, ...p]);
+         else this.entryPathsComplete = false;
+         this.resolve(source, p, chain, joins, entry);
+      }
    }
 
    /** Follow one field: a rename, an expression, a stage output or a column. */
