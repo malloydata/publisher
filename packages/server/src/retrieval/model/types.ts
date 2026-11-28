@@ -369,7 +369,14 @@ export interface ResolvedRequest {
    /** Targets naming a type this server cannot search, for a warning. */
    unsupported: SearchTargetType[];
    limit: number;
+   /** Sources to skip: pages a source browse or a held ranked result. */
    offset: number;
+   /**
+    * Fields to skip in one source's field listing (entity targets, none with
+    * text, scoped to a source): its paging control, separate from `offset`,
+    * which counts sources. A field listing across a package does not page.
+    */
+   entityOffset: number;
 }
 
 /** What a listing needs: the request, the package's entity index, and the warnings to lead with. */

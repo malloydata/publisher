@@ -27,7 +27,6 @@ import {
    projectEntity,
    skillsFor,
    toSourceResults,
-   truncationWarning,
    unsupportedTargetWarnings,
 } from "../../retrieval/search/response";
 import type {
@@ -150,6 +149,40 @@ async function lockedSourceKeys(
    return keys;
 }
 
+/**
+ * Which control pages a listing: `offset` (sources) for a source browse,
+ * `entity_offset` (fields) for one source's fields, and none for a field
+ * listing across a package, which is capped. Undefined for a search.
+ */
+function listingPager(
+   request: ResolvedRequest,
+): "offset" | "entity_offset" | "none" | undefined {
+   if (!request.listingOnly) return undefined;
+   if (request.pureSourceListing) return "offset";
+   return request.sourceName ? "entity_offset" : "none";
+}
+
+/**
+ * Why the request's paging control is the wrong one for it, or undefined when
+ * it is right. Each is refused rather than ignored: ignoring it would hand
+ * back page 1 as if it were page 2.
+ */
+function misusedOffset(request: ResolvedRequest): string | undefined {
+   const pager = listingPager(request);
+   const fieldListing = pager === "entity_offset" || pager === "none";
+   if (fieldListing && request.offset > 0) {
+      return pager === "entity_offset"
+         ? "Invalid offset: offset counts sources, and this is a field listing (entity targets with no search_text). Fix: send the previous response's next_entity_offset as entity_offset instead."
+         : "Invalid offset: offset counts sources, and this is a field listing (entity targets with no search_text). Fix: set scopes[].source to list one source's fields, which page with entity_offset.";
+   }
+   if (pager !== "entity_offset" && request.entityOffset > 0) {
+      return pager === "none"
+         ? "Invalid entity_offset: entity_offset pages one source's fields, and this listing spans the package. Fix: set scopes[].source to the source whose fields you want."
+         : "Invalid entity_offset: entity_offset pages one source's fields (dimension, measure, view or join targets with no search_text, scoped to a source). Fix: drop entity_offset; a search or a source listing pages with offset.";
+   }
+   return undefined;
+}
+
 /** Tier 3: nothing to rank, so enumerate what the targets name. */
 function runListing(
    ctx: ListingContext,
@@ -181,27 +214,25 @@ function runListing(
       ...matching.filter((e) => !e.recordPath),
       ...matching.filter((e) => e.recordPath),
    ];
-   // The limit caps entities; a drill-down's source row becomes the card and
-   // does not spend a slot. Only a pure browse has a stable order, so only it
-   // honours `offset`.
-   const paged = request.pureSourceListing
-      ? inScope.slice(request.offset)
-      : inScope;
-   let entityBudget = request.limit;
-   const capped = paged.filter((e) => {
-      if (sourceName && e.kind === "source") return true;
-      if (entityBudget <= 0) return false;
-      entityBudget -= 1;
-      return true;
-   });
-   /**
-    * Rows the cap spends from: the unit both sides of the truncation warning
-    * are counted in. A scoped source's own row is excluded from both counts,
-    * not subtracted from one, because it may not exist.
-    */
-   const spendable = (rows: typeof inScope) =>
-      sourceName ? rows.filter((e) => e.kind !== "source").length : rows.length;
-   const cappable = spendable(inScope);
+   // A listing is catalog order, so it pages: a source browse by `offset`
+   // (sources), one source's fields by `entity_offset` (fields). A field
+   // listing across a package is capped, not paged, as on the hosted server,
+   // whose package-wide listing is capped per source and type. The order holds
+   // for a loaded package; a reload between pages can shift it. A drill-down's
+   // source row becomes the card on every page, so it is not a row to page.
+   const pager = listingPager(request) ?? "none";
+   const isCard = (e: (typeof inScope)[number]) =>
+      Boolean(sourceName) && e.kind === "source";
+   const pageable = inScope.filter((e) => !isCard(e));
+   const skip =
+      pager === "offset"
+         ? request.offset
+         : pager === "entity_offset"
+           ? request.entityOffset
+           : 0;
+   const page = new Set(pageable.slice(skip, skip + request.limit));
+   const capped = inScope.filter((e) => isCard(e) || page.has(e));
+   const next = skip + page.size;
    const sources = toSourceResults(
       capped.map((e) => projectEntity(e, environmentName, packageName)),
       sourceContext,
@@ -214,27 +245,29 @@ function runListing(
    // A listing is catalog order, not a ranking: it names the ordering and
    // omits a score rather than inventing one. Both counts are in cards (one
    // per model path resolving a source), the unit the payload is made of.
-   const consumed = request.offset + sources.length;
-   // Distinct (model path, source) pairings, so the count stays right even
-   // for an entity whose own source row was filtered out.
-   const cardsInScope = sourceName
-      ? new Set(
-           inScope.map((e) => sourceContextKey(e.modelPath, e.source ?? "")),
-        ).size
-      : inScope.length;
+   // Distinct (model path, source) pairings, so the count stays right for a
+   // field listing, whose rows are fields, and for an entity whose own
+   // source row was filtered out.
+   const cardsInScope = new Set(
+      inScope.map((e) => sourceContextKey(e.modelPath, e.source ?? "")),
+   ).size;
    const listingEnvelope = {
       ranking: "prominence" as const,
       total_available: cardsInScope,
       returned: sources.length,
-      ...(request.pureSourceListing && consumed < inScope.length
-         ? { next_offset: consumed }
+      ...(next < pageable.length && pager === "offset"
+         ? { next_offset: next }
+         : {}),
+      ...(next < pageable.length && pager === "entity_offset"
+         ? { next_entity_offset: next }
          : {}),
    };
    // The package loaded (a failed load throws from packageIndex), so an
    // empty listing is a curation gap, not an empty database; say so. Not when
    // `kinds` is empty: then every target named an unindexed type and
-   // unsupportedTargetWarnings has already explained it.
-   if (sources.length === 0 && !sourceName && request.kinds.size > 0) {
+   // unsupportedTargetWarnings has already explained it. Counted before
+   // paging, so an offset past the end is not mistaken for one.
+   if (inScope.length === 0 && !sourceName && request.kinds.size > 0) {
       return jsonResource(uri, {
          sources,
          ...listingEnvelope,
@@ -251,9 +284,13 @@ function runListing(
       ...(ctx.packageInfo ? { package_info: ctx.packageInfo } : {}),
       ...skillsFor(ctx),
       ...warningsFor(
-         request.pureSourceListing
-            ? listingPageWarning(sources.length, inScope.length)
-            : truncationWarning(spendable(capped), cappable),
+         listingPageWarning({
+            pager,
+            unit: pager === "offset" ? "sources" : "entities",
+            skipped: skip,
+            returned: page.size,
+            total: pageable.length,
+         }),
       ),
    });
 }
@@ -307,24 +344,18 @@ async function runContextQuery(
       "get-context",
    );
 
-   // A ranked result is held for a while (retrieval/search/pages.ts), so `offset`
-   // resumes it. A listing other than the catalog browse has no order to
-   // resume from.
-   if (
-      resolved.offset > 0 &&
-      resolved.listingOnly &&
-      !resolved.pureSourceListing
-   ) {
-      // Refused rather than ignored: silently ignoring the offset would hand
-      // back page 1 as if it were page 2.
+   // Each listing pages by one control, in one unit: a source browse and a
+   // held ranked result by `offset` (sources), a field listing by
+   // `entity_offset` (rows). The other is refused rather than ignored:
+   // ignoring it would hand back page 1 as if it were page 2.
+   const pagingError = misusedOffset(resolved);
+   if (pagingError) {
       return contextError(
          uri,
          `${environmentName}/${packageName}`,
          // InvalidArgumentError, not a bare Error: an unclassified throw is
          // reported by classifyToolError as an internal fault.
-         new InvalidArgumentError(
-            "Invalid offset: paging works on a ranked search (a target with search_text) and on a pure source listing (every search_target of type `source`, none with search_text). Fix: drop `offset`, or add search_text to a target.",
-         ),
+         new InvalidArgumentError(pagingError),
       );
    }
 

@@ -3,7 +3,6 @@
 
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import {
-   MAX_LIMIT,
    type Entity,
    type ListingContext,
    type ResolvedRequest,
@@ -487,22 +486,32 @@ export function skillsFor(ctx: Pick<ListingContext, "pkgIndex">) {
 }
 
 /**
- * The warning for a capped result set, or undefined when nothing was cut.
- * Each cut warning below names the remedy that works for that cut.
+ * What a listing page leaves out, or undefined on a last page. Its remedy is
+ * paging, not raising the limit, which is capped, so a source with more
+ * fields than the cap would never be listed in full. A field listing across a
+ * package does not page; its remedy is listing one source. A page past the end
+ * says so, rather than coming back empty and silent, which reads as "no
+ * fields".
  */
-export const truncationWarning = (returned: number, matched: number) =>
-   matched > returned
-      ? `Returned ${returned} of ${matched} matching entities. Raise limit (max ${MAX_LIMIT}) or narrow the query to see the rest.`
-      : undefined;
-
-/**
- * A browse that stopped early. Its remedy is paging by `offset`, not raising
- * the limit, which is capped either way.
- */
-export const listingPageWarning = (returned: number, matched: number) =>
-   matched > returned
-      ? `Returned ${returned} of ${matched} sources in scope. Pass next_offset back as offset for the next page, or narrow with search_text or more targeted scopes.`
-      : undefined;
+export function listingPageWarning(page: {
+   /** The control that pages this listing, or "none" when it is capped. */
+   pager: "offset" | "entity_offset" | "none";
+   unit: "sources" | "entities";
+   skipped: number;
+   returned: number;
+   total: number;
+}): string | undefined {
+   const { pager, unit, skipped, returned, total } = page;
+   if (pager !== "none" && returned === 0 && skipped > 0 && total > 0) {
+      return `${pager} ${skipped} is past the end: there are ${total} ${unit} in scope. Start again without ${pager}.`;
+   }
+   if (skipped + returned >= total) return undefined;
+   if (pager === "none") {
+      return `Returned ${returned} of ${total} ${unit} in scope. To see the rest, list one source's fields by setting scopes[].source (that listing pages with entity_offset), or narrow with search_text.`;
+   }
+   const after = skipped > 0 ? `, after skipping the first ${skipped}` : "";
+   return `Returned ${returned} of ${total} ${unit} in scope${after}. Pass next_${pager} back as ${pager}, with every other argument unchanged, for the next page, or narrow with search_text or more targeted scopes.`;
+}
 /**
  * A target type this server cannot search, said plainly with the remedy that
  * works. Reached only when value search is turned off

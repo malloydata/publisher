@@ -49,6 +49,7 @@ const request: ResolvedRequest = {
    unsupported: [],
    limit: 20,
    offset: 0,
+   entityOffset: 0,
 };
 void DEFAULT_PACKAGE_RETRIEVAL;
 

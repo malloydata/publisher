@@ -2187,8 +2187,60 @@ describe("get_context truncation reporting", () => {
          }),
       );
       expect(payload.sources[0].entities).toHaveLength(4);
-      expect(payload.warnings.join(" ")).toContain("Returned 4 of 12");
-      expect(payload.warnings.join(" ")).toContain("Raise limit");
+      expect(payload.warnings.join(" ")).toContain(
+         "Returned 4 of 12 entities in scope",
+      );
+      // The limit is capped, so raising it cannot reach field 151 of a wide
+      // source; paging can.
+      expect(payload.warnings.join(" ")).toContain(
+         "Pass next_entity_offset back as entity_offset",
+      );
+      expect(payload.warnings.join(" ")).not.toContain("Raise limit");
+      expect(payload.next_entity_offset).toBe(4);
+      // offset counts sources, so a field listing never sends next_offset.
+      expect(payload).not.toHaveProperty("next_offset");
+   });
+
+   it("pages a source's fields with entity_offset until every field is listed once", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => widePackage),
+      });
+      const call = async (entityOffset?: number) =>
+         parse(
+            await handler({
+               search_targets: everyKind(),
+               scopes: [
+                  { environment: "specs", package: "wide", source: "orders" },
+               ],
+               limit: 5,
+               ...(entityOffset === undefined
+                  ? {}
+                  : { entity_offset: entityOffset }),
+            }),
+         );
+      const pages = [await call()];
+      while (pages[pages.length - 1].next_entity_offset !== undefined) {
+         pages.push(await call(pages[pages.length - 1].next_entity_offset));
+      }
+      expect(pages.map((p) => p.next_entity_offset)).toEqual([
+         5,
+         10,
+         undefined,
+      ]);
+      const names = pages.flatMap((p) =>
+         p.sources[0].entities.map((e: { name: string }) => e.name),
+      );
+      expect(names).toHaveLength(12);
+      expect(new Set(names).size).toBe(12);
+      // Every page carries the source's card, so each is usable on its own.
+      for (const p of pages) {
+         expect(p.sources[0].source_info.resource_id.source).toBe("orders");
+      }
+      expect(pages[1].warnings.join(" ")).toContain(
+         "Returned 5 of 12 entities in scope, after skipping the first 5",
+      );
+      // The last page is not cut, so it says nothing about paging.
+      expect("warnings" in pages[2]).toBe(false);
    });
 
    it("stays silent when nothing was cut", async () => {
@@ -2205,6 +2257,97 @@ describe("get_context truncation reporting", () => {
          }),
       );
       expect("warnings" in payload).toBe(false);
+   });
+});
+
+describe("get_context field listing paging controls", () => {
+   const wideModel = {
+      getSourceInfos: () => [
+         {
+            name: "orders",
+            annotations: [],
+            schema: {
+               fields: Array.from({ length: 12 }, (_, i) => ({
+                  kind: "measure",
+                  name: `revenue_${i}`,
+                  annotations: [],
+               })),
+            },
+         },
+      ],
+      getQueries: () => [],
+   };
+   const handler = () =>
+      captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "wide.malloy" }],
+               getModel: () => wideModel,
+            })),
+      });
+   const scoped = [{ environment: "specs", package: "wide", source: "orders" }];
+
+   it("says an entity_offset past the end is past the end, not that the source is empty", async () => {
+      const payload = parse(
+         await handler()({
+            search_targets: everyKind(),
+            scopes: scoped,
+            entity_offset: 20,
+         }),
+      );
+      expect(payload.sources[0].entities ?? []).toHaveLength(0);
+      expect(payload.warnings).toEqual([
+         "entity_offset 20 is past the end: there are 12 entities in scope. Start again without entity_offset.",
+      ]);
+   });
+
+   it("refuses offset on a field listing, naming entity_offset", async () => {
+      // offset counts sources everywhere; on a field listing it would be a
+      // different unit, so it is refused rather than reinterpreted.
+      const payload = parse(
+         await handler()({
+            search_targets: everyKind(),
+            scopes: scoped,
+            offset: 5,
+         }),
+      );
+      expect(payload.error).toContain("Invalid offset");
+      expect(payload.error).toContain("entity_offset");
+   });
+
+   it("refuses entity_offset on a search, a source listing, and a field listing across the package", async () => {
+      for (const search_targets of [
+         [{ target_type: "measure", search_text: "revenue" }],
+         [{ target_type: "source" }],
+         [{ target_type: "measure" }],
+      ]) {
+         const payload = parse(
+            await handler()({
+               search_targets,
+               scopes: [{ environment: "specs", package: "wide" }],
+               entity_offset: 5,
+            }),
+         );
+         expect(payload.error).toContain("Invalid entity_offset");
+      }
+   });
+
+   it("caps a field listing across the package, and says to list one source to see the rest", async () => {
+      // The hosted server caps its package-wide listing per source and type,
+      // so neither server pages it; one source's fields page on both.
+      const payload = parse(
+         await handler()({
+            search_targets: [{ target_type: "measure" }],
+            scopes: [{ environment: "specs", package: "wide" }],
+            limit: 5,
+         }),
+      );
+      expect(payload.sources[0].entities).toHaveLength(5);
+      expect(payload).not.toHaveProperty("next_entity_offset");
+      expect(payload).not.toHaveProperty("next_offset");
+      expect(payload.warnings).toEqual([
+         "Returned 5 of 12 entities in scope. To see the rest, list one source's fields by setting scopes[].source (that listing pages with entity_offset), or narrow with search_text.",
+      ]);
    });
 });
 
@@ -2993,6 +3136,8 @@ describe("get_context catalog browse", () => {
       // Absent on the final page: present would promise a page that is not
       // there, and a caller walking next_offset would loop.
       expect(last).not.toHaveProperty("next_offset");
+      // Nor a warning pointing at one: there is nothing left to page to.
+      expect(last).not.toHaveProperty("warnings");
    });
 
    it("keeps the full doc when the caller scopes to one source", async () => {
@@ -3007,19 +3152,6 @@ describe("get_context catalog browse", () => {
       expect(payload.sources[0].source_info.docs).toContain(
          "grain and population rules",
       );
-   });
-
-   it("refuses an offset on a response with no resumable order", async () => {
-      const payload = parse(
-         await handler()({
-            search_targets: [{ target_type: "measure" }],
-            scopes,
-            offset: 10,
-         }),
-      );
-      // Silently dropping it would hand back page 1 to a caller who believed
-      // they were reading page 2.
-      expect(JSON.stringify(payload)).toContain("Invalid offset");
    });
 });
 
