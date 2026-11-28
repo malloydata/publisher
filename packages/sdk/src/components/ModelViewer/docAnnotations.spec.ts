@@ -80,7 +80,21 @@ describe("getTagLines", () => {
 });
 
 describe("hasPersistTag", () => {
-   it("detects the #@ persist source tagline (with or without params)", () => {
+   it("detects #(materialize) on a source (with or without keys)", () => {
+      expect(hasPersistTag([{ value: "#(materialize)" }])).toBe(true);
+      expect(
+         hasPersistTag([
+            { value: '#(materialize) name="orders_t" storage="lake"' },
+         ]),
+      ).toBe(true);
+      expect(
+         hasPersistTag([{ value: '#(materialize) { storage="lake" }' }]),
+      ).toBe(true);
+      expect(hasPersistTag([{ value: "#(materialized)" }])).toBe(false);
+      expect(hasPersistTag([{ value: '#(rollup) grain=["c"]' }])).toBe(false);
+   });
+
+   it("detects the legacy #@ persist source tagline (with or without params)", () => {
       expect(hasPersistTag([{ value: "#@ persist" }])).toBe(true);
       expect(
          hasPersistTag([{ value: "#@ persist refresh=7d name=orders_t" }]),
@@ -96,7 +110,15 @@ describe("hasPersistTag", () => {
 });
 
 describe("hasPreaggregateTag", () => {
-   it("detects the #@ preaggregate measure tagline, which always carries a grain", () => {
+   it("detects #(rollup) on a measure", () => {
+      expect(
+         hasPreaggregateTag([{ value: '#(rollup) grain=["category"]' }]),
+      ).toBe(true);
+      expect(hasPreaggregateTag([{ value: "#(rollups)" }])).toBe(false);
+      expect(hasPreaggregateTag([{ value: "#(materialize)" }])).toBe(false);
+   });
+
+   it("detects the legacy v1 rollup tagline, which always carries a grain", () => {
       expect(
          hasPreaggregateTag([
             { value: '#@ preaggregate grain="category_grain"' },

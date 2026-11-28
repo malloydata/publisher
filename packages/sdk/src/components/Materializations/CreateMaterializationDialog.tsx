@@ -62,7 +62,7 @@ export default function CreateMaterializationDialog({
             open={open}
             onClose={handleClose}
             title="New materialization"
-            description="Compile the package, build a table for every persist source, and load them so queries serve from the tables."
+            description="Compile the package, build a table for every materialized source, and load them so queries serve from the tables."
             actions={
                <>
                   <Button onClick={handleClose}>Cancel</Button>

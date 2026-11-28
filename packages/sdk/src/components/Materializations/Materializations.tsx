@@ -131,7 +131,7 @@ export default function Materializations({
          queryKey: ["materializations", environmentName, packageName],
       });
 
-   // Auto-run: the publisher compiles, builds every persist source, and loads
+   // Auto-run: the publisher compiles, builds every materialized source, and loads
    // the resulting manifest in a single pass.
    const createMaterialization = useMutationWithApiError({
       mutationFn: reporting(
@@ -232,7 +232,7 @@ export default function Materializations({
       },
    });
 
-   // Set the persist scope explicitly (package | version). Independent of the
+   // Set the materialization scope explicitly (package | version). Independent of the
    // schedule so the version flip a schedule requires can be undone after the
    // schedule is cleared. The server rejects scope: package while a schedule is
    // still set (publish-gate Rule 2), so the UI only offers this when no
