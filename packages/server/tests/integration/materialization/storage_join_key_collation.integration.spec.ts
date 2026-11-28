@@ -76,6 +76,7 @@ source: funnel is deals extend { measure: c is count() }
 const QUERIES = {
    open: "run: pipeline_now -> { aggregate: n is count() }",
    all: "run: funnel -> { aggregate: c }",
+   joined_count: "run: deals -> { aggregate: k is deal_first_close.count() }",
 };
 
 for (const shape of ["query", "table"] as const) {
@@ -230,6 +231,12 @@ for (const shape of ["query", "table"] as const) {
             it(`answers the null test ${ci ? "live" : "from the tables"}, equal to live`, async () => {
                const served = await query(QUERIES.open);
                expect(served.rows).toBe(live.open.rows);
+               expect(served.kind).toBe(ci ? "live" : "materialized");
+            });
+
+            it(`counts through the join ${ci ? "live" : "from the tables"}, equal to live`, async () => {
+               const served = await query(QUERIES.joined_count);
+               expect(served.rows).toBe(live.joined_count.rows);
                expect(served.kind).toBe(ci ? "live" : "materialized");
             });
 

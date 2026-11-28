@@ -736,6 +736,23 @@ class ResultReadWalk {
     * primary key (and its owner's) is how a fanned-out aggregate counts
     * distinct rows.
     */
+   /** Judge each join `path` names from `scope` (an aggregate's `structPath`). */
+   private joinsAlong(scope: Scope, path: unknown): void {
+      if (scope.kind !== "source" || !Array.isArray(path)) return;
+      let owner = scope.source;
+      const prefix = [...scope.prefix];
+      for (const name of path as unknown[]) {
+         const j = fieldsOf(owner).get(String(name));
+         if (j === undefined || j.join === undefined) {
+            this.unresolved = true;
+            return;
+         }
+         this.join(owner, j, prefix, scope.entry);
+         owner = j;
+         prefix.push(String(name));
+      }
+   }
+
    private join(
       owner: unknown,
       j: FieldLike,
@@ -908,6 +925,10 @@ class ResultReadWalk {
       const node = typeof n.node === "string" ? n.node : "";
       switch (node) {
          case "aggregate": {
+            // An aggregate over a joined source (`fc.count()`, which reads
+            // none of its fields) still counts the rows its joins match:
+            // each join on its path is judged as a field read through it is.
+            if (mode === "judge") this.joinsAlong(scope, n.structPath);
             const src = sub(n.e);
             if (n.function === "min" || n.function === "max") {
                need(src, "order");
