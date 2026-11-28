@@ -1273,14 +1273,15 @@ function manifestAt(
  * when this skill ran `entries`, the set's budget, out (or holds a directory
  * past the listing bound), `spent` when earlier skills had spent it already. It
  * reads the real tree, folders a `.skillignore` ignores included: that file
- * decides what a skill is made of, never what may sit in it. It descends what
- * skillFiles descends otherwise (no `node_modules`, `__pycache__` or path over
- * `ASSET_PATH_MAX_CHARS`), so a skill is never set aside for files nothing
- * serves, but every entry it lists counts, a skipped one included. It follows a
- * link only to a directory inside the package and lists each directory, a
- * linked `assets/` among them, for at most `REFERENCE_MAX_EXAMINED` entries, so
- * a link cannot make it scan the filesystem, list a huge directory whole, or
- * report on files outside the package.
+ * decides what a skill is made of, never what may sit in it. It does not look
+ * under `node_modules`, `__pycache__` or a path over `ASSET_PATH_MAX_CHARS`,
+ * which nothing serves, but it lists and counts every entry it meets, a skipped
+ * one included, so it fails closed on any skill once the budget is spent, one
+ * with only dot files under `assets/` too. It follows a link only to a
+ * directory inside the package and lists each directory, a linked `assets/`
+ * among them, for at most `REFERENCE_MAX_EXAMINED` entries, so a link cannot
+ * make it scan the filesystem, list a huge directory whole, or report on files
+ * outside the package.
  */
 function skillManifest(
    packageRoot: string,
