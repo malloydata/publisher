@@ -1328,15 +1328,25 @@ source: monthly_live is raw -> {
             );
          }
          // With the schema the host stored from daily's entry, but not its
-         // contract, the strings `monthly` groups cannot be judged: refused.
+         // contract, the strings `monthly` groups cannot be judged: a
+         // retryable failure naming `daily` to rebuild, never a refusal.
          const unjudged = await host(
             "host_monthly_no_contract_t",
             daily.schema,
          );
          expect(unjudged.status).toBe("FAILED");
-         expect(unjudged.error).toContain(
-            "an upstream it reads has no column contract",
-         );
+         expect(unjudged.error).toContain("carries none this build can read");
+         const failure = Object.values(
+            ((unjudged as { manifest?: { failures?: Record<string, unknown> } })
+               .manifest?.failures ?? {}) as Record<
+               string,
+               Record<string, unknown>
+            >,
+         ).find((f) => f.sourceName === "monthly");
+         expect(failure?.code).toBe("upstream_contract_insufficient");
+         expect(failure?.staleUpstreams).toEqual([daily.sourceEntityId]);
+         expect(failure?.retryable).toBe(true);
+         expect(failure?.refused).toBeUndefined();
          // With the schema and the contract the host stored, it stacks.
          const stacked = await host(
             "host_monthly_schema_t",

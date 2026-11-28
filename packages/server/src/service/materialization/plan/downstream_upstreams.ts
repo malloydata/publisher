@@ -89,6 +89,13 @@ export function reachedUpstreams(
    root: unknown,
    modelDef: unknown,
    map: SourceMap,
+   /**
+    * Count a persisted SQL source (`conn.sql(…)`, which stores the SQL's
+    * result) as an upstream too, as a chained build stacks on it. Only the
+    * chained string reads ask it today; every other caller keeps the
+    * query-only rule until the planner adopts one shape test for every leg.
+    */
+   options: { persistedSql?: boolean } = {},
 ): ReachedUpstream[] {
    const ids = reachedSourceIDsOf(root, modelDef, map);
    const out: ReachedUpstream[] = [];
@@ -107,10 +114,12 @@ export function reachedUpstreams(
       if (!persisted && materialize.length === 0) continue;
       // A `#@ persist` on a source that is not a query builds no table
       // (`persist-not-materializable`): nothing stored to read.
+      const type = (node?.def as { type?: unknown } | undefined)?.type;
       if (
          persisted &&
          materialize.length === 0 &&
-         (node?.def as { type?: unknown } | undefined)?.type !== "query_source"
+         type !== "query_source" &&
+         !(options.persistedSql && type === "sql_select")
       ) {
          continue;
       }

@@ -30,6 +30,7 @@ import {
    UnconfiguredConnectionError,
    ContractCaptureFailedError,
    SchemaIncompatibleError,
+   UpstreamContractInsufficientError,
 } from "../../../errors";
 import {
    causeChain,
@@ -248,6 +249,8 @@ export function classifyBuildError(err: unknown): BuildRetryable {
    // The plan was stale: the package derives it again, and a retry builds
    // or the plan refuses.
    if (err instanceof SchemaIncompatibleError) return true;
+   // Its upstreams, once rebuilt (`staleUpstreams`), let it build.
+   if (err instanceof UpstreamContractInsufficientError) return true;
    // An upstream no manifest holds: unclassified on its own (see above).
    if (isUpstreamMissingError(err)) return undefined;
    // A property of the model, the package or the environment's configuration.

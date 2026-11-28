@@ -1556,7 +1556,10 @@ async function chainedStringReads(
    const map = SourceMap.of(modelDef);
    const def = map.node(source.sourceID)?.def as { type?: unknown } | undefined;
    if (def?.type !== "query_source") return undefined;
-   const stored = reachedUpstreams(def, modelDef, map)
+   // A persisted SQL source is a stored upstream here, as the chained build
+   // stacks on its table: without it, a query over one recorded no reads and
+   // its build refused ("its string reads were not recorded").
+   const stored = reachedUpstreams(def, modelDef, map, { persistedSql: true })
       .filter(
          (u) => u.storage === destination && u.sourceID !== source.sourceID,
       )
@@ -1574,7 +1577,9 @@ async function chainedStringReads(
    // Name what it reads instead, as a run would: the warehouse table and the
    // source that reaches it (`regions` through `daily_regional`).
    const persisted = new Set(
-      reachedUpstreams(def, modelDef, map).map((u) => u.sourceID),
+      reachedUpstreams(def, modelDef, map, { persistedSql: true }).map(
+         (u) => u.sourceID,
+      ),
    );
    const reached = reachPersisted(
       authorModelReachContext(modelDef),

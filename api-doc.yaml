@@ -12656,6 +12656,16 @@ components:
             derives its plan again at once, and the next build either builds
             the source over the upstream's table as it is or the plan refuses
             it (`upstream_table_unusable`); the source is `retryable`.
+            `upstream_contract_insufficient` (a chained `storage=` build
+            compares strings over a stored upstream whose entry carries no
+            column contract the build can read: the table was built before
+            contracts were recorded, or the entry a host supplied for it in
+            `referenceManifest` holds none or an invalid one, so the contract
+            that judges those strings is missing; `staleUpstreams` names those
+            upstreams). It is non-terminal, never a refusal: once each is
+            rebuilt, or supplied with its contract, the source builds over
+            them, and it is `retryable`. A host that retries it without
+            rebuilding or re-supplying them gets the same failure.
             `instruction_unresolved` (an instruction no source in the run's
             build plan resolves to, so nothing was built for it; not
             `retryable` until the caller reads the plan again). Every
@@ -12664,6 +12674,15 @@ components:
             plan's reason, and any other unmatched instruction fails with this
             code; none is dropped. An open set; absent for a failure that has
             none.
+        staleUpstreams:
+          type: array
+          items:
+            type: string
+          description: >-
+            With `code: upstream_contract_insufficient`: the stored upstreams
+            whose tables record no column contract, by content address
+            (`sourceEntityId`). Rebuilding them lets this source build. Absent
+            otherwise.
         refused:
           type: boolean
           description: >-

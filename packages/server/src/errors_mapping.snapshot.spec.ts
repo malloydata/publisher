@@ -15,6 +15,7 @@ import {
    ChainedShapeNotCarriedError,
    ContractCaptureFailedError,
    SchemaIncompatibleError,
+   UpstreamContractInsufficientError,
    ChainedUpstreamMissingError,
    CompileRefusedError,
    ConflictError,
@@ -378,6 +379,14 @@ const CASES: Array<[string, () => unknown]> = [
       () =>
          new SchemaIncompatibleError(
             "'v' was not built over its upstream 'a''s table a_t in 'lake'",
+         ),
+   ],
+   [
+      "UpstreamContractInsufficientError",
+      () =>
+         new UpstreamContractInsufficientError(
+            "'web_sessions' compares strings over its stored upstreams, and the table of 'ga4_events' records none",
+            ["abc123"],
          ),
    ],
    [
