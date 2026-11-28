@@ -742,6 +742,9 @@ export function servedCopyWarnings(
       );
       for (const p of problems) {
          const subject = p.sourceName ? { subject: p.sourceName } : {};
+         // A left-out source keys on `sourceID`; a cross-connection join's
+         // stored side, which still serves, on `storedSourceID`.
+         const stored = p.sourceID ?? p.storedSourceID;
          warnings.push({
             model: modelPath,
             ...subject,
@@ -751,9 +754,9 @@ export function servedCopyWarnings(
             message: servedCopyProblemMessage(
                p,
                keptInline.has(`${p.sourceName}\u0000${p.join}`),
-               p.sourceID === undefined || !takesInline
+               takesInline === undefined || stored === undefined
                   ? true
-                  : takesInline(p.sourceID),
+                  : takesInline(stored),
                writesStorage ? writesStorage(p, modelPath) : true,
             ),
          });

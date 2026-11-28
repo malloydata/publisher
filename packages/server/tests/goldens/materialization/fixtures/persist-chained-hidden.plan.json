@@ -3,7 +3,7 @@
     "annotationFindings": [
       {
         "code": "persist-not-built",
-        "message": "#@ persist source \"west_spend\" is not built, so it is answered live: it is built over its upstreams' tables in its storage= destination, which compares strings byte-exact, and the base its strings are read on is not named; a downstream is never built by recomputing its upstreams from raw.",
+        "message": "#@ persist source \"west_spend\" is not built, so it is answered live: it is built over its upstreams' tables in its storage= destination, which compares strings byte-exact, and the base its strings are read on is not named (its query runs on an inline `extend` or an unnamed query); declare that base as a source of its own and build this one over it by name; a downstream is never built by recomputing its upstreams from raw.",
         "model": "chained_hidden.malloy",
         "refused": {
           "name": "west_spend",
@@ -46,7 +46,7 @@
   "loadWarnings": [
     {
       "code": "persist-not-built",
-      "message": "#@ persist source \"west_spend\" is not built, so it is answered live: it is built over its upstreams' tables in its storage= destination, which compares strings byte-exact, and the base its strings are read on is not named; a downstream is never built by recomputing its upstreams from raw.",
+      "message": "#@ persist source \"west_spend\" is not built, so it is answered live: it is built over its upstreams' tables in its storage= destination, which compares strings byte-exact, and the base its strings are read on is not named (its query runs on an inline `extend` or an unnamed query); declare that base as a source of its own and build this one over it by name; a downstream is never built by recomputing its upstreams from raw.",
       "model": "chained_hidden.malloy",
       "reason": "upstream_table_unusable",
       "severity": "warn",
@@ -71,7 +71,7 @@
     "omittedSources": [],
     "refusedSources": {
       "west_spend@<pkg>/chained_hidden.malloy": {
-        "message": "#@ persist source \"west_spend\" is not built, so it is answered live: it is built over its upstreams' tables in its storage= destination, which compares strings byte-exact, and the base its strings are read on is not named; a downstream is never built by recomputing its upstreams from raw.",
+        "message": "#@ persist source \"west_spend\" is not built, so it is answered live: it is built over its upstreams' tables in its storage= destination, which compares strings byte-exact, and the base its strings are read on is not named (its query runs on an inline `extend` or an unnamed query); declare that base as a source of its own and build this one over it by name; a downstream is never built by recomputing its upstreams from raw.",
         "modelPath": "chained_hidden.malloy",
         "name": "west_spend",
         "origin": "persist",
