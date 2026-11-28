@@ -226,6 +226,13 @@ export const LIVE_WRONG_NEST: Gap = {
       "live is wrong here, not the stored answer: Malloy 0.0.438 (malloydata/malloy#3208) drops nested rows under a NULL parent key live (malloydata/malloy#3220); served_copy_conformance_gaps checks the stored answer against the truth",
 };
 
+/** The warehouse conformance variant's Postgres stand-in (warehouse/targets.ts). */
+const POSTGRES_NEST: Gap = {
+   kind: "live",
+   reason:
+      "the Postgres stand-in stores the nest in types the model does not declare (served-copy-not-served), so the served copy declines the source and it answers live",
+};
+
 export const SHAPES: Shape[] = [
    {
       name: "baseline",
@@ -626,6 +633,17 @@ source: nested is orders_raw -> {
             name: "the top level",
             malloy:
                "run: nested -> { group_by: region; aggregate: t is total.sum() }",
+            gaps: {
+               // The warehouse conformance variant (warehouse/warehouse_shapes.ts).
+               "snowflake:materialize_database": {
+                  kind: "live",
+                  reason:
+                     "Snowflake stores the database table's nest as ARRAY/VARIANT, so the served copy declines the source and it answers live",
+               },
+               // The local Postgres stand-in, on both tiers.
+               "postgres:materialize": POSTGRES_NEST,
+               "postgres:materialize_database": POSTGRES_NEST,
+            },
          },
          {
             name: "through the nested rows",
